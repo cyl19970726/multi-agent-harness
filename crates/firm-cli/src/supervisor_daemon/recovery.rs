@@ -31,6 +31,10 @@ pub(super) fn team_run_has_unresolved_runtime_command(
     store: &HarnessStore,
     execution_space_id: &str,
     run_id: &str,
+    node_daemon_id: &str,
+    node_daemon_generation: u64,
+    supervisor_id: &str,
+    supervisor_generation: u64,
 ) -> CliResult<bool> {
     let members = crate::latest_member_runs_in_append_order(store)?
         .into_iter()
@@ -41,7 +45,14 @@ pub(super) fn team_run_has_unresolved_runtime_command(
         .runtime_commands(execution_space_id)?
         .into_iter()
         .any(|command| {
-            command
+            runtime_command_matches_supervisor_authority(
+                &command,
+                run_id,
+                node_daemon_id,
+                node_daemon_generation,
+                supervisor_id,
+                supervisor_generation,
+            ) && command
                 .binding
                 .target_member_run_id
                 .as_ref()
@@ -60,6 +71,24 @@ pub(super) fn team_run_has_unresolved_runtime_command(
                             == harness_core::agentfirm_api::RuntimePostconditionStatus::Unknown
                 })
         }))
+}
+
+fn runtime_command_matches_supervisor_authority(
+    command: &harness_core::agentfirm_api::RuntimeCommandRecord,
+    run_id: &str,
+    node_daemon_id: &str,
+    node_daemon_generation: u64,
+    supervisor_id: &str,
+    supervisor_generation: u64,
+) -> bool {
+    command.target_node_daemon_id == node_daemon_id
+        && command.target_node_daemon_generation == node_daemon_generation
+        && command.binding.target_driver
+            == harness_core::agentfirm_api::RuntimeDriverRef::TeamSupervisor {
+                team_run_id: run_id.to_string(),
+                team_supervisor_id: supervisor_id.to_string(),
+                team_supervisor_generation: supervisor_generation,
+            }
 }
 
 pub(crate) fn reconcile_team_run_start_postcondition(
@@ -175,16 +204,43 @@ impl MultiTeamDaemon {
         run_id: &str,
         error: &CliError,
     ) {
-        match team_run_has_unresolved_runtime_command(store, execution_space_id, run_id) {
+        let daemon = store
+            .latest_node_daemon_lease(&self.node_id)
+            .ok()
+            .flatten()
+            .filter(|lease| {
+                lease.daemon_id == self.daemon_id && lease.instance_id == self.instance_id
+            });
+        let supervisor = store
+            .latest_team_supervisor_lease(run_id)
+            .ok()
+            .flatten()
+            .filter(|lease| {
+                daemon.as_ref().is_some_and(|daemon| {
+                    lease.node_daemon_id == daemon.daemon_id
+                        && lease.node_daemon_generation == daemon.generation
+                })
+            });
+        let (Some(daemon), Some(supervisor)) = (daemon, supervisor) else {
+            return;
+        };
+        match team_run_has_unresolved_runtime_command(
+            store,
+            execution_space_id,
+            run_id,
+            &daemon.daemon_id,
+            daemon.generation,
+            &supervisor.supervisor_id,
+            supervisor.generation,
+        ) {
             Ok(false) => {}
             Ok(true) => {
-                let lease = store.latest_team_supervisor_lease(run_id).ok().flatten();
                 if let Err(marker_error) = self.block_team_run_after_supervisor_failure(
                     execution_space_id,
                     store,
                     run_id,
-                    lease.as_ref().map(|lease| lease.supervisor_id.as_str()),
-                    lease.as_ref().map(|lease| lease.generation),
+                    Some(&supervisor.supervisor_id),
+                    Some(supervisor.generation),
                     error,
                 ) {
                     eprintln!(
@@ -210,6 +266,10 @@ impl MultiTeamDaemon {
             &store,
             &context.execution_space_id,
             &context.run_id,
+            &self.daemon_id,
+            context.daemon_generation,
+            &context.supervisor_id,
+            context.supervisor_generation,
         ) {
             Ok(false) => {}
             Ok(true) => self.block_finished_supervisor(
@@ -495,6 +555,80 @@ mod tests {
             3,
             43,
             50,
+        ));
+    }
+
+    #[test]
+    fn old_daemon_or_supervisor_runtime_command_cannot_authorize_recovery_block() {
+        let mut command: harness_core::agentfirm_api::RuntimeCommandRecord =
+            serde_json::from_value(serde_json::json!({
+                "id": "runtime-command-old-authority",
+                "execution_space_id": "space",
+                "target_node_id": "node",
+                "target_node_daemon_id": "node-daemon:node",
+                "target_node_daemon_generation": 7,
+                "authenticated_actor": {"kind": "service", "id": "node-daemon:node"},
+                "command": "start_cycle",
+                "required_capability": "runtime.cycle.start",
+                "idempotency_key": "old-authority",
+                "request_fingerprint": "fingerprint",
+                "status": "accepted",
+                "phase": "provider_acknowledged",
+                "effect_certainty": "unknown",
+                "postcondition_status": "unknown",
+                "binding": {
+                    "target_member_run_id": "member-run",
+                    "target_member_run_generation": 1,
+                    "target_driver": {
+                        "kind": "team_supervisor",
+                        "team_run_id": "run",
+                        "team_supervisor_id": "supervisor",
+                        "team_supervisor_generation": 3
+                    }
+                },
+                "precondition": {},
+                "postcondition": {},
+                "target_session_id": null,
+                "target_session_generation": null,
+                "source_record_id": null,
+                "result": null,
+                "failure_code": null,
+                "version": 1,
+                "created_at": "unix-ms:1",
+                "updated_at": "unix-ms:1"
+            }))
+            .expect("RuntimeCommandRecord fixture");
+        assert!(runtime_command_matches_supervisor_authority(
+            &command,
+            "run",
+            "node-daemon:node",
+            7,
+            "supervisor",
+            3,
+        ));
+        command.target_node_daemon_generation = 6;
+        assert!(!runtime_command_matches_supervisor_authority(
+            &command,
+            "run",
+            "node-daemon:node",
+            7,
+            "supervisor",
+            3,
+        ));
+        command.target_node_daemon_generation = 7;
+        command.binding.target_driver =
+            harness_core::agentfirm_api::RuntimeDriverRef::TeamSupervisor {
+                team_run_id: "run".into(),
+                team_supervisor_id: "supervisor".into(),
+                team_supervisor_generation: 2,
+            };
+        assert!(!runtime_command_matches_supervisor_authority(
+            &command,
+            "run",
+            "node-daemon:node",
+            7,
+            "supervisor",
+            3,
         ));
     }
 }
