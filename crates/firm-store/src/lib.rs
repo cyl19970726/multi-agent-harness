@@ -2,8 +2,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Seek, SeekFrom, Write};
 use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
-use std::sync::{Arc, Mutex, OnceLock, Weak};
+use std::sync::{Arc, Condvar, Mutex, OnceLock, Weak};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -330,7 +329,7 @@ pub enum HostAttentionClaimResult {
 pub struct HarnessStore {
     root: PathBuf,
     provider_compatibility_scope: Option<(String, String)>,
-    process_write_lock: Arc<AtomicBool>,
+    process_write_lock: Arc<ProcessWriteLock>,
 }
 
 mod store_current_work_delivery;
@@ -769,32 +768,154 @@ fn would_block_lock(error: &std::io::Error) -> bool {
         || error.kind() == std::io::ErrorKind::WouldBlock
 }
 
-fn process_write_lock_for(root: &Path) -> Arc<AtomicBool> {
-    static LOCKS: OnceLock<Mutex<std::collections::HashMap<PathBuf, Weak<AtomicBool>>>> =
+#[derive(Debug, Default)]
+struct ProcessWriteLockState {
+    next_ticket: u64,
+    serving_ticket: u64,
+    cancelled_tickets: std::collections::BTreeSet<u64>,
+}
+
+#[derive(Debug, Default)]
+struct ProcessWriteLock {
+    state: Mutex<ProcessWriteLockState>,
+    available: Condvar,
+}
+
+impl ProcessWriteLock {
+    fn acquire(self: &Arc<Self>, deadline: Instant) -> Option<ProcessWritePermit> {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let ticket = state.next_ticket;
+        state.next_ticket = state.next_ticket.checked_add(1)?;
+        loop {
+            if state.serving_ticket == ticket {
+                return Some(ProcessWritePermit {
+                    lock: Arc::clone(self),
+                    ticket,
+                });
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                state.cancelled_tickets.insert(ticket);
+                advance_cancelled_process_write_tickets(&mut state);
+                self.available.notify_all();
+                return None;
+            }
+            let (next, _) = self
+                .available
+                .wait_timeout(state, remaining)
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            state = next;
+        }
+    }
+
+    fn release(&self, ticket: u64) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        debug_assert_eq!(state.serving_ticket, ticket);
+        state.serving_ticket = state.serving_ticket.saturating_add(1);
+        advance_cancelled_process_write_tickets(&mut state);
+        self.available.notify_all();
+    }
+}
+
+fn advance_cancelled_process_write_tickets(state: &mut ProcessWriteLockState) {
+    while state.cancelled_tickets.remove(&state.serving_ticket) {
+        state.serving_ticket = state.serving_ticket.saturating_add(1);
+    }
+}
+
+struct ProcessWritePermit {
+    lock: Arc<ProcessWriteLock>,
+    ticket: u64,
+}
+
+impl Drop for ProcessWritePermit {
+    fn drop(&mut self) {
+        self.lock.release(self.ticket);
+    }
+}
+
+fn process_write_lock_for(root: &Path) -> Arc<ProcessWriteLock> {
+    static LOCKS: OnceLock<Mutex<std::collections::HashMap<PathBuf, Weak<ProcessWriteLock>>>> =
         OnceLock::new();
     let locks = LOCKS.get_or_init(|| Mutex::new(std::collections::HashMap::new()));
     let mut locks = locks
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    if let Some(lock) = locks.get(root).and_then(Weak::upgrade) {
+    let root = canonical_store_lock_root(root);
+    if let Some(lock) = locks.get(&root).and_then(Weak::upgrade) {
         return lock;
     }
     locks.retain(|_, lock| lock.strong_count() > 0);
-    let lock = Arc::new(AtomicBool::new(false));
-    locks.insert(root.to_path_buf(), Arc::downgrade(&lock));
+    let lock = Arc::new(ProcessWriteLock::default());
+    locks.insert(root, Arc::downgrade(&lock));
     lock
+}
+
+/// Resolve every spelling of one physical Store root to one process-local
+/// writer queue. The Store directory may not exist yet, so normalize the
+/// absolute path first, canonicalize its nearest existing ancestor, then
+/// append the still-missing suffix. This makes pre-init and post-init handles,
+/// `..` aliases, and symlinked existing ancestors share the same ticket lock.
+fn canonical_store_lock_root(root: &Path) -> PathBuf {
+    use std::path::Component;
+
+    let absolute = if root.is_absolute() {
+        root.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .unwrap_or_else(|_| PathBuf::from("/"))
+            .join(root)
+    };
+    let mut normalized = PathBuf::new();
+    for component in absolute.components() {
+        match component {
+            Component::Prefix(prefix) => normalized.push(prefix.as_os_str()),
+            Component::RootDir => normalized.push(Path::new("/")),
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if normalized.file_name().is_some() {
+                    normalized.pop();
+                }
+            }
+            Component::Normal(part) => normalized.push(part),
+        }
+    }
+    if let Ok(canonical) = fs::canonicalize(&normalized) {
+        return canonical;
+    }
+
+    let mut cursor = normalized.as_path();
+    let mut missing = Vec::new();
+    while let Some(name) = cursor.file_name() {
+        missing.push(name.to_os_string());
+        let Some(parent) = cursor.parent() else {
+            break;
+        };
+        cursor = parent;
+        if let Ok(mut canonical) = fs::canonicalize(cursor) {
+            for part in missing.iter().rev() {
+                canonical.push(part);
+            }
+            return canonical;
+        }
+    }
+    normalized
 }
 
 struct StoreWriteLock {
     file: File,
-    process_write_lock: Arc<AtomicBool>,
+    _process_write_permit: ProcessWritePermit,
 }
 
 impl Drop for StoreWriteLock {
     fn drop(&mut self) {
         unlock_file(&self.file);
-        self.process_write_lock
-            .store(false, AtomicOrdering::Release);
     }
 }
 
