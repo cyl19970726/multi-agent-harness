@@ -186,11 +186,12 @@ mod tests {
             command.arg("-c").arg("sleep 30").process_group(0);
             let mut child = command.spawn()?;
             let pid = child.id();
-            let _registration =
+            let mut registration =
                 harness_runtime_host::OwnedProcessGroupRegistration::new(&mut child)
                     .expect("register shutdown test process group");
             pid_tx.send(pid).expect("publish owned process group");
-            let _ = child.wait()?;
+            let status = registration.kill_and_reap(&mut child)?;
+            assert!(status.is_some(), "shutdown child must be terminal-reaped");
             assert!(!thread_heartbeat.load(Ordering::Acquire));
             Ok(())
         });

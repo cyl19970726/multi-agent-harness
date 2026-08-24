@@ -247,17 +247,43 @@ impl OwnedProcessGroupRegistration {
         if let Some(status) = self.try_wait_and_release(child)? {
             return Ok(Some(status));
         }
-        {
+        let signal_errno = {
             let groups = owned_process_groups()
                 .lock()
                 .unwrap_or_else(|error| error.into_inner());
             if groups.groups.get(&self.pid) == Some(&self.token) {
-                if let Some(errno) = signal_process_group(self.pid) {
-                    return Err(std::io::Error::from_raw_os_error(errno));
+                signal_process_group(self.pid)
+            } else {
+                None
+            }
+        };
+        let _ = child.kill();
+        if let Some(errno) = signal_errno {
+            // Reaping the immediate child cannot prove that the process-group
+            // descendants received SIGKILL. Preserve the exact registration
+            // and diagnostic even if the best-effort child reap succeeds.
+            let mut groups = owned_process_groups()
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            if groups.groups.get(&self.pid) == Some(&self.token) {
+                let failure = (self.pid, errno);
+                if !groups.shutdown_signal_failures.contains(&failure) {
+                    groups.shutdown_signal_failures.push(failure);
                 }
             }
+            drop(groups);
+            let deadline = Instant::now() + Duration::from_secs(2);
+            loop {
+                match child.try_wait() {
+                    Ok(Some(_)) => break,
+                    Ok(None) if Instant::now() < deadline => {
+                        std::thread::sleep(Duration::from_millis(10));
+                    }
+                    Ok(None) | Err(_) => break,
+                }
+            }
+            return Err(std::io::Error::from_raw_os_error(errno));
         }
-        let _ = child.kill();
         self.bounded_reap_and_release_with(Duration::from_secs(2), || child.try_wait())
     }
 
@@ -325,19 +351,27 @@ pub fn terminate_registered_process_groups() -> ProcessGroupTermination {
         .lock()
         .unwrap_or_else(|error| error.into_inner());
     groups.accepting = false;
-    let registered = std::mem::take(&mut groups.groups);
-    for pid in registered.keys().copied() {
-        groups.shutdown_signaled.push(pid);
-        if let Some(errno) = signal_process_group(pid) {
-            groups.shutdown_signal_failures.push((pid, errno));
-        }
-    }
-    let mut pids = std::mem::take(&mut groups.shutdown_signaled);
+    // Signalling is not terminal proof. Keep every exact pid/token ownership
+    // entry until its provider guard observes and reaps the child in the same
+    // critical section that removes the token. Late-admission children use the
+    // separate pending list until their shared constructor proves reap.
+    let mut pids = groups.groups.keys().copied().collect::<Vec<_>>();
+    pids.extend(groups.shutdown_signaled.iter().copied());
     pids.sort_unstable();
     pids.dedup();
+    let mut signal_failures = Vec::new();
+    for pid in pids.iter().copied() {
+        if let Some(errno) = signal_process_group(pid) {
+            let failure = (pid, errno);
+            if !groups.shutdown_signal_failures.contains(&failure) {
+                groups.shutdown_signal_failures.push(failure);
+            }
+            signal_failures.push(failure);
+        }
+    }
     ProcessGroupTermination {
         pids,
-        signal_failures: std::mem::take(&mut groups.shutdown_signal_failures),
+        signal_failures,
     }
 }
 
@@ -566,13 +600,13 @@ mod tests {
                 signal_failures: Vec::new(),
             }
         );
-        assert!(child
-            .wait()
+        assert!(registration
+            .kill_and_reap(&mut child)
             .expect("reap owned provider group")
+            .expect("owned provider group became terminal")
             .code()
             .is_none());
         assert!(terminate_registered_process_groups().pids.is_empty());
-        registration.release();
         complete_registered_process_group_shutdown().expect("reopen process-group admission");
     }
 
@@ -591,8 +625,10 @@ mod tests {
         stale.release();
 
         assert_eq!(terminate_registered_process_groups().pids, vec![pid]);
-        let _ = child.wait().expect("reap reused owned group");
-        current.release();
+        assert!(current
+            .kill_and_reap(&mut child)
+            .expect("reap reused owned group")
+            .is_some());
         complete_registered_process_group_shutdown().expect("reopen process-group admission");
     }
 
@@ -672,14 +708,21 @@ mod tests {
     }
 
     #[test]
-    fn shutdown_enters_between_bounded_reap_polls() {
+    fn shutdown_signal_without_terminal_reap_retains_exact_authority() {
+        use std::os::unix::process::CommandExt;
+
         let _test_lock = registry_test_lock();
-        let registration = OwnedProcessGroupRegistration::register_pid_for_test(999_998);
+        let mut command = shell("sleep 30");
+        command.process_group(0);
+        let mut child = command.spawn().expect("spawn bounded-reap test group");
+        let pid = child.id();
+        let registration = OwnedProcessGroupRegistration::new(&mut child)
+            .expect("register bounded-reap test group");
         let (first_poll_tx, first_poll_rx) = std::sync::mpsc::channel();
         let reaper = std::thread::spawn(move || {
             let mut registration = registration;
             let mut first_poll = Some(first_poll_tx);
-            registration
+            let status = registration
                 .bounded_reap_and_release_with_interval(
                     Duration::from_millis(200),
                     Duration::from_millis(200),
@@ -690,26 +733,53 @@ mod tests {
                         Ok(None)
                     },
                 )
-                .expect("bounded reap result")
+                .expect("bounded reap result");
+            (status, registration)
         });
         first_poll_rx
             .recv_timeout(Duration::from_secs(1))
             .expect("reaper performed first poll");
 
         let started = Instant::now();
-        assert_eq!(terminate_registered_process_groups().pids, vec![999_998]);
+        assert_eq!(
+            terminate_registered_process_groups(),
+            ProcessGroupTermination {
+                pids: vec![pid],
+                signal_failures: Vec::new(),
+            }
+        );
         assert!(
             started.elapsed() < Duration::from_millis(100),
             "shutdown waited for the reaper's unlocked poll interval"
         );
-        assert_eq!(reaper.join().expect("join bounded reaper"), None);
+        let (status, mut registration) = reaper.join().expect("join bounded reaper");
+        assert_eq!(status, None);
+        let error = complete_registered_process_group_shutdown()
+            .expect_err("Supervisor exit without terminal reap must keep admission closed");
+        assert_eq!(error.registered_pids, vec![pid]);
+        assert!(error.pending_signal_pids.is_empty());
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            if registration
+                .try_wait_and_release(&mut child)
+                .expect("observe real child terminal through exact guard")
+                .is_some()
+            {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "signalled child did not become terminal"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
         complete_registered_process_group_shutdown().expect("reopen process-group admission");
     }
 
     #[test]
     fn shutdown_completion_rejects_residual_registration() {
         let _test_lock = registry_test_lock();
-        let _registration = OwnedProcessGroupRegistration::register_pid_for_test(999_997);
+        let mut registration = OwnedProcessGroupRegistration::register_pid_for_test(999_997);
 
         let error = complete_registered_process_group_shutdown()
             .expect_err("residual registration must keep admission closed");
@@ -720,6 +790,7 @@ mod tests {
         assert!(error.reap_timeout_pids.is_empty());
 
         assert_eq!(terminate_registered_process_groups().pids, vec![999_997]);
+        registration.release();
         complete_registered_process_group_shutdown().expect("reopen process-group admission");
     }
 }

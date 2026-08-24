@@ -73,8 +73,12 @@ mutex, so shutdown cannot signal a pid after its original child became
 reusable. Provider-side kill/reap holds that mutex only for a bounded interval;
 each non-blocking reap observation and terminal-token removal uses one short
 critical section, while every poll wait happens outside the mutex. On timeout
-it keeps the registration so the daemon's final drain can report
-`NODE_DAEMON_DRAIN_INCOMPLETE`. Registration attempted after admission closes
+it keeps the exact pid/token registration. Shutdown signalling likewise never
+removes that ownership evidence: only the provider guard's terminal
+`try_wait` observation may remove it. A Supervisor that exits after SIGKILL but
+without terminal reap therefore leaves a typed completion residual, and the
+daemon reports `NODE_DAEMON_DRAIN_INCOMPLETE` instead of releasing authority.
+Registration attempted after admission closes
 returns a typed `PROVIDER_PROCESS_GROUP_ADMISSION_CLOSED` failure only after the
 shared registration path has signalled and bounded-reaped the actual child
 outside the registry mutex; a provider cannot continue assembling that
