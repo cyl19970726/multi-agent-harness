@@ -825,6 +825,41 @@ fn execution_binding_fences_runtime_without_owning_responsibility() {
 
     std::fs::write(&canonical_ledger, &exact_rows).expect("restore canonical rows");
     rewrite_trust_operation(&fixture.root, "binding-exact", |row| {
+        let initial = row["operation"]["immutable_side_records"][0].clone();
+        let mut forged = initial.clone();
+        forged["recipient_session_id"] = serde_json::json!("successor-session");
+        forged["status"] = serde_json::json!("claimed");
+        forged["claim_id"] = serde_json::json!("forged-claim");
+        forged["claimed_node_daemon_generation"] = serde_json::json!(1);
+        forged["version"] = serde_json::json!(2);
+        forged["updated_at"] = serde_json::json!("t5");
+        row["operation"]["immutable_side_records"] = serde_json::json!([initial, forged]);
+    });
+    let forged_delivery = store
+        .fabric_work_deliveries(SPACE)
+        .expect_err("a later delivery revision cannot retarget immutable session identity");
+    assert!(forged_delivery
+        .to_string()
+        .contains("CANONICAL_WORK_DELIVERY_FOLD_CONFLICT"));
+
+    std::fs::write(&canonical_ledger, &exact_rows).expect("restore canonical rows");
+    rewrite_trust_operation(&fixture.root, "binding-exact", |row| {
+        let initial = row["operation"]["immutable_side_records"][0].clone();
+        let mut out_of_order = initial.clone();
+        out_of_order["status"] = serde_json::json!("claimed");
+        out_of_order["claim_id"] = serde_json::json!("claim-version-gap");
+        out_of_order["claimed_node_daemon_generation"] = serde_json::json!(1);
+        out_of_order["version"] = serde_json::json!(3);
+        out_of_order["updated_at"] = serde_json::json!("t5");
+        row["operation"]["immutable_side_records"] = serde_json::json!([initial, out_of_order]);
+    });
+    let version_gap = store
+        .fabric_work_deliveries(SPACE)
+        .expect_err("canonical delivery revision gaps fail closed");
+    assert!(version_gap.to_string().contains("version gap"));
+
+    std::fs::write(&canonical_ledger, &exact_rows).expect("restore canonical rows");
+    rewrite_trust_operation(&fixture.root, "binding-exact", |row| {
         row["operation"]["event"]["aggregate_kind"] =
             serde_json::json!("orphaned_delivery_fixture");
     });

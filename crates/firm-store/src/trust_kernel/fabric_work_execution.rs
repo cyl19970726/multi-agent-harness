@@ -46,10 +46,23 @@ impl HarnessStore {
         &self,
         execution_space_id: &str,
     ) -> StoreResult<BTreeMap<String, CanonicalWorkDelivery>> {
-        self.latest_fabric_side_records_unlocked(
-            execution_space_id,
-            |row: &CanonicalWorkDelivery| row.id.clone(),
-        )
+        let mut deliveries = BTreeMap::<String, CanonicalWorkDelivery>::new();
+        for delivery in self.trust_side_records::<CanonicalWorkDelivery>(execution_space_id)? {
+            let decision = firm_application::fold_canonical_work_delivery(
+                deliveries.get(&delivery.id),
+                &delivery,
+            )
+            .map_err(|error| {
+                StoreError::Conflict(format!(
+                    "CANONICAL_WORK_DELIVERY_FOLD_CONFLICT: delivery {}: {error}",
+                    delivery.id
+                ))
+            })?;
+            if decision != firm_application::ProjectionFoldDecision::Replay {
+                deliveries.insert(delivery.id.clone(), delivery);
+            }
+        }
+        Ok(deliveries)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -224,10 +237,7 @@ impl HarnessStore {
             delivery_id,
         )?;
         let mut delivery = self
-            .latest_fabric_side_records_unlocked(
-                &context.execution_space_id,
-                |row: &CanonicalWorkDelivery| row.id.clone(),
-            )?
+            .canonical_fabric_work_deliveries_unlocked(&context.execution_space_id)?
             .remove(delivery_id)
             .ok_or_else(|| {
                 trust_error(
@@ -291,10 +301,7 @@ impl HarnessStore {
             delivery_id,
         )?;
         let mut delivery = self
-            .latest_fabric_side_records_unlocked(
-                &context.execution_space_id,
-                |row: &CanonicalWorkDelivery| row.id.clone(),
-            )?
+            .canonical_fabric_work_deliveries_unlocked(&context.execution_space_id)?
             .remove(delivery_id)
             .ok_or_else(|| {
                 trust_error(

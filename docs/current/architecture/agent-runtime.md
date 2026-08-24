@@ -175,6 +175,23 @@ no compatibility reader, export adapter, fallback, or migration path.
 The repository Work boundary gate rejects direct legacy delivery readers and
 types from every maintained current product module in this table.
 
+Canonical delivery revisions are folded by an explicit source/lifecycle
+contract, not by last-row-wins. The WorkDelivery id, Work/binding revision,
+recipient AgentMember and AgentSession generation, target Node, and creation
+time are immutable. The only legal revision chain is
+`Queued -> Claimed -> ProviderReceived|Failed`; exact replay is idempotent,
+while identity drift, same-version drift, version regression/gaps, and illegal
+transitions fail the entire read closed. There is no legacy WorkDelivery row
+to merge into this fold.
+
+`HostAttention` uses the same boundary with different storage ownership. The
+canonical trust side record owns the immutable causal source fact; the
+HostAttention lifecycle ledger may change only claim, transport, receipt,
+failure, attempt, status, and update-time fields through reviewed transitions.
+Canonical source rows fold before lifecycle rows. A matching legacy-only
+HostAttention lifecycle row remains readable, but it is not canonical Work or
+delivery authority and cannot synthesize a WorkDelivery. See ADR 0060.
+
 ### Runtime control
 
 Start, resume, turn, queued input, interrupt, and stop all use the same durable
