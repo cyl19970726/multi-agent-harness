@@ -30,7 +30,7 @@ use std::time::{Duration, Instant};
 use std::os::unix::process::CommandExt;
 
 use harness_core::agentfirm_api::PermissionCeiling;
-use harness_runtime_host::kill_process_tree;
+use harness_runtime_host::OwnedProcessGroupRegistration;
 
 mod capability_transport;
 pub use capability_transport::*;
@@ -96,6 +96,7 @@ pub const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(15);
 
 pub struct PiRpcClient {
     child: Child,
+    owned_process_group: OwnedProcessGroupRegistration,
     stdin: BufWriter<ChildStdin>,
     next_request_id: u64,
     /// Response waiters: string request id → oneshot sender.
@@ -290,6 +291,7 @@ impl PiRpcClient {
                 options.member_name
             ))
         })?;
+        let owned_process_group = OwnedProcessGroupRegistration::new(child.id());
 
         let stdin = BufWriter::new(
             child
@@ -352,6 +354,7 @@ impl PiRpcClient {
 
         let mut client = Self {
             child,
+            owned_process_group,
             stdin,
             next_request_id: 0,
             pending,
@@ -433,9 +436,12 @@ impl PiRpcClient {
 
     pub fn ensure_transport_alive(&mut self) -> CliResult<()> {
         let reader_ended = self.reader.as_ref().is_some_and(JoinHandle::is_finished);
-        let child_ended = self.child.try_wait().map_err(|error| {
-            CliError::Usage(format!("failed to inspect pi rpc process: {error}"))
-        })?;
+        let child_ended = self
+            .owned_process_group
+            .try_wait_and_release(&mut self.child)
+            .map_err(|error| {
+                CliError::Usage(format!("failed to inspect pi rpc process: {error}"))
+            })?;
         if reader_ended || child_ended.is_some() {
             return Err(CliError::Usage(format!(
                 "pi rpc transport disconnected{}",
@@ -630,10 +636,10 @@ impl PiRpcClient {
     pub fn release(&mut self) -> CliResult<harness_runtime_contract::CycleRuntimeObservation> {
         if !self.released {
             self.released = true;
-            kill_process_tree(&mut self.child);
+            let _ = self.owned_process_group.kill_and_reap(&mut self.child);
             if self
-                .child
-                .try_wait()
+                .owned_process_group
+                .try_wait_and_release(&mut self.child)
                 .map_err(|error| {
                     CliError::Usage(format!("failed to verify pi process release: {error}"))
                 })?
@@ -806,7 +812,7 @@ impl PiRpcClient {
                         }));
                         // Give a short grace window, then kill the process tree.
                         std::thread::sleep(Duration::from_secs(2));
-                        kill_process_tree(&mut self.child);
+                        let _ = self.owned_process_group.kill_and_reap(&mut self.child);
                         return Err(CliError::Usage(format!(
                             "pi rpc prompt timed out after {}s idle{}",
                             idle_timeout.as_secs(),
@@ -816,7 +822,11 @@ impl PiRpcClient {
                 }
                 Err(RecvTimeoutError::Disconnected) => {
                     // Reader thread exited — transport dead.
-                    let status = self.child.try_wait().ok().flatten();
+                    let status = self
+                        .owned_process_group
+                        .try_wait_and_release(&mut self.child)
+                        .ok()
+                        .flatten();
                     return Err(CliError::Usage(format!(
                         "pi rpc transport disconnected (child: {}){}",
                         status

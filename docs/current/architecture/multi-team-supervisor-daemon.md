@@ -52,12 +52,29 @@ The machine socket is `<FIRM_HOME>/nodes/<node_id>/daemon.sock`, with a hashed
 ```json
 {"cmd":"start","execution_space_id":"space-a","run_id":"team-run-1"}
 {"cmd":"status"}
-{"cmd":"stop"}
+{"cmd":"stop","execution_space_id":"space-a","daemon_generation":12}
 ```
 
 Repeated start is idempotent and returns `reused: true`. A request naming a
 Team placed on another Node, an unregistered project, or a mismatched Execution
 Space is rejected before child supervision starts.
+
+Stop is generation-fenced and two-phase. The daemon first stops accepting new
+control, keeps its lease alive while accepted mutations and Team Supervisors
+drain, and drops standalone session handles. If a Supervisor misses the bounded
+cooperative deadline, the daemon terminates only provider process groups
+registered by that exact daemon process and waits for their threads to observe
+EOF. Each registration has a process-local unique token, so an old guard cannot
+remove a later registration that reused the same pid. The first forced drain
+atomically closes new provider-group admission; a late spawn is terminated
+synchronously and included in the final drain before admission can reopen. It
+also linearizes child reap and exact-token unregister under that admission
+mutex, so shutdown cannot signal a pid after its original child became
+reusable. Provider-side kill/reap holds that mutex only for a bounded interval;
+on timeout it keeps the registration and releases the mutex so the daemon's
+final drain can report `NODE_DAEMON_DRAIN_INCOMPLETE`. It
+releases authority only after this converges; an unkillable group or unfinished
+thread is `NODE_DAEMON_DRAIN_INCOMPLETE`, never a successful stop.
 
 ## Operator surface
 

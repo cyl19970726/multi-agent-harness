@@ -52,7 +52,7 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use harness_runtime_host::kill_process_tree;
+use harness_runtime_host::{kill_process_tree, OwnedProcessGroupRegistration};
 
 pub type KimiResult<T> = Result<T, KimiError>;
 
@@ -185,6 +185,7 @@ impl PromptTimeouts {
 /// streams on the same stdout every frame arrives on).
 pub struct KimiAcpClient {
     child: Child,
+    owned_process_group: Option<OwnedProcessGroupRegistration>,
     stdin: Option<ChildStdin>,
     next_request_id: u64,
     /// In-flight request id → channel the reader thread delivers the matching
@@ -214,6 +215,23 @@ pub struct KimiAcpClient {
 }
 
 impl KimiAcpClient {
+    fn try_wait_child(&mut self) -> std::io::Result<Option<std::process::ExitStatus>> {
+        match self.owned_process_group.as_mut() {
+            Some(group) => group.try_wait_and_release(&mut self.child),
+            None => self.child.try_wait(),
+        }
+    }
+
+    fn kill_and_reap_child(&mut self) -> std::io::Result<Option<std::process::ExitStatus>> {
+        match self.owned_process_group.as_mut() {
+            Some(group) => group.kill_and_reap(&mut self.child),
+            None => {
+                kill_process_tree(&mut self.child);
+                self.child.try_wait()
+            }
+        }
+    }
+
     #[cfg(all(test, unix))]
     pub fn scripted_for_close_contract() -> Self {
         // One close request receives a real correlated JSON-RPC response. The
@@ -257,6 +275,7 @@ impl KimiAcpClient {
         });
         Self {
             child,
+            owned_process_group: None,
             stdin: Some(stdin),
             next_request_id: 2,
             pending,
@@ -308,6 +327,7 @@ impl KimiAcpClient {
         let mut child = cmd
             .spawn()
             .map_err(|error| CliError::Usage(format!("failed to spawn kimi acp: {error}")))?;
+        let owned_process_group = Some(OwnedProcessGroupRegistration::new(child.id()));
         let stdin = child
             .stdin
             .take()
@@ -373,6 +393,7 @@ impl KimiAcpClient {
 
         let mut client = Self {
             child,
+            owned_process_group,
             stdin: Some(stdin),
             next_request_id: 1,
             pending,
@@ -423,8 +444,7 @@ impl KimiAcpClient {
             .as_ref()
             .is_some_and(std::thread::JoinHandle::is_finished);
         let child_ended = self
-            .child
-            .try_wait()
+            .try_wait_child()
             .map_err(|error| CliError::Usage(format!("failed to inspect kimi acp: {error}")))?;
         if reader_ended || child_ended.is_some() {
             return Err(self.session_ended_error("idle supervisor"));
@@ -441,8 +461,7 @@ impl KimiAcpClient {
             .as_ref()
             .is_some_and(std::thread::JoinHandle::is_finished);
         let child_ended = self
-            .child
-            .try_wait()
+            .try_wait_child()
             .map_err(|error| CliError::Usage(format!("failed to inspect kimi acp: {error}")))?
             .is_some();
         let released = self.shutdown_receipt.is_some();
@@ -1019,7 +1038,7 @@ impl KimiAcpClient {
         drop(self.stdin.take());
         let deadline = Instant::now() + HANDSHAKE_TIMEOUT;
         let status = loop {
-            match self.child.try_wait() {
+            match self.try_wait_child() {
                 Ok(Some(status)) => break status,
                 Ok(None) if Instant::now() < deadline => {
                     std::thread::sleep(Duration::from_millis(10));
@@ -1029,7 +1048,7 @@ impl KimiAcpClient {
                     // clean process disposal is unknown. Reap the owned tree
                     // for safety, then fail closed rather than returning a
                     // successful Close receipt.
-                    kill_process_tree(&mut self.child);
+                    let _ = self.kill_and_reap_child();
                     if let Some(reader) = self.reader.take() {
                         let _ = reader.join();
                     }
@@ -1091,16 +1110,14 @@ impl KimiAcpClient {
             ));
         }
         let process_was_running = self
-            .child
-            .try_wait()
+            .try_wait_child()
             .map_err(|error| CliError::Usage(format!("failed to inspect kimi acp: {error}")))?
             .is_none();
         if process_was_running {
-            kill_process_tree(&mut self.child);
+            let _ = self.kill_and_reap_child();
         }
         let status = self
-            .child
-            .try_wait()
+            .try_wait_child()
             .map_err(|error| CliError::Usage(format!("failed to reap kimi acp: {error}")))?
             .ok_or_else(|| {
                 CliError::Usage(
@@ -1137,11 +1154,11 @@ impl KimiAcpClient {
         if self.shutdown_receipt.is_some() {
             return;
         }
-        match self.child.try_wait() {
-            Ok(None) => kill_process_tree(&mut self.child),
-            _ => {
-                let _ = self.child.wait();
+        match self.try_wait_child() {
+            Ok(None) | Err(_) => {
+                let _ = self.kill_and_reap_child();
             }
+            Ok(Some(_)) => {}
         }
         if let Some(reader) = self.reader.take() {
             let _ = reader.join();

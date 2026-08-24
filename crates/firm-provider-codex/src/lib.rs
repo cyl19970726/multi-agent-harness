@@ -21,7 +21,7 @@ use harness_core::{
     ProviderCapacitySnapshot, ProviderCapacityState, ProviderCapacityWindow,
 };
 
-use harness_runtime_host::kill_process_tree;
+use harness_runtime_host::OwnedProcessGroupRegistration;
 
 pub type CodexResult<T> = Result<T, CodexError>;
 
@@ -279,6 +279,7 @@ fn exact_steer_receipt(response: &serde_json::Value, expected_turn_id: &str) -> 
 
 pub struct CodexAppServerClient {
     child: Child,
+    owned_process_group: OwnedProcessGroupRegistration,
     stdin: BufWriter<ChildStdin>,
     next_request_id: u64,
     pending: Arc<Mutex<HashMap<u64, Sender<serde_json::Value>>>>,
@@ -421,6 +422,7 @@ impl CodexAppServerClient {
         let mut child = command.spawn().map_err(|error| {
             CliError::Usage(format!("failed to spawn codex app-server: {error}"))
         })?;
+        let owned_process_group = OwnedProcessGroupRegistration::new(child.id());
         let stdin =
             BufWriter::new(child.stdin.take().ok_or_else(|| {
                 CliError::Usage("codex app-server stdin unavailable".to_string())
@@ -480,6 +482,7 @@ impl CodexAppServerClient {
 
         let mut client = Self {
             child,
+            owned_process_group,
             stdin,
             next_request_id: 0,
             pending,
@@ -566,9 +569,12 @@ impl CodexAppServerClient {
             .reader
             .as_ref()
             .is_some_and(std::thread::JoinHandle::is_finished);
-        let child_ended = self.child.try_wait().map_err(|error| {
-            CliError::Usage(format!("failed to inspect codex app-server: {error}"))
-        })?;
+        let child_ended = self
+            .owned_process_group
+            .try_wait_and_release(&mut self.child)
+            .map_err(|error| {
+                CliError::Usage(format!("failed to inspect codex app-server: {error}"))
+            })?;
         if reader_ended || child_ended.is_some() {
             return Err(CliError::Usage(format!(
                 "codex app-server transport disconnected{}",
@@ -691,18 +697,18 @@ impl CodexAppServerClient {
         }
         self.shutdown_attempted = true;
         let process_was_running = self
-            .child
-            .try_wait()
+            .owned_process_group
+            .try_wait_and_release(&mut self.child)
             .map_err(|error| {
                 CliError::Usage(format!("failed to inspect codex app-server: {error}"))
             })?
             .is_none();
         if process_was_running {
-            kill_process_tree(&mut self.child);
+            let _ = self.owned_process_group.kill_and_reap(&mut self.child);
         }
         let status = self
-            .child
-            .try_wait()
+            .owned_process_group
+            .try_wait_and_release(&mut self.child)
             .map_err(|error| CliError::Usage(format!("failed to reap codex app-server: {error}")))?
             .ok_or_else(|| {
                 CliError::Usage(
@@ -1121,8 +1127,14 @@ impl Drop for CodexAppServerClient {
     fn drop(&mut self) {
         // An explicit Close already reaped the child. Inspect first so a late
         // Drop can never signal a recycled process-group id.
-        if self.child.try_wait().ok().flatten().is_none() {
-            kill_process_tree(&mut self.child);
+        if self
+            .owned_process_group
+            .try_wait_and_release(&mut self.child)
+            .ok()
+            .flatten()
+            .is_none()
+        {
+            let _ = self.owned_process_group.kill_and_reap(&mut self.child);
         }
         if let Some(reader) = self.reader.take() {
             let deadline = Instant::now() + READER_SHUTDOWN_TIMEOUT;

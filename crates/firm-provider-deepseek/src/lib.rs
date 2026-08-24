@@ -18,6 +18,8 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
+use harness_runtime_host::OwnedProcessGroupRegistration;
+
 use harness_core::agentfirm_api::{
     AgentSession, NativeContinuationActivation, RuntimeEffectCertainty, RuntimePostconditionStatus,
 };
@@ -144,12 +146,18 @@ impl RunnerEvent {
 /// Supervisor generation cannot orphan the DSH runner descendants.
 struct DeepSeekRunnerChild {
     child: Child,
+    process_group: OwnedProcessGroupRegistration,
     armed: bool,
 }
 
 impl DeepSeekRunnerChild {
     fn new(child: Child) -> Self {
-        Self { child, armed: true }
+        let process_group = OwnedProcessGroupRegistration::new(child.id());
+        Self {
+            child,
+            process_group,
+            armed: true,
+        }
     }
 
     fn id(&self) -> u32 {
@@ -157,7 +165,7 @@ impl DeepSeekRunnerChild {
     }
 
     fn try_wait(&mut self) -> std::io::Result<Option<std::process::ExitStatus>> {
-        let status = self.child.try_wait()?;
+        let status = self.process_group.try_wait_and_release(&mut self.child)?;
         if status.is_some() {
             self.armed = false;
         }
@@ -170,7 +178,7 @@ impl DeepSeekRunnerChild {
     ) -> std::io::Result<Option<std::process::ExitStatus>> {
         let started = Instant::now();
         loop {
-            if let Some(status) = self.child.try_wait()? {
+            if let Some(status) = self.process_group.try_wait_and_release(&mut self.child)? {
                 self.armed = false;
                 return Ok(Some(status));
             }
@@ -185,17 +193,10 @@ impl DeepSeekRunnerChild {
         if !self.armed {
             return;
         }
-        #[cfg(unix)]
-        unsafe {
-            // The child is its own process-group leader (see `spawn`).
-            libc::kill(-(self.child.id() as libc::pid_t), libc::SIGKILL);
-        }
-        #[cfg(not(unix))]
-        {
-            let _ = self.child.kill();
-        }
-        let _ = self.child.wait();
-        self.armed = false;
+        self.armed = !matches!(
+            self.process_group.kill_and_reap(&mut self.child),
+            Ok(Some(_))
+        );
     }
 }
 
