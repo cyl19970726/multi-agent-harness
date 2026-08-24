@@ -150,37 +150,64 @@ impl OwnedProcessGroupRegistration {
         Ok(status)
     }
 
-    /// Reap a child and unregister its exact token as one linearized action.
-    pub fn wait_and_release(
+    /// Terminate and reap this exact registered process group without exposing
+    /// a reap-to-unregister pid-reuse window to daemon shutdown. The registry
+    /// lock is held for a bounded interval only; on timeout the registration
+    /// remains so daemon shutdown can observe and fail closed.
+    pub fn kill_and_reap(
         &mut self,
         child: &mut std::process::Child,
-    ) -> std::io::Result<std::process::ExitStatus> {
+    ) -> std::io::Result<Option<std::process::ExitStatus>> {
         let mut groups = owned_process_groups()
             .lock()
             .unwrap_or_else(|error| error.into_inner());
-        let status = child.wait()?;
-        self.release_locked(&mut groups);
-        Ok(status)
-    }
-
-    /// Terminate and reap this exact registered process group without exposing
-    /// a reap-to-unregister pid-reuse window to daemon shutdown.
-    pub fn kill_and_reap(&mut self, child: &mut std::process::Child) {
-        let mut groups = owned_process_groups()
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        match child.try_wait() {
-            Ok(Some(_)) => {}
-            _ => {
-                #[cfg(unix)]
-                unsafe {
-                    libc::kill(-(child.id() as libc::pid_t), libc::SIGKILL);
+        if let Some(status) = child.try_wait()? {
+            self.release_locked(&mut groups);
+            return Ok(Some(status));
+        }
+        #[cfg(unix)]
+        {
+            let result = unsafe { libc::kill(-(child.id() as libc::pid_t), libc::SIGKILL) };
+            if result == -1 {
+                let error = std::io::Error::last_os_error();
+                if error.raw_os_error() != Some(libc::ESRCH) {
+                    return Err(error);
                 }
-                let _ = child.kill();
-                let _ = child.wait();
             }
         }
-        self.release_locked(&mut groups);
+        let _ = child.kill();
+        self.bounded_reap_locked(&mut groups, Duration::from_secs(2), || child.try_wait())
+    }
+
+    #[cfg(test)]
+    fn bounded_reap_and_release_with<T, E>(
+        &mut self,
+        timeout: Duration,
+        operation: impl FnMut() -> Result<Option<T>, E>,
+    ) -> Result<Option<T>, E> {
+        let mut groups = owned_process_groups()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        self.bounded_reap_locked(&mut groups, timeout, operation)
+    }
+
+    fn bounded_reap_locked<T, E>(
+        &mut self,
+        groups: &mut OwnedProcessGroups,
+        timeout: Duration,
+        mut operation: impl FnMut() -> Result<Option<T>, E>,
+    ) -> Result<Option<T>, E> {
+        let deadline = Instant::now() + timeout;
+        loop {
+            if let Some(status) = operation()? {
+                self.release_locked(groups);
+                return Ok(Some(status));
+            }
+            if Instant::now() >= deadline {
+                return Ok(None);
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
     }
 
     fn release_locked(&mut self, groups: &mut OwnedProcessGroups) {
@@ -195,7 +222,9 @@ impl OwnedProcessGroupRegistration {
 
 impl Drop for OwnedProcessGroupRegistration {
     fn drop(&mut self) {
-        self.release();
+        // Absence of a kernel reap is not evidence that the pid is safe to
+        // unregister. Provider owners explicitly use the atomic reap methods;
+        // otherwise the daemon registry retains the group for final cleanup.
     }
 }
 
@@ -517,6 +546,24 @@ mod tests {
             .pids
             .is_empty());
         shutdown.join().expect("join shutdown");
+        complete_registered_process_group_shutdown();
+    }
+
+    #[test]
+    fn bounded_reap_timeout_retains_registration_and_releases_shutdown_lock() {
+        let _test_lock = registry_test_lock();
+        let mut registration = OwnedProcessGroupRegistration::new(999_998);
+        let result = registration
+            .bounded_reap_and_release_with(
+                Duration::from_millis(20),
+                || -> Result<Option<()>, ()> { Ok(None) },
+            )
+            .expect("bounded reap result");
+        assert_eq!(result, None);
+
+        let started = Instant::now();
+        assert_eq!(terminate_registered_process_groups().pids, vec![999_998]);
+        assert!(started.elapsed() < Duration::from_secs(1));
         complete_registered_process_group_shutdown();
     }
 }

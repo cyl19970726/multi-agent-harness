@@ -70,7 +70,9 @@ atomically closes new provider-group admission; a late spawn is terminated
 synchronously and included in the final drain before admission can reopen. It
 also linearizes child reap and exact-token unregister under that admission
 mutex, so shutdown cannot signal a pid after its original child became
-reusable. It
+reusable. Provider-side kill/reap holds that mutex only for a bounded interval;
+on timeout it keeps the registration and releases the mutex so the daemon's
+final drain can report `NODE_DAEMON_DRAIN_INCOMPLETE`. It
 releases authority only after this converges; an unkillable group or unfinished
 thread is `NODE_DAEMON_DRAIN_INCOMPLETE`, never a successful stop.
 

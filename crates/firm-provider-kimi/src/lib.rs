@@ -222,10 +222,13 @@ impl KimiAcpClient {
         }
     }
 
-    fn kill_and_reap_child(&mut self) {
+    fn kill_and_reap_child(&mut self) -> std::io::Result<Option<std::process::ExitStatus>> {
         match self.owned_process_group.as_mut() {
             Some(group) => group.kill_and_reap(&mut self.child),
-            None => kill_process_tree(&mut self.child),
+            None => {
+                kill_process_tree(&mut self.child);
+                self.child.try_wait()
+            }
         }
     }
 
@@ -1045,7 +1048,7 @@ impl KimiAcpClient {
                     // clean process disposal is unknown. Reap the owned tree
                     // for safety, then fail closed rather than returning a
                     // successful Close receipt.
-                    self.kill_and_reap_child();
+                    let _ = self.kill_and_reap_child();
                     if let Some(reader) = self.reader.take() {
                         let _ = reader.join();
                     }
@@ -1111,7 +1114,7 @@ impl KimiAcpClient {
             .map_err(|error| CliError::Usage(format!("failed to inspect kimi acp: {error}")))?
             .is_none();
         if process_was_running {
-            self.kill_and_reap_child();
+            let _ = self.kill_and_reap_child();
         }
         let status = self
             .try_wait_child()
@@ -1152,14 +1155,10 @@ impl KimiAcpClient {
             return;
         }
         match self.try_wait_child() {
-            Ok(None) => self.kill_and_reap_child(),
-            _ => {
-                if let Some(group) = self.owned_process_group.as_mut() {
-                    let _ = group.wait_and_release(&mut self.child);
-                } else {
-                    let _ = self.child.wait();
-                }
+            Ok(None) | Err(_) => {
+                let _ = self.kill_and_reap_child();
             }
+            Ok(Some(_)) => {}
         }
         if let Some(reader) = self.reader.take() {
             let _ = reader.join();

@@ -7,6 +7,14 @@ impl MultiTeamDaemon {
     }
 
     fn graceful_shutdown_with_deadline(&self, cooperative_timeout: Duration) -> CliResult<()> {
+        self.graceful_shutdown_with_deadlines(cooperative_timeout, Duration::from_secs(5))
+    }
+
+    fn graceful_shutdown_with_deadlines(
+        &self,
+        cooperative_timeout: Duration,
+        forced_timeout: Duration,
+    ) -> CliResult<()> {
         eprintln!("[node-daemon] graceful shutdown initiated");
         self.session_runtimes
             .lock()
@@ -77,7 +85,7 @@ impl MultiTeamDaemon {
                 termination.signal_failures
             ));
         }
-        let forced_deadline = Instant::now() + Duration::from_secs(5);
+        let forced_deadline = Instant::now() + forced_timeout;
         for (space_id, run_id, thread) in unfinished {
             while !thread.is_finished() && Instant::now() < forced_deadline {
                 std::thread::sleep(Duration::from_millis(50));
@@ -152,9 +160,18 @@ fn observe_join(
 mod tests {
     use super::*;
     use std::os::unix::process::CommandExt;
+    use std::sync::OnceLock;
+
+    fn shutdown_test_lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+    }
 
     #[test]
     fn shutdown_force_reaps_an_owned_group_before_returning() {
+        let _test_lock = shutdown_test_lock();
         let heartbeat = Arc::new(AtomicBool::new(true));
         let thread_heartbeat = Arc::clone(&heartbeat);
         let (pid_tx, pid_rx) = std::sync::mpsc::channel();
@@ -208,5 +225,61 @@ mod tests {
             std::io::Error::last_os_error().raw_os_error(),
             Some(libc::ESRCH)
         );
+    }
+
+    #[test]
+    fn shutdown_returns_drain_incomplete_when_provider_thread_does_not_converge() {
+        let _test_lock = shutdown_test_lock();
+        let heartbeat = Arc::new(AtomicBool::new(true));
+        let release = Arc::new(AtomicBool::new(false));
+        let thread_release = Arc::clone(&release);
+        let (finished_tx, finished_rx) = std::sync::mpsc::channel();
+        let thread = std::thread::spawn(move || -> CliResult<()> {
+            while !thread_release.load(Ordering::Acquire) {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            finished_tx.send(()).expect("publish provider thread exit");
+            Ok(())
+        });
+        let daemon = MultiTeamDaemon {
+            firm_home: std::env::temp_dir(),
+            node_id: "shutdown-timeout-test-node".into(),
+            daemon_id: "node-daemon:shutdown-timeout-test-node".into(),
+            instance_id: "shutdown-timeout-test-instance".into(),
+            contexts: Mutex::new(vec![MultiTeamContext {
+                execution_space_id: "shutdown-timeout-space".into(),
+                project_binding_id: "shutdown-timeout-project".into(),
+                run_id: "shutdown-timeout-run".into(),
+                daemon_generation: 1,
+                supervisor_id: "shutdown-timeout-supervisor".into(),
+                supervisor_generation: 1,
+                heartbeat_valid: heartbeat,
+                thread: Some(thread),
+                started_at: Instant::now(),
+            }]),
+            supervisor_start_gate: Mutex::new(()),
+            session_runtimes: Mutex::new(HashMap::new()),
+            live_provider_activity_endpoint: Arc::new(Mutex::new(None)),
+            max_concurrency: 1,
+            idle_timeout_secs: 1,
+            scan_interval: Duration::from_secs(1),
+            stop_requested: Arc::new(AtomicBool::new(false)),
+            authority_shutdown: Arc::new(AtomicBool::new(false)),
+            control_worker_failed: AtomicBool::new(false),
+            recovery_blocked_runs: Mutex::new(HashSet::new()),
+            lease_ttl_override_ms: None,
+        };
+
+        let started = Instant::now();
+        let error = daemon
+            .graceful_shutdown_with_deadlines(Duration::from_millis(10), Duration::from_millis(20))
+            .expect_err("unfinished provider thread must fail closed");
+        assert!(error.to_string().contains("NODE_DAEMON_DRAIN_INCOMPLETE"));
+        assert!(started.elapsed() < Duration::from_secs(1));
+        release.store(true, Ordering::Release);
+        finished_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("detached test thread exits");
+        harness_runtime_host::complete_registered_process_group_shutdown();
     }
 }

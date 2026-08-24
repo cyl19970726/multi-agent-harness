@@ -636,7 +636,7 @@ impl PiRpcClient {
     pub fn release(&mut self) -> CliResult<harness_runtime_contract::CycleRuntimeObservation> {
         if !self.released {
             self.released = true;
-            self.owned_process_group.kill_and_reap(&mut self.child);
+            let _ = self.owned_process_group.kill_and_reap(&mut self.child);
             if self
                 .owned_process_group
                 .try_wait_and_release(&mut self.child)
@@ -812,7 +812,7 @@ impl PiRpcClient {
                         }));
                         // Give a short grace window, then kill the process tree.
                         std::thread::sleep(Duration::from_secs(2));
-                        self.owned_process_group.kill_and_reap(&mut self.child);
+                        let _ = self.owned_process_group.kill_and_reap(&mut self.child);
                         return Err(CliError::Usage(format!(
                             "pi rpc prompt timed out after {}s idle{}",
                             idle_timeout.as_secs(),

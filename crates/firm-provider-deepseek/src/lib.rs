@@ -193,8 +193,10 @@ impl DeepSeekRunnerChild {
         if !self.armed {
             return;
         }
-        self.process_group.kill_and_reap(&mut self.child);
-        self.armed = false;
+        self.armed = !matches!(
+            self.process_group.kill_and_reap(&mut self.child),
+            Ok(Some(_))
+        );
     }
 }
 

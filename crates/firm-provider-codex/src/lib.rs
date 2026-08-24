@@ -704,7 +704,7 @@ impl CodexAppServerClient {
             })?
             .is_none();
         if process_was_running {
-            self.owned_process_group.kill_and_reap(&mut self.child);
+            let _ = self.owned_process_group.kill_and_reap(&mut self.child);
         }
         let status = self
             .owned_process_group
@@ -1134,7 +1134,7 @@ impl Drop for CodexAppServerClient {
             .flatten()
             .is_none()
         {
-            self.owned_process_group.kill_and_reap(&mut self.child);
+            let _ = self.owned_process_group.kill_and_reap(&mut self.child);
         }
         if let Some(reader) = self.reader.take() {
             let deadline = Instant::now() + READER_SHUTDOWN_TIMEOUT;
