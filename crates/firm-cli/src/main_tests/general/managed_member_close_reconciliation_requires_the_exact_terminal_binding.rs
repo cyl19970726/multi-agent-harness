@@ -106,6 +106,7 @@ fn managed_member_close_reconciliation_requires_the_exact_terminal_binding() {
                 } else {
                     "runtime.release"
                 },
+                None,
             )
             .expect("prepare close fixture RuntimeCommand");
             settle_provider_effect(

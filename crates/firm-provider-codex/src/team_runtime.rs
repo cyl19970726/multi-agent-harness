@@ -963,13 +963,21 @@ impl<'a, B: CodexAppServerBridge> TeamRuntimeAdapter for CodexTeamRuntime<'a, B>
                             self.last_cycle_terminal = true;
                             let provider_terminal_failure = (terminal.status == "failed")
                                 .then(|| provider_terminal_failure(terminal.error.as_ref()));
+                            let exact_terminal_ref =
+                                format!("codex.turn.completed:{turn_id}:{}", terminal.status);
                             return Ok(ExecutionCycleOutcome {
                                 final_text,
                                 provider_terminal_failure,
                                 interrupted,
                                 close_requested_by_harness: close_requested,
                                 tool_call_count,
-                                input_acceptance_receipt: input_receipt,
+                                native_correlation:
+                                    harness_runtime_contract::NativeCycleCorrelation {
+                                        provider_input_id: turn_id.clone(),
+                                        input_acceptance_receipt: input_receipt,
+                                        terminal_provider_input_id: Some(turn_id.clone()),
+                                        exact_terminal_ref: Some(exact_terminal_ref),
+                                    },
                                 control_receipts,
                                 terminal_observation: CycleRuntimeObservation {
                                     transport_alive: true,

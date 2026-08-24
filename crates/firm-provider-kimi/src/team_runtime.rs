@@ -443,13 +443,23 @@ impl harness_runtime_contract::TeamRuntimeAdapter for KimiTeamRuntime<'_> {
             Vec::new()
         };
         let process = self.client.observe_runtime()?;
+        let provider_input_id = outcome.provider_input_id;
+        let exact_terminal_ref = format!(
+            "kimi_acp.session_prompt:{provider_input_id}:stop_reason={}",
+            outcome.stop_reason
+        );
         Ok(harness_runtime_contract::ExecutionCycleOutcome {
             final_text,
             provider_terminal_failure: None,
             interrupted,
             close_requested_by_harness: close_requested,
             tool_call_count,
-            input_acceptance_receipt,
+            native_correlation: harness_runtime_contract::NativeCycleCorrelation {
+                provider_input_id: provider_input_id.clone(),
+                input_acceptance_receipt,
+                terminal_provider_input_id: Some(provider_input_id),
+                exact_terminal_ref: Some(exact_terminal_ref),
+            },
             control_receipts,
             terminal_observation: harness_runtime_contract::CycleRuntimeObservation {
                 transport_alive: process.transport_alive,
@@ -1072,7 +1082,9 @@ mod tests {
             target_session_id: Some(session.id.clone()),
             target_session_generation: Some(session.runtime_generation),
             source_record_id: None,
+            provider_attempt: None,
             result: None,
+            cycle_correlation: None,
             failure_code: None,
             version: 1,
             created_at: "t0".to_string(),

@@ -289,6 +289,7 @@ pub(crate) fn prepare_team_control_effect(
         // the machine-global AgentSession (which may serve another Team).
         harness_core::agentfirm_api::RuntimeCommandKind::InterruptCurrentCycle,
         "cycle.interrupt_current",
+        None,
     )?;
     admission.control_plan = Some(control_plan);
     Ok(admission)

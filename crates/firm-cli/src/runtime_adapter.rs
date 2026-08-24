@@ -42,15 +42,15 @@ use crate::supervisor_wake::{WakeBackoff, WakePolicy};
 use crate::{
     active_work_continuation_prompt, emit_live_provider_activity, mark_message_delivered,
     member_work_collaboration_envelope, native_session_ref, now_string, parse_round_result,
-    prepare_provider_effect, refresh_member_after_provider_callbacks,
-    requeue_managed_host_attentions, require_provider_session_authority,
-    settle_managed_host_attentions, settle_provider_effect, settle_provider_effect_not_applied,
-    stop_member_for_latched_close, team_messages_prompt, transition_provider_session_for_member,
-    wait_for_idle_member_wake, work_contract_prompt, ClaimedWork, CliError, CliResult,
-    ControlReceiver, HostAttention, IdleMemberWake, LiveMemberControlRegistration,
-    LiveProviderTurnGuard, MemberActionStatus, MemberControlCommand, MemberOutcome,
-    MemberRoundResult, MemberRunStatus, MemberRuntimeContext, ProviderRuntimeProjection,
-    TeamMessageProjection, TeamRunEventSourceKind, TeamRunLedger,
+    prepare_provider_effect, record_provider_cycle_correlation,
+    refresh_member_after_provider_callbacks, requeue_managed_host_attentions,
+    require_provider_session_authority, settle_managed_host_attentions, settle_provider_effect,
+    settle_provider_effect_not_applied, stop_member_for_latched_close, team_messages_prompt,
+    transition_provider_session_for_member, wait_for_idle_member_wake, work_contract_prompt,
+    ClaimedWork, CliError, CliResult, ControlReceiver, HostAttention, IdleMemberWake,
+    LiveMemberControlRegistration, LiveProviderTurnGuard, MemberActionStatus, MemberControlCommand,
+    MemberOutcome, MemberRoundResult, MemberRunStatus, MemberRuntimeContext,
+    ProviderRuntimeProjection, TeamMessageProjection, TeamRunEventSourceKind, TeamRunLedger,
 };
 
 /// Deterministic integration hook: pause after the provider terminal boundary
@@ -373,6 +373,7 @@ fn execute_member_runtime_close<A: TeamRuntimeAdapter<Error = CliError>>(
         "close the owned Team member runtime and retain its native session",
         RuntimeCommandKind::CloseMember,
         "member.close",
+        None,
     )?;
     let close_admission = adapter
         .bind_authority_session(effect.target_session.clone(), &profile)
@@ -517,6 +518,7 @@ pub(crate) fn run_team_member_with_adapter<A: TeamRuntimeAdapter<Error = CliErro
     adapter: &mut A,
     live_control: &ControlReceiver<MemberControlCommand>,
     live_control_registration: Option<LiveMemberControlRegistration>,
+    provider_attempt: u64,
 ) -> CliResult<MemberOutcome> {
     let supports_inject = adapter.supports_inject_current_cycle();
     let provider = adapter.provider();
@@ -615,18 +617,23 @@ pub(crate) fn run_team_member_with_adapter<A: TeamRuntimeAdapter<Error = CliErro
                 member_row,
                 harness_core::agentfirm_api::AgentSessionStatus::Active,
             )?;
-            let effect =
-                match prepare_provider_effect(ledger, member_row, &source_record_id, &prompt) {
-                    Ok(effect) => effect,
-                    Err(error) => {
-                        requeue_managed_host_attentions(
-                            ledger,
-                            &cycle.host_attentions,
-                            &error.to_string(),
-                        )?;
-                        return Err(error);
-                    }
-                };
+            let effect = match prepare_provider_effect(
+                ledger,
+                member_row,
+                &source_record_id,
+                &prompt,
+                provider_attempt,
+            ) {
+                Ok(effect) => effect,
+                Err(error) => {
+                    requeue_managed_host_attentions(
+                        ledger,
+                        &cycle.host_attentions,
+                        &error.to_string(),
+                    )?;
+                    return Err(error);
+                }
+            };
             let profile = member_row.provider_profile.as_ref().ok_or_else(|| {
                 CliError::Usage(format!(
                     "RUNTIME_ADAPTER_PROFILE_MISSING: {} has no persisted provider profile",
@@ -954,6 +961,7 @@ pub(crate) fn run_team_member_with_adapter<A: TeamRuntimeAdapter<Error = CliErro
                                         &content,
                                         harness_core::agentfirm_api::RuntimeCommandKind::InjectCurrentCycle,
                                         "cycle.inject_current",
+                                        None,
                                     ) {
                                         Ok(admission) => {
                                             let token = next_steer_token.get();
@@ -1098,13 +1106,71 @@ pub(crate) fn run_team_member_with_adapter<A: TeamRuntimeAdapter<Error = CliErro
             // terminal CAS; never let a stale outer row overwrite it or turn the
             // provider receipt into a false conflict.
             *member_row = refresh_member_after_provider_callbacks(ledger, &round_start)?;
-            if turn.input_acceptance_receipt.response_id.as_deref()
+            // A fresh provider runtime learns its native session only after
+            // the first input has crossed the provider boundary. Persist that
+            // one same-generation attachment before correlating the terminal
+            // frame so Store can prove it against the current AgentSession.
+            // An existing non-empty locator may never be replaced here.
+            let terminal_native_session_id = adapter.native_session_locator().trim();
+            if terminal_native_session_id.is_empty() {
+                return Err(CliError::RuntimeRecoveryRequired(format!(
+                    "{provider} terminal cycle has no exact native session binding"
+                )));
+            }
+            match member_row.native_session.as_ref() {
+                Some(existing) if existing.native_session_id != terminal_native_session_id => {
+                    return Err(CliError::RuntimeRecoveryRequired(format!(
+                        "{provider} terminal cycle attempted to replace the bound native session"
+                    )));
+                }
+                Some(_) => {}
+                None => {
+                    let expected = member_row.clone();
+                    member_row.native_session = Some(native_session_ref(
+                        member_row,
+                        terminal_native_session_id,
+                        adapter.native_locator_kind(),
+                    ));
+                    ledger.save_member_run(&expected, member_row)?;
+                }
+            }
+            if turn
+                .native_correlation
+                .input_acceptance_receipt
+                .response_id
+                .as_deref()
                 != accepted_provider_receipt.as_deref()
             {
                 return Err(CliError::RuntimeRecoveryRequired(format!(
                     "{provider} terminal cycle receipt no longer matches the accepted input receipt"
                 )));
             }
+            let cycle_terminal_observed = turn.terminal_observation.terminal_cycle_observed();
+            let (cycle_correlation, cycle_outcome) = harness_application::correlate_provider_cycle(
+                harness_application::ProviderCycleAuthority {
+                    invocation_id: effect.command_id.clone(),
+                    source_delivery_id: cycle
+                        .active_work
+                        .as_ref()
+                        .map(|claimed| claimed.delivery.id.clone()),
+                    native_session_id: terminal_native_session_id.to_string(),
+                    agent_session_generation: effect.target_session.runtime_generation,
+                    provider_attempt,
+                },
+                turn.native_correlation.clone(),
+                cycle_terminal_observed,
+                turn.interrupted,
+            )
+            .map_err(CliError::RuntimeRecoveryRequired)?;
+            if matches!(
+                cycle_outcome,
+                harness_application::CycleOutcome::StillRunning
+            ) {
+                return Err(CliError::RuntimeRecoveryRequired(format!(
+                    "{provider} returned before the exact provider cycle terminal boundary"
+                )));
+            }
+            record_provider_cycle_correlation(ledger, &effect, &cycle_correlation)?;
             if let Some(error) = control_prepare_error {
                 provider_adapter::settle_team_controls_without_terminal_ack(
                     ledger,
@@ -1123,7 +1189,6 @@ pub(crate) fn run_team_member_with_adapter<A: TeamRuntimeAdapter<Error = CliErro
                 .control_receipts
                 .iter()
                 .any(|receipt| receipt.command == "abort" && receipt.success);
-            let cycle_terminal_observed = turn.terminal_observation.terminal_cycle_observed();
             let cycle_control_ack = verified_terminal_control_ack(
                 turn.interrupted,
                 abort_receipt_observed,

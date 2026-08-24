@@ -106,6 +106,8 @@ const CANCEL_GRACE: Duration = Duration::from_secs(15);
 
 /// Terminal result of one `session/prompt` round.
 pub struct PromptOutcome {
+    /// Exact JSON-RPC id of the terminal `session/prompt` response.
+    pub provider_input_id: String,
     /// `result.stopReason` as reported by the agent (`end_turn`, `cancelled`,
     /// `refusal`, `max_tokens`, ...); `"unknown"` when the frame omitted it.
     pub stop_reason: String,
@@ -783,7 +785,13 @@ impl KimiAcpClient {
             // completed turn for a dead session.
             match response.try_recv() {
                 Ok(frame) => {
-                    let outcome = prompt_outcome(&frame);
+                    let mut outcome = prompt_outcome(&frame);
+                    if frame.get("id").and_then(serde_json::Value::as_u64) != Some(prompt_id) {
+                        return Err(CliError::Usage(format!(
+                            "KIMI_CYCLE_TERMINAL_MISMATCH: prompt {prompt_id} received terminal frame {frame}"
+                        )));
+                    }
+                    outcome.provider_input_id = format!("kimi-acp-prompt:{prompt_id}");
                     // ...but the reader dispatched every update that preceded
                     // the response on the wire BEFORE enqueueing it, so
                     // draining here recovers the tail of the stream in order.
@@ -1353,6 +1361,7 @@ fn prompt_outcome(frame: &serde_json::Value) -> PromptOutcome {
             .and_then(|message| message.as_str())
             .unwrap_or("unknown provider error");
         return PromptOutcome {
+            provider_input_id: String::new(),
             stop_reason: "error".to_string(),
             provider_error: Some(format!("session/prompt rejected{code}: {message}")),
         };
@@ -1363,6 +1372,7 @@ fn prompt_outcome(frame: &serde_json::Value) -> PromptOutcome {
         .and_then(|reason| reason.as_str())
     else {
         return PromptOutcome {
+            provider_input_id: String::new(),
             stop_reason: "unknown".to_string(),
             provider_error: Some(format!(
                 "session/prompt response missing result.stopReason: {frame}"
@@ -1370,6 +1380,7 @@ fn prompt_outcome(frame: &serde_json::Value) -> PromptOutcome {
         };
     };
     PromptOutcome {
+        provider_input_id: String::new(),
         stop_reason: stop_reason.to_string(),
         provider_error: stop_reason_failure(stop_reason),
     }

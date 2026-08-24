@@ -77,6 +77,17 @@ pub struct ControlTransportReceipt {
     pub success: bool,
 }
 
+/// Provider-owned correlation returned with a terminal cycle. The application
+/// combines it with the durable RuntimeCommand/session/attempt identity; the
+/// provider adapter must not invent those application-owned fields.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct NativeCycleCorrelation {
+    pub provider_input_id: String,
+    pub input_acceptance_receipt: ControlTransportReceipt,
+    pub terminal_provider_input_id: Option<String>,
+    pub exact_terminal_ref: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct QuiesceOutcome {
     pub drained: bool,
@@ -118,7 +129,7 @@ pub struct ExecutionCycleOutcome {
     pub interrupted: bool,
     pub close_requested_by_harness: bool,
     pub tool_call_count: u32,
-    pub input_acceptance_receipt: ControlTransportReceipt,
+    pub native_correlation: NativeCycleCorrelation,
     pub control_receipts: Vec<ControlTransportReceipt>,
     pub terminal_observation: CycleRuntimeObservation,
 }

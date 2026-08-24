@@ -250,6 +250,7 @@ pub(super) fn run_pi_team_member(
         &mut adapter,
         &live_control,
         Some(registration),
+        transport_attempt,
     )
 }
 

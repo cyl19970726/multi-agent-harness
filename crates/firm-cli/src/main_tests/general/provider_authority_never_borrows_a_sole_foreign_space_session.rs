@@ -48,6 +48,7 @@ fn provider_authority_never_borrows_a_sole_foreign_space_session() {
             "must remain local",
             RuntimeCommandKind::DispatchProvider,
             "provider.dispatch",
+            None,
         )
         .expect_err("provider effect cannot target the foreign session"),
     ] {

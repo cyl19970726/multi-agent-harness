@@ -835,6 +835,7 @@ fn scripted_prompt_update_and_terminal_success_publish_receipt_exactly_once() {
     );
 
     assert_eq!(outcome.provider_error, None);
+    assert_eq!(outcome.provider_input_id, "kimi-acp-prompt:1");
     assert_eq!(outcome.stop_reason, "end_turn");
     assert_eq!(receipts, ["kimi-acp-prompt:1"]);
 }
@@ -861,6 +862,35 @@ fn scripted_terminal_success_without_updates_publishes_receipt_exactly_once() {
     );
 
     assert_eq!(outcome.provider_error, None);
+    assert_eq!(outcome.provider_input_id, "kimi-acp-prompt:1");
     assert_eq!(outcome.stop_reason, "end_turn");
     assert_eq!(receipts, ["kimi-acp-prompt:1"]);
+}
+
+#[cfg(unix)]
+#[test]
+fn scripted_terminal_for_another_prompt_fails_closed() {
+    let (mut client, _update_tx) = scripted_client();
+    let (response_tx, response) = channel();
+    response_tx
+        .send(serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "result": {"stopReason": "end_turn"}
+        }))
+        .expect("queue crossed terminal");
+    let result = client.drive_prompt(
+        (1, response),
+        PromptTimeouts::production(Duration::from_secs(1)),
+        &mut |_| Ok(()),
+        &mut |_| {},
+        &mut |_| Ok(serde_json::json!({})),
+        &mut |_| Ok(()),
+        &mut || Ok(PromptControl::Continue),
+    );
+    let error = match result {
+        Ok(_) => panic!("another prompt's terminal cannot close this prompt"),
+        Err(error) => error,
+    };
+    assert!(error.to_string().contains("KIMI_CYCLE_TERMINAL_MISMATCH"));
 }

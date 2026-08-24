@@ -232,6 +232,16 @@ for await (const line of input) {
         .as_deref()
         .is_some_and(|receipt| receipt.contains("native-session-1")));
     assert!(outcome.interrupted);
+    assert!(outcome
+        .native_correlation
+        .terminal_provider_input_id
+        .as_deref()
+        .is_some_and(|terminal| terminal == outcome.native_correlation.provider_input_id));
+    assert!(outcome
+        .native_correlation
+        .exact_terminal_ref
+        .as_deref()
+        .is_some_and(|terminal| terminal.starts_with("claude_sdk.interrupt_resume:")));
     assert!(!outcome.close_requested_by_harness);
     assert!(outcome.terminal_observation.settled_boundary_observed);
     assert!(transport.last_interrupt_resumed_same_session);

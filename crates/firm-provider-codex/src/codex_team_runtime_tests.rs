@@ -324,7 +324,9 @@ fn admitted_fence(session: &AgentSession) -> RuntimeBindingFence {
         target_session_id: Some(session.id.clone()),
         target_session_generation: Some(session.runtime_generation),
         source_record_id: None,
+        provider_attempt: None,
         result: None,
+        cycle_correlation: None,
         failure_code: None,
         version: 1,
         created_at: "t0".to_string(),
@@ -371,6 +373,18 @@ fn cycle_requires_turn_completed_and_exact_idle_observation() {
     )
     .unwrap();
     assert_eq!(accepted.as_deref(), Some("turn-1"));
+    assert_eq!(outcome.native_correlation.provider_input_id, "turn-1");
+    assert_eq!(
+        outcome
+            .native_correlation
+            .terminal_provider_input_id
+            .as_deref(),
+        Some("turn-1")
+    );
+    assert_eq!(
+        outcome.native_correlation.exact_terminal_ref.as_deref(),
+        Some("codex.turn.completed:turn-1:completed")
+    );
     assert!(outcome.terminal_observation.settled_boundary_observed);
     assert_eq!(outcome.final_text, "## RESULT\ndone");
 }

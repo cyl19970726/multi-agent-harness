@@ -288,7 +288,7 @@ impl harness_runtime_contract::TeamRuntimeAdapter for PiTeamRuntime {
             interrupted: outcome.interrupted,
             close_requested_by_harness: outcome.close_requested_by_harness,
             tool_call_count: outcome.tool_call_count,
-            input_acceptance_receipt: outcome.input_acceptance_receipt,
+            native_correlation: outcome.native_correlation,
             control_receipts: outcome.control_receipts,
             terminal_observation: outcome.terminal_observation,
         })

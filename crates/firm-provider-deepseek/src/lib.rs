@@ -100,6 +100,22 @@ struct RunnerEvent {
     raw: Value,
 }
 
+fn native_cycle_correlation(
+    input_id: &str,
+    receipt: ControlTransportReceipt,
+    terminal_kind: &str,
+    native_session_id: &str,
+) -> harness_runtime_contract::NativeCycleCorrelation {
+    harness_runtime_contract::NativeCycleCorrelation {
+        provider_input_id: input_id.to_string(),
+        input_acceptance_receipt: receipt,
+        terminal_provider_input_id: Some(input_id.to_string()),
+        exact_terminal_ref: Some(format!(
+            "deepseek_harness.{terminal_kind}:{input_id}:{native_session_id}"
+        )),
+    }
+}
+
 impl RunnerEvent {
     fn parse(line: &str) -> CliResult<Self> {
         let raw: Value = serde_json::from_str(line).map_err(|error| {
@@ -621,7 +637,12 @@ impl DeepSeekRunnerTransport {
                         interrupted: false,
                         close_requested_by_harness: false,
                         tool_call_count,
-                        input_acceptance_receipt: receipt,
+                        native_correlation: native_cycle_correlation(
+                            &input_id,
+                            receipt,
+                            "turn_complete",
+                            &self.native_session_id,
+                        ),
                         control_receipts,
                         terminal_observation: self.cycle_observation(true),
                     });
@@ -662,7 +683,12 @@ impl DeepSeekRunnerTransport {
                         interrupted: true,
                         close_requested_by_harness: close_requested,
                         tool_call_count,
-                        input_acceptance_receipt: receipt,
+                        native_correlation: native_cycle_correlation(
+                            &input_id,
+                            receipt,
+                            "interrupt_resume",
+                            &self.native_session_id,
+                        ),
                         control_receipts,
                         terminal_observation: self.cycle_observation(true),
                     });

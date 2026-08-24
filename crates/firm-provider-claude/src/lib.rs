@@ -34,6 +34,9 @@ use harness_runtime_contract::{
     SemanticCapability, SteerProviderResult, SteerRequest, TeamRuntimeAdapter,
 };
 
+mod cycle_correlation;
+use cycle_correlation::cycle_ref;
+
 mod compatibility;
 mod error;
 mod host_runtime;
@@ -613,7 +616,7 @@ impl ClaudeRunnerTransport {
                         interrupted: false,
                         close_requested_by_harness: false,
                         tool_call_count,
-                        input_acceptance_receipt: receipt,
+                        native_correlation: cycle_ref(&input_id, receipt, "turn_complete"),
                         control_receipts,
                         terminal_observation: self.cycle_observation(true),
                     });
@@ -654,7 +657,7 @@ impl ClaudeRunnerTransport {
                         interrupted: true,
                         close_requested_by_harness: close_requested,
                         tool_call_count,
-                        input_acceptance_receipt: receipt,
+                        native_correlation: cycle_ref(&input_id, receipt, "interrupt_resume"),
                         control_receipts,
                         terminal_observation: self.cycle_observation(true),
                     });

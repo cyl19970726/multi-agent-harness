@@ -30,12 +30,15 @@ fn interrupt_is_the_only_successor_admitted_while_start_cycle_is_in_flight() {
         )
         .unwrap();
 
-    let (start, start_context) = runtime_command_fixture(
+    let (mut start, mut start_context) = runtime_command_fixture(
         "runtime-compensating-start",
         RuntimeCommandKind::StartCycle,
         &session,
         "start_cycle",
     );
+    start.payload["provider_attempt"] = serde_json::json!(1);
+    start.payload_fingerprint = canonical_json_fingerprint(&start.payload);
+    start_context.request_fingerprint = Some(runtime_command_envelope_fingerprint(&start).unwrap());
     store
         .prepare_runtime_command(&start_context, &start, current_unix_ms(), "t-start")
         .expect("StartCycle admission");

@@ -3,6 +3,89 @@ use super::{
     value_contains_persisted_thinking, PermissionCeiling, PiRpcClient,
 };
 
+#[test]
+fn prompt_and_agent_settled_share_one_provider_cycle_identity() {
+    let dir = std::env::temp_dir().join(format!(
+        "pi-rpc-cycle-correlation-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let session_file = dir.join("session.jsonl");
+    std::fs::write(&session_file, "{\"type\":\"agent_start\"}\n").unwrap();
+    let shim = dir.join("pi");
+    let script = format!(
+        r##"#!/usr/bin/env python3
+import sys, json
+state_calls = 0
+for line in sys.stdin:
+    cmd = json.loads(line)
+    cid = cmd.get('id')
+    kind = cmd.get('type')
+    if kind == 'get_state':
+        state_calls += 1
+        if state_calls == 1:
+            print(json.dumps({{'type':'agent_settled', 'stale':True}}), flush=True)
+        print(json.dumps({{'id': cid, 'type':'response', 'command':'get_state', 'success':True, 'data':{{'sessionFile':'{session_file}', 'autoCompactionEnabled':False, 'isStreaming':False, 'pendingMessageCount':0, 'steeringMode':'one-at-a-time', 'followUpMode':'one-at-a-time'}}}}), flush=True)
+    elif kind == 'prompt':
+        print(json.dumps({{'id': cid, 'type':'response', 'command':'prompt', 'success':True}}), flush=True)
+        print(json.dumps({{'type':'turn_end', 'message':{{'content':[{{'type':'text', 'text':'done'}}]}}}}), flush=True)
+        print(json.dumps({{'type':'agent_settled'}}), flush=True)
+"##,
+        session_file = session_file.display(),
+    );
+    std::fs::write(&shim, script).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut permissions = std::fs::metadata(&shim).unwrap().permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&shim, permissions).unwrap();
+    }
+    let mut client = PiRpcClient::spawn(
+        shim.to_str().unwrap(),
+        super::PiSpawnOptions {
+            cwd: &dir,
+            model: None,
+            resume_session_file: None,
+            session_dir: &dir,
+            member_name: "cycle-correlation",
+            collaboration_env: &[],
+            tools: None,
+            permission_ceiling: PermissionCeiling::FullAccess,
+        },
+    )
+    .unwrap();
+    let outcome = client
+        .prompt(
+            "one cycle",
+            std::time::Duration::from_secs(2),
+            |_| Ok(()),
+            |_, _| Ok(()),
+            |_| {},
+            harness_runtime_contract::CycleControl::default,
+        )
+        .unwrap();
+    assert_eq!(
+        outcome.final_text, "done",
+        "stale pre-dispatch idle was ignored"
+    );
+    let correlation = outcome.native_correlation;
+    assert_eq!(
+        correlation.terminal_provider_input_id.as_deref(),
+        Some(correlation.provider_input_id.as_str())
+    );
+    assert_eq!(
+        correlation.exact_terminal_ref.as_deref(),
+        Some(format!("pi.agent_settled:{}", correlation.provider_input_id).as_str())
+    );
+    drop(client);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
 /// Spawn a minimal fake `pi --mode rpc` shim and exercise the RPC-level
 /// adapter surface: handshake, follow_up acknowledgement, queue
 /// observation, and the --tools permission compilation in the spawn argv.

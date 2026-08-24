@@ -26,7 +26,9 @@
     "target_session_id": {"type": ["string", "null"]},
     "target_session_generation": {"type": ["integer", "null"], "minimum": 1},
     "source_record_id": {"type": ["string", "null"]},
+    "provider_attempt": {"type": ["integer", "null"], "minimum": 1},
     "result": {},
+    "cycle_correlation": {"anyOf": [{"$ref": "#/$defs/cycle_correlation"}, {"type": "null"}]},
     "failure_code": {"type": ["string", "null"]},
     "version": {"type": "integer", "minimum": 1},
     "created_at": {"type": "string", "minLength": 1},
@@ -34,6 +36,22 @@
   },
   "$defs": {
     "actor": {"type": "object", "additionalProperties": false, "required": ["kind", "id"], "properties": {"kind": {"enum": ["human", "agent_member", "external", "service"]}, "id": {"type": "string", "minLength": 1}}},
+    "cycle_correlation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["invocation_id", "provider_input_id", "input_acceptance_receipt", "terminal_provider_input_id", "exact_terminal_ref", "native_session_id", "agent_session_generation", "provider_attempt"],
+      "properties": {
+        "invocation_id": {"type": "string", "minLength": 1},
+        "source_delivery_id": {"type": ["string", "null"], "minLength": 1},
+        "provider_input_id": {"type": "string", "minLength": 1},
+        "input_acceptance_receipt": {"type": "string", "minLength": 1},
+        "terminal_provider_input_id": {"type": "string", "minLength": 1},
+        "exact_terminal_ref": {"type": "string", "minLength": 1},
+        "native_session_id": {"type": "string", "minLength": 1},
+        "agent_session_generation": {"type": "integer", "minimum": 1},
+        "provider_attempt": {"type": "integer", "minimum": 1}
+      }
+    },
     "command_kind": {"enum": ["author_message", "start_session", "stop_session", "resume_session", "dispatch_provider", "cancel_provider_turn", "open_runtime", "resume_native_session", "release_runtime", "close_member", "reopen_member", "retire_member", "delete_native_session", "start_cycle", "inject_current_cycle", "queue_at_native_boundary", "interrupt_current_cycle", "cancel_pending_input", "inspect_continuation", "activate_continuation", "inhibit_continuation", "resume_continuation", "replace_continuation_condition", "clear_continuation", "quiesce_execution_lane", "drain_runtime", "stop_background_task", "transfer_execution_driver", "inspect_command_effect", "reconcile_unknown_effect", "reattach_live_runtime", "abort_if_not_applied"]},
     "binding": {
       "type": "object",

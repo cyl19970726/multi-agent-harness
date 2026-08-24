@@ -68,3 +68,41 @@ pub(super) fn settle_provider_effect_not_applied(
         })
         .map(|_| ())
 }
+
+pub(super) fn record_provider_cycle_correlation(
+    ledger: &TeamRunLedger,
+    admission: &ProviderEffectAdmission,
+    correlation: &harness_core::agentfirm_api::ProviderCycleCorrelation,
+) -> CliResult<()> {
+    let current = ledger
+        .store
+        .runtime_commands(&admission.settle_context.execution_space_id)?
+        .into_iter()
+        .find(|command| command.id == admission.command_id)
+        .ok_or_else(|| {
+            CliError::RuntimeRecoveryRequired(format!(
+                "provider cycle command {} disappeared before terminal correlation",
+                admission.command_id
+            ))
+        })?;
+    let mut context = admission.settle_context.clone();
+    context.command_name = "node_daemon.provider_cycle.correlate".into();
+    context.idempotency_key = format!("{}:terminal", admission.command_id);
+    context.expected_version = current.version;
+    context.request_fingerprint = None;
+    ledger
+        .store
+        .record_runtime_cycle_correlation(
+            &context,
+            &admission.command_id,
+            correlation,
+            &now_string(),
+        )
+        .map_err(|error| {
+            CliError::RuntimeRecoveryRequired(format!(
+                "provider cycle {} terminal correlation failed closed: {error}",
+                admission.command_id
+            ))
+        })
+        .map(|_| ())
+}
