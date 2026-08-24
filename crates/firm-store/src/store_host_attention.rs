@@ -614,6 +614,11 @@ impl HarnessStore {
         attention.claimed_host_lease_id = None;
         attention.claimed_host_lease_generation = None;
         attention.claimed_host_lease_owner_id = None;
+        attention.claimed_recipient_member_run_id = None;
+        attention.claimed_recipient_session_id = None;
+        attention.claimed_recipient_session_generation = None;
+        attention.claimed_node_daemon_id = None;
+        attention.claimed_node_daemon_generation = None;
         attention.provider_receipt_id = None;
         attention.last_failure_reason = Some(reason.to_string());
         attention.updated_at = updated_at.to_string();

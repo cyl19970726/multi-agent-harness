@@ -389,13 +389,7 @@ impl HarnessStore {
     }
 
     pub(super) fn same_host_attention_fact(left: &HostAttention, right: &HostAttention) -> bool {
-        left.team_run_id == right.team_run_id
-            && left.kind == right.kind
-            && left.work_id == right.work_id
-            && left.work_version == right.work_version
-            && left.source_event_ref == right.source_event_ref
-            && left.member_run_id == right.member_run_id
-            && left.created_at == right.created_at
+        firm_application::same_host_attention_identity(left, right)
     }
 
     pub(super) fn host_attention_for_work_operation(
@@ -545,27 +539,46 @@ impl HarnessStore {
         // host_attentions.jsonl owns the later delivery lifecycle projection.
         // Fold source records first so Claimed/Delivered/Acknowledged rows are
         // not reset to their initial Actionable state on every read.
-        let mut latest = std::collections::BTreeMap::new();
+        let mut sources = std::collections::BTreeMap::new();
         for execution_space_id in self.canonical_execution_space_ids()? {
             for attention in self.trust_side_records::<HostAttention>(&execution_space_id)? {
-                latest.insert(attention.id.clone(), attention);
-            }
-        }
-        for attention in latest_by_id(
-            self.read_jsonl::<HostAttention>("host_attentions.jsonl")?,
-            |attention| attention.id.clone(),
-        )
-        .into_values()
-        {
-            if let Some(source) = latest.get(&attention.id) {
-                if !Self::same_host_attention_fact(source, &attention) {
-                    return Err(StoreError::Conflict(format!(
-                        "HOST_ATTENTION_SOURCE_FACT_CONFLICT: lifecycle projection {} disagrees with its canonical source fact",
+                let decision = firm_application::fold_host_attention_source(
+                    sources.get(&attention.id),
+                    &attention,
+                )
+                .map_err(|error| {
+                    StoreError::Conflict(format!(
+                        "HOST_ATTENTION_SOURCE_FACT_CONFLICT: canonical source {}: {error}",
                         attention.id
-                    )));
+                    ))
+                })?;
+                if decision != firm_application::ProjectionFoldDecision::Replay {
+                    sources.insert(attention.id.clone(), attention);
                 }
             }
-            latest.insert(attention.id.clone(), attention);
+        }
+        let mut latest = sources;
+        for attention in self.read_jsonl::<HostAttention>("host_attentions.jsonl")? {
+            let decision = firm_application::fold_host_attention_lifecycle(
+                latest.get(&attention.id),
+                &attention,
+            )
+            .map_err(|error| {
+                let code = if error
+                    == firm_application::ProjectionFoldViolation::ImmutableIdentityConflict
+                {
+                    "HOST_ATTENTION_SOURCE_FACT_CONFLICT"
+                } else {
+                    "HOST_ATTENTION_LIFECYCLE_FOLD_CONFLICT"
+                };
+                StoreError::Conflict(format!(
+                    "{code}: lifecycle projection {}: {error}",
+                    attention.id
+                ))
+            })?;
+            if decision != firm_application::ProjectionFoldDecision::Replay {
+                latest.insert(attention.id.clone(), attention);
+            }
         }
         Ok(latest)
     }

@@ -57,6 +57,7 @@ consequences, affected modules, and validation path.
 | [0057](0057-host-is-an-agent-member.md) | accepted; implementation tracked by DEV-59 | Managed and external interactive Hosts share AgentMember identity and role authority; managed Hosts use the ordinary Team runtime and exact-session inbox path |
 | [0058](0058-work-dependency-dag-and-kernel-boundary.md) | accepted; DEV-60 cutover | Flat Work dependency DAG, kernel/package boundary, constrained Member proposals, and closed Module scope |
 | [0059](0059-trusted-development-full-access-and-explicit-cwd.md) | accepted; DEV-65 implementation | Managed coding Hosts/Members use frozen FullAccess and exact cwd; shared cwd is allowed, worktrees are optional, and agent coordination is CLI-only |
+| [0060](0060-source-lifecycle-projection-folds.md) | accepted; DEV-74 implementation | Canonical WorkDelivery revisions and HostAttention source/lifecycle rows fold deterministically and fail closed on identity, version, or transition conflicts |
 
 ## Split Rule
 

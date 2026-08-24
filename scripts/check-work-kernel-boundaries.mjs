@@ -261,6 +261,34 @@ for (const required of [
     failures.push(`crates/firm-application/src/current_work_delivery.rs: missing ${required}`);
   }
 }
+const projectionFoldPath = "crates/firm-application/src/projection_fold.rs";
+if (!existsSync(resolve(root, projectionFoldPath))) {
+  failures.push(`${projectionFoldPath}: source/lifecycle fold contract is missing`);
+} else {
+  const projectionFold = read(projectionFoldPath);
+  for (const required of [
+    "pub fn fold_canonical_work_delivery",
+    "pub fn fold_host_attention_source",
+    "pub fn fold_host_attention_lifecycle",
+    "ImmutableIdentityConflict",
+    "VersionRegression",
+    "InvalidLifecycleTransition",
+  ]) {
+    if (!projectionFold.includes(required)) {
+      failures.push(`${projectionFoldPath}: missing ${required}`);
+    }
+  }
+}
+const canonicalWorkDeliveryFoldPath = "crates/firm-store/src/trust_kernel/fabric_work_execution.rs";
+if (!read(canonicalWorkDeliveryFoldPath).includes("fold_canonical_work_delivery")) {
+  failures.push(`${canonicalWorkDeliveryFoldPath}: canonical WorkDelivery reads must use the immutable-fenced fold`);
+}
+const hostAttentionFoldPath = "crates/firm-store/src/store_host_attention_internals.rs";
+for (const required of ["fold_host_attention_source", "fold_host_attention_lifecycle"]) {
+  if (!read(hostAttentionFoldPath).includes(required)) {
+    failures.push(`${hostAttentionFoldPath}: HostAttention reads must use ${required}`);
+  }
+}
 
 const applicationServicePath = "crates/firm-application/src/work_service.rs";
 if (!existsSync(resolve(root, applicationServicePath))) {
