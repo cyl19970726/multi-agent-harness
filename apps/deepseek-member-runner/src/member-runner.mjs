@@ -15,6 +15,7 @@ export function createMemberRunner({ runtime, emit }) {
   let activeInputId;
   let activeMessageId;
   let interrupted = false;
+  let releaseInterruptedCycle;
   let disposed = false;
   let detachEvents;
 
@@ -74,6 +75,10 @@ export function createMemberRunner({ runtime, emit }) {
     let finalText = "";
     let toolCallCount = 0;
     let turnReason;
+    let inputAcceptedObserved = false;
+    let activeTurnNumber;
+    let resolveTurnTerminal;
+    let terminalTimer;
     const message = runtime.createUserMessage(payload.body);
     activeMessageId = message.id;
     let acceptTimer;
@@ -82,6 +87,7 @@ export function createMemberRunner({ runtime, emit }) {
       detachAcceptance = runtime.onEvent(current.agent.session, (event) => {
         if (event.type !== "agent/inbox/spliced"
           || !event.data?.inserted?.some((inserted) => inserted.id === message.id)) return;
+        inputAcceptedObserved = true;
         clearTimeout(acceptTimer);
         detachAcceptance();
         resolve();
@@ -91,10 +97,22 @@ export function createMemberRunner({ runtime, emit }) {
         reject(new Error(`DSH_INPUT_NOT_ACCEPTED:${payload.id}`));
       }, 30_000);
     });
+    const turnTerminal = new Promise((resolve) => { resolveTurnTerminal = resolve; });
+    const interruptedCycle = new Promise((resolve) => { releaseInterruptedCycle = resolve; });
+    const terminalTimeout = Number.isFinite(runtime.turnTerminalTimeoutMs)
+      ? new Promise((resolve) => { terminalTimer = setTimeout(resolve, runtime.turnTerminalTimeoutMs); })
+      : new Promise(() => {});
     const detachCycle = runtime.onEvent(current.agent.session, (event) => {
       if (event.type === "assistant/message") finalText = textOf(event.data?.message) || finalText;
       if (event.type === "tool/call") toolCallCount += 1;
-      if (event.type === "turn/end") turnReason = event.data?.reason ?? turnReason;
+      if (event.type === "turn/start" && inputAcceptedObserved && activeTurnNumber === undefined) {
+        activeTurnNumber = event.data?.turn;
+      }
+      if (event.type === "turn/end" && activeTurnNumber !== undefined
+        && event.data?.turn === activeTurnNumber) {
+        turnReason = event.data?.reason ?? turnReason;
+        resolveTurnTerminal();
+      }
     });
     try {
       current.agent.followup(message);
@@ -103,9 +121,14 @@ export function createMemberRunner({ runtime, emit }) {
       // idle/turn-end, otherwise a newly accepted followup can be settled as
       // missing_terminal without ever observing its native turn.
       await inputAccepted;
-      await current.agent.whenIdle();
-      await runtime.flush(current.agent.session);
+      // `whenIdle()` can still resolve from the previous interrupted cycle
+      // after the exact splice. Bind the subsequent exact turn/start number
+      // and require its matching turn/end. An authenticated interrupt releases
+      // the wait only after its own idle+flush boundary.
+      await Promise.race([turnTerminal, interruptedCycle, terminalTimeout]);
       if (!interrupted) {
+        await current.agent.whenIdle();
+        await runtime.flush(current.agent.session);
         emit("turn_complete", {
           triggerMessageId: activeInputId,
           sessionId: current.agent.session.id,
@@ -120,8 +143,10 @@ export function createMemberRunner({ runtime, emit }) {
       }
     } finally {
       clearTimeout(acceptTimer);
+      clearTimeout(terminalTimer);
       detachAcceptance();
       detachCycle();
+      releaseInterruptedCycle = undefined;
       activeInputId = undefined;
       activeMessageId = undefined;
     }
@@ -134,6 +159,7 @@ export function createMemberRunner({ runtime, emit }) {
     current.agent.cancel({ kind: "user", detail: payload.reason ?? "Harness interrupt" }, { keepInbox: false });
     await current.agent.whenIdle();
     await runtime.flush(current.agent.session);
+    releaseInterruptedCycle?.();
     emit("interrupted", { stillQueued: [], abandonedTriggerMessageIds: interruptedInputId ? [interruptedInputId] : [] });
     emit("member_resumed_after_interrupt", { sessionId: current.agent.session.id });
   }
