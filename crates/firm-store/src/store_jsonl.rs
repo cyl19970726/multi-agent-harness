@@ -174,53 +174,33 @@ impl HarnessStore {
     ) -> StoreResult<StoreWriteLock> {
         let lock_path = self.root.join(".store.lock");
         let deadline = Instant::now() + timeout;
-        loop {
-            if self
-                .process_write_lock
-                .compare_exchange(
-                    false,
-                    true,
-                    AtomicOrdering::Acquire,
-                    AtomicOrdering::Relaxed,
-                )
-                .is_ok()
-            {
-                break;
-            }
-            if Instant::now() >= deadline {
-                return Err(StoreError::LockTimeout(lock_path.display().to_string()));
-            }
-            thread::sleep(poll_interval.min(deadline.saturating_duration_since(Instant::now())));
-        }
-        let process_write_lock = self.process_write_lock.clone();
+        let process_write_permit = self
+            .process_write_lock
+            .acquire(deadline)
+            .ok_or_else(|| StoreError::LockTimeout(lock_path.display().to_string()))?;
         let file = OpenOptions::new()
             .create(true)
             .read(true)
             .truncate(false)
             .write(true)
-            .open(&lock_path)
-            .inspect_err(|_| process_write_lock.store(false, AtomicOrdering::Release))?;
+            .open(&lock_path)?;
         loop {
             match lock_file_exclusive(&file) {
                 Ok(()) => {
                     return Ok(StoreWriteLock {
                         file,
-                        process_write_lock,
+                        _process_write_permit: process_write_permit,
                     })
                 }
                 Err(error) if would_block_lock(&error) => {
                     if Instant::now() >= deadline {
-                        process_write_lock.store(false, AtomicOrdering::Release);
                         return Err(StoreError::LockTimeout(lock_path.display().to_string()));
                     }
                     thread::sleep(
                         poll_interval.min(deadline.saturating_duration_since(Instant::now())),
                     );
                 }
-                Err(error) => {
-                    process_write_lock.store(false, AtomicOrdering::Release);
-                    return Err(StoreError::Io(error));
-                }
+                Err(error) => return Err(StoreError::Io(error)),
             }
         }
     }
