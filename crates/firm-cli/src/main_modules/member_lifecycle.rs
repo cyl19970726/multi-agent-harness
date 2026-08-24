@@ -553,12 +553,21 @@ pub(super) fn wait_for_idle_member_wake(
             return Ok(IdleMemberWake::HostAttentions(host_attentions));
         }
         // Build pure views from the store for the decision function.
-        let member_view = build_member_wake_view(
+        let Some(member_view) = retryable_idle_projection(build_member_wake_view(
             ledger,
             member_row,
             zero_output_streak,
             last_consumed_work_version,
-        )?;
+        ))?
+        else {
+            // This is a pure read before any Work claim or provider turn. A
+            // concurrent canonical append may exhaust the bounded seqlock
+            // stabilization window, but retrying the read cannot replay a
+            // provider effect. The loop revalidates the Supervisor lease at
+            // its next iteration before reading or controlling anything.
+            backoff.sleep_and_tick(policy);
+            continue;
+        };
         let board_view = build_board_wake_view(ledger, member_row)?;
 
         let decision = supervisor_wake::decide_wake(&member_view, &board_view, policy, backoff);
@@ -733,6 +742,16 @@ pub(super) fn wait_for_idle_member_wake(
                 return Ok(IdleMemberWake::Degraded(reason));
             }
         }
+    }
+}
+
+pub(super) fn retryable_idle_projection<T>(result: CliResult<T>) -> CliResult<Option<T>> {
+    match result {
+        Ok(value) => Ok(Some(value)),
+        Err(CliError::Store(harness_store::StoreError::CurrentWorkDeliverySnapshotUnstable)) => {
+            Ok(None)
+        }
+        Err(error) => Err(error),
     }
 }
 
