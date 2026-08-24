@@ -2,6 +2,29 @@ use super::*;
 use harness_core::agentfirm_api::PermissionCeiling;
 use std::fs;
 
+#[test]
+fn native_cycle_correlation_never_crosses_input_ids() {
+    let correlation = native_cycle_correlation(
+        "deepseek-cycle-2",
+        ControlTransportReceipt {
+            command: "deliver".into(),
+            response_id: Some("deepseek-sdk-session:native:deepseek-cycle-2".into()),
+            success: true,
+        },
+        "turn_complete",
+        "native",
+    );
+    assert_eq!(correlation.provider_input_id, "deepseek-cycle-2");
+    assert_eq!(
+        correlation.terminal_provider_input_id.as_deref(),
+        Some("deepseek-cycle-2")
+    );
+    assert_eq!(
+        correlation.exact_terminal_ref.as_deref(),
+        Some("deepseek_harness.turn_complete:deepseek-cycle-2:native")
+    );
+}
+
 fn reviewed_runner_fixture(label: &str) -> PathBuf {
     let root = std::env::temp_dir().join(format!(
         "deepseek-runner-composition-{label}-{}-{}",

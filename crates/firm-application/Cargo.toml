@@ -9,3 +9,6 @@ repository.workspace = true
 serde.workspace = true
 firm-core = { path = "../firm-core" }
 firm-runtime-contract = { path = "../firm-runtime-contract" }
+
+[dev-dependencies]
+serde_json.workspace = true

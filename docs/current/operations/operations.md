@@ -144,6 +144,14 @@ capability fingerprints, provider effect certainty, semantic postcondition
 status, and adapter observations for terminal/quiesce/release claims. A
 provider ACK alone is not sufficient evidence for semantic completion.
 
+Provider-cycle conformance additionally requires the durable
+`ProviderCycleCorrelation` on the exact `StartCycle` command. For Codex,
+Claude, Kimi, DeepSeek and Pi, verify two consecutive inputs, interrupt then
+immediate follow-up, receipt-before-terminal ordering, mismatched-terminal
+rejection, and no replay after transport loss following receipt. The terminal
+observation may advance runtime lifecycle only after its RuntimeCommand,
+NativeSessionRef, AgentSession generation and provider attempt all match.
+
 ## Harness And Provider Update Windows
 
 Validate the repository's unified Harness/Plugin source and compare it with the

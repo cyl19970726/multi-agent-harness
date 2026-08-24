@@ -274,6 +274,26 @@ pub enum RuntimeEffectCertainty {
     Unknown,
 }
 
+/// Durable, provider-neutral identity for one accepted provider cycle and its
+/// exact terminal observation. This is coordination evidence only: it neither
+/// mirrors a provider transcript nor proves semantic Work success.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProviderCycleCorrelation {
+    pub invocation_id: String,
+    #[serde(default)]
+    pub source_delivery_id: Option<String>,
+    pub provider_input_id: String,
+    pub input_acceptance_receipt: String,
+    #[serde(default)]
+    pub terminal_provider_input_id: Option<String>,
+    #[serde(default)]
+    pub exact_terminal_ref: Option<String>,
+    pub native_session_id: String,
+    pub agent_session_generation: u64,
+    pub provider_attempt: u64,
+}
+
 /// Durable machine-local command journal. The NodeDaemon records acceptance
 /// before touching a provider and records the observed effect afterwards.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -310,7 +330,13 @@ pub struct RuntimeCommandRecord {
     #[serde(default)]
     pub source_record_id: Option<String>,
     #[serde(default)]
+    pub provider_attempt: Option<u64>,
+    #[serde(default)]
     pub result: Option<serde_json::Value>,
+    /// Present only after the exact StartCycle input and provider terminal have
+    /// been correlated under the same immutable RuntimeCommand authority.
+    #[serde(default)]
+    pub cycle_correlation: Option<ProviderCycleCorrelation>,
     #[serde(default)]
     pub failure_code: Option<String>,
     pub version: u64,

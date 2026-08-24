@@ -429,6 +429,7 @@ dependencies = [
  "firm-core",
  "firm-runtime-contract",
  "serde",
+ "serde_json",
 ]
 
 [[package]]

@@ -134,7 +134,7 @@ pub struct PiTurnOutcome {
     pub interrupted: bool,
     pub close_requested_by_harness: bool,
     pub tool_call_count: u32,
-    pub input_acceptance_receipt: harness_runtime_contract::ControlTransportReceipt,
+    pub native_correlation: harness_runtime_contract::NativeCycleCorrelation,
     pub control_receipts: Vec<harness_runtime_contract::ControlTransportReceipt>,
     pub terminal_observation: harness_runtime_contract::CycleRuntimeObservation,
 }
@@ -715,6 +715,12 @@ impl PiRpcClient {
         on_event: &mut dyn FnMut(&serde_json::Value),
         poll_control: &mut dyn FnMut() -> harness_runtime_contract::CycleControl,
     ) -> CliResult<PiTurnOutcome> {
+        // Pi's `agent_settled` event has no native cycle id. Under the strict
+        // one-driver contract the previous cycle has already proved idle, so
+        // discard every queued pre-dispatch event before assigning the next
+        // prompt response id. A stale idle event must not terminate a fresh
+        // follow-up.
+        while self.incoming.try_recv().is_ok() {}
         let prompt_response = self.request_blocking(
             "prompt",
             serde_json::json!({"message": text}),
@@ -842,12 +848,24 @@ impl PiRpcClient {
                 "PI_CYCLE_SETTLEMENT_UNKNOWN: agent_settled was not confirmed by get_state isStreaming=false: {terminal_observation:?}"
             )));
         }
+        let provider_input_id = input_acceptance_receipt
+            .response_id
+            .clone()
+            .expect("validated Pi prompt response id");
         Ok(PiTurnOutcome {
             final_text,
             interrupted,
             close_requested_by_harness: close_requested,
             tool_call_count,
-            input_acceptance_receipt,
+            native_correlation: harness_runtime_contract::NativeCycleCorrelation {
+                provider_input_id: provider_input_id.clone(),
+                input_acceptance_receipt,
+                // Pi RPC emits an unkeyed `agent_settled` event. The one-driver
+                // prompt response plus the ordered terminal boundary closes
+                // the local cycle; there is no stronger native terminal id.
+                terminal_provider_input_id: Some(provider_input_id.clone()),
+                exact_terminal_ref: Some(format!("pi.agent_settled:{provider_input_id}")),
+            },
             control_receipts,
             terminal_observation,
         })

@@ -686,6 +686,7 @@ pub(super) fn run_codex_member_shared(
         &mut adapter,
         &live_control,
         Some(registration),
+        transport_attempt,
     )
 }
 
@@ -865,11 +866,17 @@ pub(super) fn run_claude_agent_sdk_team_member_shared(
         harness_core::agentfirm_api::RuntimeActivity::Idle,
     )?;
     let expected = member_row.clone();
-    member_row.native_session = Some(native_session_ref(
-        &member_row,
-        adapter.native_session_locator(),
-        adapter.native_locator_kind(),
-    ));
+    // Fresh embedded-SDK transports do not learn their provider-native
+    // session id until the first accepted input. Never persist an empty
+    // placeholder as if it were a real binding; the terminal cycle path will
+    // attach the exact id under the same AgentSession generation.
+    if !adapter.native_session_locator().trim().is_empty() {
+        member_row.native_session = Some(native_session_ref(
+            &member_row,
+            adapter.native_session_locator(),
+            adapter.native_locator_kind(),
+        ));
+    }
     if member_row
         .provider_controls
         .service_tier
@@ -894,6 +901,7 @@ pub(super) fn run_claude_agent_sdk_team_member_shared(
         &mut adapter,
         &live_control,
         Some(registration),
+        transport_attempt,
     )
 }
 
@@ -1114,11 +1122,13 @@ pub(super) fn run_deepseek_harness_team_member_shared(
         harness_core::agentfirm_api::RuntimeActivity::Idle,
     )?;
     let expected = member_row.clone();
-    member_row.native_session = Some(native_session_ref(
-        &member_row,
-        adapter.native_session_locator(),
-        adapter.native_locator_kind(),
-    ));
+    if !adapter.native_session_locator().trim().is_empty() {
+        member_row.native_session = Some(native_session_ref(
+            &member_row,
+            adapter.native_session_locator(),
+            adapter.native_locator_kind(),
+        ));
+    }
     if member_row
         .provider_controls
         .service_tier
@@ -1143,6 +1153,7 @@ pub(super) fn run_deepseek_harness_team_member_shared(
         &mut adapter,
         &live_control,
         Some(registration),
+        transport_attempt,
     )
 }
 
@@ -1398,5 +1409,6 @@ pub(super) fn run_kimi_member_shared(
         &mut adapter,
         &live_control,
         Some(registration),
+        transport_attempt,
     )
 }

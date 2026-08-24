@@ -479,7 +479,9 @@ impl HarnessStore {
             target_session_id,
             target_session_generation,
             source_record_id: command.payload["delivery_id"].as_str().map(str::to_string),
+            provider_attempt: command.payload["provider_attempt"].as_u64(),
             result: None,
+            cycle_correlation: None,
             failure_code: None,
             version: 1,
             created_at: now.to_string(),
@@ -934,6 +936,270 @@ impl HarnessStore {
                 "result": record.result,
                 "failure_code": record.failure_code,
             }),
+            &record,
+            Vec::new(),
+            Vec::new(),
+        )
+    }
+
+    /// Attach one exact provider terminal correlation to an already accepted
+    /// and durably Applied `StartCycle` command. Input acceptance remains the
+    /// first settlement (and therefore the no-replay fence); this later event
+    /// adds terminal identity without creating a transcript or second ledger.
+    pub fn record_runtime_cycle_correlation(
+        &self,
+        context: &MutationContext,
+        command_id: &str,
+        correlation: &ProviderCycleCorrelation,
+        now: &str,
+    ) -> StoreResult<CanonicalMutationResult<RuntimeCommandRecord>> {
+        self.init()?;
+        let _lock = self.acquire_write_lock()?;
+        required(command_id, "ProviderCycleCorrelation.invocation_id")?;
+        required(
+            &correlation.provider_input_id,
+            "ProviderCycleCorrelation.provider_input_id",
+        )?;
+        required(
+            &correlation.input_acceptance_receipt,
+            "ProviderCycleCorrelation.input_acceptance_receipt",
+        )?;
+        required(
+            &correlation.native_session_id,
+            "ProviderCycleCorrelation.native_session_id",
+        )?;
+        if correlation.agent_session_generation == 0 || correlation.provider_attempt == 0 {
+            return Err(trust_error(
+                TrustErrorCode::InvalidStateTransition,
+                "provider cycle generations and attempts are one-based",
+                "runtime_command",
+                command_id,
+                None,
+            ));
+        }
+        if correlation
+            .exact_terminal_ref
+            .as_deref()
+            .is_some_and(|value| value.trim().is_empty())
+            || correlation
+                .source_delivery_id
+                .as_deref()
+                .is_some_and(|value| value.trim().is_empty())
+        {
+            return Err(trust_error(
+                TrustErrorCode::InvalidStateTransition,
+                "provider cycle optional references cannot be empty",
+                "runtime_command",
+                command_id,
+                None,
+            ));
+        }
+        let fingerprint = canonical_json_fingerprint(&serde_json::json!({
+            "command_id": command_id,
+            "correlation": correlation,
+        }));
+        let existing = self.trust_operation_envelopes_unlocked()?;
+        if let Some(replay) = existing.iter().find(|envelope| {
+            envelope.execution_space_id == context.execution_space_id
+                && envelope.authenticated_actor_kind == context.authenticated_actor.kind
+                && envelope.authenticated_actor_id == context.authenticated_actor.id
+                && envelope.command_name == context.command_name
+                && envelope.operation.event.idempotency_key == context.idempotency_key
+        }) {
+            if replay.operation.event.canonical_request_fingerprint != fingerprint
+                || replay.operation.event.aggregate_kind != "runtime_command"
+                || replay.operation.event.aggregate_id != command_id
+            {
+                return Err(trust_error(
+                    TrustErrorCode::IdempotencyKeyReused,
+                    "provider cycle correlation key was reused with different semantics",
+                    "runtime_command",
+                    command_id,
+                    Some(replay.operation.event.resulting_version),
+                ));
+            }
+            return Ok(CanonicalMutationResult {
+                projection: event_projection(replay)?,
+                event: replay.operation.event.clone(),
+                replayed: true,
+            });
+        }
+        let mut record = self
+            .latest_trust_envelopes_unlocked(&context.execution_space_id, "runtime_command")?
+            .remove(command_id)
+            .ok_or_else(|| {
+                trust_error(
+                    TrustErrorCode::InvalidStateTransition,
+                    "provider cycle correlation has no durable RuntimeCommand",
+                    "runtime_command",
+                    command_id,
+                    None,
+                )
+            })
+            .and_then(|envelope| event_projection::<RuntimeCommandRecord>(&envelope))?;
+        if context.authenticated_actor.kind != ActorKind::Service
+            || context.authenticated_actor.id != record.target_node_daemon_id
+        {
+            return Err(trust_error(
+                TrustErrorCode::UnauthorizedActor,
+                "only the exact target NodeDaemon may record provider cycle correlation",
+                "runtime_command",
+                command_id,
+                Some(record.version),
+            ));
+        }
+        self.require_current_node_daemon_unlocked(
+            &context.execution_space_id,
+            &record.target_node_id,
+            &record.target_node_daemon_id,
+            record.target_node_daemon_generation,
+            &context.authenticated_actor,
+            "runtime_command",
+            command_id,
+        )?;
+        let session_id = record.target_session_id.as_deref().ok_or_else(|| {
+            trust_error(
+                TrustErrorCode::MemberRunGenerationFenced,
+                "provider cycle command has no exact AgentSession",
+                "runtime_command",
+                command_id,
+                Some(record.version),
+            )
+        })?;
+        let session = self
+            .fabric_agent_sessions(&context.execution_space_id)?
+            .into_iter()
+            .find(|session| session.id == session_id)
+            .ok_or_else(|| {
+                trust_error(
+                    TrustErrorCode::MemberRunGenerationFenced,
+                    "provider cycle AgentSession disappeared before terminal correlation",
+                    "runtime_command",
+                    command_id,
+                    Some(record.version),
+                )
+            })?;
+        if session.runtime_generation != record.target_session_generation.unwrap_or(0)
+            || session.node_id != record.target_node_id
+            || session.node_daemon_id != record.target_node_daemon_id
+            || session.node_daemon_generation != record.target_node_daemon_generation
+        {
+            return Err(trust_error(
+                TrustErrorCode::MemberRunGenerationFenced,
+                "provider cycle terminal no longer owns the current AgentSession generation",
+                "runtime_command",
+                command_id,
+                Some(record.version),
+            ));
+        }
+        self.require_live_runtime_binding_unlocked(
+            &session,
+            &record.binding,
+            RuntimeBindingAdmission::RuntimeCommand {
+                // A fresh StartCycle can be admitted before the provider has
+                // returned its native session id. The shared binding fence
+                // permits only None -> exact current same-generation session;
+                // it never permits replacement of an existing binding.
+                allow_native_session_attachment: true,
+            },
+            "runtime_command",
+            command_id,
+            Some(record.version),
+        )?;
+        if context.expected_version != record.version
+            || record.command != RuntimeCommandKind::StartCycle
+            || record.status != RuntimeCommandStatus::Applied
+            || record.effect_certainty != RuntimeEffectCertainty::Applied
+            || record.postcondition_status != RuntimePostconditionStatus::Satisfied
+        {
+            return Err(trust_error(
+                TrustErrorCode::InvalidStateTransition,
+                "provider terminal correlation requires the exact settled StartCycle version",
+                "runtime_command",
+                command_id,
+                Some(record.version),
+            ));
+        }
+        if correlation.invocation_id != record.id
+            || correlation.agent_session_generation != record.target_session_generation.unwrap_or(0)
+            || Some(correlation.provider_attempt) != record.provider_attempt
+            || session
+                .native_session_ref
+                .as_ref()
+                .map(|native| native.native_session_id.as_str())
+                != Some(correlation.native_session_id.as_str())
+        {
+            return Err(trust_error(
+                TrustErrorCode::MemberRunGenerationFenced,
+                "provider cycle correlation does not match RuntimeCommand session/attempt authority",
+                "runtime_command",
+                command_id,
+                Some(record.version),
+            ));
+        }
+        if correlation
+            .terminal_provider_input_id
+            .as_deref()
+            .is_some_and(|terminal| terminal != correlation.provider_input_id)
+        {
+            return Err(trust_error(
+                TrustErrorCode::InvalidStateTransition,
+                "provider terminal belongs to a different provider input",
+                "runtime_command",
+                command_id,
+                Some(record.version),
+            ));
+        }
+        let accepted_receipt = record
+            .result
+            .as_ref()
+            .and_then(|result| result.pointer("/provider_receipt/response_id"))
+            .and_then(Value::as_str);
+        if accepted_receipt != Some(correlation.input_acceptance_receipt.as_str()) {
+            return Err(trust_error(
+                TrustErrorCode::InvalidStateTransition,
+                "provider terminal correlation does not match the durable input receipt",
+                "runtime_command",
+                command_id,
+                Some(record.version),
+            ));
+        }
+        if let Some(delivery_id) = correlation.source_delivery_id.as_deref() {
+            let expected_prefix = format!("{delivery_id}:turn:");
+            if !record
+                .source_record_id
+                .as_deref()
+                .is_some_and(|source| source.starts_with(&expected_prefix))
+            {
+                return Err(trust_error(
+                    TrustErrorCode::InvalidStateTransition,
+                    "provider cycle source delivery does not match the admitted command",
+                    "runtime_command",
+                    command_id,
+                    Some(record.version),
+                ));
+            }
+        }
+        if record.cycle_correlation.is_some() {
+            return Err(trust_error(
+                TrustErrorCode::InvalidStateTransition,
+                "provider cycle terminal correlation was already recorded",
+                "runtime_command",
+                command_id,
+                Some(record.version),
+            ));
+        }
+        record.cycle_correlation = Some(correlation.clone());
+        record.version += 1;
+        record.updated_at = now.to_string();
+        let mut commit_context = context.clone();
+        commit_context.request_fingerprint = Some(fingerprint);
+        self.commit_trust_projection_unlocked(
+            &commit_context,
+            "runtime_command",
+            command_id,
+            "cycle_terminal_correlated",
+            serde_json::to_value(correlation)?,
             &record,
             Vec::new(),
             Vec::new(),

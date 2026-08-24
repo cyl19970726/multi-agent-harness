@@ -64,6 +64,30 @@ permanent coordination transition.
 Typed sender and recipient provenance is part of the envelope; an unbound
 external client cannot impersonate a Member.
 
+Every driven provider cycle closes through the same correlation contract:
+
+```text
+ProviderCycleCorrelation
+  RuntimeCommand invocation_id + optional WorkDelivery source
+  provider-native input id + durable input-acceptance receipt
+  provider-native terminal input id + exact terminal ref when exposed
+  NativeSessionRef + AgentSession generation + provider transport attempt
+```
+
+The `StartCycle` RuntimeCommand is settled `Applied` immediately when the
+provider accepts input. That is the no-replay fence. A later
+`cycle_terminal_correlated` event appends the exact terminal identity to the
+same RuntimeCommand aggregate; it never sends another input and never creates a
+turn/transcript ledger. Codex binds `turn/start` to the matching
+`turn/completed`; Claude Agent SDK and DeepSeek Harness bind the exact delivery
+id to `turn_complete` or the same-session interrupt-resume boundary; Kimi binds
+the JSON-RPC `session/prompt` id to its terminal response; Pi uses the ordered
+one-driver prompt response plus `agent_settled` and a verified idle
+observation. A mismatched terminal, stale generation/session/attempt, or
+transport loss after input acceptance fails closed as reconciliation work.
+Empty output and a provider terminal remain operational facts, not semantic
+Work success or Host acceptance.
+
 The declared exception to that invariant is the `external_interactive`
 execution mode. An `external_interactive` member is a user's own already-open
 interactive provider session that Harness never spawns or drives: the

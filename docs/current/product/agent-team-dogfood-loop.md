@@ -37,3 +37,10 @@ implementation-bound remainder below.
   request, or terminal response for that prompt is the earliest honest
   runtime receipt and must publish before that turn's Member-to-Host or peer
   communication.
+- For every driven mode, inspect the settled `StartCycle` RuntimeCommand and
+  require one exact `cycle_correlation`: the accepted provider input, terminal
+  provider input (where the native protocol exposes one), native session,
+  AgentSession generation, and transport attempt must agree. Run two rounds
+  and an interrupt/follow-up boundary to prove an old terminal cannot complete
+  a new input. Loss after the input receipt is `Unknown`/reconciliation and
+  must never be automatically replayed. Empty output is not semantic success.

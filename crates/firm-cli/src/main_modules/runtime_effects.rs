@@ -325,6 +325,7 @@ pub(super) fn prepare_provider_effect_kind(
     content: &str,
     command_kind: harness_core::agentfirm_api::RuntimeCommandKind,
     required_capability: &str,
+    provider_attempt: Option<u64>,
 ) -> CliResult<ProviderEffectAdmission> {
     use harness_core::agentfirm_api::{
         ActorKind, ActorRef, AgentSessionStatus, ControlCommandEnvelope, RuntimeCommandStatus,
@@ -399,6 +400,7 @@ pub(super) fn prepare_provider_effect_kind(
         "command_kind": command_kind,
         "permission_ceiling": session.effective_permission_ceiling,
         "content_fingerprint": content_fingerprint,
+        "provider_attempt": provider_attempt,
     });
     let payload_fingerprint = harness_store::canonical_json_fingerprint(&payload);
     let source_fingerprint = harness_store::canonical_json_fingerprint(
@@ -512,6 +514,7 @@ pub(super) fn prepare_provider_effect(
     member: &ProviderRuntimeProjection,
     source_record_id: &str,
     content: &str,
+    provider_attempt: u64,
 ) -> CliResult<ProviderEffectAdmission> {
     prepare_provider_effect_kind(
         ledger,
@@ -520,6 +523,7 @@ pub(super) fn prepare_provider_effect(
         content,
         harness_core::agentfirm_api::RuntimeCommandKind::StartCycle,
         "cycle.start",
+        Some(provider_attempt),
     )
 }
 
