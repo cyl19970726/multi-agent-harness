@@ -639,7 +639,10 @@ pub(crate) fn operator_provider_admission_probe(
 }
 
 pub(super) fn member_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    require_subcommand(args, "member providers|preflight|inbox|message|work")?;
+    require_subcommand(
+        args,
+        "member providers|preflight|inbox|message|work|runtime",
+    )?;
     match args[0].as_str() {
         // Runtime availability of each provider ACCOUNT, reported separately
         // from adapter compatibility. See `member providers` for the latter.
@@ -706,9 +709,50 @@ pub(super) fn member_command(store: &HarnessStore, args: &[String]) -> CliResult
         "inbox" => bound_member_inbox_command(store, &args[1..])?,
         "message" => bound_member_message_command(store, &args[1..])?,
         "work" => bound_member_work_command(store, &args[1..])?,
+        "runtime" => bound_member_runtime_command(store, &args[1..])?,
         other => return Err(CliError::Usage(format!("unknown member command: {other}"))),
     }
     Ok(())
+}
+
+/// Provider lifecycle control from the exact Supervisor-bound AgentMember.
+/// The caller token authenticates the source identity; the canonical Role
+/// Action policy then permits only exact-self control or the Team Host acting
+/// on another active MemberRun. The CLI never reaches the Store directly.
+pub(super) fn bound_member_runtime_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
+    require_subcommand(
+        args,
+        "member runtime interrupt [--member-run-id <target>] --expected-version <n> --reason <text>",
+    )?;
+    let context = bound_member_role_context()?;
+    match args[0].as_str() {
+        "interrupt" => {
+            let target_member_run_id =
+                value(args, "--member-run-id").unwrap_or_else(|| context.member_run_id.clone());
+            let expected_version = required(args, "--expected-version")?
+                .parse::<u64>()
+                .map_err(|_| {
+                    CliError::Usage("--expected-version must be an unsigned integer".into())
+                })?;
+            let reason = required(args, "--reason")?;
+            execute_bound_member_role_action(
+                store,
+                &context,
+                &format!("/v1/agentfirm/member-runs/{target_member_run_id}/interrupt"),
+                expected_version,
+                value(args, "--idempotency-key")
+                    .unwrap_or_else(|| generated_id("member-runtime-interrupt")),
+                serde_json::json!({
+                    "action": "interrupt_member_run",
+                    "reason": reason,
+                }),
+                None,
+            )
+        }
+        other => Err(CliError::Usage(format!(
+            "unknown member runtime command: {other}"
+        ))),
+    }
 }
 
 #[derive(Debug)]

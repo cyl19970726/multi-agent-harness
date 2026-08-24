@@ -126,6 +126,11 @@ pub(crate) struct MultiTeamDaemon {
     daemon_id: String,
     instance_id: String,
     contexts: Mutex<Vec<MultiTeamContext>>,
+    /// Serializes only Supervisor admission. Recovery discovery and an
+    /// explicit Start may target the same TeamRun concurrently; the separate
+    /// gate closes that lease-acquisition window without holding `contexts`
+    /// across Store/provider admission or blocking the reserved control lane.
+    supervisor_start_gate: Mutex<()>,
     /// Machine-local provider handles keyed by canonical AgentSession id.
     /// Team membership is intentionally absent from this registry.
     session_runtimes: Mutex<HashMap<String, crate::provider_adapter::NodeSessionRuntime>>,
@@ -136,7 +141,17 @@ pub(crate) struct MultiTeamDaemon {
     max_concurrency: usize,
     idle_timeout_secs: u64,
     scan_interval: Duration,
-    shutdown: Arc<AtomicBool>,
+    /// Stops control acceptance and discovery, but deliberately does not stop
+    /// authority renewal while already-accepted mutations are draining.
+    stop_requested: Arc<AtomicBool>,
+    /// Ends the NodeDaemon lease heartbeat only after accepted workers and
+    /// managed supervisors have converged.
+    authority_shutdown: Arc<AtomicBool>,
+    /// Latches an accepted worker that panicked or returned without proving
+    /// command completion. Such a generation may drain but never Release.
+    control_worker_failed: AtomicBool,
+    #[cfg(test)]
+    lease_ttl_override_ms: Option<u64>,
 }
 
 impl MultiTeamDaemon {
@@ -214,45 +229,33 @@ impl MultiTeamDaemon {
             socket_path.display()
         );
 
-        let daemon = MultiTeamDaemon {
+        let daemon = Arc::new(MultiTeamDaemon {
             firm_home,
             node_id,
             daemon_id,
             instance_id,
             contexts: Mutex::new(Vec::new()),
+            supervisor_start_gate: Mutex::new(()),
             session_runtimes: Mutex::new(HashMap::new()),
             live_provider_activity_endpoint: Arc::new(Mutex::new(None)),
             max_concurrency,
             idle_timeout_secs,
             scan_interval: Duration::from_secs(scan_interval_secs),
-            shutdown: shutdown_sig,
-        };
+            stop_requested: shutdown_sig,
+            authority_shutdown: Arc::new(AtomicBool::new(false)),
+            control_worker_failed: AtomicBool::new(false),
+            #[cfg(test)]
+            lease_ttl_override_ms: None,
+        });
 
-        // Always remove the socket and drain managed supervisors, even when a
-        // store or control-loop error stops the foreground service.
+        // `serve_loop` owns the two-phase shutdown: it stops accepting new
+        // control work, keeps authority alive while accepted work and managed
+        // supervisors converge, and only then drains/releases the generation.
         let serve_result = daemon.serve_loop(&listener);
         drop(listener);
         let _ = std::fs::remove_file(&socket_path);
-        // Draining is the shutdown linearization point: it fences every new
-        // provider effect while retaining exclusive Node ownership long enough
-        // to reap all Supervisor/provider handles. `Released` is published
-        // only after that drain succeeds, so a successor may use it as a
-        // durable no-writable-child receipt. Lease expiry alone never proves
-        // that postcondition.
-        let drain_result = daemon.drain_node_authorities();
-        let shutdown_result = daemon.graceful_shutdown();
-        let drained = drain_result.is_ok() && shutdown_result.is_ok();
-        let release_result = if drained {
-            daemon.release_node_authorities()
-        } else {
-            Ok(())
-        };
-
         eprintln!("[node-daemon] shutdown complete");
         serve_result
-            .and(drain_result)
-            .and(shutdown_result)
-            .and(release_result)
     }
 
     /// A dead socket is not sufficient evidence that the previous daemon
@@ -309,6 +312,10 @@ impl MultiTeamDaemon {
     }
 
     fn node_lease_ttl_ms(&self) -> u64 {
+        #[cfg(test)]
+        if let Some(ttl_ms) = self.lease_ttl_override_ms {
+            return ttl_ms;
+        }
         self.scan_interval
             .as_millis()
             .min(u64::MAX as u128)
@@ -495,17 +502,19 @@ impl MultiTeamDaemon {
     /// provider recovery scan every registered Execution Space. Store reads,
     /// stale-run validation and native-session recovery can take many seconds;
     /// none of them may head-of-line block status/start/runtime control.
-    fn serve_loop(&self, listener: &UnixListener) -> CliResult<()> {
+    fn serve_loop(self: &Arc<Self>, listener: &UnixListener) -> CliResult<()> {
         const CONTROL_POLL_INTERVAL: Duration = Duration::from_millis(20);
         let mut pending = Vec::new();
+        let mut control_workers = Vec::new();
 
         std::thread::scope(|scope| {
             let scanner = scope.spawn(|| -> CliResult<()> {
-                while !self.shutdown.load(Ordering::SeqCst) {
+                while !self.stop_requested.load(Ordering::SeqCst) {
                     self.scan_and_adopt()?;
                     self.reap_finished()?;
                     let next_scan = Instant::now() + self.scan_interval;
-                    while !self.shutdown.load(Ordering::SeqCst) && Instant::now() < next_scan {
+                    while !self.stop_requested.load(Ordering::SeqCst) && Instant::now() < next_scan
+                    {
                         std::thread::sleep(CONTROL_POLL_INTERVAL);
                     }
                 }
@@ -518,27 +527,56 @@ impl MultiTeamDaemon {
                 // authority alive on an independent cadence so a slow scan
                 // cannot fence the AgentSessions currently being supervised.
                 let interval = node_authority_refresh_interval(self.scan_interval);
-                while !self.shutdown.load(Ordering::SeqCst) {
+                while !self.authority_shutdown.load(Ordering::SeqCst) {
                     self.refresh_held_node_authorities()?;
                     let next_refresh = Instant::now() + interval;
-                    while !self.shutdown.load(Ordering::SeqCst) && Instant::now() < next_refresh {
+                    while !self.authority_shutdown.load(Ordering::SeqCst)
+                        && Instant::now() < next_refresh
+                    {
                         std::thread::sleep(CONTROL_POLL_INTERVAL);
                     }
                 }
                 Ok(())
             });
 
-            while !self.shutdown.load(Ordering::SeqCst)
+            while !self.stop_requested.load(Ordering::SeqCst)
                 && !scanner.is_finished()
                 && !authority_heartbeat.is_finished()
             {
-                self.poll_control_socket(listener, &mut pending);
+                self.poll_control_socket(listener, &mut pending, &mut control_workers);
                 std::thread::sleep(CONTROL_POLL_INTERVAL);
             }
 
             // A failure in either background responsibility ends the exact
             // daemon generation and lets the normal drain/release path run.
-            self.shutdown.store(true, Ordering::SeqCst);
+            self.stop_requested.store(true, Ordering::SeqCst);
+
+            // Every accepted mutation owns a response socket and may already
+            // have crossed the durable RuntimeCommand prepare boundary. Do
+            // not abandon those effects when Stop wins: stop accepting new
+            // work, then join every bounded control worker before releasing
+            // this daemon generation.
+            for worker in control_workers {
+                match worker.join() {
+                    Ok(Ok(())) => {}
+                    Ok(Err(error)) => {
+                        self.control_worker_failed.store(true, Ordering::SeqCst);
+                        eprintln!("[node-daemon] control worker failed while draining: {error}");
+                    }
+                    Err(_) => {
+                        self.control_worker_failed.store(true, Ordering::SeqCst);
+                        eprintln!("[node-daemon] control worker panicked while draining");
+                    }
+                }
+            }
+            let control_result = if self.control_worker_failed.load(Ordering::SeqCst) {
+                Err(CliError::Usage(
+                    "NODE_DAEMON_CONTROL_DRAIN_INCOMPLETE: an accepted control command did not prove completion"
+                        .into(),
+                ))
+            } else {
+                Ok(())
+            };
 
             let scan_result = match scanner.join() {
                 Ok(result) => result,
@@ -546,6 +584,18 @@ impl MultiTeamDaemon {
                     "NODE_DAEMON_SCAN_PANICKED: recovery scanner terminated unexpectedly".into(),
                 )),
             };
+            // The machine generation remains renewed while every managed
+            // Supervisor/provider handle converges. Only after that
+            // postcondition may Draining fence the generation and the
+            // heartbeat stop. This prevents a successor generation from
+            // overlapping an accepted mutation that already crossed prepare.
+            let supervisor_result = self.graceful_shutdown();
+            let drain_result = if supervisor_result.is_ok() {
+                self.drain_node_authorities()
+            } else {
+                Ok(())
+            };
+            self.authority_shutdown.store(true, Ordering::SeqCst);
             let heartbeat_result = match authority_heartbeat.join() {
                 Ok(result) => result,
                 Err(_) => Err(CliError::Usage(
@@ -553,7 +603,21 @@ impl MultiTeamDaemon {
                         .into(),
                 )),
             };
-            scan_result.and(heartbeat_result)
+            let release_result = if control_result.is_ok()
+                && supervisor_result.is_ok()
+                && drain_result.is_ok()
+                && heartbeat_result.is_ok()
+            {
+                self.release_node_authorities()
+            } else {
+                Ok(())
+            };
+            scan_result
+                .and(control_result)
+                .and(supervisor_result)
+                .and(drain_result)
+                .and(heartbeat_result)
+                .and(release_result)
         })
     }
 
@@ -656,6 +720,10 @@ impl MultiTeamDaemon {
         store: HarnessStore,
         run_id: &str,
     ) -> CliResult<()> {
+        let _start_guard = self
+            .supervisor_start_gate
+            .lock()
+            .map_err(|error| CliError::Usage(format!("supervisor start gate poisoned: {error}")))?;
         // Provider admissions are scoped to the exact Project Binding and
         // physical Execution Space.  The machine daemon opens stores from the
         // space registry rather than through CLI resolution, so recover that

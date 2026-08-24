@@ -114,19 +114,24 @@ fn status_remains_responsive_while_execution_space_scan_is_blocked() {
         .set_nonblocking(true)
         .expect("configure nonblocking test listener");
     let shutdown = Arc::new(AtomicBool::new(false));
-    let daemon = MultiTeamDaemon {
+    let authority_shutdown = Arc::new(AtomicBool::new(false));
+    let daemon = Arc::new(MultiTeamDaemon {
         firm_home,
         node_id: "test-node".into(),
         daemon_id: "node-daemon:test-node".into(),
         instance_id: "test-instance".into(),
         contexts: Mutex::new(Vec::new()),
+        supervisor_start_gate: Mutex::new(()),
         session_runtimes: Mutex::new(HashMap::new()),
         live_provider_activity_endpoint: Arc::new(Mutex::new(None)),
         max_concurrency: 1,
         idle_timeout_secs: 1,
         scan_interval: Duration::from_secs(60),
-        shutdown: Arc::clone(&shutdown),
-    };
+        stop_requested: Arc::clone(&shutdown),
+        authority_shutdown: Arc::clone(&authority_shutdown),
+        control_worker_failed: AtomicBool::new(false),
+        lease_ttl_override_ms: None,
+    });
 
     std::thread::scope(|scope| {
         let server = scope.spawn(|| daemon.serve_loop(&listener));
@@ -178,13 +183,13 @@ fn status_remains_responsive_while_execution_space_scan_is_blocked() {
             assert_eq!(response["node_id"], "test-node");
         }));
         shutdown.store(true, Ordering::SeqCst);
+        authority_shutdown.store(true, Ordering::SeqCst);
         drop(registry_writer);
 
-        // The independent authority heartbeat may reach the same FIFO
-        // after the discovery reader observes EOF but before it observes
-        // shutdown. Release that one late read as well; otherwise the
-        // scoped join can hide a successful responsiveness assertion
-        // behind an unbounded test hang.
+        // The FIFO deliberately replaces a normal registry file. Release
+        // every two-phase shutdown read (scanner, heartbeat and drain), not
+        // merely the first late reader, so the fixture does not manufacture
+        // an unbounded filesystem operation that production cannot have.
         let release_deadline = Instant::now() + Duration::from_secs(2);
         while !server.is_finished() && Instant::now() < release_deadline {
             match OpenOptions::new()
@@ -193,10 +198,14 @@ fn status_remains_responsive_while_execution_space_scan_is_blocked() {
                 .open(&registry_path)
             {
                 Ok(mut writer) => {
-                    writer
-                        .write_all(b"\n")
-                        .expect("release late registry FIFO reader");
-                    break;
+                    if let Err(error) = writer.write_all(b"\n") {
+                        assert_eq!(
+                            error.kind(),
+                            std::io::ErrorKind::BrokenPipe,
+                            "release late registry FIFO reader: {error}"
+                        );
+                    }
+                    std::thread::sleep(Duration::from_millis(5));
                 }
                 Err(error) if error.raw_os_error() == Some(libc::ENXIO) => {
                     std::thread::sleep(Duration::from_millis(5));
@@ -210,6 +219,349 @@ fn status_remains_responsive_while_execution_space_scan_is_blocked() {
         }
         server_result.expect("daemon exits cleanly after blocked scan is released");
     });
+}
+
+#[test]
+fn status_remains_responsive_while_a_control_mutation_is_blocked() {
+    use std::io::BufReader;
+
+    let tree = TestTree::new("mutation-control");
+    let firm_home = tree.0.join("home");
+    std::fs::create_dir_all(&firm_home).expect("create test FIRM_HOME");
+    let socket_path = tree.0.join("daemon.sock");
+    let listener = UnixListener::bind(&socket_path).expect("bind test control socket");
+    listener
+        .set_nonblocking(true)
+        .expect("configure nonblocking test listener");
+    let shutdown = Arc::new(AtomicBool::new(false));
+    let daemon = Arc::new(MultiTeamDaemon {
+        firm_home,
+        node_id: "test-node".into(),
+        daemon_id: "node-daemon:test-node".into(),
+        instance_id: "test-instance".into(),
+        contexts: Mutex::new(Vec::new()),
+        supervisor_start_gate: Mutex::new(()),
+        session_runtimes: Mutex::new(HashMap::new()),
+        live_provider_activity_endpoint: Arc::new(Mutex::new(None)),
+        max_concurrency: 1,
+        idle_timeout_secs: 1,
+        scan_interval: Duration::from_secs(60),
+        stop_requested: Arc::clone(&shutdown),
+        authority_shutdown: Arc::new(AtomicBool::new(false)),
+        control_worker_failed: AtomicBool::new(false),
+        lease_ttl_override_ms: None,
+    });
+
+    std::thread::scope(|scope| {
+        let server = scope.spawn(|| daemon.serve_loop(&listener));
+        let (sent_tx, sent_rx) = std::sync::mpsc::sync_channel(1);
+        let blocker_socket_path = socket_path.clone();
+        let blocker = scope.spawn(move || {
+            let mut client =
+                UnixStream::connect(&blocker_socket_path).expect("connect blocking client");
+            client
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .expect("bound blocking response wait");
+            client
+                .write_all(b"{\"cmd\":\"test_block\",\"delay_ms\":500}\n")
+                .expect("send blocking mutation");
+            client.flush().expect("flush blocking mutation");
+            sent_tx.send(()).expect("announce blocking request");
+            let mut response = String::new();
+            BufReader::new(&mut client)
+                .read_line(&mut response)
+                .expect("blocking mutation eventually responds");
+            serde_json::from_str::<serde_json::Value>(response.trim())
+                .expect("blocking response is complete JSON")
+        });
+
+        sent_rx.recv().expect("blocking request was sent");
+        std::thread::sleep(Duration::from_millis(75));
+
+        let status_started = Instant::now();
+        let mut client = UnixStream::connect(&socket_path).expect("connect status client");
+        client
+            .set_read_timeout(Some(Duration::from_millis(250)))
+            .expect("bound status response wait");
+        client
+            .write_all(b"{\"cmd\":\"status\"}\n")
+            .expect("send status request");
+        client.flush().expect("flush status request");
+        let mut response = String::new();
+        BufReader::new(&mut client)
+            .read_line(&mut response)
+            .expect("status bypasses the blocked mutation worker");
+        let response: serde_json::Value =
+            serde_json::from_str(response.trim()).expect("status response is complete JSON");
+        assert_eq!(response["ok"], true);
+        assert!(
+            status_started.elapsed() < Duration::from_millis(250),
+            "status must use the reserved control lane"
+        );
+
+        let blocked_response = blocker.join().expect("blocking control client");
+        assert_eq!(blocked_response["ok"], true);
+        shutdown.store(true, Ordering::SeqCst);
+        server
+            .join()
+            .expect("daemon control thread")
+            .expect("daemon exits after draining the mutation worker");
+    });
+}
+
+#[test]
+fn shutdown_renews_node_authority_until_accepted_worker_finishes() {
+    use std::io::BufReader;
+
+    const NODE_ID: &str = "11111111-1111-4111-8111-111111111111";
+    let tree = TestTree::new("drain");
+    let firm_home = tree.0.join("home");
+    let space = crate::execution_space::register_and_activate(
+        &firm_home,
+        "space-test",
+        "Space Test",
+        Some("project-test".into()),
+        None,
+        "unix-ms:1",
+    )
+    .expect("register test Execution Space");
+    let store = HarnessStore::new(space.store_root.clone());
+    store.init().expect("initialize test Store");
+    store
+        .insert_execution_node(&harness_core::ExecutionNode {
+            id: NODE_ID.into(),
+            display_name: "Test Node".into(),
+            status: harness_core::ExecutionNodeStatus::Active,
+            created_at: "unix-ms:1".into(),
+            updated_at: "unix-ms:1".into(),
+        })
+        .expect("insert test Node");
+    store
+        .register_node_project(
+            &harness_core::NodeProjectRegistration {
+                node_id: NODE_ID.into(),
+                execution_space_id: space.id.clone(),
+                project_binding_id: "project-test".into(),
+                status: harness_core::NodeProjectRegistrationStatus::Active,
+                created_at: "unix-ms:1".into(),
+                updated_at: "unix-ms:1".into(),
+            },
+            &space.id,
+        )
+        .expect("register test Node project");
+    let lease = store
+        .acquire_node_daemon_lease(
+            NODE_ID,
+            &format!("node-daemon:{NODE_ID}"),
+            "test-instance",
+            current_unix_ms_u64(),
+            1_500,
+        )
+        .expect("acquire short test lease");
+
+    let socket_path = tree.0.join("daemon.sock");
+    let listener = UnixListener::bind(&socket_path).expect("bind test control socket");
+    listener
+        .set_nonblocking(true)
+        .expect("configure nonblocking test listener");
+    let stop_requested = Arc::new(AtomicBool::new(false));
+    let daemon = Arc::new(MultiTeamDaemon {
+        firm_home,
+        node_id: NODE_ID.into(),
+        daemon_id: format!("node-daemon:{NODE_ID}"),
+        instance_id: "test-instance".into(),
+        contexts: Mutex::new(Vec::new()),
+        supervisor_start_gate: Mutex::new(()),
+        session_runtimes: Mutex::new(HashMap::new()),
+        live_provider_activity_endpoint: Arc::new(Mutex::new(None)),
+        max_concurrency: 1,
+        idle_timeout_secs: 1,
+        scan_interval: Duration::from_millis(50),
+        stop_requested,
+        authority_shutdown: Arc::new(AtomicBool::new(false)),
+        control_worker_failed: AtomicBool::new(false),
+        lease_ttl_override_ms: Some(1_500),
+    });
+
+    std::thread::scope(|scope| {
+        let server = scope.spawn(|| daemon.serve_loop(&listener));
+        let (sent_tx, sent_rx) = std::sync::mpsc::sync_channel(1);
+        let blocker_socket_path = socket_path.clone();
+        let blocker = scope.spawn(move || {
+            let mut client =
+                UnixStream::connect(&blocker_socket_path).expect("connect blocking client");
+            client
+                .set_read_timeout(Some(Duration::from_secs(4)))
+                .expect("bound blocking response wait");
+            client
+                .write_all(b"{\"cmd\":\"test_block\",\"delay_ms\":2000}\n")
+                .expect("send accepted slow mutation");
+            client.flush().expect("flush accepted slow mutation");
+            sent_tx.send(()).expect("announce accepted request");
+            let mut response = String::new();
+            BufReader::new(&mut client)
+                .read_line(&mut response)
+                .expect("accepted mutation responds before authority release");
+            serde_json::from_str::<serde_json::Value>(response.trim())
+                .expect("blocking response is complete JSON")
+        });
+
+        sent_rx.recv().expect("slow mutation was sent");
+        std::thread::sleep(Duration::from_millis(100));
+        let mut stop_client = UnixStream::connect(&socket_path).expect("connect stop client");
+        stop_client
+            .write_all(
+                format!(
+                    "{{\"cmd\":\"stop\",\"execution_space_id\":\"{}\",\"daemon_generation\":{}}}\n",
+                    space.id, lease.generation
+                )
+                .as_bytes(),
+            )
+            .expect("send stop request");
+        stop_client.flush().expect("flush stop request");
+        let mut stop_response = String::new();
+        BufReader::new(&mut stop_client)
+            .read_line(&mut stop_response)
+            .expect("reserved stop lane responds");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(stop_response.trim())
+                .expect("stop response JSON")["ok"],
+            true
+        );
+
+        // Cross the lease TTL that existed when Stop was accepted. The
+        // heartbeat must have renewed this exact generation while the
+        // accepted worker was still running.
+        std::thread::sleep(Duration::from_millis(1_600));
+        assert!(!server.is_finished(), "daemon still drains accepted worker");
+        let during_drain = store
+            .latest_node_daemon_lease(NODE_ID)
+            .expect("read lease during drain")
+            .expect("lease remains present");
+        assert_eq!(
+            during_drain.status,
+            harness_core::NodeDaemonLeaseStatus::Active
+        );
+        assert_eq!(during_drain.generation, lease.generation);
+        assert!(
+            during_drain.expires_unix_ms > current_unix_ms_u64(),
+            "accepted worker retains unexpired exact Node authority"
+        );
+
+        assert_eq!(blocker.join().expect("blocking control client")["ok"], true);
+        server
+            .join()
+            .expect("daemon control thread")
+            .expect("two-phase shutdown completes");
+    });
+
+    let released = store
+        .latest_node_daemon_lease(NODE_ID)
+        .expect("read released lease")
+        .expect("released lease remains auditable");
+    assert_eq!(
+        released.status,
+        harness_core::NodeDaemonLeaseStatus::Released
+    );
+
+    // A successor test generation accepts a command whose worker cannot
+    // prove completion. Shutdown may fence it as Draining, but must not mint
+    // the Released receipt that would authorize another successor.
+    let failed_lease = store
+        .acquire_node_daemon_lease(
+            NODE_ID,
+            &format!("node-daemon:{NODE_ID}"),
+            "test-failure-instance",
+            current_unix_ms_u64(),
+            1_500,
+        )
+        .expect("acquire failure-test lease");
+    let failure_socket_path = tree.0.join("fail.sock");
+    let failure_listener =
+        UnixListener::bind(&failure_socket_path).expect("bind failure control socket");
+    failure_listener
+        .set_nonblocking(true)
+        .expect("configure failure listener");
+    let failed_daemon = Arc::new(MultiTeamDaemon {
+        firm_home: tree.0.join("home"),
+        node_id: NODE_ID.into(),
+        daemon_id: format!("node-daemon:{NODE_ID}"),
+        instance_id: "test-failure-instance".into(),
+        contexts: Mutex::new(Vec::new()),
+        supervisor_start_gate: Mutex::new(()),
+        session_runtimes: Mutex::new(HashMap::new()),
+        live_provider_activity_endpoint: Arc::new(Mutex::new(None)),
+        max_concurrency: 1,
+        idle_timeout_secs: 1,
+        scan_interval: Duration::from_millis(50),
+        stop_requested: Arc::new(AtomicBool::new(false)),
+        authority_shutdown: Arc::new(AtomicBool::new(false)),
+        control_worker_failed: AtomicBool::new(false),
+        lease_ttl_override_ms: Some(1_500),
+    });
+    std::thread::scope(|scope| {
+        let server = scope.spawn(|| failed_daemon.serve_loop(&failure_listener));
+        let mut failed_client =
+            UnixStream::connect(&failure_socket_path).expect("connect failed worker client");
+        failed_client
+            .write_all(b"{\"cmd\":\"test_fail\"}\n")
+            .expect("send accepted failing command");
+        failed_client.flush().expect("flush failing command");
+        drop(failed_client);
+
+        let failure_deadline = Instant::now() + Duration::from_secs(1);
+        while !failed_daemon.control_worker_failed.load(Ordering::SeqCst)
+            && Instant::now() < failure_deadline
+        {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(
+            failed_daemon.control_worker_failed.load(Ordering::SeqCst),
+            "accepted worker failure is latched before shutdown"
+        );
+
+        let mut stop_client =
+            UnixStream::connect(&failure_socket_path).expect("connect failure stop client");
+        stop_client
+            .write_all(
+                format!(
+                    "{{\"cmd\":\"stop\",\"execution_space_id\":\"{}\",\"daemon_generation\":{}}}\n",
+                    space.id, failed_lease.generation
+                )
+                .as_bytes(),
+            )
+            .expect("send failure-generation stop");
+        stop_client.flush().expect("flush failure-generation stop");
+        let mut stop_response = String::new();
+        BufReader::new(&mut stop_client)
+            .read_line(&mut stop_response)
+            .expect("failure-generation stop responds");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(stop_response.trim())
+                .expect("failure stop response JSON")["ok"],
+            true
+        );
+        let error = server
+            .join()
+            .expect("failure daemon control thread")
+            .expect_err("unresolved accepted worker fails shutdown");
+        assert!(
+            error
+                .to_string()
+                .contains("NODE_DAEMON_CONTROL_DRAIN_INCOMPLETE"),
+            "unexpected shutdown failure: {error}"
+        );
+    });
+    let not_released = store
+        .latest_node_daemon_lease(NODE_ID)
+        .expect("read failed generation")
+        .expect("failed generation remains auditable");
+    assert_eq!(not_released.generation, failed_lease.generation);
+    assert_eq!(
+        not_released.status,
+        harness_core::NodeDaemonLeaseStatus::Draining,
+        "unresolved accepted worker must never publish Released"
+    );
 }
 
 #[test]

@@ -30,7 +30,7 @@ pub(super) fn team_run_command(
 ) -> CliResult<()> {
     require_subcommand(
         args,
-        "team-run create|list|status|board-summary|work|recover|host-inbox|bind-host|host-lease-status|renew-host-lease|release-host-lease|inbox|add-member|rename-member|close-member|reopen-member|deactivate-member|start|answer-message|events|wait|complete|cancel",
+        "team-run create|list|status|board-summary|work|recover|host-inbox|bind-host|host-lease-status|renew-host-lease|release-host-lease|inbox|add-member|rename-member|interrupt-member|close-member|reopen-member|deactivate-member|start|answer-message|events|wait|complete|cancel",
     )?;
     let json = has_flag(args, "--json");
     match args[0].as_str() {
@@ -705,6 +705,15 @@ pub(super) fn team_run_command(
             &required(args, "--id")?,
             &required(args, "--member-run-id")?,
             &required(args, "--reason")?,
+        )?)?,
+        "interrupt-member" => print_json(&interrupt_team_member_value(
+            store,
+            &required(args, "--id")?,
+            &required(args, "--member-run-id")?,
+            &serde_json::json!({
+                "reason": required(args, "--reason")?,
+                "requested_by": value(args, "--requested-by").unwrap_or_else(|| "operator".to_string()),
+            }),
         )?)?,
         "close-member" => print_json(&close_team_member_value(
             store,

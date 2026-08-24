@@ -698,6 +698,36 @@ where
             expected_version: *expected_version,
             request_fingerprint: None,
         };
+        if path.ends_with("/interrupt") {
+            let authorized = role_actions_api::authorize_member_interrupt(
+                store,
+                &auth,
+                path,
+                &serde_json::to_vec(body)?,
+            )
+            .map_err(|error| match error {
+                StoreError::Conflict(encoded) => CliError::Usage(encoded),
+                other => CliError::Store(other),
+            })?;
+            if authorized.team_run_id != team_run_id {
+                return Err(CliError::Usage(
+                    "UNAUTHORIZED_ACTOR: Interrupt target is outside the bound TeamRun".into(),
+                ));
+            }
+            return dispatch_local_live_member_control(
+                store,
+                supervisor_id,
+                generation,
+                supervisor_valid,
+                authority_gate,
+                LiveMemberControlRequest::Interrupt {
+                    team_run_id: authorized.team_run_id,
+                    member_run_id: authorized.member_run_id,
+                    reason: authorized.reason,
+                    requested_by: authorized.requested_by,
+                },
+            );
+        }
         let result = role_actions_api::execute(
             store,
             auth,

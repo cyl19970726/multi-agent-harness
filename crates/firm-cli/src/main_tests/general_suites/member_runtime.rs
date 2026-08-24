@@ -24,6 +24,8 @@ mod dynamic_member_admission_revalidates_paused_local_identity_before_writing;
 mod execution_space_migration_no_replace_closes_final_check_publish_race;
 #[path = "../general/four_provider_native_control_seam_is_durable_replay_safe_and_fail_closed.rs"]
 mod five_provider_native_control_seam_is_durable_replay_safe_and_fail_closed;
+#[path = "../general/host_bound_runtime_interrupt_targets_member_through_supervisor.rs"]
+mod host_bound_runtime_interrupt_targets_member_through_supervisor;
 #[path = "../general/initial_member_admission_rejects_foreign_only_identity_without_any_durable_write.rs"]
 mod initial_member_admission_rejects_foreign_only_identity_without_any_durable_write;
 #[path = "../general/kimi_full_access_receipt_ignores_unrelated_provider_control_rows.rs"]
