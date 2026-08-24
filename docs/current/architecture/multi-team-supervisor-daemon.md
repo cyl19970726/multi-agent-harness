@@ -78,6 +78,9 @@ removes that ownership evidence: only the provider guard's terminal
 `try_wait` observation may remove it. A Supervisor that exits after SIGKILL but
 without terminal reap therefore leaves a typed completion residual, and the
 daemon reports `NODE_DAEMON_DRAIN_INCOMPLETE` instead of releasing authority.
+If process-group signalling fails, an immediate-child terminal reap still
+removes its exact pid/token to prevent a later drain signalling a reused PID;
+the independent signal-failure diagnostic keeps completion closed.
 Registration attempted after admission closes
 returns a typed `PROVIDER_PROCESS_GROUP_ADMISSION_CLOSED` failure only after the
 shared registration path has signalled and bounded-reaped the actual child

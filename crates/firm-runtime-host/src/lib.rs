@@ -257,11 +257,19 @@ impl OwnedProcessGroupRegistration {
                 None
             }
         };
+        self.finish_kill_and_reap_after_signal(child, signal_errno)
+    }
+
+    fn finish_kill_and_reap_after_signal(
+        &mut self,
+        child: &mut std::process::Child,
+        signal_errno: Option<i32>,
+    ) -> std::io::Result<Option<std::process::ExitStatus>> {
         let _ = child.kill();
         if let Some(errno) = signal_errno {
             // Reaping the immediate child cannot prove that the process-group
-            // descendants received SIGKILL. Preserve the exact registration
-            // and diagnostic even if the best-effort child reap succeeds.
+            // descendants received SIGKILL. Preserve a separate completion
+            // diagnostic even if the best-effort child reap succeeds.
             let mut groups = owned_process_groups()
                 .lock()
                 .unwrap_or_else(|error| error.into_inner());
@@ -272,16 +280,10 @@ impl OwnedProcessGroupRegistration {
                 }
             }
             drop(groups);
-            let deadline = Instant::now() + Duration::from_secs(2);
-            loop {
-                match child.try_wait() {
-                    Ok(Some(_)) => break,
-                    Ok(None) if Instant::now() < deadline => {
-                        std::thread::sleep(Duration::from_millis(10));
-                    }
-                    Ok(None) | Err(_) => break,
-                }
-            }
+            // Terminal child proof still removes the exact pid/token so a
+            // later drain cannot signal a foreign process after PID reuse.
+            // The signal diagnostic independently keeps completion closed.
+            let _ = self.bounded_reap_and_release_with(Duration::from_secs(2), || child.try_wait());
             return Err(std::io::Error::from_raw_os_error(errno));
         }
         self.bounded_reap_and_release_with(Duration::from_secs(2), || child.try_wait())
@@ -774,6 +776,47 @@ mod tests {
             std::thread::sleep(Duration::from_millis(10));
         }
         complete_registered_process_group_shutdown().expect("reopen process-group admission");
+    }
+
+    #[test]
+    fn signal_failure_and_terminal_child_remove_pid_but_keep_completion_closed() {
+        use std::os::unix::process::CommandExt;
+
+        let _test_lock = registry_test_lock();
+        let mut command = std::process::Command::new("sleep");
+        command.arg("30").process_group(0);
+        let mut child = command.spawn().expect("spawn signal-failure test group");
+        let pid = child.id();
+        let mut registration = OwnedProcessGroupRegistration::new(&mut child)
+            .expect("register signal-failure test group");
+
+        let error = registration
+            .finish_kill_and_reap_after_signal(&mut child, Some(libc::EPERM))
+            .expect_err("process-group signal failure must remain typed");
+        assert_eq!(error.raw_os_error(), Some(libc::EPERM));
+
+        let completion = complete_registered_process_group_shutdown()
+            .expect_err("signal failure must keep admission closed after child reap");
+        assert!(completion.registered_pids.is_empty());
+        assert_eq!(completion.signal_failures, vec![(pid, libc::EPERM)]);
+        assert_eq!(
+            terminate_registered_process_groups(),
+            ProcessGroupTermination {
+                pids: Vec::new(),
+                signal_failures: Vec::new(),
+            },
+            "a terminal-reaped pid must never be signalled again"
+        );
+
+        // The residual is intentionally unrecoverable in production. Remove
+        // only the synthetic diagnostic so this process-global test registry
+        // can exercise the remaining cases.
+        owned_process_groups()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .shutdown_signal_failures
+            .retain(|failure| *failure != (pid, libc::EPERM));
+        complete_registered_process_group_shutdown().expect("reopen after test-only cleanup");
     }
 
     #[test]
