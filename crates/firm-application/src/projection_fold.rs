@@ -219,7 +219,7 @@ fn valid_host_attention_transition(current: &HostAttention, next: &HostAttention
     }
     match (current.status, next.status) {
         (HostAttentionStatus::Actionable, HostAttentionStatus::Claimed) => {
-            next.attempt == current.attempt.saturating_add(1)
+            next.attempt == current.attempt.saturating_add(1) && next.last_failure_reason.is_none()
         }
         (HostAttentionStatus::Claimed, HostAttentionStatus::Actionable) => {
             next.attempt == current.attempt && next.last_failure_reason.is_some()
@@ -229,11 +229,13 @@ fn valid_host_attention_transition(current: &HostAttention, next: &HostAttention
             next.attempt == current.attempt
                 && same_host_attention_claim(current, next)
                 && next.provider_receipt_id.is_some()
+                && next.last_failure_reason == current.last_failure_reason
         }
         (HostAttentionStatus::Delivered, HostAttentionStatus::Acknowledged) => {
             next.attempt == current.attempt
                 && same_host_attention_claim(current, next)
                 && next.provider_receipt_id == current.provider_receipt_id
+                && next.last_failure_reason == current.last_failure_reason
         }
         (HostAttentionStatus::Actionable, HostAttentionStatus::EscalationRequired)
         | (HostAttentionStatus::Claimed, HostAttentionStatus::EscalationRequired) => {
@@ -389,6 +391,54 @@ mod tests {
         assert_eq!(
             fold_host_attention_lifecycle(Some(&claimed), &delivered),
             Ok(ProjectionFoldDecision::Advance)
+        );
+
+        let mut poisoned_delivery = delivered.clone();
+        poisoned_delivery.last_failure_reason = Some("forged failure".into());
+        assert_eq!(
+            fold_host_attention_lifecycle(Some(&claimed), &poisoned_delivery),
+            Err(ProjectionFoldViolation::InvalidLifecycleTransition)
+        );
+
+        let mut acknowledged = delivered.clone();
+        acknowledged.status = HostAttentionStatus::Acknowledged;
+        acknowledged.updated_at = "t4".into();
+        assert_eq!(
+            fold_host_attention_lifecycle(Some(&delivered), &acknowledged),
+            Ok(ProjectionFoldDecision::Advance)
+        );
+        let mut poisoned_ack = acknowledged.clone();
+        poisoned_ack.last_failure_reason = Some("forged failure".into());
+        assert_eq!(
+            fold_host_attention_lifecycle(Some(&delivered), &poisoned_ack),
+            Err(ProjectionFoldViolation::InvalidLifecycleTransition)
+        );
+
+        let mut retryable = claimed.clone();
+        retryable.status = HostAttentionStatus::Actionable;
+        retryable.claim_id = None;
+        retryable.claimed_host_surface = None;
+        retryable.claimed_host_thread_id = None;
+        retryable.last_failure_reason = Some("transport failed".into());
+        retryable.updated_at = "t4".into();
+        assert_eq!(
+            fold_host_attention_lifecycle(Some(&claimed), &retryable),
+            Ok(ProjectionFoldDecision::Advance)
+        );
+        let mut retry_claim = claimed.clone();
+        retry_claim.attempt = 2;
+        retry_claim.claim_id = Some("claim-2".into());
+        retry_claim.last_failure_reason = None;
+        retry_claim.updated_at = "t5".into();
+        assert_eq!(
+            fold_host_attention_lifecycle(Some(&retryable), &retry_claim),
+            Ok(ProjectionFoldDecision::Advance)
+        );
+        let mut poisoned_retry_claim = retry_claim.clone();
+        poisoned_retry_claim.last_failure_reason = retryable.last_failure_reason.clone();
+        assert_eq!(
+            fold_host_attention_lifecycle(Some(&retryable), &poisoned_retry_claim),
+            Err(ProjectionFoldViolation::InvalidLifecycleTransition)
         );
 
         let mut out_of_order = source.clone();
