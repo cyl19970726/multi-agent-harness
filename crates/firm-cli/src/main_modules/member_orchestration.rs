@@ -534,17 +534,39 @@ pub(crate) fn delegate_team_run_to_node_daemon_in_space(
                 body.run.execution_node_id
             )));
         }
-        let response = crate::supervisor_daemon::try_delegate_to_node_daemon(
+        let response = match crate::supervisor_daemon::try_delegate_to_node_daemon(
             &firm_home,
             &local_node_id,
             execution_space_id,
             run_id,
-        )
-        .map_err(|error| {
-            CliError::Usage(format!(
-                "NODE_DAEMON_UNAVAILABLE: cannot reach Node {local_node_id} for TeamRun {run_id}: {error}; start it with `firm daemon start`"
-            ))
-        })?;
+        ) {
+            Ok(response) => response,
+            Err(error) if error.request_may_have_been_accepted() => {
+                let status = crate::supervisor_daemon::daemon_status_via_socket(
+                    &firm_home,
+                    &local_node_id,
+                );
+                if let Some(reconciled) = status.as_deref().and_then(|status| {
+                    crate::supervisor_daemon::reconcile_team_run_start_postcondition(
+                        store,
+                        status,
+                        &local_node_id,
+                        execution_space_id,
+                        run_id,
+                    )
+                }) {
+                    return reconciled;
+                }
+                return Err(CliError::Usage(format!(
+                    "TEAM_RUN_START_RESULT_UNKNOWN: the request for TeamRun {run_id} may have been accepted by Node {local_node_id}, but the exact daemon/Supervisor postcondition could not be proven after transport failure: {error}; do not retry blindly—inspect daemon status and the canonical RuntimeCommand inventory, then use explicit recovery"
+                )));
+            }
+            Err(error) => {
+                return Err(CliError::Usage(format!(
+                    "NODE_DAEMON_UNAVAILABLE: cannot reach Node {local_node_id} for TeamRun {run_id}: {error}; start it with `firm daemon start`"
+                )))
+            }
+        };
         let parsed: serde_json::Value = serde_json::from_str(&response).map_err(|error| {
             CliError::Usage(format!(
                 "NodeDaemon returned invalid JSON for {run_id}: {error}"

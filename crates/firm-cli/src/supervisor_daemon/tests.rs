@@ -130,6 +130,7 @@ fn status_remains_responsive_while_execution_space_scan_is_blocked() {
         stop_requested: Arc::clone(&shutdown),
         authority_shutdown: Arc::clone(&authority_shutdown),
         control_worker_failed: AtomicBool::new(false),
+        recovery_blocked_runs: Mutex::new(HashSet::new()),
         lease_ttl_override_ms: None,
     });
 
@@ -249,6 +250,7 @@ fn status_remains_responsive_while_a_control_mutation_is_blocked() {
         stop_requested: Arc::clone(&shutdown),
         authority_shutdown: Arc::new(AtomicBool::new(false)),
         control_worker_failed: AtomicBool::new(false),
+        recovery_blocked_runs: Mutex::new(HashSet::new()),
         lease_ttl_override_ms: None,
     });
 
@@ -380,6 +382,7 @@ fn shutdown_renews_node_authority_until_accepted_worker_finishes() {
         stop_requested,
         authority_shutdown: Arc::new(AtomicBool::new(false)),
         control_worker_failed: AtomicBool::new(false),
+        recovery_blocked_runs: Mutex::new(HashSet::new()),
         lease_ttl_override_ms: Some(1_500),
     });
 
@@ -497,10 +500,28 @@ fn shutdown_renews_node_authority_until_accepted_worker_finishes() {
         stop_requested: Arc::new(AtomicBool::new(false)),
         authority_shutdown: Arc::new(AtomicBool::new(false)),
         control_worker_failed: AtomicBool::new(false),
+        recovery_blocked_runs: Mutex::new(HashSet::new()),
         lease_ttl_override_ms: Some(1_500),
     });
     std::thread::scope(|scope| {
         let server = scope.spawn(|| failed_daemon.serve_loop(&failure_listener));
+
+        // The accepted command completes successfully, but its client goes
+        // away before the response can be written. This is response loss, not
+        // an unresolved semantic effect, and must not poison the generation.
+        let mut abandoned_client =
+            UnixStream::connect(&failure_socket_path).expect("connect abandoned client");
+        abandoned_client
+            .write_all(b"{\"cmd\":\"test_block\",\"delay_ms\":25}\n")
+            .expect("send successful command whose response is abandoned");
+        abandoned_client.flush().expect("flush abandoned command");
+        drop(abandoned_client);
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(
+            !failed_daemon.control_worker_failed.load(Ordering::SeqCst),
+            "response delivery failure after semantic completion is nonfatal"
+        );
+
         let mut failed_client =
             UnixStream::connect(&failure_socket_path).expect("connect failed worker client");
         failed_client

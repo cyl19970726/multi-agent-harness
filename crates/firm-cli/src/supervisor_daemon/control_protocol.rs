@@ -13,17 +13,7 @@ impl MultiTeamDaemon {
         while worker_index < workers.len() {
             if workers[worker_index].is_finished() {
                 let worker = workers.swap_remove(worker_index);
-                match worker.join() {
-                    Ok(Ok(())) => {}
-                    Ok(Err(error)) => {
-                        self.control_worker_failed.store(true, Ordering::SeqCst);
-                        eprintln!("[node-daemon] control worker failed: {error}");
-                    }
-                    Err(_) => {
-                        self.control_worker_failed.store(true, Ordering::SeqCst);
-                        eprintln!("[node-daemon] control worker panicked");
-                    }
-                }
+                self.observe_control_worker_result(worker.join(), "");
             } else {
                 worker_index += 1;
             }
@@ -159,14 +149,15 @@ impl MultiTeamDaemon {
         // EOF-truncated object. Keep the accepted AF_UNIX socket nonblocking
         // (switching it back to blocking is not portable on macOS) and drain
         // the complete bounded frame against an explicit deadline.
-        let mut frame = serde_json::to_vec(response).map_err(CliError::Json)?;
+        let mut frame = serde_json::to_vec(response)
+            .map_err(|error| control_response_delivery_error(std::io::Error::other(error)))?;
         frame.push(b'\n');
         let deadline = Instant::now() + Duration::from_secs(10);
         let mut written = 0;
         while written < frame.len() {
             match stream.write(&frame[written..]) {
                 Ok(0) => {
-                    return Err(CliError::Io(std::io::Error::new(
+                    return Err(control_response_delivery_error(std::io::Error::new(
                         std::io::ErrorKind::WriteZero,
                         "NodeDaemon control client closed before the response was complete",
                     )))
@@ -174,14 +165,14 @@ impl MultiTeamDaemon {
                 Ok(count) => written += count,
                 Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                     if Instant::now() >= deadline {
-                        return Err(CliError::Io(std::io::Error::new(
+                        return Err(control_response_delivery_error(std::io::Error::new(
                             std::io::ErrorKind::TimedOut,
                             "NodeDaemon control response exceeded its 10s write deadline",
                         )));
                     }
                     std::thread::sleep(Duration::from_millis(1));
                 }
-                Err(error) => return Err(CliError::Io(error)),
+                Err(error) => return Err(control_response_delivery_error(error)),
             }
         }
         Ok(())
@@ -907,8 +898,35 @@ impl MultiTeamDaemon {
                             ))
                         })?;
                 let store = HarnessStore::new(space.store_root.clone());
-                match self.start_supervising(space, store, run_id) {
+                match self.start_supervising(space, store.clone(), run_id) {
                     Ok(()) => {
+                        let authority = self
+                            .contexts
+                            .lock()
+                            .map_err(|error| {
+                                CliError::Usage(format!("context lock poisoned: {error}"))
+                            })?
+                            .iter()
+                            .find(|context| {
+                                context.execution_space_id == execution_space_id
+                                    && context.run_id == run_id
+                            })
+                            .map(|context| {
+                                (context.supervisor_id.clone(), context.supervisor_generation)
+                            });
+                        if let Some((supervisor_id, supervisor_generation)) = authority {
+                            if let Err(error) = self.clear_team_run_supervisor_recovery(
+                                execution_space_id,
+                                &store,
+                                run_id,
+                                &supervisor_id,
+                                supervisor_generation,
+                            ) {
+                                eprintln!(
+                                    "[node-daemon] Supervisor recovery marker settlement deferred for {execution_space_id}/{run_id}: {error}"
+                                );
+                            }
+                        }
                         let response = serde_json::json!({
                             "ok": true,
                             "execution_space_id": execution_space_id,
@@ -947,6 +965,12 @@ impl MultiTeamDaemon {
                             Self::write_control_response(stream, &response)?;
                             return Ok(());
                         }
+                        self.block_start_failure_if_unresolved(
+                            execution_space_id,
+                            &store,
+                            run_id,
+                            &e,
+                        );
                         let response = serde_json::json!({
                             "ok": false,
                             "execution_space_id": execution_space_id,
@@ -972,6 +996,9 @@ impl MultiTeamDaemon {
                                 "execution_space_id": ctx.execution_space_id,
                                 "project_binding_id": ctx.project_binding_id,
                                 "run_id": ctx.run_id,
+                                "daemon_generation": ctx.daemon_generation,
+                                "supervisor_id": ctx.supervisor_id,
+                                "supervisor_generation": ctx.supervisor_generation,
                                 "status": if is_finished { "finished" } else { "running" },
                                 "elapsed_secs": ctx.started_at.elapsed().as_secs(),
                             })
@@ -984,6 +1011,15 @@ impl MultiTeamDaemon {
                     "daemon_id": self.daemon_id,
                     "instance_id": self.instance_id,
                     "process_id": std::process::id(),
+                    "recovery_blocked_runs": self.recovery_blocked_runs
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner())
+                        .iter()
+                        .map(|(space, run)| serde_json::json!({
+                            "execution_space_id": space,
+                            "run_id": run,
+                        }))
+                        .collect::<Vec<_>>(),
                     "runs": runs
                 });
                 Self::write_control_response(stream, &resp)?;
@@ -1047,5 +1083,40 @@ impl MultiTeamDaemon {
             }
         }
         Ok(())
+    }
+}
+
+const CONTROL_RESPONSE_DELIVERY_FAILED: &str = "NODE_DAEMON_RESPONSE_DELIVERY_FAILED:";
+
+fn control_response_delivery_error(error: std::io::Error) -> CliError {
+    CliError::Usage(format!("{CONTROL_RESPONSE_DELIVERY_FAILED} {error}"))
+}
+
+fn is_control_response_delivery_error(error: &CliError) -> bool {
+    matches!(error, CliError::Usage(message) if message.starts_with(CONTROL_RESPONSE_DELIVERY_FAILED))
+}
+
+impl MultiTeamDaemon {
+    pub(super) fn observe_control_worker_result(
+        &self,
+        result: std::thread::Result<CliResult<()>>,
+        phase: &str,
+    ) {
+        match result {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) if is_control_response_delivery_error(&error) => {
+                eprintln!(
+                    "[node-daemon] accepted control command completed but its response was not delivered {phase}: {error}"
+                );
+            }
+            Ok(Err(error)) => {
+                self.control_worker_failed.store(true, Ordering::SeqCst);
+                eprintln!("[node-daemon] control worker failed {phase}: {error}");
+            }
+            Err(_) => {
+                self.control_worker_failed.store(true, Ordering::SeqCst);
+                eprintln!("[node-daemon] control worker panicked {phase}");
+            }
+        }
     }
 }

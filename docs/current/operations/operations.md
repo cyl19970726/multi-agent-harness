@@ -256,6 +256,20 @@ cargo run -p firm-cli -- dashboard snapshot
 cargo run -p firm-cli -- serve --addr 127.0.0.1:8787
 ```
 
+`team-run start` is an accepted-command boundary, not a fire-and-forget hint.
+If the request was sent but the response socket times out or closes, the CLI
+uses the reserved daemon status lane once and accepts success only when the
+exact NodeDaemon instance/generation and exact active TeamSupervisor
+id/generation, Execution Space, Project Binding, and owner process all match.
+Otherwise it returns `TEAM_RUN_START_RESULT_UNKNOWN`; do not retry blindly.
+Inspect daemon status and the canonical RuntimeCommand inventory, then use an
+explicit recovery or new start intent. A Supervisor that exits with an
+unresolved current-generation RuntimeCommand records
+`team_supervisor_recovery_required` and automatic recovery scanning stops for
+that TeamRun until such explicit intent. Losing only the client response after
+a command completed is diagnostic response loss and never poisons the daemon
+generation.
+
 Teams are created without any Mission (DOC-108); `--mission-id` survives only
 as optional legacy provenance. Omit ad-hoc `--member` overrides when starting
 from a durable AgentTeam definition. That path preserves each registered
