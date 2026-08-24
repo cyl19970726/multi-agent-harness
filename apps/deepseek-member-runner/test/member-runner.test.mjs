@@ -103,6 +103,30 @@ test("interrupt settles without fabricating turn completion and retains the sess
   assert.equal(events.some(({ event }) => event === "turn_complete"), false);
 });
 
+test("interrupt after turn terminal wins over a delivery still awaiting idle", async () => {
+  const runtime = fakeRuntime();
+  const handle = await runtime.create({});
+  let releaseDeliveryIdle;
+  const deliveryIdle = new Promise((resolve) => { releaseDeliveryIdle = resolve; });
+  let idleCalls = 0;
+  handle.agent.whenIdle = () => (++idleCalls === 1 ? deliveryIdle : Promise.resolve());
+  handle.agent.cancel = () => {};
+  runtime.create = async () => handle;
+  const events = [];
+  const runner = createMemberRunner({ runtime, emit: (event, data) => events.push({ event, data }) });
+  await runner.command({ command: "start", payload: { protocolVersion: PROTOCOL_VERSION, protocolFingerprint: PROTOCOL_FINGERPRINT } });
+  const delivery = runner.command({ command: "deliver", payload: { id: "terminal-then-interrupt", body: "long cleanup" } });
+  await new Promise((resolve) => setImmediate(resolve));
+  await runner.command({ command: "interrupt", payload: { reason: "interrupt during idle fence" } });
+  releaseDeliveryIdle();
+  await delivery;
+  assert.equal(events.some(({ event }) => event === "turn_complete"), false);
+  assert.deepEqual(
+    events.find(({ event }) => event === "interrupted").data.abandonedTriggerMessageIds,
+    ["terminal-then-interrupt"],
+  );
+});
+
 test("post-interrupt followup waits for its exact inbox splice before the idle boundary", async () => {
   const runtime = fakeRuntime();
   const handle = await runtime.create({});

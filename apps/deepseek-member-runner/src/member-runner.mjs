@@ -129,7 +129,7 @@ export function createMemberRunner({ runtime, emit }) {
       if (!interrupted) {
         await current.agent.whenIdle();
         await runtime.flush(current.agent.session);
-        emit("turn_complete", {
+        if (!interrupted) emit("turn_complete", {
           triggerMessageId: activeInputId,
           sessionId: current.agent.session.id,
           subtype: "success",
