@@ -96,7 +96,28 @@ impl MultiTeamDaemon {
                 ));
             }
         }
+        // Collect groups that raced with the first drain. Admission remained
+        // closed throughout the forced join window, so each late registration
+        // was synchronously killed and is reported here.
+        let late_termination = harness_runtime_host::terminate_registered_process_groups();
+        if !late_termination.pids.is_empty() {
+            eprintln!(
+                "[node-daemon] terminated {} late owned provider process group(s): {:?}",
+                late_termination.pids.len(),
+                late_termination.pids
+            );
+        }
+        if !late_termination.signal_failures.is_empty() {
+            failures.push(format!(
+                "late owned provider process-group signals failed: {:?}",
+                late_termination.signal_failures
+            ));
+        }
         if failures.is_empty() {
+            // Every old Supervisor has joined and the final closed-admission
+            // drain is empty of failures. A future daemon generation in this
+            // same process may now register its own groups.
+            harness_runtime_host::complete_registered_process_group_shutdown();
             Ok(())
         } else {
             Err(CliError::Usage(format!(

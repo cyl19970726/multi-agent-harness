@@ -64,8 +64,12 @@ control, keeps its lease alive while accepted mutations and Team Supervisors
 drain, and drops standalone session handles. If a Supervisor misses the bounded
 cooperative deadline, the daemon terminates only provider process groups
 registered by that exact daemon process and waits for their threads to observe
-EOF. It releases authority only after this converges; an unkillable group or
-unfinished thread is `NODE_DAEMON_DRAIN_INCOMPLETE`, never a successful stop.
+EOF. Each registration has a process-local unique token, so an old guard cannot
+remove a later registration that reused the same pid. The first forced drain
+atomically closes new provider-group admission; a late spawn is terminated
+synchronously and included in the final drain before admission can reopen. It
+releases authority only after this converges; an unkillable group or unfinished
+thread is `NODE_DAEMON_DRAIN_INCOMPLETE`, never a successful stop.
 
 ## Operator surface
 

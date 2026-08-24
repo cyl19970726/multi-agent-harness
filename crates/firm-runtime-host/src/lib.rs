@@ -4,7 +4,7 @@
 //! stderr draining. Provider command construction and event interpretation stay
 //! in their provider packages.
 
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -36,9 +36,44 @@ pub enum ProcessTransportError {
     },
 }
 
-fn owned_process_groups() -> &'static Mutex<HashSet<u32>> {
-    static GROUPS: OnceLock<Mutex<HashSet<u32>>> = OnceLock::new();
-    GROUPS.get_or_init(|| Mutex::new(HashSet::new()))
+#[derive(Debug)]
+struct OwnedProcessGroups {
+    accepting: bool,
+    next_token: u64,
+    groups: HashMap<u32, u64>,
+    shutdown_signaled: Vec<u32>,
+    shutdown_signal_failures: Vec<(u32, i32)>,
+}
+
+impl Default for OwnedProcessGroups {
+    fn default() -> Self {
+        Self {
+            accepting: true,
+            next_token: 0,
+            groups: HashMap::new(),
+            shutdown_signaled: Vec::new(),
+            shutdown_signal_failures: Vec::new(),
+        }
+    }
+}
+
+fn owned_process_groups() -> &'static Mutex<OwnedProcessGroups> {
+    static GROUPS: OnceLock<Mutex<OwnedProcessGroups>> = OnceLock::new();
+    GROUPS.get_or_init(|| Mutex::new(OwnedProcessGroups::default()))
+}
+
+fn signal_process_group(pid: u32) -> Option<i32> {
+    #[cfg(unix)]
+    {
+        let result = unsafe { libc::kill(-(pid as libc::pid_t), libc::SIGKILL) };
+        if result == -1 {
+            let errno = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
+            if errno != libc::ESRCH {
+                return Some(errno);
+            }
+        }
+    }
+    None
 }
 
 /// Process-local registration for a child that is the leader of its own
@@ -49,27 +84,44 @@ fn owned_process_groups() -> &'static Mutex<HashSet<u32>> {
 #[derive(Debug)]
 pub struct OwnedProcessGroupRegistration {
     pid: u32,
+    token: u64,
     registered: bool,
 }
 
 impl OwnedProcessGroupRegistration {
     pub fn new(pid: u32) -> Self {
-        owned_process_groups()
+        let mut groups = owned_process_groups()
             .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .insert(pid);
+            .unwrap_or_else(|error| error.into_inner());
+        groups.next_token = groups.next_token.wrapping_add(1).max(1);
+        let token = groups.next_token;
+        let registered = groups.accepting;
+        if registered {
+            groups.groups.insert(pid, token);
+        } else {
+            // Shutdown closes provider-spawn admission under the same mutex as
+            // registration. A Supervisor that raced past its final lease
+            // check cannot leave a late process group outside the drain.
+            groups.shutdown_signaled.push(pid);
+            if let Some(errno) = signal_process_group(pid) {
+                groups.shutdown_signal_failures.push((pid, errno));
+            }
+        }
         Self {
             pid,
-            registered: true,
+            token,
+            registered,
         }
     }
 
     pub fn release(&mut self) {
         if self.registered {
-            owned_process_groups()
+            let mut groups = owned_process_groups()
                 .lock()
-                .unwrap_or_else(|error| error.into_inner())
-                .remove(&self.pid);
+                .unwrap_or_else(|error| error.into_inner());
+            if groups.groups.get(&self.pid) == Some(&self.token) {
+                groups.groups.remove(&self.pid);
+            }
             self.registered = false;
         }
     }
@@ -87,30 +139,40 @@ pub struct ProcessGroupTermination {
     pub signal_failures: Vec<(u32, i32)>,
 }
 
-/// Terminate only process groups registered by provider transports in this
-/// exact process. Draining the registry makes the operation idempotent.
+/// Close provider process-group admission and terminate only groups registered
+/// by transports in this exact process. Registration and signalling share one
+/// mutex: a late spawn is killed synchronously instead of escaping the drain.
 pub fn terminate_registered_process_groups() -> ProcessGroupTermination {
-    let pids = {
-        let mut groups = owned_process_groups()
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        groups.drain().collect::<Vec<_>>()
-    };
-    let mut signal_failures = Vec::new();
-    #[cfg(unix)]
-    for pid in &pids {
-        let result = unsafe { libc::kill(-(*pid as libc::pid_t), libc::SIGKILL) };
-        if result == -1 {
-            let errno = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
-            if errno != libc::ESRCH {
-                signal_failures.push((*pid, errno));
-            }
+    let mut groups = owned_process_groups()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    groups.accepting = false;
+    let registered = std::mem::take(&mut groups.groups);
+    for pid in registered.keys().copied() {
+        groups.shutdown_signaled.push(pid);
+        if let Some(errno) = signal_process_group(pid) {
+            groups.shutdown_signal_failures.push((pid, errno));
         }
     }
+    let mut pids = std::mem::take(&mut groups.shutdown_signaled);
+    pids.sort_unstable();
+    pids.dedup();
     ProcessGroupTermination {
         pids,
-        signal_failures,
+        signal_failures: std::mem::take(&mut groups.shutdown_signal_failures),
     }
+}
+
+/// Reopen registration only after every old Supervisor thread has joined and
+/// a final closed-admission drain observed no signal failure.
+pub fn complete_registered_process_group_shutdown() {
+    let mut groups = owned_process_groups()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    debug_assert!(groups.groups.is_empty());
+    debug_assert!(groups.shutdown_signaled.is_empty());
+    debug_assert!(groups.shutdown_signal_failures.is_empty());
+    groups.accepting = true;
 }
 
 /// Kill the child process group, falling back to the immediate child.
@@ -232,6 +294,13 @@ pub fn run_ndjson_child(
 mod tests {
     use super::*;
 
+    fn registry_test_lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+    }
+
     fn shell(script: &str) -> Command {
         let mut command = Command::new("sh");
         command.arg("-c").arg(script);
@@ -284,6 +353,8 @@ mod tests {
     fn registered_provider_group_is_terminated_exactly_once() {
         use std::os::unix::process::CommandExt;
 
+        let _test_lock = registry_test_lock();
+
         let mut command = shell("sleep 30");
         command.process_group(0);
         let mut child = command.spawn().expect("spawn owned provider group");
@@ -304,5 +375,44 @@ mod tests {
             .is_none());
         assert!(terminate_registered_process_groups().pids.is_empty());
         registration.release();
+        complete_registered_process_group_shutdown();
+    }
+
+    #[test]
+    fn stale_guard_cannot_remove_a_reused_pid_registration() {
+        use std::os::unix::process::CommandExt;
+
+        let _test_lock = registry_test_lock();
+
+        let mut command = shell("sleep 30");
+        command.process_group(0);
+        let mut child = command.spawn().expect("spawn reused owned group");
+        let pid = child.id();
+        let mut stale = OwnedProcessGroupRegistration::new(pid);
+        let mut current = OwnedProcessGroupRegistration::new(pid);
+        stale.release();
+
+        assert_eq!(terminate_registered_process_groups().pids, vec![pid]);
+        let _ = child.wait().expect("reap reused owned group");
+        current.release();
+        complete_registered_process_group_shutdown();
+    }
+
+    #[test]
+    fn registration_after_shutdown_admission_closes_is_killed_and_observed() {
+        use std::os::unix::process::CommandExt;
+
+        let _test_lock = registry_test_lock();
+
+        assert!(terminate_registered_process_groups().pids.is_empty());
+        let mut command = shell("sleep 30");
+        command.process_group(0);
+        let mut child = command.spawn().expect("spawn late owned group");
+        let pid = child.id();
+        let _late = OwnedProcessGroupRegistration::new(pid);
+        let _ = child.wait().expect("reap late owned group");
+
+        assert_eq!(terminate_registered_process_groups().pids, vec![pid]);
+        complete_registered_process_group_shutdown();
     }
 }
