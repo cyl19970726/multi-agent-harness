@@ -52,6 +52,12 @@ reaps the runner process group and retains the Session id for an explicit
 higher-generation Reopen. NodeDaemon, AgentSession, Supervisor generation and
 RuntimeCommand fences remain the only lifecycle authority.
 
+A managed Host issues Interrupt through its Supervisor-bound CLI capability:
+`firm member runtime interrupt --member-run-id <dsh-member-run> --expected-version <n> --reason <text>`.
+The operator-equivalent `firm team-run interrupt-member` reaches the same live
+Supervisor and provider-control path. Neither command writes the Store or the
+DSH Session directly.
+
 Provider transcripts, tool output and reasoning stay in the DSH Session store
 under `DSH_SESSION_ROOT`. Harness receives only coordination receipts and
 transient activity projections; it does not mirror the native transcript.

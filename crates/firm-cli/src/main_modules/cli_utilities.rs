@@ -250,7 +250,7 @@ pub(super) fn print_help() {
   mission list|show (read-only legacy rows; Mission writers retired by DOC-108)
   mission log show --mission-id <id> [--tail <n>] (read-only legacy)
   legacy wave list|show|history (historical reads only)
-  team-run create|list|status|recover|host-inbox|bind-host|host-lease-status|renew-host-lease|release-host-lease|inbox|add-member|rename-member|close-member|reopen-member|deactivate-member|start|answer-message|events|complete|cancel
+  team-run create|list|status|recover|host-inbox|bind-host|host-lease-status|renew-host-lease|release-host-lease|inbox|add-member|rename-member|interrupt-member|close-member|reopen-member|deactivate-member|start|answer-message|events|complete|cancel
   team-run board-summary --id <team-run-id>
       <=500-char plain-text board digest: counts by status, assigned/unassigned,
       ready, and one idle|working|awaiting-review line per active member.
@@ -284,6 +284,7 @@ pub(super) fn print_help() {
   member message send|reply|request-decision --body <markdown>
                    [--recipient-agent-id <stable-agent-identity>] [--work-id <id>]
   member work create|assign|claim|start|block|resume|release|submit|accept --expected-version <n> ...
+  member runtime interrupt [--member-run-id <target>] --expected-version <n> --reason <text>
   [--project <id|path>] provider admit --provider <name> --execution-mode <mode> --provider-version <version>
                  --adapter-contract-version <version> --evidence <ref>
                  [--policy strict|advisory] [--actor <id>] [--json]

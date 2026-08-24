@@ -4,10 +4,31 @@ impl MultiTeamDaemon {
     /// Accept new control connections and advance every partial command once.
     /// Per-client framing and I/O failures never escape into the daemon loop.
     pub(super) fn poll_control_socket(
-        &self,
+        self: &Arc<Self>,
         listener: &UnixListener,
         pending: &mut Vec<PendingControlConnection>,
+        workers: &mut Vec<std::thread::JoinHandle<CliResult<()>>>,
     ) {
+        let mut worker_index = 0;
+        while worker_index < workers.len() {
+            if workers[worker_index].is_finished() {
+                let worker = workers.swap_remove(worker_index);
+                match worker.join() {
+                    Ok(Ok(())) => {}
+                    Ok(Err(error)) => {
+                        self.control_worker_failed.store(true, Ordering::SeqCst);
+                        eprintln!("[node-daemon] control worker failed: {error}");
+                    }
+                    Err(_) => {
+                        self.control_worker_failed.store(true, Ordering::SeqCst);
+                        eprintln!("[node-daemon] control worker panicked");
+                    }
+                }
+            } else {
+                worker_index += 1;
+            }
+        }
+
         loop {
             match listener.accept() {
                 Ok((stream, _addr)) => {
@@ -39,11 +60,41 @@ impl MultiTeamDaemon {
                 }
                 ControlReadState::Ready(command) => {
                     let mut connection = pending.swap_remove(index);
-                    if let Err(error) =
-                        self.handle_control_command(&mut connection.stream, command.trim())
-                    {
-                        eprintln!("[node-daemon] control client error: {error}");
+                    let command = command.trim().to_string();
+                    let command_name = serde_json::from_str::<serde_json::Value>(&command)
+                        .ok()
+                        .and_then(|value| value["cmd"].as_str().map(str::to_string));
+                    // Status and Stop are deliberately reserved control-lane
+                    // commands. They are bounded Store/registry reads and must
+                    // remain reachable even when every mutation worker is
+                    // waiting on a provider-native effect.
+                    if matches!(command_name.as_deref(), Some("status" | "stop")) {
+                        if let Err(error) =
+                            self.handle_control_command(&mut connection.stream, command.as_str())
+                        {
+                            eprintln!("[node-daemon] control client error: {error}");
+                        }
+                        continue;
                     }
+
+                    let worker_limit = self.max_concurrency.saturating_mul(4).clamp(8, 64);
+                    if workers.len() >= worker_limit {
+                        let response = serde_json::json!({
+                            "ok": false,
+                            "error": "NODE_DAEMON_CONTROL_BUSY: bounded mutation workers are occupied; reconcile or retry the pre-effect request",
+                            "retryable": true,
+                        });
+                        if let Err(error) =
+                            Self::write_control_response(&mut connection.stream, &response)
+                        {
+                            eprintln!("[node-daemon] control client error: {error}");
+                        }
+                        continue;
+                    }
+                    let daemon = Arc::clone(self);
+                    workers.push(std::thread::spawn(move || {
+                        daemon.handle_control_command(&mut connection.stream, command.as_str())
+                    }));
                 }
                 ControlReadState::Invalid(error) => {
                     let mut connection = pending.swap_remove(index);
@@ -152,6 +203,21 @@ impl MultiTeamDaemon {
 
         let cmd_name = cmd["cmd"].as_str().unwrap_or("");
         match cmd_name {
+            #[cfg(test)]
+            "test_block" => {
+                let delay_ms = cmd["delay_ms"].as_u64().unwrap_or(250).min(2_000);
+                std::thread::sleep(Duration::from_millis(delay_ms));
+                Self::write_control_response(
+                    stream,
+                    &serde_json::json!({"ok": true, "delay_ms": delay_ms}),
+                )?;
+            }
+            #[cfg(test)]
+            "test_fail" => {
+                return Err(CliError::Usage(
+                    "TEST_ACCEPTED_CONTROL_FAILURE: simulated unresolved accepted command".into(),
+                ));
+            }
             "register_live_provider_activity" => {
                 let authority = cmd["authority"].as_str().unwrap_or("").trim();
                 let token = cmd["token"].as_str().unwrap_or("").trim();
@@ -963,7 +1029,7 @@ impl MultiTeamDaemon {
                     )?;
                     return Ok(());
                 }
-                self.shutdown.store(true, Ordering::SeqCst);
+                self.stop_requested.store(true, Ordering::SeqCst);
                 Self::write_control_response(
                     stream,
                     &serde_json::json!({

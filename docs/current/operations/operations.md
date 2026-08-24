@@ -393,8 +393,9 @@ GitHub release
   if it stays unsplit.
 Managed coding Agent Teams use the CLI-only collaboration surface. Inside an
 exact Host or Member Session, use `firm member message send`, `firm member work
-start|submit|accept`, and the Host-authorized `firm team-run close-member` /
-`reopen-member` controls. These commands submit the exact Supervisor-issued
+start|submit|accept`, `firm member runtime interrupt`, and the Host-authorized
+operator surfaces `firm team-run interrupt-member` / `firm team-run close-member` /
+`reopen-member`. These commands submit the exact Supervisor-issued
 capability; they do not write the Store directly. Managed provider launch
 profiles remove Harness mutation MCP servers.
 
