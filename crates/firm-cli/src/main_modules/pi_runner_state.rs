@@ -151,7 +151,8 @@ pub(super) fn run_pi_team_member(
     };
 
     // Fence immediately before pi process start/resume.
-    let process_effect = prepare_provider_process_effect(ledger, &member_row, transport_attempt)?;
+    let process_effect =
+        prepare_provider_process_effect_with_retry(ledger, &member_row, transport_attempt)?;
     let capability = collaboration_capability_envelope(
         ledger,
         &member_row,

@@ -516,7 +516,8 @@ pub(super) fn run_codex_member_shared(
         provider_session.effective_permission_ceiling,
     )
     .map_err(CliError::Usage)?;
-    let process_effect = prepare_provider_process_effect(ledger, &member_row, transport_attempt)?;
+    let process_effect =
+        prepare_provider_process_effect_with_retry(ledger, &member_row, transport_attempt)?;
     if let Err(error) = crate::runtime_adapter::preflight_profile_effect(
         &profile,
         &process_effect.target_session,
@@ -785,7 +786,8 @@ pub(super) fn run_claude_agent_sdk_team_member_shared(
         &member_row,
         None,
     )?;
-    let process_effect = prepare_provider_process_effect(ledger, &member_row, transport_attempt)?;
+    let process_effect =
+        prepare_provider_process_effect_with_retry(ledger, &member_row, transport_attempt)?;
     if let Err(error) = crate::runtime_adapter::preflight_profile_effect(
         &profile,
         &process_effect.target_session,
@@ -1004,7 +1006,8 @@ pub(super) fn run_deepseek_harness_team_member_shared(
         &member_row,
         None,
     )?;
-    let process_effect = prepare_provider_process_effect(ledger, &member_row, transport_attempt)?;
+    let process_effect =
+        prepare_provider_process_effect_with_retry(ledger, &member_row, transport_attempt)?;
     if let Err(error) = crate::runtime_adapter::preflight_profile_effect(
         &profile,
         &process_effect.target_session,
@@ -1211,7 +1214,8 @@ pub(super) fn run_kimi_member_shared(
         provider_session.effective_permission_ceiling,
     )
     .map_err(CliError::Usage)?;
-    let process_effect = prepare_provider_process_effect(ledger, &member_row, transport_attempt)?;
+    let process_effect =
+        prepare_provider_process_effect_with_retry(ledger, &member_row, transport_attempt)?;
     if let Err(error) = crate::runtime_adapter::preflight_profile_effect(
         &profile,
         &process_effect.target_session,

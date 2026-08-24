@@ -138,6 +138,9 @@ use team_run_cli::*;
 #[path = "main_modules/provider_process_recovery.rs"]
 mod provider_process_recovery;
 use provider_process_recovery::*;
+#[path = "main_modules/provider_admission_retry.rs"]
+mod provider_admission_retry;
+use provider_admission_retry::*;
 #[path = "main_modules/provider_effect_settlement.rs"]
 mod provider_effect_settlement;
 use provider_effect_settlement::*;
@@ -236,6 +239,8 @@ enum CliError {
     RuntimeRecoveryRequired(String),
     #[error("PROVIDER_ADMISSION_REJECTED_NO_EFFECT: {0}")]
     ProviderAdmissionRejected(String),
+    #[error("PROVIDER_ADMISSION_CONTENTION_NO_EFFECT: {0}")]
+    ProviderAdmissionContention(harness_store::StoreError),
     #[error("PROVIDER_EFFECT_ACCEPTED: {0}")]
     ProviderEffectAccepted(String),
     #[error("store error: {0}")]
