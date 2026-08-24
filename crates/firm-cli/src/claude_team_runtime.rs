@@ -16,6 +16,9 @@ fn callback_error(error: crate::CliError) -> harness_provider_claude::ClaudeErro
 impl From<harness_provider_claude::ClaudeError> for crate::CliError {
     fn from(error: harness_provider_claude::ClaudeError) -> Self {
         match error {
+            harness_provider_claude::ClaudeError::ProcessGroupAdmissionClosed(error) => {
+                crate::CliError::ProviderProcessAdmissionClosed(error)
+            }
             harness_provider_claude::ClaudeError::Callback {
                 detail,
                 supervisor_lease_lost: true,

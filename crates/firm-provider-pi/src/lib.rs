@@ -39,6 +39,8 @@ pub type PiResult<T> = Result<T, PiError>;
 
 #[derive(Debug, thiserror::Error)]
 pub enum PiError {
+    #[error(transparent)]
+    ProcessGroupAdmissionClosed(#[from] harness_runtime_host::ProcessGroupRegistrationError),
     #[error("{0}")]
     Usage(String),
     #[error("application callback failed: {detail}")]
@@ -291,7 +293,7 @@ impl PiRpcClient {
                 options.member_name
             ))
         })?;
-        let owned_process_group = OwnedProcessGroupRegistration::new(child.id());
+        let owned_process_group = OwnedProcessGroupRegistration::new(&mut child)?;
 
         let stdin = BufWriter::new(
             child

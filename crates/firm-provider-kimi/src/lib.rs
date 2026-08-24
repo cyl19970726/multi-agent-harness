@@ -58,6 +58,8 @@ pub type KimiResult<T> = Result<T, KimiError>;
 
 #[derive(Debug, thiserror::Error)]
 pub enum KimiError {
+    #[error(transparent)]
+    ProcessGroupAdmissionClosed(#[from] harness_runtime_host::ProcessGroupRegistrationError),
     #[error("{0}")]
     Usage(String),
     #[error("application callback failed: {detail}")]
@@ -327,7 +329,7 @@ impl KimiAcpClient {
         let mut child = cmd
             .spawn()
             .map_err(|error| CliError::Usage(format!("failed to spawn kimi acp: {error}")))?;
-        let owned_process_group = Some(OwnedProcessGroupRegistration::new(child.id()));
+        let owned_process_group = Some(OwnedProcessGroupRegistration::new(&mut child)?);
         let stdin = child
             .stdin
             .take()

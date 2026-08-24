@@ -106,6 +106,9 @@ pub(super) fn provider_retry_authority_after_failure(
     durable_process_outcome: &harness_application::ProviderEffectOutcome,
     transport_attempt: u64,
 ) -> harness_application::ProviderRetryAuthority {
+    if error.is_provider_process_admission_closed() {
+        return harness_application::ProviderRetryAuthority::StopNoRetry;
+    }
     let error_outcome = error.provider_effect_outcome();
     match (&error_outcome, durable_process_outcome) {
         (harness_application::ProviderEffectOutcome::Unknown { .. }, _) => {
@@ -131,6 +134,15 @@ pub(super) fn provider_retry_authority_after_failure(
             MAX_AUTOMATIC_PROVIDER_TRANSPORT_ATTEMPTS,
         ),
     }
+}
+
+pub(super) fn provider_failure_lifecycle_override(
+    error: &CliError,
+    current_status: MemberRunStatus,
+) -> Option<MemberRunStatus> {
+    error
+        .is_provider_process_admission_closed()
+        .then_some(current_status)
 }
 
 pub(super) fn provider_process_idempotency_key(
@@ -277,6 +289,59 @@ mod tests {
             ),
             harness_application::ProviderRetryAuthority::StopNoRetry
         );
+    }
+
+    #[test]
+    fn admission_closed_is_zero_retry_and_preserves_member_lifecycle_for_all_providers() {
+        let admission_closed =
+            harness_runtime_host::ProcessGroupRegistrationError::AdmissionClosed {
+                pid: 4242,
+                signal_errno: None,
+                reap_failed: false,
+                reap_errno: None,
+                reap_timed_out: false,
+            };
+        let errors = vec![
+            CliError::from(
+                harness_provider_codex::CodexError::ProcessGroupAdmissionClosed(
+                    admission_closed.clone(),
+                ),
+            ),
+            CliError::from(
+                harness_provider_claude::ClaudeError::ProcessGroupAdmissionClosed(
+                    admission_closed.clone(),
+                ),
+            ),
+            CliError::from(
+                harness_provider_kimi::KimiError::ProcessGroupAdmissionClosed(
+                    admission_closed.clone(),
+                ),
+            ),
+            CliError::from(
+                harness_provider_deepseek::DeepSeekError::ProcessGroupAdmissionClosed(
+                    admission_closed.clone(),
+                ),
+            ),
+            CliError::from(harness_provider_pi::PiError::ProcessGroupAdmissionClosed(
+                admission_closed,
+            )),
+        ];
+        let not_applied = harness_application::ProviderEffectOutcome::NotApplied {
+            reason: "provider process was rejected before effect".into(),
+        };
+
+        for error in errors {
+            assert!(matches!(error, CliError::ProviderProcessAdmissionClosed(_)));
+            assert_eq!(
+                provider_retry_authority_after_failure(&error, &not_applied, 1),
+                harness_application::ProviderRetryAuthority::StopNoRetry
+            );
+            assert_eq!(
+                provider_failure_lifecycle_override(&error, MemberRunStatus::Running),
+                Some(MemberRunStatus::Running),
+                "daemon shutdown admission must not turn a Member Blocked"
+            );
+        }
     }
 
     #[test]

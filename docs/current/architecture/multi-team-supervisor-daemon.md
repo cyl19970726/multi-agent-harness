@@ -71,8 +71,20 @@ synchronously and included in the final drain before admission can reopen. It
 also linearizes child reap and exact-token unregister under that admission
 mutex, so shutdown cannot signal a pid after its original child became
 reusable. Provider-side kill/reap holds that mutex only for a bounded interval;
-on timeout it keeps the registration and releases the mutex so the daemon's
-final drain can report `NODE_DAEMON_DRAIN_INCOMPLETE`. It
+each non-blocking reap observation and terminal-token removal uses one short
+critical section, while every poll wait happens outside the mutex. On timeout
+it keeps the registration so the daemon's final drain can report
+`NODE_DAEMON_DRAIN_INCOMPLETE`. Registration attempted after admission closes
+returns a typed `PROVIDER_PROCESS_GROUP_ADMISSION_CLOSED` failure only after the
+shared registration path has signalled and bounded-reaped the actual child
+outside the registry mutex; a provider cannot continue assembling that
+transport as an ordinary spawn. The typed failure survives every provider
+adapter into the Supervisor lifecycle boundary: it is StopNoRetry and preserves
+the current Member lifecycle because NodeDaemon shutdown superseded the spawn.
+Signal failures, reap failures, and reap timeouts remain typed residual
+diagnostics. Admission reopens only through a
+checked completion result; any residual registration or diagnostic keeps it
+closed. It
 releases authority only after this converges; an unkillable group or unfinished
 thread is `NODE_DAEMON_DRAIN_INCOMPLETE`, never a successful stop.
 

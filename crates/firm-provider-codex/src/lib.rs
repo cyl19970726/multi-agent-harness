@@ -27,6 +27,8 @@ pub type CodexResult<T> = Result<T, CodexError>;
 
 #[derive(Debug, thiserror::Error)]
 pub enum CodexError {
+    #[error(transparent)]
+    ProcessGroupAdmissionClosed(#[from] harness_runtime_host::ProcessGroupRegistrationError),
     #[error("{0}")]
     Usage(String),
     #[error("application callback failed: {detail}")]
@@ -422,7 +424,7 @@ impl CodexAppServerClient {
         let mut child = command.spawn().map_err(|error| {
             CliError::Usage(format!("failed to spawn codex app-server: {error}"))
         })?;
-        let owned_process_group = OwnedProcessGroupRegistration::new(child.id());
+        let owned_process_group = OwnedProcessGroupRegistration::new(&mut child)?;
         let stdin =
             BufWriter::new(child.stdin.take().ok_or_else(|| {
                 CliError::Usage("codex app-server stdin unavailable".to_string())
