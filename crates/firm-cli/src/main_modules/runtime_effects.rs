@@ -1,6 +1,49 @@
 use super::*;
 
-// ---------------------------------------------------------------------------
+fn prepared_command_recovery(command_id: &str, error: impl std::fmt::Display) -> CliError {
+    CliError::RuntimeRecoveryRequired(format!(
+        "command {command_id} was durably prepared; reconcile before provider effect: {error}"
+    ))
+}
+
+pub(super) fn current_node_daemon_lease_after_admission_at(
+    store: &harness_store::HarnessStore,
+    admitted_lease: &harness_core::NodeDaemonLease,
+    now_unix_ms: u64,
+    command_id: &str,
+) -> CliResult<harness_core::NodeDaemonLease> {
+    store
+        .latest_node_daemon_lease(&admitted_lease.node_id)
+        .map_err(|error| prepared_command_recovery(command_id, error))?
+        .filter(|lease| {
+            lease.node_id == admitted_lease.node_id
+                && lease.daemon_id == admitted_lease.daemon_id
+                && lease.instance_id == admitted_lease.instance_id
+                && lease.generation == admitted_lease.generation
+                && lease.status == NodeDaemonLeaseStatus::Active
+                && lease.expires_unix_ms > now_unix_ms
+        })
+        .ok_or_else(|| {
+            prepared_command_recovery(
+                command_id,
+                "NODE_DAEMON_CURRENT_LEASE_FENCED_AFTER_ADMISSION",
+            )
+        })
+}
+
+fn current_node_daemon_lease_after_admission(
+    store: &harness_store::HarnessStore,
+    admitted_lease: &harness_core::NodeDaemonLease,
+    command_id: &str,
+) -> CliResult<harness_core::NodeDaemonLease> {
+    current_node_daemon_lease_after_admission_at(
+        store,
+        admitted_lease,
+        current_unix_ms_u64(),
+        command_id,
+    )
+}
+
 // `harness team-run start` — durable Agent Team Supervisor.
 //
 // The starter currently attaches the durable Supervisor to its process, while
@@ -486,13 +529,16 @@ pub(super) fn prepare_provider_effect_kind(
         };
         return replay;
     }
+    let current_lease =
+        current_node_daemon_lease_after_admission(&ledger.store, &lease, &command_id)?;
     let fence = runtime_binding_fence_for_admission(
         ledger,
         &admission,
         &session,
         &canonical_member,
-        &lease,
-    )?;
+        &current_lease,
+    )
+    .map_err(|error| prepared_command_recovery(&command_id, error))?;
     Ok(ProviderEffectAdmission {
         command_id,
         control_plan: None,
@@ -633,13 +679,16 @@ pub(super) fn prepare_provider_process_effect(
             admission.projection.effect_certainty
         )));
     }
+    let current_lease =
+        current_node_daemon_lease_after_admission(&ledger.store, &lease, &command_id)?;
     let fence = runtime_binding_fence_for_admission(
         ledger,
         &admission,
         &session,
         &canonical_member,
-        &lease,
-    )?;
+        &current_lease,
+    )
+    .map_err(|error| prepared_command_recovery(&command_id, error))?;
     Ok(ProviderEffectAdmission {
         command_id,
         control_plan: None,

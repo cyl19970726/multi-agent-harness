@@ -80,6 +80,8 @@ mod provider_tool_status_is_a_closed_display_safe_vocabulary;
 mod reopen_unchanged_profile_does_not_drift_last_event_at;
 #[path = "../general/runtime_anchor_accepts_owned_progress_but_rejects_authority_drift.rs"]
 mod runtime_anchor_accepts_owned_progress_but_rejects_authority_drift;
+#[path = "../general/runtime_command_admission_revalidates_same_daemon_renewal.rs"]
+mod runtime_command_admission_revalidates_same_daemon_renewal;
 #[path = "../general/runtime_composition_fingerprint_commits_to_security_and_capabilities.rs"]
 mod runtime_composition_fingerprint_commits_to_security_and_capabilities;
 #[path = "../general/save_member_run_settle_syncs_native_binding_to_trust_fabric.rs"]
