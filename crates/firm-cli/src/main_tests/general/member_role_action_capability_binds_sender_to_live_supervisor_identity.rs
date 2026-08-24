@@ -33,10 +33,12 @@ fn member_role_action_capability_binds_sender_to_live_supervisor_identity() {
 
     let first_token = "a".repeat(64);
     let second_token = "b".repeat(64);
+    let first_capability = test_collaboration_capability(&store, &lease, &first, &first_token);
+    let second_capability = test_collaboration_capability(&store, &lease, &second, &second_token);
     let (first_control, _first_registration) =
-        register_live_member_control(&first, &first_token, 1);
+        register_live_member_control(&first, &first_capability, 1);
     let (second_control, _second_registration) =
-        register_live_member_control(&second, &second_token, 1);
+        register_live_member_control(&second, &second_capability, 1);
     let supervisor_valid = AtomicBool::new(true);
     let authority_gate = Mutex::new(());
     author_test_canonical_message(
@@ -159,7 +161,7 @@ fn member_role_action_capability_binds_sender_to_live_supervisor_identity() {
         LiveMemberControlRequest::RoleAction {
             team_run_id: created.team_run.id.clone(),
             member_run_id: first.id.clone(),
-            capability_token: first_token,
+            capability_token: first_token.clone(),
             path: route,
             expected_version: work.version,
             idempotency_key: "valid-member-work-start".into(),
@@ -178,6 +180,142 @@ fn member_role_action_capability_binds_sender_to_live_supervisor_identity() {
     assert_eq!(
         started.active_member_run_id.as_deref(),
         Some(first.id.as_str())
+    );
+    let registered_control = LIVE_MEMBER_CONTROLS
+        .get()
+        .expect("live registry")
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .get(&first.id)
+        .cloned()
+        .expect("registered exact member control");
+    assert_ne!(registered_control.capability_fingerprint, first_token);
+    assert_eq!(
+        registered_control.capability_fingerprint,
+        first_capability.fingerprint
+    );
+    assert!(!format!("{first_capability:?}").contains(&first_token));
+
+    let active_daemon = store
+        .latest_node_daemon_lease(&created.team_run.execution_node_id)
+        .expect("read NodeDaemon lease")
+        .expect("active NodeDaemon lease");
+    store
+        .release_node_daemon_lease(
+            &active_daemon.node_id,
+            &active_daemon.daemon_id,
+            active_daemon.generation,
+            &active_daemon.instance_id,
+            current_unix_ms_u64(),
+        )
+        .expect("release original NodeDaemon lease");
+    store
+        .acquire_node_daemon_lease(
+            &active_daemon.node_id,
+            "successor-node-daemon",
+            "successor-node-daemon-instance",
+            current_unix_ms_u64(),
+            60_000,
+        )
+        .expect("acquire successor NodeDaemon lease");
+    let before_stale_daemon = durable_store_file_bytes(&store);
+    let stale_daemon = dispatch_local_live_member_control(
+        &store,
+        &lease.supervisor_id,
+        lease.generation,
+        &supervisor_valid,
+        &authority_gate,
+        LiveMemberControlRequest::ReadInbox {
+            team_run_id: created.team_run.id.clone(),
+            member_run_id: first.id.clone(),
+            capability_token: first_token.clone(),
+            include_all: true,
+        },
+    )
+    .expect_err("capability cannot cross a successor NodeDaemon lease");
+    assert!(stale_daemon
+        .to_string()
+        .contains("NODE_DAEMON_GENERATION_FENCED"));
+    assert_eq!(
+        durable_store_file_bytes(&store),
+        before_stale_daemon,
+        "stale NodeDaemon capability must have byte-zero durable side effects"
+    );
+
+    let current_first = latest_member_runs_in_append_order(&store)
+        .expect("read current MemberRun")
+        .into_iter()
+        .find(|member| member.id == first.id)
+        .expect("current exact MemberRun");
+    let mut successor_member = current_first.clone();
+    successor_member.runtime_generation += 1;
+    successor_member.last_event_at = Some(now_string());
+    store
+        .compare_and_advance_member_run_generation(&current_first, &successor_member)
+        .expect("advance MemberRun generation");
+    let before_stale_member = durable_store_file_bytes(&store);
+    let stale_member = dispatch_local_live_member_control(
+        &store,
+        &lease.supervisor_id,
+        lease.generation,
+        &supervisor_valid,
+        &authority_gate,
+        LiveMemberControlRequest::ReadInbox {
+            team_run_id: created.team_run.id.clone(),
+            member_run_id: first.id.clone(),
+            capability_token: first_token.clone(),
+            include_all: true,
+        },
+    )
+    .expect_err("capability cannot cross a successor MemberRun generation");
+    assert!(stale_member
+        .to_string()
+        .contains("MEMBER_RUN_GENERATION_FENCED"));
+    assert_eq!(
+        durable_store_file_bytes(&store),
+        before_stale_member,
+        "stale MemberRun capability must have byte-zero durable side effects"
+    );
+    store
+        .release_team_supervisor_lease(
+            &created.team_run.id,
+            &lease.supervisor_id,
+            lease.generation,
+            current_unix_ms_u64(),
+        )
+        .expect("release capability-signing Supervisor");
+    let successor = store
+        .acquire_test_supervisor_lease(
+            &created.team_run.id,
+            "successor-supervisor",
+            std::process::id(),
+            "test://successor-role-action",
+            current_unix_ms_u64(),
+            60_000,
+        )
+        .expect("acquire successor Supervisor");
+    let before_stale_supervisor = durable_store_file_bytes(&store);
+    let stale_supervisor = dispatch_local_live_member_control(
+        &store,
+        &successor.supervisor_id,
+        successor.generation,
+        &supervisor_valid,
+        &authority_gate,
+        LiveMemberControlRequest::ReadInbox {
+            team_run_id: created.team_run.id.clone(),
+            member_run_id: first.id.clone(),
+            capability_token: first_token,
+            include_all: true,
+        },
+    )
+    .expect_err("capability cannot cross its frozen Supervisor generation");
+    assert!(stale_supervisor
+        .to_string()
+        .contains("stale runtime binding"));
+    assert_eq!(
+        durable_store_file_bytes(&store),
+        before_stale_supervisor,
+        "stale Supervisor capability must have byte-zero durable side effects"
     );
     assert!(matches!(
         first_control.try_recv(),

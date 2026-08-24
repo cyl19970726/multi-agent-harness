@@ -294,6 +294,26 @@ Codex, Claude, Kimi, Pi, and DeepSeek Harness expose separate, closed capability
   Claude, Kimi, and Pi, including permission mapping, safe-injection downgrade,
   terminal acknowledgement, replay, and recovery. It is contract evidence,
   not a claim that an unavailable provider passed a live run;
+- collaboration Role Actions use one process-local
+  `CollaborationCapabilityEnvelope`. It freezes the exact TeamRun, MemberRun,
+  MemberRun, AgentSession, NodeDaemon and Supervisor generations, exact-self scope,
+  non-secret fingerprint, provider delivery mechanism, and expiry with the
+  live Supervisor registration. The bearer secret is deliberately neither
+  cloneable nor serializable and remains inside a non-cloneable, Debug-redacted
+  launch environment until spawn. The live registry retains only its
+  non-secret fingerprint. The bearer never enters Store, provider profile,
+  RuntimeCommand, logs, transcript, artifacts, API, or Dashboard state;
+- every provider owns one closed agent-tool delivery seam: Codex app-server
+  direct tool environment, Claude SDK tool environment, Kimi ACP tool
+  environment, Pi RPC tool environment, or DeepSeek Cordis `shellEnv`.
+  Provider composition must call that owned seam before spawn. DSH exposes its
+  renamed capability only when `execution.agent` is true; arbitrary ambient
+  TOKEN/KEY/SECRET/PASSWORD variables are not accepted by the envelope;
+- the CLI submits the capability to the exact live Supervisor. Token,
+  Supervisor, AgentSession and NodeDaemon generation mismatches fail before a
+  Work or Message mutation. Dropping the live registration expires the
+  capability; Close/Reopen creates a new registration and secret. Harness MCP
+  mutation tools remain disabled for managed provider processes;
 - the persistent Team member loop is provider-neutral: the monotonic round
   progression lives in `firm-runtime-supervisor` over an application port,
   while `firm-runtime-contract` owns the provider-facing lifecycle language.

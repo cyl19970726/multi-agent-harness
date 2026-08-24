@@ -265,7 +265,7 @@ impl Drop for LiveMemberControlRegistration {
 
 pub(super) fn register_live_member_control(
     member: &ProviderRuntimeProjection,
-    role_action_token: &str,
+    capability: &harness_runtime_contract::CollaborationCapabilityEnvelope,
     capacity: usize,
 ) -> (
     ControlReceiver<MemberControlCommand>,
@@ -282,7 +282,8 @@ pub(super) fn register_live_member_control(
             LiveMemberControl {
                 team_run_id: member.team_run_id.clone(),
                 agent_member_id: member.agent_member_id.clone(),
-                role_action_token: role_action_token.to_string(),
+                capability_fingerprint: capability.fingerprint.clone(),
+                collaboration_binding: capability.binding.clone(),
                 execution_mode: profile
                     .map(|profile| profile.execution_mode.clone())
                     .unwrap_or_else(|| "unknown".to_string()),
@@ -482,9 +483,29 @@ pub(super) fn require_bound_live_member_authority(
     generation: u64,
     capability_token: &str,
 ) -> CliResult<harness_core::agentfirm_api::AgentSession> {
-    if capability_token.len() != 64 || capability_token != control.role_action_token {
+    let presented_fingerprint =
+        harness_runtime_contract::CollaborationCapabilitySecret::new(capability_token.to_string())
+            .map(|secret| secret.fingerprint())
+            .map_err(|_| {
+                CliError::Usage(
+            "UNAUTHORIZED_ACTOR: member Role Action capability is invalid for this live runtime"
+                .into(),
+        )
+            })?;
+    if presented_fingerprint != control.capability_fingerprint {
         return Err(CliError::Usage(
             "UNAUTHORIZED_ACTOR: member Role Action capability is invalid for this live runtime"
+                .into(),
+        ));
+    }
+    let binding = &control.collaboration_binding;
+    if binding.team_run_id != team_run_id
+        || binding.member_run_id != member_run_id
+        || binding.supervisor_id != supervisor_id
+        || binding.supervisor_generation != generation
+    {
+        return Err(CliError::Usage(
+            "UNAUTHORIZED_ACTOR: member Role Action capability belongs to a stale runtime binding"
                 .into(),
         ));
     }
@@ -502,6 +523,12 @@ pub(super) fn require_bound_live_member_authority(
                 .into(),
         ));
     }
+    if member.runtime_generation != binding.member_run_generation {
+        return Err(CliError::Usage(
+            "MEMBER_RUN_GENERATION_FENCED: member Role Action capability belongs to a stale MemberRun generation"
+                .into(),
+        ));
+    }
     let ledger = TeamRunLedger::new(
         store,
         team_run_id,
@@ -513,6 +540,33 @@ pub(super) fn require_bound_live_member_authority(
     if session.agent_member_id != control.agent_member_id {
         return Err(CliError::Usage(
             "AGENT_SESSION_SCOPE_FENCED: live Role Action identity does not match the current AgentSession"
+                .into(),
+        ));
+    }
+    if session.id != binding.agent_session_id
+        || session.runtime_generation != binding.agent_session_generation
+        || session.node_daemon_id != binding.node_daemon_id
+        || session.node_daemon_generation != binding.node_daemon_generation
+    {
+        return Err(CliError::Usage(
+            "AGENT_SESSION_SCOPE_FENCED: member Role Action capability belongs to a stale AgentSession or NodeDaemon generation"
+                .into(),
+        ));
+    }
+    let daemon_lease = store
+        .latest_node_daemon_lease(&session.node_id)?
+        .ok_or_else(|| {
+            CliError::Usage(
+                "NODE_DAEMON_GENERATION_FENCED: current NodeDaemon lease is missing".into(),
+            )
+        })?;
+    if daemon_lease.daemon_id != binding.node_daemon_id
+        || daemon_lease.generation != binding.node_daemon_generation
+        || daemon_lease.status != harness_core::NodeDaemonLeaseStatus::Active
+        || daemon_lease.expires_unix_ms <= current_unix_ms_u64()
+    {
+        return Err(CliError::Usage(
+            "NODE_DAEMON_GENERATION_FENCED: member Role Action capability belongs to a stale or expired NodeDaemon lease"
                 .into(),
         ));
     }

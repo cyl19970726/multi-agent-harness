@@ -1,7 +1,30 @@
 use super::*;
 
+fn protected_test_environment(
+    token: &str,
+) -> harness_runtime_contract::CollaborationCapabilityEnvironment {
+    let envelope = harness_runtime_contract::CollaborationCapabilityEnvelope::new(
+        harness_runtime_contract::CollaborationCapabilitySecret::new(token.to_string()).unwrap(),
+        harness_runtime_contract::CollaborationCapabilityBinding {
+            team_run_id: "team-run-test".into(),
+            member_run_id: "member-run-test".into(),
+            member_run_generation: 1,
+            agent_session_id: "session-test".into(),
+            agent_session_generation: 1,
+            node_daemon_id: "daemon-test".into(),
+            node_daemon_generation: 1,
+            supervisor_id: "supervisor-test".into(),
+            supervisor_generation: 1,
+        },
+        COLLABORATION_CAPABILITY_MECHANISM,
+    )
+    .unwrap();
+    collaboration_agent_tool_environment(&envelope).unwrap()
+}
+
 #[test]
 fn start_frame_uses_the_shared_versioned_runner_contract() {
+    let token = "cd".repeat(32);
     let config = ClaudeTeamRuntimeConfig {
         runner_path: PathBuf::from("runner.mjs"),
         cwd: PathBuf::from("/tmp/project"),
@@ -17,8 +40,9 @@ fn start_frame_uses_the_shared_versioned_runner_contract() {
         disallowed_tools: None,
         setting_sources: Vec::new(),
         resume_session_id: None,
-        environment: Vec::new(),
+        environment: protected_test_environment(&token),
     };
+    assert!(!format!("{config:?}").contains(&token));
     let frame = config.start_frame().expect("shared contract must parse");
     let contract: Value = serde_json::from_str(include_str!(
         "../../../apps/claude-member-runner/contract/runner-v1.json"
@@ -208,7 +232,7 @@ for await (const line of input) {
         disallowed_tools: None,
         setting_sources: vec!["project".into(), "user".into()],
         resume_session_id: None,
-        environment: Vec::new(),
+        environment: harness_runtime_contract::CollaborationCapabilityEnvironment::empty(),
     };
     let mut transport = ClaudeRunnerTransport::spawn(&config).unwrap();
     let mut accepted = None;
@@ -281,7 +305,7 @@ fn live_claude_21220_round_interrupt_close_and_same_session_resume() {
         disallowed_tools: None,
         setting_sources: Vec::new(),
         resume_session_id,
-        environment: Vec::new(),
+        environment: harness_runtime_contract::CollaborationCapabilityEnvironment::empty(),
     };
     let mut no_steer = |_pending: &SteerRequest, _result: &SteerProviderResult| Ok(());
     let mut no_event = |_event: &Value| {};
@@ -399,7 +423,7 @@ for await (const line of input) {
         disallowed_tools: None,
         setting_sources: vec!["project".into(), "user".into()],
         resume_session_id: None,
-        environment: Vec::new(),
+        environment: harness_runtime_contract::CollaborationCapabilityEnvironment::empty(),
     };
     let mut runtime = ClaudeTeamRuntime::spawn(config).unwrap();
     let evidence = runtime.close_owned_runtime("harness_team_close").unwrap();

@@ -15,11 +15,13 @@ fn successor_generation_between_live_close_precheck_and_latch_has_zero_side_effe
             60_000,
         )
         .expect("acquire first Supervisor lease");
+    ensure_test_runtime_fabric(&store, &created, &first);
     let events_before = store
         .legacy_team_run_events()
         .expect("events before stale Close");
-    let (control_rx, _control_registration) =
-        register_live_member_control(&member, "test-role-action-token", 1);
+    let token = "d".repeat(64);
+    let capability = test_collaboration_capability(&store, &first, &member, &token);
+    let (control_rx, _control_registration) = register_live_member_control(&member, &capability, 1);
     let supervisor_valid = AtomicBool::new(true);
     let authority_gate = Mutex::new(());
     let successor_generation = std::cell::Cell::new(0);

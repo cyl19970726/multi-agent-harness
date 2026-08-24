@@ -46,6 +46,8 @@ mod compatibility;
 pub use compatibility::*;
 mod permission;
 pub use permission::*;
+mod capability_transport;
+pub use capability_transport::*;
 
 type CliResult<T> = CodexResult<T>;
 type CliError = CodexError;

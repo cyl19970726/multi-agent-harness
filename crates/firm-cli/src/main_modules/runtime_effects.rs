@@ -91,7 +91,8 @@ pub(super) static LIVE_TEAM_SUPERVISORS: OnceLock<Mutex<HashSet<String>>> = Once
 pub(super) struct LiveMemberControl {
     pub(super) team_run_id: String,
     pub(super) agent_member_id: String,
-    pub(super) role_action_token: String,
+    pub(super) capability_fingerprint: String,
+    pub(super) collaboration_binding: harness_runtime_contract::CollaborationCapabilityBinding,
     pub(super) execution_mode: String,
     pub(super) supports_steer: bool,
     pub(super) supports_interrupt: bool,

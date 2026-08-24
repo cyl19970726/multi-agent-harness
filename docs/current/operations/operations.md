@@ -398,6 +398,13 @@ start|submit|accept`, and the Host-authorized `firm team-run close-member` /
 capability; they do not write the Store directly. Managed provider launch
 profiles remove Harness mutation MCP servers.
 
+The capability is not a durable credential. Each provider adapter compiles it
+through its reviewed agent-tool boundary, and the Supervisor rechecks the
+exact TeamRun, MemberRun, AgentSession, live NodeDaemon lease and Supervisor generations
+on every Role Action. A successor Supervisor or replacement Session cannot
+reuse an older token. Do not export the token, add it to provider profiles, or
+forward arbitrary parent secrets alongside it.
+
 Trusted-development Sessions must be newly created with FullAccess and a
 canonical cwd. The cwd may be shared by Host and Members; choose a separate
 worktree only when the task needs filesystem or Git-history isolation.

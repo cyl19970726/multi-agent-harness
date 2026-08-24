@@ -72,8 +72,6 @@ pub(super) fn run_pi_team_member(
         &member_row,
         None,
     )?;
-    let collaboration_env = envelope.environment(&context.role_action_token);
-
     // Build the session directory path: <store_root>/pi_sessions/<member_run_id>/
     let session_base = ledger.store.root().join("pi_sessions");
     let session_dir = session_base.join(&member.id);
@@ -154,6 +152,17 @@ pub(super) fn run_pi_team_member(
 
     // Fence immediately before pi process start/resume.
     let process_effect = prepare_provider_process_effect(ledger, &member_row, transport_attempt)?;
+    let capability = collaboration_capability_envelope(
+        ledger,
+        &member_row,
+        &process_effect.target_session,
+        &context.role_action_token,
+        harness_provider_pi::COLLABORATION_CAPABILITY_MECHANISM,
+    )?;
+    let capability_environment =
+        harness_provider_pi::collaboration_agent_tool_environment(&capability)
+            .map_err(|error| CliError::Usage(error.to_string()))?;
+    let collaboration_env = envelope.environment(capability_environment);
     let profile = member_row.provider_profile.as_ref().ok_or_else(|| {
         CliError::Usage(format!(
             "RUNTIME_ADAPTER_PROFILE_MISSING: {} has no persisted provider profile",
@@ -177,7 +186,7 @@ pub(super) fn run_pi_team_member(
             resume_session_file,
             session_dir: &session_dir,
             member_name: &member.name,
-            collaboration_env: &collaboration_env,
+            collaboration_env: collaboration_env.as_pairs(),
             tools,
             permission_ceiling: ceiling,
         },
@@ -234,8 +243,7 @@ pub(super) fn run_pi_team_member(
         adapter.native_locator_kind(),
     ));
 
-    let (live_control, registration) =
-        register_live_member_control(&member_row, &context.role_action_token, 16);
+    let (live_control, registration) = register_live_member_control(&member_row, &capability, 16);
 
     member_row.status = MemberRunStatus::Idle;
     member_row.last_event_at = Some(now_string());
