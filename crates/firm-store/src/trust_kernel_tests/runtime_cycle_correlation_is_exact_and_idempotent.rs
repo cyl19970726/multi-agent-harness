@@ -25,6 +25,17 @@ fn runtime_cycle_correlation_is_exact_and_idempotent() {
         "start-cycle",
     );
     command.payload["delivery_id"] = serde_json::json!("work-delivery:1:turn:1");
+    command.payload_fingerprint = canonical_json_fingerprint(&command.payload);
+    admission.request_fingerprint = Some(runtime_command_envelope_fingerprint(&command).unwrap());
+    let operations_before_missing_attempt = store.canonical_operations().unwrap();
+    let error = store
+        .prepare_runtime_command(&admission, &command, current_unix_ms(), "t-missing-attempt")
+        .expect_err("StartCycle without a one-based provider attempt must write nothing");
+    assert!(error.to_string().contains("one-based provider_attempt"));
+    assert_eq!(
+        store.canonical_operations().unwrap(),
+        operations_before_missing_attempt
+    );
     command.payload["provider_attempt"] = serde_json::json!(2);
     command.payload_fingerprint = canonical_json_fingerprint(&command.payload);
     admission.request_fingerprint = Some(runtime_command_envelope_fingerprint(&command).unwrap());
@@ -91,6 +102,26 @@ fn runtime_cycle_correlation_is_exact_and_idempotent() {
         settled.projection.version,
     );
     let operations_before_terminal = store.canonical_operations().unwrap();
+    let mut missing_terminal = correlation.clone();
+    missing_terminal.exact_terminal_ref = None;
+    let missing_terminal_context = service_context(
+        "node_daemon.provider_cycle.correlate",
+        "runtime-cycle-correlation:missing-terminal",
+        settled.projection.version,
+    );
+    let error = store
+        .record_runtime_cycle_correlation(
+            &missing_terminal_context,
+            &command.id,
+            &missing_terminal,
+            "t-missing-terminal",
+        )
+        .expect_err("missing exact terminal identity must write nothing");
+    assert!(error.to_string().contains("exact_terminal_ref"));
+    assert_eq!(
+        store.canonical_operations().unwrap(),
+        operations_before_terminal
+    );
     let mut crossed_before_write = correlation.clone();
     crossed_before_write.terminal_provider_input_id = Some("provider-input:old".into());
     let crossed_context = service_context(

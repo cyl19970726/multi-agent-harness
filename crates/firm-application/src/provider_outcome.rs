@@ -106,30 +106,31 @@ pub fn correlate_provider_cycle(
     if !native.input_acceptance_receipt.success {
         return Err("PROVIDER_CYCLE_CORRELATION_INVALID: input receipt was not successful".into());
     }
-    if native
+    let terminal_provider_input_id = native
         .terminal_provider_input_id
         .as_deref()
-        .is_some_and(|terminal| terminal != native.provider_input_id)
-    {
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| {
+            "PROVIDER_CYCLE_CORRELATION_MISSING: terminal_provider_input_id".to_string()
+        })?;
+    if terminal_provider_input_id != native.provider_input_id {
         return Err(
             "PROVIDER_CYCLE_TERMINAL_MISMATCH: terminal belongs to another provider input".into(),
         );
     }
-    if native
+    let exact_terminal_ref = native
         .exact_terminal_ref
         .as_deref()
-        .is_some_and(|value| value.trim().is_empty())
-    {
-        return Err("PROVIDER_CYCLE_CORRELATION_INVALID: empty exact_terminal_ref".into());
-    }
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| "PROVIDER_CYCLE_CORRELATION_MISSING: exact_terminal_ref".to_string())?;
 
     let correlation = firm_core::agentfirm_api::ProviderCycleCorrelation {
         invocation_id: authority.invocation_id.clone(),
         source_delivery_id: authority.source_delivery_id,
         provider_input_id: native.provider_input_id,
         input_acceptance_receipt: receipt_id.to_string(),
-        terminal_provider_input_id: native.terminal_provider_input_id,
-        exact_terminal_ref: native.exact_terminal_ref,
+        terminal_provider_input_id: Some(terminal_provider_input_id.to_string()),
+        exact_terminal_ref: Some(exact_terminal_ref.to_string()),
         native_session_id: authority.native_session_id,
         agent_session_generation: authority.agent_session_generation,
         provider_attempt: authority.provider_attempt,
@@ -286,6 +287,20 @@ mod tests {
         )
         .unwrap_err();
         assert!(error.contains("PROVIDER_CYCLE_TERMINAL_MISMATCH"));
+    }
+
+    #[test]
+    fn missing_terminal_identity_is_rejected_before_durable_correlation() {
+        let missing_input =
+            correlate_provider_cycle(cycle_authority(), native_cycle(None), true, false)
+                .unwrap_err();
+        assert!(missing_input.contains("terminal_provider_input_id"));
+
+        let mut missing_ref = native_cycle(Some("provider-input:1"));
+        missing_ref.exact_terminal_ref = None;
+        let error =
+            correlate_provider_cycle(cycle_authority(), missing_ref, true, false).unwrap_err();
+        assert!(error.contains("exact_terminal_ref"));
     }
 
     #[test]

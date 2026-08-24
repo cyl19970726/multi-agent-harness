@@ -39,14 +39,14 @@
     "cycle_correlation": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["invocation_id", "provider_input_id", "input_acceptance_receipt", "native_session_id", "agent_session_generation", "provider_attempt"],
+      "required": ["invocation_id", "provider_input_id", "input_acceptance_receipt", "terminal_provider_input_id", "exact_terminal_ref", "native_session_id", "agent_session_generation", "provider_attempt"],
       "properties": {
         "invocation_id": {"type": "string", "minLength": 1},
         "source_delivery_id": {"type": ["string", "null"], "minLength": 1},
         "provider_input_id": {"type": "string", "minLength": 1},
         "input_acceptance_receipt": {"type": "string", "minLength": 1},
-        "terminal_provider_input_id": {"type": ["string", "null"], "minLength": 1},
-        "exact_terminal_ref": {"type": ["string", "null"], "minLength": 1},
+        "terminal_provider_input_id": {"type": "string", "minLength": 1},
+        "exact_terminal_ref": {"type": "string", "minLength": 1},
         "native_session_id": {"type": "string", "minLength": 1},
         "agent_session_generation": {"type": "integer", "minimum": 1},
         "provider_attempt": {"type": "integer", "minimum": 1}

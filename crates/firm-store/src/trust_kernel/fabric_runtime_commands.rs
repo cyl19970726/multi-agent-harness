@@ -424,6 +424,19 @@ impl HarnessStore {
                 | RuntimeCommandKind::AbortIfNotApplied
                 | RuntimeCommandKind::AuthorMessage => {}
             }
+            if command.command == RuntimeCommandKind::StartCycle
+                && command.payload["provider_attempt"]
+                    .as_u64()
+                    .is_none_or(|attempt| attempt == 0)
+            {
+                return Err(trust_error(
+                    TrustErrorCode::InvalidStateTransition,
+                    "StartCycle requires a one-based provider_attempt before provider effect",
+                    "runtime_command",
+                    &command.id,
+                    Some(session.version),
+                ));
+            }
             let ambiguous = self
                 .runtime_commands(&context.execution_space_id)?
                 .into_iter()
@@ -968,6 +981,26 @@ impl HarnessStore {
             &correlation.native_session_id,
             "ProviderCycleCorrelation.native_session_id",
         )?;
+        let terminal_provider_input_id = correlation
+            .terminal_provider_input_id
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| {
+                trust_error(
+                    TrustErrorCode::InvalidStateTransition,
+                    "provider cycle correlation requires terminal_provider_input_id",
+                    "runtime_command",
+                    command_id,
+                    None,
+                )
+            })?;
+        required(
+            correlation
+                .exact_terminal_ref
+                .as_deref()
+                .unwrap_or_default(),
+            "ProviderCycleCorrelation.exact_terminal_ref",
+        )?;
         if correlation.agent_session_generation == 0 || correlation.provider_attempt == 0 {
             return Err(trust_error(
                 TrustErrorCode::InvalidStateTransition,
@@ -1137,11 +1170,7 @@ impl HarnessStore {
                 Some(record.version),
             ));
         }
-        if correlation
-            .terminal_provider_input_id
-            .as_deref()
-            .is_some_and(|terminal| terminal != correlation.provider_input_id)
-        {
+        if terminal_provider_input_id != correlation.provider_input_id {
             return Err(trust_error(
                 TrustErrorCode::InvalidStateTransition,
                 "provider terminal belongs to a different provider input",
