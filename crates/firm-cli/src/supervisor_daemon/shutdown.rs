@@ -125,7 +125,13 @@ impl MultiTeamDaemon {
             // Every old Supervisor has joined and the final closed-admission
             // drain is empty of failures. A future daemon generation in this
             // same process may now register its own groups.
-            harness_runtime_host::complete_registered_process_group_shutdown();
+            if let Err(error) = harness_runtime_host::complete_registered_process_group_shutdown() {
+                failures.push(format!(
+                    "owned provider process-group admission cannot reopen: {error}"
+                ));
+            }
+        }
+        if failures.is_empty() {
             Ok(())
         } else {
             Err(CliError::Usage(format!(
@@ -180,9 +186,12 @@ mod tests {
             command.arg("-c").arg("sleep 30").process_group(0);
             let mut child = command.spawn()?;
             let pid = child.id();
-            let _registration = harness_runtime_host::OwnedProcessGroupRegistration::new(pid);
+            let mut registration =
+                harness_runtime_host::OwnedProcessGroupRegistration::new(&mut child)
+                    .expect("register shutdown test process group");
             pid_tx.send(pid).expect("publish owned process group");
-            let _ = child.wait()?;
+            let status = registration.kill_and_reap(&mut child)?;
+            assert!(status.is_some(), "shutdown child must be terminal-reaped");
             assert!(!thread_heartbeat.load(Ordering::Acquire));
             Ok(())
         });
@@ -280,6 +289,7 @@ mod tests {
         finished_rx
             .recv_timeout(Duration::from_secs(1))
             .expect("detached test thread exits");
-        harness_runtime_host::complete_registered_process_group_shutdown();
+        harness_runtime_host::complete_registered_process_group_shutdown()
+            .expect("reset process-group admission after timeout test");
     }
 }

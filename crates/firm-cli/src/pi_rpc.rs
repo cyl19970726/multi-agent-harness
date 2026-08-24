@@ -8,6 +8,9 @@ pub(crate) use harness_provider_pi::{PiRpcClient, PiSpawnOptions};
 impl From<harness_provider_pi::PiError> for crate::CliError {
     fn from(error: harness_provider_pi::PiError) -> Self {
         match error {
+            harness_provider_pi::PiError::ProcessGroupAdmissionClosed(error) => {
+                crate::CliError::ProviderProcessAdmissionClosed(error)
+            }
             harness_provider_pi::PiError::Callback {
                 detail,
                 supervisor_lease_lost: true,

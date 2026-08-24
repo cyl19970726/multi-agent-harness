@@ -131,13 +131,13 @@ struct ClaudeRunnerChild {
 }
 
 impl ClaudeRunnerChild {
-    fn new(child: Child) -> Self {
-        let pid = child.id();
-        Self {
+    fn new(mut child: Child) -> CliResult<Self> {
+        let process_group = OwnedProcessGroupRegistration::new(&mut child)?;
+        Ok(Self {
             child,
-            process_group: OwnedProcessGroupRegistration::new(pid),
+            process_group,
             armed: true,
-        }
+        })
     }
 
     fn id(&self) -> u32 {
@@ -224,21 +224,25 @@ impl ClaudeRunnerTransport {
             use std::os::unix::process::CommandExt;
             command.process_group(0);
         }
-        let mut child = command.spawn().map_err(|error| {
+        let child = command.spawn().map_err(|error| {
             CliError::Usage(format!(
                 "failed to spawn Claude Agent SDK runner {}: {error}",
                 config.runner_path.display()
             ))
         })?;
+        let mut child = ClaudeRunnerChild::new(child)?;
         let stdin = child
+            .child
             .stdin
             .take()
             .ok_or_else(|| CliError::Usage("Claude runner stdin unavailable".into()))?;
         let stdout = child
+            .child
             .stdout
             .take()
             .ok_or_else(|| CliError::Usage("Claude runner stdout unavailable".into()))?;
         let stderr = child
+            .child
             .stderr
             .take()
             .ok_or_else(|| CliError::Usage("Claude runner stderr unavailable".into()))?;
@@ -259,7 +263,7 @@ impl ClaudeRunnerTransport {
         });
 
         let mut transport = Self {
-            child: ClaudeRunnerChild::new(child),
+            child,
             stdin: Some(stdin),
             lines,
             stdout_reader: Some(stdout_reader),

@@ -291,6 +291,13 @@ pub(super) fn run_member_orchestration(
                 if error.is_supervisor_lease_lost() {
                     return MemberOutcome::new(&latest, latest.status, reason);
                 }
+                if let Some(status) = provider_failure_lifecycle_override(&error, latest.status) {
+                    return MemberOutcome::new(
+                        &latest,
+                        status,
+                        "provider start was superseded by NodeDaemon shutdown".to_string(),
+                    );
+                }
                 match reconcile_member_lifecycle_after_provider_error(ledger, &mut latest) {
                     Ok(true) => {
                         return MemberOutcome::new(

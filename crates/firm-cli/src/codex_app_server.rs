@@ -5,6 +5,9 @@ pub(crate) use harness_provider_codex::*;
 impl From<harness_provider_codex::CodexError> for crate::CliError {
     fn from(error: harness_provider_codex::CodexError) -> Self {
         match error {
+            harness_provider_codex::CodexError::ProcessGroupAdmissionClosed(error) => {
+                crate::CliError::ProviderProcessAdmissionClosed(error)
+            }
             harness_provider_codex::CodexError::Callback {
                 detail,
                 supervisor_lease_lost: true,

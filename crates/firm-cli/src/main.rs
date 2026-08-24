@@ -231,6 +231,8 @@ use store_resolution::*;
 
 #[derive(Debug, Error)]
 enum CliError {
+    #[error(transparent)]
+    ProviderProcessAdmissionClosed(#[from] harness_runtime_host::ProcessGroupRegistrationError),
     #[error("{0}")]
     Usage(String),
     #[error("{0}")]
@@ -256,6 +258,10 @@ type CliResult<T> = Result<T, CliError>;
 impl CliError {
     fn is_supervisor_lease_lost(&self) -> bool {
         matches!(self, Self::SupervisorLeaseLost(_))
+    }
+
+    fn is_provider_process_admission_closed(&self) -> bool {
+        matches!(self, Self::ProviderProcessAdmissionClosed(_))
     }
 
     fn is_provider_compatibility_blocked(&self) -> bool {

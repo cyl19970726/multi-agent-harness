@@ -16,6 +16,9 @@ fn callback_error(error: crate::CliError) -> harness_provider_deepseek::DeepSeek
 impl From<harness_provider_deepseek::DeepSeekError> for crate::CliError {
     fn from(error: harness_provider_deepseek::DeepSeekError) -> Self {
         match error {
+            harness_provider_deepseek::DeepSeekError::ProcessGroupAdmissionClosed(error) => {
+                crate::CliError::ProviderProcessAdmissionClosed(error)
+            }
             harness_provider_deepseek::DeepSeekError::Callback {
                 detail,
                 supervisor_lease_lost: true,

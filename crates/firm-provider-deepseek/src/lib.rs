@@ -151,13 +151,13 @@ struct DeepSeekRunnerChild {
 }
 
 impl DeepSeekRunnerChild {
-    fn new(child: Child) -> Self {
-        let process_group = OwnedProcessGroupRegistration::new(child.id());
-        Self {
+    fn new(mut child: Child) -> CliResult<Self> {
+        let process_group = OwnedProcessGroupRegistration::new(&mut child)?;
+        Ok(Self {
             child,
             process_group,
             armed: true,
-        }
+        })
     }
 
     fn id(&self) -> u32 {
@@ -250,21 +250,25 @@ impl DeepSeekRunnerTransport {
             use std::os::unix::process::CommandExt;
             command.process_group(0);
         }
-        let mut child = command.spawn().map_err(|error| {
+        let child = command.spawn().map_err(|error| {
             CliError::Usage(format!(
                 "failed to spawn DeepSeek Harness runner {}: {error}",
                 config.runner_path.display()
             ))
         })?;
+        let mut child = DeepSeekRunnerChild::new(child)?;
         let stdin = child
+            .child
             .stdin
             .take()
             .ok_or_else(|| CliError::Usage("DeepSeek runner stdin unavailable".into()))?;
         let stdout = child
+            .child
             .stdout
             .take()
             .ok_or_else(|| CliError::Usage("DeepSeek runner stdout unavailable".into()))?;
         let stderr = child
+            .child
             .stderr
             .take()
             .ok_or_else(|| CliError::Usage("DeepSeek runner stderr unavailable".into()))?;
@@ -285,7 +289,7 @@ impl DeepSeekRunnerTransport {
         });
 
         let mut transport = Self {
-            child: DeepSeekRunnerChild::new(child),
+            child,
             stdin: Some(stdin),
             lines,
             stdout_reader: Some(stdout_reader),
