@@ -43,6 +43,7 @@ fn partial_legacy_team_run_is_diagnostic_only_until_canonical_completeness_is_re
             60_000,
         )
         .expect("seed current Supervisor before reconstructing partial history");
+    ensure_test_runtime_fabric(&store, &created, &lease);
     let mut partial = current.clone();
     partial.member_run_ids.push(dangling.id.clone());
     partial.updated_at = "unix-ms:s6-partial".into();
@@ -99,8 +100,10 @@ fn partial_legacy_team_run_is_diagnostic_only_until_canonical_completeness_is_re
         std::slice::from_ref(&third),
     )
     .expect("seed valid third identity before the zero-write boundary");
+    let token = "c".repeat(64);
+    let capability = test_collaboration_capability(&store, &lease, &created.member_runs[0], &token);
     let (control_rx, _control_registration) =
-        register_live_member_control(&created.member_runs[0], "test-role-action-token", 2);
+        register_live_member_control(&created.member_runs[0], &capability, 2);
     let before = durable_store_file_bytes(&store);
     let expect_incomplete = |error: CliError| {
         let rendered = error.to_string();

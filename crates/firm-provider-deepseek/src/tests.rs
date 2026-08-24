@@ -3,6 +3,45 @@ use harness_core::agentfirm_api::PermissionCeiling;
 use std::fs;
 
 #[test]
+fn runtime_config_debug_redacts_collaboration_bearer() {
+    let token = "de".repeat(32);
+    let envelope = harness_runtime_contract::CollaborationCapabilityEnvelope::new(
+        harness_runtime_contract::CollaborationCapabilitySecret::new(token.clone()).unwrap(),
+        harness_runtime_contract::CollaborationCapabilityBinding {
+            team_run_id: "team-run-test".into(),
+            member_run_id: "member-run-test".into(),
+            member_run_generation: 1,
+            agent_session_id: "session-test".into(),
+            agent_session_generation: 1,
+            node_daemon_id: "daemon-test".into(),
+            node_daemon_generation: 1,
+            supervisor_id: "supervisor-test".into(),
+            supervisor_generation: 1,
+        },
+        COLLABORATION_CAPABILITY_MECHANISM,
+    )
+    .unwrap();
+    let config = DeepSeekTeamRuntimeConfig {
+        runner_path: PathBuf::from("runner.mjs"),
+        cwd: PathBuf::from("/tmp/project"),
+        team_run_id: "team-run-test".into(),
+        member_run_id: "member-run-test".into(),
+        member_name: "DeepSeek test".into(),
+        role_label: "developer".into(),
+        owned_paths: Vec::new(),
+        model: None,
+        effort: None,
+        permission_mode: "full_access".into(),
+        allowed_tools: None,
+        disallowed_tools: None,
+        setting_sources: Vec::new(),
+        resume_session_id: None,
+        environment: collaboration_agent_tool_environment(&envelope).unwrap(),
+    };
+    assert!(!format!("{config:?}").contains(&token));
+}
+
+#[test]
 fn native_cycle_correlation_never_crosses_input_ids() {
     let correlation = native_cycle_correlation(
         "deepseek-cycle-2",

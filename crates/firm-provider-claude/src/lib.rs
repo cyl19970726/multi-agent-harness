@@ -10,7 +10,6 @@
 //! `@anthropic-ai/claude-agent-sdk` 0.3.220. A different package or init-event
 //! version fails before it can be reported as compatible.
 
-use std::ffi::OsString;
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
@@ -37,12 +36,14 @@ use harness_runtime_contract::{
 mod cycle_correlation;
 use cycle_correlation::cycle_ref;
 
+mod capability_transport;
 mod compatibility;
 mod error;
 mod host_runtime;
 mod permission;
 mod resident;
 mod runner_contract;
+pub use capability_transport::*;
 pub use compatibility::*;
 pub use error::{ClaudeError, ClaudeResult};
 pub use host_runtime::*;
@@ -69,7 +70,7 @@ const GRACEFUL_CLOSE_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Owned spawn configuration. The caller resolves Workspace/project cwd and
 /// supplies only the collaboration environment authorized for this member.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct ClaudeTeamRuntimeConfig {
     pub runner_path: PathBuf,
     pub cwd: PathBuf,
@@ -85,7 +86,7 @@ pub struct ClaudeTeamRuntimeConfig {
     pub disallowed_tools: Option<Vec<String>>,
     pub setting_sources: Vec<String>,
     pub resume_session_id: Option<String>,
-    pub environment: Vec<(OsString, OsString)>,
+    pub environment: harness_runtime_contract::CollaborationCapabilityEnvironment,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -219,10 +220,10 @@ impl ClaudeRunnerTransport {
         let start_frame = config.start_frame()?;
 
         let mut command = Command::new("node");
+        apply_collaboration_environment(&mut command, &config.environment);
         command
             .arg(&config.runner_path)
             .current_dir(&config.cwd)
-            .envs(config.environment.iter().cloned())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());

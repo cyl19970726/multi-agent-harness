@@ -60,6 +60,8 @@ mod member_run_snapshots_requested_provider_controls_before_start;
 mod native_session_open_target_rejects_unsupported_or_unsafe_sessions;
 #[path = "../general/provider_authority_never_borrows_a_sole_foreign_space_session.rs"]
 mod provider_authority_never_borrows_a_sole_foreign_space_session;
+#[path = "../general/provider_collaboration_capability_reaches_only_declared_agent_tool_boundaries.rs"]
+mod provider_collaboration_capability_reaches_only_declared_agent_tool_boundaries;
 #[path = "../general/provider_error_after_start_claim_applies_close_before_prebind_failure.rs"]
 mod provider_error_after_start_claim_applies_close_before_prebind_failure;
 #[path = "../general/provider_error_does_not_turn_pending_close_into_provider_receipt.rs"]

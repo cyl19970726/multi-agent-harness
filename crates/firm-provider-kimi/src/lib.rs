@@ -33,10 +33,12 @@
 //!   them: thinking is not evidence, replayable history, or peer-visible
 //!   state. The driver itself stays a faithful transport.
 
+mod capability_transport;
 mod compatibility;
 mod host_runtime;
 mod permission;
 
+pub use capability_transport::*;
 pub use compatibility::*;
 pub use host_runtime::*;
 pub use permission::*;

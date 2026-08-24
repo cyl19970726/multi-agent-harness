@@ -867,18 +867,15 @@ pub(super) struct MemberCollaborationEnvelope {
 }
 
 impl MemberCollaborationEnvelope {
-    pub(super) fn environment(&self, role_action_token: &str) -> Vec<(String, String)> {
+    pub(super) fn environment(
+        &self,
+        mut capability_environment: harness_runtime_contract::CollaborationCapabilityEnvironment,
+    ) -> harness_runtime_contract::CollaborationCapabilityEnvironment {
         let mut values = vec![
-            ("FIRM_TEAM_RUN_ID".to_string(), self.team_run_id.clone()),
-            ("FIRM_MEMBER_RUN_ID".to_string(), self.member_run_id.clone()),
             ("HARNESS_TEAM_RUN_ID".to_string(), self.team_run_id.clone()),
             (
                 "HARNESS_MEMBER_RUN_ID".to_string(),
                 self.member_run_id.clone(),
-            ),
-            (
-                "FIRM_MEMBER_ROLE_ACTION_TOKEN".to_string(),
-                role_action_token.to_string(),
             ),
         ];
         for (suffix, value) in [
@@ -903,8 +900,44 @@ impl MemberCollaborationEnvelope {
             values.push(("FIRM_WORK_VERSION".to_string(), version.to_string()));
             values.push(("HARNESS_WORK_VERSION".to_string(), version.to_string()));
         }
-        values
+        capability_environment.extend_non_secret(values);
+        capability_environment
     }
+}
+
+pub(super) fn collaboration_capability_envelope(
+    ledger: &TeamRunLedger,
+    member: &ProviderRuntimeProjection,
+    session: &harness_core::agentfirm_api::AgentSession,
+    role_action_token: &str,
+    mechanism: harness_runtime_contract::CollaborationCapabilityMechanism,
+) -> CliResult<harness_runtime_contract::CollaborationCapabilityEnvelope> {
+    ledger.require_supervisor_lease()?;
+    if session.agent_member_id != member.agent_member_id {
+        return Err(CliError::Usage(
+            "COLLABORATION_CAPABILITY_SESSION_MISMATCH: AgentSession is not owned by the exact AgentMember"
+                .into(),
+        ));
+    }
+    let secret =
+        harness_runtime_contract::CollaborationCapabilitySecret::new(role_action_token.to_string())
+            .map_err(|error| CliError::Usage(error.to_string()))?;
+    harness_runtime_contract::CollaborationCapabilityEnvelope::new(
+        secret,
+        harness_runtime_contract::CollaborationCapabilityBinding {
+            team_run_id: ledger.run_id.clone(),
+            member_run_id: member.id.clone(),
+            member_run_generation: member.runtime_generation,
+            agent_session_id: session.id.clone(),
+            agent_session_generation: session.runtime_generation,
+            node_daemon_id: session.node_daemon_id.clone(),
+            node_daemon_generation: session.node_daemon_generation,
+            supervisor_id: ledger.supervisor_id.clone(),
+            supervisor_generation: ledger.supervisor_generation,
+        },
+        mechanism,
+    )
+    .map_err(|error| CliError::Usage(error.to_string()))
 }
 
 pub(super) fn member_collaboration_envelope(

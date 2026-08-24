@@ -11,7 +11,6 @@
 //! package, composition fingerprint, or native session id fails before it can
 //! be reported as compatible.
 
-use std::ffi::OsString;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::PathBuf;
 use std::process::{Child, ChildStdin, Command, Stdio};
@@ -34,10 +33,12 @@ use harness_runtime_contract::{
     SemanticCapability, SteerProviderResult, SteerRequest, TeamRuntimeAdapter,
 };
 
+mod capability_transport;
 mod composition;
 mod error;
 mod permission;
 mod runner_contract;
+pub use capability_transport::*;
 use composition::*;
 pub use error::{DeepSeekError, DeepSeekResult};
 pub use permission::*;
@@ -64,7 +65,7 @@ const GRACEFUL_CLOSE_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Owned spawn configuration. The caller resolves Workspace/project cwd and
 /// supplies only the collaboration environment authorized for this member.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct DeepSeekTeamRuntimeConfig {
     pub runner_path: PathBuf,
     pub cwd: PathBuf,
@@ -80,7 +81,7 @@ pub struct DeepSeekTeamRuntimeConfig {
     pub disallowed_tools: Option<Vec<String>>,
     pub setting_sources: Vec<String>,
     pub resume_session_id: Option<String>,
-    pub environment: Vec<(OsString, OsString)>,
+    pub environment: harness_runtime_contract::CollaborationCapabilityEnvironment,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -233,7 +234,13 @@ impl DeepSeekRunnerTransport {
         command
             .arg(&config.runner_path)
             .current_dir(&config.cwd)
-            .envs(config.environment.iter().cloned())
+            .envs(
+                config
+                    .environment
+                    .as_pairs()
+                    .iter()
+                    .map(|(key, value)| (key, value)),
+            )
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());

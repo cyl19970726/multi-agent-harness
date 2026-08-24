@@ -499,8 +499,18 @@ pub(super) fn run_codex_member_shared(
         &member_row,
         None,
     )?;
-    let collaboration_env = envelope.environment(&context.role_action_token);
     let provider_session = require_member_provider_session_authority(ledger, &member_row, false)?;
+    let capability = collaboration_capability_envelope(
+        ledger,
+        &member_row,
+        &provider_session,
+        &context.role_action_token,
+        harness_provider_codex::COLLABORATION_CAPABILITY_MECHANISM,
+    )?;
+    let capability_environment =
+        harness_provider_codex::collaboration_agent_tool_environment(&capability)
+            .map_err(|error| CliError::Usage(error.to_string()))?;
+    let collaboration_env = envelope.environment(capability_environment);
     let permission_mapping = crate::provider_adapter::map_permission(
         &provider_session.provider_kind,
         provider_session.effective_permission_ceiling,
@@ -531,7 +541,7 @@ pub(super) fn run_codex_member_shared(
                 .as_ref()
                 .map(|session| session.native_session_id.as_str()),
             member_name: &member.name,
-            collaboration_env: &collaboration_env,
+            collaboration_env: collaboration_env.as_pairs(),
             plan_mode: false,
             sandbox: permission_mapping.native_sandbox.as_str(),
             approval_policy: permission_mapping.native_approval.as_str(),
@@ -671,8 +681,7 @@ pub(super) fn run_codex_member_shared(
     }
     member_row.status = MemberRunStatus::Idle;
     member_row.last_event_at = Some(now_string());
-    let (live_control, registration) =
-        register_live_member_control(&member_row, &context.role_action_token, 16);
+    let (live_control, registration) = register_live_member_control(&member_row, &capability, 16);
     // Publish the process-local control handle before making the native
     // binding observable. A Host that sees the durable binding must never
     // race the small window where Close would incorrectly report that the
@@ -786,16 +795,17 @@ pub(super) fn run_claude_agent_sdk_team_member_shared(
         settle_provider_effect_not_applied(ledger, &process_effect, error.to_string())?;
         return Err(error);
     }
-    let environment = envelope
-        .environment(&context.role_action_token)
-        .into_iter()
-        .map(|(key, value)| {
-            (
-                std::ffi::OsString::from(key),
-                std::ffi::OsString::from(value),
-            )
-        })
-        .collect();
+    let capability = collaboration_capability_envelope(
+        ledger,
+        &member_row,
+        &process_effect.target_session,
+        &context.role_action_token,
+        harness_provider_claude::COLLABORATION_CAPABILITY_MECHANISM,
+    )?;
+    let capability_environment =
+        harness_provider_claude::collaboration_agent_tool_environment(&capability)
+            .map_err(|error| CliError::Usage(error.to_string()))?;
+    let environment = envelope.environment(capability_environment);
     let mut adapter = match crate::claude_team_runtime::ClaudeTeamRuntime::spawn(
         crate::claude_team_runtime::ClaudeTeamRuntimeConfig {
             runner_path: runner,
@@ -890,8 +900,7 @@ pub(super) fn run_claude_agent_sdk_team_member_shared(
     }
     member_row.status = MemberRunStatus::Idle;
     member_row.last_event_at = Some(now_string());
-    let (live_control, registration) =
-        register_live_member_control(&member_row, &context.role_action_token, 16);
+    let (live_control, registration) = register_live_member_control(&member_row, &capability, 16);
     ledger.save_member_run(&expected, &member_row)?;
     crate::runtime_adapter::run_team_member_with_adapter(
         ledger,
@@ -1009,47 +1018,49 @@ pub(super) fn run_deepseek_harness_team_member_shared(
         process_effect.target_session.effective_permission_ceiling,
     )
     .0;
-    let mut environment = envelope
-        .environment(&context.role_action_token)
-        .into_iter()
-        .map(|(key, value)| {
-            (
-                std::ffi::OsString::from(key),
-                std::ffi::OsString::from(value),
-            )
-        })
-        .collect::<Vec<_>>();
+    let capability = collaboration_capability_envelope(
+        ledger,
+        &member_row,
+        &process_effect.target_session,
+        &context.role_action_token,
+        harness_provider_deepseek::COLLABORATION_CAPABILITY_MECHANISM,
+    )?;
+    let capability_environment =
+        harness_provider_deepseek::collaboration_agent_tool_environment(&capability)
+            .map_err(|error| CliError::Usage(error.to_string()))?;
+    let mut environment = envelope.environment(capability_environment);
     let dsh_home = std::env::var_os("DSH_HOME")
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".dsh")))
         .ok_or_else(|| {
             CliError::Usage("DEEPSEEK_HARNESS_HOME_UNAVAILABLE: set DSH_HOME or HOME".to_string())
         })?;
-    environment.extend([
+    environment.extend_non_secret([
         (
-            std::ffi::OsString::from("DSH_CWD"),
-            context.cwd.as_os_str().to_os_string(),
+            "DSH_CWD".to_string(),
+            context.cwd.to_string_lossy().into_owned(),
         ),
         (
-            std::ffi::OsString::from("DSH_SESSION_ROOT"),
+            "DSH_SESSION_ROOT".to_string(),
             dsh_home
                 .join("sessions")
                 .join("star-harness")
-                .into_os_string(),
+                .to_string_lossy()
+                .into_owned(),
         ),
         (
-            std::ffi::OsString::from("DSH_PERMISSION_MODE"),
-            std::ffi::OsString::from(permission_mode),
+            "DSH_PERMISSION_MODE".to_string(),
+            permission_mode.to_string(),
         ),
         (
-            std::ffi::OsString::from("DSH_SYSTEM_PROMPT"),
-            std::ffi::OsString::from(
+            "DSH_SYSTEM_PROMPT".to_string(),
+            String::from(
                 "You are a durable Star Harness AgentMember. Work and identity-first Messages are the coordination authority; DeepSeek Harness goals or plans are not. Use the available tools to perform requested repository work and Supervisor-bound `firm member message` / `firm member work` Role Actions. A provider turn ending is not semantic success: when Work asks you to submit, run the exact Role Action and leave Host acceptance to the Host. Never claim a command succeeded unless its tool result proves it.",
             ),
         ),
         (
-            std::ffi::OsString::from("NODE_USE_ENV_PROXY"),
-            std::ffi::OsString::from("1"),
+            "NODE_USE_ENV_PROXY".to_string(),
+            "1".to_string(),
         ),
     ]);
     let mut adapter = match crate::deepseek_team_runtime::DeepSeekTeamRuntime::spawn(
@@ -1142,8 +1153,7 @@ pub(super) fn run_deepseek_harness_team_member_shared(
     }
     member_row.status = MemberRunStatus::Idle;
     member_row.last_event_at = Some(now_string());
-    let (live_control, registration) =
-        register_live_member_control(&member_row, &context.role_action_token, 16);
+    let (live_control, registration) = register_live_member_control(&member_row, &capability, 16);
     ledger.save_member_run(&expected, &member_row)?;
     crate::runtime_adapter::run_team_member_with_adapter(
         ledger,
@@ -1184,8 +1194,18 @@ pub(super) fn run_kimi_member_shared(
         &member_row,
         None,
     )?;
-    let collaboration_env = envelope.environment(&context.role_action_token);
     let provider_session = require_member_provider_session_authority(ledger, &member_row, false)?;
+    let capability = collaboration_capability_envelope(
+        ledger,
+        &member_row,
+        &provider_session,
+        &context.role_action_token,
+        harness_provider_kimi::COLLABORATION_CAPABILITY_MECHANISM,
+    )?;
+    let capability_environment =
+        harness_provider_kimi::collaboration_agent_tool_environment(&capability)
+            .map_err(|error| CliError::Usage(error.to_string()))?;
+    let collaboration_env = envelope.environment(capability_environment);
     crate::provider_adapter::map_permission(
         &provider_session.provider_kind,
         provider_session.effective_permission_ceiling,
@@ -1213,7 +1233,7 @@ pub(super) fn run_kimi_member_shared(
             .native_session
             .as_ref()
             .map(|session| session.native_session_id.as_str()),
-        &collaboration_env,
+        collaboration_env.as_pairs(),
     ) {
         Ok(client) => client,
         Err(error) => {
@@ -1398,8 +1418,7 @@ pub(super) fn run_kimi_member_shared(
     }
     member_row.status = MemberRunStatus::Idle;
     member_row.last_event_at = Some(now_string());
-    let (live_control, registration) =
-        register_live_member_control(&member_row, &context.role_action_token, 16);
+    let (live_control, registration) = register_live_member_control(&member_row, &capability, 16);
     ledger.save_member_run(&expected, &member_row)?;
     crate::runtime_adapter::run_team_member_with_adapter(
         ledger,

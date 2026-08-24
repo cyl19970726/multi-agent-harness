@@ -32,6 +32,9 @@ use std::os::unix::process::CommandExt;
 use harness_core::agentfirm_api::PermissionCeiling;
 use harness_runtime_host::kill_process_tree;
 
+mod capability_transport;
+pub use capability_transport::*;
+
 pub type PiResult<T> = Result<T, PiError>;
 
 #[derive(Debug, thiserror::Error)]

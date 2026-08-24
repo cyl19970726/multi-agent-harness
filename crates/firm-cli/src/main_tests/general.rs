@@ -866,6 +866,37 @@ fn ensure_test_runtime_fabric(
     .expect("materialize canonical test AgentSessions and TeamMemberships");
 }
 
+fn test_collaboration_capability(
+    store: &HarnessStore,
+    lease: &TeamSupervisorLease,
+    member: &ProviderRuntimeProjection,
+    token: &str,
+) -> harness_runtime_contract::CollaborationCapabilityEnvelope {
+    let session = store
+        .fabric_agent_sessions(&lease.execution_space_id)
+        .expect("read canonical test AgentSessions")
+        .into_iter()
+        .find(|session| session.agent_member_id == member.agent_member_id)
+        .expect("exact test AgentSession");
+    harness_runtime_contract::CollaborationCapabilityEnvelope::new(
+        harness_runtime_contract::CollaborationCapabilitySecret::new(token.to_string())
+            .expect("valid test capability secret"),
+        harness_runtime_contract::CollaborationCapabilityBinding {
+            team_run_id: member.team_run_id.clone(),
+            member_run_id: member.id.clone(),
+            member_run_generation: member.runtime_generation,
+            agent_session_id: session.id,
+            agent_session_generation: session.runtime_generation,
+            node_daemon_id: session.node_daemon_id,
+            node_daemon_generation: session.node_daemon_generation,
+            supervisor_id: lease.supervisor_id.clone(),
+            supervisor_generation: lease.generation,
+        },
+        harness_runtime_contract::CollaborationCapabilityMechanism::DirectAgentToolEnvironment,
+    )
+    .expect("test collaboration capability")
+}
+
 fn ensure_foreign_test_message_fabric(
     store: &HarnessStore,
     created: &CreatedTeamRun,

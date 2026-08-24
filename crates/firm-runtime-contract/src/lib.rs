@@ -22,6 +22,9 @@ use harness_core::{
 };
 use thiserror::Error;
 
+mod collaboration_capability;
+pub use collaboration_capability::*;
+
 /// Per-capability execution status. Every claimed status is accompanied by
 /// provider evidence in [`CapabilityBinding`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
