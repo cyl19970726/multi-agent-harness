@@ -538,11 +538,11 @@ pub(super) fn prepare_provider_process_effect(
     };
     let (execution_space_id, canonical_member, session) =
         provider_runtime_subject_for_member(ledger, member)
-            .map_err(|error| CliError::ProviderAdmissionRejected(error.to_string()))?;
+            .map_err(classify_pre_effect_provider_admission_error)?;
     let lease = ledger
         .store
         .latest_node_daemon_lease(&session.node_id)
-        .map_err(|error| CliError::ProviderAdmissionRejected(error.to_string()))?
+        .map_err(|error| classify_pre_effect_provider_admission_error(error.into()))?
         .filter(|lease| {
             lease.daemon_id == session.node_daemon_id
                 && lease.generation == session.node_daemon_generation
@@ -624,7 +624,7 @@ pub(super) fn prepare_provider_process_effect(
     let admission = ledger
         .store
         .prepare_runtime_command(&context, &command, current_unix_ms_u64(), &now_string())
-        .map_err(|error| CliError::ProviderAdmissionRejected(error.to_string()))?;
+        .map_err(|error| classify_pre_effect_provider_admission_error(error.into()))?;
     if admission.replayed {
         return Err(CliError::RuntimeRecoveryRequired(format!(
             "provider process command {} already exists as {:?}/{:?}; reconcile before spawn",
