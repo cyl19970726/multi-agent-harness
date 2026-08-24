@@ -75,9 +75,7 @@ impl HarnessStore {
                 backoff_ms = backoff_ms.saturating_mul(2).min(25);
             }
         }
-        Err(StoreError::Conflict(
-            "CURRENT_WORK_DELIVERY_SNAPSHOT_UNSTABLE: canonical trust authority changed throughout the bounded stabilization window".into(),
-        ))
+        Err(StoreError::CurrentWorkDeliverySnapshotUnstable)
     }
 
     fn current_work_deliveries_once(

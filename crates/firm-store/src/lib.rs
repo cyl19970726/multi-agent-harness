@@ -213,6 +213,10 @@ pub enum StoreError {
     Json(#[from] serde_json::Error),
     #[error("timed out waiting for store write lock {0}")]
     LockTimeout(String),
+    #[error(
+        "CURRENT_WORK_DELIVERY_SNAPSHOT_UNSTABLE: canonical trust authority changed throughout the bounded stabilization window"
+    )]
+    CurrentWorkDeliverySnapshotUnstable,
     #[error("conflict: {0}")]
     Conflict(String),
     #[error("invalid company os record: {0}")]

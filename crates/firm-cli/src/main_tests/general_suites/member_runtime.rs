@@ -94,5 +94,7 @@ mod supervisor_heartbeat_diagnostics_name_run_generation_error_and_action;
 mod supervisor_renewal_error_classification;
 #[path = "../general/team_run_materializes_canonical_member_runs_in_its_execution_space.rs"]
 mod team_run_materializes_canonical_member_runs_in_its_execution_space;
+#[path = "../general/transient_idle_work_delivery_snapshot_contention_retries_without_provider_recovery.rs"]
+mod transient_idle_work_delivery_snapshot_contention_retries_without_provider_recovery;
 #[path = "../general/unknown_provider_runtime_start_fails_fast.rs"]
 mod unknown_provider_runtime_start_fails_fast;
