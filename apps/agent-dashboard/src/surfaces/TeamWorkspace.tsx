@@ -26,6 +26,9 @@ export function TeamWorkspace({apiUrl,space,project,company,teamId,teamRunId,ref
   const [refetch,setRefetch] = useState(0);
   const [replyTo,setReplyTo] = useState<MessageSummary|null>(null);
   const workspaceScrollRef = useRef<HTMLElement>(null);
+  const committedIdentityRef = useRef<string|null>(null);
+  const observedRefreshKeyRef = useRef(refreshKey);
+  const requestIdentity = `${apiUrl}\u0000${space}\u0000${project}\u0000${company??""}\u0000${teamId}`;
   const tab:TeamTab = selection.teamTab ?? "works";
   const hostMode = selection.teamMode === "host";
   const retry = () => setRefetch((value) => value+1);
@@ -43,8 +46,9 @@ export function TeamWorkspace({apiUrl,space,project,company,teamId,teamRunId,ref
   },[tab,teamId]);
   useEffect(() => {
     let live=true;
+    const identityChanged=committedIdentityRef.current!==requestIdentity;
     setLoading(true);
-    setView(null);
+    if(identityChanged){setView(null);setViewerContext(null);}
     setError(null);
     fetchRoleView<ViewerContextData>(apiUrl,"/v1/views/viewer-context",{space,project,company}).then(async (context) => {
       if(!live)return;
@@ -59,10 +63,20 @@ export function TeamWorkspace({apiUrl,space,project,company,teamId,teamRunId,ref
         return;
       }
       const value=await fetchRoleView<TeamWorkspaceData>(apiUrl,`/v1/views/team-workspace/${encodeURIComponent(teamId)}`,{space,project,company});
-      if(live){setView(value);setError(null);}
+      if(live){committedIdentityRef.current=requestIdentity;setView(value);setError(null);}
     }).catch((reason) => { if(live)setError(String(reason)); }).finally(() => { if(live)setLoading(false); });
     return () => { live=false; };
-  },[apiUrl,space,project,company,teamId,refreshKey,refetch]);
+  },[apiUrl,space,project,company,teamId,requestIdentity,refetch]);
+  // Ambient snapshots may advance faster than an authenticated RoleView can
+  // load. Never let that traffic repeatedly cancel the first request. Once
+  // the stream is quiet, coalesce it into one background revalidation while
+  // preserving the last committed TeamWorkspace truth.
+  useEffect(() => {
+    if(observedRefreshKeyRef.current===refreshKey)return;
+    observedRefreshKeyRef.current=refreshKey;
+    const timer=window.setTimeout(()=>setRefetch(value=>value+1),500);
+    return()=>window.clearTimeout(timer);
+  },[refreshKey]);
   const authority=viewerContext?.data.teams.find((team)=>team.team_id===teamId||team.team_run_ids.includes(teamId));
   const canonicalSelection=view&&authority&&view.data.team.team_id===authority.team_id?canonicalConversationSelection(selection,view.data,authority):null;
   useEffect(() => { if(canonicalSelection)onSelectionReplace(canonicalSelection); },[canonicalSelection?.teamConversation,canonicalSelection?.memberRunId]);

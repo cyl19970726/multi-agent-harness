@@ -69,6 +69,7 @@ export function AgentConversationWorkspace({
   const profileTriggerRef=useRef<HTMLButtonElement>(null);
   const profileCloseRef=useRef<HTMLButtonElement>(null);
   const workspaceRef=useRef<HTMLElement>(null);
+  const committedViewRef=useRef<RoleView<AgentWorkspaceData>|null>(null);
   // Path of the last committed view. Loading (and the composer lock it drives)
   // only applies while no view exists for the current request path; background
   // refetches revalidate silently against the committed view.
@@ -78,23 +79,27 @@ export function AgentConversationWorkspace({
   const requestQuery=new URLSearchParams();
   if(agentId)requestQuery.set("agent_id",agentId);
   const requestPath=`/v1/views/agent-workspace/${encodeURIComponent(routeIdentity)}${requestQuery.size?`?${requestQuery.toString()}`:""}`;
+  const requestIdentity=`${apiUrl}\u0000${space}\u0000${project}\u0000${company??""}\u0000${requestPath}`;
+  const expectedIdentityRef=useRef(requestIdentity);
+  expectedIdentityRef.current=requestIdentity;
 
   useEffect(()=>{
     let live=true;
-    if(committedPathRef.current!==requestPath)setLoading(true);
+    if(committedPathRef.current!==requestIdentity)setLoading(true);
     setError(null);
     fetchRoleView<AgentWorkspaceData>(apiUrl,requestPath,{space,project,company})
       .then((next)=>{if(live){
-        const identityChanged=committedPathRef.current!==requestPath;
-        committedPathRef.current=requestPath;setView(next);setViewRequestPath(requestPath);setError(null);
+        const identityChanged=committedPathRef.current!==requestIdentity;
+        const committed=identityChanged?next:mergeAgentWorkspaceViews(next,committedViewRef.current)??next;
+        committedPathRef.current=requestIdentity;committedViewRef.current=committed;setView(committed);setViewRequestPath(requestIdentity);setError(null);
         // A background revalidate keeps the selection alive; an identity switch
         // or a selection whose canonical record left the projection honestly drops it.
-        setContextSelection(current=>identityChanged?null:revalidateContextSelection(current,next.data));
+        setContextSelection(current=>identityChanged?null:revalidateContextSelection(current,committed.data));
       };})
       .catch((reason)=>{if(live)setError(String(reason));})
       .finally(()=>{if(live)setLoading(false);});
     return()=>{live=false;};
-  },[apiUrl,space,project,company,requestPath,refresh]);
+  },[apiUrl,space,project,company,requestPath,requestIdentity,refresh]);
   // Snapshot traffic can change continuously while providers are active. It
   // must not repeatedly cancel the first owner-private RoleView load. Recheck
   // only after the ambient snapshot has been quiet briefly; live activity has
@@ -114,7 +119,7 @@ export function AgentConversationWorkspace({
     return()=>window.cancelAnimationFrame(frame);
   },[mode,selection.teamConversation]);
 
-  const currentView=viewRequestPath===requestPath?view:null;
+  const currentView=viewRequestPath===requestIdentity?view:null;
   const privateData=currentView?.data??null;
   const liveProviderStream=useTeamSessionLiveActivity({
     apiUrl,space,project,company,
@@ -142,14 +147,18 @@ export function AgentConversationWorkspace({
   const currentLiveActivity=selectAgentWorkspaceLiveActivity({activity:liveProviderStream.activity,projectionScope:data.projection_scope,executionSpaceId:space,projectId:project,teamRunId:data.team.latest_run_id,memberRunId:selectedRunId,memberRunGeneration:selected.runtime_generation,sessionId:currentSession?.agent_session_id??sessionProjection?.agent_session_id??null,sessionGeneration:currentSession?.agent_session_generation??sessionProjection?.agent_session_generation??null});
   const loadOlderSessionEvents=async()=>{
     if(loadingOlder||!sessionProjection?.page.has_more||sessionProjection.page.next_before_position==null)return;
+    const requestedIdentity=requestIdentity;
     setLoadingOlder(true);
     try{
       const olderQuery=new URLSearchParams(requestQuery);
       olderQuery.set("session_before",String(sessionProjection.page.next_before_position));
       const olderPath=`/v1/views/agent-workspace/${encodeURIComponent(routeIdentity)}?${olderQuery.toString()}`;
       const older=await fetchRoleView<AgentWorkspaceData>(apiUrl,olderPath,{space,project,company});
-      setView(current=>mergeAgentWorkspaceViews(current,older));
-    }catch(reason){setError(String(reason));}finally{setLoadingOlder(false);}
+      if(expectedIdentityRef.current!==requestedIdentity)return;
+      const merged=mergeAgentWorkspaceViews(committedViewRef.current,older);
+      committedViewRef.current=merged;
+      setView(merged);
+    }catch(reason){if(expectedIdentityRef.current===requestedIdentity)setError(String(reason));}finally{setLoadingOlder(false);}
   };
   const currentWork=data.works.find(work=>work.work_id===(contextSelection?.kind==="work"?contextSelection.work.work_id:data.context_summary.current_work_id));
   const selectAgent=(agent:AgentWorkspaceRosterItem)=>{

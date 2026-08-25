@@ -9,6 +9,7 @@ import { createServer } from "vite";
 const dashboardRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const capturedSourceSha = process.env.FIRM_BUILD_GIT_REV ?? null;
 const teamConsoleOnly = process.env.TEAM_CONSOLE_ONLY === "1";
+const refreshChurnOnly = process.env.TEAM_REFRESH_CHURN_ONLY === "1";
 if (capturedSourceSha !== null) assert.match(capturedSourceSha,/^[0-9a-f]{40}$/,"FIRM_BUILD_GIT_REV must identify the frozen captured source");
 const runtimeFabric={agent_identities:[],agent_sessions:[],team_memberships:[],work_execution_bindings:[],messages:[],message_deliveries:[]};
 const work={work_id:"work-roleview-1",work_revision:3,team_id:"team-roleview-1",mission_id:"mission-roleview-1",title:"Ship authenticated War Room parity",context_markdown:"Use only **RoleView truth**.",completion_criteria_markdown:"Responsive UI and exact semantic writes.",claim_mode:"host_assign",eligible_member_ids:["member-roleview-1"],prerequisite_work_ids:[],successor_work_ids:[],readiness:{state:"not_claimable",reason_codes:["fixture_state"],unsatisfied_prerequisite_work_ids:[],failed_or_cancelled_prerequisite_work_ids:[]},blocker_reason:null,result_summary:"Ready for Host review.",artifact_refs:["artifact://war-room"],check_refs:["check://tsc"],latest_event:{id:"event-roleview-1",kind:"submitted",actor_ref:{kind:"agent_member",id:"member-roleview-1"},created_at:"2026-08-11T01:00:00Z"},owner_actor_ref:{kind:"agent_member",id:"member-roleview-1"},current_member_run_ref:"member-run-roleview-1",phase:"review",condition:"normal",resolution:null,priority:"high",module_refs:[],gate_summary:{required:1,passed:1,failed:0,pending:0,waived:0,stale:0},latest_report_ref:"report-1",latest_finding_refs:[],latest_failure_ref:null,delivery_summary:{queued:0,claimed:0,provider_received:1,failed:0,expired:0,invalidated:0,recovery_class:"none"},runtime_summary:{state:"idle",generation:2,freshness:"current"},workspace_summary:{binding_id:"workspace-1",lifecycle:"ready",safety:"safe"},delegation_summary:{incoming:0,outgoing:0,attention:false},updated_at:"2026-08-11T01:00:00Z"};
@@ -73,6 +74,7 @@ const browser=await chromium.launch({headless:true});
 try {
   const evidenceDir=resolve(process.env.WAR_ROOM_EVIDENCE_DIR??join(dashboardRoot,"..","..",".visual-evidence","agent-team-war-room-roleviews","final-exact"));
   await mkdir(evidenceDir,{recursive:true});
+  if(!refreshChurnOnly){
   const scenarios=[...([{width:1440,height:1000},{width:900,height:1180},{width:390,height:844},{width:320,height:844}].map(viewport=>({kind:"populated",viewport,workspace:teamWorkspace,host:hostConsole}))),...([{width:1440,height:1000},{width:390,height:844},{width:320,height:844}].map(viewport=>({kind:"empty",viewport,workspace:emptyTeamWorkspace,host:emptyHostConsole})))];
   for (const scenario of scenarios) {
     const {viewport}=scenario;
@@ -231,6 +233,17 @@ try {
     allowTeamView=true;
     await page.getByRole("button",{name:"Retry authenticated view"}).click();
     await page.locator('[data-testid="authenticated-team-workspace"]').waitFor();
+    await page.close();
+  }
+  }
+  {
+    const page=await browser.newPage({viewport:{width:1440,height:1000}});
+    await page.addInitScript(()=>{window.__AGENTFIRM_BOOTSTRAP__={capabilityToken:"fixture-token"};class BusyEventSource{constructor(){this.timer=null;}addEventListener(kind,listener){if(kind!=="snapshot")return;this.timer=setInterval(()=>listener(new MessageEvent("snapshot",{data:JSON.stringify({generated_at:new Date().toISOString(),execution_space_id:"fixture-space",stream_epoch:"busy-team-load"})})),25);}close(){if(this.timer)clearInterval(this.timer);}}Object.defineProperty(window,"EventSource",{value:BusyEventSource,configurable:true});});
+    let teamWorkspaceReads=0;
+    await page.route("**/v1/**",async(route)=>{const url=new URL(route.request().url());let body;if(url.pathname==="/v1/meta")body={schema_version:"agentfirm.role_views.v1",protocol_version:"agentfirm-member-trust/1",action_manifest_version:"agentfirm.role_actions.v1",capability_auth:"x-agentfirm-token",build_sha:"fbc401646f66b69a0269622c489441cfe643b54f"};else if(url.pathname==="/v1/projects")body={projects:[{id:"fixture-project",is_current:true}]};else if(url.pathname==="/v1/spaces")body={spaces:[{id:"fixture-space",is_current:true}]};else if(url.pathname==="/v1/companies")body={companies:[]};else if(url.pathname==="/v1/views/viewer-context")body=viewerContext;else if(url.pathname==="/v1/snapshot"||/^\/v1\/team-runs\/[^/]+\/snapshot$/.test(url.pathname))body={generated_at:new Date().toISOString(),execution_space_id:"fixture-space",teams:[],team_runs:[],execution_nodes:[],company_os:{}};else if(url.pathname.includes("team-workspace")){teamWorkspaceReads+=1;await new Promise(resolve=>setTimeout(resolve,250));body=teamWorkspace;}else return route.fulfill({status:404,contentType:"application/json",body:JSON.stringify({error:{message:url.pathname}})});return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(body)});});
+    await page.goto(`${base}/?surface=team&team=run-roleview-1&space=fixture-space&project=fixture-project`,{waitUntil:"domcontentloaded"});
+    await page.locator('[data-testid="authenticated-team-workspace"]').waitFor({timeout:2000});
+    assert.equal(teamWorkspaceReads,1,"ambient snapshot churn restarted the initial authenticated TeamWorkspace request");
     await page.close();
   }
   console.log("Team RoleView War Room browser check: PASS");
