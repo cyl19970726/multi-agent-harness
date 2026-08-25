@@ -230,7 +230,7 @@ function createCanonicalMember(id, name, role, commandEnv = env) {
         provider_profile_ref: "codex-default",
         model_preference: null,
         workspace_policy: "managed-worktree",
-        permission_ceiling: "workspace_write",
+        permission_ceiling: "full_access",
         organization_status: "active",
         version: 1,
         created_by: { kind: "human", id: "dashboard-runtime-owner" },
