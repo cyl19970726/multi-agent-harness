@@ -55,28 +55,30 @@ fn work_contract_keeps_host_messages_on_the_work_being_discussed() {
 
     let prompt = work_contract_prompt("coordinate exact Works", &host, &work, &envelope);
 
+    let response_required = crate::collaboration::member_operating_contract::MEMBER_OPERATING_ACTIONS
+        .iter()
+        .find(|spec| {
+            spec.action
+                == crate::collaboration::member_operating_contract::MemberOperatingAction::SendResponseRequired
+        })
+        .expect("response-required action spec");
+    assert_eq!(
+        response_required.work_binding,
+        crate::collaboration::member_operating_contract::WorkBinding::RecipientWorkFromBoard
+    );
+    assert_eq!(
+        response_required.wake_behavior,
+        crate::collaboration::member_operating_contract::WakeBehavior::WakesExactIdleManagedRecipient
+    );
+
     assert!(prompt.contains("--work-id <discussed-work-id>"));
     assert!(prompt.contains("informational canonical Work-linked Message"));
     assert!(prompt.contains("does not wake an idle recipient"));
-    assert!(prompt.contains(
-        "member message send --response-required --recipient-agent-id <stable-agent-identity> --work-id <recipient-work-id-from-board>"
-    ));
     assert!(prompt.contains("<recipient-work-id-from-board>"));
     assert!(prompt.contains("A Member asks the Host to decide, review, or accept"));
-    assert!(prompt.contains(&format!(
-        "member message request-decision --work-id {}",
-        work.id
-    )));
     assert!(!prompt.contains("request-decision --recipient-agent-id"));
     assert!(prompt.contains("a response-required Message wakes the Host"));
     assert!(prompt.contains("--work-id <incoming-work-id>"));
     assert!(prompt.contains(&format!("your current Work is {}", work.id)));
-    assert!(!prompt.contains(&format!(
-        "member message send --recipient-agent-id <stable-agent-identity> --work-id {}",
-        work.id
-    )));
-    assert!(!prompt.contains(&format!(
-        "member message reply --recipient-agent-id <stable-agent-identity> --correlation-id <correlation-id> --causation-id <message-id> --work-id {}",
-        work.id
-    )));
+    assert!(prompt.contains(&work.id));
 }

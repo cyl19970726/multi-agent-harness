@@ -1008,15 +1008,13 @@ pub(crate) fn team_messages_prompt(
             message.body
         ));
         if let Some(sender) = message.sender.as_ref() {
-            let work_argument = message
-                .work_id
-                .as_deref()
-                .map(|work_id| format!(" --work-id {work_id}"))
-                .unwrap_or_default();
-            prompt.push_str(&format!(
-                "Reply canonically with: \"$HARNESS_BIN\" member message reply --recipient-agent-id {} --correlation-id {} --causation-id {}{} --body '<markdown>'\n",
-                sender.id, message.correlation_id, message.id, work_argument
-            ));
+            let reply_command = crate::collaboration::member_operating_contract::render_incoming_message_reply_command(
+                &sender.id,
+                &message.correlation_id,
+                &message.id,
+                message.work_id.as_deref(),
+            );
+            prompt.push_str(&format!("Reply canonically with: {reply_command}\n"));
         } else {
             prompt.push_str(
                 "This historical Message has no typed sender identity. Resolve the sender's stable AgentIdentity from the Team roster before replying.\n",
@@ -1049,6 +1047,9 @@ pub(super) fn work_contract_prompt(
         })
         .collect::<Vec<_>>()
         .join("\n");
+    let member_operating_contract =
+        crate::collaboration::member_operating_contract::MemberOperatingContract::new(&work.id)
+            .render_provider_prompt();
     format!(
         "You are {name}, the {role} member of Agent Team run \"{objective}\".\n\
          \n\
@@ -1071,10 +1072,7 @@ pub(super) fn work_contract_prompt(
          - Inspect the latest version before every transition: \"$HARNESS_BIN\" team-run work show --work-id {work_id}\n\
          - Ordinary canonical Message is conversation only. Messages never change Work ownership or status. Link each discussion to the exact Work being discussed; your current Work is {work_id}. A Host assigning, retrying, or reviewing another member must use that member's exact Work id from the board, never the Host Work id.\n\
          - Read actionable mail through the same exact-self Supervisor binding with: \"$HARNESS_BIN\" member inbox --all --json.\n\
-         - Send an informational canonical Work-linked Message through the authenticated Member Role Action, which does not wake an idle recipient, with: \"$HARNESS_BIN\" member message send --recipient-agent-id <stable-agent-identity> --work-id <discussed-work-id> --body '<markdown>'. For ordinary member progress, `<discussed-work-id>` is {work_id}. The bound command derives your sender identity and live runtime scope; never select a sender identity.\n\
-         - When a Host needs a Member to act, send response-required mail so that exact idle managed recipient gets a provider round: \"$HARNESS_BIN\" member message send --response-required --recipient-agent-id <stable-agent-identity> --work-id <recipient-work-id-from-board> --body '<action requested, acceptance, next step>'. Use this for Host assignment/progress/retry, and never use the Host Work id for another member's action.\n\
-         - Reply with the exact correlation, causation, and Work id printed beside an incoming Message: \"$HARNESS_BIN\" member message reply --recipient-agent-id <stable-agent-identity> --correlation-id <correlation-id> --causation-id <message-id> --work-id <incoming-work-id> --body '<markdown>'. Never replace the incoming Work id with your own Work id.\n\
-         - A Member asks the Host to decide, review, or accept with: \"$HARNESS_BIN\" member message request-decision --work-id {work_id} --body '<decision needed, options, recommendation>'. This command routes to the Host; a response-required Message wakes the Host but never transfers or accepts Work.\n\
+{member_operating_contract}\n\
          - If blocked, inspect the latest version, then run: \"$HARNESS_BIN\" member work block --work-id {work_id} --expected-version <latest-version> --reason '<reason>'; follow it with a concise Work-linked Message. Resume with member work resume and the next exact version.\n\
          - When complete, inspect the latest version, then run: \"$HARNESS_BIN\" member work submit --work-id {work_id} --expected-version <latest-version> --result-summary '<result>' --candidate-revision '<exact-revision>' --artifact-ref '<artifact>' --check-ref '<check>'. Host acceptance, not provider completion, moves Work to done.\n\
          - You may propose scoped follow-up Work, and may use provider-native subagents as implementation details.\n\
