@@ -33,6 +33,96 @@ rejectText(
   /firm-provider-|firm-cli|firm-store|firm-application/,
   "runtime contract must remain provider- and composition-neutral",
 );
+
+const runtimeContractRoot = "crates/firm-runtime-contract/src";
+const runtimeContractLib = `${runtimeContractRoot}/lib.rs`;
+const runtimeContractModules = new Map([
+  ["cycle", [
+    "pub struct CycleRuntimeObservation",
+    "pub struct ExecutionCycleOutcome",
+    "pub struct CycleControl",
+    "pub trait TeamRuntimeAdapter",
+  ]],
+  ["control", [
+    "pub enum ProviderControlAction",
+    "pub enum NativeControlPrimitive",
+    "pub struct ProviderControlPlan",
+    "pub trait ProviderNativeControl",
+    "pub enum ControlIntent",
+    "pub struct ControlRequest",
+  ]],
+  ["provider_capabilities", [
+    "pub enum CapabilityStatus",
+    "pub struct CapabilityBinding",
+    "pub enum SemanticCapability",
+    "pub struct CapabilityResolver",
+    "pub struct RuntimeBindingFence",
+  ]],
+  ["receipt_and_terminal", [
+    "pub struct ProviderTerminalFailure",
+    "pub struct EffectReceipt",
+    "pub struct RuntimeObservation",
+    "pub struct QuiesceReceipt",
+    "pub struct ReleaseReceipt",
+    "pub struct MemberRuntimeCloseReceipt",
+  ]],
+  ["collaboration_capability", [
+    "pub struct CollaborationCapabilityEnvelope",
+    "pub struct CollaborationCapabilityBinding",
+  ]],
+  ["conformance", [
+    "pub trait RuntimeAdapter",
+    "pub fn preflight_effect",
+    "pub struct CompositionLifecycle",
+    "pub struct OneShotDisposer",
+    "pub enum RuntimeContractError",
+  ]],
+]);
+const runtimeContractSources = fs
+  .readdirSync(path.join(root, runtimeContractRoot), { withFileTypes: true })
+  .filter((entry) => entry.isFile() && entry.name.endsWith(".rs"))
+  .map((entry) => `${runtimeContractRoot}/${entry.name}`);
+const runtimeContractProductionSources = runtimeContractSources.filter(
+  (source) => !source.endsWith("/tests.rs"),
+);
+const runtimeContractLibText = read(runtimeContractLib);
+for (const moduleName of runtimeContractModules.keys()) {
+  const modulePath = `${runtimeContractRoot}/${moduleName}.rs`;
+  if (!runtimeContractProductionSources.includes(modulePath)) {
+    failures.push(`${modulePath}: missing runtime-contract responsibility module`);
+    continue;
+  }
+  for (const rootToken of [`mod ${moduleName};`, `pub use ${moduleName}::*;`]) {
+    if (!runtimeContractLibText.includes(rootToken)) {
+      failures.push(`${runtimeContractLib}: missing stable module surface ${rootToken}`);
+    }
+  }
+}
+if (/^pub (?:struct|enum|trait|fn) /m.test(runtimeContractLibText)) {
+  failures.push(
+    `${runtimeContractLib}: crate root must remain a module/re-export surface`,
+  );
+}
+for (const [moduleName, ownedDefinitions] of runtimeContractModules) {
+  const ownerPath = `${runtimeContractRoot}/${moduleName}.rs`;
+  for (const definition of ownedDefinitions) {
+    const owners = runtimeContractProductionSources.filter((source) =>
+      read(source).includes(definition),
+    );
+    if (owners.length !== 1 || owners[0] !== ownerPath) {
+      failures.push(
+        `${definition}: expected sole owner ${ownerPath}, found ${owners.join(", ") || "none"}`,
+      );
+    }
+  }
+}
+for (const source of runtimeContractProductionSources) {
+  rejectText(
+    source,
+    /(?:firm|harness)_(?:provider|store|application|cli)/,
+    "provider-neutral runtime contract must not import provider, Store, application, or CLI implementation",
+  );
+}
 rejectText(
   "crates/firm-runtime-supervisor/Cargo.toml",
   /firm-provider-|firm-cli|firm-store/,

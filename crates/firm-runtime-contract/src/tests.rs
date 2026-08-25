@@ -2,15 +2,18 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 use harness_core::agentfirm_api::{
-    ActorKind, ActorRef, AgentSessionControlState, AgentSessionStatus, MemberCoordinationStatus,
-    MemberExecutionDriver, MemberRun, MemberRuntimeStatus, NativeContinuationBudget,
-    NativeContinuationDefinition, NativeContinuationPhase, PermissionCeiling, RuntimeActivity,
-    RuntimeCommandKind, RuntimeCommandPhase, RuntimeCommandRecord, RuntimeCommandStatus,
-    RuntimeDriverRef, RuntimeEffectCertainty, RuntimePostconditionStatus, RuntimeResidency,
+    ActorKind, ActorRef, AgentSession, AgentSessionControlState, AgentSessionStatus,
+    MemberCoordinationStatus, MemberExecutionDriver, MemberRun, MemberRuntimeStatus,
+    NativeContinuationActivation, NativeContinuationBudget, NativeContinuationDefinition,
+    NativeContinuationPhase, NativeContinuationProjection, PermissionCeiling, RuntimeActivity,
+    RuntimeCommandBinding, RuntimeCommandKind, RuntimeCommandPhase, RuntimeCommandRecord,
+    RuntimeCommandStatus, RuntimeDriverRef, RuntimeEffectCertainty, RuntimePostconditionStatus,
+    RuntimeResidency,
 };
 use harness_core::{
-    NodeDaemonLease, NodeDaemonLeaseStatus, ProviderCapabilityEvidence,
-    ProviderCapabilityEvidenceKind, TeamSupervisorLease, TeamSupervisorLeaseStatus,
+    NodeDaemonLease, NodeDaemonLeaseStatus, ProviderBindingAdmission, ProviderCapabilityBinding,
+    ProviderCapabilityEvidence, ProviderCapabilityEvidenceKind, ProviderCapabilityStatus,
+    TeamSupervisorLease, TeamSupervisorLeaseStatus,
 };
 
 use super::*;
