@@ -97,6 +97,29 @@ impl ProviderProjectionService {
         Ok(read_count)
     }
 
+    pub fn refresh_latest_jsonl(
+        &mut self,
+        content: &str,
+        max_events: usize,
+    ) -> Result<usize, ProviderProjectionServiceError> {
+        let batch = crate::read_latest_jsonl_text(&self.context, content, max_events)?;
+        self.fold = ProviderEventFold::new(
+            &self.context.agent_session_id,
+            self.context.agent_session_generation,
+            &self.context.node_daemon_id,
+            self.context.node_daemon_generation,
+        );
+        let read_count = batch.outcomes.len();
+        for outcome in batch.outcomes {
+            if let DecodeOutcome::Observation(observation) = outcome {
+                self.fold.ingest(*observation)?;
+            }
+        }
+        self.transient_position = TransientReadPosition::default();
+        self.source_truncated = batch.source_truncated || batch.incomplete_tail;
+        Ok(read_count)
+    }
+
     pub fn private_session(
         &self,
         authority: &ProjectionAuthority,

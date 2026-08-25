@@ -70,6 +70,7 @@ fn provider_kind(provider: &str) -> Option<ProviderKind> {
         "claude" | "claude-code" | "claude_code" => Some(ProviderKind::Claude),
         "kimi" | "kimi-code" | "kimi_code" => Some(ProviderKind::Kimi),
         "pi" => Some(ProviderKind::Pi),
+        "deepseek" | "deepseek_harness" => Some(ProviderKind::DeepseekHarness),
         _ => None,
     }
 }
@@ -95,13 +96,6 @@ pub(crate) fn read_historical_projection(
 ) -> CliResult<Value> {
     let Some(provider) = provider_kind(&request.native_session.provider) else {
         return Err(CliError::Usage("provider adapter is unavailable".into()));
-    };
-    let Some((allowed_root, transcript_path)) =
-        crate::native_session::locate_read_boundary(request.native_session)?
-    else {
-        return Err(CliError::Usage(
-            "provider-native Session source is unavailable".into(),
-        ));
     };
     let context = DecodeContext {
         provider,
@@ -138,15 +132,31 @@ pub(crate) fn read_historical_projection(
         is_team_host: false,
     };
     let mut service = ProviderProjectionService::open(context);
-    service
-        .refresh_latest(
-            &TranscriptReadBoundary {
-                allowed_root,
-                transcript_path,
-            },
-            MAX_HISTORICAL_EVENTS,
-        )
-        .map_err(|error| CliError::Usage(error.to_string()))?;
+    if provider == ProviderKind::DeepseekHarness {
+        let content = crate::native_session::read_deepseek_session_jsonl(request.native_session)?;
+        service
+            .refresh_latest_jsonl(&content, MAX_HISTORICAL_EVENTS)
+            .map_err(|error| CliError::Usage(error.to_string()))?;
+    } else {
+        let Some((allowed_root, transcript_path)) = crate::native_session::locate_read_boundary(
+            request.native_session,
+            request.execution_space_id,
+        )?
+        else {
+            return Err(CliError::Usage(
+                "provider-native Session source is unavailable".into(),
+            ));
+        };
+        service
+            .refresh_latest(
+                &TranscriptReadBoundary {
+                    allowed_root,
+                    transcript_path,
+                },
+                MAX_HISTORICAL_EVENTS,
+            )
+            .map_err(|error| CliError::Usage(error.to_string()))?;
+    }
     serde_json::to_value(
         service
             .private_session(&authority, &viewer, 300)
@@ -287,11 +297,15 @@ pub(crate) fn exact_live_scope(
     if member_run.team_run_id != team_run_id {
         return Err("member run does not belong to the selected TeamRun");
     }
+    // The first live frames can precede terminal settlement of the provider's
+    // native Session id onto MemberRun. They are still attributable without a
+    // client-supplied Session selector: the exact Active AgentSession is bound
+    // to this TeamSupervisor, AgentMember, provider and NodeDaemon generation.
+    // Once MemberRun has a native binding, require it as an additional fence.
     let expected_native = member_run
         .native_session
         .as_ref()
-        .map(crate::agentfirm_native_session_ref)
-        .ok_or("member run has no exact provider-native Session binding")?;
+        .map(crate::agentfirm_native_session_ref);
     let run = store
         .team_runs()
         .map_err(|_| "TeamRun registry is unavailable")?
@@ -305,19 +319,43 @@ pub(crate) fn exact_live_scope(
     let sessions = store
         .fabric_agent_sessions(execution_space_id)
         .map_err(|_| "AgentSession registry is unavailable")?;
+    let supervisor = store
+        .latest_team_supervisor_lease(team_run_id)
+        .map_err(|_| "TeamSupervisor registry is unavailable")?
+        .filter(|lease| {
+            lease.status == harness_core::TeamSupervisorLeaseStatus::Active
+                && lease.expires_unix_ms > now_unix_ms()
+                && lease.execution_space_id == execution_space_id
+                && lease.project_binding_id == project_id
+        })
+        .ok_or("TeamRun has no exact active TeamSupervisor generation")?;
     let current = sessions
         .into_iter()
         .filter(|session| session.agent_member_id == member_run.agent_member_id)
         .filter(|session| session.execution_space_id == execution_space_id)
         .filter(|session| session.provider_kind == member_run.provider)
         .filter(|session| {
-            crate::agentfirm_native_session_identity_matches(
-                session.native_session_ref.as_ref(),
-                Some(&expected_native),
-            )
+            expected_native.as_ref().is_none_or(|expected| {
+                crate::agentfirm_native_session_identity_matches(
+                    session.native_session_ref.as_ref(),
+                    Some(expected),
+                )
+            })
         })
         .filter(|session| {
-            session.lifecycle != harness_core::agentfirm_api::AgentSessionStatus::Closed
+            session.lifecycle == harness_core::agentfirm_api::AgentSessionStatus::Active
+        })
+        .filter(|session| {
+            matches!(
+                &session.control_state.driver_ref,
+                harness_core::agentfirm_api::RuntimeDriverRef::TeamSupervisor {
+                    team_run_id: driven_run,
+                    team_supervisor_id,
+                    team_supervisor_generation,
+                } if driven_run == team_run_id
+                    && team_supervisor_id == &supervisor.supervisor_id
+                    && *team_supervisor_generation == supervisor.generation
+            )
         })
         .filter(|session| {
             store

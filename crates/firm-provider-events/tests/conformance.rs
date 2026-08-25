@@ -51,12 +51,13 @@ fn observation(outcome: DecodeOutcome) -> firm_provider_events::ProviderObservat
 }
 
 #[test]
-fn four_provider_manifests_are_closed_and_truthful() {
+fn five_provider_manifests_are_closed_and_truthful() {
     for provider in [
         ProviderKind::Codex,
         ProviderKind::Claude,
         ProviderKind::Kimi,
         ProviderKind::Pi,
+        ProviderKind::DeepseekHarness,
     ] {
         let manifest = adapter_manifest(provider);
         assert_eq!(manifest.provider, provider);
@@ -80,6 +81,7 @@ fn rust_adapter_manifests_match_the_versioned_json_contract() {
         ProviderKind::Claude,
         ProviderKind::Kimi,
         ProviderKind::Pi,
+        ProviderKind::DeepseekHarness,
     ]
     .into_iter()
     .map(adapter_manifest)
@@ -108,6 +110,11 @@ fn faithful_text_tool_terminal_paths_map_without_raw_tool_io() {
         (
             ProviderKind::Pi,
             json!({"type":"turn_end","message":{"content":[{"type":"text","text":"done"}]}}),
+            SemanticKind::TurnCompleted,
+        ),
+        (
+            ProviderKind::DeepseekHarness,
+            json!({"type":"turn/end","data":{"turn":1,"reason":{"kind":"completed"}}}),
             SemanticKind::TurnCompleted,
         ),
     ];
@@ -141,6 +148,10 @@ fn private_reasoning_is_structurally_dropped_for_all_providers() {
         (
             ProviderKind::Kimi,
             json!({"type":"context.append_loop_event","event":{"type":"content.part","part":{"type":"think","think":"secret"}}}),
+        ),
+        (
+            ProviderKind::DeepseekHarness,
+            json!({"type":"assistant/message","data":{"turn":1,"message":{"content":[{"type":"reasoning","text":"secret"}]}}}),
         ),
     ];
     for (provider, raw) in cases {
@@ -517,12 +528,16 @@ fn impossible_effect_and_public_private_semantics_fail_before_fold_change() {
 }
 
 #[test]
-fn four_provider_jsonl_corpora_decode_and_malformed_lines_are_bounded() {
+fn five_provider_jsonl_corpora_decode_and_malformed_lines_are_bounded() {
     let cases = [
         (ProviderKind::Codex, include_str!("fixtures/codex.jsonl")),
         (ProviderKind::Claude, include_str!("fixtures/claude.jsonl")),
         (ProviderKind::Kimi, include_str!("fixtures/kimi.jsonl")),
         (ProviderKind::Pi, include_str!("fixtures/pi.jsonl")),
+        (
+            ProviderKind::DeepseekHarness,
+            include_str!("fixtures/deepseek_harness.jsonl"),
+        ),
     ];
     for (provider, corpus) in cases {
         let observations = corpus
@@ -563,6 +578,14 @@ fn four_provider_jsonl_corpora_decode_and_malformed_lines_are_bounded() {
             assert!(observations
                 .iter()
                 .all(|item| item.provider_turn_id.as_deref() == Some("kimi-turn")));
+        } else if provider == ProviderKind::DeepseekHarness {
+            assert!(observations.iter().any(|item| {
+                matches!(
+                    &item.payload,
+                    ObservationPayload::AuthoredResponse { text }
+                        if text == "done together"
+                )
+            }));
         }
     }
 

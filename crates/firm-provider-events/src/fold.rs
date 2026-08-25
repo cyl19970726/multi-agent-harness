@@ -149,6 +149,8 @@ impl ProviderEventFold {
             source_snapshot_fingerprint: self.snapshot_fingerprint(),
             episodes,
             truncated,
+            availability: crate::SessionProjectionAvailability::Available,
+            unavailable_reason_code: None,
             disabled_reason: None,
         }
     }

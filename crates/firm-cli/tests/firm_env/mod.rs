@@ -916,14 +916,23 @@ impl ServeHandle {
     /// caller can pull `event:`/`data:` lines from. The connection stays open
     /// (no `Connection: close`) so live frames arrive as they are broadcast.
     pub fn open_sse(&self, query: &str) -> BufReader<TcpStream> {
+        self.open_sse_with_token(query, None)
+    }
+
+    /// Open one authenticated SSE stream. Private provider activity is
+    /// delivered only when this token resolves to the exact owning Member.
+    pub fn open_sse_with_token(&self, query: &str, token: Option<&str>) -> BufReader<TcpStream> {
         let stream = TcpStream::connect(self.addr()).expect("connect sse");
         stream
             .set_read_timeout(Some(Duration::from_secs(8)))
             .expect("sse timeout");
         let mut writer = stream.try_clone().expect("clone sse");
+        let token_header = token
+            .map(|token| format!("X-AgentFirm-Token: {token}\r\n"))
+            .unwrap_or_default();
         write!(
             writer,
-            "GET /v1/events{query} HTTP/1.1\r\nHost: localhost\r\n\r\n"
+            "GET /v1/events{query} HTTP/1.1\r\nHost: localhost\r\n{token_header}\r\n"
         )
         .expect("write sse req");
         let mut reader = BufReader::new(stream);
@@ -939,6 +948,18 @@ impl ServeHandle {
                 // consume the following data line + blank line, then return.
                 let mut data = String::new();
                 let _ = reader.read_line(&mut data);
+                if token.is_some() {
+                    let snapshot = data
+                        .strip_prefix("data: ")
+                        .and_then(|value| {
+                            serde_json::from_str::<serde_json::Value>(value.trim()).ok()
+                        })
+                        .expect("authenticated SSE snapshot JSON");
+                    assert_eq!(
+                        snapshot["private_provider_activity"], true,
+                        "authenticated AgentMember SSE did not bind a private provider stream"
+                    );
+                }
                 let mut blank = String::new();
                 let _ = reader.read_line(&mut blank);
                 break;
@@ -981,6 +1002,47 @@ pub fn collect_sse_data(
                 }
             }
             Err(_) => break, // read timeout
+        }
+    }
+    out
+}
+
+/// Collect one named SSE event family while unrelated durable projection
+/// traffic continues on the same stream. A provider-live collection ends at
+/// the explicit terminal clear rather than an arbitrary total frame count.
+pub fn collect_named_sse_data(
+    reader: &mut BufReader<TcpStream>,
+    timeout: Duration,
+    event_name: &str,
+) -> Vec<serde_json::Value> {
+    let deadline = Instant::now() + timeout;
+    let mut current_event = None::<String>;
+    let mut out = Vec::new();
+    while Instant::now() < deadline {
+        let mut line = String::new();
+        match reader.read_line(&mut line) {
+            Ok(0) => break,
+            Ok(_) => {
+                if let Some(name) = line.strip_prefix("event: ") {
+                    current_event = Some(name.trim().to_string());
+                } else if current_event.as_deref() == Some(event_name) {
+                    if let Some(data) = line.strip_prefix("data: ") {
+                        if let Ok(value) = serde_json::from_str::<serde_json::Value>(data.trim()) {
+                            let terminal = value["reason"] == "terminal";
+                            out.push(value);
+                            if terminal {
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) => {}
+            Err(_) => break,
         }
     }
     out

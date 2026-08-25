@@ -15,7 +15,7 @@
   "properties": {
     "schema_version": {"const": "agentfirm.provider_observation.v1"},
     "observation_id": {"type": "string", "minLength": 1},
-    "provider": {"enum": ["codex", "claude", "kimi", "pi"]},
+    "provider": {"enum": ["codex", "claude", "kimi", "pi", "deepseek_harness"]},
     "adapter_version": {"const": "agentfirm.provider_event_adapter.v1"},
     "native_source_ref": {"type": "string", "pattern": "^provider-source:[A-Za-z0-9:_-]+$"},
     "agent_member_id": {"type": "string", "minLength": 1},

@@ -24,8 +24,8 @@ use action_matrix_and_projection::{
     assert_action_matrix_and_final_projections, ActionMatrixContext,
 };
 use firm_env::{
-    create_canonical_agent_member, current_project_id, current_space_id, run_firm, ServeHandle,
-    TempHome,
+    collect_named_sse_data, create_canonical_agent_member, current_project_id, current_space_id,
+    run_firm, ServeHandle, TempHome,
 };
 use harness_core::agentfirm_api::{
     ActorKind, ActorRef, AgentSession, AgentSessionControlState, AgentSessionStatus,

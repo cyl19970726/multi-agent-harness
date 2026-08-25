@@ -13,7 +13,7 @@ Work, Message, or identity authority.
 | Package version | `0.1.1-rc.2` |
 | Reviewed source revision | `b150a551b8d465e31e418e1b2eaf5e79bbb7d28e` |
 | Native protocol | `deepseek-harness-native/v1` |
-| Protocol fingerprint | `deepseek-harness-native/v1@dsh-0.1.1-rc.2+b150a551` |
+| Protocol fingerprint | `deepseek-harness-native/v1@dsh-0.1.1-rc.2+b150a551+session-events-v1` |
 | Cordis composition fingerprint | `sha256:333c529f67aa2237096dd5191cfd4c46842d14eed786669b9be18b9cc4e2401f` |
 | Native session locator | `deepseek_harness_session` |
 | Execution driver | `host_driven` |
@@ -61,6 +61,11 @@ DSH Session directly.
 Provider transcripts, tool output and reasoning stay in the DSH Session store
 under `DSH_SESSION_ROOT`. Harness receives only coordination receipts and
 transient activity projections; it does not mirror the native transcript.
+Historical Agent Workspace reads invoke the reviewed official JSONL persistence
+package, which owns zstd decoding and exact SessionId lookup. Harness consumes
+only a bounded logical JSONL response in memory and never stores it. Live
+Cordis events expose generic thinking/response/tool phases to the exact owner;
+raw reasoning, arguments, output, and filesystem paths remain absent.
 
 ## Permissions and honest gaps
 

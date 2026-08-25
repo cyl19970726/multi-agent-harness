@@ -891,12 +891,12 @@ impl MultiTeamDaemon {
                     if let Err(error) =
                         post_live_provider_activity(&endpoint, &callback_space_id, &update)
                     {
-                        *live_provider_activity_endpoint
-                            .lock()
-                            .unwrap_or_else(|lock_error| lock_error.into_inner()) = None;
-                        eprintln!(
-                            "[node-daemon] live provider activity callback unavailable: {error}"
-                        );
+                        if error.clears_registered_endpoint() {
+                            *live_provider_activity_endpoint
+                                .lock()
+                                .unwrap_or_else(|lock_error| lock_error.into_inner()) = None;
+                        }
+                        eprintln!("[node-daemon] live provider activity callback failed: {error}");
                     }
                 }
             });
@@ -1145,11 +1145,40 @@ pub(crate) fn daemon_status_via_socket(firm_home: &Path, node_id: &str) -> Optio
     Some(response)
 }
 
+#[derive(Debug)]
+enum LiveProviderActivityPostError {
+    Unavailable(std::io::Error),
+    Rejected(String),
+}
+
+impl LiveProviderActivityPostError {
+    fn clears_registered_endpoint(&self) -> bool {
+        matches!(self, Self::Unavailable(_))
+    }
+}
+
+impl std::fmt::Display for LiveProviderActivityPostError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Unavailable(error) => write!(formatter, "serve callback unavailable: {error}"),
+            Self::Rejected(status) => {
+                write!(formatter, "serve rejected exact live scope: {status}")
+            }
+        }
+    }
+}
+
+impl From<std::io::Error> for LiveProviderActivityPostError {
+    fn from(error: std::io::Error) -> Self {
+        Self::Unavailable(error)
+    }
+}
+
 fn post_live_provider_activity(
     endpoint: &LiveProviderActivityEndpoint,
     execution_space_id: &str,
     update: &LiveProviderActivityUpdate,
-) -> Result<(), std::io::Error> {
+) -> Result<(), LiveProviderActivityPostError> {
     let mut stream = std::net::TcpStream::connect(&endpoint.authority)?;
     stream.set_read_timeout(Some(Duration::from_millis(500)))?;
     stream.set_write_timeout(Some(Duration::from_millis(500)))?;
@@ -1167,10 +1196,9 @@ fn post_live_provider_activity(
     let mut status_line = String::new();
     std::io::BufReader::new(&mut stream).read_line(&mut status_line)?;
     if !status_line.contains(" 202 ") {
-        return Err(std::io::Error::other(format!(
-            "serve rejected live provider activity: {}",
-            status_line.trim()
-        )));
+        return Err(LiveProviderActivityPostError::Rejected(
+            status_line.trim().to_string(),
+        ));
     }
     Ok(())
 }

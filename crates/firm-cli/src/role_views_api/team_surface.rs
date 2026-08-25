@@ -658,6 +658,10 @@ pub(crate) fn team_view(
 }
 
 pub(crate) fn unavailable_session_event_projection(reason: &str) -> Value {
+    unavailable_session_event_projection_code("native_session_unavailable", reason)
+}
+
+fn unavailable_session_event_projection_code(code: &str, reason: &str) -> Value {
     json!({
         "schema_version":"agentfirm.provider_observation.v1",
         "agent_session_id":null,
@@ -665,6 +669,8 @@ pub(crate) fn unavailable_session_event_projection(reason: &str) -> Value {
         "source_snapshot_fingerprint":null,
         "episodes":[],
         "truncated":false,
+        "availability":"unavailable",
+        "unavailable_reason_code":code,
         "disabled_reason":reason,
     })
 }
@@ -733,7 +739,7 @@ pub(crate) struct SessionProjectionReadRequest<'a> {
 }
 
 pub(crate) fn read_session_event_projection(
-    store: &HarnessStore,
+    _store: &HarnessStore,
     facts: &Facts,
     request: SessionProjectionReadRequest<'_>,
 ) -> Value {
@@ -787,21 +793,27 @@ pub(crate) fn read_session_event_projection(
         Ok(binding) => binding,
         Err(reason) => return unavailable_session_event_projection(reason),
     };
-    let node_id = session["node_id"].as_str().unwrap_or_default();
-    let lease = match store.latest_node_daemon_lease(node_id) {
-        Ok(Some(lease))
-            if enum_string(&lease.status) == "active"
-                && lease.expires_unix_ms > crate::current_unix_ms_u64()
-                && session["node_daemon_id"].as_str() == Some(lease.daemon_id.as_str())
-                && session["node_daemon_generation"].as_u64() == Some(lease.generation) =>
-        {
-            lease
-        }
-        _ => {
-            return unavailable_session_event_projection(
-                "The canonical AgentSession is not owned by the current NodeDaemon generation.",
-            )
-        }
+    // Historical provider-native storage remains readable after Stop/Detach.
+    // A current daemon lease is an execution-effect fence, not read authority.
+    // The immutable AgentSession binding supplies exact provenance while the
+    // owner-only RoleView and provider root checks remain mandatory.
+    let Some(node_daemon_id) = session["node_daemon_id"]
+        .as_str()
+        .filter(|value| !value.trim().is_empty())
+    else {
+        return unavailable_session_event_projection_code(
+            "agent_session_provenance_missing",
+            "The canonical AgentSession has no recorded NodeDaemon provenance.",
+        );
+    };
+    let Some(node_daemon_generation) = session["node_daemon_generation"]
+        .as_u64()
+        .filter(|generation| *generation > 0)
+    else {
+        return unavailable_session_event_projection_code(
+            "agent_session_provenance_missing",
+            "The canonical AgentSession has no recorded NodeDaemon generation.",
+        );
     };
     crate::provider_event_api::read_historical_projection(
         crate::provider_event_api::HistoricalProjectionRequest {
@@ -811,14 +823,15 @@ pub(crate) fn read_session_event_projection(
             agent_member_id: request.selected_agent_id,
             agent_session_id: session["id"].as_str().unwrap_or_default(),
             agent_session_generation: session["runtime_generation"].as_u64().unwrap_or(0),
-            node_daemon_id: &lease.daemon_id,
-            node_daemon_generation: lease.generation,
+            node_daemon_id,
+            node_daemon_generation,
             viewer_identity_id: request.viewer_identity_id,
             native_session: &native_session,
         },
     )
     .unwrap_or_else(|_| {
-        unavailable_session_event_projection(
+        unavailable_session_event_projection_code(
+            "provider_native_read_failed",
             "The server could not verify and read the bound provider-native Session.",
         )
     })

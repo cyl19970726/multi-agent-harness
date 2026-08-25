@@ -90,6 +90,8 @@ const sessionEnvelope = {
   source_snapshot_fingerprint: `sha256:${"a".repeat(64)}`,
   episodes: [{ episode_id: "turn-1", provider_turn_id: "turn-1", observations: [validObservation], terminal: false, incomplete: false }],
   truncated: false,
+  availability: "available",
+  unavailable_reason_code: null,
   disabled_reason: null,
 };
 if (!ajv.getSchema(sessionSchema.$id)(sessionEnvelope)) failures.push("generated Session projection violates schema");

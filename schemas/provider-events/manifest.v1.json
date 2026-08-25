@@ -6,7 +6,7 @@
   "live_activity_schema": "live-provider-activity.schema.json",
   "live_activity_event_schema": "live-provider-activity-event.schema.json",
   "team_activity_schema": "team-runtime-activity.schema.json",
-  "providers": ["codex", "claude", "kimi", "pi"],
+  "providers": ["codex", "claude", "kimi", "pi", "deepseek_harness"],
   "semantic_kinds": [
     "authored_response", "reasoning_summary", "tool_call_requested",
     "tool_call_started", "tool_call_completed", "tool_call_failed",

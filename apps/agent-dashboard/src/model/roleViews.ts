@@ -369,7 +369,7 @@ export interface ProviderObservation {
 export interface SessionEventProjection {
   schema_version:"agentfirm.provider_observation.v1"; agent_session_id:string|null; agent_session_generation:number|null;
   source_snapshot_fingerprint:string|null; episodes:Array<{episode_id:string;provider_turn_id:string|null;observations:ProviderObservation[];terminal:boolean;incomplete:boolean}>;
-  truncated:boolean; disabled_reason:string|null;
+  truncated:boolean; availability:"available"|"unavailable"; unavailable_reason_code:string|null; disabled_reason:string|null;
 }
 export interface LiveProviderActivityItem {
   runtime_event_locator:string; kind:"thinking"|"response_streaming"|"tool_started"|"tool_completed"|"tool_failed"|"interaction_waiting";

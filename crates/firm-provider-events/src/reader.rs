@@ -59,6 +59,8 @@ pub enum TranscriptReadError {
     SourceChanged,
     #[error("provider transcript line exceeds the bounded adapter limit")]
     LineTooLarge,
+    #[error("provider transcript exceeds the bounded on-demand projection limit")]
+    SourceTooLarge,
     #[error("provider transcript is not UTF-8")]
     InvalidUtf8,
     #[error(transparent)]
@@ -174,7 +176,36 @@ pub fn read_latest_transcript_batch(
     // rejected as a changed provider source.
     let snapshot_len = metadata.len();
     let file = fs::File::open(path)?;
-    let mut reader = BufReader::new(file.take(snapshot_len));
+    let reader = BufReader::new(file.take(snapshot_len));
+    scan_latest_reader(context, reader, snapshot_len, max_events)
+}
+
+/// Decode a bounded JSONL snapshot returned directly by a reviewed provider
+/// persistence API. DeepSeek Harness owns its zstd decoding; Harness receives
+/// only this response-local logical JSONL and never stores it.
+pub fn read_latest_jsonl_text(
+    context: &DecodeContext,
+    content: &str,
+    max_events: usize,
+) -> Result<LatestTranscriptBatch, TranscriptReadError> {
+    if content.len() > MAX_LATEST_TRANSCRIPT_BYTES {
+        return Err(TranscriptReadError::SourceTooLarge);
+    }
+    let snapshot_len = content.len() as u64;
+    scan_latest_reader(
+        context,
+        BufReader::new(std::io::Cursor::new(content.as_bytes())),
+        snapshot_len,
+        max_events,
+    )
+}
+
+fn scan_latest_reader(
+    context: &DecodeContext,
+    mut reader: impl BufRead,
+    snapshot_len: u64,
+    max_events: usize,
+) -> Result<LatestTranscriptBatch, TranscriptReadError> {
     let mut segment = Vec::new();
     let mut tail = VecDeque::<BufferedTranscriptOutcome>::new();
     let mut tail_bytes = 0usize;
@@ -285,6 +316,9 @@ fn provider_turn_id(value: &serde_json::Value) -> Option<&str> {
 }
 
 fn is_turn_terminal(value: &serde_json::Value) -> bool {
+    if value.get("type").and_then(|value| value.as_str()) == Some("turn/end") {
+        return true;
+    }
     if value.get("type").and_then(|value| value.as_str()) == Some("context.append_loop_event")
         && value
             .pointer("/event/type")

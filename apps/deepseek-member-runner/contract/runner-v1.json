@@ -1,11 +1,12 @@
 {
   "protocolVersion": "deepseek-harness-native/v1",
-  "fingerprint": "deepseek-harness-native/v1@dsh-0.1.1-rc.2+b150a551",
+  "fingerprint": "deepseek-harness-native/v1@dsh-0.1.1-rc.2+b150a551+session-events-v1",
   "reviewedProvider": {
     "version": "0.1.1-rc.2",
     "sourceRevision": "b150a551b8d465e31e418e1b2eaf5e79bbb7d28e",
     "compositionFingerprint": "sha256:333c529f67aa2237096dd5191cfd4c46842d14eed786669b9be18b9cc4e2401f",
     "dependencies": {
+      "@deepseek-ai/cordis": "4.0.1",
       "@deepseek-ai/dsh-agent": "0.1.1-rc.2",
       "@deepseek-ai/dsh-agent-loop": "0.1.1-rc.2",
       "@deepseek-ai/dsh-agent-spine-demo": "0.1.1-rc.2",
@@ -28,7 +29,7 @@
   },
   "commands": ["start", "deliver", "interrupt", "close"],
   "events": [
-    "session_bound", "assistant_message", "consumed", "turn_complete",
+    "session_bound", "assistant_message", "provider_activity", "consumed", "turn_complete",
     "interrupted", "member_resumed_after_interrupt", "member_closed", "runner_error"
   ],
   "commandPayloadSchemas": {
@@ -75,6 +76,14 @@
     "assistant_message": {
       "type": "object", "required": ["sessionId", "content"],
       "properties": {"sessionId": {"type": "string"}, "content": {}}, "additionalProperties": false
+    },
+    "provider_activity": {
+      "type": "object", "required": ["kind", "summary"],
+      "properties": {
+        "kind": {"enum": ["thinking", "response_streaming", "tool_started", "tool_completed", "tool_failed", "interaction_waiting"]},
+        "summary": {"type": "string"}
+      },
+      "additionalProperties": false
     },
     "consumed": {
       "type": "object", "required": ["id", "kind", "sessionId"],

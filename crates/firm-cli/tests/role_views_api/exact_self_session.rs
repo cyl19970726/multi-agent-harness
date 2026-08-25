@@ -174,11 +174,91 @@ fn exact_self_session_projection_follows_fresh_start_settle_sync() {
         .as_str()
         .expect("member run id")
         .to_string();
+    let live_work = run_firm(
+        &home,
+        &root,
+        &[
+            "--space",
+            &space_id,
+            "--project",
+            &project_id,
+            "team-run",
+            "work",
+            "create",
+            "--team-run-id",
+            &run_id,
+            "--work-id",
+            "work-live-provider-sse",
+            "--title",
+            "Exercise provider live SSE",
+            "--completion-criteria",
+            "Provider emits display-safe live activity and terminal clear",
+            "--owner-member-run-id",
+            &member_run_id,
+        ],
+    );
+    assert!(live_work.status.success(), "live Work: {live_work:?}");
+    let mut member_sse = serve.open_sse_with_token(
+        &format!("?space={space_id}&project={project_id}"),
+        Some(MEMBER_TOKEN),
+    );
+    member_sse
+        .get_mut()
+        .set_read_timeout(Some(std::time::Duration::from_millis(250)))
+        .expect("private SSE timeout");
+    // Serve and NodeDaemon are independent children. Wait for the volatile
+    // loopback endpoint handshake before the provider turn starts.
+    let mut sink_registered = false;
+    for _ in 0..150 {
+        let status = run_firm(&home, &root, &["daemon", "status"]);
+        if status.status.success()
+            && serde_json::from_slice::<serde_json::Value>(&status.stdout)
+                .is_ok_and(|value| value["live_provider_activity_sink_registered"] == true)
+        {
+            sink_registered = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert!(
+        sink_registered,
+        "serve never registered its volatile live provider activity sink"
+    );
     let (status, started) = serve.post_json(
         &format!("/v1/team-runs/{run_id}/start"),
         &serde_json::json!({}),
     );
     assert_eq!(status, 202, "start: {started}");
+
+    let live_frames = collect_named_sse_data(
+        &mut member_sse,
+        std::time::Duration::from_secs(10),
+        "live_provider_activity",
+    );
+    let private_live = live_frames
+        .iter()
+        .filter(|frame| frame["schema_version"] == "agentfirm.live_provider_activity_event.v1")
+        .collect::<Vec<_>>();
+    assert!(private_live.iter().any(|frame| {
+        frame["reason"] == "updated"
+            && frame["scope"]["member_run_id"] == member_run_id
+            && frame["activity"]["items"].as_array().is_some_and(|items| {
+                items.iter().any(|item| {
+                    matches!(item["kind"].as_str(), Some("tool_started" | "response_streaming"))
+                })
+            })
+    }), "independent NodeDaemon provider activity never reached authenticated serve SSE: {private_live:?}");
+    assert!(
+        private_live.iter().any(|frame| {
+            frame["reason"] == "terminal"
+                && frame["scope"]["member_run_id"] == member_run_id
+                && frame["activity"].is_null()
+        }),
+        "provider terminal did not clear the volatile overlay: {private_live:?}"
+    );
+    let serialized_live = serde_json::to_string(&private_live).expect("private SSE JSON");
+    assert!(!serialized_live.contains("cargo check"));
+    assert!(!serialized_live.contains("hidden"));
 
     let mut settled = false;
     for _ in 0..500 {
@@ -335,4 +415,70 @@ fn exact_self_session_projection_follows_fresh_start_settle_sync() {
     assert_eq!(unavailable["episodes"], serde_json::json!([]));
     assert_eq!(unavailable["truncated"], false);
     assert!(unavailable["disabled_reason"].as_str().is_some());
+
+    // Stop is an execution fence, not read authority. Close the exact Member
+    // through its Supervisor, then stop the NodeDaemon cleanly before proving
+    // that owner history still reconstructs from the provider-native source.
+    let closed = run_firm(
+        &home,
+        &root,
+        &[
+            "--space",
+            &space_id,
+            "--project",
+            &project_id,
+            "team-run",
+            "close-member",
+            "--id",
+            &run_id,
+            "--member-run-id",
+            &member_run_id,
+            "--reason",
+            "historical projection after clean Stop",
+        ],
+    );
+    assert!(closed.status.success(), "close Member: {closed:?}");
+    let mut member_stopped = false;
+    for _ in 0..500 {
+        member_stopped = store
+            .member_runs()
+            .expect("MemberRuns after Close")
+            .into_iter()
+            .rev()
+            .find(|member| member.id == member_run_id)
+            .is_some_and(|member| {
+                member.status == harness_core::MemberRunStatus::Stopped
+                    && member.coordination_status == harness_core::MemberCoordinationStatus::Closed
+            });
+        if member_stopped {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert!(
+        member_stopped,
+        "Member did not reach a clean stopped boundary"
+    );
+    let daemon_stopped = run_firm(&home, &root, &["daemon", "stop"]);
+    assert!(
+        daemon_stopped.status.success(),
+        "clean NodeDaemon stop: {daemon_stopped:?}"
+    );
+    let (status, stopped_owner_workspace) = serve.get_json_with_headers(
+        &member_agent_workspace_route,
+        &[("X-AgentFirm-Token", MEMBER_TOKEN)],
+    );
+    assert_eq!(
+        status, 200,
+        "stopped owner workspace: {stopped_owner_workspace}"
+    );
+    assert_eq!(
+        stopped_owner_workspace["data"]["session_event_projection"]["availability"],
+        "available"
+    );
+    assert!(
+        stopped_owner_workspace["data"]["session_event_projection"]["episodes"]
+            .as_array()
+            .is_some_and(|episodes| !episodes.is_empty())
+    );
 }

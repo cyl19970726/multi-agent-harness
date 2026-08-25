@@ -94,6 +94,8 @@
       "source_snapshot_fingerprint":null,
       "episodes":[],
       "truncated":false,
+      "availability":"unavailable",
+      "unavailable_reason_code":"native_session_unavailable",
       "disabled_reason":"Provider-native Session source is unavailable in this deterministic fixture."
     },
     "live_provider_activity":null,

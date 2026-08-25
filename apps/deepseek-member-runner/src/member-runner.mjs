@@ -42,6 +42,20 @@ export function createMemberRunner({ runtime, emit }) {
       handle = await runtime.create({ ...options, sessionId: payload.sessionId ?? `star-${randomUUID()}` });
     }
     detachEvents = runtime.onEvent(handle.agent.session, (event) => {
+      const chunkType = event.data?.chunk?.type;
+      if (event.type === "assistant/chunk" && chunkType === "block-start"
+        && event.data?.chunk?.blockType === "reasoning") {
+        emit("provider_activity", { kind: "thinking", summary: "DeepSeek Harness is thinking" });
+      }
+      if (event.type === "assistant/chunk" && chunkType === "text-delta") {
+        emit("provider_activity", { kind: "response_streaming", summary: "assistant response streaming" });
+      }
+      if (event.type === "tool/call") {
+        emit("provider_activity", { kind: "tool_started", summary: `${event.data?.name ?? "tool"} started` });
+      }
+      if (event.type === "tool/result") {
+        emit("provider_activity", { kind: "tool_completed", summary: "tool completed" });
+      }
       if (event.type === "agent/inbox/spliced" && activeMessageId
         && event.data?.inserted?.some((message) => message.id === activeMessageId)) {
         emit("consumed", { id: activeInputId, kind: "runtime_cycle", sessionId: handle.agent.session.id });

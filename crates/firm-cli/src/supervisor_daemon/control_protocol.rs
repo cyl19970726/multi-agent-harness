@@ -1011,6 +1011,11 @@ impl MultiTeamDaemon {
                     "daemon_id": self.daemon_id,
                     "instance_id": self.instance_id,
                     "process_id": std::process::id(),
+                    "live_provider_activity_sink_registered": self
+                        .live_provider_activity_endpoint
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner())
+                        .is_some(),
                     "recovery_blocked_runs": self.recovery_blocked_runs
                         .lock()
                         .unwrap_or_else(|error| error.into_inner())

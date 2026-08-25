@@ -194,3 +194,23 @@ fn permission_ceiling_compiles_into_the_shared_dsh_policy() {
         ("danger-full-access", "dsh-sandbox-policy")
     );
 }
+
+#[test]
+fn provider_activity_projects_only_closed_display_safe_kinds() {
+    use harness_runtime_contract::{LiveProviderActivityKind, TeamRuntimeAdapter};
+    let event = json!({
+        "event":"provider_activity",
+        "data":{"kind":"tool_started","summary":"bash started"}
+    });
+    assert_eq!(
+        DeepSeekTeamRuntime::project_live(&event),
+        Some((LiveProviderActivityKind::ToolStarted, "bash started".into()))
+    );
+    let hostile = json!({
+        "event":"provider_activity",
+        "data":{"kind":"tool_started","summary":"x".repeat(400),"arguments":"secret"}
+    });
+    let (_, summary) = DeepSeekTeamRuntime::project_live(&hostile).expect("known activity");
+    assert_eq!(summary.chars().count(), 240);
+    assert!(!summary.contains("secret"));
+}

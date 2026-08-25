@@ -28,7 +28,7 @@
         "properties": {
           "runtime_event_locator": {"type": "string", "pattern": "^runtime-event-[0-9]+$", "description": "Opaque process-local locator; never stable history or replay identity."},
           "kind": {"enum": ["thinking", "response_streaming", "tool_started", "tool_completed", "tool_failed", "interaction_waiting"]},
-          "provider": {"enum": ["codex", "claude", "kimi", "pi"]},
+          "provider": {"enum": ["codex", "claude", "kimi", "pi", "deepseek_harness"]},
           "display_summary": {"type": "string", "minLength": 1, "maxLength": 240},
           "emitted_unix_ms": {"type": "integer", "minimum": 1},
           "expires_unix_ms": {"type": "integer", "minimum": 1}

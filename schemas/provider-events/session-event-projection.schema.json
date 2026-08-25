@@ -4,7 +4,7 @@
   "title": "SessionEventProjection",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema_version", "agent_session_id", "agent_session_generation", "source_snapshot_fingerprint", "episodes", "truncated", "disabled_reason"],
+  "required": ["schema_version", "agent_session_id", "agent_session_generation", "source_snapshot_fingerprint", "episodes", "truncated", "availability", "unavailable_reason_code", "disabled_reason"],
   "properties": {
     "schema_version": {"const": "agentfirm.provider_observation.v1"},
     "agent_session_id": {"type": ["string", "null"], "minLength": 1},
@@ -27,6 +27,8 @@
       }
     },
     "truncated": {"type": "boolean"},
+    "availability": {"enum": ["available", "unavailable"]},
+    "unavailable_reason_code": {"type": ["string", "null"], "pattern": "^[a-z0-9_]+$"},
     "disabled_reason": {"type": ["string", "null"], "minLength": 1}
   },
   "oneOf": [
@@ -35,6 +37,8 @@
         "agent_session_id": {"type": "string"},
         "agent_session_generation": {"type": "integer"},
         "source_snapshot_fingerprint": {"type": "string"},
+        "availability": {"const": "available"},
+        "unavailable_reason_code": {"type": "null"},
         "disabled_reason": {"type": "null"}
       }
     },
@@ -43,6 +47,8 @@
         "agent_session_id": {"type": "null"},
         "agent_session_generation": {"type": "null"},
         "source_snapshot_fingerprint": {"type": "null"},
+        "availability": {"const": "unavailable"},
+        "unavailable_reason_code": {"type": "string", "minLength": 1},
         "episodes": {"type": "array", "maxItems": 0},
         "truncated": {"const": false},
         "disabled_reason": {"type": "string", "minLength": 1}

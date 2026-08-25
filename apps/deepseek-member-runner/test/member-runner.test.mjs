@@ -50,6 +50,31 @@ test("resumes the exact requested native session", async () => {
   assert.equal(events[0].data.resumed, true);
 });
 
+test("normalizes native live phases without exposing reasoning or tool arguments", async () => {
+  const runtime = fakeRuntime();
+  const handle = await runtime.create({});
+  handle.agent.followup = (message) => {
+    for (const listener of runtime.listeners) {
+      listener({ type: "agent/inbox/spliced", data: { inserted: [message] } });
+      listener({ type: "turn/start", data: { turn: 1 } });
+      listener({ type: "assistant/chunk", data: { chunk: { type: "block-start", blockType: "reasoning", text: "secret" } } });
+      listener({ type: "tool/call", data: { name: "bash", arguments: "private" } });
+      listener({ type: "tool/result", data: { output: "private" } });
+      listener({ type: "assistant/message", data: { message: { content: [{ type: "text", text: "done" }] } } });
+      listener({ type: "turn/end", data: { turn: 1, reason: { kind: "completed" } } });
+    }
+  };
+  runtime.create = async () => handle;
+  const events = [];
+  const runner = createMemberRunner({ runtime, emit: (event, data) => events.push({ event, data }) });
+  await runner.command({ command: "start", payload: { protocolVersion: PROTOCOL_VERSION, protocolFingerprint: PROTOCOL_FINGERPRINT } });
+  await runner.command({ command: "deliver", payload: { id: "live-phases", body: "do work" } });
+  const activities = events.filter(({ event }) => event === "provider_activity");
+  assert.deepEqual(activities.map(({ data }) => data.kind), ["thinking", "tool_started", "tool_completed"]);
+  assert.equal(JSON.stringify(activities).includes("secret"), false);
+  assert.equal(JSON.stringify(activities).includes("private"), false);
+});
+
 test("idle without a native turn/end fails closed", async () => {
   const runtime = fakeRuntime();
   runtime.turnTerminalTimeoutMs = 5;

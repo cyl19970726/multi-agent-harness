@@ -1,0 +1,3 @@
+{"type":"assistant/message","seq":1,"time":1,"data":{"turn":1,"step":1,"message":{"role":"assistant","content":[{"type":"reasoning","text":"not projected"},{"type":"text","text":"done"},{"type":"text","text":" together"}]}}}
+{"type":"tool/call","seq":2,"time":2,"data":{"turn":1,"step":1,"callId":"dsh-call","name":"bash","arguments":"private tool output"}}
+{"type":"turn/end","seq":3,"time":3,"data":{"turn":1,"reason":{"kind":"completed"}}}

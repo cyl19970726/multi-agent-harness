@@ -694,3 +694,15 @@ fn daemon_control_generation_fences_stale_and_successor_instances() {
         20,
     ));
 }
+
+#[test]
+fn rejected_live_scope_does_not_discard_the_registered_serve_endpoint() {
+    let rejected = LiveProviderActivityPostError::Rejected("HTTP/1.1 400 Bad Request".into());
+    let unavailable = LiveProviderActivityPostError::Unavailable(std::io::Error::new(
+        std::io::ErrorKind::ConnectionRefused,
+        "serve exited",
+    ));
+
+    assert!(!rejected.clears_registered_endpoint());
+    assert!(unavailable.clears_registered_endpoint());
+}
