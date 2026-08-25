@@ -97,7 +97,7 @@ const sourcePaths = execFileSync(
   .toString("utf8")
   .trim()
   .split("\n")
-  .filter((path) => path.endsWith(".rs") && path !== contractPath);
+  .filter((path) => path.endsWith(".rs"));
 
 const daemonRootPath = "crates/firm-cli/src/supervisor_daemon.rs";
 const machineAuthorityPath =
@@ -214,7 +214,7 @@ const forbiddenRenderedCommands = [
   "member message reply --recipient-agent-id",
   "member message request-decision --work-id",
 ];
-for (const path of sourcePaths) {
+for (const path of sourcePaths.filter((path) => path !== contractPath)) {
   const content = read(path);
   for (const command of forbiddenRenderedCommands) {
     if (content.includes(command)) {
