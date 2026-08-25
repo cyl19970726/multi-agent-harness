@@ -80,7 +80,7 @@ const sendMessageAction = {
 };
 const teamWorkspace = await json("team-workspace");
 teamWorkspace.source_execution_space_id = "fixture-space";
-teamWorkspace.data.team.team_id = "teamrun-mission-current";
+teamWorkspace.data.team.team_id = "team-platform-foundation";
 teamWorkspace.data.team.latest_run = { id: "teamrun-mission-current", status: "running" };
 const hostConsole = await json("host-console");
 hostConsole.source_execution_space_id = "fixture-space";
@@ -130,6 +130,29 @@ function responseFor(url) {
     action_manifest_version: "agentfirm.role_actions.v1",
     capability_auth: "x-agentfirm-token",
     build_sha: "fbc401646f66b69a0269622c489441cfe643b54f",
+  };
+  if (url.pathname === "/v1/views/viewer-context") return {
+    view_kind: "viewer_context",
+    schema_version: "agentfirm.role_views.v1",
+    source_execution_space_id: "fixture-space",
+    source_store_identity: "slow-snapshot-fixture-store",
+    as_of_event_sequence: 1,
+    generated_at: new Date().toISOString(),
+    freshness: "current",
+    data: {
+      viewer_actor_ref: { kind: "agent_member", id: teamWorkspace.data.team.host_agent_id },
+      teams: [{
+        team_id: teamWorkspace.data.team.team_id,
+        display_name: teamWorkspace.data.team.display_name,
+        viewer_role: "host",
+        viewer_agent_member_id: teamWorkspace.data.team.host_agent_id,
+        default_conversation: "host",
+        latest_run_id: teamWorkspace.data.team.latest_run.id,
+        team_run_ids: [teamWorkspace.data.team.latest_run.id],
+        current_member_run_id: null,
+      }],
+    },
+    attention: [], allowed_actions: [],
   };
   if (url.pathname.startsWith("/v1/views/team-inbox/")) return {
     view_kind: "team_inbox",
