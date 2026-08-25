@@ -40,6 +40,10 @@ const requiredConsumers = new Map([
     "crates/firm-cli/src/main_modules/user_commands.rs",
     ["member_message_subcommand_usage"],
   ],
+  [
+    "scripts/check-cross-layer-consistency.mjs",
+    ["crates/firm-cli/src/collaboration"],
+  ],
 ]);
 for (const [path, tokens] of requiredConsumers) {
   const content = read(path);
