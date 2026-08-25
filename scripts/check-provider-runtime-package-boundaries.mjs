@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import process from "node:process";
@@ -28,11 +29,318 @@ for (const provider of providerCrates) {
   );
 }
 
-rejectText(
-  "crates/firm-runtime-contract/Cargo.toml",
-  /firm-provider-|firm-cli|firm-store|firm-application/,
-  "runtime contract must remain provider- and composition-neutral",
+const runtimeContractRoot = "crates/firm-runtime-contract/src";
+const runtimeContractLib = `${runtimeContractRoot}/lib.rs`;
+const runtimeContractModules = new Map([
+  ["cycle", [
+    "struct CycleRuntimeObservation",
+    "struct ControlTransportReceipt",
+    "struct NativeCycleCorrelation",
+    "struct QuiesceOutcome",
+    "struct ExecutionCycleOutcome",
+    "enum SteerProviderResult",
+    "struct SteerRequest",
+    "struct CycleControl",
+    "enum LiveProviderActivityKind",
+    "trait TeamRuntimeAdapter",
+  ]],
+  ["control", [
+    "enum ProviderControlAction",
+    "enum NativeControlPrimitive",
+    "struct ProviderControlPlan",
+    "trait ProviderNativeControl",
+    "struct RuntimeDescription",
+    "enum ControlIntent",
+    "struct ControlRequest",
+  ]],
+  ["provider_capabilities", [
+    "enum CapabilityStatus",
+    "struct CapabilityBinding",
+    "enum SemanticCapability",
+    "struct AdmissionDecision",
+    "struct CapabilityResolver",
+    "struct MemberRunGeneration",
+    "struct AgentSessionGeneration",
+    "struct NodeDaemonGeneration",
+    "struct TeamSupervisorGeneration",
+    "struct RuntimeDriverGeneration",
+    "struct RuntimeBindingFence",
+  ]],
+  ["receipt_and_terminal", [
+    "struct ProviderTerminalFailure",
+    "struct EffectReceipt",
+    "struct RuntimeObservation",
+    "struct EffectInspection",
+    "struct ReconcileReceipt",
+    "struct QuiesceReceipt",
+    "enum QuiesceStep",
+    "struct QuiesceReceiptBuilder",
+    "struct ReleaseReceipt",
+    "struct MemberRuntimeCloseReceipt",
+  ]],
+  ["collaboration_capability", [
+    "enum CollaborationCapabilityScope",
+    "enum CollaborationCapabilityMechanism",
+    "enum CollaborationCapabilityExpiry",
+    "struct CollaborationCapabilityBinding",
+    "struct CollaborationCapabilitySecret",
+    "struct CollaborationCapabilityEnvironment",
+    "struct CollaborationCapabilityEnvelope",
+    "enum CollaborationCapabilityError",
+  ]],
+  ["conformance", [
+    "trait RuntimeAdapter",
+    "fn preflight_effect",
+    "struct CompositionLifecycle",
+    "struct OneShotDisposer",
+    "enum RuntimeContractError",
+  ]],
+]);
+const runtimeContractSources = execFileSync(
+  "git",
+  ["ls-files", "-co", "--exclude-standard", runtimeContractRoot],
+  { cwd: root },
+)
+  .toString("utf8")
+  .trim()
+  .split("\n")
+  .filter((source) => source.endsWith(".rs"));
+const isTestRustPath = (source) => {
+  const segments = source.split("/");
+  const basename = segments.at(-1) ?? "";
+  return (
+    segments.includes("tests")
+    || basename === "tests.rs"
+    || basename.endsWith("_tests.rs")
+  );
+};
+const runtimeContractProductionSources = runtimeContractSources.filter(
+  (source) => !isTestRustPath(source),
 );
+const runtimeContractLibText = read(runtimeContractLib);
+const expectedRuntimeContractSources = new Set([
+  runtimeContractLib,
+  ...[...runtimeContractModules.keys()].map(
+    (moduleName) => `${runtimeContractRoot}/${moduleName}.rs`,
+  ),
+]);
+for (const source of runtimeContractProductionSources) {
+  if (!expectedRuntimeContractSources.has(source)) {
+    failures.push(
+      `${source}: unclassified runtime-contract production module; add its responsibility and edges to the complete inventory`,
+    );
+  }
+}
+for (const source of expectedRuntimeContractSources) {
+  if (!runtimeContractProductionSources.includes(source)) {
+    failures.push(`${source}: missing inventoried runtime-contract production module`);
+  }
+}
+for (const moduleName of runtimeContractModules.keys()) {
+  const modulePath = `${runtimeContractRoot}/${moduleName}.rs`;
+  if (!runtimeContractProductionSources.includes(modulePath)) {
+    failures.push(`${modulePath}: missing runtime-contract responsibility module`);
+    continue;
+  }
+  for (const rootToken of [`mod ${moduleName};`, `pub use ${moduleName}::*;`]) {
+    if (!runtimeContractLibText.includes(rootToken)) {
+      failures.push(`${runtimeContractLib}: missing stable module surface ${rootToken}`);
+    }
+  }
+}
+const expectedRootPublicSurface = new Set(
+  [...runtimeContractModules.keys()].map(
+    (moduleName) => `pub use ${moduleName}::*;`,
+  ),
+);
+const actualRootPublicSurface =
+  runtimeContractLibText.match(/^pub\s+[^\n]+/gm) ?? [];
+for (const publicSurface of actualRootPublicSurface) {
+  if (!expectedRootPublicSurface.has(publicSurface)) {
+    failures.push(
+      `${runtimeContractLib}: unclassified crate-root public surface ${publicSurface}`,
+    );
+  }
+}
+for (const publicSurface of expectedRootPublicSurface) {
+  if (!actualRootPublicSurface.includes(publicSurface)) {
+    failures.push(`${runtimeContractLib}: missing public surface ${publicSurface}`);
+  }
+}
+
+const expectedPublicOwner = new Map();
+for (const [moduleName, publicItems] of runtimeContractModules) {
+  for (const publicItem of publicItems) {
+    if (expectedPublicOwner.has(publicItem)) {
+      failures.push(`${publicItem}: duplicated runtime-contract inventory entry`);
+    }
+    expectedPublicOwner.set(publicItem, moduleName);
+  }
+}
+const actualPublicOwner = new Map();
+for (const source of runtimeContractProductionSources) {
+  if (source === runtimeContractLib) continue;
+  const moduleName = path.basename(source, ".rs");
+  const content = read(source);
+  const publicFunctions = [...content.matchAll(
+      /^pub\s+(?:(?:async|const|unsafe)\s+)*(?:extern(?:\s+"[^"]+")?\s+)?fn\s+([A-Za-z_][A-Za-z0-9_]*)/gm,
+    )].map((match) => ({ kind: "fn", name: match[1], index: match.index }));
+  const publicFunctionStarts = new Set(
+    publicFunctions.map((definition) => definition.index),
+  );
+  const directDefinitions = [
+    ...[...content.matchAll(
+      /^pub\s+(struct|enum|trait|type|const|static|union|mod|macro)\s+([A-Za-z_][A-Za-z0-9_]*)/gm,
+    )]
+      .filter((match) => !publicFunctionStarts.has(match.index))
+      .map((match) => ({
+        kind: match[1],
+        name: match[2],
+        index: match.index,
+      })),
+    ...publicFunctions,
+  ];
+  const recognizedPublicStarts = new Set(
+    directDefinitions.map((definition) => definition.index),
+  );
+  for (const publicSurface of content.matchAll(/^pub\s+[^\n]+/gm)) {
+    if (!recognizedPublicStarts.has(publicSurface.index)) {
+      failures.push(
+        `${source}: unclassified public surface ${publicSurface[0]}`,
+      );
+    }
+  }
+  if (content.includes("#[macro_export]")) {
+    failures.push(
+      `${source}: macro exports are outside the closed runtime-contract public inventory`,
+    );
+  }
+  const generatedDefinitions = content.matchAll(
+    /^generation_type!\(([A-Za-z_][A-Za-z0-9_]*),/gm,
+  );
+  for (const match of directDefinitions) {
+    const publicItem = `${match.kind} ${match.name}`;
+    const owners = actualPublicOwner.get(publicItem) ?? [];
+    owners.push(moduleName);
+    actualPublicOwner.set(publicItem, owners);
+  }
+  for (const match of generatedDefinitions) {
+    const publicItem = `struct ${match[1]}`;
+    const owners = actualPublicOwner.get(publicItem) ?? [];
+    owners.push(moduleName);
+    actualPublicOwner.set(publicItem, owners);
+  }
+}
+for (const [publicItem, expectedOwner] of expectedPublicOwner) {
+  const owners = actualPublicOwner.get(publicItem) ?? [];
+  if (owners.length !== 1 || owners[0] !== expectedOwner) {
+    failures.push(
+      `${publicItem}: expected sole owner ${expectedOwner}, found ${owners.join(", ") || "none"}`,
+    );
+  }
+}
+for (const [publicItem, owners] of actualPublicOwner) {
+  if (!expectedPublicOwner.has(publicItem)) {
+    failures.push(
+      `${publicItem}: unclassified public runtime-contract item in ${owners.join(", ")}`,
+    );
+  }
+}
+
+const cargoMetadata = JSON.parse(
+  execFileSync(
+    "cargo",
+    ["metadata", "--no-deps", "--format-version", "1"],
+    { cwd: root },
+  ).toString("utf8"),
+);
+const runtimeContractPackage = cargoMetadata.packages.find(
+  (candidate) => candidate.name === "firm-runtime-contract",
+);
+if (!runtimeContractPackage) {
+  failures.push("cargo metadata: missing firm-runtime-contract package");
+}
+const allowedContractDependencies = new Set([
+  "firm-core",
+  "serde",
+  "serde_json",
+  "sha2",
+  "thiserror",
+]);
+for (const dependency of runtimeContractPackage?.dependencies ?? []) {
+  if (!allowedContractDependencies.has(dependency.name)) {
+    failures.push(
+      `crates/firm-runtime-contract/Cargo.toml: dependency ${dependency.name}${dependency.rename ? ` (alias ${dependency.rename})` : ""} is outside the provider-neutral allowlist`,
+    );
+  }
+}
+
+const workspaceCrateRoots = cargoMetadata.packages
+  .map((workspacePackage) => workspacePackage.name)
+  .filter((packageName) => !["firm-core", "firm-runtime-contract"].includes(packageName))
+  .map((packageName) => packageName.replaceAll("-", "_"));
+for (const source of runtimeContractProductionSources) {
+  const content = read(source);
+  for (const crateRoot of workspaceCrateRoots) {
+    if (content.includes(`${crateRoot}::`)) {
+      failures.push(
+        `${source}: provider-neutral contract references workspace implementation crate ${crateRoot}`,
+      );
+    }
+  }
+}
+
+const privateItemOwner = new Map([
+  ["validate_continuation_exact", "provider_capabilities"],
+]);
+const itemOwner = new Map([
+  ...[...expectedPublicOwner].map(([item, owner]) => [item.split(" ")[1], owner]),
+  ...privateItemOwner,
+]);
+const allowedModuleEdges = new Map([
+  ["collaboration_capability", new Set()],
+  ["conformance", new Set(["control", "provider_capabilities", "receipt_and_terminal"])],
+  ["control", new Set(["conformance", "provider_capabilities"])],
+  ["cycle", new Set(["conformance", "control", "provider_capabilities", "receipt_and_terminal"])],
+  ["provider_capabilities", new Set(["conformance"])],
+  ["receipt_and_terminal", new Set(["conformance"])],
+]);
+const observedModuleEdges = new Set();
+for (const moduleName of runtimeContractModules.keys()) {
+  const source = `${runtimeContractRoot}/${moduleName}.rs`;
+  const content = read(source);
+  const importedItems = [];
+  for (const match of content.matchAll(/use crate::\{([\s\S]*?)\};/g)) {
+    importedItems.push(
+      ...match[1]
+        .split(",")
+        .map((item) => item.trim())
+        .filter(Boolean),
+    );
+  }
+  for (const match of content.matchAll(/use crate::([A-Za-z_][A-Za-z0-9_]*)\s*;/g)) {
+    importedItems.push(match[1]);
+  }
+  for (const match of content.matchAll(/(?:crate|super)::([A-Za-z_][A-Za-z0-9_]*)/g)) {
+    importedItems.push(match[1]);
+  }
+  for (const importedItem of new Set(importedItems)) {
+    const targetModule = runtimeContractModules.has(importedItem)
+      ? importedItem
+      : itemOwner.get(importedItem);
+    if (!targetModule) {
+      failures.push(`${source}: unclassified crate import ${importedItem}`);
+      continue;
+    }
+    if (targetModule === moduleName) continue;
+    observedModuleEdges.add(`${moduleName}->${targetModule}`);
+    if (!allowedModuleEdges.get(moduleName)?.has(targetModule)) {
+      failures.push(
+        `${source}: forbidden internal dependency ${moduleName} -> ${targetModule} via ${importedItem}`,
+      );
+    }
+  }
+}
 rejectText(
   "crates/firm-runtime-supervisor/Cargo.toml",
   /firm-provider-|firm-cli|firm-store/,
@@ -166,4 +474,6 @@ if (failures.length) {
   process.exit(1);
 }
 
-console.log("Provider runtime package boundaries: 5 providers, neutral contracts, application policy, and CLI composition verified.");
+console.log(
+  `Provider runtime package boundaries: 5 providers, ${expectedPublicOwner.size} runtime-contract public items, ${runtimeContractProductionSources.length} recursive production sources, ${observedModuleEdges.size} allowed internal edges, neutral contracts, application policy, and CLI composition verified.`,
+);
