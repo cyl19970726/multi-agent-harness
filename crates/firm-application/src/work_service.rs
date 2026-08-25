@@ -9,6 +9,7 @@ use firm_core::{
     CurrentWorkDraft, GitHubLink, TeamActorRef, Work, WorkClaimMode, WorkCommandContext,
     WorkPriority,
 };
+use serde::Serialize;
 
 /// Persistence port required by Work application use cases. Implementations
 /// own locking, CAS, append-only operations and projection storage.
@@ -152,7 +153,8 @@ pub struct ReplaceWorkDependenciesCommand {
 
 /// Transport-neutral canonical Work mutation selected by an adapter after it
 /// has authenticated the actor and built the exact command context.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum WorkActionKind {
     Create,
     ReplaceDependencies,
@@ -278,6 +280,27 @@ impl WorkAction {
             Self::Submit(_) => WorkActionKind::Submit,
             Self::RequestChanges { .. } => WorkActionKind::RequestChanges,
             Self::Cancel { .. } => WorkActionKind::Cancel,
+        }
+    }
+
+    pub fn context(&self) -> &WorkCommandContext {
+        match self {
+            Self::Create(command) => &command.context,
+            Self::ReplaceDependencies(command) => &command.context,
+            Self::Submit(command) => &command.context,
+            Self::AssignMembership { context, .. }
+            | Self::AssignRuntime { context, .. }
+            | Self::Rebind { context, .. }
+            | Self::ReleaseHost { context, .. }
+            | Self::ReleaseMember { context, .. }
+            | Self::Claim { context, .. }
+            | Self::Start { context, .. }
+            | Self::BlockHost { context, .. }
+            | Self::BlockMember { context, .. }
+            | Self::ResumeHost { context, .. }
+            | Self::ResumeMember { context, .. }
+            | Self::RequestChanges { context, .. }
+            | Self::Cancel { context, .. } => context,
         }
     }
 }

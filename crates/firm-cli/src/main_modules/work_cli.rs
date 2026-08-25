@@ -1,13 +1,62 @@
 use super::*;
 use harness_core::CurrentWorkDraft;
 
+struct CliWorkActionOutcome(crate::work_action_service::CanonicalWorkActionOutcome);
+
+impl std::ops::Deref for CliWorkActionOutcome {
+    type Target = Work;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0.work
+    }
+}
+
+impl serde::Serialize for CliWorkActionOutcome {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        self.0.work.serialize(serializer)
+    }
+}
+
 fn execute_work_action(
     store: &HarnessStore,
     action: harness_application::WorkAction,
-) -> CliResult<Work> {
-    Ok(harness_application::WorkApplication::new(store)
-        .execute(action)?
-        .work)
+) -> CliResult<CliWorkActionOutcome> {
+    Ok(CliWorkActionOutcome(crate::work_action_service::execute(
+        store,
+        crate::work_action_service::CanonicalWorkCommand::Lifecycle {
+            auth: None,
+            action: Box::new(action),
+        },
+    )?))
+}
+
+fn local_work_auth(
+    resolved: &ResolvedStore,
+    actor: harness_core::agentfirm_api::ActorRef,
+    authority: Option<harness_core::agentfirm_api::ActorRef>,
+    context: &WorkCommandContext,
+    expected_version: u64,
+) -> CliResult<crate::agentfirm_api::AuthenticatedMutation> {
+    let execution_space_id = resolved
+        .execution_space_context
+        .as_ref()
+        .map(|space| space.id.clone())
+        .ok_or_else(|| {
+            CliError::Usage(
+                "canonical Work mutations require an explicitly selected --space".into(),
+            )
+        })?;
+    Ok(crate::agentfirm_api::AuthenticatedMutation {
+        execution_space_id,
+        actor,
+        authorized_authority_actors: authority.into_iter().collect(),
+        idempotency_key: context.idempotency_key.clone(),
+        expected_version,
+        request_fingerprint: None,
+    })
 }
 
 pub(super) fn team_run_work_command(
@@ -686,7 +735,6 @@ pub(super) fn team_run_work_command(
             // artifact_refs (PR URL) + check_refs (CI checks URL) (issue #369).
             let mut artifact_refs = many(args, "--artifact-ref");
             let mut check_refs = many(args, "--check-ref");
-            let mut github_links = Vec::new();
             let result = required(args, "--result")?;
             if let Some(raw) = value(args, "--github-pr") {
                 let link = github_pr_link(&raw)?;
@@ -698,23 +746,60 @@ pub(super) fn team_run_work_command(
                         check_refs.push(ci_url.clone());
                     }
                 }
-                github_links.push(link);
             }
-            let work = execute_work_action(
+            let work_id = required(args, "--work-id")?;
+            let expected_version = required_work_version(args)?;
+            let context = member_work_context(args, &team_run_id, &member_run_id)?;
+            let execution_space_id = resolved
+                .execution_space_context
+                .as_ref()
+                .map(|space| space.id.clone())
+                .ok_or_else(|| {
+                    CliError::Usage(
+                        "canonical Work submission requires an explicitly selected --space".into(),
+                    )
+                })?;
+            let member = store
+                .trust_member_runs(&execution_space_id)?
+                .into_iter()
+                .find(|run| run.id == member_run_id)
+                .ok_or_else(|| {
+                    CliError::Usage(format!("MemberRun not found: {member_run_id}"))
+                })?;
+            let current = crate::work_action_service::current_work(
                 store,
-                harness_application::WorkAction::Submit(harness_application::SubmitWorkCommand {
-                    work_id: required(args, "--work-id")?,
-                    expected_version: required_work_version(args)?,
-                    member_run_id: member_run_id.clone(),
-                    result_summary: required(args, "--result")?,
-                    artifact_refs,
-                    check_refs,
-                    github_links,
-                    base_revision: value(args, "--base-revision"),
-                    candidate_revision: value(args, "--candidate-revision"),
-                    context: member_work_context(args, &team_run_id, &member_run_id)?,
-                }),
+                &execution_space_id,
+                &work_id,
             )?;
+            let team_id = current.accountable_team_id.clone().ok_or_else(|| {
+                CliError::Usage("canonical Work has no accountable Team".into())
+            })?;
+            let auth = local_work_auth(
+                resolved,
+                harness_core::agentfirm_api::ActorRef {
+                    kind: harness_core::agentfirm_api::ActorKind::AgentMember,
+                    id: member.agent_member_id,
+                },
+                None,
+                &context,
+                expected_version,
+            )?;
+            let outcome = crate::work_action_service::execute(
+                store,
+                crate::work_action_service::CanonicalWorkCommand::SubmitResult {
+                    auth,
+                    team_id,
+                    work_id: work_id.clone(),
+                    submission: crate::work_action_service::ResultSubmission {
+                        result_summary: required(args, "--result")?,
+                        artifact_refs,
+                        check_refs,
+                        base_revision: value(args, "--base-revision"),
+                        candidate_revision: value(args, "--candidate-revision"),
+                    },
+                },
+            )?;
+            let work = outcome.work;
             append_work_event(
                 store,
                 &work,
@@ -769,11 +854,44 @@ pub(super) fn team_run_work_command(
                         .to_string(),
                 ));
             }
-            let work = store.accept_work(
+            let context = host_work_context_for_work(store, &work_id, args)?;
+            let execution_space_id = resolved
+                .execution_space_context
+                .as_ref()
+                .map(|space| space.id.clone())
+                .ok_or_else(|| {
+                    CliError::Usage(
+                        "canonical Work acceptance requires an explicitly selected --space".into(),
+                    )
+                })?;
+            let current = crate::work_action_service::current_work(
+                store,
+                &execution_space_id,
                 &work_id,
-                expected_version,
-                host_work_context_for_work(store, &work_id, args)?,
             )?;
+            let team_id = current.accountable_team_id.clone().ok_or_else(|| {
+                CliError::Usage("canonical Work has no accountable Team".into())
+            })?;
+            let host = harness_core::agentfirm_api::ActorRef {
+                kind: harness_core::agentfirm_api::ActorKind::AgentMember,
+                id: context.performed_by_actor.id.clone(),
+            };
+            let auth = local_work_auth(
+                resolved,
+                host.clone(),
+                Some(host),
+                &context,
+                expected_version,
+            )?;
+            let outcome = crate::work_action_service::execute(
+                store,
+                crate::work_action_service::CanonicalWorkCommand::Accept {
+                    auth,
+                    team_id,
+                    work_id: work_id.clone(),
+                },
+            )?;
+            let work = outcome.work;
             append_work_event(
                 store,
                 &work,

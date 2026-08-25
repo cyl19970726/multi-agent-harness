@@ -320,6 +320,26 @@ pub struct TrustCommandResult {
     pub replayed: bool,
 }
 
+/// Existing-crate application boundary for canonical Trust mutations.
+/// Transport adapters never choose Store writers directly.
+pub struct TrustApplication<'a> {
+    store: &'a HarnessStore,
+}
+
+impl<'a> TrustApplication<'a> {
+    pub fn new(store: &'a HarnessStore) -> Self {
+        Self { store }
+    }
+
+    pub fn execute(
+        &self,
+        auth: AuthenticatedMutation,
+        command: TrustCommand,
+    ) -> Result<TrustCommandResult, StoreError> {
+        execute(self.store, auth, command)
+    }
+}
+
 fn unauthorized(resource_kind: &str, resource_id: &str, message: &str) -> StoreError {
     StoreError::Conflict(
         serde_json::to_string(&harness_core::agentfirm_api::TrustError {

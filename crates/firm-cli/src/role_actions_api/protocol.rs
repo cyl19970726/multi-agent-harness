@@ -1118,45 +1118,6 @@ pub(super) fn canonical_replay(
     }))
 }
 
-pub(super) fn committed_canonical_work_result(
-    store: &HarnessStore,
-    auth: &AuthenticatedMutation,
-    work: &harness_core::Work,
-    operation_count_before: usize,
-) -> Result<Option<RoleActionResult>, StoreError> {
-    let operations = store.canonical_operations_for_space(&auth.execution_space_id)?;
-    let Some(operation) = operations
-        .iter()
-        .find(|operation| operation.event.idempotency_key == auth.idempotency_key)
-    else {
-        return Ok(None);
-    };
-    let projection = serde_json::to_value(work)?;
-    if operation.event.aggregate_kind != "work"
-        || operation.event.aggregate_id != work.id
-        || operation.event.performed_by_actor != auth.actor
-        || operation.event.resulting_version != work.version
-        || operation.resulting_projection != projection
-    {
-        return Err(encoded_error(
-            "IDEMPOTENCY_KEY_REUSED",
-            "idempotency key is already bound to a different authenticated Work action",
-            "work",
-            &work.id,
-            Some(work.version),
-        ));
-    }
-    Ok(Some(RoleActionResult {
-        ok: true,
-        action_protocol_version: "agentfirm.role_actions.v1",
-        projection,
-        event_id: operation.event.id.clone(),
-        resulting_version: operation.event.resulting_version,
-        store_sequence: operation.event.store_sequence,
-        replayed: operations.len() == operation_count_before,
-    }))
-}
-
 pub(super) fn work_replay(
     store: &HarnessStore,
     auth: &AuthenticatedMutation,

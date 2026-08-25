@@ -102,14 +102,19 @@ pub(super) fn execute_work_record_action(
             ));
         };
         let host_id = require_host(&auth, &team.host_agent_id, "work", work_id)?;
-        let before = store.work_operations()?.len();
-        let work = store.request_work_changes(
-            work_id,
-            auth.expected_version,
-            &reason,
-            host_context(&auth, host_id, false),
+        let outcome = crate::work_action_service::execute(
+            store,
+            crate::work_action_service::CanonicalWorkCommand::Lifecycle {
+                auth: Some(auth.clone()),
+                action: Box::new(WorkAction::RequestChanges {
+                    work_id: work_id.to_string(),
+                    expected_version: auth.expected_version,
+                    reason,
+                    context: host_context(&auth, host_id, false),
+                }),
+            },
         )?;
-        return work_action_result(store, &auth, before, work);
+        return Ok(work_outcome_result(outcome));
     }
     if operation == "revise" {
         let RoleActionIntent::ReviseWork {
@@ -176,14 +181,15 @@ pub(super) fn execute_work_record_action(
                 created_at: now_string(),
             };
             auth.expected_version = 0;
-            Ok(trust_result(crate::agentfirm_api::execute(
-                store,
-                auth,
-                crate::agentfirm_api::TrustCommand::CreateWorkReport {
-                    team_id: team_id.into(),
-                    report,
-                },
-            )?))
+            Ok(trust_result(
+                crate::agentfirm_api::TrustApplication::new(store).execute(
+                    auth,
+                    crate::agentfirm_api::TrustCommand::CreateWorkReport {
+                        team_id: team_id.into(),
+                        report,
+                    },
+                )?,
+            ))
         }
         (
             "findings",
@@ -212,14 +218,15 @@ pub(super) fn execute_work_record_action(
                 created_at: now_string(),
             };
             auth.expected_version = 0;
-            Ok(trust_result(crate::agentfirm_api::execute(
-                store,
-                auth,
-                crate::agentfirm_api::TrustCommand::CreateWorkFinding {
-                    team_id: team_id.into(),
-                    finding,
-                },
-            )?))
+            Ok(trust_result(
+                crate::agentfirm_api::TrustApplication::new(store).execute(
+                    auth,
+                    crate::agentfirm_api::TrustCommand::CreateWorkFinding {
+                        team_id: team_id.into(),
+                        finding,
+                    },
+                )?,
+            ))
         }
         (
             "failure-analyses",
@@ -258,14 +265,15 @@ pub(super) fn execute_work_record_action(
                 created_at: now_string(),
             };
             auth.expected_version = 0;
-            Ok(trust_result(crate::agentfirm_api::execute(
-                store,
-                auth,
-                crate::agentfirm_api::TrustCommand::CreateFailureAnalysis {
-                    team_id: team_id.into(),
-                    analysis,
-                },
-            )?))
+            Ok(trust_result(
+                crate::agentfirm_api::TrustApplication::new(store).execute(
+                    auth,
+                    crate::agentfirm_api::TrustCommand::CreateFailureAnalysis {
+                        team_id: team_id.into(),
+                        analysis,
+                    },
+                )?,
+            ))
         }
         (
             "gate-requirements",
@@ -334,14 +342,15 @@ pub(super) fn execute_work_record_action(
                 version: 1,
             };
             auth.expected_version = 0;
-            Ok(trust_result(crate::agentfirm_api::execute(
-                store,
-                auth,
-                crate::agentfirm_api::TrustCommand::CreateGateRequirement {
-                    team_id: team_id.into(),
-                    requirement,
-                },
-            )?))
+            Ok(trust_result(
+                crate::agentfirm_api::TrustApplication::new(store).execute(
+                    auth,
+                    crate::agentfirm_api::TrustCommand::CreateGateRequirement {
+                        team_id: team_id.into(),
+                        requirement,
+                    },
+                )?,
+            ))
         }
         _ => Err(encoded_error(
             "INVALID_STATE_TRANSITION",
@@ -416,47 +425,15 @@ pub(super) fn create_result_report(
         created_at: now_string(),
     };
     auth.expected_version = 0;
-    Ok(trust_result(crate::agentfirm_api::execute(
-        store,
-        auth,
-        crate::agentfirm_api::TrustCommand::CreateWorkReport {
-            team_id: team.id.clone(),
-            report,
-        },
-    )?))
-}
-
-pub(super) fn work_action_result(
-    store: &HarnessStore,
-    auth: &AuthenticatedMutation,
-    before: usize,
-    work: Work,
-) -> Result<RoleActionResult, StoreError> {
-    let operations = store.work_operations()?;
-    let operation = operations
-        .iter()
-        .rev()
-        .find(|operation| {
-            operation.work.id == work.id && operation.event.idempotency_key == auth.idempotency_key
-        })
-        .ok_or_else(|| {
-            encoded_error(
-                "INVALID_STATE_TRANSITION",
-                "Work mutation committed without its operation",
-                "work",
-                &work.id,
-                Some(work.version),
-            )
-        })?;
-    Ok(RoleActionResult {
-        ok: true,
-        action_protocol_version: "agentfirm.role_actions.v1",
-        projection: serde_json::to_value(&work)?,
-        event_id: operation.event.id.clone(),
-        resulting_version: work.version,
-        store_sequence: operations.len() as u64,
-        replayed: operations.len() == before,
-    })
+    Ok(trust_result(
+        crate::agentfirm_api::TrustApplication::new(store).execute(
+            auth,
+            crate::agentfirm_api::TrustCommand::CreateWorkReport {
+                team_id: team.id.clone(),
+                report,
+            },
+        )?,
+    ))
 }
 
 pub(super) fn execute_gate_action(
@@ -592,11 +569,12 @@ pub(super) fn execute_gate_action(
                 version: 1,
             };
             auth.expected_version = 0;
-            Ok(trust_result(crate::agentfirm_api::execute(
-                store,
-                auth,
-                crate::agentfirm_api::TrustCommand::EvaluateGate { evaluation },
-            )?))
+            Ok(trust_result(
+                crate::agentfirm_api::TrustApplication::new(store).execute(
+                    auth,
+                    crate::agentfirm_api::TrustCommand::EvaluateGate { evaluation },
+                )?,
+            ))
         }
         (
             "waive",
@@ -636,11 +614,12 @@ pub(super) fn execute_gate_action(
                 revoked_at: None,
             };
             auth.expected_version = 0;
-            Ok(trust_result(crate::agentfirm_api::execute(
-                store,
-                auth,
-                crate::agentfirm_api::TrustCommand::WaiveGate { waiver },
-            )?))
+            Ok(trust_result(
+                crate::agentfirm_api::TrustApplication::new(store).execute(
+                    auth,
+                    crate::agentfirm_api::TrustCommand::WaiveGate { waiver },
+                )?,
+            ))
         }
         _ => Err(encoded_error(
             "INVALID_STATE_TRANSITION",
@@ -724,12 +703,13 @@ pub(super) fn execute_waiver_revoke(
             Some(waiver.version),
         ));
     }
-    Ok(trust_result(crate::agentfirm_api::execute(
-        store,
-        auth,
-        crate::agentfirm_api::TrustCommand::RevokeGateWaiver {
-            waiver_id: waiver_id.into(),
-            revoked_at: now_string(),
-        },
-    )?))
+    Ok(trust_result(
+        crate::agentfirm_api::TrustApplication::new(store).execute(
+            auth,
+            crate::agentfirm_api::TrustCommand::RevokeGateWaiver {
+                waiver_id: waiver_id.into(),
+                revoked_at: now_string(),
+            },
+        )?,
+    ))
 }

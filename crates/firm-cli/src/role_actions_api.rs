@@ -5,10 +5,7 @@
 //! identity, or runtime identity. Those are bound from the authenticated
 //! transport and the addressed Team/Work at this boundary.
 
-use harness_application::{
-    CreateWorkCommand, ReplaceWorkDependenciesCommand, SubmitWorkCommand, WorkAction,
-    WorkApplication,
-};
+use harness_application::{CreateWorkCommand, ReplaceWorkDependenciesCommand, WorkAction};
 use harness_core::agentfirm_api::{
     ActorKind, ActorRef, CandidateKind, CandidateRef, Confidence, DeliveryReconcileOutcome,
     FailureAnalysis, GateEvaluation, GateRequirement, GateRequirementSource, GateVerdict,
@@ -43,8 +40,32 @@ pub(crate) use protocol::{
 };
 pub use protocol::{is_http_mutation_path, is_retired_legacy_write_path, RoleActionResult};
 
-fn execute_work_action(store: &HarnessStore, action: WorkAction) -> Result<Work, StoreError> {
-    Ok(WorkApplication::new(store).execute(action)?.work)
+fn execute_work_action(
+    store: &HarnessStore,
+    auth: &AuthenticatedMutation,
+    action: WorkAction,
+) -> Result<crate::work_action_service::CanonicalWorkActionOutcome, StoreError> {
+    crate::work_action_service::execute(
+        store,
+        crate::work_action_service::CanonicalWorkCommand::Lifecycle {
+            auth: Some(auth.clone()),
+            action: Box::new(action),
+        },
+    )
+}
+
+fn work_outcome_result(
+    outcome: crate::work_action_service::CanonicalWorkActionOutcome,
+) -> RoleActionResult {
+    RoleActionResult {
+        ok: true,
+        action_protocol_version: "agentfirm.role_actions.v1",
+        projection: outcome.projection,
+        event_id: outcome.event_id,
+        resulting_version: outcome.resulting_version,
+        store_sequence: outcome.store_sequence,
+        replayed: outcome.replayed,
+    }
 }
 
 pub fn execute(
@@ -109,17 +130,14 @@ pub fn execute(
             )
         })?;
         let host_id = require_host(&auth, &team.host_agent_id, "work", work_id)?;
-        let before = store.work_operations()?.len();
-        let canonical_before = store
-            .canonical_operations_for_space(&auth.execution_space_id)?
-            .len();
         let mut context = host_context(&auth, host_id, false);
         context.causation_ref = Some(WorkCausationRef {
             kind: "work_dependency_reason".into(),
             id: reason,
         });
-        let work = execute_work_action(
+        let outcome = execute_work_action(
             store,
+            &auth,
             WorkAction::ReplaceDependencies(ReplaceWorkDependenciesCommand {
                 accountable_team_id: team_id.to_string(),
                 work_id: work_id.to_string(),
@@ -128,36 +146,7 @@ pub fn execute(
                 context,
             }),
         )?;
-        if let Some(result) =
-            committed_canonical_work_result(store, &auth, &work, canonical_before)?
-        {
-            return Ok(result);
-        }
-        let operations = store.work_operations()?;
-        let operation = operations
-            .iter()
-            .rev()
-            .find(|operation| {
-                operation.work.id == work.id && operation.work.version == work.version
-            })
-            .ok_or_else(|| {
-                encoded_error(
-                    "INVALID_STATE_TRANSITION",
-                    "dependency replacement committed without a matching operation",
-                    "work",
-                    work_id,
-                    Some(work.version),
-                )
-            })?;
-        return Ok(RoleActionResult {
-            ok: true,
-            action_protocol_version: "agentfirm.role_actions.v1",
-            projection: serde_json::to_value(&work)?,
-            event_id: operation.event.id.clone(),
-            resulting_version: work.version,
-            store_sequence: operations.len() as u64,
-            replayed: operations.len() == before,
-        });
+        return Ok(work_outcome_result(outcome));
     }
     if let Some((team_id, work_id)) = parse_accept_route(path) {
         let intent = serde_json::from_slice::<RoleActionIntent>(body).map_err(|error| {
@@ -187,82 +176,14 @@ pub fn execute(
                 None,
             ));
         }
-        let team = store.latest_teams()?.remove(team_id).ok_or_else(|| {
-            encoded_error(
-                "INVALID_STATE_TRANSITION",
-                "AgentTeam does not exist",
-                "team",
-                team_id,
-                None,
-            )
-        })?;
-        require_host(&auth, &team.host_agent_id, "work", work_id)?;
-        if let Some(replay) = canonical_replay(store, &auth, "work", work_id)? {
-            return Ok(replay);
-        }
-        let work = current_canonical_work(store, &auth.execution_space_id, work_id)?;
-        if work.accountable_team_id.as_deref() != Some(team_id)
-            || work.version != auth.expected_version
-        {
-            return Err(encoded_error(
-                "VERSION_CONFLICT",
-                "accept requires the exact current Team-scoped Work revision",
-                "work",
-                work_id,
-                Some(work.version),
-            ));
-        }
-        let report = store
-            .canonical_operations_for_space(&auth.execution_space_id)?
-            .into_iter()
-            .filter(|operation| operation.event.aggregate_kind == "work_report")
-            .filter_map(|operation| {
-                serde_json::from_value::<WorkReport>(operation.resulting_projection).ok()
-            })
-            .filter(|report| {
-                report.kind == WorkReportKind::Result
-                    && report.work_id == work_id
-                    && report.work_revision == work.version
-            })
-            .max_by_key(|report| report.report_revision)
-            .ok_or_else(|| {
-                encoded_error(
-                    "REPORT_EVIDENCE_MISSING",
-                    "accept requires the exact current result WorkReport",
-                    "work",
-                    work_id,
-                    Some(work.version),
-                )
-            })?;
-        let candidate_fingerprint = report.candidate_fingerprint.clone().ok_or_else(|| {
-            encoded_error(
-                "REPORT_EVIDENCE_MISSING",
-                "result WorkReport has no candidate fingerprint",
-                "work",
-                work_id,
-                Some(work.version),
-            )
-        })?;
-        let result = crate::agentfirm_api::execute(
+        return Ok(work_outcome_result(crate::work_action_service::execute(
             store,
-            auth,
-            crate::agentfirm_api::TrustCommand::AcceptWork {
+            crate::work_action_service::CanonicalWorkCommand::Accept {
+                auth,
                 team_id: team_id.to_string(),
                 work_id: work_id.to_string(),
-                work_report_id: report.id,
-                candidate_fingerprint,
-                updated_at: now_string(),
             },
-        )?;
-        return Ok(RoleActionResult {
-            ok: true,
-            action_protocol_version: "agentfirm.role_actions.v1",
-            projection: result.projection,
-            event_id: result.event_id,
-            resulting_version: result.resulting_version,
-            store_sequence: result.store_sequence,
-            replayed: result.replayed,
-        });
+        )?));
     }
     let route = parse_route(path).ok_or_else(|| {
         encoded_error(
@@ -295,119 +216,24 @@ pub fn execute(
         },
     ) = (route.operation, route.work_id, &intent)
     {
-        let member_run_id = resolve_member_run(store, &auth, route.team_run_id)?;
-        if let Some(replay) = canonical_replay(
+        let outcome = crate::work_action_service::execute(
             store,
-            &auth,
-            "work_report",
-            &deterministic_id("work-report", &auth),
-        )? {
-            return Ok(replay);
-        }
-        let current = current_work(store, route.team_run_id, work_id)?;
-        if current.owner_member_id.as_deref() != Some(auth.actor.id.as_str())
-            || current.active_member_run_id.as_deref() != Some(member_run_id.as_str())
-        {
-            return Err(encoded_error(
-                "UNAUTHORIZED_ACTOR",
-                "submit requires the exact accountable AgentMember and current active WorkExecutionBinding",
-                "work",
-                work_id,
-                Some(current.version),
-            ));
-        }
-        if current.version != auth.expected_version {
-            return Err(encoded_error(
-                "VERSION_CONFLICT",
-                format!(
-                    "expected version {}, current version is {}",
-                    auth.expected_version, current.version
-                ),
-                "work",
-                work_id,
-                Some(current.version),
-            ));
-        }
-        let candidate_value = candidate_revision
-            .as_deref()
-            .filter(|value| !value.trim().is_empty())
-            .ok_or_else(|| {
-                encoded_error(
-                    "REPORT_EVIDENCE_MISSING",
-                    "candidate_revision is required",
-                    "work",
-                    work_id,
-                    Some(current.version),
-                )
-            })?;
-        let evidence_refs = artifact_refs
-            .iter()
-            .chain(check_refs.iter())
-            .filter(|value| !value.trim().is_empty())
-            .cloned()
-            .collect::<Vec<_>>();
-        if evidence_refs.is_empty() {
-            return Err(encoded_error(
-                "REPORT_EVIDENCE_MISSING",
-                "at least one artifact_ref or check_ref is required",
-                "work",
-                work_id,
-                Some(current.version),
-            ));
-        }
-        let candidate = CandidateRef {
-            kind: CandidateKind::GitCommit,
-            value: candidate_value.to_string(),
-        };
-        let candidate_fingerprint = canonical_json_fingerprint(&serde_json::to_value(&candidate)?);
-        let report = WorkReport {
-            id: format!("work-report:{}", auth.idempotency_key),
-            work_id: work_id.to_string(),
-            work_revision: current.version + 1,
-            report_revision: canonical_report_count(store, &auth.execution_space_id, work_id)? + 1,
-            kind: WorkReportKind::Result,
-            authored_by: auth.actor.clone(),
-            summary: result_summary.clone(),
-            base_revision: base_revision.clone(),
-            candidate: Some(candidate),
-            candidate_fingerprint: Some(candidate_fingerprint),
-            finding_refs: Vec::new(),
-            failure_analysis_ref: None,
-            artifact_refs: artifact_refs.clone(),
-            check_refs: check_refs.clone(),
-            evidence_refs,
-            known_risks: Vec::new(),
-            confidence: Some(Confidence::High),
-            recommended_next_action: Some("host_review".into()),
-            created_at: now_string(),
-        };
-        let mut report_auth = auth;
-        // The external CAS is the addressed Work revision. WorkReport is a
-        // newly-created canonical aggregate, so its internal create CAS is 0.
-        report_auth.expected_version = 0;
-        let result = crate::agentfirm_api::execute(
-            store,
-            report_auth,
-            crate::agentfirm_api::TrustCommand::CreateWorkReport {
+            crate::work_action_service::CanonicalWorkCommand::SubmitResult {
+                auth,
                 team_id: team.id.clone(),
-                report,
+                work_id: work_id.to_string(),
+                submission: crate::work_action_service::ResultSubmission {
+                    result_summary: result_summary.clone(),
+                    artifact_refs: artifact_refs.clone(),
+                    check_refs: check_refs.clone(),
+                    base_revision: base_revision.clone(),
+                    candidate_revision: candidate_revision.clone(),
+                },
             },
         )?;
-        return Ok(RoleActionResult {
-            ok: true,
-            action_protocol_version: "agentfirm.role_actions.v1",
-            projection: result.projection,
-            event_id: result.event_id,
-            resulting_version: result.resulting_version,
-            store_sequence: result.store_sequence,
-            replayed: result.replayed,
-        });
+        return Ok(work_outcome_result(outcome));
     }
-    let before = store.work_operations()?.len();
-    let canonical_before = store
-        .canonical_operations_for_space(&auth.execution_space_id)?
-        .len();
-    let work = match (route.operation, route.work_id, intent) {
+    let outcome = match (route.operation, route.work_id, intent) {
         (
             "create",
             None,
@@ -440,6 +266,7 @@ pub fn execute(
             let context = host_context(&auth, host_id, false);
             execute_work_action(
                 store,
+                &auth,
                 WorkAction::Create(CreateWorkCommand {
                     work_id,
                     team_run_id: route.team_run_id.to_string(),
@@ -515,6 +342,7 @@ pub fn execute(
                     match (membership_id, member_run_id) {
                         (Some(membership_id), _) => execute_work_action(
                             store,
+                            &auth,
                             WorkAction::AssignMembership {
                                 work_id: work_id.to_string(),
                                 expected_version: auth.expected_version,
@@ -525,6 +353,7 @@ pub fn execute(
                         )?,
                         (None, Some(member_run_id)) => execute_work_action(
                             store,
+                            &auth,
                             WorkAction::AssignRuntime {
                                 work_id: work_id.to_string(),
                                 expected_version: auth.expected_version,
@@ -547,6 +376,7 @@ pub fn execute(
                     let host_id = require_host(&auth, &team.host_agent_id, "work", work_id)?;
                     execute_work_action(
                         store,
+                        &auth,
                         WorkAction::Rebind {
                             work_id: work_id.to_string(),
                             expected_version: auth.expected_version,
@@ -560,6 +390,7 @@ pub fn execute(
                 {
                     execute_work_action(
                         store,
+                        &auth,
                         WorkAction::ReleaseHost {
                             work_id: work_id.to_string(),
                             expected_version: auth.expected_version,
@@ -571,6 +402,7 @@ pub fn execute(
                     let member_run_id = resolve_member_run(store, &auth, route.team_run_id)?;
                     execute_work_action(
                         store,
+                        &auth,
                         WorkAction::ReleaseMember {
                             work_id: work_id.to_string(),
                             expected_version: auth.expected_version,
@@ -583,6 +415,7 @@ pub fn execute(
                     let host_id = require_host(&auth, &team.host_agent_id, "work", work_id)?;
                     execute_work_action(
                         store,
+                        &auth,
                         WorkAction::Cancel {
                             work_id: work_id.to_string(),
                             expected_version: auth.expected_version,
@@ -595,6 +428,7 @@ pub fn execute(
                     let member_run_id = resolve_member_run(store, &auth, route.team_run_id)?;
                     execute_work_action(
                         store,
+                        &auth,
                         WorkAction::Claim {
                             work_id: work_id.to_string(),
                             expected_version: auth.expected_version,
@@ -607,6 +441,7 @@ pub fn execute(
                     let member_run_id = resolve_member_run(store, &auth, route.team_run_id)?;
                     execute_work_action(
                         store,
+                        &auth,
                         WorkAction::Start {
                             work_id: work_id.to_string(),
                             expected_version: auth.expected_version,
@@ -619,6 +454,7 @@ pub fn execute(
                     let member_run_id = resolve_member_run(store, &auth, route.team_run_id)?;
                     execute_work_action(
                         store,
+                        &auth,
                         WorkAction::BlockMember {
                             work_id: work_id.to_string(),
                             expected_version: auth.expected_version,
@@ -632,6 +468,7 @@ pub fn execute(
                     let member_run_id = resolve_member_run(store, &auth, route.team_run_id)?;
                     execute_work_action(
                         store,
+                        &auth,
                         WorkAction::ResumeMember {
                             work_id: work_id.to_string(),
                             expected_version: auth.expected_version,
@@ -639,33 +476,6 @@ pub fn execute(
                             resolution,
                             context: member_context(&auth, &member_run_id),
                         },
-                    )?
-                }
-                (
-                    "submit",
-                    RoleActionIntent::SubmitWork {
-                        result_summary,
-                        artifact_refs,
-                        check_refs,
-                        base_revision,
-                        candidate_revision,
-                    },
-                ) => {
-                    let member_run_id = resolve_member_run(store, &auth, route.team_run_id)?;
-                    execute_work_action(
-                        store,
-                        WorkAction::Submit(SubmitWorkCommand {
-                            work_id: work_id.to_string(),
-                            expected_version: auth.expected_version,
-                            member_run_id: member_run_id.clone(),
-                            result_summary,
-                            artifact_refs,
-                            check_refs,
-                            github_links: Vec::new(),
-                            base_revision,
-                            candidate_revision,
-                            context: member_context(&auth, &member_run_id),
-                        }),
                     )?
                 }
                 _ => {
@@ -689,32 +499,7 @@ pub fn execute(
             ))
         }
     };
-    if let Some(result) = committed_canonical_work_result(store, &auth, &work, canonical_before)? {
-        return Ok(result);
-    }
-    let operations = store.work_operations()?;
-    let operation = operations
-        .iter()
-        .rev()
-        .find(|operation| operation.work.id == work.id && operation.work.version == work.version)
-        .ok_or_else(|| {
-            encoded_error(
-                "INVALID_STATE_TRANSITION",
-                "Work mutation committed without a matching operation",
-                "work",
-                &work.id,
-                Some(work.version),
-            )
-        })?;
-    Ok(RoleActionResult {
-        ok: true,
-        action_protocol_version: "agentfirm.role_actions.v1",
-        projection: serde_json::to_value(work.clone())?,
-        event_id: operation.event.id.clone(),
-        resulting_version: work.version,
-        store_sequence: operations.len() as u64,
-        replayed: operations.len() == before,
-    })
+    Ok(work_outcome_result(outcome))
 }
 
 #[cfg(test)]
