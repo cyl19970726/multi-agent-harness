@@ -136,6 +136,23 @@ fn kimi_provider_error_after_receipt_requires_recovery_without_replay() {
         .expect("member Work")
         .to_string();
 
+    // Reproduce the exact probation edge: generic idle wake would Continue
+    // active Work from a nonzero streak unless recovery atomically consumes
+    // that continuation authority together with the provider receipt fence.
+    let blocked_row = store
+        .member_runs()
+        .expect("member rows before recovery")
+        .into_iter()
+        .rev()
+        .find(|member| member.id == member_id)
+        .expect("blocked member row");
+    let mut probation_blocked = blocked_row.clone();
+    probation_blocked.zero_output_streak = 2;
+    probation_blocked.last_event_at = Some("unix-ms:recovery-probation".into());
+    store
+        .compare_and_append_member_run(&blocked_row, &probation_blocked)
+        .expect("seed nonzero probation continuation streak");
+
     let (status, closed) = serve.post_json(
         &format!("/v1/team-runs/{run_id}/members/{member_id}/close"),
         &serde_json::json!({
@@ -149,6 +166,14 @@ fn kimi_provider_error_after_receipt_requires_recovery_without_replay() {
         "recovery Close must not fabricate a provider Close receipt: {closed}"
     );
     assert_eq!(closed["result"]["provider_close_receipt"], "not_fabricated");
+    let closed_row = store
+        .member_runs()
+        .expect("member rows after recovery Close")
+        .into_iter()
+        .rev()
+        .find(|member| member.id == member_id)
+        .expect("closed member row");
+    assert_eq!(closed_row.zero_output_streak, 0);
 
     let (status, reopened) = serve.post_json(
         &format!("/v1/team-runs/{run_id}/members/{member_id}/reopen"),

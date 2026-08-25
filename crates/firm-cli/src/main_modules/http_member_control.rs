@@ -332,9 +332,30 @@ pub(super) fn close_detached_blocked_member_for_recovery(
     requested_by: &str,
     reason: &str,
 ) -> CliResult<Option<serde_json::Value>> {
+    close_detached_blocked_member_for_recovery_with_hook(
+        store,
+        team_run_id,
+        member,
+        supervisor,
+        requested_by,
+        reason,
+        |_| Ok(()),
+    )
+}
+
+pub(super) fn close_detached_blocked_member_for_recovery_with_hook(
+    store: &HarnessStore,
+    team_run_id: &str,
+    member: &ProviderRuntimeProjection,
+    supervisor: &TeamSupervisorLease,
+    requested_by: &str,
+    reason: &str,
+    mut before_terminal_cas: impl FnMut(usize) -> CliResult<()>,
+) -> CliResult<Option<serde_json::Value>> {
     use harness_core::agentfirm_api::{
-        AgentSessionStatus, RuntimeActivity, RuntimeCommandStatus, RuntimeDriverRef,
-        RuntimeEffectCertainty, RuntimeResidency, WorkDeliveryStatus,
+        AgentSessionStatus, NativeSessionAvailability as AgentNativeSessionAvailability,
+        RuntimeActivity, RuntimeCommandStatus, RuntimeDriverRef, RuntimeEffectCertainty,
+        RuntimeResidency, WorkDeliveryStatus,
     };
 
     let ledger = TeamRunLedger::without_supervisor(store, team_run_id);
@@ -351,7 +372,7 @@ pub(super) fn close_detached_blocked_member_for_recovery(
             member.id, session.id
         )));
     }
-    let native_session_matches = match (
+    let native_session_matches_and_resumable = match (
         member.native_session.as_ref(),
         session.native_session_ref.as_ref(),
     ) {
@@ -362,15 +383,25 @@ pub(super) fn close_detached_blocked_member_for_recovery(
                 && member_native.native_locator_kind == session_native.native_locator_kind
                 && member_native.provider_version == session_native.provider_version
                 && member_native.adapter_contract_version == session_native.adapter_contract_version
-                && member_native.supports_resume == session_native.supports_resume
+                && member_native.supports_resume
+                && session_native.supports_resume
                 && member_native.parent_native_session_id == session_native.parent_native_session_id
+                && matches!(
+                    (member_native.availability, session_native.availability),
+                    (
+                        harness_core::NativeSessionAvailability::Available,
+                        AgentNativeSessionAvailability::Available
+                    ) | (
+                        harness_core::NativeSessionAvailability::Stale,
+                        AgentNativeSessionAvailability::Stale
+                    )
+                )
         }
-        (None, None) => true,
         _ => false,
     };
-    if !native_session_matches {
+    if !native_session_matches_and_resumable {
         return Err(CliError::RuntimeRecoveryRequired(format!(
-            "DETACHED_MEMBER_RECOVERY_FENCED: member {} native-session authority does not match AgentSession {}",
+            "DETACHED_MEMBER_RECOVERY_FENCED: member {} lacks an exact present, resumable native-session authority matching AgentSession {}",
             member.id, session.id
         )));
     }
@@ -454,9 +485,10 @@ pub(super) fn close_detached_blocked_member_for_recovery(
         .next()
         .map(|(_, version)| version);
 
-    // Revalidate the exact lease while latching Close, then revalidate every
-    // durable boundary immediately before its CAS.  No provider effect is
-    // issued on this recovery-only path.
+    // Latch intent first. The terminal recovery projection itself is committed
+    // below through one Store writer-lock transaction that revalidates the
+    // exact Supervisor/NodeDaemon, AgentSession, ambiguous-command set, and
+    // MemberRun revision. No provider effect is issued on this path.
     let close = latch_member_close_for_supervisor(
         store,
         team_run_id,
@@ -466,19 +498,12 @@ pub(super) fn close_detached_blocked_member_for_recovery(
         &supervisor.supervisor_id,
         supervisor.generation,
     )?;
-    cancel_unanswered_provider_messages(store, team_run_id, &member.id, requested_by, reason)?;
-    let mut closed = mark_member_coordination_closed_with_hook(
-        store,
-        team_run_id,
-        &member.id,
-        |_, latest| {
-            require_current_supervisor_lease(
-                store,
-                team_run_id,
-                &supervisor.supervisor_id,
-                supervisor.generation,
-            )?;
-            require_provider_session_authority(&ledger, &member.agent_member_id, false)?;
+    let mut conflicted_expected = None;
+    let closed = 'terminal_cas: {
+        for attempt in 0..PROVIDER_MEMBER_CAS_RETRIES {
+            let latest = ledger
+                .latest_member_run(&member.id)?
+                .ok_or_else(|| CliError::Usage(format!("member run not found: {}", member.id)))?;
             if latest.runtime_generation != member.runtime_generation
                 || latest.status != MemberRunStatus::Blocked
                 || !latest.coordination_is_active()
@@ -492,7 +517,15 @@ pub(super) fn close_detached_blocked_member_for_recovery(
                     member.id
                 )));
             }
-            let (_, current_session) = provider_session_for_member(&ledger, latest)?;
+            if let Some(expected) = conflicted_expected.take() {
+                if !is_same_runtime_close_drift(&expected, &latest) {
+                    return Err(CliError::RuntimeRecoveryRequired(format!(
+                        "DETACHED_MEMBER_RECOVERY_FENCED: member {} changed outside the admitted runtime generation",
+                        member.id
+                    )));
+                }
+            }
+            let (_, current_session) = provider_session_for_member(&ledger, &latest)?;
             if current_session.version != session.version
                 || current_session.control_state.runtime_residency != RuntimeResidency::Detached
                 || current_session.control_state.activity != RuntimeActivity::Idle
@@ -504,48 +537,61 @@ pub(super) fn close_detached_blocked_member_for_recovery(
                     session.id
                 )));
             }
-            let ambiguous_command = store
-                .runtime_commands(&execution_space_id)?
-                .into_iter()
-                .any(|command| {
-                    command.target_session_id.as_deref() == Some(session.id.as_str())
-                        && command.target_session_generation == Some(session.runtime_generation)
-                        && matches!(
-                            command.status,
-                            RuntimeCommandStatus::Accepted
-                                | RuntimeCommandStatus::Quiesced
-                                | RuntimeCommandStatus::RecoveryRequired
-                        )
-                        && command.effect_certainty == RuntimeEffectCertainty::Unknown
-                });
-            if ambiguous_command {
-                return Err(CliError::RuntimeRecoveryRequired(format!(
-                    "DETACHED_MEMBER_RECOVERY_FENCED: member {} acquired an ambiguous RuntimeCommand after recovery admission",
-                    member.id
-                )));
+            before_terminal_cas(attempt)?;
+
+            let expected = latest;
+            let mut next = expected.clone();
+            let closed_at = now_string();
+            next.coordination_status = MemberCoordinationStatus::Closed;
+            next.status = MemberRunStatus::Stopped;
+            next.last_consumed_work_version =
+                consumed_work_version.or(next.last_consumed_work_version);
+            // The consumed provider-received revision has ended probation.
+            // Reopen must wait for new canonical Host input instead of using
+            // the generic zero-output continuation predicate.
+            next.zero_output_streak = 0;
+            next.finished_at = Some(closed_at.clone());
+            next.last_event_at = Some(closed_at);
+            match store.compare_and_append_recovered_member_run_for_supervisor(
+                &expected,
+                &next,
+                &execution_space_id,
+                &current_session,
+                &supervisor.supervisor_id,
+                supervisor.generation,
+                current_unix_ms_u64(),
+            ) {
+                Ok(()) => break 'terminal_cas next,
+                Err(StoreError::Conflict(message))
+                    if message.starts_with("ProviderRuntimeProjection ")
+                        && message.ends_with(" changed concurrently; retry the operation")
+                        && attempt + 1 < PROVIDER_MEMBER_CAS_RETRIES =>
+                {
+                    conflicted_expected = Some(expected);
+                }
+                Err(StoreError::Conflict(message))
+                    if message.starts_with("TEAM_SUPERVISOR_LEASE_LOST:")
+                        || message.starts_with("TEAM_SUPERVISOR_PARENT_FENCED:") =>
+                {
+                    return Err(CliError::SupervisorLeaseLost(message));
+                }
+                Err(StoreError::Conflict(message))
+                    if message.starts_with("DETACHED_MEMBER_RECOVERY_") =>
+                {
+                    return Err(CliError::RuntimeRecoveryRequired(message));
+                }
+                Err(error) => return store_conflict_as_usage(Err(error)),
             }
-            Ok(())
-        },
-    )?;
-    require_current_supervisor_lease(
-        store,
-        team_run_id,
-        &supervisor.supervisor_id,
-        supervisor.generation,
-    )?;
-    require_provider_session_authority(&ledger, &member.agent_member_id, false)?;
-    let expected = closed.clone();
-    closed.status = MemberRunStatus::Stopped;
-    closed.last_consumed_work_version = consumed_work_version.or(closed.last_consumed_work_version);
-    closed.finished_at = Some(now_string());
-    closed.last_event_at = Some(now_string());
-    store_conflict_as_usage(store.compare_and_append_member_run(&expected, &closed))?;
+        }
+        unreachable!("bounded detached-recovery CAS loop returns on every path")
+    };
     store_conflict_as_usage(store.complete_team_member_close(
         team_run_id,
         &member.id,
         &close.id,
         &now_string(),
     ))?;
+    cancel_unanswered_provider_messages(store, team_run_id, &member.id, requested_by, reason)?;
     ledger.append_action(
         &member.id,
         "closed",

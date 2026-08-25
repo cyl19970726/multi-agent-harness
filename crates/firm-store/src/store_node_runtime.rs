@@ -1,6 +1,52 @@
 use super::*;
 
 impl HarnessStore {
+    pub(super) fn require_exact_supervisor_authority_unlocked(
+        &self,
+        team_run_id: &str,
+        supervisor_id: &str,
+        supervisor_generation: u64,
+        now_unix_ms: u64,
+    ) -> StoreResult<TeamSupervisorLease> {
+        let lease = self
+            .latest_lease_for_run_unlocked(team_run_id)?
+            .ok_or_else(|| {
+                StoreError::Conflict(format!(
+                    "TEAM_SUPERVISOR_LEASE_LOST: TeamRun {team_run_id} has no Supervisor lease"
+                ))
+            })?;
+        if lease.status != TeamSupervisorLeaseStatus::Active
+            || lease.supervisor_id != supervisor_id
+            || lease.generation != supervisor_generation
+            || lease.expires_unix_ms <= now_unix_ms
+        {
+            return Err(StoreError::Conflict(format!(
+                "TEAM_SUPERVISOR_LEASE_LOST: TeamRun {team_run_id} is not owned by {supervisor_id} generation {supervisor_generation}"
+            )));
+        }
+        let parent = latest_by_id(
+            self.read_jsonl::<NodeDaemonLease>("node_daemon_leases.jsonl")?,
+            |parent| parent.node_id.clone(),
+        )
+        .remove(&lease.node_id)
+        .ok_or_else(|| {
+            StoreError::Conflict(format!(
+                "TEAM_SUPERVISOR_PARENT_FENCED: Node {} has no active parent",
+                lease.node_id
+            ))
+        })?;
+        if parent.status != NodeDaemonLeaseStatus::Active
+            || parent.daemon_id != lease.node_daemon_id
+            || parent.generation != lease.node_daemon_generation
+            || parent.expires_unix_ms <= now_unix_ms
+        {
+            return Err(StoreError::Conflict(format!(
+                "TEAM_SUPERVISOR_PARENT_FENCED: parent NodeDaemon generation is no longer active for TeamRun {team_run_id}"
+            )));
+        }
+        Ok(lease)
+    }
+
     pub fn append_team_message(&self, value: &TeamMessageProjection) -> StoreResult<()> {
         let _ = value;
         Err(StoreError::Conflict(
@@ -564,45 +610,12 @@ impl HarnessStore {
     ) -> StoreResult<TeamMemberCloseRequest> {
         self.init()?;
         let _lock = self.acquire_write_lock()?;
-        let lease = self
-            .latest_lease_for_run_unlocked(&value.team_run_id)?
-            .ok_or_else(|| {
-                StoreError::Conflict(format!(
-                    "TEAM_SUPERVISOR_LEASE_LOST: TeamRun {} has no Supervisor lease",
-                    value.team_run_id
-                ))
-            })?;
-        if lease.status != TeamSupervisorLeaseStatus::Active
-            || lease.supervisor_id != supervisor_id
-            || lease.generation != supervisor_generation
-            || lease.expires_unix_ms <= now_unix_ms
-        {
-            return Err(StoreError::Conflict(format!(
-                "TEAM_SUPERVISOR_LEASE_LOST: TeamRun {} is not owned by {supervisor_id} generation {supervisor_generation}",
-                value.team_run_id
-            )));
-        }
-        let parent = latest_by_id(
-            self.read_jsonl::<NodeDaemonLease>("node_daemon_leases.jsonl")?,
-            |parent| parent.node_id.clone(),
-        )
-        .remove(&lease.node_id)
-        .ok_or_else(|| {
-            StoreError::Conflict(format!(
-                "TEAM_SUPERVISOR_PARENT_FENCED: Node {} has no active parent",
-                lease.node_id
-            ))
-        })?;
-        if parent.status != NodeDaemonLeaseStatus::Active
-            || parent.daemon_id != lease.node_daemon_id
-            || parent.generation != lease.node_daemon_generation
-            || parent.expires_unix_ms <= now_unix_ms
-        {
-            return Err(StoreError::Conflict(format!(
-                "TEAM_SUPERVISOR_PARENT_FENCED: parent NodeDaemon generation is no longer active for TeamRun {}",
-                value.team_run_id
-            )));
-        }
+        self.require_exact_supervisor_authority_unlocked(
+            &value.team_run_id,
+            supervisor_id,
+            supervisor_generation,
+            now_unix_ms,
+        )?;
         let member = latest_by_id(
             self.read_jsonl::<ProviderRuntimeProjection>("member_runs.jsonl")?,
             |member| member.id.clone(),
