@@ -467,7 +467,7 @@ impl HarnessStore {
                 "work {work_id} is already terminal"
             )));
         }
-        self.ensure_deliveries_reassignable_unlocked(&current)?;
+        self.ensure_no_claimed_delivery_unlocked(&current)?;
         let mut next = current.clone();
         next.phase = WorkPhase::Closed;
         next.condition = WorkCondition::Normal;

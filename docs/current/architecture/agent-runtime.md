@@ -184,6 +184,13 @@ while identity drift, same-version drift, version regression/gaps, and illegal
 transitions fail the entire read closed. There is no legacy WorkDelivery row
 to merge into this fold.
 
+Host cancellation remains a Work responsibility-plane decision after
+`ProviderReceived`: it closes only the exact current Work revision and
+preserves the delivery receipt, active execution binding, and RuntimeCommand
+history unchanged. An unsettled `Claimed` delivery remains uncertain and
+fences cancellation until it is reconciled. Cancellation never fabricates a
+provider effect, delivery failure, binding release, or semantic Work start.
+
 `HostAttention` uses the same boundary with different storage ownership. The
 canonical trust side record owns the immutable causal source fact; the
 HostAttention lifecycle ledger may change only claim, transport, receipt,
