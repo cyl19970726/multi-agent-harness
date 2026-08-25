@@ -33,6 +33,7 @@ import {
   type LiveProviderActivityEvent,
   type MessageSummary,
   type ProviderObservation,
+  type SessionEventProjection,
   type RoleActionExecutor,
   type RoleView,
   type WorkSummary,
@@ -243,10 +244,10 @@ function SessionCanvas({data,liveActivity,liveConnectionState,selectedMessageId,
   const chronologyRef=useRef<HTMLDivElement>(null);
   const projection=data.session_event_projection??null;
   const rows=useMemo(()=>{
-    const sorted=[
-      ...data.messages.map(message=>({kind:"message" as const,at:message.created_at,message,continuation:false})),
-      ...(projection?.episodes.flatMap(episode=>episode.observations.map(event=>({kind:"native" as const,at:observationTime(event)??"",event,episode})))??[]),
-    ].sort((left,right)=>timestampKey(left.at)-timestampKey(right.at));
+    const sorted=mergeSessionRows(
+      data.messages.map(message=>({kind:"message" as const,at:message.created_at,message,continuation:false})).sort((left,right)=>timestampKey(left.at)-timestampKey(right.at)),
+      (projection?.episodes.flatMap(episode=>episode.observations.map(event=>({kind:"native" as const,at:observationTime(event)??"",event,episode})))??[]).sort((left,right)=>left.event.ordering_position-right.event.ordering_position),
+    );
     const seen=new Set<string>();
     return sorted.map(row=>{
       if(row.kind!=="message")return row;
@@ -278,7 +279,7 @@ function SessionCanvas({data,liveActivity,liveConnectionState,selectedMessageId,
 }
 
 function NativeEventRecord({event,episodeTerminal,actorName,selected,onOpen}:{event:ProviderObservation;episodeTerminal:boolean;actorName:string;selected:boolean;onOpen:()=>void}){
-  return <section className="aw-provider-episode" data-terminal={episodeTerminal||undefined} aria-label={`Provider-native ${humanizeToken(event.semantic_kind)} event`}>
+  return <section className="aw-provider-episode" data-native-ordering-position={event.ordering_position} data-terminal={episodeTerminal||undefined} aria-label={`Provider-native ${humanizeToken(event.semantic_kind)} event`}>
     {event.semantic_kind==="authored_response"
       ? <NativeAuthoredRecord event={event} actorName={actorName} selected={selected} onSelect={onOpen}/>
       : <div className="aw-native-facts-trail"><ExpandableEvent event={event} selected={selected} onSelect={onOpen}/></div>}
@@ -538,7 +539,23 @@ function mergeAgentWorkspaceViews(primary:RoleView<AgentWorkspaceData>|null,addi
     current.terminal=current.terminal||episode.terminal;
     current.incomplete=current.incomplete||episode.incomplete;
   }
-  return {...primary,data:{...primary.data,session_event_projection:{...left,episodes:[...episodes.values()].sort((a,b)=>timestampKey(a.observations[0]?.occurred_at??a.observations[0]?.observed_at)-timestampKey(b.observations[0]?.occurred_at??b.observations[0]?.observed_at)),page:right.page}}};
+  return {...primary,data:{...primary.data,session_event_projection:{...left,episodes:[...episodes.values()].sort((a,b)=>(a.observations[0]?.ordering_position??Number.MAX_SAFE_INTEGER)-(b.observations[0]?.ordering_position??Number.MAX_SAFE_INTEGER)||a.episode_id.localeCompare(b.episode_id)),page:right.page}}};
+}
+type SessionMessageRow={kind:"message";at:string;message:MessageSummary;continuation:boolean};
+type SessionNativeRow={kind:"native";at:string;event:ProviderObservation;episode:SessionEventProjection["episodes"][number]};
+function mergeSessionRows(messages:SessionMessageRow[],nativeEvents:SessionNativeRow[]):Array<SessionMessageRow|SessionNativeRow>{
+  const rows:Array<SessionMessageRow|SessionNativeRow>=[];
+  let messageIndex=0;
+  let nativeIndex=0;
+  while(messageIndex<messages.length||nativeIndex<nativeEvents.length){
+    const message=messages[messageIndex];
+    const nativeEvent=nativeEvents[nativeIndex];
+    if(!nativeEvent){rows.push(message!);messageIndex+=1;continue;}
+    if(!message){rows.push(nativeEvent);nativeIndex+=1;continue;}
+    if(timestampKey(message.at)<=timestampKey(nativeEvent.at)){rows.push(message);messageIndex+=1;}
+    else{rows.push(nativeEvent);nativeIndex+=1;}
+  }
+  return rows;
 }
 function humanizeToken(value:string){return value.split(/[_-]+/).filter(Boolean).map((part,index)=>index===0?`${part.charAt(0).toUpperCase()}${part.slice(1)}`:part).join(" ")}
 function rosterStateTone(state:string){if(/running|active/.test(state))return "text-status-good";if(/wait|pending|review/.test(state))return "text-status-warn";if(/block/.test(state))return "text-status-bad";return "text-muted-foreground";}
