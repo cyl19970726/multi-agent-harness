@@ -314,7 +314,9 @@ const canonicalWorkActionAdapters = [
   "crates/firm-cli/src/main_modules/work_cli.rs",
   "crates/firm-cli/src/role_actions_api.rs",
   "crates/firm-cli/src/role_actions_api/work_records.rs",
+  "crates/firm-cli/src/role_actions_api/canonical_actions.rs",
   "crates/firm-cli/src/main_modules/user_commands.rs",
+  "crates/firm-cli/src/main_modules/http_trust_routes.rs",
 ];
 const forbiddenAdapterDispatch = /WorkApplication::new\(store\)|agentfirm_api::execute\(|store\.(?:accept_work|request_work_changes)\(/;
 for (const path of canonicalWorkActionAdapters) {
@@ -328,6 +330,7 @@ const canonicalWorkActionService = read(canonicalWorkActionServicePath);
 for (const required of [
   "pub enum CanonicalWorkActionKind",
   "pub enum CanonicalWorkCommand",
+  "CreateReport {",
   "pub struct CanonicalWorkActionOutcome",
   "pub fn execute(",
   "TrustApplication::new(store).execute",
@@ -344,6 +347,12 @@ if (!read("crates/firm-cli/src/role_actions_api.rs").includes("work_action_servi
 }
 if (!read("crates/firm-cli/src/main_modules/user_commands.rs").includes("TrustApplication::new(store).execute")) {
   failures.push("user_commands.rs: member-trust mutations must use TrustApplication");
+}
+if (read("crates/firm-cli/src/role_actions_api/work_records.rs").includes("TrustCommand::CreateWorkReport")) {
+  failures.push("work_records.rs: WorkReport mutations must use CanonicalWorkCommand::CreateReport");
+}
+if (!read("crates/firm-cli/src/main_modules/http_trust_routes.rs").includes("TrustApplication::new(store_owned).execute")) {
+  failures.push("http_trust_routes.rs: generic HTTP trust mutations must use TrustApplication");
 }
 const storeApplicationPath = "crates/firm-store/src/store_work_application.rs";
 if (!existsSync(resolve(root, storeApplicationPath))) {

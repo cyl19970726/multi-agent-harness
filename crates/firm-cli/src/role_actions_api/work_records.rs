@@ -47,18 +47,6 @@ pub(super) fn execute_work_record_action(
         _ => {}
     }
     let replay = match operation {
-        "request-changes" => work_replay(
-            store,
-            &auth,
-            work_id,
-            harness_core::WorkEventKind::ChangesRequested,
-        )?,
-        "revise" | "reports" => canonical_replay(
-            store,
-            &auth,
-            "work_report",
-            &deterministic_id("work-report", &auth),
-        )?,
         "findings" => canonical_replay(
             store,
             &auth,
@@ -81,15 +69,6 @@ pub(super) fn execute_work_record_action(
     };
     if let Some(replay) = replay {
         return Ok(replay);
-    }
-    if auth.expected_version != current.version {
-        return Err(encoded_error(
-            "VERSION_CONFLICT",
-            "Work record action requires the exact current Work revision",
-            "work",
-            work_id,
-            Some(current.version),
-        ));
     }
     if operation == "request-changes" {
         let RoleActionIntent::RequestChanges { reason } = intent else {
@@ -148,6 +127,15 @@ pub(super) fn execute_work_record_action(
             },
         );
     }
+    if operation != "reports" && auth.expected_version != current.version {
+        return Err(encoded_error(
+            "VERSION_CONFLICT",
+            "Work record action requires the exact current Work revision",
+            "work",
+            work_id,
+            Some(current.version),
+        ));
+    }
     match (operation, intent) {
         (
             "reports",
@@ -174,22 +162,21 @@ pub(super) fn execute_work_record_action(
                 failure_analysis_ref: None,
                 artifact_refs: Vec::new(),
                 check_refs: Vec::new(),
+                github_links: Vec::new(),
                 evidence_refs,
                 known_risks: Vec::new(),
                 confidence: Some(Confidence::Medium),
                 recommended_next_action,
                 created_at: now_string(),
             };
-            auth.expected_version = 0;
-            Ok(trust_result(
-                crate::agentfirm_api::TrustApplication::new(store).execute(
+            Ok(work_outcome_result(crate::work_action_service::execute(
+                store,
+                crate::work_action_service::CanonicalWorkCommand::CreateReport {
                     auth,
-                    crate::agentfirm_api::TrustCommand::CreateWorkReport {
-                        team_id: team_id.into(),
-                        report,
-                    },
-                )?,
-            ))
+                    team_id: team_id.into(),
+                    report: Box::new(report),
+                },
+            )?))
         }
         (
             "findings",
@@ -372,7 +359,7 @@ pub(super) struct ResultReportInput {
 
 pub(super) fn create_result_report(
     store: &HarnessStore,
-    mut auth: AuthenticatedMutation,
+    auth: AuthenticatedMutation,
     team: &harness_core::AgentTeam,
     current: &Work,
     input: ResultReportInput,
@@ -406,7 +393,15 @@ pub(super) fn create_result_report(
     let report = WorkReport {
         id: deterministic_id("work-report", &auth),
         work_id: current.id.clone(),
-        work_revision: current.version + 1,
+        work_revision: auth.expected_version.checked_add(1).ok_or_else(|| {
+            encoded_error(
+                "VERSION_CONFLICT",
+                "Work report revision cannot overflow",
+                "work",
+                &current.id,
+                Some(current.version),
+            )
+        })?,
         report_revision: canonical_report_count(store, &auth.execution_space_id, &current.id)? + 1,
         kind: WorkReportKind::Result,
         authored_by: auth.actor.clone(),
@@ -418,22 +413,21 @@ pub(super) fn create_result_report(
         failure_analysis_ref: None,
         artifact_refs,
         check_refs,
+        github_links: Vec::new(),
         evidence_refs,
         known_risks: Vec::new(),
         confidence: Some(Confidence::High),
         recommended_next_action: Some("host_review".into()),
         created_at: now_string(),
     };
-    auth.expected_version = 0;
-    Ok(trust_result(
-        crate::agentfirm_api::TrustApplication::new(store).execute(
+    Ok(work_outcome_result(crate::work_action_service::execute(
+        store,
+        crate::work_action_service::CanonicalWorkCommand::CreateReport {
             auth,
-            crate::agentfirm_api::TrustCommand::CreateWorkReport {
-                team_id: team.id.clone(),
-                report,
-            },
-        )?,
-    ))
+            team_id: team.id.clone(),
+            report: Box::new(report),
+        },
+    )?))
 }
 
 pub(super) fn execute_gate_action(

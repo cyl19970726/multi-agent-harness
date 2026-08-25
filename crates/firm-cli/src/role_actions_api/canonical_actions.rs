@@ -401,9 +401,9 @@ pub(super) fn execute_canonical_role_action(
                     ))
                 }
             };
-            Ok(trust_result(crate::agentfirm_api::execute(
-                store, auth, command,
-            )?))
+            Ok(trust_result(
+                crate::agentfirm_api::TrustApplication::new(store).execute(auth, command)?,
+            ))
         }
         CanonicalRoute::Workspace {
             member_run_id,
@@ -568,16 +568,14 @@ pub(super) fn execute_canonical_role_action(
                 let mut create_auth = auth.clone();
                 create_auth.idempotency_key = format!("{role_action_key}:workspace-create");
                 create_auth.expected_version = 0;
-                crate::agentfirm_api::execute(
-                    store,
+                crate::agentfirm_api::TrustApplication::new(store).execute(
                     create_auth,
                     crate::agentfirm_api::TrustCommand::ProvisionWorkspace { binding },
                 )?;
                 let mut prepare_auth = auth.clone();
                 prepare_auth.idempotency_key = format!("{role_action_key}:workspace-prepare");
                 prepare_auth.expected_version = 1;
-                crate::agentfirm_api::execute(
-                    store,
+                crate::agentfirm_api::TrustApplication::new(store).execute(
                     prepare_auth,
                     crate::agentfirm_api::TrustCommand::TransitionWorkspace {
                         member_run_id: member_run_id.into(),
@@ -588,17 +586,18 @@ pub(super) fn execute_canonical_role_action(
                     },
                 )?;
                 auth.expected_version = 2;
-                return Ok(trust_result(crate::agentfirm_api::execute(
-                    store,
-                    auth,
-                    crate::agentfirm_api::TrustCommand::TransitionWorkspace {
-                        member_run_id: member_run_id.into(),
-                        binding_id,
-                        next: WorkspaceLifecycle::Ready,
-                        proof,
-                        updated_at: now_string(),
-                    },
-                )?));
+                return Ok(trust_result(
+                    crate::agentfirm_api::TrustApplication::new(store).execute(
+                        auth,
+                        crate::agentfirm_api::TrustCommand::TransitionWorkspace {
+                            member_run_id: member_run_id.into(),
+                            binding_id,
+                            next: WorkspaceLifecycle::Ready,
+                            proof,
+                            updated_at: now_string(),
+                        },
+                    )?,
+                ));
             }
             let binding = latest_workspace(store, &auth.execution_space_id, member_run_id)?;
             if let Some(replay) = canonical_replay(store, &auth, "workspace_binding", &binding.id)?
@@ -640,17 +639,18 @@ pub(super) fn execute_canonical_role_action(
                 ));
             }
             let proof = observe_workspace_proof(&binding, run.runtime_generation)?;
-            Ok(trust_result(crate::agentfirm_api::execute(
-                store,
-                auth,
-                crate::agentfirm_api::TrustCommand::TransitionWorkspace {
-                    member_run_id: member_run_id.into(),
-                    binding_id: binding.id,
-                    next,
-                    proof,
-                    updated_at: now_string(),
-                },
-            )?))
+            Ok(trust_result(
+                crate::agentfirm_api::TrustApplication::new(store).execute(
+                    auth,
+                    crate::agentfirm_api::TrustCommand::TransitionWorkspace {
+                        member_run_id: member_run_id.into(),
+                        binding_id: binding.id,
+                        next,
+                        proof,
+                        updated_at: now_string(),
+                    },
+                )?,
+            ))
         }
         CanonicalRoute::WorkRecord {
             team_id,

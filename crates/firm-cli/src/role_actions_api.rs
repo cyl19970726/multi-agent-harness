@@ -226,6 +226,7 @@ pub fn execute(
                     result_summary: result_summary.clone(),
                     artifact_refs: artifact_refs.clone(),
                     check_refs: check_refs.clone(),
+                    github_links: Vec::new(),
                     base_revision: base_revision.clone(),
                     candidate_revision: candidate_revision.clone(),
                 },
@@ -249,11 +250,6 @@ pub fn execute(
             },
         ) => {
             let host_id = require_host(&auth, &team.host_agent_id, "team_run", route.team_run_id)?;
-            if let Some(replay) =
-                work_replay(store, &auth, &work_id, harness_core::WorkEventKind::Created)?
-            {
-                return Ok(replay);
-            }
             if auth.expected_version != 0 {
                 return Err(encoded_error(
                     "VERSION_CONFLICT",
@@ -289,47 +285,24 @@ pub fn execute(
         }
         (operation, Some(work_id), intent) => {
             require_confirmed(operation, confirmed_action, work_id)?;
-            let kind = match operation {
-                "assign" => harness_core::WorkEventKind::Assigned,
-                "rebind" => harness_core::WorkEventKind::Rebound,
-                "release" => harness_core::WorkEventKind::Released,
-                "cancel" => harness_core::WorkEventKind::Cancelled,
-                "claim" => harness_core::WorkEventKind::Claimed,
-                "start" => harness_core::WorkEventKind::Started,
-                "block" => harness_core::WorkEventKind::Blocked,
-                "resume" => harness_core::WorkEventKind::Resumed,
-                "submit" => harness_core::WorkEventKind::Submitted,
-                _ => {
-                    return Err(encoded_error(
-                        "INVALID_STATE_TRANSITION",
-                        "unknown Work operation",
-                        "work",
-                        work_id,
-                        None,
-                    ))
-                }
-            };
+            if !matches!(
+                operation,
+                "assign" | "rebind" | "release" | "cancel" | "claim" | "start" | "block" | "resume"
+            ) {
+                return Err(encoded_error(
+                    "INVALID_STATE_TRANSITION",
+                    "unknown Work operation",
+                    "work",
+                    work_id,
+                    None,
+                ));
+            }
             if matches!(operation, "assign" | "rebind" | "cancel") {
                 require_host(&auth, &team.host_agent_id, "work", work_id)?;
             } else if operation != "release" || !is_host(&auth, &team.host_agent_id) {
                 let _ = resolve_member_run(store, &auth, route.team_run_id)?;
             }
-            if let Some(replay) = work_replay(store, &auth, work_id, kind)? {
-                return Ok(replay);
-            }
             let current = current_work(store, route.team_run_id, work_id)?;
-            if current.version != auth.expected_version {
-                return Err(encoded_error(
-                    "VERSION_CONFLICT",
-                    format!(
-                        "expected version {}, current version is {}",
-                        auth.expected_version, current.version
-                    ),
-                    "work",
-                    work_id,
-                    Some(current.version),
-                ));
-            }
             match (operation, intent) {
                 (
                     "assign",

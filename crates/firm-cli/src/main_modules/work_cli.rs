@@ -735,6 +735,7 @@ pub(super) fn team_run_work_command(
             // artifact_refs (PR URL) + check_refs (CI checks URL) (issue #369).
             let mut artifact_refs = many(args, "--artifact-ref");
             let mut check_refs = many(args, "--check-ref");
+            let mut github_links = Vec::new();
             let result = required(args, "--result")?;
             if let Some(raw) = value(args, "--github-pr") {
                 let link = github_pr_link(&raw)?;
@@ -746,6 +747,7 @@ pub(super) fn team_run_work_command(
                         check_refs.push(ci_url.clone());
                     }
                 }
+                github_links.push(link);
             }
             let work_id = required(args, "--work-id")?;
             let expected_version = required_work_version(args)?;
@@ -794,6 +796,7 @@ pub(super) fn team_run_work_command(
                         result_summary: required(args, "--result")?,
                         artifact_refs,
                         check_refs,
+                        github_links,
                         base_revision: value(args, "--base-revision"),
                         candidate_revision: value(args, "--candidate-revision"),
                     },

@@ -208,6 +208,20 @@ impl HarnessStore {
             submitted_work.condition = firm_core::WorkCondition::Normal;
             submitted_work.version = report.work_revision;
             submitted_work.result_summary = Some(report.summary.clone());
+            submitted_work.artifact_refs = report.artifact_refs.clone();
+            submitted_work.check_refs = report.check_refs.clone();
+            let mut candidate_links = submitted_work
+                .github_links
+                .iter()
+                .filter(|link| link.kind == firm_core::GitHubLinkKind::Issue)
+                .cloned()
+                .collect::<Vec<_>>();
+            for link in &report.github_links {
+                if !candidate_links.contains(link) {
+                    candidate_links.push(link.clone());
+                }
+            }
+            submitted_work.github_links = candidate_links;
             submitted_work.updated_at = report.created_at.clone();
             side_records.push(serde_json::to_value(submitted_work)?);
         }

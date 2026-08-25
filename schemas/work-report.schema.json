@@ -6,7 +6,7 @@
     "id":{"type":"string","minLength":1},"work_id":{"type":"string","minLength":1},"work_revision":{"type":"integer","minimum":1},"report_revision":{"type":"integer","minimum":1},
     "kind":{"enum":["progress","result","failure"]},"authored_by":{"$ref":"#/$defs/actor"},"summary":{"type":"string","minLength":1},"base_revision":{"type":["string","null"],"minLength":1},
     "candidate":{"anyOf":[{"$ref":"#/$defs/candidate"},{"type":"null"}]},"candidate_fingerprint":{"type":["string","null"],"minLength":1},
-    "finding_refs":{"$ref":"#/$defs/refs"},"failure_analysis_ref":{"type":["string","null"],"minLength":1},"artifact_refs":{"$ref":"#/$defs/refs"},"check_refs":{"$ref":"#/$defs/refs"},
+    "finding_refs":{"$ref":"#/$defs/refs"},"failure_analysis_ref":{"type":["string","null"],"minLength":1},"artifact_refs":{"$ref":"#/$defs/refs"},"check_refs":{"$ref":"#/$defs/refs"},"github_links":{"type":"array","items":{"$ref":"work.schema.json#/$defs/github_link"}},
     "evidence_refs":{"$ref":"#/$defs/refs"},"known_risks":{"$ref":"#/$defs/refs"},"confidence":{"type":["string","null"],"enum":["low","medium","high",null]},
     "recommended_next_action":{"type":["string","null"],"minLength":1},"created_at":{"type":"string","minLength":1}
   },

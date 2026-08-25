@@ -77,7 +77,7 @@ fn canonical_provider_admission_evidence_refs(values: &[String]) -> Vec<String> 
     canonical
 }
 
-fn canonical_work_candidate_revision(
+pub fn canonical_work_candidate_revision(
     result_summary: &str,
     artifact_refs: &[String],
     check_refs: &[String],

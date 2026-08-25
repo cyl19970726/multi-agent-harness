@@ -23,6 +23,7 @@ use crate::agentfirm_api::{
 pub enum CanonicalWorkActionKind {
     Lifecycle(WorkActionKind),
     SubmitResult,
+    Report,
     Accept,
 }
 
@@ -45,6 +46,7 @@ pub struct ResultSubmission {
     pub result_summary: String,
     pub artifact_refs: Vec<String>,
     pub check_refs: Vec<String>,
+    pub github_links: Vec<harness_core::GitHubLink>,
     pub base_revision: Option<String>,
     pub candidate_revision: Option<String>,
 }
@@ -59,6 +61,11 @@ pub enum CanonicalWorkCommand {
         team_id: String,
         work_id: String,
         submission: ResultSubmission,
+    },
+    CreateReport {
+        auth: AuthenticatedMutation,
+        team_id: String,
+        report: Box<WorkReport>,
     },
     Accept {
         auth: AuthenticatedMutation,
@@ -85,6 +92,11 @@ pub fn execute(
             work_id,
             submission,
         } => submit_result(store, auth, &team_id, &work_id, submission),
+        CanonicalWorkCommand::CreateReport {
+            auth,
+            team_id,
+            report,
+        } => create_report(store, auth, &team_id, *report),
         CanonicalWorkCommand::Accept {
             auth,
             team_id,
@@ -110,10 +122,31 @@ fn execute_lifecycle(
         .into_iter()
         .find(|operation| operation.event.idempotency_key == auth.idempotency_key)
     {
+        let authenticated_fingerprint_matches = match auth.request_fingerprint.as_deref() {
+            None => true,
+            Some(fingerprint) if operation.event.canonical_request_fingerprint == fingerprint => {
+                true
+            }
+            Some(fingerprint) => store.work_events()?.into_iter().any(|event| {
+                event.work_id == executed.work.id
+                    && event.idempotency_key == auth.idempotency_key
+                    && event.expected_version == auth.expected_version
+                    && event.resulting_version == executed.work.version
+                    && event
+                        .causation_ref
+                        .as_ref()
+                        .filter(|reference| reference.kind == "agentfirm.role_action.v1")
+                        .map(|reference| reference.id.as_str())
+                        == Some(fingerprint)
+            }),
+        };
         if operation.event.aggregate_kind != "work"
             || operation.event.aggregate_id != executed.work.id
+            || operation.event.performed_by_actor != auth.actor
+            || operation.event.expected_version != auth.expected_version
             || operation.event.resulting_version != executed.work.version
             || operation.resulting_projection != projection
+            || !authenticated_fingerprint_matches
         {
             return Err(StoreError::Conflict(
                 "IDEMPOTENCY_KEY_REUSED: canonical Work outcome does not match the requested action"
@@ -147,6 +180,25 @@ fn execute_lifecycle(
                 "INVALID_STATE_TRANSITION: Work mutation committed without its operation".into(),
             )
         })?;
+    if operation.event.expected_version != auth.expected_version
+        || auth
+            .request_fingerprint
+            .as_deref()
+            .is_some_and(|fingerprint| {
+                operation
+                    .event
+                    .causation_ref
+                    .as_ref()
+                    .filter(|reference| reference.kind == "agentfirm.role_action.v1")
+                    .map(|reference| reference.id.as_str())
+                    != Some(fingerprint)
+            })
+    {
+        return Err(conflict(
+            "IDEMPOTENCY_KEY_REUSED",
+            "Work operation does not match the authenticated request fingerprint or CAS",
+        ));
+    }
     Ok(CanonicalWorkActionOutcome {
         kind: CanonicalWorkActionKind::Lifecycle(executed.kind),
         projection,
@@ -223,7 +275,7 @@ fn execute_local_lifecycle(
 
 fn submit_result(
     store: &HarnessStore,
-    mut auth: AuthenticatedMutation,
+    auth: AuthenticatedMutation,
     team_id: &str,
     work_id: &str,
     submission: ResultSubmission,
@@ -240,17 +292,31 @@ fn submit_result(
                     "idempotency key is not a WorkReport submission",
                 )
             })?;
-        let candidate_revision = report
-            .candidate
-            .as_ref()
-            .map(|candidate| candidate.value.as_str());
+        let expected_candidate_revision = submission
+            .candidate_revision
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| {
+                harness_store::canonical_work_candidate_revision(
+                    &submission.result_summary,
+                    &submission.artifact_refs,
+                    &submission.check_refs,
+                    &submission.github_links,
+                )
+            });
         if operation.event.aggregate_kind != "work_report"
             || report.work_id != work_id
             || report.summary != submission.result_summary
             || report.artifact_refs != submission.artifact_refs
             || report.check_refs != submission.check_refs
+            || report.github_links != submission.github_links
             || report.base_revision != submission.base_revision
-            || candidate_revision != submission.candidate_revision.as_deref()
+            || report
+                .candidate
+                .as_ref()
+                .map(|candidate| candidate.value.as_str())
+                != Some(expected_candidate_revision.as_str())
         {
             return Err(conflict(
                 "IDEMPOTENCY_KEY_REUSED",
@@ -264,21 +330,15 @@ fn submit_result(
             ));
         }
         let work = current_work(store, &auth.execution_space_id, work_id)?;
-        if work.accountable_team_id.as_deref() != Some(team_id) {
+        if work.accountable_team_id.as_deref() != Some(team_id)
+            || work.owner_member_id.as_deref() != Some(auth.actor.id.as_str())
+        {
             return Err(conflict(
                 "IDEMPOTENCY_KEY_REUSED",
                 "submission replay does not belong to the addressed Team",
             ));
         }
-        return Ok(CanonicalWorkActionOutcome {
-            kind: CanonicalWorkActionKind::SubmitResult,
-            projection: serde_json::to_value(report)?,
-            work,
-            event_id: operation.event.id,
-            store_sequence: operation.event.store_sequence,
-            resulting_version: operation.event.resulting_version,
-            replayed: true,
-        });
+        return create_report(store, auth, team_id, report);
     }
     let current = current_work(store, &auth.execution_space_id, work_id)?;
     if current.accountable_team_id.as_deref() != Some(team_id) {
@@ -312,7 +372,14 @@ fn submit_result(
     let candidate_revision = submission
         .candidate_revision
         .filter(|value| !value.trim().is_empty())
-        .ok_or_else(|| conflict("REPORT_EVIDENCE_MISSING", "candidate_revision is required"))?;
+        .unwrap_or_else(|| {
+            harness_store::canonical_work_candidate_revision(
+                &submission.result_summary,
+                &submission.artifact_refs,
+                &submission.check_refs,
+                &submission.github_links,
+            )
+        });
     let evidence_refs = submission
         .artifact_refs
         .iter()
@@ -351,11 +418,112 @@ fn submit_result(
         failure_analysis_ref: None,
         artifact_refs: submission.artifact_refs,
         check_refs: submission.check_refs,
+        github_links: submission.github_links,
         evidence_refs,
         known_risks: Vec::new(),
         confidence: Some(Confidence::High),
         recommended_next_action: Some("host_review".into()),
         created_at: crate::role_views_api::now(),
+    };
+    create_report(store, auth, team_id, report)
+}
+
+fn create_report(
+    store: &HarnessStore,
+    mut auth: AuthenticatedMutation,
+    team_id: &str,
+    report: WorkReport,
+) -> Result<CanonicalWorkActionOutcome, StoreError> {
+    let expected_work_revision = match report.kind {
+        WorkReportKind::Result => auth
+            .expected_version
+            .checked_add(1)
+            .ok_or_else(|| conflict("VERSION_CONFLICT", "Work report revision cannot overflow"))?,
+        WorkReportKind::Progress | WorkReportKind::Failure => auth.expected_version,
+    };
+    if report.work_revision != expected_work_revision {
+        return Err(conflict(
+            "VERSION_CONFLICT",
+            "WorkReport does not bind the exact addressed Work revision",
+        ));
+    }
+    if let Some(operation) = store
+        .canonical_operations_for_space(&auth.execution_space_id)?
+        .into_iter()
+        .find(|operation| operation.event.idempotency_key == auth.idempotency_key)
+    {
+        let committed = serde_json::from_value::<WorkReport>(
+            operation.resulting_projection.clone(),
+        )
+        .map_err(|_| {
+            conflict(
+                "IDEMPOTENCY_KEY_REUSED",
+                "idempotency key is not a WorkReport mutation",
+            )
+        })?;
+        let fingerprint_matches = auth.request_fingerprint.as_deref().map_or_else(
+            || {
+                let mut comparable = report.clone();
+                comparable.created_at = committed.created_at.clone();
+                comparable.report_revision = committed.report_revision;
+                comparable == committed
+            },
+            |fingerprint| operation.event.canonical_request_fingerprint == fingerprint,
+        );
+        if operation.event.aggregate_kind != "work_report"
+            || operation.event.aggregate_id != report.id
+            || operation.event.performed_by_actor != auth.actor
+            || committed.work_id != report.work_id
+            || committed.work_revision != report.work_revision
+            || !fingerprint_matches
+        {
+            return Err(conflict(
+                "IDEMPOTENCY_KEY_REUSED",
+                "idempotency key is already bound to a different authenticated WorkReport request",
+            ));
+        }
+        let work = current_work(store, &auth.execution_space_id, &report.work_id)?;
+        if work.accountable_team_id.as_deref() != Some(team_id) {
+            return Err(conflict(
+                "IDEMPOTENCY_KEY_REUSED",
+                "WorkReport replay does not belong to the addressed Team",
+            ));
+        }
+        return Ok(CanonicalWorkActionOutcome {
+            kind: if committed.kind == WorkReportKind::Result {
+                CanonicalWorkActionKind::SubmitResult
+            } else {
+                CanonicalWorkActionKind::Report
+            },
+            projection: operation.resulting_projection,
+            work,
+            event_id: operation.event.id,
+            store_sequence: operation.event.store_sequence,
+            resulting_version: operation.event.resulting_version,
+            replayed: true,
+        });
+    }
+    let current = current_work(store, &auth.execution_space_id, &report.work_id)?;
+    if current.accountable_team_id.as_deref() != Some(team_id) {
+        return Err(conflict(
+            "UNAUTHORIZED_ACTOR",
+            "WorkReport does not belong to the addressed Team",
+        ));
+    }
+    if current.version != auth.expected_version {
+        return Err(conflict(
+            "VERSION_CONFLICT",
+            &format!(
+                "WorkReport expected revision {}, current revision is {}",
+                auth.expected_version, current.version
+            ),
+        ));
+    }
+    let work_id = report.work_id.clone();
+    let kind = if report.kind == WorkReportKind::Result {
+        CanonicalWorkActionKind::SubmitResult
+    } else {
+        CanonicalWorkActionKind::Report
     };
     auth.expected_version = 0;
     let result = TrustApplication::new(store).execute(
@@ -365,13 +533,7 @@ fn submit_result(
             report,
         },
     )?;
-    outcome_from_trust(
-        store,
-        &auth.execution_space_id,
-        work_id,
-        CanonicalWorkActionKind::SubmitResult,
-        result,
-    )
+    outcome_from_trust(store, &auth.execution_space_id, &work_id, kind, result)
 }
 
 fn accept(
@@ -508,7 +670,7 @@ pub fn current_work(
     execution_space_id: &str,
     work_id: &str,
 ) -> Result<Work, StoreError> {
-    if let Some(work) = store
+    let canonical = store
         .canonical_operations_for_space(execution_space_id)?
         .into_iter()
         .flat_map(|operation| {
@@ -516,15 +678,32 @@ pub fn current_work(
         })
         .filter_map(|projection| serde_json::from_value::<Work>(projection).ok())
         .filter(|work| work.id == work_id)
-        .max_by_key(|work| work.version)
-    {
-        return Ok(work);
-    }
-    store
+        .max_by_key(|work| work.version);
+    let compatibility = store
         .latest_works()?
         .into_iter()
-        .find(|work| work.id == work_id)
-        .ok_or_else(|| conflict("INVALID_STATE_TRANSITION", "Work does not exist"))
+        .find(|work| work.id == work_id);
+    match (canonical, compatibility) {
+        (Some(canonical), Some(compatibility)) if canonical.version == compatibility.version => {
+            if canonical != compatibility {
+                Err(conflict(
+                    "IDENTITY_CONFLICT",
+                    "canonical and compatibility Work projections conflict at one revision",
+                ))
+            } else {
+                Ok(canonical)
+            }
+        }
+        (Some(canonical), Some(compatibility)) => {
+            Ok(if canonical.version > compatibility.version {
+                canonical
+            } else {
+                compatibility
+            })
+        }
+        (Some(work), None) | (None, Some(work)) => Ok(work),
+        (None, None) => Err(conflict("INVALID_STATE_TRANSITION", "Work does not exist")),
+    }
 }
 
 fn conflict(code: &str, message: &str) -> StoreError {
