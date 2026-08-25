@@ -307,3 +307,135 @@ fn detached_blocked_recovery_authority_takeover_never_persists_closed_blocked() 
 
     std::fs::remove_dir_all(root).expect("cleanup");
 }
+
+#[test]
+fn detached_blocked_recovery_samples_lease_time_after_writer_lock_wait() {
+    use harness_core::agentfirm_api::{AgentSessionStatus, RuntimeActivity, RuntimeResidency};
+    use std::sync::mpsc;
+
+    let (store, root) = temp_store("detached-recovery-lock-expiry");
+    let created = create_two_member_team_run(&store);
+    let initial = created.member_runs[0].clone();
+    let mut bound = initial.clone();
+    bound.native_session = Some(capacity_test_session());
+    bound.last_event_at = Some("unix-ms:expiry-bound".into());
+    store
+        .compare_and_append_member_run(&initial, &bound)
+        .expect("bind native session");
+    let lease = store
+        .acquire_test_supervisor_lease(
+            &created.team_run.id,
+            "supervisor-recovery-expiry",
+            std::process::id(),
+            "test://recovery-expiry",
+            current_unix_ms_u64(),
+            60_000,
+        )
+        .expect("acquire Supervisor lease");
+    ensure_test_runtime_fabric(&store, &created, &lease);
+    let run = latest_team_run(&store, &created.team_run.id).expect("TeamRun");
+    let body = PreparedTeamRunBody {
+        run_id: run.id.clone(),
+        objective: run.objective.clone(),
+        run: run.clone(),
+        members: latest_member_runs_in_append_order(&store)
+            .expect("members")
+            .into_iter()
+            .filter(|member| member.team_run_id == run.id)
+            .collect(),
+    };
+    bind_team_runtime_supervisor(
+        &store,
+        &body,
+        &lease.execution_space_id,
+        &lease.node_daemon_id,
+        &lease.supervisor_id,
+        lease.generation,
+    )
+    .expect("bind Supervisor driver");
+    let ledger = TeamRunLedger::new(
+        &store,
+        &run.id,
+        &lease.supervisor_id,
+        lease.generation,
+        Arc::new(AtomicBool::new(true)),
+    );
+    transition_provider_session_for_member(&ledger, &bound, AgentSessionStatus::Idle)
+        .expect("idle session");
+    transition_provider_session_runtime_control(
+        &ledger,
+        &bound,
+        RuntimeResidency::Attached,
+        RuntimeActivity::Idle,
+    )
+    .expect("attach runtime");
+    let mut blocked = bound.clone();
+    blocked.status = MemberRunStatus::Blocked;
+    blocked.last_event_at = Some("unix-ms:expiry-blocked".into());
+    ledger
+        .save_member_run(&bound, &blocked)
+        .expect("block member");
+    settle_provider_attempt_release(&ledger, &blocked).expect("detach runtime");
+
+    let near_expiry = store
+        .renew_team_supervisor_lease(
+            &run.id,
+            &lease.supervisor_id,
+            lease.generation,
+            current_unix_ms_u64(),
+            100,
+        )
+        .expect("renew near-expiry Supervisor lease");
+    let member_rows_before = store.member_runs().expect("member rows before").len();
+    let guard = store
+        .acquire_exclusive_migration_guard()
+        .expect("hold Store writer lock across lease expiry");
+    let worker_store = store.clone();
+    let worker_run_id = run.id.clone();
+    let worker_member = blocked.clone();
+    let (started_tx, started_rx) = mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        started_tx.send(()).expect("signal recovery start");
+        close_detached_blocked_member_for_recovery(
+            &worker_store,
+            &worker_run_id,
+            &worker_member,
+            &near_expiry,
+            "host",
+            "writer contention crosses lease expiry",
+        )
+    });
+    started_rx.recv().expect("recovery thread started");
+    std::thread::sleep(Duration::from_millis(250));
+    drop(guard);
+
+    let error = worker
+        .join()
+        .expect("recovery thread")
+        .expect_err("expired authority must fail after writer-lock wait");
+    assert!(
+        error.is_supervisor_lease_lost(),
+        "unexpected error: {error}"
+    );
+    assert_eq!(
+        store.member_runs().expect("member rows after").len(),
+        member_rows_before,
+        "expired authority must append no MemberRun revision"
+    );
+    assert!(
+        store
+            .team_member_close_requests()
+            .expect("Close requests")
+            .is_empty(),
+        "expired authority must not even latch Close intent"
+    );
+    let latest = latest_member_runs_in_append_order(&store)
+        .expect("latest member")
+        .into_iter()
+        .find(|member| member.id == blocked.id)
+        .expect("blocked member");
+    assert!(latest.coordination_is_active());
+    assert_eq!(latest.status, MemberRunStatus::Blocked);
+
+    std::fs::remove_dir_all(root).expect("cleanup");
+}

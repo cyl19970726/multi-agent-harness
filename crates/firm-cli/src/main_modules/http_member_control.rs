@@ -559,7 +559,6 @@ pub(super) fn close_detached_blocked_member_for_recovery_with_hook(
                 &current_session,
                 &supervisor.supervisor_id,
                 supervisor.generation,
-                current_unix_ms_u64(),
             ) {
                 Ok(()) => break 'terminal_cas next,
                 Err(StoreError::Conflict(message))

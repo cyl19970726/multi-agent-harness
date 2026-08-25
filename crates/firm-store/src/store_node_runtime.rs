@@ -1,13 +1,24 @@
 use super::*;
 
+fn current_store_unix_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .min(u64::MAX as u128) as u64
+}
+
 impl HarnessStore {
     pub(super) fn require_exact_supervisor_authority_unlocked(
         &self,
         team_run_id: &str,
         supervisor_id: &str,
         supervisor_generation: u64,
-        now_unix_ms: u64,
     ) -> StoreResult<TeamSupervisorLease> {
+        // This helper is called only while the Store writer lock is held.
+        // Sample time here, at the authority linearization point, so lock
+        // contention cannot carry a pre-lock timestamp past lease expiry.
+        let now_unix_ms = current_store_unix_ms();
         let lease = self
             .latest_lease_for_run_unlocked(team_run_id)?
             .ok_or_else(|| {
@@ -606,7 +617,6 @@ impl HarnessStore {
         value: &TeamMemberCloseRequest,
         supervisor_id: &str,
         supervisor_generation: u64,
-        now_unix_ms: u64,
     ) -> StoreResult<TeamMemberCloseRequest> {
         self.init()?;
         let _lock = self.acquire_write_lock()?;
@@ -614,7 +624,6 @@ impl HarnessStore {
             &value.team_run_id,
             supervisor_id,
             supervisor_generation,
-            now_unix_ms,
         )?;
         let member = latest_by_id(
             self.read_jsonl::<ProviderRuntimeProjection>("member_runs.jsonl")?,

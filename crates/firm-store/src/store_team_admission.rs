@@ -231,7 +231,6 @@ impl HarnessStore {
         expected_session: &firm_core::agentfirm_api::AgentSession,
         supervisor_id: &str,
         supervisor_generation: u64,
-        now_unix_ms: u64,
     ) -> StoreResult<()> {
         use firm_core::agentfirm_api::{RuntimeCommandStatus, RuntimeEffectCertainty};
 
@@ -241,7 +240,6 @@ impl HarnessStore {
             &expected.team_run_id,
             supervisor_id,
             supervisor_generation,
-            now_unix_ms,
         )?;
         let current_session = self
             .fabric_agent_sessions(execution_space_id)?

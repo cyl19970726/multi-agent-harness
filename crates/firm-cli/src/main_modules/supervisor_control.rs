@@ -368,12 +368,7 @@ pub(super) fn latch_member_close_for_supervisor(
     generation: u64,
 ) -> CliResult<TeamMemberCloseRequest> {
     let close = pending_close_request(team_run_id, member_run_id, requested_by, reason);
-    match store.latch_team_member_close_for_supervisor(
-        &close,
-        supervisor_id,
-        generation,
-        current_unix_ms_u64(),
-    ) {
+    match store.latch_team_member_close_for_supervisor(&close, supervisor_id, generation) {
         Ok(close) => Ok(close),
         Err(StoreError::Conflict(message))
             if message.starts_with("TEAM_SUPERVISOR_LEASE_LOST:")
