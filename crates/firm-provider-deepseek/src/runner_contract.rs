@@ -84,18 +84,39 @@ fn validate_schema(schema: &Value, value: &Value, path: &str) -> CliResult<()> {
     if schema_object.is_empty() {
         return Ok(());
     }
-    let types = match schema.get("type") {
-        Some(Value::String(value)) => vec![value.as_str()],
-        Some(Value::Array(values)) => values.iter().filter_map(Value::as_str).collect(),
-        _ => Vec::new(),
-    };
-    if !types
-        .iter()
-        .any(|expected| value_matches_type(value, expected))
-    {
-        return Err(CliError::Usage(format!(
-            "DEEPSEEK_HARNESS_PROTOCOL_ERROR: {path} has wrong payload type"
-        )));
+    if let Some(type_schema) = schema.get("type") {
+        let types = match type_schema {
+            Value::String(value) => vec![value.as_str()],
+            Value::Array(values) if values.iter().all(Value::is_string) => {
+                values.iter().filter_map(Value::as_str).collect()
+            }
+            _ => {
+                return Err(CliError::Usage(format!(
+                    "DEEPSEEK_HARNESS_PROTOCOL_ERROR: invalid type schema at {path}"
+                )))
+            }
+        };
+        if types.is_empty()
+            || !types
+                .iter()
+                .any(|expected| value_matches_type(value, expected))
+        {
+            return Err(CliError::Usage(format!(
+                "DEEPSEEK_HARNESS_PROTOCOL_ERROR: {path} has wrong payload type"
+            )));
+        }
+    }
+    if let Some(enum_schema) = schema.get("enum") {
+        let allowed = enum_schema.as_array().ok_or_else(|| {
+            CliError::Usage(format!(
+                "DEEPSEEK_HARNESS_PROTOCOL_ERROR: invalid enum schema at {path}"
+            ))
+        })?;
+        if !allowed.iter().any(|candidate| candidate == value) {
+            return Err(CliError::Usage(format!(
+                "DEEPSEEK_HARNESS_PROTOCOL_ERROR: {path} is outside the allowed enum"
+            )));
+        }
     }
     if value.is_null() {
         return Ok(());
