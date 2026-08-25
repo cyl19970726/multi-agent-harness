@@ -197,3 +197,108 @@ fn reopened_member_generation_gets_a_distinct_resume_command_identity() {
         harness_core::agentfirm_api::RuntimeCommandKind::ResumeNativeSession
     );
 }
+
+#[test]
+fn provider_process_retry_after_daemon_lease_renewal_reconciles_existing_command() {
+    let (store, _root) = temp_store("provider-process-retry-after-daemon-renewal");
+    let (ledger, member) = persisted_native_test_member(
+        &store,
+        "codex",
+        "codex_app_server",
+        "thread-provider-process-retry-renewal",
+    );
+
+    let first = prepare_provider_process_effect(&ledger, &member, 1)
+        .expect("prepare the immutable provider-process attempt");
+    let execution_space_id = store
+        .trust_member_run_scope(&member.id)
+        .expect("read MemberRun scope")
+        .expect("canonical MemberRun scope");
+    let session = store
+        .fabric_agent_sessions(&execution_space_id)
+        .expect("read AgentSessions")
+        .into_iter()
+        .find(|session| session.agent_member_id == member.agent_member_id)
+        .expect("exact provider AgentSession");
+    let initial = store
+        .latest_node_daemon_lease(&session.node_id)
+        .expect("read NodeDaemon lease")
+        .expect("active NodeDaemon lease");
+    let now = current_unix_ms_u64();
+    let renewed = store
+        .renew_node_daemon_lease(
+            &initial.node_id,
+            &initial.daemon_id,
+            initial.generation,
+            &initial.instance_id,
+            now,
+            120_000,
+        )
+        .expect("renew the same daemon generation");
+    assert_ne!(initial.expires_unix_ms, renewed.expires_unix_ms);
+
+    let error = prepare_provider_process_effect(&ledger, &member, 1)
+        .expect_err("the same attempt must reconcile instead of rebuilding a drifting envelope");
+    assert!(matches!(error, CliError::RuntimeRecoveryRequired(_)));
+    assert!(error.to_string().contains(&first.command_id));
+    assert!(!error.to_string().contains("IDEMPOTENCY_KEY_REUSED"));
+    assert_eq!(
+        store
+            .runtime_commands(&execution_space_id)
+            .expect("read RuntimeCommands")
+            .into_iter()
+            .filter(|command| command.id == first.command_id)
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn changed_agent_session_version_gets_a_distinct_resume_command_identity() {
+    let (store, _root) = temp_store("resume-command-changed-session-version");
+    let (ledger, member) = persisted_native_test_member(
+        &store,
+        "codex",
+        "codex_app_server",
+        "thread-resume-command-session-version",
+    );
+
+    let first = prepare_provider_process_effect(&ledger, &member, 1)
+        .expect("prepare the first AgentSession-version command");
+    settle_provider_effect_not_applied(
+        &ledger,
+        &first,
+        "first session-version effect was not applied".into(),
+    )
+    .expect("settle first command without provider effect");
+    transition_provider_session_for_member(
+        &ledger,
+        &member,
+        harness_core::agentfirm_api::AgentSessionStatus::Idle,
+    )
+    .expect("advance the canonical AgentSession version");
+
+    let second = prepare_provider_process_effect(&ledger, &member, 1)
+        .expect("the same transport attempt under a new session version must not collide");
+    assert_ne!(first.command_id, second.command_id);
+
+    let execution_space_id = store
+        .trust_member_run_scope(&member.id)
+        .expect("read MemberRun scope")
+        .expect("canonical MemberRun scope");
+    let commands = store
+        .runtime_commands(&execution_space_id)
+        .expect("read RuntimeCommands");
+    let first_record = commands
+        .iter()
+        .find(|command| command.id == first.command_id)
+        .expect("first session-version command remains durable");
+    let second_record = commands
+        .iter()
+        .find(|command| command.id == second.command_id)
+        .expect("second session-version command is independently durable");
+    assert!(
+        second_record.precondition.expected_session_version
+            > first_record.precondition.expected_session_version
+    );
+}
