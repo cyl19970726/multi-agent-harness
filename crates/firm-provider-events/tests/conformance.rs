@@ -709,6 +709,95 @@ fn latest_reader_keeps_the_real_tail_with_turn_context_and_explicit_truncation()
 }
 
 #[test]
+fn codex_adjacent_native_message_envelopes_project_one_authored_response() {
+    let root = unique_temp_path("codex-message-mirror");
+    fs::create_dir_all(&root).unwrap();
+    let path = root.join("session.jsonl");
+    fs::write(
+        &path,
+        concat!(
+            "{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_started\",\"turn_id\":\"turn-1\"}}\n",
+            "{\"type\":\"event_msg\",\"payload\":{\"type\":\"agent_message\",\"message\":\"same authored response\"}}\n",
+            "{\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"same authored response\"}]}}\n",
+            "{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_complete\",\"turn_id\":\"turn-1\"}}\n",
+        ),
+    )
+    .unwrap();
+    let boundary = TranscriptReadBoundary {
+        allowed_root: root.clone(),
+        transcript_path: path,
+    };
+    let latest = read_latest_transcript_batch(&context(ProviderKind::Codex), &boundary, 10)
+        .expect("latest Codex projection");
+    let observations = latest
+        .outcomes
+        .into_iter()
+        .filter_map(|outcome| match outcome {
+            DecodeOutcome::Observation(value) => Some(*value),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        observations
+            .iter()
+            .filter(|item| item.semantic_kind == SemanticKind::AuthoredResponse)
+            .count(),
+        1
+    );
+    assert!(observations
+        .iter()
+        .any(|item| item.semantic_kind == SemanticKind::TurnCompleted));
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn codex_mirror_fold_crosses_incremental_batch_without_global_text_deduplication() {
+    let root = unique_temp_path("codex-message-mirror-incremental");
+    fs::create_dir_all(&root).unwrap();
+    let path = root.join("session.jsonl");
+    fs::write(
+        &path,
+        concat!(
+            "{\"type\":\"event_msg\",\"payload\":{\"type\":\"agent_message\",\"message\":\"repeat\"}}\n",
+            "{\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"repeat\"}]}}\n",
+            "{\"type\":\"event_msg\",\"payload\":{\"type\":\"agent_message\",\"message\":\"repeat\"}}\n",
+            "{\"type\":\"event_msg\",\"payload\":{\"type\":\"agent_message\",\"message\":\"repeat\"}}\n",
+        ),
+    )
+    .unwrap();
+    let boundary = TranscriptReadBoundary {
+        allowed_root: root.clone(),
+        transcript_path: path,
+    };
+    let first = read_transcript_batch(
+        &context(ProviderKind::Codex),
+        &boundary,
+        TransientReadPosition::default(),
+        1,
+    )
+    .unwrap();
+    assert!(first.next_position.pending_codex_message_mirror.is_some());
+    let second = read_transcript_batch(
+        &context(ProviderKind::Codex),
+        &boundary,
+        first.next_position,
+        10,
+    )
+    .unwrap();
+    assert!(matches!(second.outcomes[0], DecodeOutcome::Unsupported));
+    assert_eq!(
+        second
+            .outcomes
+            .iter()
+            .filter(|outcome| matches!(outcome, DecodeOutcome::Observation(_)))
+            .count(),
+        2,
+        "same-family authored responses must remain distinct"
+    );
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn latest_reader_budget_counts_projectable_observations_not_native_metadata() {
     let root = unique_temp_path("latest-observation-budget");
     fs::create_dir_all(&root).unwrap();

@@ -6,9 +6,11 @@ use std::{
 };
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use sha2::{Digest, Sha256};
 use thiserror::Error;
 
-use crate::{decode_native_json_line, DecodeContext, DecodeError, DecodeOutcome};
+use crate::{decode_native_json_line, DecodeContext, DecodeError, DecodeOutcome, ProviderKind};
 
 const MAX_NATIVE_LINE_BYTES: usize = 1024 * 1024;
 const MAX_LATEST_TRANSCRIPT_BYTES: usize = 16 * 1024 * 1024;
@@ -20,6 +22,13 @@ pub struct TransientReadPosition {
     pub next_ordering_position: u64,
     #[serde(default)]
     pub active_provider_turn_id: Option<String>,
+    /// Process-local continuity for the reviewed Codex JSONL pair where one
+    /// authored response is written first as `event_msg.agent_message` and
+    /// immediately again as `response_item.message`. Only the exact next
+    /// native row may consume this digest, so intentionally repeated replies
+    /// from the same family remain distinct.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_codex_message_mirror: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -106,6 +115,7 @@ pub fn read_transcript_batch(
     let mut consumed = 0usize;
     let mut ordering = position.next_ordering_position.max(1);
     let mut active_turn_id = position.active_provider_turn_id.clone();
+    let mut pending_codex_message_mirror = position.pending_codex_message_mirror.clone();
     let mut incomplete_tail = false;
     while outcomes.len() < max_events {
         let read = read_bounded_segment(&mut reader, &mut segment)?;
@@ -123,14 +133,23 @@ pub fn read_transcript_batch(
             if let Some(turn_id) = parsed.as_ref().and_then(provider_turn_id) {
                 active_turn_id = Some(turn_id.to_owned());
             }
-            outcomes.push(decode_native_json_line(
+            let mut outcome = decode_native_json_line(
                 context,
                 Some(format!("offset-{}", position.byte_offset + consumed as u64)),
                 active_turn_id.clone(),
                 ordering,
                 None,
                 line,
-            )?);
+            )?;
+            if suppress_codex_mirrored_message(
+                context.provider,
+                parsed.as_ref(),
+                active_turn_id.as_deref(),
+                &mut pending_codex_message_mirror,
+            ) {
+                outcome = DecodeOutcome::Unsupported;
+            }
+            outcomes.push(outcome);
             if parsed.as_ref().is_some_and(is_turn_terminal) {
                 active_turn_id = None;
             }
@@ -147,6 +166,7 @@ pub fn read_transcript_batch(
             byte_offset: position.byte_offset + consumed as u64,
             next_ordering_position: ordering,
             active_provider_turn_id: active_turn_id,
+            pending_codex_message_mirror,
         },
         incomplete_tail: incomplete_tail || (consumed as u64) < remaining,
     })
@@ -212,6 +232,7 @@ fn scan_latest_reader(
     let mut byte_offset = 0u64;
     let mut ordering_position = 1u64;
     let mut active_turn_id = None;
+    let mut pending_codex_message_mirror = None;
     let mut source_truncated = false;
     let mut incomplete_tail = false;
 
@@ -237,7 +258,7 @@ fn scan_latest_reader(
         if let Some(turn_id) = parsed.as_ref().and_then(provider_turn_id) {
             active_turn_id = Some(turn_id.to_owned());
         }
-        let outcome = decode_native_json_line(
+        let mut outcome = decode_native_json_line(
             context,
             Some(format!("offset-{segment_offset}")),
             active_turn_id.clone(),
@@ -245,6 +266,14 @@ fn scan_latest_reader(
             None,
             &line,
         )?;
+        if suppress_codex_mirrored_message(
+            context.provider,
+            parsed.as_ref(),
+            active_turn_id.as_deref(),
+            &mut pending_codex_message_mirror,
+        ) {
+            outcome = DecodeOutcome::Unsupported;
+        }
         // Unsupported provider metadata and deliberately dropped private
         // reasoning do not consume the visible-history budget. Otherwise a
         // long run of non-projectable native rows could hide the actual latest
@@ -277,6 +306,74 @@ fn scan_latest_reader(
         source_truncated,
         incomplete_tail,
     })
+}
+
+fn suppress_codex_mirrored_message(
+    provider: ProviderKind,
+    raw: Option<&Value>,
+    active_turn_id: Option<&str>,
+    pending: &mut Option<String>,
+) -> bool {
+    if provider != ProviderKind::Codex {
+        *pending = None;
+        return false;
+    }
+    let Some(raw) = raw else {
+        *pending = None;
+        return false;
+    };
+    let row_type = raw.get("type").and_then(Value::as_str);
+    let payload_type = raw.pointer("/payload/type").and_then(Value::as_str);
+    if row_type == Some("event_msg") && payload_type == Some("agent_message") {
+        *pending = raw
+            .pointer("/payload/message")
+            .and_then(Value::as_str)
+            .map(|text| codex_message_mirror_digest(active_turn_id, text));
+        return false;
+    }
+    if row_type == Some("response_item")
+        && payload_type == Some("message")
+        && raw.pointer("/payload/role").and_then(Value::as_str) == Some("assistant")
+    {
+        let response_text = codex_response_item_text(raw);
+        let mirrored = response_text
+            .as_deref()
+            .map(|text| codex_message_mirror_digest(active_turn_id, text))
+            .is_some_and(|digest| pending.as_deref() == Some(digest.as_str()));
+        *pending = None;
+        return mirrored;
+    }
+    *pending = None;
+    false
+}
+
+fn codex_response_item_text(raw: &Value) -> Option<String> {
+    let content = raw.pointer("/payload/content")?;
+    if let Some(text) = content.as_str() {
+        return Some(text.to_string());
+    }
+    let text = content
+        .as_array()?
+        .iter()
+        .filter_map(|part| {
+            matches!(
+                part.get("type").and_then(Value::as_str),
+                Some("text" | "output_text")
+            )
+            .then(|| part.get("text").and_then(Value::as_str))
+            .flatten()
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    (!text.is_empty()).then_some(text)
+}
+
+fn codex_message_mirror_digest(active_turn_id: Option<&str>, text: &str) -> String {
+    let mut digest = Sha256::new();
+    digest.update(active_turn_id.unwrap_or_default().as_bytes());
+    digest.update([0]);
+    digest.update(text.as_bytes());
+    format!("sha256:{:x}", digest.finalize())
 }
 
 fn read_bounded_segment(
