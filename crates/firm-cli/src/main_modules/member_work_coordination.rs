@@ -5,6 +5,7 @@ use super::*;
 pub(crate) enum LiveProviderActivityUpdate {
     Updated {
         team_run_id: String,
+        agent_member_id: String,
         member_run_id: String,
         member_run_generation: u64,
         provider: String,
@@ -13,6 +14,7 @@ pub(crate) enum LiveProviderActivityUpdate {
     },
     Terminal {
         team_run_id: String,
+        agent_member_id: String,
         member_run_id: String,
         member_run_generation: u64,
     },
@@ -43,6 +45,7 @@ pub(super) fn emit_live_provider_activity(
 ) {
     sink(LiveProviderActivityUpdate::Updated {
         team_run_id: ledger.run_id.clone(),
+        agent_member_id: member.agent_member_id.clone(),
         member_run_id: member.id.clone(),
         member_run_generation: member.runtime_generation,
         provider: member.provider.clone(),
@@ -66,6 +69,7 @@ pub(super) fn display_safe_tool_status(status: &str, started_event: bool) -> &'s
 pub(super) struct LiveProviderTurnGuard {
     pub(super) sink: Option<LiveMemberActivitySink>,
     pub(super) team_run_id: String,
+    pub(super) agent_member_id: String,
     pub(super) member_run_id: String,
     pub(super) member_run_generation: u64,
 }
@@ -74,12 +78,14 @@ impl LiveProviderTurnGuard {
     pub(super) fn new(
         sink: Option<LiveMemberActivitySink>,
         team_run_id: String,
+        agent_member_id: String,
         member_run_id: String,
         member_run_generation: u64,
     ) -> Self {
         Self {
             sink,
             team_run_id,
+            agent_member_id,
             member_run_id,
             member_run_generation,
         }
@@ -91,6 +97,7 @@ impl Drop for LiveProviderTurnGuard {
         if let Some(sink) = &self.sink {
             sink(LiveProviderActivityUpdate::Terminal {
                 team_run_id: self.team_run_id.clone(),
+                agent_member_id: self.agent_member_id.clone(),
                 member_run_id: self.member_run_id.clone(),
                 member_run_generation: self.member_run_generation,
             });

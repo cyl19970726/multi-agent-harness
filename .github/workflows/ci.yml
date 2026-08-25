@@ -26,7 +26,9 @@ jobs:
           version: 9.15.4
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          # Official DSH session persistence uses the native zstd exports that
+          # ship with Node 24. Keep CI on the same supported runtime boundary.
+          node-version: 24
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       # check:fast includes the current-HEAD Dynamic Workflow retirement proof.
@@ -42,7 +44,7 @@ jobs:
           version: 9.15.4
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 24
           cache: pnpm
       - uses: dtolnay/rust-toolchain@stable
       # Runtime integration discovers the repository-owned provider SDK from
@@ -81,7 +83,7 @@ jobs:
           version: 9.15.4
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 24
           cache: pnpm
       - uses: dtolnay/rust-toolchain@stable
       - run: pnpm install --frozen-lockfile

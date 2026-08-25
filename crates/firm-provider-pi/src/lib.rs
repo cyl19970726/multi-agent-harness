@@ -268,7 +268,8 @@ impl PiRpcClient {
             .envs(options.collaboration_env.iter().cloned())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+            .stderr(Stdio::piped())
+            .env_remove("AGENTFIRM_HTTP_CREDENTIALS_JSON");
 
         if let Some(model) = options.model {
             command.arg("--model").arg(model);

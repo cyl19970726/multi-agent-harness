@@ -244,7 +244,8 @@ impl DeepSeekRunnerTransport {
             )
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+            .stderr(Stdio::piped())
+            .env_remove("AGENTFIRM_HTTP_CREDENTIALS_JSON");
         #[cfg(unix)]
         {
             use std::os::unix::process::CommandExt;
@@ -1066,6 +1067,27 @@ impl TeamRuntimeAdapter for DeepSeekTeamRuntime {
     fn project_live(
         event: &Value,
     ) -> Option<(harness_runtime_contract::LiveProviderActivityKind, String)> {
+        if event.get("event").and_then(Value::as_str) == Some("provider_activity") {
+            use harness_runtime_contract::LiveProviderActivityKind;
+            let data = event.get("data")?;
+            let kind = match data.get("kind").and_then(Value::as_str)? {
+                "thinking" => LiveProviderActivityKind::Thinking,
+                "response_streaming" => LiveProviderActivityKind::ResponseStreaming,
+                "tool_started" => LiveProviderActivityKind::ToolStarted,
+                "tool_completed" => LiveProviderActivityKind::ToolCompleted,
+                "tool_failed" => LiveProviderActivityKind::ToolFailed,
+                "interaction_waiting" => LiveProviderActivityKind::InteractionWaiting,
+                _ => return None,
+            };
+            let summary = data
+                .get("summary")
+                .and_then(Value::as_str)
+                .unwrap_or("provider activity")
+                .chars()
+                .take(240)
+                .collect();
+            return Some((kind, summary));
+        }
         if event.get("event").and_then(Value::as_str) != Some("assistant_message") {
             return None;
         }

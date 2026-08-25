@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
@@ -93,6 +94,25 @@ pub fn adapter_manifest(provider: ProviderKind) -> AdapterManifest {
                 SemanticKind::InteractionRequired,
                 SemanticKind::TransportInterrupted,
                 SemanticKind::TurnCompleted,
+            ][..],
+        ),
+        ProviderKind::DeepseekHarness => (
+            &[
+                "assistant/message",
+                "tool/call",
+                "tool/result",
+                "turn/start",
+                "turn/end",
+            ][..],
+            true,
+            &[
+                SemanticKind::AuthoredResponse,
+                SemanticKind::ToolCallStarted,
+                SemanticKind::ToolCallCompleted,
+                SemanticKind::UsageReported,
+                SemanticKind::TurnCompleted,
+                SemanticKind::TurnFailed,
+                SemanticKind::TurnCancelled,
             ][..],
         ),
     };
@@ -237,6 +257,7 @@ pub fn decode_native_event(
             ProviderKind::Claude => decode_claude(&event),
             ProviderKind::Kimi => decode_kimi(&event),
             ProviderKind::Pi => decode_pi(&event),
+            ProviderKind::DeepseekHarness => decode_deepseek_harness(&event),
         }?
     };
     let Some(decoded) = decoded else {
@@ -595,6 +616,9 @@ fn codex_usage(raw: &serde_json::Value) -> Decoded {
 }
 
 fn native_turn_id(raw: &serde_json::Value) -> Option<String> {
+    if let Some(turn) = raw.pointer("/data/turn").and_then(|value| value.as_u64()) {
+        return Some(turn.to_string());
+    }
     raw.pointer("/payload/turn_id")
         .or_else(|| raw.pointer("/turn_id"))
         .or_else(|| raw.pointer("/turnId"))
@@ -755,6 +779,96 @@ fn decode_pi(event: &NativeEvent) -> Result<Option<Decoded>, DecodeError> {
         "interaction_required" => Ok(Some(interaction(&event.raw))),
         "artifact_created" => Ok(Some(artifact(&event.raw, ""))),
         "transport_interrupted" => Ok(Some(transport("provider_transport_interrupted"))),
+        _ => Ok(None),
+    }
+}
+
+fn decode_deepseek_harness(event: &NativeEvent) -> Result<Option<Decoded>, DecodeError> {
+    let row_type = string(&event.raw, "/type")?;
+    match row_type {
+        "assistant/message" => {
+            let content = event
+                .raw
+                .pointer("/data/message/content")
+                .and_then(Value::as_array)
+                .ok_or(DecodeError::Malformed("DeepSeek assistant content"))?;
+            let mut saw_reasoning = false;
+            let mut text_parts = Vec::new();
+            for part in content {
+                match part.get("type").and_then(Value::as_str) {
+                    Some("reasoning") => {
+                        saw_reasoning = true;
+                        continue;
+                    }
+                    Some("text") => {
+                        if let Some(text) = part.get("text").and_then(Value::as_str) {
+                            text_parts.push(text);
+                        }
+                    }
+                    // The official store also writes an exact tool/call row;
+                    // projecting the embedded copy would duplicate it.
+                    Some("tool-call") => {}
+                    _ => {}
+                }
+            }
+            if text_parts.is_empty() {
+                Ok(saw_reasoning.then(reasoning_drop))
+            } else {
+                Ok(Some(authored(&text_parts.join(""))))
+            }
+        }
+        "tool/call" => Ok(Some(tool(
+            SemanticKind::ToolCallStarted,
+            LifecyclePhase::Started,
+            event.raw.pointer("/data/name").and_then(Value::as_str),
+            event.raw.pointer("/data/callId").and_then(Value::as_str),
+        ))),
+        "tool/result" => Ok(Some(tool(
+            SemanticKind::ToolCallCompleted,
+            LifecyclePhase::Terminal,
+            Some("tool"),
+            event
+                .raw
+                .pointer("/data/message/source/callId")
+                .and_then(Value::as_str),
+        ))),
+        "turn/end" => {
+            let kind = event
+                .raw
+                .pointer("/data/reason/kind")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown");
+            Ok(Some(turn(match kind {
+                "completed" => "completed",
+                "cancelled" | "canceled" => "cancelled",
+                _ => "failed",
+            })))
+        }
+        "assistant/chunk"
+            if event
+                .raw
+                .pointer("/data/chunk/type")
+                .and_then(Value::as_str)
+                == Some("usage") =>
+        {
+            let usage = event.raw.pointer("/data/chunk/usage");
+            Ok(Some(private(
+                ObservationPayload::Usage {
+                    input_tokens: usage
+                        .and_then(|value| value.get("inputTokens"))
+                        .and_then(Value::as_u64),
+                    output_tokens: usage
+                        .and_then(|value| value.get("outputTokens"))
+                        .and_then(Value::as_u64),
+                    total_tokens: None,
+                },
+                SemanticKind::UsageReported,
+                LifecyclePhase::Progress,
+            )))
+        }
+        // Other chunk rows contain private reasoning deltas or duplicate the
+        // final assistant/message. They are deliberately not projected.
+        "assistant/chunk" | "turn/start" | "agent/inbox/spliced" => Ok(None),
         _ => Ok(None),
     }
 }

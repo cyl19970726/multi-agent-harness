@@ -435,6 +435,52 @@ impl HttpExchange<'_> {
                     } else {
                         None
                     };
+                    #[cfg(unix)]
+                    if let (
+                        Some(agent_member_id),
+                        Some(credential_token),
+                        Some(callback),
+                        Some(firm_home),
+                    ) = (
+                        private_agent_member_id.as_deref(),
+                        trust_transport_token.as_deref(),
+                        projects.live_provider_activity_callback.as_ref(),
+                        projects.firm_home.as_deref(),
+                    ) {
+                        if let Ok(node_id) = read_local_node_id() {
+                            let daemon_instance_id =
+                                supervisor_daemon::daemon_status_via_socket(firm_home, &node_id)
+                                    .and_then(|raw| {
+                                        serde_json::from_str::<serde_json::Value>(&raw).ok()
+                                    })
+                                    .and_then(|status| {
+                                        status["instance_id"].as_str().map(ToString::to_string)
+                                    });
+                            if let Some(daemon_instance_id) = daemon_instance_id {
+                                match supervisor_daemon::register_live_provider_activity_via_socket(
+                                    firm_home,
+                                    &node_id,
+                                    supervisor_daemon::LiveProviderActivityRegistration {
+                                        authority: &callback.authority,
+                                        token: &callback.token,
+                                        agent_member_id,
+                                        credential_token,
+                                        expected_daemon_instance_id: &daemon_instance_id,
+                                        serve_instance_id: &callback.serve_instance_id,
+                                    },
+                                ) {
+                                    Some(Ok(response)) if response.contains("\"ok\":true") => {}
+                                    Some(Ok(response)) => eprintln!(
+                                        "serve: NodeDaemon rejected private live sink: {response}"
+                                    ),
+                                    Some(Err(error)) => eprintln!(
+                                        "serve: cannot register private live sink: {error}"
+                                    ),
+                                    None => {}
+                                }
+                            }
+                        }
+                    }
                     // Scope coordination to the selected Execution Space and Company
                     // invalidations to the independently selected Company Store.
                     // Private live provider activity additionally requires the

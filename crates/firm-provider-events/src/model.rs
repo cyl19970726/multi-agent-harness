@@ -10,6 +10,7 @@ pub enum ProviderKind {
     Claude,
     Kimi,
     Pi,
+    DeepseekHarness,
 }
 
 impl ProviderKind {
@@ -19,6 +20,7 @@ impl ProviderKind {
             Self::Claude => "claude",
             Self::Kimi => "kimi",
             Self::Pi => "pi",
+            Self::DeepseekHarness => "deepseek_harness",
         }
     }
 }
@@ -309,8 +311,20 @@ pub struct SessionEventProjection {
     pub source_snapshot_fingerprint: String,
     pub episodes: Vec<super::SessionEpisode>,
     pub truncated: bool,
+    /// Typed read state for the UI. An available projection may legitimately
+    /// contain zero episodes; absence is never inferred from an empty array.
+    pub availability: SessionProjectionAvailability,
+    #[serde(default)]
+    pub unavailable_reason_code: Option<String>,
     #[serde(default)]
     pub disabled_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionProjectionAvailability {
+    Available,
+    Unavailable,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

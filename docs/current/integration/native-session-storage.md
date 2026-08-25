@@ -140,6 +140,9 @@ as a second history.
 The backend performs native reads so provider paths and credentials do not leak
 to browser code. The current response exposes `truncated` rather than a cursor;
 refresh/reconnect rebuilds the projection directly from provider storage.
+Typed `availability` and `unavailable_reason_code` distinguish an available
+empty Session from a missing, unsupported, or failed reader; prose remains
+display detail, not state.
 
 ## Execution-root boundary
 
@@ -188,6 +191,8 @@ new binding records the parent native session id.
 | Kimi `kimi_acp` | real ACP session id captured | `~/.kimi-code/sessions/**/session_<id>/agents/main/wire.jsonl` | reviewed through 0.36.1 prefer `session/resume`; both resume and the `session/load` compatibility fallback may replay history, which is drained before the next prompt | K3/max selection, generation-crossing same-session resume, next-round mail, bounded full-access receipts, and cooperative `session/cancel` notification are current; live activity remains transient and native history is read on demand |
 | Claude `claude_agent_sdk` | real `system(init).session_id` captured | `~/.claude/projects/**/<session>.jsonl` | streaming mailbox, SDK interrupt/close, explicit resume binding, and SDK `listSessions` | Only Claude Team mode; `system(init).claude_code_version` owns the version claim; Desktop visibility is opt-in through `claude://resume?session=<id>`, and Desktop stays observation-only while Harness drives |
 | Claude `claude_cli` | real one-shot session id | `~/.claude/projects/**/<session>.jsonl` | exact-session resume remains only in the separately fenced external Host/direct-delivery compatibility path | rejected for managed Host and Member runs; historical Team records remain read-only |
+| Pi `pi_rpc` | exact provider JSONL locator captured from provider state | exact regular JSONL beneath the managed Execution Space `pi_sessions` root | exact provider session path is retained for explicit continuation | absolute paths are accepted only from the canonical NativeSessionRef and must remain beneath the resolved managed root |
+| DeepSeek Harness `deepseek_sdk` | exact native `SessionId` | official `@deepseek-ai/dsh-session-persistence-jsonl` reader over the reviewed zstd store | `ctx.agents.resume` with the exact SessionId | Harness never reimplements or copies DSH zstd/packed persistence; the official package returns a bounded response-local logical JSONL view |
 
 Unknown providers and unregistered execution modes have no executable Team
 Member adapter and fail explicitly. A provider brand, installed binary, native
@@ -220,11 +225,14 @@ states. UI must not invent native activity or resume from a Harness replay.
   capability snapshot. New provider activity is not written to
   `member_actions.jsonl` or `team_run_events.jsonl`.
 - Authenticated `AgentWorkspace.data.session_event_projection` resolves the
-  canonical AgentSession and current NodeDaemon generation server-side, then
+  canonical AgentSession and its recorded NodeDaemon generation server-side, then
   returns a bounded thinking-free projection. Host-selected Member views
   structurally omit this field. The legacy
   `GET /v1/member-runs/{id}/native-activity` route returns `410 Gone` because it
   cannot prove the exact owner.
+- Stop/Detach or daemon release does not erase readable provider-native
+  history. Current NodeDaemon/Supervisor authority remains mandatory for every
+  Resume, Interrupt, Close, delivery, and other provider effect.
 - A retry can bind a member to an earlier provider session with HTTP/MCP member
   field `resume_native_session_id` or CLI
   `--resume-member <member-name>:<native-session-id>`. Resume is never inferred

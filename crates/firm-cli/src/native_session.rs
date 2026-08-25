@@ -12,6 +12,8 @@ use harness_core::NativeSessionRef;
 
 use crate::{CliError, CliResult};
 
+mod deepseek;
+
 const MAX_DISCOVERY_LINE_BYTES: usize = 1024 * 1024;
 
 /// Find the canonical Codex rollout whose own `session_meta.payload.id`
@@ -200,8 +202,7 @@ fn locate(session: &NativeSessionRef) -> CliResult<Option<PathBuf>> {
             &format!("{}.jsonl", session.native_session_id),
             4,
         ),
-        // Pi currently has no reviewed same-user native Session reader. This
-        // remains explicitly unavailable; a path or provider id is never made up.
+        "pi" => locate_pi_jsonl(&session.native_session_id),
         _ => Ok(None),
     }
 }
@@ -210,6 +211,7 @@ fn locate(session: &NativeSessionRef) -> CliResult<Option<PathBuf>> {
 /// provider decoder revalidates this boundary before reading.
 pub(crate) fn locate_read_boundary(
     session: &NativeSessionRef,
+    execution_space_id: &str,
 ) -> CliResult<Option<(PathBuf, PathBuf)>> {
     let Some(path) = locate(session)? else {
         return Ok(None);
@@ -224,9 +226,75 @@ pub(crate) fn locate_read_boundary(
             .join("sessions"),
         "kimi" => kimi_code_home(&home).join("sessions"),
         "claude" | "claude-code" | "claude_code" => home.join(".claude/projects"),
+        "pi" => pi_sessions_root(&path, Some(execution_space_id))?,
         _ => return Ok(None),
     };
     Ok(Some((root, path)))
+}
+
+pub(crate) fn read_deepseek_session_jsonl(session: &NativeSessionRef) -> CliResult<String> {
+    if session.provider != "deepseek_harness" && session.provider != "deepseek" {
+        return Err(CliError::Usage(
+            "DeepSeek native reader requires a DeepSeek Harness Session".into(),
+        ));
+    }
+    deepseek::read_official_jsonl(&session.native_session_id)
+}
+
+fn locate_pi_jsonl(locator: &str) -> CliResult<Option<PathBuf>> {
+    let path = PathBuf::from(locator);
+    if !path.is_absolute() {
+        return Err(CliError::Usage(
+            "Pi native Session locator must be absolute".into(),
+        ));
+    }
+    let metadata = match fs::symlink_metadata(&path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(CliError::Usage(
+            "Pi native Session must be a regular non-symlink JSONL file".into(),
+        ));
+    }
+    let canonical = fs::canonicalize(path)?;
+    let root = pi_sessions_root(&canonical, None)?;
+    if !canonical.starts_with(&root)
+        || canonical.extension().and_then(|v| v.to_str()) != Some("jsonl")
+    {
+        return Err(CliError::Usage(
+            "Pi native Session is outside an exact pi_sessions root".into(),
+        ));
+    }
+    Ok(Some(canonical))
+}
+
+fn pi_sessions_root(path: &Path, execution_space_id: Option<&str>) -> CliResult<PathBuf> {
+    let mut candidate = PathBuf::new();
+    let mut previous = None::<String>;
+    let mut observed_space = None::<String>;
+    for component in path.components() {
+        let value = component.as_os_str().to_string_lossy().into_owned();
+        candidate.push(&value);
+        if previous.as_deref() == Some("execution-spaces") {
+            observed_space = Some(value.clone());
+        }
+        if component.as_os_str() == "pi_sessions" {
+            if let Some(expected) = execution_space_id {
+                if observed_space.as_deref() != Some(expected) {
+                    return Err(CliError::Usage(
+                        "Pi native Session belongs to another Execution Space".into(),
+                    ));
+                }
+            }
+            return fs::canonicalize(candidate).map_err(Into::into);
+        }
+        previous = Some(value);
+    }
+    Err(CliError::Usage(
+        "Pi native Session locator does not contain the managed pi_sessions root".into(),
+    ))
 }
 
 fn kimi_code_home(home: &Path) -> PathBuf {
@@ -422,6 +490,28 @@ mod tests {
         ));
         fs::create_dir_all(&root).expect("Kimi sessions root");
         root
+    }
+
+    #[test]
+    fn pi_session_locator_is_exact_jsonl_beneath_managed_root() {
+        let root = std::env::temp_dir().join(format!(
+            "firm-pi-native-session-{}-{}",
+            std::process::id(),
+            NEXT_ROOT.fetch_add(1, Ordering::Relaxed)
+        ));
+        let session = root.join("execution-spaces/space-a/pi_sessions/run-a/session.jsonl");
+        fs::create_dir_all(session.parent().expect("parent")).expect("Pi session dir");
+        fs::write(&session, "{\"type\":\"turn_end\"}\n").expect("Pi JSONL");
+        assert_eq!(
+            locate_pi_jsonl(session.to_str().expect("UTF-8 path")).expect("Pi boundary"),
+            Some(fs::canonicalize(&session).expect("canonical Pi Session"))
+        );
+        assert!(pi_sessions_root(&session, Some("space-a")).is_ok());
+        assert!(pi_sessions_root(&session, Some("space-b")).is_err());
+        let outside = root.join("outside.jsonl");
+        fs::write(&outside, "{}\n").expect("outside");
+        assert!(locate_pi_jsonl(outside.to_str().expect("UTF-8 path")).is_err());
+        fs::remove_dir_all(root).expect("cleanup");
     }
 
     #[test]

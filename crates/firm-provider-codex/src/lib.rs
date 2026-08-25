@@ -415,6 +415,7 @@ impl CodexAppServerClient {
             .arg("--listen")
             .arg("stdio://")
             .envs(env.iter().cloned())
+            .env_remove("AGENTFIRM_HTTP_CREDENTIALS_JSON")
             .current_dir(cwd)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())

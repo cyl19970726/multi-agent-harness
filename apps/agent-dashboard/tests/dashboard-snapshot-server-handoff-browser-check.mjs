@@ -137,7 +137,7 @@ for (const [id, role] of [["dev33-host", "host"], ["dev33-worker", "worker"]]) {
         description: "Durable identity seeded for the snapshot handoff acceptance.",
         role, capabilities: [], skill_refs: [],
         provider_profile_ref: "codex-default", model_preference: null,
-        workspace_policy: "managed-worktree", permission_ceiling: "workspace_write",
+        workspace_policy: "managed-worktree", permission_ceiling: "full_access",
         organization_status: "active", version: 1,
         created_by: { kind: "human", id: "dev33-handoff-owner" },
         created_at: "2026-08-05T12:00:00+08:00", updated_at: "2026-08-05T12:00:00+08:00",

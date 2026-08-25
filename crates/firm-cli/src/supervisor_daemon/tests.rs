@@ -38,6 +38,96 @@ fn node_authority_heartbeat_is_independent_of_a_long_discovery_scan() {
 }
 
 #[test]
+fn private_live_sink_rejects_forged_and_stale_registration_then_replaces_exact_successor() {
+    let tree = TestTree::new("private-live-sink");
+    let daemon = MultiTeamDaemon {
+        firm_home: tree.0.clone(),
+        node_id: "node-live".into(),
+        daemon_id: "node-daemon:node-live".into(),
+        instance_id: "daemon-instance-current".into(),
+        contexts: Mutex::new(Vec::new()),
+        supervisor_start_gate: Mutex::new(()),
+        session_runtimes: Mutex::new(HashMap::new()),
+        live_provider_activity_endpoint: Arc::new(Mutex::new(HashMap::new())),
+        max_concurrency: 1,
+        idle_timeout_secs: 1,
+        scan_interval: Duration::from_secs(1),
+        stop_requested: Arc::new(AtomicBool::new(false)),
+        authority_shutdown: Arc::new(AtomicBool::new(false)),
+        control_worker_failed: AtomicBool::new(false),
+        recovery_blocked_runs: Mutex::new(HashSet::new()),
+        lease_ttl_override_ms: None,
+    };
+    let owner = crate::AgentFirmHttpCredential {
+        token: "owner-browser-capability".into(),
+        actor: harness_core::agentfirm_api::ActorRef {
+            kind: harness_core::agentfirm_api::ActorKind::AgentMember,
+            id: "member-owner".into(),
+        },
+        authority_actors: Vec::new(),
+    };
+    let attacker = crate::AgentFirmHttpCredential {
+        token: "attacker-browser-capability".into(),
+        actor: harness_core::agentfirm_api::ActorRef {
+            kind: harness_core::agentfirm_api::ActorKind::AgentMember,
+            id: "member-attacker".into(),
+        },
+        authority_actors: Vec::new(),
+    };
+    let first_token = "a".repeat(32);
+    let first_instance = "b".repeat(32);
+    assert!(!daemon.install_live_provider_activity_endpoint(
+        "127.0.0.1:19001",
+        &first_token,
+        "member-owner",
+        Some(&attacker),
+        "daemon-instance-current",
+        &first_instance,
+    ));
+    assert!(!daemon.install_live_provider_activity_endpoint(
+        "127.0.0.1:19001",
+        &first_token,
+        "member-owner",
+        Some(&owner),
+        "daemon-instance-stale",
+        &first_instance,
+    ));
+    assert!(daemon
+        .live_provider_activity_endpoint
+        .lock()
+        .expect("live sink registry")
+        .is_empty());
+
+    assert!(daemon.install_live_provider_activity_endpoint(
+        "127.0.0.1:19001",
+        &first_token,
+        "member-owner",
+        Some(&owner),
+        "daemon-instance-current",
+        &first_instance,
+    ));
+    let successor_token = "c".repeat(32);
+    let successor_instance = "d".repeat(32);
+    assert!(daemon.install_live_provider_activity_endpoint(
+        "127.0.0.1:19002",
+        &successor_token,
+        "member-owner",
+        Some(&owner),
+        "daemon-instance-current",
+        &successor_instance,
+    ));
+    let endpoints = daemon
+        .live_provider_activity_endpoint
+        .lock()
+        .expect("live sink registry");
+    assert_eq!(endpoints.len(), 1);
+    let current = endpoints.get("member-owner").expect("exact owner sink");
+    assert_eq!(current.authority, "127.0.0.1:19002");
+    assert_eq!(current.token, successor_token);
+    assert_eq!(current.serve_instance_id, successor_instance);
+}
+
+#[test]
 fn control_response_is_one_complete_json_frame_under_backpressure() {
     let (mut server, mut client) = UnixStream::pair().expect("create control socket pair");
     server
@@ -123,7 +213,7 @@ fn status_remains_responsive_while_execution_space_scan_is_blocked() {
         contexts: Mutex::new(Vec::new()),
         supervisor_start_gate: Mutex::new(()),
         session_runtimes: Mutex::new(HashMap::new()),
-        live_provider_activity_endpoint: Arc::new(Mutex::new(None)),
+        live_provider_activity_endpoint: Arc::new(Mutex::new(HashMap::new())),
         max_concurrency: 1,
         idle_timeout_secs: 1,
         scan_interval: Duration::from_secs(60),
@@ -243,7 +333,7 @@ fn status_remains_responsive_while_a_control_mutation_is_blocked() {
         contexts: Mutex::new(Vec::new()),
         supervisor_start_gate: Mutex::new(()),
         session_runtimes: Mutex::new(HashMap::new()),
-        live_provider_activity_endpoint: Arc::new(Mutex::new(None)),
+        live_provider_activity_endpoint: Arc::new(Mutex::new(HashMap::new())),
         max_concurrency: 1,
         idle_timeout_secs: 1,
         scan_interval: Duration::from_secs(60),
@@ -375,7 +465,7 @@ fn shutdown_renews_node_authority_until_accepted_worker_finishes() {
         contexts: Mutex::new(Vec::new()),
         supervisor_start_gate: Mutex::new(()),
         session_runtimes: Mutex::new(HashMap::new()),
-        live_provider_activity_endpoint: Arc::new(Mutex::new(None)),
+        live_provider_activity_endpoint: Arc::new(Mutex::new(HashMap::new())),
         max_concurrency: 1,
         idle_timeout_secs: 1,
         scan_interval: Duration::from_millis(50),
@@ -493,7 +583,7 @@ fn shutdown_renews_node_authority_until_accepted_worker_finishes() {
         contexts: Mutex::new(Vec::new()),
         supervisor_start_gate: Mutex::new(()),
         session_runtimes: Mutex::new(HashMap::new()),
-        live_provider_activity_endpoint: Arc::new(Mutex::new(None)),
+        live_provider_activity_endpoint: Arc::new(Mutex::new(HashMap::new())),
         max_concurrency: 1,
         idle_timeout_secs: 1,
         scan_interval: Duration::from_millis(50),
@@ -693,4 +783,16 @@ fn daemon_control_generation_fences_stale_and_successor_instances() {
         8,
         20,
     ));
+}
+
+#[test]
+fn rejected_live_scope_does_not_discard_the_registered_serve_endpoint() {
+    let rejected = LiveProviderActivityPostError::Rejected("HTTP/1.1 400 Bad Request".into());
+    let unavailable = LiveProviderActivityPostError::Unavailable(std::io::Error::new(
+        std::io::ErrorKind::ConnectionRefused,
+        "serve exited",
+    ));
+
+    assert!(!rejected.clears_registered_endpoint());
+    assert!(unavailable.clears_registered_endpoint());
 }

@@ -4,9 +4,10 @@
   "type": "module",
   "scripts": {
     "test": "node --test test/*.test.mjs",
-    "check": "node --check bin/deepseek-member-runner.mjs && node --check src/member-runner.mjs && node --test test/*.test.mjs"
+    "check": "node --check bin/deepseek-member-runner.mjs && node --check bin/deepseek-session-reader.mjs && node --check src/member-runner.mjs && node --check src/session-reader.mjs && node --test test/*.test.mjs"
   },
   "dependencies": {
+    "@deepseek-ai/cordis": "4.0.1",
     "@deepseek-ai/dsh-agent": "0.1.1-rc.2",
     "@deepseek-ai/dsh-agent-loop": "0.1.1-rc.2",
     "@deepseek-ai/dsh-agent-spine-demo": "0.1.1-rc.2",

@@ -212,28 +212,31 @@ impl MultiTeamDaemon {
             "register_live_provider_activity" => {
                 let authority = cmd["authority"].as_str().unwrap_or("").trim();
                 let token = cmd["token"].as_str().unwrap_or("").trim();
-                let loopback = authority
-                    .parse::<std::net::SocketAddr>()
-                    .ok()
-                    .is_some_and(|address| address.ip().is_loopback());
-                if !loopback || token.len() < 32 || token.len() > 256 {
+                let agent_member_id = cmd["agent_member_id"].as_str().unwrap_or("").trim();
+                let credential_token = cmd["credential_token"].as_str().unwrap_or("").trim();
+                let expected_daemon_instance_id = cmd["expected_daemon_instance_id"]
+                    .as_str()
+                    .unwrap_or("")
+                    .trim();
+                let serve_instance_id = cmd["serve_instance_id"].as_str().unwrap_or("").trim();
+                let credential = crate::resolve_agentfirm_http_credential(Some(credential_token));
+                if !self.install_live_provider_activity_endpoint(
+                    authority,
+                    token,
+                    agent_member_id,
+                    credential.as_ref().ok(),
+                    expected_daemon_instance_id,
+                    serve_instance_id,
+                ) {
                     Self::write_control_response(
                         stream,
                         &serde_json::json!({
                             "ok": false,
-                            "error": "live provider activity requires a loopback authority and a 32-256 character token"
+                            "error": "live provider activity sink registration requires the exact current daemon instance, an authenticated exact AgentMember owner, a loopback authority, and bounded callback capabilities"
                         }),
                     )?;
                     return Ok(());
                 }
-                *self
-                    .live_provider_activity_endpoint
-                    .lock()
-                    .unwrap_or_else(|error| error.into_inner()) =
-                    Some(LiveProviderActivityEndpoint {
-                        authority: authority.to_string(),
-                        token: token.to_string(),
-                    });
                 Self::write_control_response(
                     stream,
                     &serde_json::json!({"ok": true, "registered": true}),
@@ -1011,6 +1014,11 @@ impl MultiTeamDaemon {
                     "daemon_id": self.daemon_id,
                     "instance_id": self.instance_id,
                     "process_id": std::process::id(),
+                    "live_provider_activity_sink_registered": !self
+                        .live_provider_activity_endpoint
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner())
+                        .is_empty(),
                     "recovery_blocked_runs": self.recovery_blocked_runs
                         .lock()
                         .unwrap_or_else(|error| error.into_inner())

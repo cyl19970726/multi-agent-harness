@@ -1,6 +1,6 @@
 # Canonical Provider Event Projection
 
-Status: current contract for DEV-20.
+Status: current contract through DEV-88.
 
 ## Authority boundary
 
@@ -76,6 +76,18 @@ Hosts, siblings, anonymous streams, cross-project streams, and later reconnects
 receive no Member-private overlay. Terminal turn state clears the overlay
 immediately; disconnect, TTL expiry, or process restart loses it.
 
+Provider transports are not required to be SSE themselves. Codex app-server,
+Claude SDK, Kimi ACP, Pi RPC, and DeepSeek Cordis events are normalized by
+their runtime adapters; only the owner-authenticated Dashboard delivery uses
+Harness SSE. NodeDaemon and `firm serve` are separate processes. When an exact
+AgentMember owner opens an authenticated private SSE stream, serve registers a
+process-memory callback for that owner only. Registration proves the existing
+browser capability and current NodeDaemon instance; a forged actor, stale
+daemon instance, anonymous process, or another Member cannot install or
+replace that owner's endpoint. A later valid serve instance replaces only the
+same owner's endpoint. Provider children explicitly do not inherit the HTTP
+credential registry. Neither callback capabilities nor live items are durable.
+
 The live scope carries `member_run_generation` and
 `agent_session_generation` as independent fences. Reopen advances the Team
 adapter's MemberRun generation while it may continue the same canonical
@@ -83,13 +95,18 @@ AgentSession generation and exact provider-native Session. An update or
 terminal event from the pre-Reopen adapter is rejected at ingress and cannot
 populate or clear the reopened generation's overlay. Historical reads continue
 to resolve the exact native-session binding; they do not require those two
-independent generations to be numerically equal.
+independent generations to be numerically equal or the recorded NodeDaemon
+lease to remain active. A current lease fences execution effects, not read
+authority. Exact owner, Execution Space, Project Binding, Team,
+AgentSession/native-session binding, recorded provenance, and provider source
+containment remain mandatory.
 
 Codex live reasoning accepts only provider-declared `summaryTextDelta`. Kimi
 thought text is discarded and becomes only a generic thinking phase; an ACP
 reverse permission request becomes only a generic interaction-waiting phase.
-Pi runs
-with provider thinking disabled. Claude Agent SDK thinking blocks are discarded
+Pi runs with provider thinking disabled. DeepSeek reasoning blocks and native
+tool names remain private; only generic live phases and closed generic tool
+lifecycle are projected. Claude Agent SDK thinking blocks are discarded
 because the SDK does not label them as display-safe summaries. Unknown provider
 tool names, arguments, paths, and status strings are also omitted. Raw
 chain-of-thought is never saved, reconstructed, or forwarded.
@@ -114,11 +131,27 @@ delivery authority.
 ## Provider fidelity
 
 The versioned adapter manifest is executable governance. Codex, Claude, Kimi,
-and Pi each declare native families, native identity support, and the exact
+Pi, and DeepSeek Harness each declare native families, native identity support, and the exact
 semantic kinds implemented by their decoder. Unsupported capabilities remain
 absent rather than being inferred for parity. Fixture conformance covers all
-four providers; only an actually available provider may be claimed as a live
+five providers; only an actually available provider may be claimed as a live
 journey.
+
+The volatile live channel is intentionally not equal-fidelity. `terminal`
+clear is provider-neutral and emitted for every bounded cycle; phase rows are
+only emitted when the reviewed native transport exposes them:
+
+| Provider | thinking | response streaming | tool started | tool completed/failed | interaction waiting |
+| --- | --- | --- | --- | --- | --- |
+| Codex app-server | provider-declared summary only | yes | yes | completed | no |
+| Claude Agent SDK | no (thinking dropped) | yes | yes | no | no |
+| Kimi ACP | generic phase only | yes | yes | completed + failed | permission request |
+| Pi RPC | no (thinking disabled) | no | yes | completed + failed | no reviewed live mapping |
+| DeepSeek Harness | generic phase only | yes | yes | completed | no current runner emission |
+
+This matrix is a capability disclosure, not a request to synthesize missing
+events. Historical fidelity is separately governed by
+`schemas/provider-events/adapters.v1.json` and the provider-native readers.
 
 ## Recovery
 
