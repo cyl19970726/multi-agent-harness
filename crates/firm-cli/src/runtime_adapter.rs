@@ -673,6 +673,7 @@ pub(crate) fn run_team_member_with_adapter<A: TeamRuntimeAdapter<Error = CliErro
                 let _live_turn_guard = LiveProviderTurnGuard::new(
                     context.live_sink.clone(),
                     ledger.run_id.clone(),
+                    member_row.agent_member_id.clone(),
                     member_row.id.clone(),
                     member_row.runtime_generation,
                 );

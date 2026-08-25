@@ -753,6 +753,13 @@ mod dashboard_snapshot_build_tests {
 /// provider execution context. Raw-store and project-derived compatibility
 /// modes retain the historical single-store behavior.
 #[derive(Clone)]
+pub(super) struct LiveProviderActivityCallback {
+    pub(super) authority: String,
+    pub(super) token: String,
+    pub(super) serve_instance_id: String,
+}
+
+#[derive(Clone)]
 pub(super) struct ServeProjects {
     /// `~/.harness` — `None` only when serve was started with a raw
     /// `--store`/`FIRM_ROOT` override (no registry to consult).
@@ -773,6 +780,10 @@ pub(super) struct ServeProjects {
     /// the synchronous full-snapshot Store builder without serializing SSE,
     /// authenticated RoleView reads/writes, or other HTTP work.
     pub(super) dashboard_snapshot_builds: Arc<DashboardSnapshotBuildFence>,
+    /// Process-memory-only callback capability. It is registered per exact
+    /// authenticated AgentMember when that owner opens a private SSE stream;
+    /// an ambient same-user process cannot install a global private sink.
+    pub(super) live_provider_activity_callback: Option<LiveProviderActivityCallback>,
 }
 
 impl ServeProjects {
@@ -801,6 +812,7 @@ impl ServeProjects {
             default_space: resolved.execution_space_context.clone(),
             default_context: resolved.context.clone(),
             dashboard_snapshot_builds: Arc::new(DashboardSnapshotBuildFence::default()),
+            live_provider_activity_callback: None,
         }
     }
 
@@ -1050,7 +1062,7 @@ pub(super) fn serve_command(
         "coordination store: {store_display}  (select with --space/FIRM_SPACE; raw --store remains deprecated)"
     );
 
-    let projects = ServeProjects::from_resolved(store, resolved);
+    let mut projects = ServeProjects::from_resolved(store, resolved);
     let watch_map = projects.watch_map();
     println!(
         "default execution space: {} ({} coordination store(s) watched)",
@@ -1060,37 +1072,19 @@ pub(super) fn serve_command(
 
     let sse_manager = sse::SseManager::new();
 
-    // Register this exact serve process as the NodeDaemon's volatile activity
-    // sink. No endpoint or token is durable; either process restarting drops
-    // the bridge until serve registers again.
+    // Prepare an exact process-memory callback capability. Registration is
+    // deferred until an authenticated AgentMember opens /v1/events so the
+    // daemon can bind the endpoint to that exact owner rather than trusting
+    // any same-user process that can reach its Unix socket.
     #[cfg(unix)]
-    if let Some(firm_home) = projects.firm_home.clone() {
-        if bound_addr.ip().is_loopback() {
-            let token = LIVE_PROVIDER_ACTIVITY_TOKEN
+    if projects.firm_home.is_some() && bound_addr.ip().is_loopback() {
+        projects.live_provider_activity_callback = Some(LiveProviderActivityCallback {
+            authority: bound_addr.to_string(),
+            token: LIVE_PROVIDER_ACTIVITY_TOKEN
                 .get_or_init(new_live_provider_activity_token)
-                .clone();
-            if let Ok(node_id) = read_local_node_id() {
-                let callback_authority = bound_addr.to_string();
-                std::thread::spawn(move || loop {
-                    match supervisor_daemon::register_live_provider_activity_via_socket(
-                        &firm_home,
-                        &node_id,
-                        &callback_authority,
-                        &token,
-                    ) {
-                        Some(Ok(response)) if response.contains("\"ok\":true") => {}
-                        Some(Ok(response)) => eprintln!(
-                            "serve: NodeDaemon rejected volatile activity sink: {response}"
-                        ),
-                        Some(Err(error)) => {
-                            eprintln!("serve: cannot register volatile activity sink: {error}")
-                        }
-                        None => {}
-                    }
-                    std::thread::sleep(Duration::from_secs(2));
-                });
-            }
-        }
+                .clone(),
+            serve_instance_id: new_live_provider_activity_token(),
+        });
     }
 
     // Start one Execution-Space-multiplexed SSE watcher. The watcher re-scans the

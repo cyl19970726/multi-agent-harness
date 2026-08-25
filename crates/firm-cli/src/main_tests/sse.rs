@@ -229,6 +229,7 @@ fn serve_preserves_unregistered_default_worktree_context() {
         default_space: None,
         default_context: Some(expected.clone()),
         dashboard_snapshot_builds: Arc::new(DashboardSnapshotBuildFence::default()),
+        live_provider_activity_callback: None,
     };
 
     let resolved = projects.context_for(Some(&expected.id), None, &store);
@@ -270,6 +271,7 @@ fn sse_stream_does_not_block_concurrent_requests() {
             default_space: None,
             default_context: None,
             dashboard_snapshot_builds: Arc::new(DashboardSnapshotBuildFence::default()),
+            live_provider_activity_callback: None,
         };
         let watcher_projects = projects.clone();
         sse::start_sse_watcher(move || watcher_projects.watch_map(), sse_manager.clone())

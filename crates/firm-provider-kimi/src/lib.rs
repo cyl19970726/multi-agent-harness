@@ -320,7 +320,8 @@ impl KimiAcpClient {
             .current_dir(cwd)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+            .stderr(Stdio::piped())
+            .env_remove("AGENTFIRM_HTTP_CREDENTIALS_JSON");
         #[cfg(unix)]
         {
             use std::os::unix::process::CommandExt;

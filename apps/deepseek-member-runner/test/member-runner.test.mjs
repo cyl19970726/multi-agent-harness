@@ -58,7 +58,7 @@ test("normalizes native live phases without exposing reasoning or tool arguments
       listener({ type: "agent/inbox/spliced", data: { inserted: [message] } });
       listener({ type: "turn/start", data: { turn: 1 } });
       listener({ type: "assistant/chunk", data: { chunk: { type: "block-start", blockType: "reasoning", text: "secret" } } });
-      listener({ type: "tool/call", data: { name: "bash", arguments: "private" } });
+      listener({ type: "tool/call", data: { name: "private-custom-tool-name", arguments: "private" } });
       listener({ type: "tool/result", data: { output: "private" } });
       listener({ type: "assistant/message", data: { message: { content: [{ type: "text", text: "done" }] } } });
       listener({ type: "turn/end", data: { turn: 1, reason: { kind: "completed" } } });
@@ -73,6 +73,7 @@ test("normalizes native live phases without exposing reasoning or tool arguments
   assert.deepEqual(activities.map(({ data }) => data.kind), ["thinking", "tool_started", "tool_completed"]);
   assert.equal(JSON.stringify(activities).includes("secret"), false);
   assert.equal(JSON.stringify(activities).includes("private"), false);
+  assert.equal(activities.find(({ data }) => data.kind === "tool_started")?.data.summary, "tool started");
 });
 
 test("idle without a native turn/end fails closed", async () => {

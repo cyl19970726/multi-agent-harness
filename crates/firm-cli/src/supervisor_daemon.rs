@@ -94,6 +94,7 @@ struct PendingControlConnection {
 struct LiveProviderActivityEndpoint {
     authority: String,
     token: String,
+    serve_instance_id: String,
 }
 
 enum ControlReadState {
@@ -143,7 +144,7 @@ pub(crate) struct MultiTeamDaemon {
     /// Volatile callback registered by the current local `serve` process. It
     /// is never written to the Store and a daemon restart deliberately loses
     /// it. The bearer token is required on every loopback ingress request.
-    live_provider_activity_endpoint: Arc<Mutex<Option<LiveProviderActivityEndpoint>>>,
+    live_provider_activity_endpoint: Arc<Mutex<HashMap<String, LiveProviderActivityEndpoint>>>,
     max_concurrency: usize,
     idle_timeout_secs: u64,
     scan_interval: Duration,
@@ -165,6 +166,47 @@ pub(crate) struct MultiTeamDaemon {
 }
 
 impl MultiTeamDaemon {
+    fn install_live_provider_activity_endpoint(
+        &self,
+        authority: &str,
+        token: &str,
+        agent_member_id: &str,
+        credential: Option<&crate::AgentFirmHttpCredential>,
+        expected_daemon_instance_id: &str,
+        serve_instance_id: &str,
+    ) -> bool {
+        let loopback = authority
+            .parse::<std::net::SocketAddr>()
+            .ok()
+            .is_some_and(|address| address.ip().is_loopback());
+        let exact_owner = credential.is_some_and(|credential| {
+            credential.actor.kind == harness_core::agentfirm_api::ActorKind::AgentMember
+                && credential.actor.id == agent_member_id
+        });
+        if !loopback
+            || token.len() < 32
+            || token.len() > 256
+            || serve_instance_id.len() < 32
+            || serve_instance_id.len() > 256
+            || expected_daemon_instance_id != self.instance_id
+            || !exact_owner
+        {
+            return false;
+        }
+        self.live_provider_activity_endpoint
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .insert(
+                agent_member_id.to_string(),
+                LiveProviderActivityEndpoint {
+                    authority: authority.to_string(),
+                    token: token.to_string(),
+                    serve_instance_id: serve_instance_id.to_string(),
+                },
+            );
+        true
+    }
+
     /// Run the multi-team daemon in the foreground. Blocks until SIGTERM/SIGINT
     /// or until the control socket receives a "stop" command.
     pub(crate) fn run(
@@ -247,7 +289,7 @@ impl MultiTeamDaemon {
             contexts: Mutex::new(Vec::new()),
             supervisor_start_gate: Mutex::new(()),
             session_runtimes: Mutex::new(HashMap::new()),
-            live_provider_activity_endpoint: Arc::new(Mutex::new(None)),
+            live_provider_activity_endpoint: Arc::new(Mutex::new(HashMap::new())),
             max_concurrency,
             idle_timeout_secs,
             scan_interval: Duration::from_secs(scan_interval_secs),
@@ -883,18 +925,34 @@ impl MultiTeamDaemon {
         let callback_space_id = execution_space_id.clone();
         let thread = std::thread::spawn(move || {
             let live_sink = Arc::new(move |update: LiveProviderActivityUpdate| {
+                let agent_member_id = match &update {
+                    LiveProviderActivityUpdate::Updated {
+                        agent_member_id, ..
+                    }
+                    | LiveProviderActivityUpdate::Terminal {
+                        agent_member_id, ..
+                    } => agent_member_id,
+                };
                 let endpoint = live_provider_activity_endpoint
                     .lock()
                     .unwrap_or_else(|error| error.into_inner())
-                    .clone();
+                    .get(agent_member_id)
+                    .cloned();
                 if let Some(endpoint) = endpoint {
                     if let Err(error) =
                         post_live_provider_activity(&endpoint, &callback_space_id, &update)
                     {
                         if error.clears_registered_endpoint() {
-                            *live_provider_activity_endpoint
+                            let mut endpoints = live_provider_activity_endpoint
                                 .lock()
-                                .unwrap_or_else(|lock_error| lock_error.into_inner()) = None;
+                                .unwrap_or_else(|lock_error| lock_error.into_inner());
+                            if endpoints.get(agent_member_id).is_some_and(|current| {
+                                current.serve_instance_id == endpoint.serve_instance_id
+                                    && current.authority == endpoint.authority
+                                    && current.token == endpoint.token
+                            }) {
+                                endpoints.remove(agent_member_id);
+                            }
                         }
                         eprintln!("[node-daemon] live provider activity callback failed: {error}");
                     }
@@ -1206,11 +1264,19 @@ fn post_live_provider_activity(
 /// Register the current `serve` process as the volatile live-activity sink.
 /// A missing daemon is not an error: serve remains usable and a later restart
 /// registers again. The endpoint is loopback-only and never durable.
+pub(crate) struct LiveProviderActivityRegistration<'a> {
+    pub authority: &'a str,
+    pub token: &'a str,
+    pub agent_member_id: &'a str,
+    pub credential_token: &'a str,
+    pub expected_daemon_instance_id: &'a str,
+    pub serve_instance_id: &'a str,
+}
+
 pub(crate) fn register_live_provider_activity_via_socket(
     firm_home: &Path,
     node_id: &str,
-    authority: &str,
-    token: &str,
+    registration: LiveProviderActivityRegistration<'_>,
 ) -> Option<Result<String, std::io::Error>> {
     let socket_path = node_daemon_socket_path(firm_home, node_id);
     let mut stream = match UnixStream::connect(&socket_path) {
@@ -1225,8 +1291,12 @@ pub(crate) fn register_live_provider_activity_via_socket(
     }
     let command = serde_json::json!({
         "cmd": "register_live_provider_activity",
-        "authority": authority,
-        "token": token,
+        "authority": registration.authority,
+        "token": registration.token,
+        "agent_member_id": registration.agent_member_id,
+        "credential_token": registration.credential_token,
+        "expected_daemon_instance_id": registration.expected_daemon_instance_id,
+        "serve_instance_id": registration.serve_instance_id,
     });
     if let Err(error) = writeln!(stream, "{command}") {
         return Some(Err(error));

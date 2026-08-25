@@ -79,9 +79,14 @@ immediately; disconnect, TTL expiry, or process restart loses it.
 Provider transports are not required to be SSE themselves. Codex app-server,
 Claude SDK, Kimi ACP, Pi RPC, and DeepSeek Cordis events are normalized by
 their runtime adapters; only the owner-authenticated Dashboard delivery uses
-Harness SSE. NodeDaemon and `firm serve` are separate processes, so serve
-registers and renews one volatile loopback callback token with the daemon.
-Neither that token nor the live items are durable.
+Harness SSE. NodeDaemon and `firm serve` are separate processes. When an exact
+AgentMember owner opens an authenticated private SSE stream, serve registers a
+process-memory callback for that owner only. Registration proves the existing
+browser capability and current NodeDaemon instance; a forged actor, stale
+daemon instance, anonymous process, or another Member cannot install or
+replace that owner's endpoint. A later valid serve instance replaces only the
+same owner's endpoint. Provider children explicitly do not inherit the HTTP
+credential registry. Neither callback capabilities nor live items are durable.
 
 The live scope carries `member_run_generation` and
 `agent_session_generation` as independent fences. Reopen advances the Team
@@ -99,9 +104,9 @@ containment remain mandatory.
 Codex live reasoning accepts only provider-declared `summaryTextDelta`. Kimi
 thought text is discarded and becomes only a generic thinking phase; an ACP
 reverse permission request becomes only a generic interaction-waiting phase.
-Pi runs with provider thinking disabled. DeepSeek reasoning blocks remain
-private; only generic live phases and final authored/tool lifecycle are
-projected. Claude Agent SDK thinking blocks are discarded
+Pi runs with provider thinking disabled. DeepSeek reasoning blocks and native
+tool names remain private; only generic live phases and closed generic tool
+lifecycle are projected. Claude Agent SDK thinking blocks are discarded
 because the SDK does not label them as display-safe summaries. Unknown provider
 tool names, arguments, paths, and status strings are also omitted. Raw
 chain-of-thought is never saved, reconstructed, or forwarded.

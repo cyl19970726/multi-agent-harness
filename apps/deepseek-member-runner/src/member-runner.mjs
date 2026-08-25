@@ -51,7 +51,7 @@ export function createMemberRunner({ runtime, emit }) {
         emit("provider_activity", { kind: "response_streaming", summary: "assistant response streaming" });
       }
       if (event.type === "tool/call") {
-        emit("provider_activity", { kind: "tool_started", summary: `${event.data?.name ?? "tool"} started` });
+        emit("provider_activity", { kind: "tool_started", summary: "tool started" });
       }
       if (event.type === "tool/result") {
         emit("provider_activity", { kind: "tool_completed", summary: "tool completed" });
