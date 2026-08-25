@@ -98,6 +98,80 @@ const sourcePaths = execFileSync(
   .trim()
   .split("\n")
   .filter((path) => path.endsWith(".rs") && path !== contractPath);
+
+const daemonRootPath = "crates/firm-cli/src/supervisor_daemon.rs";
+const machineAuthorityPath =
+  "crates/firm-cli/src/supervisor_daemon/machine_authority.rs";
+const teamSupervisionPath =
+  "crates/firm-cli/src/supervisor_daemon/team_supervision.rs";
+const daemonRoot = read(daemonRootPath);
+for (const moduleName of [
+  "control_protocol",
+  "machine_authority",
+  "recovery",
+  "shutdown",
+  "team_supervision",
+]) {
+  if (!daemonRoot.includes(`mod ${moduleName};`)) {
+    failures.push(
+      `${daemonRootPath}: missing NodeDaemon responsibility module ${moduleName}`,
+    );
+  }
+}
+
+const daemonProductionPaths = sourcePaths.filter(
+  (path) =>
+    path === daemonRootPath ||
+    (path.startsWith("crates/firm-cli/src/supervisor_daemon/") &&
+      !path.endsWith("/tests.rs")),
+);
+const authorityWriterTokens = [
+  ".acquire_node_daemon_lease(",
+  ".renew_node_daemon_lease(",
+  ".drain_node_daemon_lease(",
+  ".release_node_daemon_lease(",
+];
+for (const path of daemonProductionPaths) {
+  const content = read(path);
+  for (const token of authorityWriterTokens) {
+    if (path !== machineAuthorityPath && content.includes(token)) {
+      failures.push(
+        `${path}: NodeDaemon machine authority writer escaped ${machineAuthorityPath}: ${token}`,
+      );
+    }
+  }
+}
+const machineAuthority = read(machineAuthorityPath);
+for (const token of authorityWriterTokens) {
+  if (!machineAuthority.includes(token)) {
+    failures.push(`${machineAuthorityPath}: missing authority operation ${token}`);
+  }
+}
+
+const teamLifecycleTokens = [
+  "fn scan_and_adopt(",
+  "fn start_supervising(",
+  "TeamSupervisorRegistration::start(",
+  "drive_prepared_team_run(",
+  "fn reap_finished(",
+];
+for (const path of daemonProductionPaths) {
+  const content = read(path);
+  for (const token of teamLifecycleTokens) {
+    if (path !== teamSupervisionPath && content.includes(token)) {
+      failures.push(
+        `${path}: Team supervisor lifecycle escaped ${teamSupervisionPath}: ${token}`,
+      );
+    }
+  }
+}
+const teamSupervision = read(teamSupervisionPath);
+for (const token of teamLifecycleTokens) {
+  if (!teamSupervision.includes(token)) {
+    failures.push(`${teamSupervisionPath}: missing lifecycle operation ${token}`);
+  }
+}
+
 const forbiddenRenderedCommands = [
   "member message send --recipient-agent-id <stable-agent-identity>",
   "member message send --response-required --recipient-agent-id",
