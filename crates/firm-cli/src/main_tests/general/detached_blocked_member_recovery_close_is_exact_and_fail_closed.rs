@@ -3,6 +3,7 @@ use super::*;
 #[test]
 fn detached_blocked_member_recovery_close_is_exact_and_fail_closed() {
     use harness_core::agentfirm_api::{AgentSessionStatus, RuntimeActivity, RuntimeResidency};
+    use harness_core::CurrentWorkDraft;
 
     let (store, root) = temp_store("detached-blocked-member-recovery-close");
     let created = create_two_member_team_run(&store);
@@ -53,6 +54,47 @@ fn detached_blocked_member_recovery_close_is_exact_and_fail_closed() {
         lease.generation,
         Arc::new(AtomicBool::new(true)),
     );
+    let make_received_work = |id: &str, at: &str| {
+        let mut draft = CurrentWorkDraft::new(
+            id.into(),
+            created.team_run.id.clone(),
+            created.team_run.agent_team_id.clone(),
+            format!("stale recovery Work {id}"),
+            "Exercise explicit Host reconciliation before detached recovery".into(),
+            "Host cancellation preserves provider receipt evidence".into(),
+            WorkClaimMode::HostAssign,
+            WorkPriority::Normal,
+            compatibility_team_actor("host", "test"),
+            at.into(),
+        );
+        draft.owner_member_id = Some(bound.agent_member_id.clone());
+        draft.active_member_run_id = Some(bound.id.clone());
+        draft.eligible_member_ids = vec![bound.agent_member_id.clone()];
+        let work = store
+            .insert_work(
+                draft.into_work(),
+                WorkCommandContext {
+                    event_id: format!("{id}-created"),
+                    performed_by_actor: compatibility_team_actor("host", "test"),
+                    authority_actor: None,
+                    causation_ref: None,
+                    idempotency_key: format!("{id}-create"),
+                    created_at: at.into(),
+                    duplicate_ok: false,
+                },
+            )
+            .expect("create recovery Work");
+        let claimed = claim_canonical_work_for_member(&ledger, &bound)
+            .expect("claim recovery Work")
+            .expect("one recovery Work claim");
+        assert_eq!(claimed.work.id, work.id);
+        ledger
+            .complete_work_delivery(&claimed, &format!("receipt-{id}"))
+            .expect("record provider receipt");
+        work
+    };
+    let stale_work_a = make_received_work("recovery-stale-a", "unix-ms:recovery-work-a");
+    let stale_work_b = make_received_work("recovery-stale-b", "unix-ms:recovery-work-b");
     transition_provider_session_for_member(&ledger, &bound, AgentSessionStatus::Idle)
         .expect("idle session");
     transition_provider_session_runtime_control(
@@ -139,6 +181,67 @@ fn detached_blocked_member_recovery_close_is_exact_and_fail_closed() {
     ledger
         .save_member_run(&blocked, &probation_blocked)
         .expect("seed a nonzero probation continuation streak");
+
+    let multiple = close_detached_blocked_member_for_recovery(
+        &store,
+        &run.id,
+        &probation_blocked,
+        &lease,
+        "host",
+        "multiple received Works require Host reconciliation",
+    )
+    .expect_err("multiple provider-received active Work revisions must fence recovery Close");
+    assert!(multiple
+        .to_string()
+        .contains("multiple provider-received active Work revisions"));
+    let deliveries_before_cancel = store
+        .fabric_work_deliveries(&lease.execution_space_id)
+        .expect("provider-received evidence before Host reconciliation");
+    let bindings_before_cancel = store
+        .fabric_work_execution_bindings(&lease.execution_space_id)
+        .expect("execution bindings before Host reconciliation");
+    let commands_before_cancel = store
+        .runtime_commands(&lease.execution_space_id)
+        .expect("RuntimeCommands before Host reconciliation");
+    for (index, work) in [stale_work_a, stale_work_b].into_iter().enumerate() {
+        store
+            .cancel_work(
+                &work.id,
+                work.version,
+                "obsolete after detached provider recovery",
+                WorkCommandContext {
+                    event_id: format!("recovery-stale-cancel-{index}"),
+                    performed_by_actor: compatibility_team_actor("host", "test"),
+                    authority_actor: None,
+                    causation_ref: None,
+                    idempotency_key: format!("recovery-stale-cancel-{index}"),
+                    created_at: format!("unix-ms:recovery-cancel-{index}"),
+                    duplicate_ok: false,
+                },
+            )
+            .expect("Host reconciles one provider-received Work");
+    }
+    assert_eq!(
+        store
+            .fabric_work_deliveries(&lease.execution_space_id)
+            .expect("provider receipts after Host reconciliation"),
+        deliveries_before_cancel,
+        "Host reconciliation must preserve delivery evidence"
+    );
+    assert_eq!(
+        store
+            .fabric_work_execution_bindings(&lease.execution_space_id)
+            .expect("bindings after Host reconciliation"),
+        bindings_before_cancel,
+        "Host reconciliation must not fabricate binding release"
+    );
+    assert_eq!(
+        store
+            .runtime_commands(&lease.execution_space_id)
+            .expect("RuntimeCommands after Host reconciliation"),
+        commands_before_cancel,
+        "Host reconciliation must not issue a provider effect"
+    );
 
     let recovered = close_detached_blocked_member_for_recovery(
         &store,

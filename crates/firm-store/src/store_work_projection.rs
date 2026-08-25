@@ -267,6 +267,26 @@ impl HarnessStore {
         Ok(())
     }
 
+    /// Host cancellation is a responsibility-plane decision. A durable
+    /// provider receipt is therefore preserved as evidence instead of
+    /// blocking cancellation, while an unsettled claim remains uncertain and
+    /// must fail closed.
+    pub(super) fn ensure_no_claimed_delivery_unlocked(&self, work: &Work) -> StoreResult<()> {
+        if self
+            .canonical_work_deliveries_for_work_unlocked(work)?
+            .iter()
+            .any(|delivery| {
+                delivery.work_revision == work.version
+                    && delivery.status == WorkDeliveryStatus::Claimed
+            })
+        {
+            return Err(StoreError::Conflict(
+                "RECONCILIATION_REQUIRED: Work delivery claim is unsettled".to_string(),
+            ));
+        }
+        Ok(())
+    }
+
     /// Return an exact idempotent retry, while rejecting accidental reuse of
     /// the same key for a different Work or command. A bare key is not enough
     /// to identify an operation safely: without this fingerprint a retry of
