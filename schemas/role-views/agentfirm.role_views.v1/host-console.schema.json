@@ -73,6 +73,11 @@
                 "required": [
                   "agent_member_id",
                   "member_run_id",
+                  "provider",
+                  "runtime_generation",
+                  "agent_session_id",
+                  "native_session_ref",
+                  "effective_permission_ceiling",
                   "mode",
                   "delivery_guarantee",
                   "runtime_residency",
@@ -84,6 +89,27 @@
                   "agent_member_id": { "type": "string" },
                   "member_run_id": {
                     "type": ["string", "null"]
+                  },
+                  "provider": { "type": "string", "minLength": 1 },
+                  "runtime_generation": { "type": "integer", "minimum": 1 },
+                  "agent_session_id": { "type": ["string", "null"] },
+                  "native_session_ref": {
+                    "anyOf": [
+                      {
+                        "type": "object",
+                        "additionalProperties": true,
+                        "required": ["provider", "execution_mode", "native_session_id"],
+                        "properties": {
+                          "provider": { "type": "string", "minLength": 1 },
+                          "execution_mode": { "type": "string", "minLength": 1 },
+                          "native_session_id": { "type": "string", "minLength": 1 }
+                        }
+                      },
+                      { "type": "null" }
+                    ]
+                  },
+                  "effective_permission_ceiling": {
+                    "enum": ["read_only", "workspace_write", "full_access", null]
                   },
                   "mode": {
                     "enum": ["managed", "external_interactive"]

@@ -14,6 +14,11 @@
     "host_runtime": {
       "agent_member_id": "host-1",
       "member_run_id": "host-member-run-1",
+      "provider": "codex",
+      "runtime_generation": 1,
+      "agent_session_id": "agent-session-host-1",
+      "native_session_ref": null,
+      "effective_permission_ceiling": "full_access",
       "mode": "managed",
       "delivery_guarantee": "daemon_managed",
       "runtime_residency": "managed_member_run",
