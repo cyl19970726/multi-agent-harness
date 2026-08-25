@@ -185,7 +185,7 @@ impl HttpExchange<'_> {
                     LiveProviderActivityUpdate::Updated {
                         provider,
                         kind,
-                        display_summary,
+                        native_event,
                         ..
                     } => {
                         if run.status != TeamRunStatus::Running {
@@ -212,17 +212,11 @@ impl HttpExchange<'_> {
                                     .to_string(),
                             ));
                         }
-                        let display_summary = sanitize_live_member_preview(&display_summary)
-                            .ok_or_else(|| {
-                                CliError::Usage(
-                                    "live provider activity summary must not be empty".to_string(),
-                                )
-                            })?;
                         let activity = provider_event_api::record_live(
                             scope.clone(),
                             &member.provider,
                             kind,
-                            display_summary,
+                            native_event,
                         );
                         provider_event_api::updated_live_event(&scope, activity)
                     }

@@ -38,7 +38,7 @@ fn node_authority_heartbeat_is_independent_of_a_long_discovery_scan() {
 }
 
 #[test]
-fn private_live_sink_rejects_forged_and_stale_registration_then_replaces_exact_successor() {
+fn machine_local_live_sink_rejects_invalid_and_stale_registration_then_replaces_successor() {
     let tree = TestTree::new("private-live-sink");
     let daemon = MultiTeamDaemon {
         firm_home: tree.0.clone(),
@@ -58,29 +58,12 @@ fn private_live_sink_rejects_forged_and_stale_registration_then_replaces_exact_s
         recovery_blocked_runs: Mutex::new(HashSet::new()),
         lease_ttl_override_ms: None,
     };
-    let owner = crate::AgentFirmHttpCredential {
-        token: "owner-browser-capability".into(),
-        actor: harness_core::agentfirm_api::ActorRef {
-            kind: harness_core::agentfirm_api::ActorKind::AgentMember,
-            id: "member-owner".into(),
-        },
-        authority_actors: Vec::new(),
-    };
-    let attacker = crate::AgentFirmHttpCredential {
-        token: "attacker-browser-capability".into(),
-        actor: harness_core::agentfirm_api::ActorRef {
-            kind: harness_core::agentfirm_api::ActorKind::AgentMember,
-            id: "member-attacker".into(),
-        },
-        authority_actors: Vec::new(),
-    };
     let first_token = "a".repeat(32);
     let first_instance = "b".repeat(32);
     assert!(!daemon.install_live_provider_activity_endpoint(
-        "127.0.0.1:19001",
+        "198.51.100.1:19001",
         &first_token,
         "member-owner",
-        Some(&attacker),
         "daemon-instance-current",
         &first_instance,
     ));
@@ -88,7 +71,6 @@ fn private_live_sink_rejects_forged_and_stale_registration_then_replaces_exact_s
         "127.0.0.1:19001",
         &first_token,
         "member-owner",
-        Some(&owner),
         "daemon-instance-stale",
         &first_instance,
     ));
@@ -102,7 +84,6 @@ fn private_live_sink_rejects_forged_and_stale_registration_then_replaces_exact_s
         "127.0.0.1:19001",
         &first_token,
         "member-owner",
-        Some(&owner),
         "daemon-instance-current",
         &first_instance,
     ));
@@ -112,7 +93,6 @@ fn private_live_sink_rejects_forged_and_stale_registration_then_replaces_exact_s
         "127.0.0.1:19002",
         &successor_token,
         "member-owner",
-        Some(&owner),
         "daemon-instance-current",
         &successor_instance,
     ));

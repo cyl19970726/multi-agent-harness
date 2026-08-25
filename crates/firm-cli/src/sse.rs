@@ -70,13 +70,12 @@ pub struct ProjectionInvalidation {
 #[derive(Clone)]
 struct SseClient {
     company_scope_id: Option<String>,
-    /// Exact authenticated AgentIdentity eligible to receive its own private
-    /// process-memory provider overlay. Team Host authority is intentionally
-    /// not represented here and cannot widen this identity.
-    private_agent_member_id: Option<String>,
+    /// Exact selected AgentMember whose process-memory provider overlay this
+    /// already-authorized Team/local stream receives.
+    selected_agent_member_id: Option<String>,
     /// Project Binding is independent from the Execution Space channel key.
-    /// A private overlay must match both axes before delivery.
-    private_project_binding_id: Option<String>,
+    /// A Team Session overlay must match both axes before delivery.
+    selected_project_binding_id: Option<String>,
     sender: Sender<SseEventFrame>,
 }
 
@@ -119,15 +118,15 @@ impl SseManager {
         execution_space_id: &str,
         company_scope_id: Option<&str>,
     ) -> Receiver<SseEventFrame> {
-        self.subscribe_scoped_private(execution_space_id, company_scope_id, None, None)
+        self.subscribe_scoped_agent_session(execution_space_id, company_scope_id, None, None)
     }
 
-    pub fn subscribe_scoped_private(
+    pub fn subscribe_scoped_agent_session(
         &self,
         execution_space_id: &str,
         company_scope_id: Option<&str>,
-        private_agent_member_id: Option<&str>,
-        private_project_binding_id: Option<&str>,
+        selected_agent_member_id: Option<&str>,
+        selected_project_binding_id: Option<&str>,
     ) -> Receiver<SseEventFrame> {
         let (tx, rx) = bounded(100); // Buffered channel
         let mut clients = self.clients.lock().unwrap();
@@ -136,8 +135,8 @@ impl SseManager {
             .or_default()
             .push(SseClient {
                 company_scope_id: company_scope_id.map(str::to_string),
-                private_agent_member_id: private_agent_member_id.map(str::to_string),
-                private_project_binding_id: private_project_binding_id.map(str::to_string),
+                selected_agent_member_id: selected_agent_member_id.map(str::to_string),
+                selected_project_binding_id: selected_project_binding_id.map(str::to_string),
                 sender: tx,
             });
         rx
@@ -224,8 +223,8 @@ impl SseManager {
         let mut clients = self.clients.lock().unwrap();
         if let Some(subscribers) = clients.get_mut(execution_space_id) {
             subscribers.retain(|client| {
-                if client.private_agent_member_id.as_deref() == Some(owner_agent_member_id)
-                    && client.private_project_binding_id.as_deref() == Some(project_binding_id)
+                if client.selected_agent_member_id.as_deref() == Some(owner_agent_member_id)
+                    && client.selected_project_binding_id.as_deref() == Some(project_binding_id)
                 {
                     client.sender.try_send(frame.clone()).is_ok()
                 } else {

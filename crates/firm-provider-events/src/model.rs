@@ -28,6 +28,7 @@ impl ProviderKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SemanticKind {
+    NativeEvent,
     AuthoredResponse,
     ReasoningSummary,
     ToolCallRequested,
@@ -80,7 +81,7 @@ pub enum EffectCertainty {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ObservationVisibility {
-    SessionOwnerPrivate,
+    TeamSession,
     TeamPublic,
     OperatorOnly,
 }
@@ -88,6 +89,10 @@ pub enum ObservationVisibility {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ObservationPayload {
+    Native {
+        #[serde(default)]
+        event_type: Option<String>,
+    },
     AuthoredResponse {
         text: String,
     },
@@ -178,6 +183,9 @@ pub struct ProviderObservation {
     pub visibility: ObservationVisibility,
     pub redacted: bool,
     pub truncated: bool,
+    /// Exact provider-native row, preserved response-locally for the local
+    /// Session viewer. Harness never writes this value to a durable Store.
+    pub native_event: serde_json::Value,
     /// Fingerprint of the provider-native content used for response-local
     /// dedupe. It is not a Harness Evidence reference.
     pub source_content_fingerprint: String,
@@ -233,47 +241,58 @@ impl ProviderObservation {
         }
         let payload_matches = matches!(
             (self.semantic_kind, &self.payload),
-            (
-                SemanticKind::AuthoredResponse,
-                ObservationPayload::AuthoredResponse { .. }
-            ) | (
-                SemanticKind::ReasoningSummary,
-                ObservationPayload::ReasoningSummary { .. }
-            ) | (
-                SemanticKind::ToolCallRequested
-                    | SemanticKind::ToolCallStarted
-                    | SemanticKind::ToolCallCompleted
-                    | SemanticKind::ToolCallFailed,
-                ObservationPayload::Tool { .. }
-            ) | (
-                SemanticKind::ArtifactCreated,
-                ObservationPayload::Artifact { .. }
-            ) | (
-                SemanticKind::UsageReported,
-                ObservationPayload::Usage { .. }
-            ) | (
-                SemanticKind::InteractionRequired | SemanticKind::InteractionResolved,
-                ObservationPayload::Interaction { .. }
-            ) | (
-                SemanticKind::RuntimeStarted
-                    | SemanticKind::RuntimeReady
-                    | SemanticKind::RuntimeStopped,
-                ObservationPayload::Runtime { .. }
-            ) | (
-                SemanticKind::TransportInterrupted,
-                ObservationPayload::Transport { .. }
-            ) | (
-                SemanticKind::TurnCompleted
-                    | SemanticKind::TurnFailed
-                    | SemanticKind::TurnCancelled,
-                ObservationPayload::Turn { .. }
-            ) | (
-                SemanticKind::CommandRecoveryRequired,
-                ObservationPayload::Recovery { .. }
-            ) | (
-                SemanticKind::MalformedOrIncomplete,
-                ObservationPayload::Malformed { .. }
-            )
+            (SemanticKind::NativeEvent, ObservationPayload::Native { .. })
+                | (
+                    SemanticKind::AuthoredResponse,
+                    ObservationPayload::AuthoredResponse { .. }
+                )
+                | (
+                    SemanticKind::ReasoningSummary,
+                    ObservationPayload::ReasoningSummary { .. }
+                )
+                | (
+                    SemanticKind::ToolCallRequested
+                        | SemanticKind::ToolCallStarted
+                        | SemanticKind::ToolCallCompleted
+                        | SemanticKind::ToolCallFailed,
+                    ObservationPayload::Tool { .. }
+                )
+                | (
+                    SemanticKind::ArtifactCreated,
+                    ObservationPayload::Artifact { .. }
+                )
+                | (
+                    SemanticKind::UsageReported,
+                    ObservationPayload::Usage { .. }
+                )
+                | (
+                    SemanticKind::InteractionRequired | SemanticKind::InteractionResolved,
+                    ObservationPayload::Interaction { .. }
+                )
+                | (
+                    SemanticKind::RuntimeStarted
+                        | SemanticKind::RuntimeReady
+                        | SemanticKind::RuntimeStopped,
+                    ObservationPayload::Runtime { .. }
+                )
+                | (
+                    SemanticKind::TransportInterrupted,
+                    ObservationPayload::Transport { .. }
+                )
+                | (
+                    SemanticKind::TurnCompleted
+                        | SemanticKind::TurnFailed
+                        | SemanticKind::TurnCancelled,
+                    ObservationPayload::Turn { .. }
+                )
+                | (
+                    SemanticKind::CommandRecoveryRequired,
+                    ObservationPayload::Recovery { .. }
+                )
+                | (
+                    SemanticKind::MalformedOrIncomplete,
+                    ObservationPayload::Malformed { .. }
+                )
         );
         if !payload_matches {
             return Err(ObservationValidationError::PayloadMismatch);

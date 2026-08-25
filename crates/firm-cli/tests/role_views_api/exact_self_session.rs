@@ -24,7 +24,7 @@ fn exact_self_session_projection_follows_fresh_start_settle_sync() {
         )),
         format!(
             "{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"{settled_native_session_id}\"}}}}\n\
-             {{\"type\":\"event_msg\",\"payload\":{{\"type\":\"agent_reasoning\",\"turn_id\":\"turn-settle-1\",\"text\":\"raw-chain-of-thought-must-not-appear\"}}}}\n\
+             {{\"type\":\"event_msg\",\"payload\":{{\"type\":\"agent_reasoning\",\"turn_id\":\"turn-settle-1\",\"text\":\"raw-provider-reasoning-is-preserved\"}}}}\n\
              {{\"type\":\"event_msg\",\"payload\":{{\"type\":\"agent_message\",\"turn_id\":\"turn-settle-1\",\"message\":\"display-safe settled result\"}}}}\n\
              {{\"type\":\"event_msg\",\"payload\":{{\"type\":\"task_complete\",\"turn_id\":\"turn-settle-1\"}}}}\n"
         ),
@@ -199,8 +199,11 @@ fn exact_self_session_projection_follows_fresh_start_settle_sync() {
     );
     assert!(live_work.status.success(), "live Work: {live_work:?}");
     let mut member_sse = serve.open_sse_with_token(
-        &format!("?space={space_id}&project={project_id}"),
-        Some(MEMBER_TOKEN),
+        &format!(
+            "?space={space_id}&project={project_id}&team_id={}&agent_id={worker_id}",
+            team.id
+        ),
+        None,
     );
     member_sse
         .get_mut()
@@ -257,7 +260,7 @@ fn exact_self_session_projection_follows_fresh_start_settle_sync() {
         "provider terminal did not clear the volatile overlay: {private_live:?}"
     );
     let serialized_live = serde_json::to_string(&private_live).expect("private SSE JSON");
-    assert!(!serialized_live.contains("cargo check"));
+    assert!(serialized_live.contains("cargo check"));
     assert!(!serialized_live.contains("hidden"));
 
     let mut settled = false;
@@ -360,18 +363,21 @@ fn exact_self_session_projection_follows_fresh_start_settle_sync() {
     assert!(owner_projection["source_snapshot_fingerprint"]
         .as_str()
         .is_some_and(|fingerprint| fingerprint.starts_with("sha256:")));
-    assert_eq!(
-        owner_projection["episodes"][0]["provider_turn_id"],
-        "turn-settle-1"
-    );
-    assert_eq!(owner_projection["episodes"][0]["terminal"], true);
+    let settled_episode = owner_projection["episodes"]
+        .as_array()
+        .and_then(|episodes| {
+            episodes
+                .iter()
+                .find(|episode| episode["provider_turn_id"] == "turn-settle-1")
+        })
+        .expect("settled provider turn episode");
+    assert_eq!(settled_episode["terminal"], true);
     let serialized_owner_projection =
         serde_json::to_string(owner_projection).expect("projection JSON");
     assert!(serialized_owner_projection.contains("display-safe settled result"));
-    assert!(!serialized_owner_projection.contains("raw-chain-of-thought-must-not-appear"));
+    assert!(serialized_owner_projection.contains("raw-provider-reasoning-is-preserved"));
 
-    // The Host-selected surface stays public: the private projection is
-    // structurally absent even though the binding now exists.
+    // The exact Host reads the selected Team Member's complete native Session.
     let (status, host_selected_member) = serve.get_json_with_headers(
         &member_agent_workspace_route,
         &[("X-AgentFirm-Token", TOKEN)],
@@ -382,13 +388,38 @@ fn exact_self_session_projection_follows_fresh_start_settle_sync() {
     );
     assert_eq!(
         host_selected_member["data"]["projection_scope"],
-        "host_member_public"
+        "team_session_read"
     );
     assert!(
         host_selected_member["data"]
             .get("session_event_projection")
-            .is_none(),
-        "Host-selected Member must structurally omit the private Session projection"
+            .is_some(),
+        "Host-selected Member must include the Team Session projection"
+    );
+
+    // Any other exact Member of the same Team may inspect the selected native
+    // Session, but does not borrow the selected Member's mutation authority.
+    let (status, sibling_selected_member) = serve.get_json_with_headers(
+        &member_agent_workspace_route,
+        &[("X-AgentFirm-Token", SIBLING_MEMBER_TOKEN)],
+    );
+    assert_eq!(
+        status, 200,
+        "Team sibling-selected Member AgentWorkspace: {sibling_selected_member}"
+    );
+    assert_eq!(
+        sibling_selected_member["data"]["projection_scope"],
+        "team_session_read"
+    );
+    assert!(
+        serde_json::to_string(&sibling_selected_member["data"]["session_event_projection"])
+            .expect("sibling projection JSON")
+            .contains("raw-provider-reasoning-is-preserved")
+    );
+    assert_eq!(
+        sibling_selected_member["allowed_actions"],
+        serde_json::json!([]),
+        "Team sibling must not borrow the selected Member's actions"
     );
 
     // The same active MemberRun is readable from the loopback Dashboard
@@ -400,7 +431,7 @@ fn exact_self_session_projection_follows_fresh_start_settle_sync() {
     );
     assert_eq!(
         local_operator_member["data"]["projection_scope"],
-        "host_member_public"
+        "team_session_read"
     );
     assert_eq!(
         local_operator_member["allowed_actions"],

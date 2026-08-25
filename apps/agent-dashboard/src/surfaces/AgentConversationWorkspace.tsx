@@ -1,6 +1,7 @@
 import * as ScrollArea from "@radix-ui/react-scroll-area";
 import * as Tabs from "@radix-ui/react-tabs";
 import * as Tooltip from "@radix-ui/react-tooltip";
+import { useVirtualizer } from "@tanstack/react-virtual";
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import {
   Activity, ArrowLeft, ChevronDown, ChevronRight,
@@ -32,6 +33,7 @@ import {
   type LiveProviderActivityEvent,
   type MessageSummary,
   type ProviderObservation,
+  type SessionEventProjection,
   type RoleActionExecutor,
   type RoleView,
   type WorkSummary,
@@ -58,6 +60,7 @@ export function AgentConversationWorkspace({
   const [viewRequestPath,setViewRequestPath]=useState<string|null>(null);
   const [error,setError]=useState<string|null>(null);
   const [loading,setLoading]=useState(true);
+  const [loadingOlder,setLoadingOlder]=useState(false);
   const [refresh,setRefresh]=useState(0);
   const [contextSelection,setContextSelection]=useState<ContextSelection>(null);
   const [profileOpen,setProfileOpen]=useState(false);
@@ -112,9 +115,11 @@ export function AgentConversationWorkspace({
   },[mode,selection.teamConversation]);
 
   const currentView=viewRequestPath===requestPath?view:null;
-  const privateData=currentView?.data.projection_scope!=="host_member_public"?currentView?.data??null:null;
-  const liveProviderStream=useAuthenticatedLiveProviderActivity({
+  const privateData=currentView?.data??null;
+  const liveProviderStream=useTeamSessionLiveActivity({
     apiUrl,space,project,company,
+    teamId:privateData?.team.team_id??null,
+    agentId:privateData?.selected_agent.agent_member_ref.id??null,
     teamRunId:privateData?.team.latest_run_id??null,
     memberRunId:privateData?.selected_agent.current_member_run_ref??null,
     memberRunGeneration:privateData?.selected_agent.runtime_generation??null,
@@ -129,13 +134,23 @@ export function AgentConversationWorkspace({
   // snapshot domains used by the surrounding dashboard shell.
   const actionsCurrent=currentView.freshness==="current" && !loading && !error;
   const selected=data.selected_agent;
-  const publicProjection=data.projection_scope==="host_member_public";
   const selectedRunId=selected.current_member_run_ref;
-  const sessionProjection=publicProjection?null:data.session_event_projection??null;
-  const currentSession=publicProjection?null:data.current_session??null;
+  const sessionProjection=data.session_event_projection??null;
+  const currentSession=data.current_session??null;
   const visibleSessionId=currentSession?.agent_session_id??sessionProjection?.agent_session_id??null;
   const visibleSessionGeneration=currentSession?.agent_session_generation??sessionProjection?.agent_session_generation??null;
   const currentLiveActivity=selectAgentWorkspaceLiveActivity({activity:liveProviderStream.activity,projectionScope:data.projection_scope,executionSpaceId:space,projectId:project,teamRunId:data.team.latest_run_id,memberRunId:selectedRunId,memberRunGeneration:selected.runtime_generation,sessionId:currentSession?.agent_session_id??sessionProjection?.agent_session_id??null,sessionGeneration:currentSession?.agent_session_generation??sessionProjection?.agent_session_generation??null});
+  const loadOlderSessionEvents=async()=>{
+    if(loadingOlder||!sessionProjection?.page.has_more||sessionProjection.page.next_before_position==null)return;
+    setLoadingOlder(true);
+    try{
+      const olderQuery=new URLSearchParams(requestQuery);
+      olderQuery.set("session_before",String(sessionProjection.page.next_before_position));
+      const olderPath=`/v1/views/agent-workspace/${encodeURIComponent(routeIdentity)}?${olderQuery.toString()}`;
+      const older=await fetchRoleView<AgentWorkspaceData>(apiUrl,olderPath,{space,project,company});
+      setView(current=>mergeAgentWorkspaceViews(current,older));
+    }catch(reason){setError(String(reason));}finally{setLoadingOlder(false);}
+  };
   const currentWork=data.works.find(work=>work.work_id===(contextSelection?.kind==="work"?contextSelection.work.work_id:data.context_summary.current_work_id));
   const selectAgent=(agent:AgentWorkspaceRosterItem)=>{
     onSelectionChange({
@@ -164,10 +179,10 @@ export function AgentConversationWorkspace({
               <Avatar name={selected.display_name} identity={`${selected.agent_member_ref.id} ${selected.role}`} size="lg" tone={selected.runtime_status==="running"?"running":selected.runtime_status==="idle"?"good":"idle"}/>
               <span className="min-w-0">
                 <span className="flex min-w-0 items-center gap-2"><span className="truncate text-[1.28rem] font-semibold leading-tight tracking-[-0.025em] text-foreground">{selected.display_name}</span><span className="aw-header-role-badge">{humanizeToken(selected.role)}</span><ChevronRight className="size-3.5 text-muted-foreground transition-transform group-hover:translate-x-0.5"/></span>
-                <span className="mt-1.5 flex min-w-0 flex-wrap items-center gap-1.5">{publicProjection?<span className="aw-header-chip">Public coordination view</span>:<><span className="aw-header-chip">{currentSession?.provider ? humanizeToken(currentSession.provider) : selected.provider ? humanizeToken(selected.provider) : "No active provider Session"}</span>{selected.is_host&&selected.host_session_mode==="external_interactive"&&<span className="aw-header-chip">External · unmanaged</span>}{currentSession&&<span className="aw-header-chip">{humanizeToken(currentSession.effective_permission_ceiling)}</span>}{selected.current_member_run_ref&&<span className="aw-header-chip">{selected.current_member_run_ref}</span>}<span className="aw-header-chip">{visibleSessionId&&visibleSessionGeneration!==null ? `Session ${shortId(visibleSessionId)} · gen ${visibleSessionGeneration}` : "Native Session unavailable"}</span></>}</span>
+                <span className="mt-1.5 flex min-w-0 flex-wrap items-center gap-1.5"><span className="aw-header-chip">{currentSession?.provider ? humanizeToken(currentSession.provider) : selected.provider ? humanizeToken(selected.provider) : "No active provider Session"}</span>{selected.is_host&&selected.host_session_mode==="external_interactive"&&<span className="aw-header-chip">External · unmanaged</span>}{currentSession&&<span className="aw-header-chip">{humanizeToken(currentSession.effective_permission_ceiling)}</span>}{selected.current_member_run_ref&&<span className="aw-header-chip">{selected.current_member_run_ref}</span>}<span className="aw-header-chip">{visibleSessionId&&visibleSessionGeneration!==null ? `Session ${shortId(visibleSessionId)} · gen ${visibleSessionGeneration}` : "Native Session unavailable"}</span></span>
               </span>
             </button>
-            {!publicProjection&&<div className="hidden items-center gap-1 md:flex">{currentSession?.native_session_open_target&&<Button asChild size="sm" variant="outline"><a href={currentSession.native_session_open_target.uri} title={`Open exact ${humanizeToken(currentSession.provider)} native Session`}>Open native chat</a></Button>}<Button size="icon" variant="ghost" className="text-muted-foreground" aria-label="Agent Session details" title="Agent Session details" onClick={()=>setProfileOpen(true)}><Info className="size-4"/></Button><Button size="icon" variant="ghost" className="text-muted-foreground" aria-label="Agent Session history" title="Provider-native history"><History className="size-4"/></Button></div>}
+            <div className="hidden items-center gap-1 md:flex">{currentSession?.native_session_open_target&&<Button asChild size="sm" variant="outline"><a href={currentSession.native_session_open_target.uri} title={`Open exact ${humanizeToken(currentSession.provider)} native Session`}>Open native chat</a></Button>}<Button size="icon" variant="ghost" className="text-muted-foreground" aria-label="Agent Session details" title="Agent Session details" onClick={()=>setProfileOpen(true)}><Info className="size-4"/></Button><Button size="icon" variant="ghost" className="text-muted-foreground" aria-label="Agent Session history" title="Provider-native history"><History className="size-4"/></Button></div>
             <Button size="icon" variant="secondary" className="lg:hidden" onClick={()=>setRosterOpen(true)} aria-label="Open Agent roster"><Users className="size-4"/></Button>
             <Button size="icon" variant="secondary" className="lg:hidden" onClick={()=>setContextOpen(true)} aria-label="Open Agent context"><PanelRight className="size-4"/></Button>
           </header>
@@ -180,9 +195,9 @@ export function AgentConversationWorkspace({
                 <WorkspaceTab value="messages" label="Messages" count={data.context_summary.unread_count}/>
                 <WorkspaceTab value="work" label="Work" count={data.works.length}/>
               </Tabs.List>
-              <div className="ml-auto flex h-full items-center gap-3 text-[10px] text-muted-foreground"><span className="flex items-center gap-1.5"><ShieldCheck className="size-3.5"/>{publicProjection?"Public coordination only":selected.is_host?"Host-owned Session":sessionProjection?.agent_session_id?"Owner-bound Session":"Native Session unavailable"}</span></div>
+              <div className="ml-auto flex h-full items-center gap-3 text-[10px] text-muted-foreground"><span className="flex items-center gap-1.5"><ShieldCheck className="size-3.5"/>{sessionProjection?.agent_session_id?"Team-scoped native Session":"Native Session unavailable"}</span></div>
             </div>
-            <Tabs.Content value="session" className="min-h-0 flex-1 outline-none"><SessionCanvas data={data} liveActivity={currentLiveActivity} liveConnectionState={liveProviderStream.connectionState} selectedMessageId={contextSelection?.kind==="message"?contextSelection.message.message_id:null} onSelect={setContextSelection}/></Tabs.Content>
+            <Tabs.Content value="session" className="min-h-0 flex-1 outline-none"><SessionCanvas data={data} liveActivity={currentLiveActivity} liveConnectionState={liveProviderStream.connectionState} selectedMessageId={contextSelection?.kind==="message"?contextSelection.message.message_id:null} onSelect={setContextSelection} loadingOlder={loadingOlder} onLoadOlder={loadOlderSessionEvents}/></Tabs.Content>
             <Tabs.Content value="messages" className="min-h-0 flex-1 outline-none"><MessagesCanvas data={data} onSelect={setContextSelection}/></Tabs.Content>
             <Tabs.Content value="work" className="min-h-0 flex-1 outline-none"><WorkCanvas data={data} onSelect={(work)=>{setContextSelection({kind:"work",work});onSelectionChange({teamWorkId:work.work_id});}}/></Tabs.Content>
           </Tabs.Root>
@@ -223,51 +238,52 @@ function AgentRoster({data,selectedId,onBack,onSelect}:{data:AgentWorkspaceData;
 }
 
 type LiveProviderConnectionState="inactive"|"connecting"|"connected"|"disconnected";
-function SessionCanvas({data,liveActivity,liveConnectionState,selectedMessageId,onSelect}:{data:AgentWorkspaceData;liveActivity:LiveProviderActivity|null;liveConnectionState:LiveProviderConnectionState;selectedMessageId:string|null;onSelect:(next:ContextSelection)=>void}){
+function SessionCanvas({data,liveActivity,liveConnectionState,selectedMessageId,onSelect,loadingOlder,onLoadOlder}:{data:AgentWorkspaceData;liveActivity:LiveProviderActivity|null;liveConnectionState:LiveProviderConnectionState;selectedMessageId:string|null;onSelect:(next:ContextSelection)=>void;loadingOlder:boolean;onLoadOlder:()=>void}){
   const [selectedEventId,setSelectedEventId]=useState<string|null>(null);
-  const projection=data.projection_scope==="host_member_public"?null:data.session_event_projection??null;
-  const rows=useMemo(()=>[
-    ...data.messages.map(message=>({kind:"message" as const,at:message.created_at,message})),
-    ...(projection?.episodes.map(episode=>({kind:"episode" as const,at:episode.observations[0]?.occurred_at??episode.observations[0]?.observed_at??"",episode}))??[]),
-  ].sort((left,right)=>timestampKey(left.at)-timestampKey(right.at)),[data.messages,projection]);
-  const publicProjection=data.projection_scope==="host_member_public";
+  const viewportRef=useRef<HTMLDivElement>(null);
+  const chronologyRef=useRef<HTMLDivElement>(null);
+  const projection=data.session_event_projection??null;
+  const rows=useMemo(()=>{
+    const sorted=mergeSessionRows(
+      data.messages.map(message=>({kind:"message" as const,at:message.created_at,message,continuation:false})).sort((left,right)=>timestampKey(left.at)-timestampKey(right.at)),
+      (projection?.episodes.flatMap(episode=>episode.observations.map(event=>({kind:"native" as const,at:observationTime(event)??"",event,episode})))??[]).sort((left,right)=>left.event.ordering_position-right.event.ordering_position),
+    );
+    const seen=new Set<string>();
+    return sorted.map(row=>{
+      if(row.kind!=="message")return row;
+      const continuation=seen.has(row.message.correlation_id);seen.add(row.message.correlation_id);
+      return {...row,continuation};
+    });
+  },[data.messages,projection]);
+  const virtualizer=useVirtualizer({count:rows.length,getScrollElement:()=>viewportRef.current,estimateSize:index=>rows[index]?.kind==="native"?240:150,overscan:10,scrollMargin:chronologyRef.current?.offsetTop??0});
   const currentWork=data.works.find(work=>work.work_id===data.context_summary.current_work_id);
-  const seenConversations=new Set<string>();
-  return <ScrollArea.Root className="h-full overflow-hidden"><ScrollArea.Viewport className="size-full min-w-0 [&>div]:!block [&>div]:!min-w-0"><div className="agent-session-stream w-full px-5 pb-8 sm:px-7">
+  return <ScrollArea.Root className="h-full overflow-hidden"><ScrollArea.Viewport ref={viewportRef} className="size-full min-w-0 [&>div]:!block [&>div]:!min-w-0"><div className="agent-session-stream w-full px-5 pb-8 sm:px-7">
     <div className="aw-session-context-strip">
-      <span className="aw-session-context-strip__label">{publicProjection?<ShieldCheck aria-hidden="true"/>:<Sparkles aria-hidden="true"/>}{publicProjection?"Public coordination":"Messages + owner-bound Session"}</span>
-      <strong>{currentWork?.title??(publicProjection?"Authored Messages and Work facts":"Harness Messages and native Session activity")}</strong>
-      <span>{currentWork?`${humanizeToken(currentWork.phase)} Work · `:""}{data.messages.length} messages{publicProjection?"":` · ${projection?.episodes.length??0} native episodes`}{!publicProjection&&liveConnectionState==="disconnected"?" · live stream disconnected":""}</span>
+      <span className="aw-session-context-strip__label"><Sparkles aria-hidden="true"/>Messages + Team native Session</span>
+      <strong>{currentWork?.title??"Harness Messages and provider-native Session activity"}</strong>
+      <span>{currentWork?`${humanizeToken(currentWork.phase)} Work · `:""}{data.messages.length} messages · {projection?.episodes.reduce((count,episode)=>count+episode.observations.length,0)??0} native events{liveConnectionState==="disconnected"?" · live stream disconnected":""}</span>
     </div>
     {liveActivity&&<CurrentExecutionSlot activity={liveActivity}/>}
+    {projection?.page.has_more&&<div className="flex justify-center py-3"><Button type="button" variant="outline" size="sm" disabled={loadingOlder} onClick={onLoadOlder}>{loadingOlder?"Loading provider-native events…":"Load earlier native Session events"}</Button></div>}
     {rows.length
-      ? <div className="aw-session-chronology" aria-label="Harness Messages and owner-bound provider-native episodes ordered by recorded time">{rows.map(row=>{
+      ? <div ref={chronologyRef} className="aw-session-chronology relative" style={{height:virtualizer.getTotalSize()}} aria-label="Harness Messages and provider-native events ordered by recorded time">{virtualizer.getVirtualItems().map(item=>{const row=rows[item.index]!;return <div key={row.kind==="message"?`message:${row.message.message_id}`:`native:${row.event.observation_id}`} data-index={item.index} ref={virtualizer.measureElement} className="absolute left-0 top-0 w-full" style={{transform:`translateY(${item.start-virtualizer.options.scrollMargin}px)`}}>{(()=>{
         if(row.kind==="message"){
-          const continuation=seenConversations.has(row.message.correlation_id);
-          seenConversations.add(row.message.correlation_id);
-          return <AuthoredTurn key={`message:${row.message.message_id}`} data={data} message={row.message} selectedAgentId={data.selected_agent.agent_member_ref.id} selected={selectedMessageId===row.message.message_id} continuation={continuation} onSelect={()=>onSelect({kind:"message",message:row.message})}/>;
+          return <AuthoredTurn data={data} message={row.message} selectedAgentId={data.selected_agent.agent_member_ref.id} selected={selectedMessageId===row.message.message_id} continuation={row.continuation} onSelect={()=>onSelect({kind:"message",message:row.message})}/>;
         }
-        return <NativeEpisode key={row.episode.episode_id} episode={row.episode} actorName={data.selected_agent.display_name} selectedEventId={selectedEventId} onOpen={event=>{setSelectedEventId(event.observation_id);onSelect({kind:"event",event});}}/>;
-      })}</div>
-      : <EmptyCanvas compact title={projection?.availability==="unavailable"?"Provider-native Session unavailable":data.selected_agent.is_host?"No Host-owned Session events or public Messages yet":"No Session activity yet"} detail={projection?.disabled_reason??"Display-safe provider observations and public authored Messages will appear here when recorded."}/>
+        return <NativeEventRecord event={row.event} episodeTerminal={row.episode.terminal} actorName={data.selected_agent.display_name} selected={selectedEventId===row.event.observation_id} onOpen={()=>{setSelectedEventId(row.event.observation_id);onSelect({kind:"event",event:row.event});}}/>;
+      })()}</div>})}</div>
+      : <EmptyCanvas compact title={projection?.availability==="unavailable"?"Provider-native Session unavailable":data.selected_agent.is_host?"No Host Session events or Team Messages yet":"No Session activity yet"} detail={projection?.disabled_reason??"Original provider-native events and authored Team Messages will appear here when available."}/>
     }
-    {projection?.truncated&&<p className="mt-4 border-t border-border pt-3 text-[10px] text-muted-foreground">Showing the latest bounded provider-native observations.</p>}
+    {projection?.page.has_more&&<p className="mt-4 border-t border-border pt-3 text-[10px] text-muted-foreground">Earlier original provider events remain available on demand.</p>}
   </div></ScrollArea.Viewport><ScrollArea.Scrollbar orientation="vertical" className="flex w-2 p-0.5"><ScrollArea.Thumb className="rounded-full bg-border"/></ScrollArea.Scrollbar></ScrollArea.Root>;
 }
 
-function NativeEpisode({episode,actorName,selectedEventId,onOpen}:{episode:{episode_id:string;provider_turn_id:string|null;observations:ProviderObservation[];terminal:boolean;incomplete:boolean};actorName:string;selectedEventId:string|null;onOpen:(event:ProviderObservation)=>void}){
-  const authored=episode.observations.filter(event=>event.semantic_kind==="authored_response");
-  const facts=episode.observations.filter(event=>event.semantic_kind!=="authored_response");
-  return <section className="aw-provider-episode" data-terminal={episode.terminal||undefined} data-incomplete={episode.incomplete||undefined} aria-label={`Provider-native episode with ${episode.observations.length} observations`}>
-    {authored.map(event=><NativeAuthoredRecord key={event.observation_id} event={event} actorName={actorName} selected={selectedEventId===event.observation_id} onSelect={()=>onOpen(event)}/>)}
-    {facts.length>0&&<NativeFactsTrail events={facts} selectedEventId={selectedEventId} onOpen={onOpen}/>}
+function NativeEventRecord({event,episodeTerminal,actorName,selected,onOpen}:{event:ProviderObservation;episodeTerminal:boolean;actorName:string;selected:boolean;onOpen:()=>void}){
+  return <section className="aw-provider-episode" data-native-ordering-position={event.ordering_position} data-terminal={episodeTerminal||undefined} aria-label={`Provider-native ${humanizeToken(event.semantic_kind)} event`}>
+    {event.semantic_kind==="authored_response"
+      ? <NativeAuthoredRecord event={event} actorName={actorName} selected={selected} onSelect={onOpen}/>
+      : <div className="aw-native-facts-trail"><ExpandableEvent event={event} selected={selected} onSelect={onOpen}/></div>}
   </section>;
-}
-
-function NativeFactsTrail({events,selectedEventId,onOpen}:{events:ProviderObservation[];selectedEventId:string|null;onOpen:(event:ProviderObservation)=>void}){
-  return <div className="aw-native-facts-trail" aria-label={`${events.length} native ${events.length===1?"observation":"observations"}`}>
-    {events.map(event=><ExpandableEvent key={event.observation_id} event={event} selected={selectedEventId===event.observation_id} onSelect={()=>onOpen(event)}/>)}
-  </div>;
 }
 
 function CurrentExecutionSlot({activity}:{activity:LiveProviderActivity}){
@@ -278,16 +294,15 @@ function CurrentExecutionSlot({activity}:{activity:LiveProviderActivity}){
   const Icon=presentation.icon;
   return <section className="aw-current-execution" data-family={presentation.family} data-status={status} aria-label="Current provider execution" aria-live="polite">
     <span className="aw-current-execution__pulse" aria-hidden="true"><Icon/></span>
-    <span className="aw-current-execution__copy"><span className="aw-current-execution__eyebrow">Live · transient</span><strong>{humanizeToken(latest.kind)}</strong><span>{latest.display_summary}</span></span>
+    <span className="aw-current-execution__copy"><span className="aw-current-execution__eyebrow">Live SSE · provider-native</span><strong>{humanizeToken(latest.kind)}</strong><NativeEventBody value={latest.native_event}/></span>
     <span className="aw-current-execution__source"><b>{humanizeToken(latest.provider)}</b><small>{activity.items.length} current</small></span>
   </section>;
 }
 
 function NativeAuthoredRecord({event,actorName,selected,onSelect}:{event:ProviderObservation;actorName:string;selected:boolean;onSelect:()=>void}){
-  const copy=observationCopy(event);
   return <article role="button" tabIndex={0} aria-label={`Open native Session response from ${actorName}`} data-selected={selected||undefined} className="aw-native-authored-record" onClick={onSelect} onKeyDown={eventKey=>activateOnKeyDown(eventKey,onSelect)} onKeyUp={eventKey=>activateOnKeyUp(eventKey,onSelect)}>
     <span className="aw-native-authored-record__mark"><MessageSquare aria-hidden="true"/></span>
-    <div className="min-w-0 flex-1"><header><strong>{actorName}</strong><span>Provider-native response</span><span className="aw-kind-chip">{humanizeToken(event.semantic_kind)}</span><time>{formatTime(observationTime(event))}</time></header><p>{copy.summary}</p><footer>{humanizeToken(event.provider)} · {humanizeToken(event.completeness)} · native source retained by provider</footer></div>
+    <div className="min-w-0 flex-1"><header><strong>{actorName}</strong><span>Provider-native event</span><span className="aw-kind-chip">{humanizeToken(event.semantic_kind)}</span><time>{formatTime(observationTime(event))}</time></header><NativeEventBody value={event.native_event}/><footer>{humanizeToken(event.provider)} · {humanizeToken(event.completeness)} · source {event.native_source_ref}</footer></div>
   </article>;
 }
 
@@ -303,8 +318,11 @@ function AuthoredTurn({data,message,selectedAgentId,selected,continuation,onSele
 }
 
 function ExpandableEvent({event,selected,onSelect}:{event:ProviderObservation;selected:boolean;onSelect:()=>void}){
-  const copy=observationCopy(event);
-  return <div data-boundary-aligned={selected||undefined}><OperationalFactRow kind={observationPresentationKind(event)} status={observationStatus(event)} title={copy.title} summary={copy.summary} timestamp={formatTime(observationTime(event))} expanded={selected} selected={selected} onToggle={onSelect}/></div>;
+  return <div data-boundary-aligned={selected||undefined}><OperationalFactRow kind={observationPresentationKind(event)} status={observationStatus(event)} title={humanizeToken(event.semantic_kind)} summary={`Original ${humanizeToken(event.provider)} event · ${event.native_source_ref}`} timestamp={formatTime(observationTime(event))} expanded={selected} selected={selected} onToggle={onSelect}/>{selected&&<NativeEventBody value={event.native_event}/>}</div>;
+}
+
+function NativeEventBody({value}:{value:unknown}){
+  return <pre className="aw-native-event-body" aria-label="Original provider-native event">{typeof value==="string"?value:JSON.stringify(value,null,2)}</pre>;
 }
 
 function MessagesCanvas({data,onSelect}:{data:AgentWorkspaceData;onSelect:(next:ContextSelection)=>void}){
@@ -365,9 +383,7 @@ function WorkCanvas({data,onSelect}:{data:AgentWorkspaceData;onSelect:(work:Work
 }
 
 function AgentContextRail({view,data,mode,selected,currentWork,actions,onOpenWork}:{view:RoleView<AgentWorkspaceData>;data:AgentWorkspaceData;mode:WorkspaceMode;selected:ContextSelection;currentWork?:WorkSummary;actions:AllowedAction[];onOpenWork:(work?:WorkSummary)=>void}){
-  const selfPrivate=data.projection_scope!=="host_member_public";
   const isHost=data.selected_agent.is_host;
-  const publicProjection=data.projection_scope==="host_member_public";
   const ownedWorks=data.works.filter(work=>work.owner_actor_ref?.id===data.selected_agent.agent_member_ref.id);
   const eligibleWorks=data.works.filter(work=>work.owner_actor_ref?.id!==data.selected_agent.agent_member_ref.id&&work.eligible_member_ids.includes(data.selected_agent.agent_member_ref.id));
   const activeWorks=data.works.filter(work=>work.phase==="active"||work.phase==="review");
@@ -398,18 +414,18 @@ function AgentContextRail({view,data,mode,selected,currentWork,actions,onOpenWor
   const assignedSection=isHost&&otherOwnedWorks.length>0&&<ContextSection title="Assigned Work" hint={`${ownedWorks.length} total`}>{otherOwnedWorks.slice(0,2).map(work=><ContextWorkRow key={work.work_id} data={data} work={work}/>)}</ContextSection>;
   const conversationSection=mode==="messages"&&(unreadIncoming.length>0||latestExchange)&&<ContextSection title="Conversation" hint={unreadIncoming.length?`${unreadIncoming.length} unread`:`${incoming.length} incoming`}>{latestExchange&&<ContextMessageRow data={data} message={latestExchange}/>}{hostInbox.filter(message=>message.message_id!==latestExchange?.message_id).map(message=><ContextMessageRow key={message.message_id} data={data} message={message}/>)}</ContextSection>;
   const evidenceSection=evidenceWorks.some(work=>work.work_id===anchoredWork?.work_id)&&<ContextSection title="Evidence"><ContextWorkRow data={data} work={evidenceWorks.find(work=>work.work_id===anchoredWork?.work_id)!} evidence/></ContextSection>;
-  const privateProjection=selfPrivate?data.session_event_projection??null:null;
-  const sessionSection=selfPrivate?<ContextSection title="Current Session" hint={data.selected_agent.is_host&&data.selected_agent.host_session_mode==="external_interactive"?"External · unmanaged":privateProjection?.agent_session_id?humanizeToken(data.selected_agent.runtime_status??"available"):"Unavailable"}><ContextFact label="Provider" value={data.selected_agent.provider?humanizeToken(data.selected_agent.provider):"Not bound"}/><ContextFact label="Session" value={shortId(privateProjection?.agent_session_id)}/><ContextFact label="Episodes" value={String(privateProjection?.episodes.length??0)}/><ContextFact label="Last activity" value={formatTime(data.context_summary.last_activity_at)}/></ContextSection>:<ContextSection title="Privacy"><div className="aw-privacy-notice"><ShieldCheck aria-hidden="true"/><p>This view includes public Messages and Work only. The selected Agent's private Session, tools and runtime are structurally absent.</p></div></ContextSection>;
+  const privateProjection=data.session_event_projection??null;
+  const sessionSection=<ContextSection title="Current Session" hint={data.selected_agent.is_host&&data.selected_agent.host_session_mode==="external_interactive"?"External · unmanaged":privateProjection?.agent_session_id?humanizeToken(data.selected_agent.runtime_status??"available"):"Unavailable"}><ContextFact label="Provider" value={data.selected_agent.provider?humanizeToken(data.selected_agent.provider):"Not bound"}/><ContextFact label="Session" value={shortId(privateProjection?.agent_session_id)}/><ContextFact label="Episodes" value={String(privateProjection?.episodes.length??0)}/><ContextFact label="Last activity" value={formatTime(data.context_summary.last_activity_at)}/></ContextSection>;
   const controlsSection=prioritizedActions.some(action=>!action.disabled_reason)&&<ContextSection title={isHost&&anchoredNeedsJudgment?"Decision actions":"Next"}><WorkspaceActionIndex label={isHost&&anchoredNeedsJudgment?"Resolve in composer":isHost?"Available Host Controls":"Available Controls"} actions={prioritizedActions.filter(action=>!action.disabled_reason).slice(0,6).map(action=>({key:action.kind,label:actionLabel(action.kind)}))}/></ContextSection>;
   const projectionDetails=<details className="mt-5 border-t border-border pt-4"><summary className="cursor-pointer text-[10px] font-semibold text-muted-foreground">Projection · {view.freshness} · seq {view.as_of_event_sequence}</summary><div className="mt-3"><ViewProvenance view={view}/></div></details>;
-  const memberRunSection=selfPrivate&&data.selected_agent.current_member_run_ref&&<ContextSection title="Current MemberRun"><ContextFact label="Generation" value={`${data.selected_agent.current_member_run_ref}${runGeneration!=null?` (gen ${runGeneration})`:""}`}/>{executionDriver&&<ContextFact label="Execution driver" value={executionDriver}/>}<ContextFact label="Assigned work" value={String(ownedWorks.length)}/>{data.selected_agent.runtime_status&&<ContextFact label="Runtime" value={humanizeToken(data.selected_agent.runtime_status)}/>}</ContextSection>;
+  const memberRunSection=data.selected_agent.current_member_run_ref&&<ContextSection title="Current MemberRun"><ContextFact label="Generation" value={`${data.selected_agent.current_member_run_ref}${runGeneration!=null?` (gen ${runGeneration})`:""}`}/>{executionDriver&&<ContextFact label="Execution driver" value={executionDriver}/>}<ContextFact label="Assigned work" value={String(ownedWorks.length)}/>{data.selected_agent.runtime_status&&<ContextFact label="Runtime" value={humanizeToken(data.selected_agent.runtime_status)}/>}</ContextSection>;
   const sections=mode==="messages"
     ?[workSection,selectionInset,conversationSection,evidenceSection,controlsSection,memberRunSection,sessionSection]
     :mode==="work"
       ?[workSection,selectionInset,responsibilitySection,evidenceSection,needsHostSection,assignedSection,controlsSection,memberRunSection,sessionSection]
       :[workSection,selectionInset,responsibilitySection,needsHostSection,inboxSection,assignedSection,evidenceSection,memberRunSection,sessionSection,controlsSection];
   return <ScrollArea.Root className="h-full min-w-0 overflow-hidden"><ScrollArea.Viewport className="size-full min-w-0 [&>div]:!block [&>div]:!min-w-0"><div className="aw-context-story min-w-0 overflow-hidden px-5 pb-8 pt-5">
-    <p className="aw-context-story__eyebrow">{isHost?"Host operations":publicProjection?"Public Agent context":"Agent operations"}</p>
+    <p className="aw-context-story__eyebrow">{isHost?"Host operations":"Agent operations"}</p>
     {sections.map((section,index)=><Fragment key={index}>{section}</Fragment>)}
     {projectionDetails}
   </div></ScrollArea.Viewport><ScrollArea.Scrollbar orientation="vertical" className="flex w-2 p-0.5"><ScrollArea.Thumb className="rounded-full bg-border"/></ScrollArea.Scrollbar></ScrollArea.Root>;
@@ -417,7 +433,7 @@ function AgentContextRail({view,data,mode,selected,currentWork,actions,onOpenWor
 
 function WorkContext({work,title,onOpenWork}:{work?:WorkSummary;title:string;onOpenWork:(work?:WorkSummary)=>void}){return <ContextSection title={title} primary>{work?<><div><ContextFact label="Work ID" value={work.work_id}/><ContextFact label="Revision" value={`rev ${work.work_revision} (latest)`}/><div className="aw-fact-row"><span>Phase</span><strong><WorkspaceState label={humanizeToken(work.phase)} tone={work.phase==="active"?"good":work.phase==="review"?"warn":"muted"}/></strong></div><div className="aw-fact-row"><span>Condition</span><strong><WorkspaceState label={humanizeToken(String(work.condition))} tone={work.condition==="blocked"?"bad":work.condition==="normal"?"muted":"warn"}/></strong></div>{work.condition==="blocked"&&work.blocker_reason&&<ContextFact label="Blocker" value={work.blocker_reason}/>}{work.resolution&&<ContextFact label="Resolution" value={humanizeToken(String(work.resolution))}/>}<ContextFact label="Gates" value={`${work.gate_summary.passed}/${work.gate_summary.required}`}/></div><button type="button" className="aw-context-link" onClick={()=>onOpenWork(work)}>Open work ↗</button></>:<p className="text-[11px] leading-5 text-muted-foreground">No current Work is projected for this Agent.</p>}</ContextSection>}
 function MessageContext({data,message}:{data:AgentWorkspaceData;message:MessageSummary}){const actor=data.roster.find(item=>item.agent_member_ref.id===message.sender.id);return <ContextSection title="Message in focus" hint={formatTime(message.created_at)}><p className="aw-context-focus-title">{message.sender.display_name??actor?.display_name??message.sender.id}</p><p className="aw-context-focus-copy">{message.body}</p><div className="mt-3"><ContextFact label="Delivery" value={message.delivery_state?humanizeToken(message.delivery_state):message.deliveries.map(item=>humanizeToken(item.status)).join(", ")||"Recorded"}/>{message.work_id&&<ContextFact label="Linked Work" value={shortId(message.work_id)}/>}</div></ContextSection>}
-function EventContext({event}:{event:ProviderObservation}){const copy=observationCopy(event);return <ContextSection title="Native observation in focus" hint={formatTime(observationTime(event))}><p className="aw-context-focus-title">{copy.title}</p><p className="aw-context-focus-copy">{copy.summary}</p><div className="mt-3"><ContextFact label="Provider" value={humanizeToken(event.provider)}/><ContextFact label="Lifecycle" value={humanizeToken(event.lifecycle_phase)}/><ContextFact label="Completeness" value={humanizeToken(event.completeness)}/></div></ContextSection>}
+function EventContext({event}:{event:ProviderObservation}){return <ContextSection title="Native event in focus" hint={formatTime(observationTime(event))}><p className="aw-context-focus-title">{humanizeToken(event.semantic_kind)}</p><NativeEventBody value={event.native_event}/><div className="mt-3"><ContextFact label="Provider" value={humanizeToken(event.provider)}/><ContextFact label="Source" value={event.native_source_ref}/><ContextFact label="Lifecycle" value={humanizeToken(event.lifecycle_phase)}/><ContextFact label="Completeness" value={humanizeToken(event.completeness)}/></div></ContextSection>}
 function WorkSelectionContext({data,work}:{data:AgentWorkspaceData;work:WorkSummary}){
   const owner=work.owner_actor_ref?data.roster.find(item=>item.agent_member_ref.id===work.owner_actor_ref!.id):undefined;
   const runtimeState=typeof work.runtime_summary.state==="string"?work.runtime_summary.state:null;
@@ -446,9 +462,9 @@ function AgentComposer({data,actions,actionsCurrent,selectedRunId,linkedWorkId,o
 
 function ProfileDialog({data,onClose,closeRef,openerRef}:{data:AgentWorkspaceData;onClose:()=>void;closeRef:React.RefObject<HTMLButtonElement>;openerRef:React.RefObject<HTMLButtonElement>}){
   const selected=data.selected_agent,c=data.configuration;
-  const currentSession=data.projection_scope==="host_member_public"?null:data.current_session??null;
+  const currentSession=data.current_session??null;
   const hasProviderConfiguration=Boolean(selected.provider||selected.execution_mode||c.provider_profile_ref||c.permission_ceiling||c.workspace_policy);
-  const sessionProjection=data.projection_scope==="host_member_public"?null:data.session_event_projection??null;
+  const sessionProjection=data.session_event_projection??null;
   const dialogRef=useRef<HTMLElement>(null);
   const onCloseRef=useRef(onClose);
   onCloseRef.current=onClose;
@@ -503,35 +519,54 @@ function revalidateContextSelection(current:ContextSelection,data:AgentWorkspace
   if(!current)return null;
   if(current.kind==="message"){const message=data.messages.find(item=>item.message_id===current.message.message_id);return message?{kind:"message",message}:null;}
   if(current.kind==="work"){const work=data.works.find(item=>item.work_id===current.work.work_id);return work?{kind:"work",work}:null;}
-  const projection=data.projection_scope==="host_member_public"?null:data.session_event_projection??null;
+  const projection=data.session_event_projection??null;
   for(const episode of projection?.episodes??[]){const event=episode.observations.find(item=>item.observation_id===current.event.observation_id);if(event)return{kind:"event",event};}
   return null;
+}
+function mergeAgentWorkspaceViews(primary:RoleView<AgentWorkspaceData>|null,additional:RoleView<AgentWorkspaceData>|null):RoleView<AgentWorkspaceData>|null{
+  if(!primary)return additional;
+  if(!additional)return primary;
+  const left=primary.data.session_event_projection;
+  const right=additional.data.session_event_projection;
+  if(left.agent_session_id!==right.agent_session_id||left.agent_session_generation!==right.agent_session_generation)return primary;
+  const episodes=new Map<string,(typeof left.episodes)[number]>();
+  for(const episode of [...left.episodes,...right.episodes]){
+    const current=episodes.get(episode.episode_id);
+    if(!current){episodes.set(episode.episode_id,{...episode,observations:[...episode.observations]});continue;}
+    const observations=new Map(current.observations.map(event=>[event.observation_id,event]));
+    for(const event of episode.observations)observations.set(event.observation_id,event);
+    current.observations=[...observations.values()].sort((a,b)=>a.ordering_position-b.ordering_position);
+    current.terminal=current.terminal||episode.terminal;
+    current.incomplete=current.incomplete||episode.incomplete;
+  }
+  return {...primary,data:{...primary.data,session_event_projection:{...left,episodes:[...episodes.values()].sort((a,b)=>(a.observations[0]?.ordering_position??Number.MAX_SAFE_INTEGER)-(b.observations[0]?.ordering_position??Number.MAX_SAFE_INTEGER)||a.episode_id.localeCompare(b.episode_id)),page:right.page}}};
+}
+type SessionMessageRow={kind:"message";at:string;message:MessageSummary;continuation:boolean};
+type SessionNativeRow={kind:"native";at:string;event:ProviderObservation;episode:SessionEventProjection["episodes"][number]};
+function mergeSessionRows(messages:SessionMessageRow[],nativeEvents:SessionNativeRow[]):Array<SessionMessageRow|SessionNativeRow>{
+  const rows:Array<SessionMessageRow|SessionNativeRow>=[];
+  let messageIndex=0;
+  let nativeIndex=0;
+  while(messageIndex<messages.length||nativeIndex<nativeEvents.length){
+    const message=messages[messageIndex];
+    const nativeEvent=nativeEvents[nativeIndex];
+    if(!nativeEvent){rows.push(message!);messageIndex+=1;continue;}
+    if(!message){rows.push(nativeEvent);nativeIndex+=1;continue;}
+    if(timestampKey(message.at)<=timestampKey(nativeEvent.at)){rows.push(message);messageIndex+=1;}
+    else{rows.push(nativeEvent);nativeIndex+=1;}
+  }
+  return rows;
 }
 function humanizeToken(value:string){return value.split(/[_-]+/).filter(Boolean).map((part,index)=>index===0?`${part.charAt(0).toUpperCase()}${part.slice(1)}`:part).join(" ")}
 function rosterStateTone(state:string){if(/running|active/.test(state))return "text-status-good";if(/wait|pending|review/.test(state))return "text-status-warn";if(/block/.test(state))return "text-status-bad";return "text-muted-foreground";}
 function rosterStateLabel(agent:AgentWorkspaceRosterItem){const state=agent.runtime_state??agent.capacity??"unknown";if(agent.is_host&&agent.host_session_mode==="external_interactive"&&/running|active/.test(state))return{word:"External · unmanaged",tone:"text-status-warn"};return{word:humanizeToken(state),tone:rosterStateTone(state)};}
 function timestampKey(value:string|null|undefined){if(!value)return 0;if(value.startsWith("unix-ms:")){const parsed=Number(value.slice(8));return Number.isFinite(parsed)?parsed:0;}const parsed=Date.parse(value);return Number.isFinite(parsed)?parsed:0}
 function observationTime(event:ProviderObservation){return event.occurred_at??event.observed_at}
-function observationCopy(event:ProviderObservation){
-  const payload=event.payload;
-  if(payload.type==="authored_response")return {title:"Response",summary:payload.text};
-  if(payload.type==="reasoning_summary")return {title:"Reasoning summary",summary:payload.summary};
-  if(payload.type==="tool")return {title:payload.tool_name,summary:payload.display_detail??humanizeToken(event.semantic_kind)};
-  if(payload.type==="artifact")return {title:payload.display_name,summary:payload.media_type??"Provider-native artifact"};
-  if(payload.type==="usage")return {title:"Usage",summary:[payload.input_tokens!=null&&`${payload.input_tokens} input`,payload.output_tokens!=null&&`${payload.output_tokens} output`,payload.total_tokens!=null&&`${payload.total_tokens} total`].filter(Boolean).join(" · ")||"Usage reported"};
-  if(payload.type==="interaction")return {title:"Interaction required",summary:payload.prompt};
-  if(payload.type==="runtime")return {title:"Runtime",summary:humanizeToken(payload.state)};
-  if(payload.type==="transport")return {title:"Transport",summary:humanizeToken(payload.reason_code)};
-  if(payload.type==="turn")return {title:"Turn",summary:payload.display_summary??humanizeToken(payload.outcome)};
-  if(payload.type==="recovery")return {title:"Recovery required",summary:humanizeToken(payload.reason_code)};
-  return {title:"Incomplete provider observation",summary:humanizeToken(payload.reason_code)};
-}
 function observationPresentationKind(event:ProviderObservation){if(event.semantic_kind==="reasoning_summary")return "thinking";if(event.semantic_kind.startsWith("tool_call_"))return "tool";if(event.semantic_kind==="authored_response")return "message";if(event.semantic_kind==="artifact_created")return "artifact";return "runtime"}
 function observationStatus(event:ProviderObservation){if(event.semantic_kind==="tool_call_failed"||event.semantic_kind==="turn_failed")return "failed";if(event.lifecycle_phase==="terminal")return "completed";return "running"}
 export function isUnexpiredActivity(activity:LiveProviderActivity,now=Date.now()){return activity.expires_unix_ms>now}
 export function selectAgentWorkspaceLiveActivity({activity,projectionScope,executionSpaceId,projectId,teamRunId,memberRunId,memberRunGeneration,sessionId,sessionGeneration,now=Date.now()}:{activity?:LiveProviderActivity|null;projectionScope:AgentWorkspaceData["projection_scope"];executionSpaceId:string;projectId:string;teamRunId:string|null;memberRunId:string|null;memberRunGeneration:number|null|undefined;sessionId:string|null;sessionGeneration:number|null|undefined;now?:number}){
-  return projectionScope!=="host_member_public"
-    && activity
+  return activity
     && memberRunId
     && sessionId
     && sessionGeneration!=null
@@ -547,30 +582,33 @@ export function selectAgentWorkspaceLiveActivity({activity,projectionScope,execu
       : null;
 }
 function liveEventMatches(event:LiveProviderActivityEvent,scope:{executionSpaceId:string;projectId:string;teamRunId:string;memberRunId:string;memberRunGeneration:number;sessionId:string;sessionGeneration:number}){return event.scope.execution_space_id===scope.executionSpaceId&&event.scope.project_id===scope.projectId&&event.scope.team_run_id===scope.teamRunId&&event.scope.member_run_id===scope.memberRunId&&event.scope.member_run_generation===scope.memberRunGeneration&&event.scope.agent_session_id===scope.sessionId&&event.scope.agent_session_generation===scope.sessionGeneration}
-function useAuthenticatedLiveProviderActivity({apiUrl,space,project,company,teamRunId,memberRunId,memberRunGeneration,sessionId,sessionGeneration,initialActivity}:{apiUrl:string;space:string;project:string;company?:string;teamRunId:string|null;memberRunId:string|null;memberRunGeneration:number|null;sessionId:string|null;sessionGeneration:number|null;initialActivity:LiveProviderActivity|null}){
+function useTeamSessionLiveActivity({apiUrl,space,project,company,teamId,agentId,teamRunId,memberRunId,memberRunGeneration,sessionId,sessionGeneration,initialActivity}:{apiUrl:string;space:string;project:string;company?:string;teamId:string|null;agentId:string|null;teamRunId:string|null;memberRunId:string|null;memberRunGeneration:number|null;sessionId:string|null;sessionGeneration:number|null;initialActivity:LiveProviderActivity|null}){
   const [activity,setActivity]=useState<LiveProviderActivity|null>(null);
   const [connectionState,setConnectionState]=useState<LiveProviderConnectionState>("inactive");
+  const initialActivityRef=useRef(initialActivity);
+  initialActivityRef.current=initialActivity;
   useEffect(()=>{
     const exactScope=teamRunId&&memberRunId&&memberRunGeneration!=null&&sessionId&&sessionGeneration!=null?{executionSpaceId:space,projectId:project,teamRunId,memberRunId,memberRunGeneration,sessionId,sessionGeneration}:null;
-    setActivity(exactScope?selectAgentWorkspaceLiveActivity({activity:initialActivity,projectionScope:"member_self_private",...exactScope,now:Date.now()}):null);
+    setActivity(exactScope?selectAgentWorkspaceLiveActivity({activity:initialActivityRef.current,projectionScope:"team_session_read",...exactScope,now:Date.now()}):null);
     const token=window.__AGENTFIRM_BOOTSTRAP__?.capabilityToken;
-    if(!exactScope||!token){setConnectionState("inactive");return;}
+    if(!exactScope||!teamId||!agentId){setConnectionState("inactive");return;}
     setConnectionState("connecting");
     const controller=new AbortController();
     const url=new URL("/v1/events",apiUrl.endsWith("/")?apiUrl:`${apiUrl}/`);
-    url.searchParams.set("space",space);url.searchParams.set("project",project);if(company)url.searchParams.set("company",company);
+    url.searchParams.set("space",space);url.searchParams.set("project",project);url.searchParams.set("team_id",teamId);url.searchParams.set("agent_id",agentId);if(company)url.searchParams.set("company",company);
     void (async()=>{
       try{
-        const response=await fetch(url,{headers:{Accept:"text/event-stream","X-AgentFirm-Token":token},signal:controller.signal});
+        const headers:Record<string,string>={Accept:"text/event-stream"};if(token)headers["X-AgentFirm-Token"]=token;
+        const response=await fetch(url,{headers,signal:controller.signal});
         if(!response.ok||!response.body)throw new Error(`Live provider activity stream failed (${response.status})`);
         setConnectionState("connected");
         const reader=response.body.getReader(),decoder=new TextDecoder();let buffer="";
-        while(true){const {done,value}=await reader.read();if(done)break;buffer+=decoder.decode(value,{stream:true});let boundary=buffer.indexOf("\n\n");while(boundary>=0){const block=buffer.slice(0,boundary).replace(/\r/g,"");buffer=buffer.slice(boundary+2);boundary=buffer.indexOf("\n\n");const eventName=block.split("\n").find(line=>line.startsWith("event:"))?.slice(6).trim();if(eventName!=="live_provider_activity")continue;const data=block.split("\n").filter(line=>line.startsWith("data:")).map(line=>line.slice(5).trimStart()).join("\n");if(!data)continue;const event=JSON.parse(data) as LiveProviderActivityEvent;if(event.schema_version!=="agentfirm.live_provider_activity_event.v1"||!liveEventMatches(event,exactScope))continue;if(event.reason==="terminal"||!event.activity)setActivity(null);else setActivity(selectAgentWorkspaceLiveActivity({activity:event.activity,projectionScope:"member_self_private",...exactScope,now:Date.now()}));}}
+        while(true){const {done,value}=await reader.read();if(done)break;buffer+=decoder.decode(value,{stream:true});let boundary=buffer.indexOf("\n\n");while(boundary>=0){const block=buffer.slice(0,boundary).replace(/\r/g,"");buffer=buffer.slice(boundary+2);boundary=buffer.indexOf("\n\n");const eventName=block.split("\n").find(line=>line.startsWith("event:"))?.slice(6).trim();if(eventName!=="live_provider_activity")continue;const data=block.split("\n").filter(line=>line.startsWith("data:")).map(line=>line.slice(5).trimStart()).join("\n");if(!data)continue;const event=JSON.parse(data) as LiveProviderActivityEvent;if(event.schema_version!=="agentfirm.live_provider_activity_event.v1"||!liveEventMatches(event,exactScope))continue;if(event.reason==="terminal"||!event.activity)setActivity(null);else setActivity(selectAgentWorkspaceLiveActivity({activity:event.activity,projectionScope:"team_session_read",...exactScope,now:Date.now()}));}}
         if(!controller.signal.aborted)setConnectionState("disconnected");
       }catch(error){if(!controller.signal.aborted){setConnectionState("disconnected");console.warn("Agent Workspace live activity disconnected",error);}}finally{if(!controller.signal.aborted)setActivity(null);}
     })();
     return()=>{controller.abort();setActivity(null);};
-  },[apiUrl,space,project,company,teamRunId,memberRunId,memberRunGeneration,sessionId,sessionGeneration,initialActivity]);
+  },[apiUrl,space,project,company,teamId,agentId,teamRunId,memberRunGeneration,memberRunId,sessionGeneration,sessionId]);
   return {activity,connectionState};
 }
 function formatTime(value:string|null|undefined){if(!value)return "unknown";const timestamp=timestampKey(value);if(!timestamp)return value;return new Date(timestamp).toLocaleString([], {month:"short",day:"numeric",hour:"2-digit",minute:"2-digit"})}

@@ -1,8 +1,8 @@
 use std::path::PathBuf;
 
 use firm_provider_events::{
-    read_transcript_batch, DecodeContext, DecodeOutcome, ProviderEventFold, ProviderKind,
-    TranscriptReadBoundary, TransientReadPosition,
+    read_transcript_page, DecodeContext, DecodeOutcome, ProviderEventFold, ProviderKind,
+    TranscriptReadBoundary,
 };
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -27,25 +27,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         runtime_command_id: None,
         observed_at: "dogfood-observed".into(),
     };
-    let batch = read_transcript_batch(
+    let batch = read_transcript_page(
         &context,
         &TranscriptReadBoundary {
             allowed_root: root,
             transcript_path: file,
         },
-        TransientReadPosition::default(),
+        None,
         10_000,
     )?;
     let mut fold = ProviderEventFold::new("dogfood-session", 1, "dogfood-daemon", 1);
-    let mut dropped = 0usize;
-    let mut unsupported = 0usize;
     for outcome in batch.outcomes {
         match outcome {
             DecodeOutcome::Observation(observation) => {
                 fold.ingest(*observation)?;
             }
-            DecodeOutcome::DroppedPrivate => dropped += 1,
-            DecodeOutcome::Unsupported => unsupported += 1,
         }
     }
     let projection = fold.session_projection(300);
@@ -55,7 +51,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map(|episode| episode.observations.len())
         .sum::<usize>();
     println!(
-        "provider=codex observations={observations} episodes={} dropped_private={dropped} unsupported={unsupported} truncated={} incomplete_tail={} source_snapshot_fingerprint={}",
+        "provider=codex observations={observations} episodes={} truncated={} incomplete_tail={} source_snapshot_fingerprint={}",
         projection.episodes.len(),
         projection.truncated,
         batch.incomplete_tail,

@@ -1,11 +1,10 @@
 use thiserror::Error;
 
 use crate::{
-    project_private_session, project_team_activity, read_latest_transcript_batch,
-    read_transcript_batch, DecodeContext, DecodeOutcome, ProjectionAccessError,
-    ProjectionAuthority, ProjectionViewer, ProviderEventFold, ProviderEventFoldError,
-    SessionEventProjection, TeamRuntimeActivity, TranscriptReadBoundary, TranscriptReadError,
-    TransientReadPosition,
+    project_team_activity, project_team_session, read_jsonl_text_page, read_transcript_page,
+    DecodeContext, DecodeOutcome, ProjectionAccessError, ProjectionAuthority, ProjectionReadScope,
+    ProviderEventFold, ProviderEventFoldError, SessionEventProjection, TeamRuntimeActivity,
+    TranscriptReadBoundary, TranscriptReadError,
 };
 
 #[derive(Debug, Error)]
@@ -24,8 +23,8 @@ pub enum ProviderProjectionServiceError {
 pub struct ProviderProjectionService {
     context: DecodeContext,
     fold: ProviderEventFold,
-    transient_position: TransientReadPosition,
-    source_truncated: bool,
+    page_has_more: bool,
+    next_before_position: Option<u64>,
 }
 
 impl ProviderProjectionService {
@@ -42,104 +41,75 @@ impl ProviderProjectionService {
         Self {
             context,
             fold,
-            transient_position: TransientReadPosition::default(),
-            source_truncated: false,
+            page_has_more: false,
+            next_before_position: None,
         }
     }
 
-    pub fn refresh(
+    pub fn refresh_page(
         &mut self,
         boundary: &TranscriptReadBoundary,
-        max_events: usize,
+        before_position: Option<u64>,
+        limit: usize,
     ) -> Result<usize, ProviderProjectionServiceError> {
-        let batch = read_transcript_batch(
-            &self.context,
-            boundary,
-            self.transient_position.clone(),
-            max_events,
-        )?;
-        let read_count = batch.outcomes.len();
-        for outcome in batch.outcomes {
-            if let DecodeOutcome::Observation(observation) = outcome {
-                self.fold.ingest(*observation)?;
-            }
-        }
-        self.transient_position = batch.next_position;
-        Ok(read_count)
+        let page = read_transcript_page(&self.context, boundary, before_position, limit)?;
+        self.replace_with_page(page.outcomes, page.has_more, page.next_before_position)
     }
 
-    /// Replaces this disposable fold with the latest bounded snapshot. This is
-    /// the historical RoleView path: it never exposes or persists a cursor.
-    pub fn refresh_latest(
-        &mut self,
-        boundary: &TranscriptReadBoundary,
-        max_events: usize,
-    ) -> Result<usize, ProviderProjectionServiceError> {
-        let batch = read_latest_transcript_batch(&self.context, boundary, max_events)?;
-        self.fold = ProviderEventFold::new(
-            &self.context.agent_session_id,
-            self.context.agent_session_generation,
-            &self.context.node_daemon_id,
-            self.context.node_daemon_generation,
-        );
-        let read_count = batch.outcomes.len();
-        for outcome in batch.outcomes {
-            if let DecodeOutcome::Observation(observation) = outcome {
-                self.fold.ingest(*observation)?;
-            }
-        }
-        self.transient_position = TransientReadPosition::default();
-        // A provider may be appending its final JSONL row while this request
-        // reads the frozen source length. The incomplete row is intentionally
-        // omitted, so the response must say that its source view is truncated
-        // rather than presenting the visible prefix as exhaustive history.
-        self.source_truncated = batch.source_truncated || batch.incomplete_tail;
-        Ok(read_count)
-    }
-
-    pub fn refresh_latest_jsonl(
+    pub fn refresh_jsonl_page(
         &mut self,
         content: &str,
-        max_events: usize,
+        before_position: Option<u64>,
+        limit: usize,
     ) -> Result<usize, ProviderProjectionServiceError> {
-        let batch = crate::read_latest_jsonl_text(&self.context, content, max_events)?;
+        let page = read_jsonl_text_page(&self.context, content, before_position, limit)?;
+        self.replace_with_page(page.outcomes, page.has_more, page.next_before_position)
+    }
+
+    fn replace_with_page(
+        &mut self,
+        outcomes: Vec<DecodeOutcome>,
+        has_more: bool,
+        next_before_position: Option<u64>,
+    ) -> Result<usize, ProviderProjectionServiceError> {
         self.fold = ProviderEventFold::new(
             &self.context.agent_session_id,
             self.context.agent_session_generation,
             &self.context.node_daemon_id,
             self.context.node_daemon_generation,
         );
-        let read_count = batch.outcomes.len();
-        for outcome in batch.outcomes {
-            if let DecodeOutcome::Observation(observation) = outcome {
-                self.fold.ingest(*observation)?;
-            }
+        let read_count = outcomes.len();
+        for outcome in outcomes {
+            let DecodeOutcome::Observation(observation) = outcome;
+            self.fold.ingest(*observation)?;
         }
-        self.transient_position = TransientReadPosition::default();
-        self.source_truncated = batch.source_truncated || batch.incomplete_tail;
+        self.page_has_more = has_more;
+        self.next_before_position = next_before_position;
         Ok(read_count)
     }
 
-    pub fn private_session(
+    pub fn page_metadata(&self, limit: usize) -> serde_json::Value {
+        serde_json::json!({
+            "limit": limit,
+            "has_more": self.page_has_more,
+            "next_before_position": self.next_before_position,
+        })
+    }
+
+    pub fn team_session(
         &self,
         authority: &ProjectionAuthority,
-        viewer: &ProjectionViewer,
+        scope: &ProjectionReadScope,
         limit: usize,
     ) -> Result<SessionEventProjection, ProviderProjectionServiceError> {
-        let mut projection = project_private_session(&self.fold, authority, viewer, limit)?;
-        projection.truncated |= self.source_truncated;
-        Ok(projection)
+        Ok(project_team_session(&self.fold, authority, scope, limit)?)
     }
 
     pub fn team_activity(
         &self,
         authority: &ProjectionAuthority,
-        viewer: &ProjectionViewer,
+        scope: &ProjectionReadScope,
     ) -> Result<Vec<TeamRuntimeActivity>, ProviderProjectionServiceError> {
-        Ok(project_team_activity(&self.fold, authority, viewer)?)
-    }
-
-    pub fn transient_position(&self) -> &TransientReadPosition {
-        &self.transient_position
+        Ok(project_team_activity(&self.fold, authority, scope)?)
     }
 }

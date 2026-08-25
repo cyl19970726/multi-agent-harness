@@ -348,7 +348,7 @@ fn delivery_projection_is_consistent_correlated_and_host_mode_is_labeled() {
     );
 
     // Issue 1: the exact Host self view carries the external-interactive mode
-    // label, the owner-private Session projection, the transient live slot,
+    // label, the Team-scoped Session projection, the transient live slot,
     // and the authorized conversation surface.
     let host_workspace_route =
         format!("/v1/views/agent-workspace/{run_id}?project={project_id}&agent_id={host_id}");

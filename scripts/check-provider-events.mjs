@@ -70,18 +70,15 @@ for (const kind of manifest.semantic_kinds) {
   const rustName = kind.split("_").map((part) => part[0].toUpperCase() + part.slice(1)).join("");
   if (!model.includes(`    ${rustName},`)) failures.push(`missing Rust SemanticKind::${rustName}`);
 }
-// DOC-108 identity cutover: the owner boundary is the AgentMember; the old
-// "exact AgentIdentity owner" phrasing is retired with the identity itself.
-for (const required of ["exact owner AgentMember", "TeamRuntimeActivity", "RuntimeCommand"]) {
+// Native-session reads are same-machine local-Operator only; provider login
+// and remote RoleView credentials never become transcript grants. Mutation
+// remains RuntimeCommand-bound.
+for (const required of ["same-machine loopback", "Remote RoleView credentials", "TeamRuntimeActivity", "RuntimeCommand"]) {
   if (!architecture.includes(required)) failures.push(`architecture contract missing ${required}`);
 }
-if (!runtime.includes('"item/reasoning/summaryTextDelta"')) failures.push("Codex live projection does not consume provider-declared summaryTextDelta");
-if (runtime.includes('item/reasoning/textDelta')) failures.push("Codex raw reasoning textDelta must not enter the live projection");
-for (const required of ["Kimi is thinking", "Kimi is waiting for interaction", 'Some("thinking" | "redacted_thinking") => {}', "LiveProviderTurnGuard"]) {
-  if (!runtime.includes(required)) failures.push(`runtime privacy contract missing ${required}`);
+for (const required of ["native_event", "LiveProviderTurnGuard"]) {
+  if (!runtime.includes(required)) failures.push(`runtime native-event contract missing ${required}`);
 }
-if (runtime.includes("tool started · {title}")) failures.push("unreviewed provider tool titles must not enter live display summaries");
-if (piRuntime.includes('event.get("args")') || piRuntime.includes('format!("Tool: {}", other)')) failures.push("Pi live projection must omit tool arguments, paths, and unknown names");
 const validObservation = readJson(join(root, "fixtures/valid/codex-authored.json"));
 const sessionEnvelope = {
   schema_version: "agentfirm.provider_observation.v1",
@@ -108,7 +105,7 @@ const liveEnvelope = {
   agent_session_generation: 7,
   runtime_snapshot_locator: "runtime-snapshot-1",
   expires_unix_ms: 2,
-  items: [{runtime_event_locator:"runtime-event-1",kind:"thinking",provider:"codex",display_summary:"Working",emitted_unix_ms:1,expires_unix_ms:2}],
+  items: [{runtime_event_locator:"runtime-event-1",kind:"native_event",provider:"codex",native_event:{type:"unknown-provider-row",raw:"preserved"},emitted_unix_ms:1,expires_unix_ms:2}],
 };
 if (!ajv.getSchema(liveSchema.$id)(liveEnvelope)) failures.push("generated live activity violates schema");
 const liveEventEnvelope = {

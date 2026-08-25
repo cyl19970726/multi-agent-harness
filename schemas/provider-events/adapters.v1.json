@@ -12,8 +12,8 @@
     "usage_events": true,
     "interaction_events": false,
     "cancellation_events": true,
-    "supported_semantic_kinds": ["authored_response", "tool_call_requested", "tool_call_started", "tool_call_completed", "usage_reported", "transport_interrupted", "turn_completed", "turn_failed", "turn_cancelled"],
-    "redaction_policy": "drop_secrets_paths_raw_tool_io_and_private_reasoning"
+    "supported_semantic_kinds": ["authored_response", "tool_call_requested", "tool_call_started", "tool_call_completed", "usage_reported", "transport_interrupted", "turn_completed", "turn_failed", "turn_cancelled", "native_event"],
+    "redaction_policy": "preserve_exact_native_event_without_semantic_filtering"
   },
   {
     "provider": "claude",
@@ -28,8 +28,8 @@
     "usage_events": true,
     "interaction_events": false,
     "cancellation_events": true,
-    "supported_semantic_kinds": ["authored_response", "tool_call_requested", "tool_call_completed", "usage_reported", "transport_interrupted", "turn_completed", "turn_cancelled"],
-    "redaction_policy": "drop_secrets_paths_raw_tool_io_and_private_reasoning"
+    "supported_semantic_kinds": ["authored_response", "tool_call_requested", "tool_call_completed", "usage_reported", "transport_interrupted", "turn_completed", "turn_cancelled", "native_event"],
+    "redaction_policy": "preserve_exact_native_event_without_semantic_filtering"
   },
   {
     "provider": "kimi",
@@ -44,8 +44,8 @@
     "usage_events": false,
     "interaction_events": false,
     "cancellation_events": true,
-    "supported_semantic_kinds": ["authored_response", "tool_call_requested", "tool_call_completed", "artifact_created", "transport_interrupted", "turn_completed", "turn_cancelled"],
-    "redaction_policy": "drop_secrets_paths_raw_tool_io_and_private_reasoning"
+    "supported_semantic_kinds": ["authored_response", "tool_call_requested", "tool_call_completed", "artifact_created", "transport_interrupted", "turn_completed", "turn_cancelled", "native_event"],
+    "redaction_policy": "preserve_exact_native_event_without_semantic_filtering"
   },
   {
     "provider": "pi",
@@ -60,8 +60,8 @@
     "usage_events": false,
     "interaction_events": true,
     "cancellation_events": false,
-    "supported_semantic_kinds": ["authored_response", "tool_call_started", "tool_call_completed", "tool_call_failed", "artifact_created", "interaction_required", "transport_interrupted", "turn_completed", "turn_failed"],
-    "redaction_policy": "drop_secrets_paths_raw_tool_io_and_private_reasoning"
+    "supported_semantic_kinds": ["authored_response", "tool_call_started", "tool_call_completed", "tool_call_failed", "artifact_created", "interaction_required", "transport_interrupted", "turn_completed", "turn_failed", "native_event"],
+    "redaction_policy": "preserve_exact_native_event_without_semantic_filtering"
   },
   {
     "provider": "deepseek_harness",
@@ -76,7 +76,7 @@
     "usage_events": true,
     "interaction_events": false,
     "cancellation_events": true,
-    "supported_semantic_kinds": ["authored_response", "tool_call_started", "tool_call_completed", "usage_reported", "turn_completed", "turn_failed", "turn_cancelled"],
-    "redaction_policy": "drop_secrets_paths_raw_tool_io_and_private_reasoning"
+    "supported_semantic_kinds": ["authored_response", "tool_call_started", "tool_call_completed", "usage_reported", "turn_completed", "turn_failed", "turn_cancelled", "native_event"],
+    "redaction_policy": "preserve_exact_native_event_without_semantic_filtering"
   }
 ]

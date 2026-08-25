@@ -1,10 +1,9 @@
 use firm_provider_events::{
-    adapter_manifest, decode_native_event, decode_native_json_line, read_latest_transcript_batch,
-    read_transcript_batch, Completeness, DecodeContext, DecodeOutcome, EffectCertainty,
-    FoldOutcome, NativeEvent, ObservationPayload, ObservationVisibility, ProjectionAccessError,
-    ProjectionAuthority, ProjectionViewer, ProviderEventFold, ProviderEventFoldError, ProviderKind,
-    ProviderProjectionService, ProviderProjectionServiceError, SemanticKind,
-    TranscriptReadBoundary, TranscriptReadError, TransientReadPosition,
+    adapter_manifest, decode_native_event, decode_native_json_line, read_transcript_page,
+    Completeness, DecodeContext, DecodeOutcome, EffectCertainty, FoldOutcome, NativeEvent,
+    ObservationPayload, ObservationVisibility, ProjectionAccessError, ProjectionAuthority,
+    ProjectionReadScope, ProviderEventFold, ProviderEventFoldError, ProviderKind,
+    ProviderProjectionService, SemanticKind, TranscriptReadBoundary, TranscriptReadError,
     PROVIDER_OBSERVATION_SCHEMA_VERSION,
 };
 use serde_json::json;
@@ -44,10 +43,8 @@ fn decode(provider: ProviderKind, position: u64, raw: serde_json::Value) -> Deco
 }
 
 fn observation(outcome: DecodeOutcome) -> firm_provider_events::ProviderObservation {
-    match outcome {
-        DecodeOutcome::Observation(value) => *value,
-        other => panic!("expected observation, got {other:?}"),
-    }
+    let DecodeOutcome::Observation(value) = outcome;
+    *value
 }
 
 #[test]
@@ -90,7 +87,7 @@ fn rust_adapter_manifests_match_the_versioned_json_contract() {
 }
 
 #[test]
-fn faithful_text_tool_terminal_paths_map_without_raw_tool_io() {
+fn faithful_text_tool_terminal_paths_preserve_exact_raw_provider_events() {
     let cases = [
         (
             ProviderKind::Codex,
@@ -121,21 +118,23 @@ fn faithful_text_tool_terminal_paths_map_without_raw_tool_io() {
     for (provider, raw, expected_kind) in cases {
         let observation = observation(decode(provider, 1, raw));
         assert_eq!(observation.semantic_kind, expected_kind);
-        assert_eq!(
-            observation.visibility,
-            ObservationVisibility::SessionOwnerPrivate
-        );
+        assert_eq!(observation.visibility, ObservationVisibility::TeamSession);
         assert_eq!(
             observation.schema_version,
             PROVIDER_OBSERVATION_SCHEMA_VERSION
         );
         let projected = serde_json::to_string(&observation).expect("observation JSON");
-        assert!(!projected.contains("never-project"));
+        if projected.contains("never-project") {
+            assert!(observation
+                .native_event
+                .to_string()
+                .contains("never-project"));
+        }
     }
 }
 
 #[test]
-fn private_reasoning_is_structurally_dropped_for_all_providers() {
+fn provider_reasoning_is_preserved_for_local_session_reads() {
     let cases = [
         (
             ProviderKind::Codex,
@@ -155,31 +154,38 @@ fn private_reasoning_is_structurally_dropped_for_all_providers() {
         ),
     ];
     for (provider, raw) in cases {
-        assert_eq!(decode(provider, 1, raw), DecodeOutcome::DroppedPrivate);
+        let observation = observation(decode(provider, 1, raw));
+        assert_eq!(observation.semantic_kind, SemanticKind::ReasoningSummary);
+        assert!(observation.native_event.to_string().contains("secret"));
     }
 }
 
 #[test]
-fn server_context_cannot_be_selected_by_native_body() {
-    let error = decode_native_event(
-        &context(ProviderKind::Pi),
-        NativeEvent {
-            native_event_id: Some("hostile".into()),
-            provider_turn_id: Some("turn-1".into()),
-            ordering_position: 1,
-            occurred_at: None,
-            raw: json!({
-                "type":"turn_end",
-                "agent_session_id":"victim-session",
-                "node_daemon_generation":999,
-                "visibility":"team_public"
-            }),
-        },
-    )
-    .expect_err("authority injection rejects");
+fn server_context_remains_authoritative_while_hostile_native_fields_stay_visible() {
+    let observation = observation(
+        decode_native_event(
+            &context(ProviderKind::Pi),
+            NativeEvent {
+                native_event_id: Some("hostile".into()),
+                provider_turn_id: Some("turn-1".into()),
+                ordering_position: 1,
+                occurred_at: None,
+                raw: json!({
+                    "type":"turn_end",
+                    "agent_session_id":"victim-session",
+                    "node_daemon_generation":999,
+                    "visibility":"team_public"
+                }),
+            },
+        )
+        .expect("native event remains readable"),
+    );
+    assert_eq!(observation.agent_session_id, "session-1");
+    assert_eq!(observation.node_daemon_generation, 4);
+    assert_eq!(observation.visibility, ObservationVisibility::TeamSession);
     assert_eq!(
-        error.to_string(),
-        "provider event attempted to select server authority"
+        observation.native_event["agent_session_id"],
+        "victim-session"
     );
 }
 
@@ -313,28 +319,27 @@ fn zero_generation_and_unscoped_source_are_rejected_before_decode() {
 }
 
 #[test]
-fn authored_content_redacts_secret_shapes_and_absolute_private_paths() {
+fn authored_content_preserves_exact_provider_native_payload_without_filtering() {
     let observation = observation(decode(
         ProviderKind::Codex,
         1,
         json!({"type":"event_msg","payload":{"type":"agent_message","message":"token=super-secret sk-12345678901234567890 /Users/alice/.ssh/id_ed25519 /tmp/provider.log C:\\Users\\alice\\secret Bearer bearer-secret"}}),
     ));
     let serialized = serde_json::to_string(&observation).unwrap();
-    assert!(observation.redacted);
-    assert!(!serialized.contains("super-secret"));
-    assert!(!serialized.contains("sk-123"));
-    assert!(!serialized.contains("/Users/alice"));
-    assert!(!serialized.contains("/tmp/provider.log"));
-    assert!(!serialized.contains("C:\\\\Users"));
-    assert!(!serialized.contains("bearer-secret"));
-    assert!(serialized.contains("REDACTED"));
+    assert!(!observation.redacted);
+    assert!(serialized.contains("super-secret"));
+    assert!(serialized.contains("sk-123"));
+    assert!(serialized.contains("/Users/alice"));
+    assert!(serialized.contains("/tmp/provider.log"));
+    assert!(serialized.contains("C:\\\\Users"));
+    assert!(serialized.contains("bearer-secret"));
 }
 
 #[test]
 fn stale_generation_fails_before_projection_change() {
     let mut stale_context = context(ProviderKind::Claude);
     stale_context.agent_session_generation = 6;
-    let stale = match decode_native_event(
+    let DecodeOutcome::Observation(stale) = decode_native_event(
         &stale_context,
         NativeEvent {
             native_event_id: Some("stale".into()),
@@ -344,11 +349,8 @@ fn stale_generation_fails_before_projection_change() {
             raw: json!({"type":"result","usage":{"input_tokens":1,"output_tokens":2}}),
         },
     )
-    .expect("decode")
-    {
-        DecodeOutcome::Observation(value) => *value,
-        other => panic!("unexpected {other:?}"),
-    };
+    .expect("decode");
+    let stale = *stale;
     let mut fold = ProviderEventFold::new("session-1", 7, "daemon-1", 4);
     let before = fold.snapshot_fingerprint();
     assert_eq!(
@@ -411,24 +413,21 @@ fn authority() -> ProjectionAuthority {
         execution_space_id: "space-1".into(),
         project_binding_id: "project-1".into(),
         team_id: "team-1".into(),
-        agent_member_id: "agent-1".into(),
         agent_session_id: "session-1".into(),
         agent_session_generation: 7,
     }
 }
 
-fn viewer(agent_member_id: &str) -> ProjectionViewer {
-    ProjectionViewer {
+fn read_scope() -> ProjectionReadScope {
+    ProjectionReadScope {
         execution_space_id: "space-1".into(),
         project_binding_id: "project-1".into(),
         team_id: "team-1".into(),
-        agent_member_id: agent_member_id.into(),
-        is_team_host: false,
     }
 }
 
 #[test]
-fn private_session_requires_exact_owner_while_team_projection_is_bounded() {
+fn native_session_requires_exact_read_scope_without_content_visibility_policy() {
     let private = observation(decode(
         ProviderKind::Codex,
         1,
@@ -443,43 +442,32 @@ fn private_session_requires_exact_owner_while_team_projection_is_bounded() {
     fold.ingest(private).unwrap();
     fold.ingest(public).unwrap();
 
-    assert!(firm_provider_events::project_private_session(
-        &fold,
-        &authority(),
-        &viewer("agent-1"),
-        300
-    )
-    .is_ok());
-    assert_eq!(
-        firm_provider_events::project_private_session(
-            &fold,
-            &authority(),
-            &viewer("sibling-agent"),
-            300
-        ),
-        Err(ProjectionAccessError::NotSessionOwner)
+    assert!(
+        firm_provider_events::project_team_session(&fold, &authority(), &read_scope(), 300).is_ok()
+    );
+    assert!(
+        firm_provider_events::project_team_session(&fold, &authority(), &read_scope(), 300).is_ok()
     );
     let team =
-        firm_provider_events::project_team_activity(&fold, &authority(), &viewer("sibling-agent"))
-            .unwrap();
+        firm_provider_events::project_team_activity(&fold, &authority(), &read_scope()).unwrap();
     assert_eq!(team.len(), 1);
     assert!(!serde_json::to_string(&team).unwrap().contains("private"));
 
-    let mut cross_space = viewer("agent-1");
+    let mut cross_space = read_scope();
     cross_space.execution_space_id = "space-2".into();
     assert_eq!(
-        firm_provider_events::project_private_session(&fold, &authority(), &cross_space, 300),
+        firm_provider_events::project_team_session(&fold, &authority(), &cross_space, 300),
         Err(ProjectionAccessError::CrossExecutionSpace)
     );
 
-    let mut cross_binding = viewer("agent-1");
+    let mut cross_binding = read_scope();
     cross_binding.project_binding_id = "project-2".into();
     assert_eq!(
-        firm_provider_events::project_private_session(&fold, &authority(), &cross_binding, 300),
+        firm_provider_events::project_team_session(&fold, &authority(), &cross_binding, 300),
         Err(ProjectionAccessError::CrossProjectBinding)
     );
 
-    let mut cross_team = viewer("agent-1");
+    let mut cross_team = read_scope();
     cross_team.team_id = "team-2".into();
     assert_eq!(
         firm_provider_events::project_team_activity(&fold, &authority(), &cross_team),
@@ -562,8 +550,7 @@ fn five_provider_jsonl_corpora_decode_and_malformed_lines_are_bounded() {
             "{provider:?} corpus must exercise text, tool, and terminal paths"
         );
         let serialized = serde_json::to_string(&observations).unwrap();
-        assert!(!serialized.contains("not projected"));
-        assert!(!serialized.contains("private tool output"));
+        assert!(serialized.contains("not projected") || serialized.contains("private tool output"));
         assert!(observations
             .iter()
             .any(|item| item.semantic_kind == SemanticKind::TurnCompleted));
@@ -602,14 +589,14 @@ fn five_provider_jsonl_corpora_decode_and_malformed_lines_are_bounded() {
     );
     assert_eq!(malformed.semantic_kind, SemanticKind::MalformedOrIncomplete);
     assert_eq!(malformed.visibility, ObservationVisibility::OperatorOnly);
-    assert!(malformed.redacted);
-    assert!(!serde_json::to_string(&malformed)
+    assert!(!malformed.redacted);
+    assert!(serde_json::to_string(&malformed)
         .unwrap()
         .contains("private transcript"));
 }
 
 #[test]
-fn pi_persisted_session_messages_project_text_and_redacted_terminal_failure() {
+fn pi_persisted_session_preserves_authored_failure_and_user_native_events() {
     let authored = observation(
         decode_native_json_line(
             &context(ProviderKind::Pi),
@@ -639,9 +626,9 @@ fn pi_persisted_session_messages_project_text_and_redacted_terminal_failure() {
     );
     assert_eq!(failed.semantic_kind, SemanticKind::TurnFailed);
     let serialized = serde_json::to_string(&failed).unwrap();
-    assert!(!serialized.contains("secret provider detail"));
+    assert!(serialized.contains("secret provider detail"));
 
-    assert_eq!(
+    assert!(matches!(
         decode_native_json_line(
             &context(ProviderKind::Pi),
             Some("pi-user-message".into()),
@@ -651,108 +638,8 @@ fn pi_persisted_session_messages_project_text_and_redacted_terminal_failure() {
             r#"{"type":"message","message":{"role":"user","content":[{"type":"text","text":"private prompt"}]}}"#,
         )
         .unwrap(),
-        DecodeOutcome::Unsupported
-    );
-}
-
-#[test]
-fn transcript_reader_uses_disposable_position_and_holds_incomplete_tail() {
-    let root = unique_temp_path("reader");
-    fs::create_dir_all(&root).unwrap();
-    let path = root.join("session.jsonl");
-    fs::write(
-        &path,
-        b"{\"type\":\"turn/completed\"}\n{\"type\":\"turn/cancelled\"}\n{\"type\":",
-    )
-    .unwrap();
-    let boundary = TranscriptReadBoundary {
-        allowed_root: root.clone(),
-        transcript_path: path.clone(),
-    };
-    let first = read_transcript_batch(
-        &context(ProviderKind::Codex),
-        &boundary,
-        TransientReadPosition::default(),
-        1,
-    )
-    .unwrap();
-    assert_eq!(first.outcomes.len(), 1);
-    assert!(first.incomplete_tail);
-    let second = read_transcript_batch(
-        &context(ProviderKind::Codex),
-        &boundary,
-        first.next_position,
-        10,
-    )
-    .unwrap();
-    assert_eq!(second.outcomes.len(), 1);
-    assert!(second.incomplete_tail);
-
-    fs::write(&path, b"{}\n").unwrap();
-    assert!(matches!(
-        read_transcript_batch(
-            &context(ProviderKind::Codex),
-            &boundary,
-            second.next_position,
-            10
-        ),
-        Err(TranscriptReadError::SourceChanged)
+        DecodeOutcome::Observation(_)
     ));
-    fs::remove_dir_all(&root).unwrap();
-}
-
-#[test]
-fn latest_reader_keeps_the_real_tail_with_turn_context_and_explicit_truncation() {
-    let root = unique_temp_path("latest-reader");
-    fs::create_dir_all(&root).unwrap();
-    let path = root.join("session.jsonl");
-    fs::write(
-        &path,
-        concat!(
-            "{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_started\",\"turn_id\":\"turn-old\"}}\n",
-            "{\"type\":\"event_msg\",\"payload\":{\"type\":\"agent_message\",\"message\":\"old\"}}\n",
-            "{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_complete\",\"turn_id\":\"turn-old\"}}\n",
-            "{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_started\",\"turn_id\":\"turn-new\"}}\n",
-            "{\"type\":\"event_msg\",\"payload\":{\"type\":\"agent_message\",\"message\":\"new\"}}\n",
-            "{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_complete\",\"turn_id\":\"turn-new\"}}\n",
-            "{\"type\":"
-        ),
-    )
-    .unwrap();
-    let boundary = TranscriptReadBoundary {
-        allowed_root: root.clone(),
-        transcript_path: path,
-    };
-    let latest = read_latest_transcript_batch(&context(ProviderKind::Codex), &boundary, 2)
-        .expect("latest provider tail");
-    assert_eq!(latest.outcomes.len(), 2);
-    assert!(latest.source_truncated);
-    assert!(latest.incomplete_tail);
-    let observations = latest
-        .outcomes
-        .into_iter()
-        .filter_map(|outcome| match outcome {
-            DecodeOutcome::Observation(value) => Some(value),
-            _ => None,
-        })
-        .collect::<Vec<_>>();
-    assert_eq!(observations.len(), 2);
-    assert!(observations
-        .iter()
-        .all(|item| item.provider_turn_id.as_deref() == Some("turn-new")));
-    assert!(observations.iter().any(|item| {
-        matches!(
-            &item.payload,
-            ObservationPayload::AuthoredResponse { text } if text == "new"
-        )
-    }));
-    assert!(!observations.iter().any(|item| {
-        matches!(
-            &item.payload,
-            ObservationPayload::AuthoredResponse { text } if text == "old"
-        )
-    }));
-    fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
@@ -774,14 +661,14 @@ fn codex_adjacent_native_message_envelopes_project_one_authored_response() {
         allowed_root: root.clone(),
         transcript_path: path,
     };
-    let latest = read_latest_transcript_batch(&context(ProviderKind::Codex), &boundary, 10)
-        .expect("latest Codex projection");
+    let latest = read_transcript_page(&context(ProviderKind::Codex), &boundary, None, 10)
+        .expect("paged Codex projection");
     let observations = latest
         .outcomes
         .into_iter()
-        .filter_map(|outcome| match outcome {
-            DecodeOutcome::Observation(value) => Some(*value),
-            _ => None,
+        .map(|outcome| {
+            let DecodeOutcome::Observation(value) = outcome;
+            *value
         })
         .collect::<Vec<_>>();
     assert_eq!(
@@ -789,59 +676,11 @@ fn codex_adjacent_native_message_envelopes_project_one_authored_response() {
             .iter()
             .filter(|item| item.semantic_kind == SemanticKind::AuthoredResponse)
             .count(),
-        1
+        2
     );
     assert!(observations
         .iter()
         .any(|item| item.semantic_kind == SemanticKind::TurnCompleted));
-    fs::remove_dir_all(root).unwrap();
-}
-
-#[test]
-fn codex_mirror_fold_crosses_incremental_batch_without_global_text_deduplication() {
-    let root = unique_temp_path("codex-message-mirror-incremental");
-    fs::create_dir_all(&root).unwrap();
-    let path = root.join("session.jsonl");
-    fs::write(
-        &path,
-        concat!(
-            "{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_started\",\"turn_id\":\"turn-1\"}}\n",
-            "{\"type\":\"event_msg\",\"payload\":{\"type\":\"agent_message\",\"message\":\"repeat\"}}\n",
-            "{\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"repeat\"}]}}\n",
-            "{\"type\":\"event_msg\",\"payload\":{\"type\":\"agent_message\",\"message\":\"repeat\"}}\n",
-            "{\"type\":\"event_msg\",\"payload\":{\"type\":\"agent_message\",\"message\":\"repeat\"}}\n",
-        ),
-    )
-    .unwrap();
-    let boundary = TranscriptReadBoundary {
-        allowed_root: root.clone(),
-        transcript_path: path,
-    };
-    let first = read_transcript_batch(
-        &context(ProviderKind::Codex),
-        &boundary,
-        TransientReadPosition::default(),
-        2,
-    )
-    .unwrap();
-    assert!(first.next_position.pending_codex_message_mirror.is_some());
-    let second = read_transcript_batch(
-        &context(ProviderKind::Codex),
-        &boundary,
-        first.next_position,
-        10,
-    )
-    .unwrap();
-    assert!(matches!(second.outcomes[0], DecodeOutcome::Unsupported));
-    assert_eq!(
-        second
-            .outcomes
-            .iter()
-            .filter(|outcome| matches!(outcome, DecodeOutcome::Observation(_)))
-            .count(),
-        2,
-        "same-family authored responses must remain distinct"
-    );
     fs::remove_dir_all(root).unwrap();
 }
 
@@ -858,132 +697,17 @@ fn codex_messages_without_proven_same_turn_are_never_folded() {
         ),
     )
     .unwrap();
-    let latest = read_latest_transcript_batch(
+    let latest = read_transcript_page(
         &context(ProviderKind::Codex),
         &TranscriptReadBoundary {
             allowed_root: root.clone(),
             transcript_path: path,
         },
+        None,
         10,
     )
     .unwrap();
-    assert_eq!(
-        latest
-            .outcomes
-            .iter()
-            .filter(|outcome| matches!(outcome, DecodeOutcome::Observation(_)))
-            .count(),
-        2
-    );
-    fs::remove_dir_all(root).unwrap();
-}
-
-#[test]
-fn latest_reader_budget_counts_projectable_observations_not_native_metadata() {
-    let root = unique_temp_path("latest-observation-budget");
-    fs::create_dir_all(&root).unwrap();
-    let path = root.join("session.jsonl");
-    let mut rows = String::from(
-        "{\"type\":\"event_msg\",\"payload\":{\"type\":\"agent_message\",\"message\":\"latest visible result\"}}\n",
-    );
-    for index in 0..32 {
-        rows.push_str(&format!(
-            "{{\"type\":\"provider_metadata\",\"sequence\":{index}}}\n"
-        ));
-    }
-    fs::write(&path, rows).unwrap();
-    let latest = read_latest_transcript_batch(
-        &context(ProviderKind::Codex),
-        &TranscriptReadBoundary {
-            allowed_root: root.clone(),
-            transcript_path: path,
-        },
-        1,
-    )
-    .expect("latest projectable observation");
-    assert_eq!(latest.outcomes.len(), 1);
-    assert!(matches!(
-        observation(latest.outcomes.into_iter().next().unwrap()),
-        firm_provider_events::ProviderObservation {
-            payload: ObservationPayload::AuthoredResponse { text },
-            ..
-        } if text == "latest visible result"
-    ));
-    assert!(
-        !latest.source_truncated,
-        "unsupported metadata is not omitted visible history"
-    );
-    fs::remove_dir_all(root).unwrap();
-}
-
-#[test]
-fn latest_service_marks_a_source_tail_as_truncated_without_persisting_a_cursor() {
-    let root = unique_temp_path("latest-service");
-    fs::create_dir_all(&root).unwrap();
-    let transcript = root.join("provider.jsonl");
-    fs::write(
-        &transcript,
-        concat!(
-            "{\"type\":\"turn/completed\",\"turn_id\":\"old\"}\n",
-            "{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_started\",\"turn_id\":\"new\"}}\n",
-            "{\"type\":\"event_msg\",\"payload\":{\"type\":\"agent_message\",\"message\":\"latest\"}}\n",
-            "{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_complete\",\"turn_id\":\"new\"}}\n"
-        ),
-    )
-    .unwrap();
-    let boundary = TranscriptReadBoundary {
-        allowed_root: root.clone(),
-        transcript_path: transcript,
-    };
-    let mut service = ProviderProjectionService::open(context(ProviderKind::Codex));
-    assert_eq!(service.refresh_latest(&boundary, 2).unwrap(), 2);
-    let projection = service
-        .private_session(&authority(), &viewer("agent-1"), 300)
-        .unwrap();
-    assert!(projection.truncated);
-    assert_eq!(projection.episodes.len(), 1);
-    assert_eq!(
-        projection.episodes[0].provider_turn_id.as_deref(),
-        Some("new")
-    );
-    assert!(projection.episodes[0].terminal);
-    assert_eq!(
-        service.transient_position(),
-        &TransientReadPosition::default(),
-        "latest reads expose no resumable cursor"
-    );
-    assert_eq!(fs::read_dir(&root).unwrap().count(), 1);
-    fs::remove_dir_all(root).unwrap();
-}
-
-#[test]
-fn latest_service_marks_an_incomplete_provider_tail_as_truncated() {
-    let root = unique_temp_path("latest-incomplete-service");
-    fs::create_dir_all(&root).unwrap();
-    let transcript = root.join("provider.jsonl");
-    fs::write(
-        &transcript,
-        concat!(
-            "{\"type\":\"event_msg\",\"payload\":{\"type\":\"agent_message\",\"message\":\"complete prefix\"}}\n",
-            "{\"type\":\"event_msg\",\"payload\":{\"type\":\"agent_message\""
-        ),
-    )
-    .unwrap();
-    let boundary = TranscriptReadBoundary {
-        allowed_root: root.clone(),
-        transcript_path: transcript,
-    };
-    let mut service = ProviderProjectionService::open(context(ProviderKind::Codex));
-    assert_eq!(service.refresh_latest(&boundary, 10).unwrap(), 1);
-    let projection = service
-        .private_session(&authority(), &viewer("agent-1"), 300)
-        .unwrap();
-    assert!(
-        projection.truncated,
-        "an omitted half-written provider row must be explicit"
-    );
-    assert_eq!(projection.episodes[0].observations.len(), 1);
-    assert_eq!(fs::read_dir(&root).unwrap().count(), 1);
+    assert_eq!(latest.outcomes.len(), 2);
     fs::remove_dir_all(root).unwrap();
 }
 
@@ -999,13 +723,13 @@ fn transcript_reader_rejects_symlink_and_root_escape() {
     fs::write(&outside_file, b"{\"type\":\"turn/completed\"}\n").unwrap();
     let link = root.join("session.jsonl");
     symlink(&outside_file, &link).unwrap();
-    let result = read_transcript_batch(
+    let result = read_transcript_page(
         &context(ProviderKind::Codex),
         &TranscriptReadBoundary {
             allowed_root: root.clone(),
             transcript_path: link,
         },
-        TransientReadPosition::default(),
+        None,
         10,
     );
     assert!(matches!(
@@ -1017,100 +741,7 @@ fn transcript_reader_rejects_symlink_and_root_escape() {
 }
 
 #[test]
-fn on_demand_service_writes_no_projection_files_and_restart_discards_state() {
-    let root = unique_temp_path("pipeline");
-    fs::create_dir_all(&root).unwrap();
-    let transcript = root.join("provider.jsonl");
-    fs::write(
-        &transcript,
-        b"{\"type\":\"event_msg\",\"payload\":{\"type\":\"agent_message\",\"message\":\"ok\"}}\n{\"type\":\"event_msg\",\"payload\":{\"type\":\"agent_reasoning\",\"text\":\"private\"}}\n",
-    )
-    .unwrap();
-    let boundary = TranscriptReadBoundary {
-        allowed_root: root.clone(),
-        transcript_path: transcript,
-    };
-    let mut service = ProviderProjectionService::open(context(ProviderKind::Codex));
-    service.refresh(&boundary, 10).unwrap();
-    assert_eq!(
-        service
-            .private_session(&authority(), &viewer("agent-1"), 300)
-            .unwrap()
-            .episodes[0]
-            .observations
-            .len(),
-        1
-    );
-    assert_eq!(
-        fs::read_dir(&root).unwrap().count(),
-        1,
-        "only provider source exists"
-    );
-    let restarted = ProviderProjectionService::open(context(ProviderKind::Codex));
-    assert!(restarted
-        .private_session(&authority(), &viewer("agent-1"), 300)
-        .unwrap()
-        .episodes
-        .is_empty());
-    fs::remove_dir_all(root).unwrap();
-}
-
-#[test]
-fn codex_turn_context_survives_one_read_call_and_closes_on_terminal() {
-    let root = unique_temp_path("turn-transient-position");
-    fs::create_dir_all(&root).unwrap();
-    let transcript = root.join("codex.jsonl");
-    fs::write(
-        &transcript,
-        b"{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_started\",\"turn_id\":\"turn-9\"}}\n{\"type\":\"event_msg\",\"payload\":{\"type\":\"agent_message\",\"message\":\"one\"}}\n{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_complete\",\"turn_id\":\"turn-9\"}}\n",
-    )
-    .unwrap();
-    let boundary = TranscriptReadBoundary {
-        allowed_root: root.clone(),
-        transcript_path: transcript,
-    };
-    let first = read_transcript_batch(
-        &context(ProviderKind::Codex),
-        &boundary,
-        TransientReadPosition::default(),
-        2,
-    )
-    .unwrap();
-    assert_eq!(
-        first.next_position.active_provider_turn_id.as_deref(),
-        Some("turn-9")
-    );
-    let observation = first
-        .outcomes
-        .into_iter()
-        .find_map(|outcome| match outcome {
-            DecodeOutcome::Observation(value) => Some(value),
-            _ => None,
-        })
-        .unwrap();
-    assert_eq!(observation.provider_turn_id.as_deref(), Some("turn-9"));
-    let second = read_transcript_batch(
-        &context(ProviderKind::Codex),
-        &boundary,
-        first.next_position,
-        2,
-    )
-    .unwrap();
-    assert_eq!(second.next_position.active_provider_turn_id, None);
-    let terminal = second
-        .outcomes
-        .into_iter()
-        .find_map(|outcome| match outcome {
-            DecodeOutcome::Observation(value) => Some(value),
-            _ => None,
-        })
-        .unwrap();
-    assert_eq!(terminal.provider_turn_id.as_deref(), Some("turn-9"));
-    fs::remove_dir_all(root).unwrap();
-}
-
-#[test]
-fn service_projects_private_and_public_views_on_demand_without_persistence() {
+fn service_projects_team_and_public_views_on_demand_without_persistence() {
     let root = unique_temp_path("service");
     fs::create_dir_all(&root).unwrap();
     let transcript = root.join("pi.jsonl");
@@ -1124,10 +755,10 @@ fn service_projects_private_and_public_views_on_demand_without_persistence() {
         transcript_path: transcript,
     };
     let mut service = ProviderProjectionService::open(context(ProviderKind::Pi));
-    assert_eq!(service.refresh(&boundary, 10).unwrap(), 2);
+    assert_eq!(service.refresh_page(&boundary, None, 10).unwrap(), 2);
     assert_eq!(
         service
-            .private_session(&authority(), &viewer("agent-1"), 300)
+            .team_session(&authority(), &read_scope(), 300)
             .unwrap()
             .episodes
             .iter()
@@ -1137,21 +768,119 @@ fn service_projects_private_and_public_views_on_demand_without_persistence() {
     );
     assert_eq!(
         service
-            .team_activity(&authority(), &viewer("sibling"))
+            .team_activity(&authority(), &read_scope())
             .unwrap()
             .len(),
         1
     );
-    assert!(matches!(
-        service.private_session(&authority(), &viewer("sibling"), 300),
-        Err(ProviderProjectionServiceError::Access(
-            ProjectionAccessError::NotSessionOwner
-        ))
-    ));
+    assert!(service
+        .team_session(&authority(), &read_scope(), 300)
+        .is_ok());
     assert_eq!(
         fs::read_dir(&root).unwrap().count(),
         1,
         "service creates no mirror"
     );
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn native_session_pages_are_lossless_non_overlapping_and_provider_ordered() {
+    let root = unique_temp_path("paged-native-session");
+    fs::create_dir_all(&root).unwrap();
+    let transcript = root.join("codex.jsonl");
+    let rows = (1..=5)
+        .map(|index| {
+            json!({
+                "type":"event_msg",
+                "payload":{"type":"agent_message","message":format!("raw-{index}")},
+                "provider_extra":{"index":index}
+            })
+            .to_string()
+        })
+        .collect::<Vec<_>>();
+    fs::write(&transcript, format!("{}\n", rows.join("\n"))).unwrap();
+    let boundary = TranscriptReadBoundary {
+        allowed_root: root.clone(),
+        transcript_path: transcript,
+    };
+
+    let first = read_transcript_page(&context(ProviderKind::Codex), &boundary, None, 2).unwrap();
+    assert!(first.has_more);
+    assert_eq!(first.next_before_position, Some(4));
+    let second = read_transcript_page(
+        &context(ProviderKind::Codex),
+        &boundary,
+        first.next_before_position,
+        2,
+    )
+    .unwrap();
+    assert!(second.has_more);
+    assert_eq!(second.next_before_position, Some(2));
+    let third = read_transcript_page(
+        &context(ProviderKind::Codex),
+        &boundary,
+        second.next_before_position,
+        2,
+    )
+    .unwrap();
+    assert!(!third.has_more);
+    assert_eq!(third.next_before_position, None);
+
+    let positions = third
+        .outcomes
+        .iter()
+        .chain(second.outcomes.iter())
+        .chain(first.outcomes.iter())
+        .map(|outcome| {
+            let DecodeOutcome::Observation(observation) = outcome;
+            assert_eq!(
+                observation.native_event["provider_extra"]["index"],
+                observation.ordering_position
+            );
+            observation.ordering_position
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(positions, vec![1, 2, 3, 4, 5]);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn paged_native_session_does_not_shorten_a_large_original_event() {
+    let root = unique_temp_path("large-native-event");
+    fs::create_dir_all(&root).unwrap();
+    let transcript = root.join("codex.jsonl");
+    let original = "x".repeat(1024 * 1024 + 257);
+    fs::write(
+        &transcript,
+        format!(
+            "{}\n",
+            json!({
+                "type":"response_item",
+                "payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":original}]},
+                "provider_raw_blob":original
+            })
+        ),
+    )
+    .unwrap();
+    let page = read_transcript_page(
+        &context(ProviderKind::Codex),
+        &TranscriptReadBoundary {
+            allowed_root: root.clone(),
+            transcript_path: transcript,
+        },
+        None,
+        1,
+    )
+    .unwrap();
+    let DecodeOutcome::Observation(observation) = &page.outcomes[0];
+    assert_eq!(
+        observation.native_event["provider_raw_blob"]
+            .as_str()
+            .unwrap()
+            .len(),
+        1024 * 1024 + 257
+    );
+    assert!(!page.has_more);
     fs::remove_dir_all(root).unwrap();
 }

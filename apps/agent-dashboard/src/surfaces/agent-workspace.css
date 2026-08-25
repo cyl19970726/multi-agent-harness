@@ -1391,3 +1391,20 @@ select){
       display: none;
     }
   }
+
+  .agent-workspace .aw-native-event-body{
+    margin-top: 0.6rem;
+    max-height: 32rem;
+    overflow: auto;
+    border: 1px solid hsl(var(--border));
+    border-radius: 0.5rem;
+    background: hsl(var(--muted) / 0.35);
+    padding: 0.75rem;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    font-size: 0.6875rem;
+    line-height: 1.5;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    content-visibility: auto;
+    contain-intrinsic-size: auto 12rem;
+  }

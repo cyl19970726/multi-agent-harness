@@ -64,7 +64,8 @@ transient activity projections; it does not mirror the native transcript.
 Historical Agent Workspace reads invoke the reviewed official JSONL persistence
 package, which owns zstd decoding and exact SessionId lookup. Harness consumes
 only a bounded logical JSONL response in memory and never stores it. Live
-Cordis events expose generic thinking/response/tool phases to the exact owner;
+Cordis events expose generic thinking/response/tool phases to authorized exact
+Team readers and the same-machine local Operator;
 raw reasoning, arguments, output, and filesystem paths remain absent.
 
 ## Permissions and honest gaps

@@ -30,6 +30,7 @@
     "availability": {"enum": ["available", "unavailable"]},
     "unavailable_reason_code": {"type": ["string", "null"], "pattern": "^[a-z0-9_]+$"},
     "disabled_reason": {"type": ["string", "null"], "minLength": 1}
+    ,"page": {"type":"object","additionalProperties":false,"required":["limit","has_more","next_before_position"],"properties":{"limit":{"type":"integer","minimum":1,"maximum":200},"has_more":{"type":"boolean"},"next_before_position":{"type":["integer","null"],"minimum":1}}}
   },
   "oneOf": [
     {

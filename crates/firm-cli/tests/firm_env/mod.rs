@@ -948,7 +948,7 @@ impl ServeHandle {
                 // consume the following data line + blank line, then return.
                 let mut data = String::new();
                 let _ = reader.read_line(&mut data);
-                if token.is_some() {
+                if query.contains("agent_id=") {
                     let snapshot = data
                         .strip_prefix("data: ")
                         .and_then(|value| {
@@ -956,8 +956,8 @@ impl ServeHandle {
                         })
                         .expect("authenticated SSE snapshot JSON");
                     assert_eq!(
-                        snapshot["private_provider_activity"], true,
-                        "authenticated AgentMember SSE did not bind a private provider stream"
+                        snapshot["team_session_provider_activity"], true,
+                        "Team-scoped SSE did not bind the selected provider stream"
                     );
                 }
                 let mut blank = String::new();

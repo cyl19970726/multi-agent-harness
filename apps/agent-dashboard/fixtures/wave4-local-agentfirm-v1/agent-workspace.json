@@ -7,7 +7,7 @@
   "generated_at":"2026-08-12T00:00:00Z",
   "freshness":"current",
   "data":{
-    "projection_scope":"member_self_private",
+    "projection_scope":"team_session_read",
     "team":{
       "team_id":"team-1",
       "display_name":"Fixture Team",
@@ -96,7 +96,8 @@
       "truncated":false,
       "availability":"unavailable",
       "unavailable_reason_code":"native_session_unavailable",
-      "disabled_reason":"Provider-native Session source is unavailable in this deterministic fixture."
+      "disabled_reason":"Provider-native Session source is unavailable in this deterministic fixture.",
+      "page":{"limit":80,"has_more":false,"next_before_position":null}
     },
     "live_provider_activity":null,
     "messages":[],

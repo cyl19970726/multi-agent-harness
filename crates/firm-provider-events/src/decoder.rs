@@ -9,9 +9,6 @@ use crate::{
     PROVIDER_OBSERVATION_SCHEMA_VERSION,
 };
 
-const MAX_TEXT_CHARS: usize = 4_000;
-const MAX_DISPLAY_DETAIL_CHARS: usize = 600;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AdapterFidelity {
@@ -127,6 +124,8 @@ fn manifest(
     supported: &[SemanticKind],
 ) -> AdapterManifest {
     let has = |kind| supported.contains(&kind);
+    let mut supported_semantic_kinds = supported.to_vec();
+    supported_semantic_kinds.push(SemanticKind::NativeEvent);
     AdapterManifest {
         provider,
         adapter_version: PROVIDER_EVENT_ADAPTER_VERSION.into(),
@@ -160,8 +159,8 @@ fn manifest(
             )
         }),
         cancellation_events: has(SemanticKind::TurnCancelled),
-        supported_semantic_kinds: supported.to_vec(),
-        redaction_policy: "drop_secrets_paths_raw_tool_io_and_private_reasoning".into(),
+        supported_semantic_kinds,
+        redaction_policy: "preserve_exact_native_event_without_semantic_filtering".into(),
     }
 }
 
@@ -191,8 +190,6 @@ pub struct NativeEvent {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DecodeOutcome {
     Observation(Box<ProviderObservation>),
-    DroppedPrivate,
-    Unsupported,
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -203,8 +200,6 @@ pub enum DecodeError {
     MissingOrdering,
     #[error("native event is malformed: {0}")]
     Malformed(&'static str),
-    #[error("provider event attempted to select server authority")]
-    AuthorityInjection,
     #[error("provider event violates the canonical semantic contract")]
     InvalidSemantic,
 }
@@ -249,7 +244,6 @@ pub fn decode_native_event(
     event: NativeEvent,
 ) -> Result<DecodeOutcome, DecodeError> {
     validate_context(context, &event)?;
-    reject_authority_injection(&event.raw)?;
     let decoded = if let Some(common) = decode_common(&event)? {
         Some(common)
     } else {
@@ -261,12 +255,7 @@ pub fn decode_native_event(
             ProviderKind::DeepseekHarness => decode_deepseek_harness(&event),
         }?
     };
-    let Some(decoded) = decoded else {
-        return Ok(DecodeOutcome::Unsupported);
-    };
-    if decoded.private_reasoning {
-        return Ok(DecodeOutcome::DroppedPrivate);
-    }
+    let decoded = decoded.unwrap_or_else(|| native(&event.raw));
     let source_fingerprint = fingerprint(&event.raw);
     let native_identity = event.native_event_id.clone().unwrap_or_else(|| {
         format!(
@@ -308,8 +297,9 @@ pub fn decode_native_event(
         completeness: decoded.completeness,
         effect_certainty: decoded.effect_certainty,
         visibility: decoded.visibility,
-        redacted: decoded.redacted,
-        truncated: decoded.truncated,
+        redacted: false,
+        truncated: false,
+        native_event: event.raw,
         source_content_fingerprint: source_fingerprint,
         payload: decoded.payload,
     };
@@ -373,9 +363,6 @@ fn decode_common(event: &NativeEvent) -> Result<Option<Decoded>, DecodeError> {
             },
             causal_parent_id: None,
             correlation_id: None,
-            redacted: true,
-            truncated: false,
-            private_reasoning: false,
         }),
         _ => None,
     })
@@ -425,8 +412,9 @@ fn malformed_observation(
         completeness: Completeness::Incomplete,
         effect_certainty: EffectCertainty::None,
         visibility: ObservationVisibility::OperatorOnly,
-        redacted: true,
+        redacted: false,
         truncated: false,
+        native_event: Value::String(line.to_owned()),
         source_content_fingerprint: source_fingerprint,
         payload: ObservationPayload::Malformed {
             reason_code: "native_json_malformed".into(),
@@ -451,28 +439,6 @@ fn validate_context(context: &DecodeContext, event: &NativeEvent) -> Result<(), 
     Ok(())
 }
 
-fn reject_authority_injection(raw: &serde_json::Value) -> Result<(), DecodeError> {
-    const FORBIDDEN: &[&str] = &[
-        "agent_member_id",
-        "agent_session_id",
-        "agent_session_generation",
-        "node_daemon_id",
-        "node_daemon_generation",
-        "runtime_command_id",
-        "visibility",
-        "permission_ceiling",
-        "validated_references",
-    ];
-    if raw
-        .as_object()
-        .is_some_and(|object| FORBIDDEN.iter().any(|field| object.contains_key(*field)))
-    {
-        Err(DecodeError::AuthorityInjection)
-    } else {
-        Ok(())
-    }
-}
-
 struct Decoded {
     kind: SemanticKind,
     phase: LifecyclePhase,
@@ -482,9 +448,6 @@ struct Decoded {
     payload: ObservationPayload,
     causal_parent_id: Option<String>,
     correlation_id: Option<String>,
-    redacted: bool,
-    truncated: bool,
-    private_reasoning: bool,
 }
 
 fn private(payload: ObservationPayload, kind: SemanticKind, phase: LifecyclePhase) -> Decoded {
@@ -497,14 +460,21 @@ fn private(payload: ObservationPayload, kind: SemanticKind, phase: LifecyclePhas
             Completeness::Partial
         },
         effect_certainty: EffectCertainty::None,
-        visibility: ObservationVisibility::SessionOwnerPrivate,
+        visibility: ObservationVisibility::TeamSession,
         payload,
         causal_parent_id: None,
         correlation_id: None,
-        redacted: false,
-        truncated: false,
-        private_reasoning: false,
     }
+}
+
+fn native(raw: &Value) -> Decoded {
+    private(
+        ObservationPayload::Native {
+            event_type: raw.get("type").and_then(Value::as_str).map(str::to_owned),
+        },
+        SemanticKind::NativeEvent,
+        LifecyclePhase::Progress,
+    )
 }
 
 fn public_runtime(
@@ -522,9 +492,6 @@ fn public_runtime(
         payload,
         causal_parent_id: None,
         correlation_id: None,
-        redacted: false,
-        truncated: false,
-        private_reasoning: false,
     }
 }
 
@@ -752,10 +719,9 @@ fn decode_pi(event: &NativeEvent) -> Result<Option<Decoded>, DecodeError> {
     let row_type = string(&event.raw, "/type")?;
     match row_type {
         // Pi's provider-native JSONL persists completed messages rather than
-        // replaying the transient RPC `message_update` family. Keep user
-        // prompts, reasoning, raw errors and tool payloads private; only an
-        // assistant-authored text or a redacted terminal outcome is eligible
-        // for the disposable owner-bound projection.
+        // replaying the transient RPC `message_update` family. This semantic
+        // classification is additive: the exact unfiltered native row is
+        // retained on every observation for the Team-scoped Session view.
         "message" => decode_pi_persisted_message(&event.raw),
         "message_update" => {
             let content = event
@@ -908,29 +874,23 @@ fn decode_deepseek_harness(event: &NativeEvent) -> Result<Option<Decoded>, Decod
 }
 
 fn authored(text: &str) -> Decoded {
-    let (text, truncated) = bounded(text, MAX_TEXT_CHARS);
-    let (text, redacted) = redact_display_text(&text);
-    let mut decoded = private(
-        ObservationPayload::AuthoredResponse { text },
+    private(
+        ObservationPayload::AuthoredResponse {
+            text: text.to_owned(),
+        },
         SemanticKind::AuthoredResponse,
         LifecyclePhase::Progress,
-    );
-    decoded.truncated = truncated;
-    decoded.redacted = redacted;
-    decoded
+    )
 }
 
 fn reasoning_drop() -> Decoded {
-    let mut decoded = private(
+    private(
         ObservationPayload::ReasoningSummary {
-            summary: "provider-private reasoning omitted".into(),
+            summary: "provider-native reasoning event".into(),
         },
         SemanticKind::ReasoningSummary,
         LifecyclePhase::Progress,
-    );
-    decoded.private_reasoning = true;
-    decoded.redacted = true;
-    decoded
+    )
 }
 
 fn tool(
@@ -990,24 +950,19 @@ fn interaction(raw: &serde_json::Value) -> Decoded {
         .get("prompt")
         .and_then(|v| v.as_str())
         .unwrap_or("Provider interaction is required");
-    let (prompt, truncated) = bounded(prompt, MAX_DISPLAY_DETAIL_CHARS);
-    let (prompt, redacted) = redact_display_text(&prompt);
-    let mut decoded = public_runtime(
+    public_runtime(
         ObservationPayload::Interaction {
             reason_code: safe_label(
                 raw.get("reasonCode")
                     .and_then(|v| v.as_str())
                     .unwrap_or("provider_interaction_required"),
             ),
-            prompt,
+            prompt: prompt.to_owned(),
         },
         SemanticKind::InteractionRequired,
         LifecyclePhase::Requested,
         Completeness::Incomplete,
-    );
-    decoded.truncated = truncated;
-    decoded.redacted = redacted;
-    decoded
+    )
 }
 
 fn transport(reason: &str) -> Decoded {
@@ -1077,76 +1032,6 @@ fn safe_label(value: &str) -> String {
         .filter(|character| !character.is_control())
         .take(160)
         .collect()
-}
-
-fn bounded(value: &str, max: usize) -> (String, bool) {
-    let mut chars = value.chars();
-    let bounded = chars.by_ref().take(max).collect::<String>();
-    (bounded, chars.next().is_some())
-}
-
-fn redact_display_text(value: &str) -> (String, bool) {
-    let mut redacted = false;
-    let lines = value
-        .lines()
-        .map(|line| {
-            if line.contains("-----BEGIN ") && line.contains("PRIVATE KEY-----") {
-                redacted = true;
-                return "[REDACTED PRIVATE KEY]".to_string();
-            }
-            let mut redact_next_credential = false;
-            line.split_whitespace()
-                .map(|token| {
-                    if redact_next_credential {
-                        redact_next_credential = false;
-                        redacted = true;
-                        return "[REDACTED TOKEN]".to_string();
-                    }
-                    let lower = token.to_ascii_lowercase();
-                    if lower.trim_matches(|character: char| !character.is_ascii_alphanumeric())
-                        == "bearer"
-                    {
-                        redact_next_credential = true;
-                        return token.to_string();
-                    }
-                    let sensitive_assignment = [
-                        "token=",
-                        "password=",
-                        "secret=",
-                        "api_key=",
-                        "authorization=",
-                    ]
-                    .iter()
-                    .find_map(|marker| lower.find(marker).map(|index| (marker, index)));
-                    if let Some((marker, index)) = sensitive_assignment {
-                        redacted = true;
-                        return format!("{}{}[REDACTED]", &token[..index], marker);
-                    }
-                    let unquoted = token.trim_start_matches(['\"', '\'', '(', '[', '{']);
-                    if unquoted.starts_with("sk-") && unquoted.len() >= 20 {
-                        redacted = true;
-                        return "[REDACTED TOKEN]".into();
-                    }
-                    let bytes = unquoted.as_bytes();
-                    let absolute_path = unquoted.starts_with('/')
-                        || unquoted.starts_with("~/")
-                        || unquoted.starts_with("\\\\")
-                        || (bytes.len() >= 3
-                            && bytes[0].is_ascii_alphabetic()
-                            && bytes[1] == b':'
-                            && matches!(bytes[2], b'/' | b'\\'));
-                    if absolute_path {
-                        redacted = true;
-                        return "[REDACTED PATH]".into();
-                    }
-                    token.to_string()
-                })
-                .collect::<Vec<_>>()
-                .join(" ")
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-    (lines, redacted)
 }
 
 fn fingerprint(value: &serde_json::Value) -> String {

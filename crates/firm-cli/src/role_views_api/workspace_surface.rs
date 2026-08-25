@@ -135,39 +135,19 @@ pub(crate) fn agent_workspace_view(
             ),
         ));
     }
-    let exact_host_identity = identity.is_some_and(|identity| {
-        (identity.actor.kind == ActorKind::AgentMember && identity.actor.id == team.host_agent_id)
-            || identity
-                .authority_actors
-                .iter()
-                .any(|actor| actor.kind == ActorKind::AgentMember && actor.id == team.host_agent_id)
-    });
-    let exact_selected_identity = identity.is_some_and(|identity| {
-        identity.actor.kind == ActorKind::AgentMember && identity.actor.id == selected_agent_id
-    });
-    let local_operator = identity.is_some_and(|identity| identity.local_operator);
-    if !(exact_host_identity || exact_selected_identity || local_operator) {
+    let exact_host_identity =
+        identity.is_some_and(|identity| identity.has_agent_member(&team.host_agent_id));
+    let exact_selected_identity =
+        identity.is_some_and(|identity| identity.has_agent_member(selected_agent_id));
+    if !identity.is_some_and(|identity| identity.may_read_team(team)) {
         return Err((
             "403 Forbidden",
             "NOT_AUTHORIZED",
-            "AgentWorkspace requires the exact selected AgentMember or this Team's exact Host authority"
+            "AgentWorkspace requires exact Team membership or same-machine local Operator authority"
                 .into(),
         ));
     }
-    if selected_is_host && !(exact_host_identity || local_operator) {
-        return Err((
-            "403 Forbidden",
-            "NOT_AUTHORIZED",
-            "Host Agent Session is visible only to this Team's exact Host authority".into(),
-        ));
-    }
-    let projection_scope = if selected_is_host && exact_host_identity {
-        "host_self_private"
-    } else if exact_selected_identity {
-        "member_self_private"
-    } else {
-        "host_member_public"
-    };
+    let projection_scope = "team_session_read";
 
     // Reuse the bounded TeamWorkspace summaries; no browser-side ledger joins
     // or second Work/Message model is introduced by AgentWorkspace.
@@ -192,7 +172,7 @@ pub(crate) fn agent_workspace_view(
         .filter_map(|member_run| member_run["id"].as_str())
         .chain(std::iter::once(selected_agent_id))
         .collect::<BTreeSet<_>>();
-    let mut messages = all_messages
+    let messages = all_messages
         .into_iter()
         .filter(|message| {
             message["sender"]["id"]
@@ -207,7 +187,7 @@ pub(crate) fn agent_workspace_view(
                 })
         })
         .collect::<Vec<_>>();
-    let mut works = all_works
+    let works = all_works
         .into_iter()
         .filter(|work| {
             selected_is_host
@@ -217,37 +197,6 @@ pub(crate) fn agent_workspace_view(
                     .is_some_and(|ids| ids.iter().any(|id| id == selected_agent_id))
         })
         .collect::<Vec<_>>();
-    let public_unread_count = messages
-        .iter()
-        .filter(|message| {
-            message["deliveries"].as_array().is_some_and(|deliveries| {
-                deliveries.iter().any(|delivery| {
-                    matches!(delivery["status"].as_str(), Some("queued" | "delivered"))
-                })
-            })
-        })
-        .count();
-    if projection_scope == "host_member_public" {
-        // Coordination content and responsibility are public to the exact Host,
-        // but delivery receipts, runtime bindings, and workspace bindings are
-        // execution-private. Redact them before the RoleView leaves the server.
-        for message in &mut messages {
-            message["deliveries"] = json!([]);
-        }
-        for work in &mut works {
-            work["current_member_run_ref"] = Value::Null;
-            work["runtime_summary"] = json!({
-                "state":"not_projected",
-                "generation":null,
-                "freshness":"unknown",
-            });
-            work["workspace_summary"] = json!({
-                "binding_id":null,
-                "lifecycle":"not_projected",
-                "safety":"unknown",
-            });
-        }
-    }
     let selected_work_ids = works
         .iter()
         .filter_map(|work| work["work_id"].as_str())
@@ -301,16 +250,8 @@ pub(crate) fn agent_workspace_view(
             ] {
                 object.remove(key);
             }
-            if !is_selected || projection_scope == "host_member_public" {
+            if !is_selected {
                 object.remove("runtime_state");
-            }
-            if projection_scope == "host_member_public" {
-                // The public Host-selected surface is responsibility and
-                // coordination only. Provider-derived or Member-private live
-                // state is structurally absent, including roster rollups.
-                object.remove("coordination_status");
-                object.insert("coordination_status".into(), Value::Null);
-                object.insert("capacity".into(), json!("not_projected"));
             }
         }
     }
@@ -355,23 +296,17 @@ pub(crate) fn agent_workspace_view(
         })
     }
     .or_else(|| member_runs.first());
-    // Provider-private Session data is owner-bound, not merely Team-authorized.
-    // The exact Host can read the Host Session. The exact Member can read that
-    // Member's Session. Host authority selecting a Member receives only public
-    // coordination/Work facts and never that Member's native Session internals.
-    let may_read_private_session =
-        (selected_is_host && exact_host_identity) || (!selected_is_host && exact_selected_identity);
-    let current_agent_sessions = if may_read_private_session {
-        facts
-            .agent_sessions
-            .iter()
-            .filter(|session| session["execution_space_id"] == space_id)
-            .filter(|session| session["agent_member_id"] == selected_agent_id)
-            .filter(|session| session["lifecycle"] != "closed")
-            .collect::<Vec<_>>()
-    } else {
-        Vec::new()
-    };
+    // Provider-native Session reads are Team-scoped. The application layer has
+    // The AgentSession binding is coordination provenance only. Provider-native
+    // content is exposed below exclusively to the same-machine loopback
+    // Operator; remote RoleView credentials never become transcript grants.
+    let current_agent_sessions = facts
+        .agent_sessions
+        .iter()
+        .filter(|session| session["execution_space_id"] == space_id)
+        .filter(|session| session["agent_member_id"] == selected_agent_id)
+        .filter(|session| session["lifecycle"] != "closed")
+        .collect::<Vec<_>>();
     let current_agent_session = if selected_is_host {
         host_runtime_binding
             .as_ref()
@@ -388,12 +323,21 @@ pub(crate) fn agent_workspace_view(
             _ => None,
         }
     };
-    // The owner-only historical projection is decoded on demand. It is
+    // The Team-scoped historical projection is decoded on demand. It is
     // independent from the volatile live overlay and never enters a ledger.
-    let viewer_identity_id = identity
-        .map(|identity| identity.actor.id.as_str())
-        .unwrap_or_default();
-    let session_event_projection = may_read_private_session.then(|| {
+    let session_before_position = query
+        .values
+        .get("session_before")
+        .and_then(|values| values.first())
+        .and_then(|value| value.parse::<u64>().ok());
+    let session_page_limit = query
+        .values
+        .get("session_limit")
+        .and_then(|values| values.first())
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(crate::provider_event_api::DEFAULT_SESSION_PAGE_SIZE);
+    let local_native_session_read = identity.is_some_and(ReadIdentity::may_read_native_session);
+    let session_event_projection = Some(if local_native_session_read {
         let project_binding_id = store
             .provider_compatibility_scope()
             .map(|(project_id, _)| project_id)
@@ -406,37 +350,43 @@ pub(crate) fn agent_workspace_view(
                 project_id: project_binding_id,
                 team_id: &team.id,
                 selected_agent_id,
-                viewer_identity_id,
+                before_position: session_before_position,
+                page_limit: session_page_limit,
                 run,
                 selected_member_run,
             },
+        )
+    } else {
+        unavailable_session_event_projection_code(
+            "local_operator_required",
+            "Provider-native Session history is available only from the same-machine Dashboard.",
         )
     });
     // Only an exact MemberRun selector plus its current canonical AgentSession
     // can receive the process-local live overlay. MemberRun and AgentSession
     // generations are independent fences; detached external Hosts stay null.
-    let live_provider_activity = if may_read_private_session {
-        let project_binding_id = store
-            .provider_compatibility_scope()
-            .map(|(project_id, _)| project_id)
-            .unwrap_or_default();
-        selected_member_run
-            .and_then(|member_run| {
-                let typed_member = serde_json::from_value(member_run.clone()).ok()?;
-                crate::provider_event_api::exact_live_scope(
-                    store,
-                    space_id,
-                    project_binding_id,
-                    member_run["team_run_id"].as_str()?,
-                    &typed_member,
-                )
-                .ok()
-            })
-            .as_ref()
-            .and_then(crate::provider_event_api::live_snapshot)
-    } else {
-        None
-    };
+    let project_binding_id = store
+        .provider_compatibility_scope()
+        .map(|(project_id, _)| project_id)
+        .unwrap_or_default();
+    let live_provider_activity = local_native_session_read
+        .then(|| {
+            selected_member_run
+                .and_then(|member_run| {
+                    let typed_member = serde_json::from_value(member_run.clone()).ok()?;
+                    crate::provider_event_api::exact_live_scope(
+                        store,
+                        space_id,
+                        project_binding_id,
+                        member_run["team_run_id"].as_str()?,
+                        &typed_member,
+                    )
+                    .ok()
+                })
+                .as_ref()
+                .and_then(crate::provider_event_api::live_snapshot)
+        })
+        .flatten();
     let selected_member = facts
         .members
         .iter()
@@ -456,15 +406,15 @@ pub(crate) fn agent_workspace_view(
         "capabilities":selected_member.and_then(|member|member["capabilities"].as_array()).cloned().unwrap_or_default(),
         "tool_refs":[],
         "tools_projection":"not_modeled_by_agent_member",
-        "provider_profile_ref":if may_read_private_session {selected_member.and_then(|member|member["provider_profile_ref"].as_str())} else {None},
-        "model_preference":if may_read_private_session {selected_member.and_then(|member|member["model_preference"].as_str())} else {None},
-        "workspace_policy":if may_read_private_session {selected_member.and_then(|member|member["workspace_policy"].as_str())} else {None},
-        "permission_ceiling":if may_read_private_session {selected_member.and_then(|member|member["permission_ceiling"].as_str())} else {None},
-        "effective_permission_ceiling":if may_read_private_session {current_agent_session.and_then(|session|session["effective_permission_ceiling"].as_str())} else {None},
-        "resolved_workspace_cwd":if may_read_private_session {current_agent_session.and_then(|session|session["workspace_cwd"].as_str()).or_else(||selected_member_run.and_then(|member|member["provider_cwd_hint"].as_str()))} else {None},
+        "provider_profile_ref":selected_member.and_then(|member|member["provider_profile_ref"].as_str()),
+        "model_preference":selected_member.and_then(|member|member["model_preference"].as_str()),
+        "workspace_policy":selected_member.and_then(|member|member["workspace_policy"].as_str()),
+        "permission_ceiling":selected_member.and_then(|member|member["permission_ceiling"].as_str()),
+        "effective_permission_ceiling":current_agent_session.and_then(|session|session["effective_permission_ceiling"].as_str()),
+        "resolved_workspace_cwd":current_agent_session.and_then(|session|session["workspace_cwd"].as_str()).or_else(||selected_member_run.and_then(|member|member["provider_cwd_hint"].as_str())),
         "forbidden_actions":[],
         "forbidden_actions_projection":"not_modeled",
-        "workspace_binding":if may_read_private_session {workspace_binding} else {None},
+        "workspace_binding":workspace_binding,
     });
 
     let authority_envelope = if exact_host_identity {
@@ -500,10 +450,8 @@ pub(crate) fn agent_workspace_view(
         .into_iter()
         .filter(|action| match action["target_ref"]["kind"].as_str() {
             Some("team_run") => true,
-            // Host control authority and provider-private observation are
-            // separate planes. A Host-selected public projection may expose
-            // exact, server-authorized MemberRun controls without exposing the
-            // Member's Session, runtime facts, or workspace binding.
+            // Host control authority and Team-scoped provider observation are
+            // separate planes. Mutation actions still require exact authority.
             Some("member_run") => {
                 selected_member_run_id.is_some_and(|id| action["target_ref"]["id"] == id)
             }
@@ -546,27 +494,23 @@ pub(crate) fn agent_workspace_view(
         "role":selected_member.and_then(|member|member["role"].as_str()).or_else(||selected_roster.and_then(|member|member["role"].as_str())).unwrap_or(if selected_is_host{"Host"}else{"Agent"}),
         "organization_status":selected_member.and_then(|member|member["organization_status"].as_str()).unwrap_or("unknown"),
         "is_host":selected_is_host,
-        "current_member_run_ref":if may_read_private_session {selected_member_run_id} else {None},
-        "provider":if may_read_private_session {current_agent_session.and_then(|session|session["provider_kind"].as_str()).or_else(||selected_member_run.and_then(|run|run["provider"].as_str()))} else {None},
-        "execution_mode":if may_read_private_session {selected_member_run.and_then(|run|run["execution_mode"].as_str())} else {None},
-        "runtime_status":if may_read_private_session {selected_runtime_status} else {None},
-        "runtime_generation":if may_read_private_session {selected_member_run.and_then(|run|run["runtime_generation"].as_u64())} else {None},
+        "current_member_run_ref":selected_member_run_id,
+        "provider":current_agent_session.and_then(|session|session["provider_kind"].as_str()).or_else(||selected_member_run.and_then(|run|run["provider"].as_str())),
+        "execution_mode":selected_member_run.and_then(|run|run["execution_mode"].as_str()),
+        "runtime_status":selected_runtime_status,
+        "runtime_generation":selected_member_run.and_then(|run|run["runtime_generation"].as_u64()),
         "host_session_mode":if selected_is_host {Some(host_session_mode(host_member_binding.as_ref()))} else {None},
     });
-    let unread_count = if projection_scope == "host_member_public" {
-        public_unread_count
-    } else {
-        messages
-            .iter()
-            .filter(|message| {
-                message["deliveries"].as_array().is_some_and(|deliveries| {
-                    deliveries.iter().any(|delivery| {
-                        matches!(delivery["status"].as_str(), Some("queued" | "delivered"))
-                    })
+    let unread_count = messages
+        .iter()
+        .filter(|message| {
+            message["deliveries"].as_array().is_some_and(|deliveries| {
+                deliveries.iter().any(|delivery| {
+                    matches!(delivery["status"].as_str(), Some("queued" | "delivered"))
                 })
             })
-            .count()
-    };
+        })
+        .count();
     let safe_team = json!({
         "team_id":team_data["team"]["team_id"],
         "display_name":team_data["team"]["display_name"],
@@ -627,13 +571,5 @@ pub(crate) fn agent_workspace_view(
         .as_object_mut()
         .expect("AgentWorkspace data object")
         .remove("runtime_fabric");
-    if projection_scope == "host_member_public" {
-        let data = response["data"]
-            .as_object_mut()
-            .expect("AgentWorkspace data object");
-        data.remove("session_event_projection");
-        data.remove("current_session");
-        data.remove("live_provider_activity");
-    }
     Ok(response)
 }

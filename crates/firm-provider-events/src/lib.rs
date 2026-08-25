@@ -1,9 +1,9 @@
 //! Closed provider-native event semantics for AgentFirm.
 //!
 //! Provider transcripts remain provider-owned. This crate accepts one native
-//! row at a time and returns bounded, privacy-safe observations that can be
-//! folded into server-owned read models. It never authors Message, Work,
-//! Delivery, Decision, or provider-effect truth.
+//! row at a time and returns exact native observations for disposable,
+//! response-local read models. It never persists a transcript or authors
+//! Message, Work, Delivery, Decision, or provider-effect truth.
 
 mod access;
 mod decoder;

@@ -74,7 +74,8 @@
                 "viewer_role": {
                   "enum": [
                     "host",
-                    "member"
+                    "member",
+                    "operator"
                   ]
                 },
                 "node_id": {

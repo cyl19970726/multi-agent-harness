@@ -22,9 +22,10 @@
   "lifecycle_phase": "progress",
   "completeness": "partial",
   "effect_certainty": "none",
-  "visibility": "session_owner_private",
+  "visibility": "team_session",
   "redacted": false,
   "truncated": false,
+  "native_event": {"type":"event_msg","payload":{"type":"agent_message","message":"Completed the bounded step."}},
   "source_content_fingerprint": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
   "payload": {"type": "authored_response", "text": "Completed the bounded step."}
 }

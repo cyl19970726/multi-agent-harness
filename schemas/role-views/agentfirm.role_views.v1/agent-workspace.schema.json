@@ -7,11 +7,7 @@
       "type":"object",
       "properties":{
         "view_kind":{"const":"agent_workspace"},
-        "data":{"oneOf":[
-          {"$ref":"#/$defs/memberSelfPrivateData"},
-          {"$ref":"#/$defs/hostSelfPrivateData"},
-          {"$ref":"#/$defs/hostMemberPublicData"}
-        ]}
+        "data":{"$ref":"#/$defs/teamSessionReadData"}
       }
     }
   ],
@@ -21,7 +17,7 @@
       "additionalProperties":false,
       "required":["projection_scope","team","selected_agent","roster","messages","works","configuration","context_summary"],
       "properties":{
-        "projection_scope":{"enum":["member_self_private","host_self_private","host_member_public"]},
+        "projection_scope":{"const":"team_session_read"},
         "team":{"$ref":"#/$defs/team"},
         "selected_agent":{"$ref":"#/$defs/selectedAgent"},
         "roster":{"type":"array","items":{"$ref":"#/$defs/rosterAgent"}},
@@ -34,38 +30,20 @@
         "context_summary":{"$ref":"#/$defs/contextSummary"}
       }
     },
-    "memberSelfPrivateData":{
-      "allOf":[
-        {"$ref":"#/$defs/agentWorkspaceData"},
-        {"type":"object","required":["current_session","session_event_projection","live_provider_activity"],"properties":{"projection_scope":{"const":"member_self_private"},"session_event_projection":{"$ref":"https://agentfirm.local/schemas/provider-events/session-event-projection.schema.json"},"live_provider_activity":{"anyOf":[{"$ref":"https://agentfirm.local/schemas/provider-events/live-provider-activity.schema.json"},{"type":"null"}]}}}
-      ]
-    },
-    "hostSelfPrivateData":{
-      "allOf":[
-        {"$ref":"#/$defs/agentWorkspaceData"},
-        {"type":"object","required":["current_session","session_event_projection","live_provider_activity"],"properties":{"projection_scope":{"const":"host_self_private"},"session_event_projection":{"$ref":"https://agentfirm.local/schemas/provider-events/session-event-projection.schema.json"},"live_provider_activity":{"type":"null"}}}
-      ]
-    },
-    "hostMemberPublicData":{
+    "teamSessionReadData":{
       "allOf":[
         {"$ref":"#/$defs/agentWorkspaceData"},
         {
           "type":"object",
-          "properties":{
-            "projection_scope":{"const":"host_member_public"},
-            "selected_agent":{"$ref":"#/$defs/publicSelectedAgent"},
-            "current_session":false,
-            "session_event_projection":false,
-            "live_provider_activity":false,
-            "configuration":{"$ref":"#/$defs/publicConfiguration"}
-          }
+          "required":["current_session","session_event_projection","live_provider_activity"],
+          "properties":{"projection_scope":{"const":"team_session_read"},"session_event_projection":{"$ref":"https://agentfirm.local/schemas/provider-events/session-event-projection.schema.json"},"live_provider_activity":{"anyOf":[{"$ref":"https://agentfirm.local/schemas/provider-events/live-provider-activity.schema.json"},{"type":"null"}]}}
         }
       ]
     },
     "team":{
       "type":"object","additionalProperties":false,
       "required":["team_id","display_name","team_revision","mission_id","host_agent_id","viewer_role","status","latest_run_id"],
-      "properties":{"team_id":{"type":"string"},"display_name":{"type":"string"},"team_revision":{"type":"integer"},"mission_id":{"type":"string"},"host_agent_id":{"type":"string"},"viewer_role":{"enum":["host","member"]},"status":{"type":"string"},"latest_run_id":{"type":["string","null"]}}
+      "properties":{"team_id":{"type":"string"},"display_name":{"type":"string"},"team_revision":{"type":"integer"},"mission_id":{"type":"string"},"host_agent_id":{"type":"string"},"viewer_role":{"enum":["host","member","operator"]},"status":{"type":"string"},"latest_run_id":{"type":["string","null"]}}
     },
     "selectedAgent":{
       "type":"object","additionalProperties":false,
@@ -76,21 +54,6 @@
         "current_member_run_ref":{"type":["string","null"]},"provider":{"type":["string","null"]},"execution_mode":{"type":["string","null"]},"runtime_status":{"type":["string","null"]},"runtime_generation":{"type":["integer","null"],"minimum":1},
         "host_session_mode":{"enum":["harness_managed","external_interactive","unbound",null]}
       }
-    },
-    "publicSelectedAgent":{
-      "allOf":[
-        {"$ref":"#/$defs/selectedAgent"},
-        {
-          "type":"object",
-          "properties":{
-            "current_member_run_ref":{"type":"null"},
-            "provider":{"type":"null"},
-            "execution_mode":{"type":"null"},
-            "runtime_status":{"type":"null"},
-            "runtime_generation":{"type":"null"}
-          }
-        }
-      ]
     },
     "rosterAgent":{
       "type":"object","additionalProperties":false,
@@ -111,26 +74,6 @@
       "type":"object","additionalProperties":false,
       "required":["description","prompt_ref","prompt_projection","skill_refs","capabilities","tool_refs","tools_projection","provider_profile_ref","model_preference","workspace_policy","permission_ceiling","effective_permission_ceiling","resolved_workspace_cwd","forbidden_actions","forbidden_actions_projection","workspace_binding"],
       "properties":{"description":{"type":["string","null"]},"prompt_ref":{"type":["string","null"]},"prompt_projection":{"type":"string"},"skill_refs":{"type":"array","items":{"type":"string"}},"capabilities":{"type":"array","items":{"type":"string"}},"tool_refs":{"type":"array","items":{"type":"string"}},"tools_projection":{"type":"string"},"provider_profile_ref":{"type":["string","null"]},"model_preference":{"type":["string","null"]},"workspace_policy":{"type":["string","null"]},"permission_ceiling":{"type":["string","null"]},"effective_permission_ceiling":{"type":["string","null"]},"resolved_workspace_cwd":{"type":["string","null"]},"forbidden_actions":{"type":"array","items":{"type":"string"}},"forbidden_actions_projection":{"type":"string"},"workspace_binding":{"anyOf":[{"$ref":"common.schema.json#/$defs/recordSummary"},{"type":"null"}]}}
-    },
-    "publicConfiguration":{
-      "allOf":[
-        {"$ref":"#/$defs/configuration"},
-        {
-          "type":"object",
-          "properties":{
-            "prompt_ref":{"type":"null"},
-            "provider_profile_ref":{"type":"null"},
-            "model_preference":{"type":"null"},
-            "workspace_policy":{"type":"null"},
-            "permission_ceiling":{"type":"null"},
-            "effective_permission_ceiling":{"type":"null"},
-            "resolved_workspace_cwd":{"type":"null"},
-            "tool_refs":{"type":"array","maxItems":0},
-            "forbidden_actions":{"type":"array","maxItems":0},
-            "workspace_binding":{"type":"null"}
-          }
-        }
-      ]
     },
     "contextSummary":{
       "type":"object","additionalProperties":false,

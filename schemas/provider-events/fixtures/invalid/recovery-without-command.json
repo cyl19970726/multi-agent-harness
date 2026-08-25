@@ -25,6 +25,7 @@
   "visibility": "team_public",
   "redacted": false,
   "truncated": false,
+  "native_event": {"type":"command_recovery_required"},
   "source_content_fingerprint": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
   "payload": {"type": "recovery", "reason_code": "invalid"}
 }

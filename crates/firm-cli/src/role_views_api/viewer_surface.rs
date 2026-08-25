@@ -8,18 +8,14 @@ enum ViewerTeamRole {
 }
 
 fn viewer_team_role(identity: &ReadIdentity, team: &AgentTeam) -> Option<ViewerTeamRole> {
-    let exact_host = identity.actor.id == team.host_agent_id
-        || identity
-            .authority_actors
-            .iter()
-            .any(|actor| actor.kind == ActorKind::AgentMember && actor.id == team.host_agent_id);
+    let exact_host = identity.has_agent_member(&team.host_agent_id);
     if exact_host {
         return Some(ViewerTeamRole::Host);
     }
     if team
         .member_ids
         .iter()
-        .any(|member_id| member_id == &identity.actor.id)
+        .any(|member_id| identity.has_agent_member(member_id))
     {
         return Some(ViewerTeamRole::Member);
     }
@@ -29,7 +25,7 @@ fn viewer_team_role(identity: &ReadIdentity, team: &AgentTeam) -> Option<ViewerT
 /// Minimal authenticated navigation context for the Dashboard.
 ///
 /// This projection exists so an old bookmark cannot choose a Team before the
-/// current capability credential has established its exact Team authority. It
+/// current local Operator or remote AgentMember context has established Team authority. It
 /// exposes no Work, Message, runtime, workspace, or provider-session content.
 pub(crate) fn viewer_context_view(
     space_id: &str,
@@ -39,13 +35,13 @@ pub(crate) fn viewer_context_view(
     let identity = identity.ok_or((
         "401 Unauthorized",
         "NOT_AUTHORIZED",
-        "ViewerContext requires an authenticated AgentMember identity".into(),
+        "ViewerContext requires local Operator or authenticated AgentMember authority".into(),
     ))?;
     if !identity.local_operator && identity.actor.kind != ActorKind::AgentMember {
         return Err((
             "403 Forbidden",
             "NOT_AUTHORIZED",
-            "ViewerContext requires an authenticated AgentMember identity".into(),
+            "ViewerContext requires local Operator or authenticated AgentMember authority".into(),
         ));
     }
     let facts = Facts::read(space_id, store)
@@ -69,7 +65,11 @@ pub(crate) fn viewer_context_view(
             ) {
                 team.host_agent_id.as_str()
             } else {
-                identity.actor.id.as_str()
+                team.member_ids
+                    .iter()
+                    .find(|member_id| identity.has_agent_member(member_id))
+                    .map(String::as_str)
+                    .expect("Member viewer role requires exact Team Member authority")
             };
             let current_member_run_id = latest_run.and_then(|run| {
                 facts
@@ -156,6 +156,21 @@ mod tests {
             Some(ViewerTeamRole::Member)
         );
         assert_eq!(viewer_team_role(&identity("foreign-member"), &team()), None);
+        let delegated_member = ReadIdentity {
+            actor: ActorRef {
+                kind: ActorKind::Service,
+                id: "remote-machine".into(),
+            },
+            authority_actors: vec![ActorRef {
+                kind: ActorKind::AgentMember,
+                id: "member-a".into(),
+            }],
+            local_operator: false,
+        };
+        assert_eq!(
+            viewer_team_role(&delegated_member, &team()),
+            Some(ViewerTeamRole::Member)
+        );
         let mut local_operator = identity("local-dashboard-operator");
         local_operator.local_operator = true;
         assert_eq!(

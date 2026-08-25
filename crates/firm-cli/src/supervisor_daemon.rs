@@ -152,7 +152,6 @@ impl MultiTeamDaemon {
         authority: &str,
         token: &str,
         agent_member_id: &str,
-        credential: Option<&crate::AgentFirmHttpCredential>,
         expected_daemon_instance_id: &str,
         serve_instance_id: &str,
     ) -> bool {
@@ -160,17 +159,13 @@ impl MultiTeamDaemon {
             .parse::<std::net::SocketAddr>()
             .ok()
             .is_some_and(|address| address.ip().is_loopback());
-        let exact_owner = credential.is_some_and(|credential| {
-            credential.actor.kind == harness_core::agentfirm_api::ActorKind::AgentMember
-                && credential.actor.id == agent_member_id
-        });
         if !loopback
             || token.len() < 32
             || token.len() > 256
             || serve_instance_id.len() < 32
             || serve_instance_id.len() > 256
             || expected_daemon_instance_id != self.instance_id
-            || !exact_owner
+            || agent_member_id.trim().is_empty()
         {
             return false;
         }
@@ -621,7 +616,6 @@ pub(crate) struct LiveProviderActivityRegistration<'a> {
     pub authority: &'a str,
     pub token: &'a str,
     pub agent_member_id: &'a str,
-    pub credential_token: &'a str,
     pub expected_daemon_instance_id: &'a str,
     pub serve_instance_id: &'a str,
 }
@@ -647,7 +641,6 @@ pub(crate) fn register_live_provider_activity_via_socket(
         "authority": registration.authority,
         "token": registration.token,
         "agent_member_id": registration.agent_member_id,
-        "credential_token": registration.credential_token,
         "expected_daemon_instance_id": registration.expected_daemon_instance_id,
         "serve_instance_id": registration.serve_instance_id,
     });

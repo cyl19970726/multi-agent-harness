@@ -23,9 +23,9 @@ This contract defines the adapter seam between:
 
 ## Implemented V1 surface and extension seam
 
-V1 implements mode-aware binding, availability probing, exact-owner bounded
+V1 implements mode-aware binding, availability probing, local-Operator paged
 on-demand reads, and explicit provider-native resume through provider-specific
-Rust functions. History is exposed only in the authenticated AgentWorkspace
+Rust functions. History is exposed only in the loopback AgentWorkspace
 projection; the old run-addressed HTTP readers are retired. It does not expose
 one public Rust trait with the exact name below.
 
@@ -62,13 +62,15 @@ NativeActivityPage
     native_id
     native_parent_id?
     status
-    title / sanitized_summary
+    exact provider-native event + navigation metadata
     occurred_at?
     artifact_ref?
 ```
 
-No record type includes private chain-of-thought. Provider-specific fields stay
-behind a drill-in/debug boundary rather than expanding the generic schema.
+The same-machine local Operator receives the complete provider-native
+event, including user, reasoning, response, tool, command/file, and raw error
+fields. Provider-specific fields stay inside `native_event`; Harness does not
+reinterpret them as coordination truth.
 
 ## Binding contract
 
@@ -87,8 +89,11 @@ behind a drill-in/debug boundary rather than expanding the generic schema.
 | `last_verified_at` | Latest successful probe |
 | `parent_native_session_id` | Optional resume/fork lineage |
 
-Secrets, auth tokens, raw environment, and private absolute paths are not
-returned to ordinary Dashboard clients.
+Harness does not add resolver credentials, bootstrap tokens, raw process
+environment, or hidden filesystem locators to the response. It also does not
+inspect or redact the selected provider-native event: if a coding provider
+itself persisted a value inside that event, the local Operator sees
+the original value exactly as the provider's own Session UI would.
 
 ## Write boundary
 
@@ -121,9 +126,9 @@ promotes it into a coordination object. Automatic copying is prohibited.
 GET Harness Team/Member projection
   -> TeamRun/MemberRun/Work/WorkDelivery/messages/interactions/outcome (+ legacy Mission rows when present)
 
-GET authenticated AgentWorkspace for exact AgentMember
+GET AgentWorkspace from the same-machine loopback local Operator
   -> provider adapter probe
-  -> provider-native bounded read (latest 300 displayable items)
+  -> provider-native paged read (default 80, maximum 200 events per response)
   -> SessionEventProjection grouped by provider turn/episode
 
 UI merge
@@ -137,9 +142,11 @@ joined read model, not a transcript database: it is rebuilt from Harness
 coordination rows plus bounded provider-native reads, and is never persisted
 as a second history.
 
-The backend performs native reads so provider paths and credentials do not leak
-to browser code. The current response exposes `truncated` rather than a cursor;
-refresh/reconnect rebuilds the projection directly from provider storage.
+The backend performs native reads so provider locators do not become browser
+authority. `page.next_before_position` is a disposable request boundary, not a
+durable cursor: refresh/reconnect rebuilds the projection directly from
+provider storage. The browser lazily requests earlier pages and virtualizes the
+rendered list; it never changes or truncates an original event.
 Typed `availability` and `unavailable_reason_code` distinguish an available
 empty Session from a missing, unsupported, or failed reader; prose remains
 display detail, not state.
@@ -224,12 +231,14 @@ states. UI must not invent native activity or resume from a Harness replay.
 - `MemberRun.native_session` carries the mode-aware locator and verified
   capability snapshot. New provider activity is not written to
   `member_actions.jsonl` or `team_run_events.jsonl`.
-- Authenticated `AgentWorkspace.data.session_event_projection` resolves the
+- Local-loopback `AgentWorkspace.data.session_event_projection` resolves the
   canonical AgentSession and its recorded NodeDaemon generation server-side, then
-  returns a bounded thinking-free projection. Host-selected Member views
-  structurally omit this field. The legacy
+  returns complete provider-native events in response-local pages. The local
+  Operator may select any locally bound Host or Member; a remote RoleView
+  credential receives coordination data but no native Session content.
+  The legacy
   `GET /v1/member-runs/{id}/native-activity` route returns `410 Gone` because it
-  cannot prove the exact owner.
+  cannot prove the canonical Team and AgentSession scope.
 - Stop/Detach or daemon release does not erase readable provider-native
   history. Current NodeDaemon/Supervisor authority remains mandatory for every
   Resume, Interrupt, Close, delivery, and other provider effect.
@@ -252,24 +261,21 @@ states. UI must not invent native activity or resume from a Harness replay.
 3. **Kimi and Claude readers/resume (complete):** verify installed provider storage and
    privacy first; stop NDJSON/stderr mirror writes.
 4. **Dashboard backend projection (complete for V1):** provider source,
-   availability, bounded activity, and an honest truncation signal. The UI
+   availability, paged exact activity, lazy loading, and virtualization. The UI
    binding belongs to the frontend Task; explicit resume selection remains on
    TeamRun retry/create CLI, MCP, and HTTP inputs.
 5. **Removal (complete):** delete obsolete provider-event ledgers, transcript/stdout/JSONL
    fields, reducers, and old local mirrored data; no compatibility reader.
 6. **Acceptance (DEV-20 implementation evidence):** deterministic provider
-   conformance and exact-owner HTTP integration prove native reads, privacy,
+   conformance and local-Operator HTTP integration prove native reads, scope,
    explicit unavailable state, and zero duplicate provider history. A mixed
    real-provider UI journey remains separate live acceptance.
 
 ## Remaining projection extensions
 
-- Historical observations carry their display-safe semantic payload and opaque
-  provider-native event ids where the provider exposes them. Filesystem paths
-  and raw transcript rows stay server-side.
-- The read endpoint returns a bounded on-demand window with `truncated`.
-  Pagination is intentionally deferred; it must not introduce a durable or
-  recoverable Harness projection cursor.
+- Provider-native formats remain provider-specific inside `native_event`; a
+  future richer renderer may add provider-aware presentation without filtering
+  or copying the source.
 - Dashboard shows native availability and whether resume is supported, but the
   operator-facing resume/fresh choice is not yet a Member Focus control.
 - These are projection/control-plane extensions, not permission to restore a

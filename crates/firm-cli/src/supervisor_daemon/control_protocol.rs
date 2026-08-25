@@ -213,18 +213,15 @@ impl MultiTeamDaemon {
                 let authority = cmd["authority"].as_str().unwrap_or("").trim();
                 let token = cmd["token"].as_str().unwrap_or("").trim();
                 let agent_member_id = cmd["agent_member_id"].as_str().unwrap_or("").trim();
-                let credential_token = cmd["credential_token"].as_str().unwrap_or("").trim();
                 let expected_daemon_instance_id = cmd["expected_daemon_instance_id"]
                     .as_str()
                     .unwrap_or("")
                     .trim();
                 let serve_instance_id = cmd["serve_instance_id"].as_str().unwrap_or("").trim();
-                let credential = crate::resolve_agentfirm_http_credential(Some(credential_token));
                 if !self.install_live_provider_activity_endpoint(
                     authority,
                     token,
                     agent_member_id,
-                    credential.as_ref().ok(),
                     expected_daemon_instance_id,
                     serve_instance_id,
                 ) {
@@ -232,7 +229,7 @@ impl MultiTeamDaemon {
                         stream,
                         &serde_json::json!({
                             "ok": false,
-                            "error": "live provider activity sink registration requires the exact current daemon instance, an authenticated exact AgentMember owner, a loopback authority, and bounded callback capabilities"
+                            "error": "live provider activity sink registration requires the exact current daemon instance, a selected AgentMember, a loopback authority, and bounded callback capabilities"
                         }),
                     )?;
                     return Ok(());

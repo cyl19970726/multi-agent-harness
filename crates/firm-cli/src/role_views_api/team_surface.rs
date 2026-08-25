@@ -19,20 +19,10 @@ pub(crate) fn team_view(
         .iter()
         .find(|team| team.id == resolved_team_id)
         .ok_or(("404 Not Found", "TEAM_NOT_FOUND", team_id.to_string()))?;
-    let exact_host_identity = identity.is_some_and(|identity| {
-        (identity.actor.kind == ActorKind::AgentMember && identity.actor.id == team.host_agent_id)
-            || identity
-                .authority_actors
-                .iter()
-                .any(|actor| actor.kind == ActorKind::AgentMember && actor.id == team.host_agent_id)
-    });
-    let local_operator = identity.is_some_and(|identity| identity.local_operator);
-    let exact_member_identity = identity.is_some_and(|identity| {
-        identity.actor.kind == ActorKind::AgentMember
-            && (identity.actor.id == team.host_agent_id
-                || team.member_ids.contains(&identity.actor.id))
-    });
-    let team_member_identity = exact_member_identity || exact_host_identity || local_operator;
+    let exact_host_identity =
+        identity.is_some_and(|identity| identity.has_agent_member(&team.host_agent_id));
+    let exact_member_identity = identity.is_some_and(|identity| identity.has_team_member(team));
+    let team_member_identity = identity.is_some_and(|identity| identity.may_read_team(team));
     if (host && !exact_host_identity) || (!host && !team_member_identity) {
         return Err((
             "403 Forbidden",
@@ -670,7 +660,7 @@ pub(crate) fn unavailable_session_event_projection(reason: &str) -> Value {
     unavailable_session_event_projection_code("native_session_unavailable", reason)
 }
 
-fn unavailable_session_event_projection_code(code: &str, reason: &str) -> Value {
+pub(crate) fn unavailable_session_event_projection_code(code: &str, reason: &str) -> Value {
     json!({
         "schema_version":"agentfirm.provider_observation.v1",
         "agent_session_id":null,
@@ -678,6 +668,7 @@ fn unavailable_session_event_projection_code(code: &str, reason: &str) -> Value 
         "source_snapshot_fingerprint":null,
         "episodes":[],
         "truncated":false,
+        "page":{"limit":crate::provider_event_api::DEFAULT_SESSION_PAGE_SIZE,"has_more":false,"next_before_position":null},
         "availability":"unavailable",
         "unavailable_reason_code":code,
         "disabled_reason":reason,
@@ -742,7 +733,8 @@ pub(crate) struct SessionProjectionReadRequest<'a> {
     pub(crate) project_id: &'a str,
     pub(crate) team_id: &'a str,
     pub(crate) selected_agent_id: &'a str,
-    pub(crate) viewer_identity_id: &'a str,
+    pub(crate) before_position: Option<u64>,
+    pub(crate) page_limit: usize,
     pub(crate) run: Option<&'a AgentTeamRun>,
     pub(crate) selected_member_run: Option<&'a Value>,
 }
@@ -805,7 +797,7 @@ pub(crate) fn read_session_event_projection(
     // Historical provider-native storage remains readable after Stop/Detach.
     // A current daemon lease is an execution-effect fence, not read authority.
     // The immutable AgentSession binding supplies exact provenance while the
-    // owner-only RoleView and provider root checks remain mandatory.
+    // Team-scoped RoleView and provider root checks remain mandatory.
     let Some(node_daemon_id) = session["node_daemon_id"]
         .as_str()
         .filter(|value| !value.trim().is_empty())
@@ -834,7 +826,8 @@ pub(crate) fn read_session_event_projection(
             agent_session_generation: session["runtime_generation"].as_u64().unwrap_or(0),
             node_daemon_id,
             node_daemon_generation,
-            viewer_identity_id: request.viewer_identity_id,
+            before_position: request.before_position,
+            page_limit: request.page_limit,
             native_session: &native_session,
         },
     )

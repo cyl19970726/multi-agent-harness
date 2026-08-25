@@ -317,7 +317,7 @@ GET /v1/snapshot
 GET /v1/dashboard/snapshot
 GET /v1/events
 GET /v1/team-runs/host-inbox
-GET /v1/views/agent-workspace/{team-run-or-member-run}?agent_id={exact-owner}
+GET /v1/views/agent-workspace/{team-run-or-member-run}?agent_id={exact-team-member}
 ```
 
 Managed provider members read only their exact-self coordination Inbox through

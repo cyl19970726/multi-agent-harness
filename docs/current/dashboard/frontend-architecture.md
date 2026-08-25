@@ -53,11 +53,14 @@ Harness store / provider adapters
   a missing stale route converges in place when there is one target or asks the
   user when there are several. Authentication recovery uses browser history
   replacement so Back/Forward cannot loop through the rejected URL.
-- Thinking is sanitized transient state and is absent after expiry/reload.
-- Agent Workspace reads one authenticated, server-built RoleView. The browser
-  never joins Team snapshots to MemberRuns or native provider activity, and a
-  Host's provider-private Session projection is never populated from another
-  Agent's native events.
+- Provider-native events are loaded on demand and remain outside Harness durable
+  state; transient live frames disappear from memory, while reopening reloads
+  the same native event model from the provider-owned Session.
+- Agent Workspace reads one server-built RoleView. The browser
+  never joins Team snapshots to MemberRuns or native provider activity. The
+  selected Agent's provider-native Session projection is populated only for a
+  same-machine loopback Operator. Remote RoleView credentials can still read
+  their coordination projection, but they do not become transcript grants.
 
 ## Module Boundary
 
@@ -87,7 +90,7 @@ AgentTeam.
 | --- | --- | --- |
 | Agent Teams Home | durable Node-placed AgentTeam discovery and Team routes | implying Teams belong to a retired Mission or inherit runtime state |
 | Team Workspace | stable Team identity, shared Works, current Supervisor, authenticated Message actors, WorkDelivery claim/receipt/failure, per-recipient CanonicalMessageDelivery state, member presence, Work-linked conversation, unified activity, and controls | impersonating a Member, consulting Legacy TeamMessage state, or fabricating provider control |
-| Agent Conversation Workspace | one shared Host/Member shell with Team roster, exact Session activity, authored Messages, Work responsibility, selected context, profile/configuration and server-authorized actions | browser-authored authority, a second Work/Message model, copied provider transcript, or cross-Agent provider-private events |
+| Agent Conversation Workspace | one shared Host/Member shell with Team roster, exact local Session activity, authored Messages, Work responsibility, selected context, profile/configuration and server-authorized actions | browser-authored authority, a second Work/Message model, copied provider transcript, or treating a remote role credential as provider-login/transcript authority |
 | Global Work Index | the read-only Global Work aggregate over authoritative TeamWork | a second task ledger or a Work mutation path |
 | Operator View / Nodes | ExecutionNode and machine-scoped NodeDaemon state | per-Team daemon claims |
 | Legacy archive | Historical Dynamic Workflow export/verify/restore-read evidence | current execution, Agent Team semantics, or mutation actions |
