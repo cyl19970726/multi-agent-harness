@@ -325,20 +325,25 @@ fn suppress_codex_mirrored_message(
     let row_type = raw.get("type").and_then(Value::as_str);
     let payload_type = raw.pointer("/payload/type").and_then(Value::as_str);
     if row_type == Some("event_msg") && payload_type == Some("agent_message") {
-        *pending = raw
-            .pointer("/payload/message")
-            .and_then(Value::as_str)
-            .map(|text| codex_message_mirror_digest(active_turn_id, text));
+        *pending = active_turn_id
+            .filter(|turn_id| !turn_id.is_empty())
+            .and_then(|turn_id| {
+                raw.pointer("/payload/message")
+                    .and_then(Value::as_str)
+                    .map(|text| codex_message_mirror_digest(turn_id, text))
+            });
         return false;
     }
     if row_type == Some("response_item")
         && payload_type == Some("message")
         && raw.pointer("/payload/role").and_then(Value::as_str) == Some("assistant")
     {
-        let response_text = codex_response_item_text(raw);
-        let mirrored = response_text
-            .as_deref()
-            .map(|text| codex_message_mirror_digest(active_turn_id, text))
+        let mirrored = active_turn_id
+            .filter(|turn_id| !turn_id.is_empty())
+            .and_then(|turn_id| {
+                codex_response_item_text(raw)
+                    .map(|text| codex_message_mirror_digest(turn_id, &text))
+            })
             .is_some_and(|digest| pending.as_deref() == Some(digest.as_str()));
         *pending = None;
         return mirrored;
@@ -368,9 +373,9 @@ fn codex_response_item_text(raw: &Value) -> Option<String> {
     (!text.is_empty()).then_some(text)
 }
 
-fn codex_message_mirror_digest(active_turn_id: Option<&str>, text: &str) -> String {
+fn codex_message_mirror_digest(active_turn_id: &str, text: &str) -> String {
     let mut digest = Sha256::new();
-    digest.update(active_turn_id.unwrap_or_default().as_bytes());
+    digest.update(active_turn_id.as_bytes());
     digest.update([0]);
     digest.update(text.as_bytes());
     format!("sha256:{:x}", digest.finalize())

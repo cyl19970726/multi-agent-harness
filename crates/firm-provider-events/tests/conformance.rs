@@ -758,6 +758,7 @@ fn codex_mirror_fold_crosses_incremental_batch_without_global_text_deduplication
     fs::write(
         &path,
         concat!(
+            "{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_started\",\"turn_id\":\"turn-1\"}}\n",
             "{\"type\":\"event_msg\",\"payload\":{\"type\":\"agent_message\",\"message\":\"repeat\"}}\n",
             "{\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"repeat\"}]}}\n",
             "{\"type\":\"event_msg\",\"payload\":{\"type\":\"agent_message\",\"message\":\"repeat\"}}\n",
@@ -773,7 +774,7 @@ fn codex_mirror_fold_crosses_incremental_batch_without_global_text_deduplication
         &context(ProviderKind::Codex),
         &boundary,
         TransientReadPosition::default(),
-        1,
+        2,
     )
     .unwrap();
     assert!(first.next_position.pending_codex_message_mirror.is_some());
@@ -793,6 +794,39 @@ fn codex_mirror_fold_crosses_incremental_batch_without_global_text_deduplication
             .count(),
         2,
         "same-family authored responses must remain distinct"
+    );
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn codex_messages_without_proven_same_turn_are_never_folded() {
+    let root = unique_temp_path("codex-message-without-turn");
+    fs::create_dir_all(&root).unwrap();
+    let path = root.join("session.jsonl");
+    fs::write(
+        &path,
+        concat!(
+            "{\"type\":\"event_msg\",\"payload\":{\"type\":\"agent_message\",\"message\":\"same text\"}}\n",
+            "{\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"same text\"}]}}\n",
+        ),
+    )
+    .unwrap();
+    let latest = read_latest_transcript_batch(
+        &context(ProviderKind::Codex),
+        &TranscriptReadBoundary {
+            allowed_root: root.clone(),
+            transcript_path: path,
+        },
+        10,
+    )
+    .unwrap();
+    assert_eq!(
+        latest
+            .outcomes
+            .iter()
+            .filter(|outcome| matches!(outcome, DecodeOutcome::Observation(_)))
+            .count(),
+        2
     );
     fs::remove_dir_all(root).unwrap();
 }
