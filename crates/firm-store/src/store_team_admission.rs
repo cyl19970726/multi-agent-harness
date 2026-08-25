@@ -175,6 +175,14 @@ impl HarnessStore {
     ) -> StoreResult<()> {
         self.init()?;
         let _lock = self.acquire_write_lock()?;
+        self.compare_and_append_member_run_unlocked(expected, next)
+    }
+
+    fn compare_and_append_member_run_unlocked(
+        &self,
+        expected: &ProviderRuntimeProjection,
+        next: &ProviderRuntimeProjection,
+    ) -> StoreResult<()> {
         let current = latest_by_id(
             self.read_jsonl::<ProviderRuntimeProjection>("member_runs.jsonl")?,
             |row| row.id.clone(),
@@ -208,6 +216,69 @@ impl HarnessStore {
             self.commit_prepared_current_member_sync_unlocked(canonical)?;
         }
         Ok(())
+    }
+
+    /// Atomically close one detached blocked Member generation for explicit
+    /// recovery. The Supervisor and parent NodeDaemon leases, exact
+    /// AgentSession revision, absence of an ambiguous provider effect, and
+    /// MemberRun CAS are one writer-lock linearization point.
+    #[allow(clippy::too_many_arguments)]
+    pub fn compare_and_append_recovered_member_run_for_supervisor(
+        &self,
+        expected: &ProviderRuntimeProjection,
+        next: &ProviderRuntimeProjection,
+        execution_space_id: &str,
+        expected_session: &firm_core::agentfirm_api::AgentSession,
+        supervisor_id: &str,
+        supervisor_generation: u64,
+    ) -> StoreResult<()> {
+        use firm_core::agentfirm_api::{RuntimeCommandStatus, RuntimeEffectCertainty};
+
+        self.init()?;
+        let _lock = self.acquire_write_lock()?;
+        self.require_exact_supervisor_authority_unlocked(
+            &expected.team_run_id,
+            supervisor_id,
+            supervisor_generation,
+        )?;
+        let current_session = self
+            .fabric_agent_sessions(execution_space_id)?
+            .into_iter()
+            .find(|session| session.id == expected_session.id)
+            .ok_or_else(|| {
+                StoreError::Conflict(format!(
+                    "DETACHED_MEMBER_RECOVERY_SESSION_CHANGED: AgentSession {} disappeared",
+                    expected_session.id
+                ))
+            })?;
+        if current_session != *expected_session {
+            return Err(StoreError::Conflict(format!(
+                "DETACHED_MEMBER_RECOVERY_SESSION_CHANGED: AgentSession {} changed concurrently",
+                expected_session.id
+            )));
+        }
+        let ambiguous_command =
+            self.runtime_commands(execution_space_id)?
+                .into_iter()
+                .any(|command| {
+                    command.target_session_id.as_deref() == Some(expected_session.id.as_str())
+                        && command.target_session_generation
+                            == Some(expected_session.runtime_generation)
+                        && matches!(
+                            command.status,
+                            RuntimeCommandStatus::Accepted
+                                | RuntimeCommandStatus::Quiesced
+                                | RuntimeCommandStatus::RecoveryRequired
+                        )
+                        && command.effect_certainty == RuntimeEffectCertainty::Unknown
+                });
+        if ambiguous_command {
+            return Err(StoreError::Conflict(format!(
+                "DETACHED_MEMBER_RECOVERY_AMBIGUOUS_COMMAND: AgentSession {} acquired an ambiguous RuntimeCommand",
+                expected_session.id
+            )));
+        }
+        self.compare_and_append_member_run_unlocked(expected, next)
     }
 
     /// Atomically enter a compatibility-owned Blocked state. This is the only

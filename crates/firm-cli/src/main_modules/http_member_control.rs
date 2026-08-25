@@ -243,11 +243,31 @@ pub(super) fn close_team_member_value(
     let close = if member.is_external_interactive() {
         latch_member_close(store, team_run_id, member_run_id, &requested_by, &reason)?
     } else {
-        if store
+        if let Some(supervisor) = store
             .latest_team_supervisor_lease(team_run_id)?
             .filter(is_supervisor_current)
-            .is_some()
         {
+            // A post-receipt provider failure deliberately drops its process
+            // handle and blocks the Member before any automatic replay.  In
+            // that exact state there is no live handle left to acknowledge a
+            // normal CloseMember command.  The canonical detached+idle
+            // AgentSession is nevertheless positive evidence that this
+            // Member runtime generation has already ended.  Let the Host
+            // close only that obsolete coordination generation, without
+            // fabricating a provider Close receipt; ordinary attached/live
+            // runtimes continue through the normal control path below.
+            if member.status == MemberRunStatus::Blocked {
+                if let Some(result) = close_detached_blocked_member_for_recovery(
+                    store,
+                    &run.id,
+                    &member,
+                    &supervisor,
+                    &requested_by,
+                    &reason,
+                )? {
+                    return Ok(result);
+                }
+            }
             return dispatch_live_member_control(
                 store,
                 LiveMemberControlRequest::Close {
@@ -302,6 +322,303 @@ pub(super) fn close_team_member_value(
         "coordination_effect": "member_closed",
         "idempotent": false,
     }))
+}
+
+pub(super) fn close_detached_blocked_member_for_recovery(
+    store: &HarnessStore,
+    team_run_id: &str,
+    member: &ProviderRuntimeProjection,
+    supervisor: &TeamSupervisorLease,
+    requested_by: &str,
+    reason: &str,
+) -> CliResult<Option<serde_json::Value>> {
+    close_detached_blocked_member_for_recovery_with_hook(
+        store,
+        team_run_id,
+        member,
+        supervisor,
+        requested_by,
+        reason,
+        |_| Ok(()),
+    )
+}
+
+pub(super) fn close_detached_blocked_member_for_recovery_with_hook(
+    store: &HarnessStore,
+    team_run_id: &str,
+    member: &ProviderRuntimeProjection,
+    supervisor: &TeamSupervisorLease,
+    requested_by: &str,
+    reason: &str,
+    mut before_terminal_cas: impl FnMut(usize) -> CliResult<()>,
+) -> CliResult<Option<serde_json::Value>> {
+    use harness_core::agentfirm_api::{
+        AgentSessionStatus, NativeSessionAvailability as AgentNativeSessionAvailability,
+        RuntimeActivity, RuntimeCommandStatus, RuntimeDriverRef, RuntimeEffectCertainty,
+        RuntimeResidency, WorkDeliveryStatus,
+    };
+
+    let ledger = TeamRunLedger::without_supervisor(store, team_run_id);
+    let (execution_space_id, session) = provider_session_for_member(&ledger, member)?;
+    if session.control_state.runtime_residency != RuntimeResidency::Detached {
+        return Ok(None);
+    }
+    if session.lifecycle != AgentSessionStatus::Idle
+        || session.control_state.activity != RuntimeActivity::Idle
+        || session.current_turn_id.is_some()
+    {
+        return Err(CliError::RuntimeRecoveryRequired(format!(
+            "DETACHED_MEMBER_RECOVERY_FENCED: member {} session {} is not detached+idle at a terminal turn boundary",
+            member.id, session.id
+        )));
+    }
+    let native_session_matches_and_resumable = match (
+        member.native_session.as_ref(),
+        session.native_session_ref.as_ref(),
+    ) {
+        (Some(member_native), Some(session_native)) => {
+            member_native.provider == session_native.provider
+                && member_native.execution_mode == session_native.execution_mode
+                && member_native.native_session_id == session_native.native_session_id
+                && member_native.native_locator_kind == session_native.native_locator_kind
+                && member_native.provider_version == session_native.provider_version
+                && member_native.adapter_contract_version == session_native.adapter_contract_version
+                && member_native.supports_resume
+                && session_native.supports_resume
+                && member_native.parent_native_session_id == session_native.parent_native_session_id
+                && matches!(
+                    (member_native.availability, session_native.availability),
+                    (
+                        harness_core::NativeSessionAvailability::Available,
+                        AgentNativeSessionAvailability::Available
+                    ) | (
+                        harness_core::NativeSessionAvailability::Stale,
+                        AgentNativeSessionAvailability::Stale
+                    )
+                )
+        }
+        _ => false,
+    };
+    if !native_session_matches_and_resumable {
+        return Err(CliError::RuntimeRecoveryRequired(format!(
+            "DETACHED_MEMBER_RECOVERY_FENCED: member {} lacks an exact present, resumable native-session authority matching AgentSession {}",
+            member.id, session.id
+        )));
+    }
+    let exact_supervisor_driver = matches!(
+        &session.control_state.driver_ref,
+        RuntimeDriverRef::TeamSupervisor {
+            team_run_id: driver_team_run_id,
+            team_supervisor_id,
+            team_supervisor_generation,
+        } if driver_team_run_id == team_run_id
+            && team_supervisor_id == &supervisor.supervisor_id
+            && *team_supervisor_generation == supervisor.generation
+    );
+    if !exact_supervisor_driver
+        || supervisor.node_daemon_id != session.node_daemon_id
+        || supervisor.node_daemon_generation != session.node_daemon_generation
+    {
+        return Err(CliError::RuntimeRecoveryRequired(format!(
+            "DETACHED_MEMBER_RECOVERY_FENCED: member {} is not bound to the exact current Supervisor and NodeDaemon generations",
+            member.id
+        )));
+    }
+    require_provider_session_authority(&ledger, &member.agent_member_id, false)?;
+
+    let ambiguous_command = store
+        .runtime_commands(&execution_space_id)?
+        .into_iter()
+        .any(|command| {
+            command.target_session_id.as_deref() == Some(session.id.as_str())
+                && command.target_session_generation == Some(session.runtime_generation)
+                && matches!(
+                    command.status,
+                    RuntimeCommandStatus::Accepted
+                        | RuntimeCommandStatus::Quiesced
+                        | RuntimeCommandStatus::RecoveryRequired
+                )
+                && command.effect_certainty == RuntimeEffectCertainty::Unknown
+        });
+    if ambiguous_command {
+        return Err(CliError::RuntimeRecoveryRequired(format!(
+            "DETACHED_MEMBER_RECOVERY_FENCED: member {} still has an ambiguous RuntimeCommand",
+            member.id
+        )));
+    }
+
+    // A provider receipt proves that the old runtime consumed this exact Work
+    // revision even when the adapter failed before persisting its ordinary
+    // end-of-round member projection.  Carry only that coordination fact into
+    // the closed generation so Reopen cannot re-inject the same Work.  A new
+    // Host Message or a later Work revision remains the explicit wake event.
+    let works = store.latest_works()?;
+    let received_deliveries = store
+        .fabric_work_deliveries(&execution_space_id)?
+        .into_iter()
+        .filter(|delivery| {
+            delivery.recipient_agent_member_id == member.agent_member_id
+                && delivery.recipient_session_id == session.id
+                && delivery.recipient_session_generation == session.runtime_generation
+                && delivery.status == WorkDeliveryStatus::ProviderReceived
+        })
+        .filter_map(|delivery| {
+            works
+                .iter()
+                .find(|work| {
+                    work.id == delivery.work_id
+                        && work.version == delivery.work_revision
+                        && work.active_member_run_id.as_deref() == Some(member.id.as_str())
+                        && !work.is_terminal()
+                })
+                .map(|work| (work.id.clone(), work.version))
+        })
+        .collect::<BTreeSet<_>>();
+    if received_deliveries.len() > 1 {
+        return Err(CliError::RuntimeRecoveryRequired(format!(
+            "DETACHED_MEMBER_RECOVERY_FENCED: member {} has multiple provider-received active Work revisions",
+            member.id
+        )));
+    }
+    let consumed_work_version = received_deliveries
+        .into_iter()
+        .next()
+        .map(|(_, version)| version);
+
+    // Latch intent first. The terminal recovery projection itself is committed
+    // below through one Store writer-lock transaction that revalidates the
+    // exact Supervisor/NodeDaemon, AgentSession, ambiguous-command set, and
+    // MemberRun revision. No provider effect is issued on this path.
+    let close = latch_member_close_for_supervisor(
+        store,
+        team_run_id,
+        &member.id,
+        requested_by,
+        reason,
+        &supervisor.supervisor_id,
+        supervisor.generation,
+    )?;
+    let mut conflicted_expected = None;
+    let closed = 'terminal_cas: {
+        for attempt in 0..PROVIDER_MEMBER_CAS_RETRIES {
+            let latest = ledger
+                .latest_member_run(&member.id)?
+                .ok_or_else(|| CliError::Usage(format!("member run not found: {}", member.id)))?;
+            if latest.runtime_generation != member.runtime_generation
+                || latest.status != MemberRunStatus::Blocked
+                || !latest.coordination_is_active()
+                || !provider_callback_native_session_matches(
+                    &member.native_session,
+                    &latest.native_session,
+                )
+            {
+                return Err(CliError::RuntimeRecoveryRequired(format!(
+                    "DETACHED_MEMBER_RECOVERY_FENCED: member {} changed after recovery admission",
+                    member.id
+                )));
+            }
+            if let Some(expected) = conflicted_expected.take() {
+                if !is_same_runtime_close_drift(&expected, &latest) {
+                    return Err(CliError::RuntimeRecoveryRequired(format!(
+                        "DETACHED_MEMBER_RECOVERY_FENCED: member {} changed outside the admitted runtime generation",
+                        member.id
+                    )));
+                }
+            }
+            let (_, current_session) = provider_session_for_member(&ledger, &latest)?;
+            if current_session.version != session.version
+                || current_session.control_state.runtime_residency != RuntimeResidency::Detached
+                || current_session.control_state.activity != RuntimeActivity::Idle
+                || current_session.lifecycle != AgentSessionStatus::Idle
+                || current_session.current_turn_id.is_some()
+            {
+                return Err(CliError::RuntimeRecoveryRequired(format!(
+                    "DETACHED_MEMBER_RECOVERY_FENCED: AgentSession {} changed after recovery admission",
+                    session.id
+                )));
+            }
+            before_terminal_cas(attempt)?;
+
+            let expected = latest;
+            let mut next = expected.clone();
+            let closed_at = now_string();
+            next.coordination_status = MemberCoordinationStatus::Closed;
+            next.status = MemberRunStatus::Stopped;
+            next.last_consumed_work_version =
+                consumed_work_version.or(next.last_consumed_work_version);
+            // The consumed provider-received revision has ended probation.
+            // Reopen must wait for new canonical Host input instead of using
+            // the generic zero-output continuation predicate.
+            next.zero_output_streak = 0;
+            next.finished_at = Some(closed_at.clone());
+            next.last_event_at = Some(closed_at);
+            match store.compare_and_append_recovered_member_run_for_supervisor(
+                &expected,
+                &next,
+                &execution_space_id,
+                &current_session,
+                &supervisor.supervisor_id,
+                supervisor.generation,
+            ) {
+                Ok(()) => break 'terminal_cas next,
+                Err(StoreError::Conflict(message))
+                    if message.starts_with("ProviderRuntimeProjection ")
+                        && message.ends_with(" changed concurrently; retry the operation")
+                        && attempt + 1 < PROVIDER_MEMBER_CAS_RETRIES =>
+                {
+                    conflicted_expected = Some(expected);
+                }
+                Err(StoreError::Conflict(message))
+                    if message.starts_with("TEAM_SUPERVISOR_LEASE_LOST:")
+                        || message.starts_with("TEAM_SUPERVISOR_PARENT_FENCED:") =>
+                {
+                    return Err(CliError::SupervisorLeaseLost(message));
+                }
+                Err(StoreError::Conflict(message))
+                    if message.starts_with("DETACHED_MEMBER_RECOVERY_") =>
+                {
+                    return Err(CliError::RuntimeRecoveryRequired(message));
+                }
+                Err(error) => return store_conflict_as_usage(Err(error)),
+            }
+        }
+        unreachable!("bounded detached-recovery CAS loop returns on every path")
+    };
+    store_conflict_as_usage(store.complete_team_member_close(
+        team_run_id,
+        &member.id,
+        &close.id,
+        &now_string(),
+    ))?;
+    cancel_unanswered_provider_messages(store, team_run_id, &member.id, requested_by, reason)?;
+    ledger.append_action(
+        &member.id,
+        "closed",
+        MemberActionStatus::Succeeded,
+        "detached blocked member coordination closed for recovery",
+        &format!("{requested_by}: {reason}"),
+    )?;
+    ledger.fold_event(
+        TeamRunEventSourceKind::Host,
+        Some(member.id.clone()),
+        "member_run",
+        &member.id,
+        "closed",
+        &format!(
+            "member {} detached runtime generation {} closed for explicit recovery",
+            member.name, member.runtime_generation
+        ),
+    )?;
+    Ok(Some(serde_json::json!({
+        "member_run_id": closed.id,
+        "status": "stopped",
+        "coordination_status": "closed",
+        "runtime": "not_live",
+        "runtime_effect": "already_detached",
+        "coordination_effect": "member_closed_for_recovery",
+        "provider_close_receipt": "not_fabricated",
+        "idempotent": false,
+    })))
 }
 
 /// POST /v1/team-runs/{id}/members/{m}/resume — dedicated entry for resuming

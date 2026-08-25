@@ -19,7 +19,10 @@ fn kimi_provider_error_after_receipt_requires_recovery_without_replay() {
                 "FAKE_KIMI_PROMPT_ERROR_ONCE_MARKER",
                 error_once_value.as_str(),
             ),
-            ("FIRM_MEMBER_SUPERVISOR_TEST_IDLE_MS", "30000"),
+            // Keep the test-only Supervisor alive across slow, cold CI
+            // runners. ServeHandle still terminates both child processes on
+            // drop, so this does not extend test teardown or production TTLs.
+            ("FIRM_MEMBER_SUPERVISOR_TEST_IDLE_MS", "180000"),
         ],
     );
     let (_, created) = serve.post_json(
@@ -111,5 +114,197 @@ fn kimi_provider_error_after_receipt_requires_recovery_without_replay() {
         dispatches[0].postcondition_status,
         harness_core::agentfirm_api::RuntimePostconditionStatus::Satisfied,
         "the prompt receipt proves StartCycle independently of terminal provider failure"
+    );
+
+    let (_, before_recovery) = serve.get_json("/v1/snapshot");
+    let blocked_member = before_recovery["member_runs"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|member| member["id"].as_str() == Some(member_id.as_str()))
+        .expect("blocked member projection");
+    let native_session_id = blocked_member["native_session"]["native_session_id"]
+        .as_str()
+        .expect("provider-native session id")
+        .to_string();
+    let initial_runtime_generation = blocked_member["runtime_generation"]
+        .as_u64()
+        .expect("runtime generation");
+    let work_id = before_recovery["works"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|work| work["active_member_run_id"].as_str() == Some(member_id.as_str()))
+        .and_then(|work| work["id"].as_str())
+        .expect("member Work")
+        .to_string();
+
+    // Reproduce the exact probation edge: generic idle wake would Continue
+    // active Work from a nonzero streak unless recovery atomically consumes
+    // that continuation authority together with the provider receipt fence.
+    let blocked_row = store
+        .member_runs()
+        .expect("member rows before recovery")
+        .into_iter()
+        .rev()
+        .find(|member| member.id == member_id)
+        .expect("blocked member row");
+    let mut probation_blocked = blocked_row.clone();
+    probation_blocked.zero_output_streak = 2;
+    probation_blocked.last_event_at = Some("unix-ms:recovery-probation".into());
+    store
+        .compare_and_append_member_run(&blocked_row, &probation_blocked)
+        .expect("seed nonzero probation continuation streak");
+
+    let close_deadline = std::time::Instant::now() + Duration::from_secs(30);
+    let (status, closed) = loop {
+        let response = serve.post_json(
+            &format!("/v1/team-runs/{run_id}/members/{member_id}/close"),
+            &serde_json::json!({
+                "requested_by": "host",
+                "reason": "explicitly close the detached failed runtime generation"
+            }),
+        );
+        if response.0 == 200 {
+            break response;
+        }
+        let awaiting_successor_authority = response.0 == 400
+            && response.1["error"].as_str().is_some_and(|error| {
+                error.contains("RUNTIME_COMMAND_RECOVERY_REQUIRED")
+                    && error.contains("no current provider-loop authority")
+            });
+        assert!(
+            awaiting_successor_authority,
+            "unexpected detached recovery Close failure: {}",
+            response.1
+        );
+        assert!(
+            std::time::Instant::now() < close_deadline,
+            "NodeDaemon did not re-adopt the detached blocked Member before recovery Close: {}",
+            response.1
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    assert_eq!(status, 200, "detached recovery Close: {closed}");
+    assert_eq!(
+        closed["result"]["runtime_effect"], "already_detached",
+        "recovery Close must not fabricate a provider Close receipt: {closed}"
+    );
+    assert_eq!(closed["result"]["provider_close_receipt"], "not_fabricated");
+    let closed_row = store
+        .member_runs()
+        .expect("member rows after recovery Close")
+        .into_iter()
+        .rev()
+        .find(|member| member.id == member_id)
+        .expect("closed member row");
+    assert_eq!(closed_row.zero_output_streak, 0);
+
+    let (status, reopened) = serve.post_json(
+        &format!("/v1/team-runs/{run_id}/members/{member_id}/reopen"),
+        &serde_json::json!({
+            "reopened_by": "host",
+            "reason": "resume the same native session after explicit recovery"
+        }),
+    );
+    assert_eq!(status, 202, "same-session Reopen: {reopened}");
+
+    // Reopen itself is not new provider input.  Give the Supervisor enough
+    // time to attach the replacement runtime and prove that the already
+    // provider-received Work is not injected again.
+    std::thread::sleep(Duration::from_millis(500));
+    let commands_after_reopen = store
+        .runtime_commands(&current_space_id(&home))
+        .expect("RuntimeCommands after Reopen");
+    assert_eq!(
+        commands_after_reopen
+            .iter()
+            .filter(|command| {
+                command.command == harness_core::agentfirm_api::RuntimeCommandKind::StartCycle
+            })
+            .count(),
+        1,
+        "Reopen must not replay the provider-received Work"
+    );
+    let deliveries_after_reopen = store
+        .fabric_work_deliveries(&current_space_id(&home))
+        .expect("WorkDeliveries after Reopen");
+    assert_eq!(deliveries_after_reopen.len(), 1);
+    assert_eq!(
+        deliveries_after_reopen[0].status,
+        harness_core::agentfirm_api::WorkDeliveryStatus::ProviderReceived
+    );
+
+    let (_, reopened_snapshot) = serve.get_json("/v1/snapshot");
+    let reopened_member = reopened_snapshot["member_runs"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|member| member["id"].as_str() == Some(member_id.as_str()))
+        .expect("reopened member projection");
+    assert_eq!(
+        reopened_member["runtime_generation"].as_u64(),
+        Some(initial_runtime_generation + 1)
+    );
+    assert_eq!(
+        reopened_member["native_session"]["native_session_id"].as_str(),
+        Some(native_session_id.as_str())
+    );
+
+    let (status, follow_up) = serve.post_json(
+        &format!("/v1/team-runs/{run_id}/messages"),
+        &serde_json::json!({
+            "sender_runtime_id": "host",
+            "recipient_runtime_ids": [member_id],
+            "kind": "message",
+            "work_id": work_id,
+            "body": "new explicit recovery-cycle input"
+        }),
+    );
+    assert_eq!(status, 200, "new Host input: {follow_up}");
+    let follow_up_id = follow_up["result"]["id"]
+        .as_str()
+        .expect("follow-up message id")
+        .to_string();
+
+    let mut resumed_once = false;
+    for _ in 0..200 {
+        let (_, snapshot) = serve.get_json("/v1/snapshot");
+        let acknowledged = snapshot["team_messages"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|message| message["id"].as_str() == Some(follow_up_id.as_str()))
+            .is_some_and(|message| {
+                message["deliveries"][0]["status"].as_str() == Some("acknowledged")
+            });
+        let same_session_idle = snapshot["member_runs"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(|member| {
+                member["id"].as_str() == Some(member_id.as_str())
+                    && member["native_session"]["native_session_id"].as_str()
+                        == Some(native_session_id.as_str())
+                    && member["runtime_generation"].as_u64() == Some(initial_runtime_generation + 1)
+                    && member["status"].as_str() == Some("idle")
+            });
+        let start_cycles = store
+            .runtime_commands(&current_space_id(&home))
+            .expect("RuntimeCommands during follow-up")
+            .into_iter()
+            .filter(|command| {
+                command.command == harness_core::agentfirm_api::RuntimeCommandKind::StartCycle
+            })
+            .count();
+        resumed_once = acknowledged && same_session_idle && start_cycles == 2;
+        if resumed_once {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(
+        resumed_once,
+        "only the new Host input should start one same-session recovery cycle"
     );
 }

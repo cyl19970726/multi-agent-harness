@@ -14,6 +14,8 @@ mod close_without_live_supervisor_requires_runtime_command_recovery_without_side
 mod codex_multi_question_request_fails_closed_without_durable_side_effects;
 #[path = "../general/coordination_close_retries_provider_callback_status_race.rs"]
 mod coordination_close_retries_provider_callback_status_race;
+#[path = "../general/detached_blocked_member_recovery_close_is_exact_and_fail_closed.rs"]
+mod detached_blocked_member_recovery_close_is_exact_and_fail_closed;
 #[path = "../general/duplicate_canonical_member_run_scope_is_never_current_authority.rs"]
 mod duplicate_canonical_member_run_scope_is_never_current_authority;
 #[path = "../general/dynamic_member_admission_rejects_foreign_only_identity_without_any_durable_write.rs"]
