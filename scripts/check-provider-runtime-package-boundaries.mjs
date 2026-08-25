@@ -148,10 +148,24 @@ for (const moduleName of runtimeContractModules.keys()) {
     }
   }
 }
-if (/^pub (?:struct|enum|trait|fn) /m.test(runtimeContractLibText)) {
-  failures.push(
-    `${runtimeContractLib}: crate root must remain a module/re-export surface`,
-  );
+const expectedRootPublicSurface = new Set(
+  [...runtimeContractModules.keys()].map(
+    (moduleName) => `pub use ${moduleName}::*;`,
+  ),
+);
+const actualRootPublicSurface =
+  runtimeContractLibText.match(/^pub\s+[^\n]+/gm) ?? [];
+for (const publicSurface of actualRootPublicSurface) {
+  if (!expectedRootPublicSurface.has(publicSurface)) {
+    failures.push(
+      `${runtimeContractLib}: unclassified crate-root public surface ${publicSurface}`,
+    );
+  }
+}
+for (const publicSurface of expectedRootPublicSurface) {
+  if (!actualRootPublicSurface.includes(publicSurface)) {
+    failures.push(`${runtimeContractLib}: missing public surface ${publicSurface}`);
+  }
 }
 
 const expectedPublicOwner = new Map();
@@ -165,16 +179,47 @@ for (const [moduleName, publicItems] of runtimeContractModules) {
 }
 const actualPublicOwner = new Map();
 for (const source of runtimeContractProductionSources) {
+  if (source === runtimeContractLib) continue;
   const moduleName = path.basename(source, ".rs");
   const content = read(source);
-  const directDefinitions = content.matchAll(
-    /^pub (struct|enum|trait|fn|type|const|static|union|mod)\s+([A-Za-z_][A-Za-z0-9_]*)/gm,
+  const publicFunctions = [...content.matchAll(
+      /^pub\s+(?:(?:async|const|unsafe)\s+)*(?:extern(?:\s+"[^"]+")?\s+)?fn\s+([A-Za-z_][A-Za-z0-9_]*)/gm,
+    )].map((match) => ({ kind: "fn", name: match[1], index: match.index }));
+  const publicFunctionStarts = new Set(
+    publicFunctions.map((definition) => definition.index),
   );
+  const directDefinitions = [
+    ...[...content.matchAll(
+      /^pub\s+(struct|enum|trait|type|const|static|union|mod|macro)\s+([A-Za-z_][A-Za-z0-9_]*)/gm,
+    )]
+      .filter((match) => !publicFunctionStarts.has(match.index))
+      .map((match) => ({
+        kind: match[1],
+        name: match[2],
+        index: match.index,
+      })),
+    ...publicFunctions,
+  ];
+  const recognizedPublicStarts = new Set(
+    directDefinitions.map((definition) => definition.index),
+  );
+  for (const publicSurface of content.matchAll(/^pub\s+[^\n]+/gm)) {
+    if (!recognizedPublicStarts.has(publicSurface.index)) {
+      failures.push(
+        `${source}: unclassified public surface ${publicSurface[0]}`,
+      );
+    }
+  }
+  if (content.includes("#[macro_export]")) {
+    failures.push(
+      `${source}: macro exports are outside the closed runtime-contract public inventory`,
+    );
+  }
   const generatedDefinitions = content.matchAll(
     /^generation_type!\(([A-Za-z_][A-Za-z0-9_]*),/gm,
   );
   for (const match of directDefinitions) {
-    const publicItem = `${match[1]} ${match[2]}`;
+    const publicItem = `${match.kind} ${match.name}`;
     const owners = actualPublicOwner.get(publicItem) ?? [];
     owners.push(moduleName);
     actualPublicOwner.set(publicItem, owners);
@@ -202,38 +247,36 @@ for (const [publicItem, owners] of actualPublicOwner) {
   }
 }
 
-const runtimeContractManifest = read("crates/firm-runtime-contract/Cargo.toml");
+const cargoMetadata = JSON.parse(
+  execFileSync(
+    "cargo",
+    ["metadata", "--no-deps", "--format-version", "1"],
+    { cwd: root },
+  ).toString("utf8"),
+);
+const runtimeContractPackage = cargoMetadata.packages.find(
+  (candidate) => candidate.name === "firm-runtime-contract",
+);
+if (!runtimeContractPackage) {
+  failures.push("cargo metadata: missing firm-runtime-contract package");
+}
 const allowedContractDependencies = new Set([
-  "harness_core",
+  "firm-core",
   "serde",
   "serde_json",
   "sha2",
   "thiserror",
 ]);
-let dependencySection = false;
-for (const line of runtimeContractManifest.split("\n")) {
-  const section = line.match(/^\[([^\]]+)\]$/);
-  if (section) {
-    dependencySection =
-      section[1] === "dependencies" || section[1].endsWith(".dependencies");
-    continue;
-  }
-  if (!dependencySection) continue;
-  const dependency = line.match(/^([A-Za-z0-9_-]+)\s*=/)?.[1];
-  if (dependency && !allowedContractDependencies.has(dependency)) {
+for (const dependency of runtimeContractPackage?.dependencies ?? []) {
+  if (!allowedContractDependencies.has(dependency.name)) {
     failures.push(
-      `crates/firm-runtime-contract/Cargo.toml: dependency ${dependency} is outside the provider-neutral allowlist`,
+      `crates/firm-runtime-contract/Cargo.toml: dependency ${dependency.name}${dependency.rename ? ` (alias ${dependency.rename})` : ""} is outside the provider-neutral allowlist`,
     );
   }
 }
 
-const workspaceCrateRoots = fs
-  .readdirSync(path.join(root, "crates"), { withFileTypes: true })
-  .filter((entry) => entry.isDirectory())
-  .map((entry) => `crates/${entry.name}/Cargo.toml`)
-  .filter((manifest) => fs.existsSync(path.join(root, manifest)))
-  .map((manifest) => read(manifest).match(/^name\s*=\s*"([^"]+)"/m)?.[1])
-  .filter(Boolean)
+const workspaceCrateRoots = cargoMetadata.packages
+  .map((workspacePackage) => workspacePackage.name)
   .filter((packageName) => !["firm-core", "firm-runtime-contract"].includes(packageName))
   .map((packageName) => packageName.replaceAll("-", "_"));
 for (const source of runtimeContractProductionSources) {
