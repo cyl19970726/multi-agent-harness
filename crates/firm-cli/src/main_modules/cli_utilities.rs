@@ -281,8 +281,6 @@ pub(super) fn print_help() {
   member preflight [--provider <name>] [--execution-mode <mode>] [--canary]
                    [--timeout-s <n>] [--fail-on-unavailable] [--fail-on-review] [--json]
   member inbox [--all] [--json]
-  member message send|reply|request-decision --body <markdown>
-                   [--recipient-agent-id <stable-agent-identity>] [--work-id <id>]
   member work create|assign|claim|start|block|resume|release|submit|accept --expected-version <n> ...
   member runtime interrupt [--member-run-id <target>] --expected-version <n> --reason <text>
   [--project <id|path>] provider admit --provider <name> --execution-mode <mode> --provider-version <version>
@@ -310,5 +308,9 @@ HARNESS_SPACE and HARNESS_PROJECT remain deprecated compatibility aliases.
 
 Agent Team creation requires one Host AgentMember and one ExecutionNode; Mission
 provenance is optional legacy context, never a requirement."#
+    );
+    println!(
+        "\nMember operating message contract:\n{}",
+        crate::collaboration::member_operating_contract::render_member_message_cli_help()
     );
 }

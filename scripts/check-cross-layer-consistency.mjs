@@ -26,12 +26,17 @@ function ok(msg) {
 // ── Rule 1: CONTRACT prompt must match skill invariants ──────────────────
 console.log("Rule 1: CONTRACT prompt ↔ skills/shared-references");
 const mainModuleRoot = join(ROOT, "crates/firm-cli/src/main_modules");
+const collaborationRoot = join(ROOT, "crates/firm-cli/src/collaboration");
 const mainRs = [
   read(join(ROOT, "crates/firm-cli/src/main.rs")),
   ...readdirSync(mainModuleRoot)
     .filter((name) => name.endsWith(".rs"))
     .sort()
     .map((name) => read(join(mainModuleRoot, name))),
+  ...readdirSync(collaborationRoot)
+    .filter((name) => name.endsWith(".rs"))
+    .sort()
+    .map((name) => read(join(collaborationRoot, name))),
 ].filter(Boolean).join("\n");
 const shared = read(join(ROOT, "skills/shared-references/SKILL.md"));
 

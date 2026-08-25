@@ -55,6 +55,7 @@ mod agentfirm_api;
 mod claude_team_runtime;
 mod codex_app_server;
 mod codex_team_runtime;
+mod collaboration;
 mod deepseek_team_runtime;
 mod execution_space;
 mod execution_space_commands;

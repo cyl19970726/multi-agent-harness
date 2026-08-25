@@ -45,6 +45,8 @@ Current checks:
 - JSON parsing for schemas, docs, and examples;
 - provider-runtime package boundaries, the closed five-provider catalog, and
   forbidden provider-to-CLI/Store/application dependency edges;
+- runtime-composition boundaries, including the single typed Member operating
+  contract consumed by provider prompts, CLI help, and focused tests;
 - Work kernel/package direction, the 1,500-line maintained-file limit, and zero
   active Work-containment vocabulary outside an exact historical allowlist;
 - schema fixture validation;
@@ -70,6 +72,17 @@ list. Historical evidence
 is admitted only by exact path plus reason. The old wire key is admitted only
 at the exact non-serializing core decode declaration and its compatibility
 test; its neutral in-memory field cannot become a current public contract.
+
+The focused runtime-composition boundary gate is available independently:
+
+```bash
+npx pnpm@9.15.4 check:runtime-composition-boundaries
+```
+
+It proves that Member message commands and their actor, recipient, Work
+binding, response intent, correlation/causation, and wake semantics have one
+typed source. Provider turn prompts, CLI help, and command usage consume that
+source; rendered command copies elsewhere in `firm-cli` fail the gate.
 
 Rust checks are also active in CI:
 
