@@ -295,10 +295,35 @@ if (!existsSync(resolve(root, applicationServicePath))) {
   failures.push(`${applicationServicePath}: Work application service is missing`);
 } else {
   const applicationService = read(applicationServicePath);
-  for (const required of ["pub trait WorkPersistence", "pub struct WorkApplication"]) {
+  for (const required of [
+    "pub trait WorkPersistence",
+    "pub struct WorkApplication",
+    "pub enum WorkAction",
+    "pub enum WorkActionKind",
+    "pub struct WorkActionOutcome",
+    "pub fn execute(&self, action: WorkAction)",
+    "let kind = action.kind();",
+    "Ok(WorkActionOutcome { kind, work })",
+  ]) {
     if (!applicationService.includes(required)) {
       failures.push(`${applicationServicePath}: missing ${required}`);
     }
+  }
+}
+const canonicalWorkActionAdapters = [
+  "crates/firm-cli/src/main_modules/work_cli.rs",
+  "crates/firm-cli/src/role_actions_api.rs",
+];
+const forbiddenAdapterDispatch = /WorkApplication::new\(store\)\.(?:create|replace_dependencies|assign_membership|assign_runtime|rebind|release_as_host|release_as_member|claim|start|block_as_host|block_as_member|resume_as_host|resume_as_member|submit|request_changes|cancel)\(/;
+for (const path of canonicalWorkActionAdapters) {
+  const content = read(path);
+  for (const required of ["execute_work_action", "WorkAction::"]) {
+    if (!content.includes(required)) {
+      failures.push(`${path}: canonical Work adapter does not consume ${required}`);
+    }
+  }
+  if (forbiddenAdapterDispatch.test(content)) {
+    failures.push(`${path}: adapter selects WorkApplication methods outside typed WorkAction dispatch`);
   }
 }
 const storeApplicationPath = "crates/firm-store/src/store_work_application.rs";

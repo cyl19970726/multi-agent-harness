@@ -1,6 +1,15 @@
 use super::*;
 use harness_core::CurrentWorkDraft;
 
+fn execute_work_action(
+    store: &HarnessStore,
+    action: harness_application::WorkAction,
+) -> CliResult<Work> {
+    Ok(harness_application::WorkApplication::new(store)
+        .execute(action)?
+        .work)
+}
+
 pub(super) fn team_run_work_command(
     store: &HarnessStore,
     resolved: &ResolvedStore,
@@ -366,8 +375,9 @@ pub(super) fn team_run_work_command(
                 github_links.push(link);
             }
             let context_markdown = value(args, "--context").unwrap_or_default();
-            let work = harness_application::WorkApplication::new(store).create(
-                harness_application::CreateWorkCommand {
+            let work = execute_work_action(
+                store,
+                harness_application::WorkAction::Create(harness_application::CreateWorkCommand {
                 work_id: value(args, "--work-id").unwrap_or_else(|| generated_id("work")),
                 team_run_id,
                 accountable_team_id: run.agent_team_id,
@@ -387,19 +397,23 @@ pub(super) fn team_run_work_command(
                 github_links,
                 expected_version: 0,
                 context,
-            })?;
+                }),
+            )?;
             print_json(&work)
         }
         "replace-dependencies" => {
             let work_id = required(args, "--work-id")?;
-            let work = harness_application::WorkApplication::new(store).replace_dependencies(
-                harness_application::ReplaceWorkDependenciesCommand {
+            let work = execute_work_action(
+                store,
+                harness_application::WorkAction::ReplaceDependencies(
+                    harness_application::ReplaceWorkDependenciesCommand {
                     accountable_team_id: required(args, "--team-id")?,
                     work_id: work_id.clone(),
                     expected_version: required_work_version(args)?,
                     prerequisite_work_ids: many(args, "--prerequisite-work-id"),
                     context: host_work_context_for_work(store, &work_id, args)?,
-                },
+                    },
+                ),
             )?;
             print_json(&work)
         }
@@ -423,12 +437,16 @@ pub(super) fn team_run_work_command(
                                 .to_string(),
                         )
                     })?;
-                let work = harness_application::WorkApplication::new(store).assign_membership(
-                    &required(args, "--work-id")?,
-                    required_work_version(args)?,
-                    &membership_id,
-                    &space_id,
-                    host_work_context_for_work(store, &required(args, "--work-id")?, args)?,
+                let work_id = required(args, "--work-id")?;
+                let work = execute_work_action(
+                    store,
+                    harness_application::WorkAction::AssignMembership {
+                        expected_version: required_work_version(args)?,
+                        context: host_work_context_for_work(store, &work_id, args)?,
+                        work_id,
+                        membership_id: membership_id.clone(),
+                        execution_space_id: space_id,
+                    },
                 )?;
                 append_work_event(
                     store,
@@ -441,11 +459,15 @@ pub(super) fn team_run_work_command(
                 print_json(&work)
             } else {
                 let member_run_id = member_run_id.unwrap_or_default();
-                let work = harness_application::WorkApplication::new(store).assign_runtime(
-                    &required(args, "--work-id")?,
-                    required_work_version(args)?,
-                    &member_run_id,
-                    host_work_context_for_work(store, &required(args, "--work-id")?, args)?,
+                let work_id = required(args, "--work-id")?;
+                let work = execute_work_action(
+                    store,
+                    harness_application::WorkAction::AssignRuntime {
+                        expected_version: required_work_version(args)?,
+                        context: host_work_context_for_work(store, &work_id, args)?,
+                        work_id,
+                        member_run_id: member_run_id.clone(),
+                    },
                 )?;
                 append_work_event(
                     store,
@@ -476,11 +498,14 @@ pub(super) fn team_run_work_command(
         "claim" => {
             let team_run_id = required(args, "--team-run-id")?;
             let member_run_id = required(args, "--member-run-id")?;
-            let work = harness_application::WorkApplication::new(store).claim(
-                &required(args, "--work-id")?,
-                required_work_version(args)?,
-                &member_run_id,
-                member_work_context(args, &team_run_id, &member_run_id)?,
+            let work = execute_work_action(
+                store,
+                harness_application::WorkAction::Claim {
+                    work_id: required(args, "--work-id")?,
+                    expected_version: required_work_version(args)?,
+                    member_run_id: member_run_id.clone(),
+                    context: member_work_context(args, &team_run_id, &member_run_id)?,
+                },
             )?;
             append_work_event(
                 store,
@@ -495,11 +520,14 @@ pub(super) fn team_run_work_command(
         "start" => {
             let team_run_id = required(args, "--team-run-id")?;
             let member_run_id = required(args, "--member-run-id")?;
-            let work = harness_application::WorkApplication::new(store).start(
-                &required(args, "--work-id")?,
-                required_work_version(args)?,
-                &member_run_id,
-                member_work_context(args, &team_run_id, &member_run_id)?,
+            let work = execute_work_action(
+                store,
+                harness_application::WorkAction::Start {
+                    work_id: required(args, "--work-id")?,
+                    expected_version: required_work_version(args)?,
+                    member_run_id: member_run_id.clone(),
+                    context: member_work_context(args, &team_run_id, &member_run_id)?,
+                },
             )?;
             append_work_event(
                 store,
@@ -517,12 +545,15 @@ pub(super) fn team_run_work_command(
             let expected_version = required_work_version(args)?;
             let reason = required(args, "--reason")?;
             if let Some(member_run_id) = value(args, "--member-run-id") {
-                let work = harness_application::WorkApplication::new(store).block_as_member(
-                    &work_id,
-                    expected_version,
-                    &member_run_id,
-                    &reason,
-                    member_work_context(args, &team_run_id, &member_run_id)?,
+                let work = execute_work_action(
+                    store,
+                    harness_application::WorkAction::BlockMember {
+                        work_id: work_id.clone(),
+                        expected_version,
+                        member_run_id: member_run_id.clone(),
+                        reason: reason.clone(),
+                        context: member_work_context(args, &team_run_id, &member_run_id)?,
+                    },
                 )?;
                 append_work_event(
                     store,
@@ -535,11 +566,14 @@ pub(super) fn team_run_work_command(
                 roll_up_target_work_delegations(store, &work, args)?;
                 print_json(&work)
             } else {
-                let work = harness_application::WorkApplication::new(store).block_as_host(
-                    &work_id,
-                    expected_version,
-                    &reason,
-                    host_work_context(store, &team_run_id, args)?,
+                let work = execute_work_action(
+                    store,
+                    harness_application::WorkAction::BlockHost {
+                        work_id: work_id.clone(),
+                        expected_version,
+                        reason: reason.clone(),
+                        context: host_work_context(store, &team_run_id, args)?,
+                    },
                 )?;
                 append_work_event(
                     store,
@@ -559,12 +593,15 @@ pub(super) fn team_run_work_command(
             let expected_version = required_work_version(args)?;
             let resolution = required(args, "--resolution")?;
             if let Some(member_run_id) = value(args, "--member-run-id") {
-                let work = harness_application::WorkApplication::new(store).resume_as_member(
-                    &work_id,
-                    expected_version,
-                    &member_run_id,
-                    &resolution,
-                    member_work_context(args, &team_run_id, &member_run_id)?,
+                let work = execute_work_action(
+                    store,
+                    harness_application::WorkAction::ResumeMember {
+                        work_id: work_id.clone(),
+                        expected_version,
+                        member_run_id: member_run_id.clone(),
+                        resolution: resolution.clone(),
+                        context: member_work_context(args, &team_run_id, &member_run_id)?,
+                    },
                 )?;
                 append_work_event(
                     store,
@@ -577,11 +614,14 @@ pub(super) fn team_run_work_command(
                 roll_up_target_work_delegations(store, &work, args)?;
                 print_json(&work)
             } else {
-                let work = harness_application::WorkApplication::new(store).resume_as_host(
-                    &work_id,
-                    expected_version,
-                    &resolution,
-                    host_work_context(store, &team_run_id, args)?,
+                let work = execute_work_action(
+                    store,
+                    harness_application::WorkAction::ResumeHost {
+                        work_id: work_id.clone(),
+                        expected_version,
+                        resolution: resolution.clone(),
+                        context: host_work_context(store, &team_run_id, args)?,
+                    },
                 )?;
                 append_work_event(
                     store,
@@ -600,11 +640,14 @@ pub(super) fn team_run_work_command(
             let work_id = required(args, "--work-id")?;
             let expected_version = required_work_version(args)?;
             if let Some(member_run_id) = value(args, "--member-run-id") {
-                let work = harness_application::WorkApplication::new(store).release_as_member(
-                    &work_id,
-                    expected_version,
-                    &member_run_id,
-                    member_work_context(args, &team_run_id, &member_run_id)?,
+                let work = execute_work_action(
+                    store,
+                    harness_application::WorkAction::ReleaseMember {
+                        work_id: work_id.clone(),
+                        expected_version,
+                        member_run_id: member_run_id.clone(),
+                        context: member_work_context(args, &team_run_id, &member_run_id)?,
+                    },
                 )?;
                 append_work_event(
                     store,
@@ -616,10 +659,13 @@ pub(super) fn team_run_work_command(
                 )?;
                 print_json(&work)
             } else {
-                let work = harness_application::WorkApplication::new(store).release_as_host(
-                    &work_id,
-                    expected_version,
-                    host_work_context(store, &team_run_id, args)?,
+                let work = execute_work_action(
+                    store,
+                    harness_application::WorkAction::ReleaseHost {
+                        work_id: work_id.clone(),
+                        expected_version,
+                        context: host_work_context(store, &team_run_id, args)?,
+                    },
                 )?;
                 append_work_event(
                     store,
@@ -654,8 +700,9 @@ pub(super) fn team_run_work_command(
                 }
                 github_links.push(link);
             }
-            let work = harness_application::WorkApplication::new(store).submit(
-                harness_application::SubmitWorkCommand {
+            let work = execute_work_action(
+                store,
+                harness_application::WorkAction::Submit(harness_application::SubmitWorkCommand {
                     work_id: required(args, "--work-id")?,
                     expected_version: required_work_version(args)?,
                     member_run_id: member_run_id.clone(),
@@ -666,7 +713,7 @@ pub(super) fn team_run_work_command(
                     base_revision: value(args, "--base-revision"),
                     candidate_revision: value(args, "--candidate-revision"),
                     context: member_work_context(args, &team_run_id, &member_run_id)?,
-                },
+                }),
             )?;
             append_work_event(
                 store,
@@ -694,11 +741,14 @@ pub(super) fn team_run_work_command(
         "request-changes" => {
             let reason = required(args, "--reason")?;
             let work_id = required(args, "--work-id")?;
-            let work = harness_application::WorkApplication::new(store).request_changes(
-                &work_id,
-                required_work_version(args)?,
-                &reason,
-                host_work_context_for_work(store, &work_id, args)?,
+            let work = execute_work_action(
+                store,
+                harness_application::WorkAction::RequestChanges {
+                    work_id: work_id.clone(),
+                    expected_version: required_work_version(args)?,
+                    reason: reason.clone(),
+                    context: host_work_context_for_work(store, &work_id, args)?,
+                },
             )?;
             append_work_event(
                 store,
@@ -738,11 +788,14 @@ pub(super) fn team_run_work_command(
         "cancel" => {
             let reason = required(args, "--reason")?;
             let work_id = required(args, "--work-id")?;
-            let work = harness_application::WorkApplication::new(store).cancel(
-                &work_id,
-                required_work_version(args)?,
-                &reason,
-                host_work_context_for_work(store, &work_id, args)?,
+            let work = execute_work_action(
+                store,
+                harness_application::WorkAction::Cancel {
+                    work_id: work_id.clone(),
+                    expected_version: required_work_version(args)?,
+                    reason: reason.clone(),
+                    context: host_work_context_for_work(store, &work_id, args)?,
+                },
             )?;
             append_work_event(
                 store,

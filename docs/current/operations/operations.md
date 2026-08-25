@@ -65,7 +65,9 @@ npx pnpm@9.15.4 check:work-kernel-boundaries
 It checks dependency inversion: the Work application service declares a
 core-facing persistence port without importing Store, CLI, or Provider
 packages; Store depends on application + core and implements that port; CLI
-consumes and composes both. The application crate's reviewed
+and HTTP canonical Work mutations select a typed `WorkAction` and consume the
+same `WorkActionOutcome` dispatch instead of choosing application methods in
+each adapter. The application crate's reviewed
 `firm-runtime-contract` policy dependency remains allowed. The gate also scans
 the tracked repository rather than trusting a hand-maintained active-file
 list. Historical evidence

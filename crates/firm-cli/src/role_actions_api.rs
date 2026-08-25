@@ -6,7 +6,8 @@
 //! transport and the addressed Team/Work at this boundary.
 
 use harness_application::{
-    CreateWorkCommand, ReplaceWorkDependenciesCommand, SubmitWorkCommand, WorkApplication,
+    CreateWorkCommand, ReplaceWorkDependenciesCommand, SubmitWorkCommand, WorkAction,
+    WorkApplication,
 };
 use harness_core::agentfirm_api::{
     ActorKind, ActorRef, CandidateKind, CandidateRef, Confidence, DeliveryReconcileOutcome,
@@ -41,6 +42,10 @@ pub(crate) use protocol::{
     OPERATOR_PROVIDER_ADMISSION_TUPLES,
 };
 pub use protocol::{is_http_mutation_path, is_retired_legacy_write_path, RoleActionResult};
+
+fn execute_work_action(store: &HarnessStore, action: WorkAction) -> Result<Work, StoreError> {
+    Ok(WorkApplication::new(store).execute(action)?.work)
+}
 
 pub fn execute(
     store: &HarnessStore,
@@ -113,14 +118,16 @@ pub fn execute(
             kind: "work_dependency_reason".into(),
             id: reason,
         });
-        let work =
-            WorkApplication::new(store).replace_dependencies(ReplaceWorkDependenciesCommand {
+        let work = execute_work_action(
+            store,
+            WorkAction::ReplaceDependencies(ReplaceWorkDependenciesCommand {
                 accountable_team_id: team_id.to_string(),
                 work_id: work_id.to_string(),
                 expected_version: auth.expected_version,
                 prerequisite_work_ids,
                 context,
-            })?;
+            }),
+        )?;
         if let Some(result) =
             committed_canonical_work_result(store, &auth, &work, canonical_before)?
         {
@@ -431,24 +438,27 @@ pub fn execute(
                 ));
             }
             let context = host_context(&auth, host_id, false);
-            WorkApplication::new(store).create(CreateWorkCommand {
-                work_id,
-                team_run_id: route.team_run_id.to_string(),
-                accountable_team_id: team.id.clone(),
-                title,
-                context_markdown,
-                completion_criteria_markdown,
-                claim_mode,
-                eligible_member_ids,
-                prerequisite_work_ids,
-                priority,
-                initial_member_run_id: None,
-                artifact_refs: Vec::new(),
-                check_refs: Vec::new(),
-                github_links: Vec::new(),
-                expected_version: auth.expected_version,
-                context,
-            })?
+            execute_work_action(
+                store,
+                WorkAction::Create(CreateWorkCommand {
+                    work_id,
+                    team_run_id: route.team_run_id.to_string(),
+                    accountable_team_id: team.id.clone(),
+                    title,
+                    context_markdown,
+                    completion_criteria_markdown,
+                    claim_mode,
+                    eligible_member_ids,
+                    prerequisite_work_ids,
+                    priority,
+                    initial_member_run_id: None,
+                    artifact_refs: Vec::new(),
+                    check_refs: Vec::new(),
+                    github_links: Vec::new(),
+                    expected_version: auth.expected_version,
+                    context,
+                }),
+            )?
         }
         (operation, Some(work_id), intent) => {
             require_confirmed(operation, confirmed_action, work_id)?;
@@ -503,18 +513,24 @@ pub fn execute(
                 ) => {
                     let host_id = require_host(&auth, &team.host_agent_id, "work", work_id)?;
                     match (membership_id, member_run_id) {
-                        (Some(membership_id), _) => WorkApplication::new(store).assign_membership(
-                            work_id,
-                            auth.expected_version,
-                            &membership_id,
-                            &auth.execution_space_id,
-                            host_context(&auth, host_id, false),
+                        (Some(membership_id), _) => execute_work_action(
+                            store,
+                            WorkAction::AssignMembership {
+                                work_id: work_id.to_string(),
+                                expected_version: auth.expected_version,
+                                membership_id,
+                                execution_space_id: auth.execution_space_id.clone(),
+                                context: host_context(&auth, host_id, false),
+                            },
                         )?,
-                        (None, Some(member_run_id)) => WorkApplication::new(store).assign_runtime(
-                            work_id,
-                            auth.expected_version,
-                            &member_run_id,
-                            host_context(&auth, host_id, false),
+                        (None, Some(member_run_id)) => execute_work_action(
+                            store,
+                            WorkAction::AssignRuntime {
+                                work_id: work_id.to_string(),
+                                expected_version: auth.expected_version,
+                                member_run_id,
+                                context: host_context(&auth, host_id, false),
+                            },
                         )?,
                         (None, None) => {
                             return Err(encoded_error(
@@ -529,76 +545,100 @@ pub fn execute(
                 }
                 ("rebind", RoleActionIntent::RebindWork { member_run_id }) => {
                     let host_id = require_host(&auth, &team.host_agent_id, "work", work_id)?;
-                    WorkApplication::new(store).rebind(
-                        work_id,
-                        auth.expected_version,
-                        &member_run_id,
-                        host_context(&auth, host_id, false),
+                    execute_work_action(
+                        store,
+                        WorkAction::Rebind {
+                            work_id: work_id.to_string(),
+                            expected_version: auth.expected_version,
+                            member_run_id,
+                            context: host_context(&auth, host_id, false),
+                        },
                     )?
                 }
                 ("release", RoleActionIntent::ReleaseWork)
                     if is_host(&auth, &team.host_agent_id) =>
                 {
-                    WorkApplication::new(store).release_as_host(
-                        work_id,
-                        auth.expected_version,
-                        host_context(&auth, &team.host_agent_id, false),
+                    execute_work_action(
+                        store,
+                        WorkAction::ReleaseHost {
+                            work_id: work_id.to_string(),
+                            expected_version: auth.expected_version,
+                            context: host_context(&auth, &team.host_agent_id, false),
+                        },
                     )?
                 }
                 ("release", RoleActionIntent::ReleaseWork) => {
                     let member_run_id = resolve_member_run(store, &auth, route.team_run_id)?;
-                    WorkApplication::new(store).release_as_member(
-                        work_id,
-                        auth.expected_version,
-                        &member_run_id,
-                        member_context(&auth, &member_run_id),
+                    execute_work_action(
+                        store,
+                        WorkAction::ReleaseMember {
+                            work_id: work_id.to_string(),
+                            expected_version: auth.expected_version,
+                            member_run_id: member_run_id.clone(),
+                            context: member_context(&auth, &member_run_id),
+                        },
                     )?
                 }
                 ("cancel", RoleActionIntent::CancelWork { reason }) => {
                     let host_id = require_host(&auth, &team.host_agent_id, "work", work_id)?;
-                    WorkApplication::new(store).cancel(
-                        work_id,
-                        auth.expected_version,
-                        &reason,
-                        host_context(&auth, host_id, false),
+                    execute_work_action(
+                        store,
+                        WorkAction::Cancel {
+                            work_id: work_id.to_string(),
+                            expected_version: auth.expected_version,
+                            reason,
+                            context: host_context(&auth, host_id, false),
+                        },
                     )?
                 }
                 ("claim", RoleActionIntent::ClaimWork) => {
                     let member_run_id = resolve_member_run(store, &auth, route.team_run_id)?;
-                    WorkApplication::new(store).claim(
-                        work_id,
-                        auth.expected_version,
-                        &member_run_id,
-                        member_context(&auth, &member_run_id),
+                    execute_work_action(
+                        store,
+                        WorkAction::Claim {
+                            work_id: work_id.to_string(),
+                            expected_version: auth.expected_version,
+                            member_run_id: member_run_id.clone(),
+                            context: member_context(&auth, &member_run_id),
+                        },
                     )?
                 }
                 ("start", RoleActionIntent::StartWork) => {
                     let member_run_id = resolve_member_run(store, &auth, route.team_run_id)?;
-                    WorkApplication::new(store).start(
-                        work_id,
-                        auth.expected_version,
-                        &member_run_id,
-                        member_context(&auth, &member_run_id),
+                    execute_work_action(
+                        store,
+                        WorkAction::Start {
+                            work_id: work_id.to_string(),
+                            expected_version: auth.expected_version,
+                            member_run_id: member_run_id.clone(),
+                            context: member_context(&auth, &member_run_id),
+                        },
                     )?
                 }
                 ("block", RoleActionIntent::BlockWork { reason }) => {
                     let member_run_id = resolve_member_run(store, &auth, route.team_run_id)?;
-                    WorkApplication::new(store).block_as_member(
-                        work_id,
-                        auth.expected_version,
-                        &member_run_id,
-                        &reason,
-                        member_context(&auth, &member_run_id),
+                    execute_work_action(
+                        store,
+                        WorkAction::BlockMember {
+                            work_id: work_id.to_string(),
+                            expected_version: auth.expected_version,
+                            member_run_id: member_run_id.clone(),
+                            reason,
+                            context: member_context(&auth, &member_run_id),
+                        },
                     )?
                 }
                 ("resume", RoleActionIntent::UnblockWork { resolution }) => {
                     let member_run_id = resolve_member_run(store, &auth, route.team_run_id)?;
-                    WorkApplication::new(store).resume_as_member(
-                        work_id,
-                        auth.expected_version,
-                        &member_run_id,
-                        &resolution,
-                        member_context(&auth, &member_run_id),
+                    execute_work_action(
+                        store,
+                        WorkAction::ResumeMember {
+                            work_id: work_id.to_string(),
+                            expected_version: auth.expected_version,
+                            member_run_id: member_run_id.clone(),
+                            resolution,
+                            context: member_context(&auth, &member_run_id),
+                        },
                     )?
                 }
                 (
@@ -612,18 +652,21 @@ pub fn execute(
                     },
                 ) => {
                     let member_run_id = resolve_member_run(store, &auth, route.team_run_id)?;
-                    WorkApplication::new(store).submit(SubmitWorkCommand {
-                        work_id: work_id.to_string(),
-                        expected_version: auth.expected_version,
-                        member_run_id: member_run_id.clone(),
-                        result_summary,
-                        artifact_refs,
-                        check_refs,
-                        github_links: Vec::new(),
-                        base_revision,
-                        candidate_revision,
-                        context: member_context(&auth, &member_run_id),
-                    })?
+                    execute_work_action(
+                        store,
+                        WorkAction::Submit(SubmitWorkCommand {
+                            work_id: work_id.to_string(),
+                            expected_version: auth.expected_version,
+                            member_run_id: member_run_id.clone(),
+                            result_summary,
+                            artifact_refs,
+                            check_refs,
+                            github_links: Vec::new(),
+                            base_revision,
+                            candidate_revision,
+                            context: member_context(&auth, &member_run_id),
+                        }),
+                    )?
                 }
                 _ => {
                     return Err(encoded_error(

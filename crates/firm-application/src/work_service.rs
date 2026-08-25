@@ -150,6 +150,144 @@ pub struct ReplaceWorkDependenciesCommand {
     pub context: WorkCommandContext,
 }
 
+/// Transport-neutral canonical Work mutation selected by an adapter after it
+/// has authenticated the actor and built the exact command context.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkActionKind {
+    Create,
+    ReplaceDependencies,
+    AssignMembership,
+    AssignRuntime,
+    Rebind,
+    ReleaseHost,
+    ReleaseMember,
+    Claim,
+    Start,
+    BlockHost,
+    BlockMember,
+    ResumeHost,
+    ResumeMember,
+    Submit,
+    RequestChanges,
+    Cancel,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WorkAction {
+    Create(CreateWorkCommand),
+    ReplaceDependencies(ReplaceWorkDependenciesCommand),
+    AssignMembership {
+        work_id: String,
+        expected_version: u64,
+        membership_id: String,
+        execution_space_id: String,
+        context: WorkCommandContext,
+    },
+    AssignRuntime {
+        work_id: String,
+        expected_version: u64,
+        member_run_id: String,
+        context: WorkCommandContext,
+    },
+    Rebind {
+        work_id: String,
+        expected_version: u64,
+        member_run_id: String,
+        context: WorkCommandContext,
+    },
+    ReleaseHost {
+        work_id: String,
+        expected_version: u64,
+        context: WorkCommandContext,
+    },
+    ReleaseMember {
+        work_id: String,
+        expected_version: u64,
+        member_run_id: String,
+        context: WorkCommandContext,
+    },
+    Claim {
+        work_id: String,
+        expected_version: u64,
+        member_run_id: String,
+        context: WorkCommandContext,
+    },
+    Start {
+        work_id: String,
+        expected_version: u64,
+        member_run_id: String,
+        context: WorkCommandContext,
+    },
+    BlockHost {
+        work_id: String,
+        expected_version: u64,
+        reason: String,
+        context: WorkCommandContext,
+    },
+    BlockMember {
+        work_id: String,
+        expected_version: u64,
+        member_run_id: String,
+        reason: String,
+        context: WorkCommandContext,
+    },
+    ResumeHost {
+        work_id: String,
+        expected_version: u64,
+        resolution: String,
+        context: WorkCommandContext,
+    },
+    ResumeMember {
+        work_id: String,
+        expected_version: u64,
+        member_run_id: String,
+        resolution: String,
+        context: WorkCommandContext,
+    },
+    Submit(SubmitWorkCommand),
+    RequestChanges {
+        work_id: String,
+        expected_version: u64,
+        reason: String,
+        context: WorkCommandContext,
+    },
+    Cancel {
+        work_id: String,
+        expected_version: u64,
+        reason: String,
+        context: WorkCommandContext,
+    },
+}
+
+impl WorkAction {
+    pub fn kind(&self) -> WorkActionKind {
+        match self {
+            Self::Create(_) => WorkActionKind::Create,
+            Self::ReplaceDependencies(_) => WorkActionKind::ReplaceDependencies,
+            Self::AssignMembership { .. } => WorkActionKind::AssignMembership,
+            Self::AssignRuntime { .. } => WorkActionKind::AssignRuntime,
+            Self::Rebind { .. } => WorkActionKind::Rebind,
+            Self::ReleaseHost { .. } => WorkActionKind::ReleaseHost,
+            Self::ReleaseMember { .. } => WorkActionKind::ReleaseMember,
+            Self::Claim { .. } => WorkActionKind::Claim,
+            Self::Start { .. } => WorkActionKind::Start,
+            Self::BlockHost { .. } => WorkActionKind::BlockHost,
+            Self::BlockMember { .. } => WorkActionKind::BlockMember,
+            Self::ResumeHost { .. } => WorkActionKind::ResumeHost,
+            Self::ResumeMember { .. } => WorkActionKind::ResumeMember,
+            Self::Submit(_) => WorkActionKind::Submit,
+            Self::RequestChanges { .. } => WorkActionKind::RequestChanges,
+            Self::Cancel { .. } => WorkActionKind::Cancel,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkActionOutcome {
+    pub kind: WorkActionKind,
+    pub work: Work,
+}
+
 /// Thin application composition over the authoritative Core + Store pair.
 pub struct WorkApplication<'a, P: WorkPersistence + ?Sized> {
     port: &'a P,
@@ -158,6 +296,111 @@ pub struct WorkApplication<'a, P: WorkPersistence + ?Sized> {
 impl<'a, P: WorkPersistence + ?Sized> WorkApplication<'a, P> {
     pub fn new(port: &'a P) -> Self {
         Self { port }
+    }
+
+    /// The one application dispatch consumed by CLI and HTTP adapters.
+    pub fn execute(&self, action: WorkAction) -> Result<WorkActionOutcome, P::Error> {
+        let kind = action.kind();
+        let work = match action {
+            WorkAction::Create(command) => self.create(command)?,
+            WorkAction::ReplaceDependencies(command) => self.replace_dependencies(command)?,
+            WorkAction::AssignMembership {
+                work_id,
+                expected_version,
+                membership_id,
+                execution_space_id,
+                context,
+            } => self.assign_membership(
+                &work_id,
+                expected_version,
+                &membership_id,
+                &execution_space_id,
+                context,
+            )?,
+            WorkAction::AssignRuntime {
+                work_id,
+                expected_version,
+                member_run_id,
+                context,
+            } => self.assign_runtime(&work_id, expected_version, &member_run_id, context)?,
+            WorkAction::Rebind {
+                work_id,
+                expected_version,
+                member_run_id,
+                context,
+            } => self.rebind(&work_id, expected_version, &member_run_id, context)?,
+            WorkAction::ReleaseHost {
+                work_id,
+                expected_version,
+                context,
+            } => self.release_as_host(&work_id, expected_version, context)?,
+            WorkAction::ReleaseMember {
+                work_id,
+                expected_version,
+                member_run_id,
+                context,
+            } => self.release_as_member(&work_id, expected_version, &member_run_id, context)?,
+            WorkAction::Claim {
+                work_id,
+                expected_version,
+                member_run_id,
+                context,
+            } => self.claim(&work_id, expected_version, &member_run_id, context)?,
+            WorkAction::Start {
+                work_id,
+                expected_version,
+                member_run_id,
+                context,
+            } => self.start(&work_id, expected_version, &member_run_id, context)?,
+            WorkAction::BlockHost {
+                work_id,
+                expected_version,
+                reason,
+                context,
+            } => self.block_as_host(&work_id, expected_version, &reason, context)?,
+            WorkAction::BlockMember {
+                work_id,
+                expected_version,
+                member_run_id,
+                reason,
+                context,
+            } => {
+                self.block_as_member(&work_id, expected_version, &member_run_id, &reason, context)?
+            }
+            WorkAction::ResumeHost {
+                work_id,
+                expected_version,
+                resolution,
+                context,
+            } => self.resume_as_host(&work_id, expected_version, &resolution, context)?,
+            WorkAction::ResumeMember {
+                work_id,
+                expected_version,
+                member_run_id,
+                resolution,
+                context,
+            } => self.resume_as_member(
+                &work_id,
+                expected_version,
+                &member_run_id,
+                &resolution,
+                context,
+            )?,
+            WorkAction::Submit(command) => self.submit(command)?,
+            WorkAction::RequestChanges {
+                work_id,
+                expected_version,
+                reason,
+                context,
+            } => self.request_changes(&work_id, expected_version, &reason, context)?,
+            WorkAction::Cancel {
+                work_id,
+                expected_version,
+                reason,
+                context,
+            } => self.cancel(&work_id, expected_version, &reason, context)?,
+        };
+        Ok(WorkActionOutcome { kind, work })
     }
 
     pub fn create(&self, command: CreateWorkCommand) -> Result<Work, P::Error> {
@@ -392,5 +635,169 @@ pub fn host_actor(id: impl Into<String>, authn_source: impl Into<String>) -> Tea
         id: id.into(),
         display_name: None,
         authn_source: Some(authn_source.into()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn context() -> WorkCommandContext {
+        WorkCommandContext {
+            event_id: "event-1".into(),
+            performed_by_actor: host_actor("host-1", "test"),
+            authority_actor: None,
+            causation_ref: None,
+            idempotency_key: "key-1".into(),
+            created_at: "2026-08-25T00:00:00Z".into(),
+            duplicate_ok: false,
+        }
+    }
+
+    #[test]
+    fn every_typed_work_action_has_one_stable_outcome_kind() {
+        let create = || CreateWorkCommand {
+            work_id: "work-1".into(),
+            team_run_id: "run-1".into(),
+            accountable_team_id: "team-1".into(),
+            title: "Work".into(),
+            context_markdown: String::new(),
+            completion_criteria_markdown: "done".into(),
+            claim_mode: WorkClaimMode::TeamClaim,
+            eligible_member_ids: Vec::new(),
+            prerequisite_work_ids: Vec::new(),
+            priority: WorkPriority::Normal,
+            initial_member_run_id: None,
+            artifact_refs: Vec::new(),
+            check_refs: Vec::new(),
+            github_links: Vec::new(),
+            expected_version: 0,
+            context: context(),
+        };
+        let submit = || SubmitWorkCommand {
+            work_id: "work-1".into(),
+            expected_version: 1,
+            member_run_id: "member-run-1".into(),
+            result_summary: "done".into(),
+            artifact_refs: Vec::new(),
+            check_refs: Vec::new(),
+            github_links: Vec::new(),
+            base_revision: None,
+            candidate_revision: None,
+            context: context(),
+        };
+        let actions = vec![
+            WorkAction::Create(create()),
+            WorkAction::ReplaceDependencies(ReplaceWorkDependenciesCommand {
+                accountable_team_id: "team-1".into(),
+                work_id: "work-1".into(),
+                expected_version: 1,
+                prerequisite_work_ids: Vec::new(),
+                context: context(),
+            }),
+            WorkAction::AssignMembership {
+                work_id: "work-1".into(),
+                expected_version: 1,
+                membership_id: "membership-1".into(),
+                execution_space_id: "space-1".into(),
+                context: context(),
+            },
+            WorkAction::AssignRuntime {
+                work_id: "work-1".into(),
+                expected_version: 1,
+                member_run_id: "member-run-1".into(),
+                context: context(),
+            },
+            WorkAction::Rebind {
+                work_id: "work-1".into(),
+                expected_version: 1,
+                member_run_id: "member-run-1".into(),
+                context: context(),
+            },
+            WorkAction::ReleaseHost {
+                work_id: "work-1".into(),
+                expected_version: 1,
+                context: context(),
+            },
+            WorkAction::ReleaseMember {
+                work_id: "work-1".into(),
+                expected_version: 1,
+                member_run_id: "member-run-1".into(),
+                context: context(),
+            },
+            WorkAction::Claim {
+                work_id: "work-1".into(),
+                expected_version: 1,
+                member_run_id: "member-run-1".into(),
+                context: context(),
+            },
+            WorkAction::Start {
+                work_id: "work-1".into(),
+                expected_version: 1,
+                member_run_id: "member-run-1".into(),
+                context: context(),
+            },
+            WorkAction::BlockHost {
+                work_id: "work-1".into(),
+                expected_version: 1,
+                reason: "blocked".into(),
+                context: context(),
+            },
+            WorkAction::BlockMember {
+                work_id: "work-1".into(),
+                expected_version: 1,
+                member_run_id: "member-run-1".into(),
+                reason: "blocked".into(),
+                context: context(),
+            },
+            WorkAction::ResumeHost {
+                work_id: "work-1".into(),
+                expected_version: 1,
+                resolution: "fixed".into(),
+                context: context(),
+            },
+            WorkAction::ResumeMember {
+                work_id: "work-1".into(),
+                expected_version: 1,
+                member_run_id: "member-run-1".into(),
+                resolution: "fixed".into(),
+                context: context(),
+            },
+            WorkAction::Submit(submit()),
+            WorkAction::RequestChanges {
+                work_id: "work-1".into(),
+                expected_version: 1,
+                reason: "revise".into(),
+                context: context(),
+            },
+            WorkAction::Cancel {
+                work_id: "work-1".into(),
+                expected_version: 1,
+                reason: "cancel".into(),
+                context: context(),
+            },
+        ];
+        let kinds = actions.iter().map(WorkAction::kind).collect::<Vec<_>>();
+        assert_eq!(
+            kinds,
+            vec![
+                WorkActionKind::Create,
+                WorkActionKind::ReplaceDependencies,
+                WorkActionKind::AssignMembership,
+                WorkActionKind::AssignRuntime,
+                WorkActionKind::Rebind,
+                WorkActionKind::ReleaseHost,
+                WorkActionKind::ReleaseMember,
+                WorkActionKind::Claim,
+                WorkActionKind::Start,
+                WorkActionKind::BlockHost,
+                WorkActionKind::BlockMember,
+                WorkActionKind::ResumeHost,
+                WorkActionKind::ResumeMember,
+                WorkActionKind::Submit,
+                WorkActionKind::RequestChanges,
+                WorkActionKind::Cancel,
+            ]
+        );
     }
 }
