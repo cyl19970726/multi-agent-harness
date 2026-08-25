@@ -2,6 +2,24 @@ use super::*;
 
 pub(super) const MAX_AUTOMATIC_PROVIDER_TRANSPORT_ATTEMPTS: u64 = 3;
 
+pub(super) fn require_new_provider_process_command(
+    store: &harness_store::HarnessStore,
+    execution_space_id: &str,
+    command_id: &str,
+) -> CliResult<()> {
+    let exists = store
+        .runtime_commands(execution_space_id)
+        .map_err(|error| classify_pre_effect_provider_admission_error(error.into()))?
+        .iter()
+        .any(|command| command.id == command_id);
+    if exists {
+        return Err(CliError::RuntimeRecoveryRequired(format!(
+            "provider process command {command_id} already exists; reconcile before spawn"
+        )));
+    }
+    Ok(())
+}
+
 pub(super) fn durable_provider_process_outcome(
     ledger: &TeamRunLedger,
     member: &ProviderRuntimeProjection,
@@ -147,14 +165,17 @@ pub(super) fn provider_failure_lifecycle_override(
 
 pub(super) fn provider_process_idempotency_key(
     session: &harness_core::agentfirm_api::AgentSession,
+    member_run_generation: u64,
     supervisor_generation: u64,
     transport_attempt: u64,
     kind: harness_core::agentfirm_api::RuntimeCommandKind,
 ) -> String {
     format!(
-        "provider-process:{}:{}:{}:{}:{}:{}:{kind:?}",
+        "provider-process:{}:{}:{}:{}:{}:{}:{}:{}:{kind:?}",
         session.id,
         session.runtime_generation,
+        member_run_generation,
+        session.version,
         session.node_daemon_generation,
         session.control_state.driver_generation,
         supervisor_generation,
@@ -172,6 +193,7 @@ mod tests {
         let session = test_agent_session();
         let first = provider_process_idempotency_key(
             &session,
+            1,
             7,
             1,
             harness_core::agentfirm_api::RuntimeCommandKind::ResumeNativeSession,
@@ -180,6 +202,7 @@ mod tests {
             first,
             provider_process_idempotency_key(
                 &session,
+                1,
                 7,
                 1,
                 harness_core::agentfirm_api::RuntimeCommandKind::ResumeNativeSession,
@@ -189,6 +212,7 @@ mod tests {
             first,
             provider_process_idempotency_key(
                 &session,
+                1,
                 7,
                 2,
                 harness_core::agentfirm_api::RuntimeCommandKind::ResumeNativeSession,
@@ -198,10 +222,37 @@ mod tests {
             first,
             provider_process_idempotency_key(
                 &session,
+                1,
                 8,
                 1,
                 harness_core::agentfirm_api::RuntimeCommandKind::ResumeNativeSession,
             )
+        );
+
+        assert_ne!(
+            first,
+            provider_process_idempotency_key(
+                &session,
+                2,
+                7,
+                1,
+                harness_core::agentfirm_api::RuntimeCommandKind::ResumeNativeSession,
+            ),
+            "a reopened MemberRun generation is a new provider-process intent"
+        );
+
+        let mut advanced_session = session.clone();
+        advanced_session.version += 1;
+        assert_ne!(
+            first,
+            provider_process_idempotency_key(
+                &advanced_session,
+                1,
+                7,
+                1,
+                harness_core::agentfirm_api::RuntimeCommandKind::ResumeNativeSession,
+            ),
+            "a changed canonical AgentSession envelope must not reuse an old command key"
         );
     }
 
@@ -357,7 +408,7 @@ mod tests {
                     "authenticated_actor": {"kind": "service", "id": "daemon"},
                     "command": "open_runtime",
                     "required_capability": "runtime.open",
-                    "idempotency_key": "provider-process:session:1:4:2:7:1:OpenRuntime",
+                    "idempotency_key": "provider-process:session:1:1:1:4:2:7:1:OpenRuntime",
                     "request_fingerprint": "fingerprint",
                     "status": "applied",
                     "phase": "settled",

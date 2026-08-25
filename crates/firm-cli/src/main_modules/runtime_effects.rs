@@ -614,11 +614,13 @@ pub(super) fn prepare_provider_process_effect(
     let fingerprint = harness_store::canonical_json_fingerprint(&payload);
     let idempotency_key = provider_process_idempotency_key(
         &session,
+        canonical_member.runtime_generation,
         ledger.supervisor_generation,
         transport_attempt,
         kind,
     );
     let command_id = format!("runtime-command:{idempotency_key}");
+    require_new_provider_process_command(&ledger.store, &execution_space_id, &command_id)?;
     let daemon_actor = ActorRef {
         kind: ActorKind::Service,
         id: lease.daemon_id.clone(),
@@ -639,7 +641,9 @@ pub(super) fn prepare_provider_process_effect(
         .into(),
         idempotency_key: idempotency_key.clone(),
         expected_version: 0,
-        expires_unix_ms: current_unix_ms_u64().saturating_add(30_000),
+        // Exact retries reconcile by durable command identity above, before a
+        // renewed lease can alter this first command's frozen envelope.
+        expires_unix_ms: lease.expires_unix_ms,
         binding: runtime_command_binding_for_member_session(&canonical_member, &session),
         precondition: harness_core::agentfirm_api::RuntimeCommandPrecondition {
             expected_session_version: Some(session.version),
@@ -651,7 +655,7 @@ pub(super) fn prepare_provider_process_effect(
         postcondition: runtime_command_postcondition_for(kind),
         payload,
         payload_fingerprint: fingerprint.clone(),
-        issued_at: now_string(),
+        issued_at: format!("runtime-command:{idempotency_key}"),
     };
     let command_fingerprint = harness_store::runtime_command_envelope_fingerprint(&command)?;
     let context = harness_core::agentfirm_api::MutationContext {
