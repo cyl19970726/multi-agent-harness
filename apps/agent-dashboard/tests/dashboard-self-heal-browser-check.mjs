@@ -40,6 +40,7 @@ const fixtureSnapshot = {
   team_member_close_requests: [],
 };
 const teamRunId = fixtureSnapshot.team_runs[0]?.id;
+const agentTeamId = fixtureSnapshot.team_runs[0]?.agent_team_id;
 
 function scopeKey(space, company) {
   return `${space || "default"}/${company || "default"}`;
@@ -139,6 +140,29 @@ const api = createHttpServer((request, response) => {
       items: [],
       facets: {teams: [], hosts: [], members: [], phases: []},
       page: {as_of_event_sequence: 1, item_count: 0, next_cursor: null},
+    },
+    attention: [], allowed_actions: [],
+  });
+  if (url.pathname === "/v1/views/viewer-context") return jsonResponse(response, 200, {
+    view_kind: "viewer_context",
+    schema_version: "agentfirm.role_views.v1",
+    source_execution_space_id: url.searchParams.get("space") || "space-a",
+    source_store_identity: "self-heal-fixture-store",
+    as_of_event_sequence: 1,
+    generated_at: new Date().toISOString(),
+    freshness: "current",
+    data: {
+      viewer_actor_ref: { kind: "agent_member", id: "self-heal-viewer" },
+      teams: [{
+        team_id: agentTeamId,
+        display_name: "Self-heal Team",
+        viewer_role: "member",
+        viewer_agent_member_id: "self-heal-viewer",
+        default_conversation: "self-heal-viewer",
+        latest_run_id: teamRunId,
+        team_run_ids: [teamRunId],
+        current_member_run_id: null,
+      }],
     },
     attention: [], allowed_actions: [],
   });

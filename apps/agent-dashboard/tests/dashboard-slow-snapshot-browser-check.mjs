@@ -80,7 +80,7 @@ const sendMessageAction = {
 };
 const teamWorkspace = await json("team-workspace");
 teamWorkspace.source_execution_space_id = "fixture-space";
-teamWorkspace.data.team.team_id = "teamrun-mission-current";
+teamWorkspace.data.team.team_id = "team-platform-foundation";
 teamWorkspace.data.team.latest_run = { id: "teamrun-mission-current", status: "running" };
 const hostConsole = await json("host-console");
 hostConsole.source_execution_space_id = "fixture-space";
@@ -131,7 +131,30 @@ function responseFor(url) {
     capability_auth: "x-agentfirm-token",
     build_sha: "fbc401646f66b69a0269622c489441cfe643b54f",
   };
-  if (url.pathname.startsWith("/v1/views/team-inbox/")) return {
+  if (url.pathname === "/v1/views/viewer-context") return {
+    view_kind: "viewer_context",
+    schema_version: "agentfirm.role_views.v1",
+    source_execution_space_id: "fixture-space",
+    source_store_identity: "slow-snapshot-fixture-store",
+    as_of_event_sequence: 1,
+    generated_at: new Date().toISOString(),
+    freshness: "current",
+    data: {
+      viewer_actor_ref: { kind: "agent_member", id: teamWorkspace.data.team.host_agent_id },
+      teams: [{
+        team_id: teamWorkspace.data.team.team_id,
+        display_name: teamWorkspace.data.team.display_name,
+        viewer_role: "host",
+        viewer_agent_member_id: teamWorkspace.data.team.host_agent_id,
+        default_conversation: "host",
+        latest_run_id: teamWorkspace.data.team.latest_run.id,
+        team_run_ids: [teamWorkspace.data.team.latest_run.id],
+        current_member_run_id: null,
+      }],
+    },
+    attention: [], allowed_actions: [],
+  };
+  if (url.pathname === "/v1/views/team-inbox/team-platform-foundation") return {
     view_kind: "team_inbox",
     schema_version: "agentfirm.role_views.v1",
     source_execution_space_id: "fixture-space",
@@ -140,7 +163,7 @@ function responseFor(url) {
     generated_at: new Date().toISOString(),
     freshness: "current",
     data: {
-      team: { team_id: "teamrun-mission-current", display_name: "Fixture Team", team_revision: 1, node_id: "node-fixture", status: "active" },
+      team: { team_id: "team-platform-foundation", display_name: "Fixture Team", team_revision: 1, node_id: "node-fixture", status: "active" },
       subscription: null,
       items: [],
       page: { as_of_event_sequence: 1, item_count: 0, next_cursor: null },
@@ -290,7 +313,7 @@ try {
     await delay(12_000);
     return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(snapshot("late ambient team snapshot")) });
   }, teamWrites);
-  await teamPage.goto(`${appBase}/?${query({ surface: "team", team: "teamrun-mission-current", teamTab: "activity" })}`, { waitUntil: "domcontentloaded" });
+  await teamPage.goto(`${appBase}/?${query({ surface: "team", team: "team-platform-foundation", teamTab: "activity" })}`, { waitUntil: "domcontentloaded" });
   await teamPage.getByRole("button", { name: "Compose team message", exact: true }).click();
   await teamPage.getByRole("heading", { name: "Team message", exact: true }).waitFor();
   await teamPage.getByLabel("Recipient").selectOption(hostConsole.data.member_capacity[0].agent_member_ref.id);
