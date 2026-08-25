@@ -2,6 +2,24 @@ use super::*;
 
 pub(super) const MAX_AUTOMATIC_PROVIDER_TRANSPORT_ATTEMPTS: u64 = 3;
 
+pub(super) fn require_new_provider_process_command(
+    store: &harness_store::HarnessStore,
+    execution_space_id: &str,
+    command_id: &str,
+) -> CliResult<()> {
+    let exists = store
+        .runtime_commands(execution_space_id)
+        .map_err(|error| classify_pre_effect_provider_admission_error(error.into()))?
+        .iter()
+        .any(|command| command.id == command_id);
+    if exists {
+        return Err(CliError::RuntimeRecoveryRequired(format!(
+            "provider process command {command_id} already exists; reconcile before spawn"
+        )));
+    }
+    Ok(())
+}
+
 pub(super) fn durable_provider_process_outcome(
     ledger: &TeamRunLedger,
     member: &ProviderRuntimeProjection,

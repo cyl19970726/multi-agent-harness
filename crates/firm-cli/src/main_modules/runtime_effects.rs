@@ -620,17 +620,7 @@ pub(super) fn prepare_provider_process_effect(
         kind,
     );
     let command_id = format!("runtime-command:{idempotency_key}");
-    if ledger
-        .store
-        .runtime_commands(&execution_space_id)
-        .map_err(|error| classify_pre_effect_provider_admission_error(error.into()))?
-        .iter()
-        .any(|command| command.id == command_id)
-    {
-        return Err(CliError::RuntimeRecoveryRequired(format!(
-            "provider process command {command_id} already exists; reconcile before spawn"
-        )));
-    }
+    require_new_provider_process_command(&ledger.store, &execution_space_id, &command_id)?;
     let daemon_actor = ActorRef {
         kind: ActorKind::Service,
         id: lease.daemon_id.clone(),
@@ -651,10 +641,8 @@ pub(super) fn prepare_provider_process_effect(
         .into(),
         idempotency_key: idempotency_key.clone(),
         expected_version: 0,
-        // The first durable command freezes the currently revalidated lease
-        // window. An exact retry is detected by command identity above and is
-        // routed to reconciliation before a renewed lease can alter the full
-        // envelope.
+        // Exact retries reconcile by durable command identity above, before a
+        // renewed lease can alter this first command's frozen envelope.
         expires_unix_ms: lease.expires_unix_ms,
         binding: runtime_command_binding_for_member_session(&canonical_member, &session),
         precondition: harness_core::agentfirm_api::RuntimeCommandPrecondition {
