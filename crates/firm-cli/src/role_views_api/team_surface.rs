@@ -26,11 +26,13 @@ pub(crate) fn team_view(
                 .iter()
                 .any(|actor| actor.kind == ActorKind::AgentMember && actor.id == team.host_agent_id)
     });
-    let team_member_identity = identity.is_some_and(|identity| {
+    let local_operator = identity.is_some_and(|identity| identity.local_operator);
+    let exact_member_identity = identity.is_some_and(|identity| {
         identity.actor.kind == ActorKind::AgentMember
             && (identity.actor.id == team.host_agent_id
                 || team.member_ids.contains(&identity.actor.id))
-    }) || exact_host_identity;
+    });
+    let team_member_identity = exact_member_identity || exact_host_identity || local_operator;
     if (host && !exact_host_identity) || (!host && !team_member_identity) {
         return Err((
             "403 Forbidden",
@@ -242,8 +244,15 @@ pub(crate) fn team_view(
     ))?;
     let collaboration = collaboration_projection(company_id, &team.id, None);
     if !host {
+        let viewer_role = if exact_host_identity {
+            "host"
+        } else if exact_member_identity {
+            "member"
+        } else {
+            "operator"
+        };
         let latest_run = run.map(|run| json!({"id":run.id,"status":enum_string(&run.status),"previous_run_id":run.previous_run_id,"execution_node_id":run.execution_node_id,"project_binding_id":run.project_binding_id,"execution_root":run.execution_root,"created_at":run.created_at,"completed_at":run.completed_at}));
-        let data = json!({"team":{"team_id":team.id,"display_name":team.name,"team_revision":team_revision,"mission_id":team.mission_id,"host_agent_id":team.host_agent_id,"viewer_role":if exact_host_identity{"host"}else{"member"},"node_id":team.node_id,"placement_generation":run.and_then(|run|facts.run_revisions.get(&run.id).copied()),"status":enum_string(&team.status),"latest_run":latest_run},"pressure_summary":pressure_summary,"works":works,"work_graph":work_graph,"members":members,"messages":messages,"activity":activity,"activity_truncated":activity_truncated,"reports":reports,"findings":findings,"failures":failures,"gate_requirements":requirements,"gate_evaluations":evaluations,"gate_waivers":waivers,"workspace_attention":workspace_attention,"delegation_provenance":delegations,"collaboration":collaboration,"page":{"as_of_event_sequence":facts.sequence,"item_count":works.len(),"next_cursor":null}});
+        let data = json!({"team":{"team_id":team.id,"display_name":team.name,"team_revision":team_revision,"mission_id":team.mission_id,"host_agent_id":team.host_agent_id,"viewer_role":viewer_role,"node_id":team.node_id,"placement_generation":run.and_then(|run|facts.run_revisions.get(&run.id).copied()),"status":enum_string(&team.status),"latest_run":latest_run},"pressure_summary":pressure_summary,"works":works,"work_graph":work_graph,"members":members,"messages":messages,"activity":activity,"activity_truncated":activity_truncated,"reports":reports,"findings":findings,"failures":failures,"gate_requirements":requirements,"gate_evaluations":evaluations,"gate_waivers":waivers,"workspace_attention":workspace_attention,"delegation_provenance":delegations,"collaboration":collaboration,"page":{"as_of_event_sequence":facts.sequence,"item_count":works.len(),"next_cursor":null}});
         return Ok(envelope(
             "team_workspace",
             &facts,

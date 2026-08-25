@@ -71,6 +71,7 @@ interface WorkbenchShellProps {
   onApiUrlChange: (value: string) => void;
   onRefresh: () => void;
   onSelectionChange: (selection: SelectionState) => void;
+  onSelectionReplace: (selection: SelectionState) => void;
   selection: SelectionState;
   sourceError: string | null;
   sourceLabel: string;
@@ -135,6 +136,7 @@ export function WorkbenchShell({
   onApiUrlChange,
   onRefresh,
   onSelectionChange,
+  onSelectionReplace,
   selection,
   sourceError,
   sourceLabel,
@@ -152,6 +154,9 @@ export function WorkbenchShell({
   const roleActionsCurrent = actionsEnabled && domainFreshness.works === "live" && domainFreshness.runtime === "live";
   function updateSelection(next: Partial<SelectionState>) {
     onSelectionChange({ ...selection, ...next });
+  }
+  function replaceSelection(next: Partial<SelectionState>) {
+    onSelectionReplace({ ...selection, ...next });
   }
 
   return (
@@ -196,6 +201,7 @@ export function WorkbenchShell({
                 model={model}
                 selection={selection}
                 onSelectionChange={updateSelection}
+                onSelectionReplace={replaceSelection}
                 sourceLabel={sourceLabel}
                 actionsEnabled={actionsEnabled}
                 onAction={onAction}
@@ -279,7 +285,7 @@ function TopBar({
   onTogglePoll,
 }: Omit<
   WorkbenchShellProps,
-  "selection" | "onSelectionChange" | "actionsEnabled" | "onAction" | "onRoleAction" | "selectedCompanyId"
+  "selection" | "onSelectionChange" | "onSelectionReplace" | "actionsEnabled" | "onAction" | "onRoleAction" | "selectedCompanyId"
 > & {
   currentSurface: string;
   contextLabel: string;
@@ -803,6 +809,7 @@ function SurfaceSwitch({
   model,
   selection,
   onSelectionChange,
+  onSelectionReplace,
   sourceLabel,
   actionsEnabled,
   onAction,
@@ -818,6 +825,7 @@ function SurfaceSwitch({
   model: WorkbenchModel;
   selection: SelectionState;
   onSelectionChange: (selection: Partial<SelectionState>) => void;
+  onSelectionReplace: (selection: Partial<SelectionState>) => void;
   sourceLabel: string;
   actionsEnabled: boolean;
   onAction: (path: string, body?: unknown, options?: { headers?: Readonly<Record<string, string>> }) => Promise<boolean>;
@@ -855,10 +863,8 @@ function SurfaceSwitch({
   }
   switch (selection.surface) {
     case "team":
-      return selection.teamConversation && (selection.teamId||selection.memberRunId) ? (
-        <AgentConversationWorkspace apiUrl={apiUrl} space={executionSpaceId} project={projectBindingId} company={companyId} routeIdentity={selection.teamId??selection.memberRunId!} selection={selection} refreshKey={snapshotContentRevision} onAction={onRoleAction} onSelectionChange={onSelectionChange}/>
-      ) : selection.teamId ? (
-        <TeamWorkspace apiUrl={apiUrl} space={executionSpaceId} project={projectBindingId} company={companyId} teamId={selection.teamId} refreshKey={snapshotContentRevision} selection={selection} onAction={onRoleAction} onSelectionChange={onSelectionChange} />
+      return selection.teamId ? (
+        <TeamWorkspace apiUrl={apiUrl} space={executionSpaceId} project={projectBindingId} company={companyId} teamId={selection.teamId} refreshKey={snapshotContentRevision} selection={selection} onAction={onRoleAction} onSelectionChange={onSelectionChange} onSelectionReplace={onSelectionReplace} />
       ) : selection.memberRunId ? (
         <AgentConversationWorkspace apiUrl={apiUrl} space={executionSpaceId} project={projectBindingId} company={companyId} routeIdentity={selection.memberRunId} selection={selection} refreshKey={snapshotContentRevision} onAction={onRoleAction} onSelectionChange={onSelectionChange}/>
       ) : (

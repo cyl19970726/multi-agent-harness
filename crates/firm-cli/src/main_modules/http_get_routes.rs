@@ -22,17 +22,46 @@ impl HttpExchange<'_> {
         let trust_identity_override_header = self.trust_identity_override_header;
         let live_provider_activity_token = &self.live_provider_activity_token;
         if method == "GET" {
+            let local_operator_read = stream
+                .local_addr()
+                .ok()
+                .is_some_and(|address| address.ip().is_loopback())
+                && stream
+                    .peer_addr()
+                    .ok()
+                    .is_some_and(|address| address.ip().is_loopback());
             let role_view_identity = if path_only.starts_with("/v1/views/") {
-                match resolve_agentfirm_http_credential(trust_transport_token.as_deref()) {
-                    Ok(credential) => Some(role_views_api::ReadIdentity {
-                        actor: credential.actor,
-                        authority_actors: credential.authority_actors,
+                match trust_transport_token.as_deref() {
+                    Some(_) => {
+                        match resolve_agentfirm_http_credential(trust_transport_token.as_deref()) {
+                            Ok(credential) => Some(role_views_api::ReadIdentity {
+                                actor: credential.actor,
+                                authority_actors: credential.authority_actors,
+                                local_operator: local_operator_read,
+                            }),
+                            Err(message) => {
+                                write_http_json(
+                                    stream,
+                                    "401 Unauthorized",
+                                    &serde_json::json!({"ok":false,"error":{"code":"NOT_AUTHORIZED","message":message}}),
+                                )?;
+                                return Ok(true);
+                            }
+                        }
+                    }
+                    None if local_operator_read => Some(role_views_api::ReadIdentity {
+                        actor: harness_core::agentfirm_api::ActorRef {
+                            kind: harness_core::agentfirm_api::ActorKind::Service,
+                            id: "local-dashboard-operator".into(),
+                        },
+                        authority_actors: Vec::new(),
+                        local_operator: true,
                     }),
-                    Err(message) => {
+                    None => {
                         write_http_json(
                             stream,
                             "401 Unauthorized",
-                            &serde_json::json!({"ok":false,"error":{"code":"NOT_AUTHORIZED","message":message}}),
+                            &serde_json::json!({"ok":false,"error":{"code":"NOT_AUTHORIZED","message":"non-loopback RoleView reads require an AgentFirm runtime context"}}),
                         )?;
                         return Ok(true);
                     }

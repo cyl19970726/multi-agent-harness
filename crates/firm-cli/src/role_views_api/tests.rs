@@ -41,6 +41,37 @@ fn empty_global_view_is_zero_match_and_read_only() {
 }
 
 #[test]
+fn empty_viewer_context_is_authenticated_zero_match_and_read_only() {
+    let root = PathBuf::from(format!(
+        "/tmp/agentfirm-viewer-context-purity-{}",
+        std::process::id()
+    ));
+    if root.exists() {
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+    let identity = ReadIdentity {
+        actor: ActorRef {
+            kind: ActorKind::AgentMember,
+            id: "member-with-no-team".into(),
+        },
+        authority_actors: Vec::new(),
+        local_operator: false,
+    };
+    let view = viewer_context_view("space-empty", &HarnessStore::new(&root), Some(&identity))
+        .expect("authenticated zero-Team context is a valid read");
+    assert_eq!(view["view_kind"], json!("viewer_context"));
+    assert_eq!(view["data"]["teams"], json!([]));
+    assert_eq!(
+        view["data"]["viewer_actor_ref"],
+        json!({"kind":"agent_member","id":"member-with-no-team"})
+    );
+    assert!(
+        !root.exists(),
+        "read-only ViewerContext must not initialize a Store"
+    );
+}
+
+#[test]
 fn historical_duplicate_active_membership_fails_role_view_closed() {
     let duplicate = vec![
         json!({"id":"membership-1","team_id":"team-1","agent_member_id":"agent-1","state":"active","membership_generation":1}),

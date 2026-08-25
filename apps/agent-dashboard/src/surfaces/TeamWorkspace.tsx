@@ -8,7 +8,7 @@ import { TeamMembersCapacity } from "@/components/workbench/team/TeamMembersCapa
 import { TeamWorksBoard } from "@/components/workbench/team/TeamWorksBoard";
 import { TeamInboxPanel } from "@/components/workbench/team/TeamInboxPanel";
 import { AgentTeamTab, AgentTeamTabs } from "@/components/workbench/team/AgentTeamVisualPrimitives";
-import { fetchRoleView, type MessageSummary, type RoleActionExecutor, type RoleView, type TeamWorkspaceData } from "../model/roleViews";
+import { fetchRoleView, type MessageSummary, type RoleActionExecutor, type RoleView, type TeamWorkspaceData, type ViewerContextData, type ViewerContextTeam } from "../model/roleViews";
 import type { SelectionState } from "../app/selection";
 import { AttentionStrip, ViewProvenance, ViewState } from "./RoleViewPrimitives";
 import { HostConsole } from "./HostConsole";
@@ -18,8 +18,9 @@ import { AgentConversationWorkspace } from "./AgentConversationWorkspace";
 type TeamTab = "works" | "activity" | "members";
 const TABS = [{id:"works",label:"Works",icon:BriefcaseBusiness},{id:"activity",label:"Activity",icon:Activity},{id:"members",label:"Members",icon:Users}] as const;
 
-export function TeamWorkspace({apiUrl,space,project,company,teamId,teamRunId,refreshKey,selection,onAction,onSelectionChange}:{apiUrl:string;space:string;project:string;company?:string;teamId:string;teamRunId?:string;refreshKey?:string;selection:SelectionState;onAction:RoleActionExecutor;onSelectionChange:(next:Partial<SelectionState>)=>void}){
+export function TeamWorkspace({apiUrl,space,project,company,teamId,teamRunId,refreshKey,selection,onAction,onSelectionChange,onSelectionReplace}:{apiUrl:string;space:string;project:string;company?:string;teamId:string;teamRunId?:string;refreshKey?:string;selection:SelectionState;onAction:RoleActionExecutor;onSelectionChange:(next:Partial<SelectionState>)=>void;onSelectionReplace:(next:Partial<SelectionState>)=>void}){
   const [view,setView] = useState<RoleView<TeamWorkspaceData>|null>(null);
+  const [viewerContext,setViewerContext] = useState<RoleView<ViewerContextData>|null>(null);
   const [error,setError] = useState<string|null>(null);
   const [loading,setLoading] = useState(true);
   const [refetch,setRefetch] = useState(0);
@@ -40,8 +41,36 @@ export function TeamWorkspace({apiUrl,space,project,company,teamId,teamRunId,ref
   useLayoutEffect(() => {
     if(tab === "activity") workspaceScrollRef.current?.scrollTo({top:0,behavior:"auto"});
   },[tab,teamId]);
-  useEffect(() => { let live=true; fetchRoleView<TeamWorkspaceData>(apiUrl,`/v1/views/team-workspace/${encodeURIComponent(teamId)}`,{space,project,company}).then((value) => { if(live){ setView(value); setError(null); } }).catch((reason) => { if(live) setError(String(reason)); }).finally(() => { if(live) setLoading(false); }); return () => { live=false; }; },[apiUrl,space,project,company,teamId,refreshKey,refetch]);
+  useEffect(() => {
+    let live=true;
+    setLoading(true);
+    setView(null);
+    setError(null);
+    fetchRoleView<ViewerContextData>(apiUrl,"/v1/views/viewer-context",{space,project,company}).then(async (context) => {
+      if(!live)return;
+      setViewerContext(context);
+      const authorized=context.data.teams.find((team)=>team.team_id===teamId||team.team_run_ids.includes(teamId));
+      if(!authorized){
+        if(context.data.teams.length===1){
+          const target=context.data.teams[0];
+          const conversationOpen=Boolean(selection.teamConversation||selection.memberRunId);
+          onSelectionReplace({teamId:target.team_id,teamConversation:conversationOpen?target.default_conversation:undefined,memberRunId:conversationOpen?target.current_member_run_id??undefined:undefined,teamWorkId:undefined,agentSessionId:undefined});
+        }
+        return;
+      }
+      const value=await fetchRoleView<TeamWorkspaceData>(apiUrl,`/v1/views/team-workspace/${encodeURIComponent(teamId)}`,{space,project,company});
+      if(live){setView(value);setError(null);}
+    }).catch((reason) => { if(live)setError(String(reason)); }).finally(() => { if(live)setLoading(false); });
+    return () => { live=false; };
+  },[apiUrl,space,project,company,teamId,refreshKey,refetch]);
+  const authority=viewerContext?.data.teams.find((team)=>team.team_id===teamId||team.team_run_ids.includes(teamId));
+  const canonicalSelection=view&&authority&&view.data.team.team_id===authority.team_id?canonicalConversationSelection(selection,view.data,authority):null;
+  useEffect(() => { if(canonicalSelection)onSelectionReplace(canonicalSelection); },[canonicalSelection?.teamConversation,canonicalSelection?.memberRunId]);
+  if(viewerContext&&!authority&&viewerContext.data.teams.length>1)return <AuthorizedTeamChooser teams={viewerContext.data.teams} onChoose={(team)=>onSelectionReplace({teamId:team.team_id,teamConversation:undefined,memberRunId:undefined,teamWorkId:undefined,agentSessionId:undefined})}/>;
+  if(viewerContext&&!authority&&viewerContext.data.teams.length===0)return <div className="h-full flex-1 overflow-y-auto"><ViewState loading={false} error="This authenticated AgentMember has no Team in the selected Execution Space." identityLabel="Agent Teams" onRetry={retry}>{null}</ViewState></div>;
+  if(view&&authority&&view.data.team.team_id!==authority.team_id)return <div className="h-full flex-1 overflow-y-auto"><ViewState loading error={null} identityLabel={`Agent Team · ${teamId}`} onRetry={retry}>{null}</ViewState></div>;
   if (!view) return <div className="h-full flex-1 overflow-y-auto"><ViewState loading={loading} error={error} identityLabel={`Agent Team · ${teamId}`} onRetry={retry}>{null}</ViewState></div>;
+  if(canonicalSelection)return <div className="h-full flex-1 overflow-y-auto"><ViewState loading error={null} identityLabel="authenticated Agent Workspace route" onRetry={retry}>{null}</ViewState></div>;
 
   const team = view.data.team;
   const resolvedTeamRunId = teamRunId ?? team.latest_run?.id;
@@ -64,6 +93,27 @@ export function TeamWorkspace({apiUrl,space,project,company,teamId,teamRunId,ref
     {tab === "members" && <div role="tabpanel" id="team-workspace-panel-members" aria-labelledby="team-workspace-tab-members"><TeamMembersCapacity members={view.data.members} summary={view.data.pressure_summary} selectedMemberRunId={selection.memberRunId} onOpenMember={(memberRunId) => { const member=view.data.members.find((candidate) => candidate.current_member_run_ref === memberRunId); onSelectionChange({teamMode:"workspace",teamConversation:member?.agent_member_ref.id,memberRunId}); }}/></div>}
     </div>
   </div></main>;
+}
+
+function canonicalConversationSelection(selection:SelectionState,data:TeamWorkspaceData,authority:ViewerContextTeam):Partial<SelectionState>|null {
+  const members=data.members.map((member)=>member.agent_member_ref.id);
+  let conversation=selection.teamConversation;
+  if(!conversation&&selection.memberRunId){
+    conversation=data.members.find((member)=>member.current_member_run_ref===selection.memberRunId)?.agent_member_ref.id;
+  }
+  if(conversation){
+    if(conversation!=="host"&&!members.includes(conversation))conversation=authority.default_conversation;
+  }
+  const selectedAgentId=conversation==="host"?data.team.host_agent_id:conversation;
+  const memberRunId=selectedAgentId===authority.viewer_agent_member_id
+    ? authority.current_member_run_id??undefined
+    : data.members.find((member)=>member.agent_member_ref.id===selectedAgentId)?.current_member_run_ref??undefined;
+  if(selection.teamConversation===conversation&&selection.memberRunId===memberRunId)return null;
+  return {teamConversation:conversation,memberRunId,agentSessionId:undefined};
+}
+
+function AuthorizedTeamChooser({teams,onChoose}:{teams:ViewerContextTeam[];onChoose:(team:ViewerContextTeam)=>void}) {
+  return <main className="agent-team-surface h-full flex-1 overflow-y-auto p-6"><section className="mx-auto max-w-2xl rounded-xl border border-border bg-card p-6"><p className="agent-team-eyebrow">Authenticated Team context</p><h1 className="mt-2 text-2xl font-semibold">Choose the Agent Team to open</h1><p className="mt-2 text-sm text-muted-foreground">The saved link belongs to another Team. Select one available to this exact AgentMember.</p><div className="mt-5 grid gap-2">{teams.map((team)=><Button key={team.team_id} variant="outline" className="h-auto justify-start py-3 text-left" onClick={()=>onChoose(team)}><span><strong className="block">{team.display_name||team.team_id}</strong><span className="text-xs text-muted-foreground">{team.viewer_role} · {team.team_id}</span></span></Button>)}</div></section></main>;
 }
 
 function HeaderFact({label,value}:{label:string;value:string}) { return <div className="min-w-0"><dt className="uppercase tracking-wider">{label}</dt><dd className="mt-1 truncate font-medium text-foreground" title={value}>{value}</dd></div>; }

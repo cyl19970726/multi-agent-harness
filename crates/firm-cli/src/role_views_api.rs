@@ -25,6 +25,10 @@ pub(crate) struct HttpResponse {
 pub(crate) struct ReadIdentity {
     pub actor: ActorRef,
     pub authority_actors: Vec<ActorRef>,
+    /// The Dashboard connection terminates on this process's loopback socket.
+    /// This is local same-user read authority, not an AgentMember credential
+    /// and never authorizes a mutation.
+    pub local_operator: bool,
 }
 
 #[derive(Default)]
@@ -1323,11 +1327,13 @@ fn error(status: &'static str, code: &str, detail: impl Into<String>) -> HttpRes
 mod member_surface;
 mod router;
 mod team_surface;
+mod viewer_surface;
 mod workspace_surface;
 
 pub(crate) use member_surface::*;
 pub(crate) use router::*;
 pub(crate) use team_surface::*;
+pub(crate) use viewer_surface::*;
 pub(crate) use workspace_surface::*;
 
 #[cfg(test)]

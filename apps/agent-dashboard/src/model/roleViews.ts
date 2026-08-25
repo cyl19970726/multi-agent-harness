@@ -1,7 +1,7 @@
 export const ROLE_VIEW_SCHEMA = "agentfirm.role_views.v1" as const;
 
 export type RoleViewFreshness = "current" | "stale" | "unavailable" | "unknown";
-export type RoleViewKind = "global_work" | "team_workspace" | "host_console" | "agent_workspace" | "member_workbench" | "operator" | "team_inbox";
+export type RoleViewKind = "global_work" | "viewer_context" | "team_workspace" | "host_console" | "agent_workspace" | "member_workbench" | "operator" | "team_inbox";
 
 export interface ActorRef { kind: string; id: string; /** Server-resolved durable display label; the raw id remains the secondary display. */ display_name?: string|null }
 export interface TargetRef { kind: string; id: string }
@@ -304,6 +304,21 @@ export interface TeamWorkspaceData {
   gate_evaluations: RoleRecordSummary[]; gate_waivers: RoleRecordSummary[]; workspace_attention: RoleRecordSummary[];
   delegation_provenance: RoleRecordSummary[]; collaboration:CollaborationProjectionSummary; page: {as_of_event_sequence:number;item_count:number;next_cursor:string|null}; runtime_fabric:RuntimeFabricSummary;
 }
+
+export interface ViewerContextTeam {
+  team_id:string;
+  display_name:string;
+  viewer_role:"operator"|"host"|"member";
+  viewer_agent_member_id:string;
+  default_conversation:string;
+  latest_run_id:string|null;
+  team_run_ids:string[];
+  current_member_run_id:string|null;
+}
+export interface ViewerContextData {
+  viewer_actor_ref:{kind:"agent_member";id:string};
+  teams:ViewerContextTeam[];
+}
 /** One Team-subject canonical delivery in the shared Team Inbox (DOC-106). */
 export interface TeamInboxItem {
   delivery_id: string; delivery_version: number; delivery_status: string; attempt: number;
@@ -403,7 +418,7 @@ export interface AgentWorkspaceCurrentSession {
   agent_session_id:string;agent_session_generation:number;lifecycle:string;runtime_residency:string;activity:string;provider:string;effective_permission_ceiling:string;workspace_cwd:string|null;native_session_ref:{native_session_id:string;provider:string;execution_mode:string}|null;native_session_open_target:{uri:string;desktop_session_id:string;provider:string;execution_mode:string}|null;
 }
 interface AgentWorkspaceDataBase {
-  team:{team_id:string;display_name:string;team_revision:number;mission_id:string;host_agent_id:string;viewer_role:"host"|"member";status:string;latest_run_id:string|null};
+  team:{team_id:string;display_name:string;team_revision:number;mission_id:string;host_agent_id:string;viewer_role:"operator"|"host"|"member";status:string;latest_run_id:string|null};
   selected_agent:AgentWorkspaceSelectedAgent;
   roster:AgentWorkspaceRosterItem[];
   messages:MessageSummary[];
@@ -472,7 +487,7 @@ export async function fetchRoleView<T>(apiUrl:string,path:string,scope:{project?
   const body=await response.json().catch(()=>({}));
   if(!response.ok)throw new Error(body?.error?.message??`RoleView request failed (${response.status})`);
   if(body.schema_version!==ROLE_VIEW_SCHEMA)throw new Error(`Unsupported RoleView schema: ${String(body.schema_version)}`);
-  const expectedKind=path.includes("global-work")?"global_work":path.includes("team-workspace")?"team_workspace":path.includes("team-inbox")?"team_inbox":path.includes("host-console")?"host_console":path.includes("agent-workspace")?"agent_workspace":path.includes("member-workbench")?"member_workbench":path.includes("operator")?"operator":null;
+  const expectedKind=path.includes("global-work")?"global_work":path.includes("viewer-context")?"viewer_context":path.includes("team-workspace")?"team_workspace":path.includes("team-inbox")?"team_inbox":path.includes("host-console")?"host_console":path.includes("agent-workspace")?"agent_workspace":path.includes("member-workbench")?"member_workbench":path.includes("operator")?"operator":null;
   if(!expectedKind||body.view_kind!==expectedKind)throw new Error(`RoleView kind mismatch: expected ${String(expectedKind)}, received ${String(body.view_kind)}`);
   if(body.source_execution_space_id!==scope.space&&expectedKind!=="global_work")throw new Error("RoleView execution-space identity mismatch");
   if(!Number.isSafeInteger(body.as_of_event_sequence)||!["current","stale","unavailable","unknown"].includes(body.freshness)||!Array.isArray(body.allowed_actions)||!Array.isArray(body.attention))throw new Error("Malformed RoleView envelope");
