@@ -20,6 +20,7 @@ import type { DashboardSnapshot, ExecutionSpace, Project } from "../types";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import {
   defaultSelection,
+  replaceSelectionInLocation,
   selectionFromLocation,
   syncSelectionToLocation,
   type SelectionState,
@@ -216,6 +217,13 @@ export function App() {
   // i.e. the /members/:memberId workbench) is directly addressable and
   // deep-linkable without pulling in a router.
   const [selection, setSelection] = useState<SelectionState>(() => selectionFromLocation(defaultSelection));
+  const replaceSelection = useCallback((next: SelectionState) => {
+    // Update browser history before React publishes the state. The regular URL
+    // sync effect then observes an already-canonical location and cannot push
+    // the rejected stale Team back into the history stack.
+    replaceSelectionInLocation(next);
+    setSelection(next);
+  }, []);
   // Updated before selection state so a callback from the old EventSource
   // cannot merge one Execution Space's frame into another during cleanup.
   const selectedStreamRef = useRef(
@@ -1088,6 +1096,7 @@ export function App() {
         onApiUrlChange={setApiUrl}
         onRefresh={refreshLive}
         onSelectionChange={setSelection}
+        onSelectionReplace={replaceSelection}
         selection={selection}
         sourceError={sourceError ?? selectorRecoveryNotice}
         sourceLabel={sourceLabel}

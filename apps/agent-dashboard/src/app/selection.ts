@@ -202,6 +202,34 @@ function selectionFromSearch(search: string, pathname = "/"): SelectionState {
  */
 export function syncSelectionToLocation(selection: SelectionState): void {
   if (typeof window === "undefined") return;
+  const {url,query}=locationForSelection(selection);
+  const current = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+  if (url === current) return;
+  // A location that already resolves to this selection (for example explicit
+  // `?surface=work` for the default Work surface) is semantically canonical.
+  // Canonicalize it in place with replaceState — never pushState — so loading
+  // such a link adds no history entry and browser Back can never be trapped.
+  // Genuine user selection changes still pushState.
+  const parsedCurrent = selectionFromSearch(window.location.search, window.location.pathname);
+  const parsedNext = selectionFromSearch(query ? `?${query}` : "", window.location.pathname);
+  if (sameSelection(parsedCurrent, parsedNext)) {
+    window.history.replaceState(null, "", url);
+    return;
+  }
+  window.history.pushState(null, "", url);
+}
+
+/**
+ * Replace a server-canonicalized route atomically. Authentication recovery is
+ * not a user navigation step: pushing it would leave the stale unauthorized
+ * Team behind the Back button and create an endless recovery loop.
+ */
+export function replaceSelectionInLocation(selection: SelectionState): void {
+  if (typeof window === "undefined") return;
+  window.history.replaceState(null, "", locationForSelection(selection).url);
+}
+
+function locationForSelection(selection: SelectionState): {url:string;query:string} {
   const params = new URLSearchParams(window.location.search);
   // Mutate in place instead of delete-all-then-set: URLSearchParams.set keeps
   // an existing key's position, so an already-canonical location serializes
@@ -252,22 +280,7 @@ export function syncSelectionToLocation(selection: SelectionState): void {
 
   const query = params.toString();
   const url = `${window.location.pathname}${query ? `?${query}` : ""}${window.location.hash}`;
-  const current = `${window.location.pathname}${window.location.search}${window.location.hash}`;
-  if (url === current) return;
-  // A location that already resolves to this selection (for example explicit
-  // `?surface=work` for the default Work surface) is semantically canonical.
-  // Canonicalize it in place with
-  // replaceState — never pushState — so loading such a link adds no history
-  // entry and browser Back can never be trapped in a canonicalization loop.
-  // Genuine selection changes still pushState to preserve the Back/Forward
-  // workbench journey.
-  const parsedCurrent = selectionFromSearch(window.location.search, window.location.pathname);
-  const parsedNext = selectionFromSearch(query ? `?${query}` : "", window.location.pathname);
-  if (sameSelection(parsedCurrent, parsedNext)) {
-    window.history.replaceState(null, "", url);
-    return;
-  }
-  window.history.pushState(null, "", url);
+  return {url,query};
 }
 
 const selectionCompareKeys = [

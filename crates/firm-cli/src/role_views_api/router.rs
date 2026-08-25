@@ -18,6 +18,8 @@ pub(crate) fn handle_get(
     };
     let result = if path == "/v1/views/global-work" {
         global_work_view(spaces, &query)
+    } else if path == "/v1/views/viewer-context" {
+        viewer_context_view(current_space_id, current, identity)
     } else if let Some(team_id) = path.strip_prefix("/v1/views/team-workspace/") {
         team_view(
             current_space_id,

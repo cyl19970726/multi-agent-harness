@@ -42,6 +42,17 @@ Harness store / provider adapters
   newer action responses or live deltas.
 - Project selection is explicit. URL selection state never substitutes for a
   canonical object relation.
+- A Dashboard connection whose client and server sockets are both loopback is
+  a same-user local Operator read context. It may discover and read local Team
+  coordination without an AgentMember secret. A supplied invalid runtime
+  context still fails closed, and any non-loopback RoleView read requires an
+  authenticated runtime context. Mutations remain actor-attributed and never
+  inherit local read authority.
+- `ViewerContext` resolves the local Teams and TeamRun aliases before a saved
+  Agent Workspace route is opened. An existing local Team remains readable;
+  a missing stale route converges in place when there is one target or asks the
+  user when there are several. Authentication recovery uses browser history
+  replacement so Back/Forward cannot loop through the rejected URL.
 - Thinking is sanitized transient state and is absent after expiry/reload.
 - Agent Workspace reads one authenticated, server-built RoleView. The browser
   never joins Team snapshots to MemberRuns or native provider activity, and a

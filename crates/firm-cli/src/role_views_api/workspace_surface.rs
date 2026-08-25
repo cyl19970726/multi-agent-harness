@@ -145,7 +145,8 @@ pub(crate) fn agent_workspace_view(
     let exact_selected_identity = identity.is_some_and(|identity| {
         identity.actor.kind == ActorKind::AgentMember && identity.actor.id == selected_agent_id
     });
-    if !(exact_host_identity || exact_selected_identity) {
+    let local_operator = identity.is_some_and(|identity| identity.local_operator);
+    if !(exact_host_identity || exact_selected_identity || local_operator) {
         return Err((
             "403 Forbidden",
             "NOT_AUTHORIZED",
@@ -153,14 +154,14 @@ pub(crate) fn agent_workspace_view(
                 .into(),
         ));
     }
-    if selected_is_host && !exact_host_identity {
+    if selected_is_host && !(exact_host_identity || local_operator) {
         return Err((
             "403 Forbidden",
             "NOT_AUTHORIZED",
             "Host Agent Session is visible only to this Team's exact Host authority".into(),
         ));
     }
-    let projection_scope = if selected_is_host {
+    let projection_scope = if selected_is_host && exact_host_identity {
         "host_self_private"
     } else if exact_selected_identity {
         "member_self_private"
@@ -475,15 +476,21 @@ pub(crate) fn agent_workspace_view(
             identity,
             query.company.as_deref(),
         )?
-    } else if let Some(member_run_id) = selected_member_run_id {
-        member_view(
-            space_id,
-            store,
-            member_run_id,
-            identity,
-            query.company.as_deref(),
-        )?
+    } else if exact_selected_identity {
+        if let Some(member_run_id) = selected_member_run_id {
+            member_view(
+                space_id,
+                store,
+                member_run_id,
+                identity,
+                query.company.as_deref(),
+            )?
+        } else {
+            json!({"allowed_actions":[]})
+        }
     } else {
+        // A loopback Operator may inspect the Team-scoped read model, but it
+        // never borrows an AgentMember's authenticated mutation authority.
         json!({"allowed_actions":[]})
     };
     let allowed_actions = authority_envelope["allowed_actions"]

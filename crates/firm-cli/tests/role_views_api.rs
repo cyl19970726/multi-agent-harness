@@ -753,15 +753,23 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
             "legacy provider field {retired_history_field} must remain retired"
         );
     }
-    let (status, sibling_denied) = serve.get_json_with_headers(
+    let (status, sibling_local_operator) = serve.get_json_with_headers(
         &member_agent_workspace_route,
         &[("X-AgentFirm-Token", SIBLING_MEMBER_TOKEN)],
     );
     assert_eq!(
-        status, 403,
-        "sibling Agent private Session must fail closed: {sibling_denied}"
+        status, 200,
+        "loopback sibling context gets only the local Operator read projection: {sibling_local_operator}"
     );
-    assert_eq!(sibling_denied["error"]["code"], "NOT_AUTHORIZED");
+    assert_eq!(
+        sibling_local_operator["data"]["projection_scope"],
+        "host_member_public"
+    );
+    assert_eq!(
+        sibling_local_operator["allowed_actions"],
+        serde_json::json!([]),
+        "local Operator read must not borrow sibling mutation authority"
+    );
     let sibling_self_route = format!(
         "/v1/views/agent-workspace/{run_id}?project={project_id}&agent_id={sibling_worker_id}"
     );
@@ -804,15 +812,23 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
             .is_some(),
         "exact Host self view carries an explicit owner projection state"
     );
-    let (status, member_denied_host) = serve.get_json_with_headers(
+    let (status, member_local_operator_host) = serve.get_json_with_headers(
         &host_agent_workspace_route,
         &[("X-AgentFirm-Token", MEMBER_TOKEN)],
     );
     assert_eq!(
-        status, 403,
-        "Member must not read Host provider Session: {member_denied_host}"
+        status, 200,
+        "loopback Member context gets only the local Operator Host projection: {member_local_operator_host}"
     );
-    assert_eq!(member_denied_host["error"]["code"], "NOT_AUTHORIZED");
+    assert_eq!(
+        member_local_operator_host["data"]["projection_scope"],
+        "host_member_public"
+    );
+    assert_eq!(
+        member_local_operator_host["allowed_actions"],
+        serde_json::json!([]),
+        "local Operator Host read must not borrow Host mutation authority"
+    );
     let member_run_version = store
         .trust_member_runs(&space_id)
         .expect("MemberRuns")
