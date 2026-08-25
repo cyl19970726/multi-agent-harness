@@ -154,7 +154,7 @@ function responseFor(url) {
     },
     attention: [], allowed_actions: [],
   };
-  if (url.pathname.startsWith("/v1/views/team-inbox/")) return {
+  if (url.pathname === "/v1/views/team-inbox/team-platform-foundation") return {
     view_kind: "team_inbox",
     schema_version: "agentfirm.role_views.v1",
     source_execution_space_id: "fixture-space",
@@ -163,7 +163,7 @@ function responseFor(url) {
     generated_at: new Date().toISOString(),
     freshness: "current",
     data: {
-      team: { team_id: "teamrun-mission-current", display_name: "Fixture Team", team_revision: 1, node_id: "node-fixture", status: "active" },
+      team: { team_id: "team-platform-foundation", display_name: "Fixture Team", team_revision: 1, node_id: "node-fixture", status: "active" },
       subscription: null,
       items: [],
       page: { as_of_event_sequence: 1, item_count: 0, next_cursor: null },
@@ -313,7 +313,7 @@ try {
     await delay(12_000);
     return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(snapshot("late ambient team snapshot")) });
   }, teamWrites);
-  await teamPage.goto(`${appBase}/?${query({ surface: "team", team: "teamrun-mission-current", teamTab: "activity" })}`, { waitUntil: "domcontentloaded" });
+  await teamPage.goto(`${appBase}/?${query({ surface: "team", team: "team-platform-foundation", teamTab: "activity" })}`, { waitUntil: "domcontentloaded" });
   await teamPage.getByRole("button", { name: "Compose team message", exact: true }).click();
   await teamPage.getByRole("heading", { name: "Team message", exact: true }).waitFor();
   await teamPage.getByLabel("Recipient").selectOption(hostConsole.data.member_capacity[0].agent_member_ref.id);
