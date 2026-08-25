@@ -69,4 +69,39 @@ fn team_work_cli_replaces_dependencies_through_application() {
         .find(|work| work.id == dependent.id)
         .expect("updated Work");
     assert_eq!(updated.prerequisite_work_ids, vec!["work-prerequisite"]);
+
+    let outcome = crate::work_action_service::execute(
+        &store,
+        crate::work_action_service::CanonicalWorkCommand::Lifecycle {
+            auth: None,
+            action: Box::new(harness_application::WorkAction::ReplaceDependencies(
+                harness_application::ReplaceWorkDependenciesCommand {
+                    accountable_team_id: created.team_run.agent_team_id,
+                    work_id: updated.id.clone(),
+                    expected_version: updated.version,
+                    prerequisite_work_ids: Vec::new(),
+                    context: WorkCommandContext {
+                        event_id: "service-outcome-event".into(),
+                        performed_by_actor: compatibility_team_actor("host", "test"),
+                        authority_actor: None,
+                        causation_ref: None,
+                        idempotency_key: "service-outcome-command".into(),
+                        created_at: now_string(),
+                        duplicate_ok: false,
+                    },
+                },
+            )),
+        },
+    )
+    .expect("typed service outcome");
+    assert_eq!(
+        outcome.kind,
+        crate::work_action_service::CanonicalWorkActionKind::Lifecycle(
+            harness_application::WorkActionKind::ReplaceDependencies
+        )
+    );
+    assert_eq!(outcome.work.version, updated.version + 1);
+    assert_eq!(outcome.resulting_version, outcome.work.version);
+    assert!(!outcome.event_id.is_empty());
+    assert!(!outcome.replayed);
 }

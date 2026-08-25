@@ -1411,7 +1411,7 @@ impl HttpExchange<'_> {
                     return Ok(true);
                 }
             };
-            match agentfirm_api::execute(store_owned, auth, command) {
+            match agentfirm_api::TrustApplication::new(store_owned).execute(auth, command) {
                 Ok(result) => write_http_json(stream, "200 OK", &result)?,
                 Err(StoreError::Conflict(encoded)) => {
                     let error = serde_json::from_str::<serde_json::Value>(&encoded).unwrap_or_else(

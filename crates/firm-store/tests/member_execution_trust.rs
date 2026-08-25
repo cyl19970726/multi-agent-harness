@@ -687,6 +687,7 @@ fn report(id: &str, kind: WorkReportKind, author: &ActorRef) -> WorkReport {
         failure_analysis_ref: None,
         artifact_refs: Vec::new(),
         check_refs: Vec::new(),
+        github_links: Vec::new(),
         evidence_refs: Vec::new(),
         known_risks: Vec::new(),
         confidence: Some(Confidence::High),

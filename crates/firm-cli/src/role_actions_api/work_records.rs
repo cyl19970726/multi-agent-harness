@@ -47,18 +47,6 @@ pub(super) fn execute_work_record_action(
         _ => {}
     }
     let replay = match operation {
-        "request-changes" => work_replay(
-            store,
-            &auth,
-            work_id,
-            harness_core::WorkEventKind::ChangesRequested,
-        )?,
-        "revise" | "reports" => canonical_replay(
-            store,
-            &auth,
-            "work_report",
-            &deterministic_id("work-report", &auth),
-        )?,
         "findings" => canonical_replay(
             store,
             &auth,
@@ -82,15 +70,6 @@ pub(super) fn execute_work_record_action(
     if let Some(replay) = replay {
         return Ok(replay);
     }
-    if auth.expected_version != current.version {
-        return Err(encoded_error(
-            "VERSION_CONFLICT",
-            "Work record action requires the exact current Work revision",
-            "work",
-            work_id,
-            Some(current.version),
-        ));
-    }
     if operation == "request-changes" {
         let RoleActionIntent::RequestChanges { reason } = intent else {
             return Err(encoded_error(
@@ -102,14 +81,19 @@ pub(super) fn execute_work_record_action(
             ));
         };
         let host_id = require_host(&auth, &team.host_agent_id, "work", work_id)?;
-        let before = store.work_operations()?.len();
-        let work = store.request_work_changes(
-            work_id,
-            auth.expected_version,
-            &reason,
-            host_context(&auth, host_id, false),
+        let outcome = crate::work_action_service::execute(
+            store,
+            crate::work_action_service::CanonicalWorkCommand::Lifecycle {
+                auth: Some(auth.clone()),
+                action: Box::new(WorkAction::RequestChanges {
+                    work_id: work_id.to_string(),
+                    expected_version: auth.expected_version,
+                    reason,
+                    context: host_context(&auth, host_id, false),
+                }),
+            },
         )?;
-        return work_action_result(store, &auth, before, work);
+        return Ok(work_outcome_result(outcome));
     }
     if operation == "revise" {
         let RoleActionIntent::ReviseWork {
@@ -143,6 +127,15 @@ pub(super) fn execute_work_record_action(
             },
         );
     }
+    if operation != "reports" && auth.expected_version != current.version {
+        return Err(encoded_error(
+            "VERSION_CONFLICT",
+            "Work record action requires the exact current Work revision",
+            "work",
+            work_id,
+            Some(current.version),
+        ));
+    }
     match (operation, intent) {
         (
             "reports",
@@ -169,19 +162,19 @@ pub(super) fn execute_work_record_action(
                 failure_analysis_ref: None,
                 artifact_refs: Vec::new(),
                 check_refs: Vec::new(),
+                github_links: Vec::new(),
                 evidence_refs,
                 known_risks: Vec::new(),
                 confidence: Some(Confidence::Medium),
                 recommended_next_action,
                 created_at: now_string(),
             };
-            auth.expected_version = 0;
-            Ok(trust_result(crate::agentfirm_api::execute(
+            Ok(work_outcome_result(crate::work_action_service::execute(
                 store,
-                auth,
-                crate::agentfirm_api::TrustCommand::CreateWorkReport {
+                crate::work_action_service::CanonicalWorkCommand::CreateReport {
+                    auth,
                     team_id: team_id.into(),
-                    report,
+                    report: Box::new(report),
                 },
             )?))
         }
@@ -212,14 +205,15 @@ pub(super) fn execute_work_record_action(
                 created_at: now_string(),
             };
             auth.expected_version = 0;
-            Ok(trust_result(crate::agentfirm_api::execute(
-                store,
-                auth,
-                crate::agentfirm_api::TrustCommand::CreateWorkFinding {
-                    team_id: team_id.into(),
-                    finding,
-                },
-            )?))
+            Ok(trust_result(
+                crate::agentfirm_api::TrustApplication::new(store).execute(
+                    auth,
+                    crate::agentfirm_api::TrustCommand::CreateWorkFinding {
+                        team_id: team_id.into(),
+                        finding,
+                    },
+                )?,
+            ))
         }
         (
             "failure-analyses",
@@ -258,14 +252,15 @@ pub(super) fn execute_work_record_action(
                 created_at: now_string(),
             };
             auth.expected_version = 0;
-            Ok(trust_result(crate::agentfirm_api::execute(
-                store,
-                auth,
-                crate::agentfirm_api::TrustCommand::CreateFailureAnalysis {
-                    team_id: team_id.into(),
-                    analysis,
-                },
-            )?))
+            Ok(trust_result(
+                crate::agentfirm_api::TrustApplication::new(store).execute(
+                    auth,
+                    crate::agentfirm_api::TrustCommand::CreateFailureAnalysis {
+                        team_id: team_id.into(),
+                        analysis,
+                    },
+                )?,
+            ))
         }
         (
             "gate-requirements",
@@ -334,14 +329,15 @@ pub(super) fn execute_work_record_action(
                 version: 1,
             };
             auth.expected_version = 0;
-            Ok(trust_result(crate::agentfirm_api::execute(
-                store,
-                auth,
-                crate::agentfirm_api::TrustCommand::CreateGateRequirement {
-                    team_id: team_id.into(),
-                    requirement,
-                },
-            )?))
+            Ok(trust_result(
+                crate::agentfirm_api::TrustApplication::new(store).execute(
+                    auth,
+                    crate::agentfirm_api::TrustCommand::CreateGateRequirement {
+                        team_id: team_id.into(),
+                        requirement,
+                    },
+                )?,
+            ))
         }
         _ => Err(encoded_error(
             "INVALID_STATE_TRANSITION",
@@ -363,7 +359,7 @@ pub(super) struct ResultReportInput {
 
 pub(super) fn create_result_report(
     store: &HarnessStore,
-    mut auth: AuthenticatedMutation,
+    auth: AuthenticatedMutation,
     team: &harness_core::AgentTeam,
     current: &Work,
     input: ResultReportInput,
@@ -397,7 +393,15 @@ pub(super) fn create_result_report(
     let report = WorkReport {
         id: deterministic_id("work-report", &auth),
         work_id: current.id.clone(),
-        work_revision: current.version + 1,
+        work_revision: auth.expected_version.checked_add(1).ok_or_else(|| {
+            encoded_error(
+                "VERSION_CONFLICT",
+                "Work report revision cannot overflow",
+                "work",
+                &current.id,
+                Some(current.version),
+            )
+        })?,
         report_revision: canonical_report_count(store, &auth.execution_space_id, &current.id)? + 1,
         kind: WorkReportKind::Result,
         authored_by: auth.actor.clone(),
@@ -409,54 +413,21 @@ pub(super) fn create_result_report(
         failure_analysis_ref: None,
         artifact_refs,
         check_refs,
+        github_links: Vec::new(),
         evidence_refs,
         known_risks: Vec::new(),
         confidence: Some(Confidence::High),
         recommended_next_action: Some("host_review".into()),
         created_at: now_string(),
     };
-    auth.expected_version = 0;
-    Ok(trust_result(crate::agentfirm_api::execute(
+    Ok(work_outcome_result(crate::work_action_service::execute(
         store,
-        auth,
-        crate::agentfirm_api::TrustCommand::CreateWorkReport {
+        crate::work_action_service::CanonicalWorkCommand::CreateReport {
+            auth,
             team_id: team.id.clone(),
-            report,
+            report: Box::new(report),
         },
     )?))
-}
-
-pub(super) fn work_action_result(
-    store: &HarnessStore,
-    auth: &AuthenticatedMutation,
-    before: usize,
-    work: Work,
-) -> Result<RoleActionResult, StoreError> {
-    let operations = store.work_operations()?;
-    let operation = operations
-        .iter()
-        .rev()
-        .find(|operation| {
-            operation.work.id == work.id && operation.event.idempotency_key == auth.idempotency_key
-        })
-        .ok_or_else(|| {
-            encoded_error(
-                "INVALID_STATE_TRANSITION",
-                "Work mutation committed without its operation",
-                "work",
-                &work.id,
-                Some(work.version),
-            )
-        })?;
-    Ok(RoleActionResult {
-        ok: true,
-        action_protocol_version: "agentfirm.role_actions.v1",
-        projection: serde_json::to_value(&work)?,
-        event_id: operation.event.id.clone(),
-        resulting_version: work.version,
-        store_sequence: operations.len() as u64,
-        replayed: operations.len() == before,
-    })
 }
 
 pub(super) fn execute_gate_action(
@@ -592,11 +563,12 @@ pub(super) fn execute_gate_action(
                 version: 1,
             };
             auth.expected_version = 0;
-            Ok(trust_result(crate::agentfirm_api::execute(
-                store,
-                auth,
-                crate::agentfirm_api::TrustCommand::EvaluateGate { evaluation },
-            )?))
+            Ok(trust_result(
+                crate::agentfirm_api::TrustApplication::new(store).execute(
+                    auth,
+                    crate::agentfirm_api::TrustCommand::EvaluateGate { evaluation },
+                )?,
+            ))
         }
         (
             "waive",
@@ -636,11 +608,12 @@ pub(super) fn execute_gate_action(
                 revoked_at: None,
             };
             auth.expected_version = 0;
-            Ok(trust_result(crate::agentfirm_api::execute(
-                store,
-                auth,
-                crate::agentfirm_api::TrustCommand::WaiveGate { waiver },
-            )?))
+            Ok(trust_result(
+                crate::agentfirm_api::TrustApplication::new(store).execute(
+                    auth,
+                    crate::agentfirm_api::TrustCommand::WaiveGate { waiver },
+                )?,
+            ))
         }
         _ => Err(encoded_error(
             "INVALID_STATE_TRANSITION",
@@ -724,12 +697,13 @@ pub(super) fn execute_waiver_revoke(
             Some(waiver.version),
         ));
     }
-    Ok(trust_result(crate::agentfirm_api::execute(
-        store,
-        auth,
-        crate::agentfirm_api::TrustCommand::RevokeGateWaiver {
-            waiver_id: waiver_id.into(),
-            revoked_at: now_string(),
-        },
-    )?))
+    Ok(trust_result(
+        crate::agentfirm_api::TrustApplication::new(store).execute(
+            auth,
+            crate::agentfirm_api::TrustCommand::RevokeGateWaiver {
+                waiver_id: waiver_id.into(),
+                revoked_at: now_string(),
+            },
+        )?,
+    ))
 }

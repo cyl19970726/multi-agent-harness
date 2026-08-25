@@ -56,7 +56,7 @@ pub(super) fn member_trust_command(
         expected_version,
         request_fingerprint: None,
     };
-    match agentfirm_api::execute(store, auth, command) {
+    match agentfirm_api::TrustApplication::new(store).execute(auth, command) {
         Ok(result) => print_json(&result),
         Err(StoreError::Conflict(encoded)) => Err(CliError::Usage(encoded)),
         Err(error) => Err(error.into()),

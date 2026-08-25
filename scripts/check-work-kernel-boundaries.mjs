@@ -295,11 +295,68 @@ if (!existsSync(resolve(root, applicationServicePath))) {
   failures.push(`${applicationServicePath}: Work application service is missing`);
 } else {
   const applicationService = read(applicationServicePath);
-  for (const required of ["pub trait WorkPersistence", "pub struct WorkApplication"]) {
+  for (const required of [
+    "pub trait WorkPersistence",
+    "pub struct WorkApplication",
+    "pub enum WorkAction",
+    "pub enum WorkActionKind",
+    "pub struct WorkActionOutcome",
+    "pub fn execute(&self, action: WorkAction)",
+    "let kind = action.kind();",
+    "Ok(WorkActionOutcome { kind, work })",
+  ]) {
     if (!applicationService.includes(required)) {
       failures.push(`${applicationServicePath}: missing ${required}`);
     }
   }
+}
+const canonicalWorkActionAdapters = trackedAndUntrackedFiles()
+  .filter((path) =>
+    path === "crates/firm-cli/src/main_modules/work_cli.rs"
+    || path === "crates/firm-cli/src/main_modules/user_commands.rs"
+    || path === "crates/firm-cli/src/role_actions_api.rs"
+    || (path.startsWith("crates/firm-cli/src/role_actions_api/") && extname(path) === ".rs")
+    || (/^crates\/firm-cli\/src\/main_modules\/http.*\.rs$/).test(path)
+  )
+  .sort();
+if (canonicalWorkActionAdapters.length < 8) {
+  failures.push("canonical Work adapter scan is unexpectedly narrow");
+}
+const forbiddenAdapterDispatch = /WorkApplication::new\(store\)|agentfirm_api::execute\(|store\.(?:accept_work|request_work_changes)\(/;
+for (const path of canonicalWorkActionAdapters) {
+  const content = read(path);
+  if (forbiddenAdapterDispatch.test(content)) {
+    failures.push(`${path}: adapter bypasses the canonical application seam`);
+  }
+}
+const canonicalWorkActionServicePath = "crates/firm-cli/src/work_action_service.rs";
+const canonicalWorkActionService = read(canonicalWorkActionServicePath);
+for (const required of [
+  "pub enum CanonicalWorkActionKind",
+  "pub enum CanonicalWorkCommand",
+  "CreateReport {",
+  "pub struct CanonicalWorkActionOutcome",
+  "pub fn execute(",
+  "TrustApplication::new(store).execute",
+]) {
+  if (!canonicalWorkActionService.includes(required)) {
+    failures.push(`${canonicalWorkActionServicePath}: missing ${required}`);
+  }
+}
+if (!read("crates/firm-cli/src/main_modules/work_cli.rs").includes("work_action_service")) {
+  failures.push("work_cli.rs: CLI Work mutations must use the canonical Work action service");
+}
+if (!read("crates/firm-cli/src/role_actions_api.rs").includes("work_action_service")) {
+  failures.push("role_actions_api.rs: HTTP Work mutations must use the canonical Work action service");
+}
+if (!read("crates/firm-cli/src/main_modules/user_commands.rs").includes("TrustApplication::new(store).execute")) {
+  failures.push("user_commands.rs: member-trust mutations must use TrustApplication");
+}
+if (read("crates/firm-cli/src/role_actions_api/work_records.rs").includes("TrustCommand::CreateWorkReport")) {
+  failures.push("work_records.rs: WorkReport mutations must use CanonicalWorkCommand::CreateReport");
+}
+if (!read("crates/firm-cli/src/main_modules/http_trust_routes.rs").includes("TrustApplication::new(store_owned).execute")) {
+  failures.push("http_trust_routes.rs: generic HTTP trust mutations must use TrustApplication");
 }
 const storeApplicationPath = "crates/firm-store/src/store_work_application.rs";
 if (!existsSync(resolve(root, storeApplicationPath))) {

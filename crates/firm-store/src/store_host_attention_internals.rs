@@ -499,6 +499,21 @@ impl HarnessStore {
             projected.insert(attention.id.clone(), attention.clone());
             reconciled.push(attention);
         }
+        for attention in self.canonical_host_attention_outbox_unlocked()? {
+            if let Some(existing) = projected.get(&attention.id) {
+                if !Self::same_host_attention_fact(existing, &attention) {
+                    return Err(StoreError::Conflict(format!(
+                        "HostAttention id {} already names a different causal fact",
+                        attention.id
+                    )));
+                }
+                reconciled.push(existing.clone());
+                continue;
+            }
+            self.ensure_host_attention_unlocked(&attention)?;
+            projected.insert(attention.id.clone(), attention.clone());
+            reconciled.push(attention);
+        }
         Ok(reconciled)
     }
 

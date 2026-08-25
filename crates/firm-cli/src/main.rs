@@ -83,6 +83,7 @@ mod store_resolution;
 #[cfg(unix)]
 mod supervisor_daemon;
 mod supervisor_wake;
+mod work_action_service;
 
 #[path = "main_modules/http_protocol.rs"]
 mod http_protocol;

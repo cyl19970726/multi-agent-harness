@@ -14,6 +14,7 @@
 
 mod firm_env;
 
+use std::os::unix::fs::PermissionsExt;
 use std::process::Command;
 
 use firm_env::{
@@ -237,6 +238,148 @@ fn github_fixture(tag: &str) -> (TempHome, String, String, String) {
         .expect("member run id")
         .to_string();
     (home, project_id, run_id, member_id)
+}
+
+#[test]
+fn github_pr_submit_preserves_structured_link_without_explicit_candidate_revision() {
+    let (home, project_id, run_id, member_id) = github_fixture("github-linkage-offline-submit");
+    let fake_bin = home.base().join("fake-bin");
+    std::fs::create_dir_all(&fake_bin).expect("fake bin");
+    let fake_gh = fake_bin.join("gh");
+    std::fs::write(
+        &fake_gh,
+        r##"#!/bin/sh
+if [ "$1" = "issue" ]; then
+  printf '%s\n' '{"state":"OPEN","url":"https://github.com/example/project/issues/7"}'
+elif [ "$2" = "view" ]; then
+  printf '%s\n' '{"state":"OPEN","url":"https://github.com/example/project/pull/17"}'
+else
+  printf '%s\n' '[{"name":"unit","state":"SUCCESS","link":"https://github.com/example/project/actions/runs/17"}]'
+fi
+"##,
+    )
+    .expect("fake gh");
+    let mut permissions = std::fs::metadata(&fake_gh)
+        .expect("fake gh metadata")
+        .permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(&fake_gh, permissions).expect("fake gh executable");
+    let path = format!(
+        "{}:{}",
+        fake_bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let created = run_firm_with_env(
+        &home,
+        home.base(),
+        &[
+            "--project",
+            &project_id,
+            "team-run",
+            "work",
+            "create",
+            "--team-run-id",
+            &run_id,
+            "--title",
+            "Offline GitHub-linked Work",
+            "--completion-criteria",
+            "structured PR link survives canonical submission",
+            "--owner-member-run-id",
+            &member_id,
+            "--github-issue",
+            "example/project#7",
+        ],
+        &[("PATH", &path)],
+    );
+    assert!(created.status.success(), "create failed: {created:?}");
+    let created: serde_json::Value =
+        serde_json::from_slice(&created.stdout).expect("created Work JSON");
+    let work_id = created["id"].as_str().expect("work id");
+    assert_eq!(created["github_links"][0]["kind"].as_str(), Some("issue"));
+    member_firm_json(
+        &home,
+        &project_id,
+        &run_id,
+        &member_id,
+        &[
+            "team-run",
+            "work",
+            "start",
+            "--team-run-id",
+            &run_id,
+            "--work-id",
+            work_id,
+            "--expected-version",
+            "1",
+            "--member-run-id",
+            &member_id,
+        ],
+    );
+
+    let out = run_firm_with_env(
+        &home,
+        home.base(),
+        &[
+            "--project",
+            &project_id,
+            "team-run",
+            "work",
+            "submit",
+            "--team-run-id",
+            &run_id,
+            "--work-id",
+            work_id,
+            "--expected-version",
+            "2",
+            "--member-run-id",
+            &member_id,
+            "--result",
+            "offline structured PR submission",
+            "--github-pr",
+            "example/project#17",
+        ],
+        &[
+            ("PATH", &path),
+            ("FIRM_TEAM_RUN_ID", &run_id),
+            ("FIRM_MEMBER_RUN_ID", &member_id),
+        ],
+    );
+    assert!(
+        out.status.success(),
+        "submit without --candidate-revision failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let submitted: serde_json::Value =
+        serde_json::from_slice(&out.stdout).expect("submitted Work JSON");
+    assert_eq!(submitted["phase"].as_str(), Some("review"));
+    assert_eq!(submitted["github_links"][0]["kind"].as_str(), Some("issue"));
+    assert_eq!(
+        submitted["github_links"][1]["kind"].as_str(),
+        Some("pull_request")
+    );
+    assert_eq!(
+        submitted["github_links"][1]["owner"].as_str(),
+        Some("example")
+    );
+    assert_eq!(
+        submitted["github_links"][1]["repo"].as_str(),
+        Some("project")
+    );
+    assert_eq!(submitted["github_links"][1]["number"].as_u64(), Some(17));
+    assert_eq!(
+        submitted["github_links"][1]["ci_status"].as_str(),
+        Some("success")
+    );
+    assert!(submitted["artifact_refs"]
+        .as_array()
+        .expect("artifact refs")
+        .iter()
+        .any(|value| value == "https://github.com/example/project/pull/17"));
+    assert!(submitted["check_refs"]
+        .as_array()
+        .expect("check refs")
+        .iter()
+        .any(|value| value == "https://github.com/example/project/actions/runs/17"));
 }
 
 #[test]

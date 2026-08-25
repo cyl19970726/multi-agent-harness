@@ -204,6 +204,9 @@ pub struct WorkReport {
     pub artifact_refs: Vec<String>,
     #[serde(default)]
     pub check_refs: Vec<String>,
+    /// Structured GitHub snapshots attached by the existing CLI Work contract.
+    #[serde(default)]
+    pub github_links: Vec<crate::GitHubLink>,
     #[serde(default)]
     pub evidence_refs: Vec<String>,
     #[serde(default)]
