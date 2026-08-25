@@ -156,13 +156,35 @@ fn kimi_provider_error_after_receipt_requires_recovery_without_replay() {
         .compare_and_append_member_run(&blocked_row, &probation_blocked)
         .expect("seed nonzero probation continuation streak");
 
-    let (status, closed) = serve.post_json(
-        &format!("/v1/team-runs/{run_id}/members/{member_id}/close"),
-        &serde_json::json!({
-            "requested_by": "host",
-            "reason": "explicitly close the detached failed runtime generation"
-        }),
-    );
+    let close_deadline = std::time::Instant::now() + Duration::from_secs(30);
+    let (status, closed) = loop {
+        let response = serve.post_json(
+            &format!("/v1/team-runs/{run_id}/members/{member_id}/close"),
+            &serde_json::json!({
+                "requested_by": "host",
+                "reason": "explicitly close the detached failed runtime generation"
+            }),
+        );
+        if response.0 == 200 {
+            break response;
+        }
+        let awaiting_successor_authority = response.0 == 400
+            && response.1["error"].as_str().is_some_and(|error| {
+                error.contains("RUNTIME_COMMAND_RECOVERY_REQUIRED")
+                    && error.contains("no current provider-loop authority")
+            });
+        assert!(
+            awaiting_successor_authority,
+            "unexpected detached recovery Close failure: {}",
+            response.1
+        );
+        assert!(
+            std::time::Instant::now() < close_deadline,
+            "NodeDaemon did not re-adopt the detached blocked Member before recovery Close: {}",
+            response.1
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    };
     assert_eq!(status, 200, "detached recovery Close: {closed}");
     assert_eq!(
         closed["result"]["runtime_effect"], "already_detached",
