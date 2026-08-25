@@ -72,6 +72,9 @@ const memberView=envelope("agent_workspace",privateBase,actions);
 memberView.data.team={team_id:team.team_id,display_name:team.display_name,team_revision:team.team_revision,mission_id:team.mission_id,host_agent_id:team.host_agent_id,viewer_role:team.viewer_role,status:team.status,latest_run_id:team.latest_run.id};
 const olderWithoutProviderTimestamp={...observation("native-earlier","authored_response",{type:"authored_response",text:"Earlier exact provider-native event loaded from the same native Session."},"2026-08-12T10:00:00Z",1),occurred_at:null};
 const olderMemberView=envelope("agent_workspace",{...memberView.data,session_event_projection:{...memberProjection,episodes:[{episode_id:"episode-mira-earlier",provider_turn_id:"turn-mira-earlier",observations:[olderWithoutProviderTimestamp],terminal:true,incomplete:false}],page:{limit:80,has_more:false,next_before_position:null}}},actions);
+const otherProjectObservation=observation("native-other-project","authored_response",{type:"authored_response",text:"Exact native event from the second Project only."},"2026-08-12T11:00:00Z",20);
+const otherProjectMemberView=envelope("agent_workspace",{...memberView.data,session_event_projection:{...memberProjection,episodes:[{episode_id:"episode-other-project",provider_turn_id:"turn-other-project",observations:[otherProjectObservation],terminal:true,incomplete:false}],page:{limit:80,has_more:false,next_before_position:null}}},actions);
+const otherAgentView=envelope("agent_workspace",{...otherProjectMemberView.data,selected_agent:{...otherProjectMemberView.data.selected_agent,agent_member_ref:analyst.agent_member_ref,display_name:analyst.display_name,role:analyst.role,current_member_run_ref:analyst.current_member_run_ref,provider:analyst.provider}},actions);
 const hostMessages=messages;
 const hostObservations=[observation("host-native-0","authored_response",{type:"authored_response",text:"I reviewed the current decision surface and sent the next bounded assignment."},"2026-08-12T08:05:00Z",0),observation("host-native-1","tool_call_completed",{type:"tool",tool_name:"Read Lead inbox",call_id:"host-call-1",display_detail:"Provider-native Host observation from the selected Team Session."},"2026-08-12T08:08:00Z",1)].map(item=>({...item,agent_identity_id:"agent-host",agent_session_id:"host-thread-current",agent_session_generation:1,provider_turn_id:"turn-host-1"}));
 const hostView=envelope("agent_workspace",{...memberView.data,projection_scope:"team_session_read",selected_agent:{agent_member_ref:{kind:"agent_member",id:"agent-host"},display_name:"Marcus Allen",role:"Team Lead",organization_status:"active",is_host:true,current_member_run_ref:"member-run-host",provider:"codex",execution_mode:"host_native",runtime_status:"active",runtime_generation:1,host_session_mode:"external_interactive"},session_event_projection:{...memberProjection,agent_session_id:"host-thread-current",agent_session_generation:1,episodes:[{episode_id:"episode-host-1",provider_turn_id:"turn-host-1",observations:hostObservations,terminal:true,incomplete:false}]},live_provider_activity:null,messages:hostMessages,configuration:{...configuration,description:"Owns Team judgment and assignment authority."},context_summary:{current_work_id:works[1].work_id,message_count:hostMessages.length,unread_count:0,last_activity_at:"2026-08-12T08:08:00Z",authorization_count:actions.length}},actions);
@@ -93,6 +96,8 @@ try{
   let failHostMemberProjection=false;
   let hostMemberProjectionGate=null;
   let firstMemberWorkspaceRequestAt=null;
+  let delayedOlderPageGate=null;
+  let failDelayedOlderPage=false;
   const makePage=async token=>{const next=await browser.newPage({viewport:{width:1440,height:1000}});next.on("console",message=>{if(message.type()==="error")consoleErrors.push(message.text());});next.on("pageerror",error=>consoleErrors.push(error.message));next.on("response",response=>{if(response.status()>=400)httpFailures.push(`${response.status()} ${response.url()}`);});await next.addInitScript(({token,fixture,scope})=>{window.__AGENTFIRM_BOOTSTRAP__={capabilityToken:token};class QuietEventSource{timer;started=false;addEventListener(type,listener){if(!fixture||type!=="snapshot"||this.started)return;this.started=true;let revision=0;this.timer=setInterval(()=>{revision+=1;listener({data:JSON.stringify({generated_at:`2026-08-12T08:10:${String(revision).padStart(2,"0")}Z`,execution_space_id:"fixture-space"})});if(revision===80){clearInterval(this.timer);this.timer=undefined;}},15);}close(){if(this.timer)clearInterval(this.timer);}}Object.defineProperty(window,"EventSource",{value:QuietEventSource,configurable:true});if(fixture){const nativeFetch=window.fetch.bind(window);let memberStreamIssued=false;try{memberStreamIssued=sessionStorage.getItem("fixture-member-stream-issued")==="1";}catch{}window.fetch=async(input,init)=>{const request=input instanceof Request?input:null;const url=new URL(request?.url??String(input),location.href);if(url.pathname!=="/v1/events")return nativeFetch(input,init);const headers=new Headers(request?.headers);new Headers(init?.headers).forEach((value,key)=>headers.set(key,value));const capability=headers.get("X-AgentFirm-Token");const member=url.searchParams.get("agent_id")==="agent-mira"||capability==="fixture-member-token";const exactScope=member?scope.member:scope.host;const terminal={schema_version:"agentfirm.live_provider_activity_event.v1",reason:"terminal",scope:exactScope,activity:null};const encode=value=>new TextEncoder().encode(`event: live_provider_activity\ndata: ${JSON.stringify(value)}\n\n`);if(!member||memberStreamIssued)return new Response(encode(terminal),{headers:{"Content-Type":"text/event-stream"}});memberStreamIssued=true;try{sessionStorage.setItem("fixture-member-stream-issued","1");}catch{}let timer;const stream=new ReadableStream({start(controller){const now=Date.now();const activity={schema_version:"agentfirm.live_provider_activity.v1",durability:"volatile_process_memory",replayable:false,...exactScope,runtime_snapshot_locator:"runtime-snapshot-browser-live",expires_unix_ms:now+5000,items:[{runtime_event_locator:"runtime-event-browser-live",kind:"tool_started",provider:"codex",native_event:{type:"tool_execution_start",command:"cargo check"},emitted_unix_ms:now,expires_unix_ms:now+5000}]};controller.enqueue(encode({schema_version:"agentfirm.live_provider_activity_event.v1",reason:"updated",scope:exactScope,activity}));const staleScope={...exactScope,agent_session_id:"stale-session",agent_session_generation:exactScope.agent_session_generation+1};controller.enqueue(encode({schema_version:"agentfirm.live_provider_activity_event.v1",reason:"terminal",scope:staleScope,activity:null}));timer=setTimeout(()=>{controller.enqueue(encode(terminal));controller.close();},2500);},cancel(){if(timer)clearTimeout(timer);}});return new Response(stream,{headers:{"Content-Type":"text/event-stream"}});};}},{token,fixture:!liveConfig,scope:{member:{execution_space_id:"fixture-space",project_id:"fixture-project",team_run_id:team.latest_run.id,member_run_id:"member-run-mira",member_run_generation:3,agent_session_id:"session-mira-current",agent_session_generation:3},host:{execution_space_id:"fixture-space",project_id:"fixture-project",team_run_id:team.latest_run.id,member_run_id:"member-run-host",member_run_generation:1,agent_session_id:"host-thread-current",agent_session_generation:1}}});if(!liveConfig)await next.route("**/v1/**",async route=>{
     const request=route.request(),url=new URL(request.url());
     const token=request.headers()["x-agentfirm-token"];
@@ -105,7 +110,7 @@ try{
     }
     let body;
     if(url.pathname==="/v1/meta")body={schema_version:"agentfirm.role_views.v1",protocol_version:"agentfirm-member-trust/1",action_manifest_version:"agentfirm.role_actions.v1",capability_auth:"x-agentfirm-token",build_sha:"b362bc1ba1ebbeff26eb9a4a08bf3c6982ec764d"};
-    else if(url.pathname==="/v1/projects")body={projects:[{id:"fixture-project",is_current:true}]};
+    else if(url.pathname==="/v1/projects")body={projects:[{id:"fixture-project",is_current:true},{id:"fixture-project-b",is_current:false}]};
     else if(url.pathname==="/v1/spaces")body={spaces:[{id:"fixture-space",is_current:true}]};
     else if(url.pathname==="/v1/companies")body={companies:[]};
     else if(url.pathname==="/v1/snapshot"||url.pathname.includes("/snapshot"))body={generated_at:"2026-08-12T08:10:00Z",execution_space_id:"fixture-space",teams:[],team_runs:[],member_runs:[],execution_nodes:[],company_os:{}};
@@ -114,6 +119,7 @@ try{
     else if(url.pathname.includes("agent-workspace")){
       agentWorkspaceRequests.push(url.pathname);
       const memberSelected=url.searchParams.get("agent_id")==="agent-mira"||url.pathname.endsWith("member-run-mira");
+      const otherAgentSelected=url.searchParams.get("agent_id")==="agent-noah";
       if(memberSelected&&token==="fixture-member-token"&&firstMemberWorkspaceRequestAt===null)firstMemberWorkspaceRequestAt=Date.now();
       if(memberSelected&&token==="fixture-member-token")await new Promise(resolve=>setTimeout(resolve,40));
       if(memberSelected&&token==="fixture-member-token"&&failMemberRefresh)return route.fulfill({status:503,contentType:"application/json",body:JSON.stringify({error:{message:"fixture member refresh failed"}})});
@@ -121,7 +127,8 @@ try{
         if(hostMemberProjectionGate)await hostMemberProjectionGate;
         if(failHostMemberProjection)return route.fulfill({status:503,contentType:"application/json",body:JSON.stringify({error:{message:"fixture Team Session projection failed"}})});
       }
-      body=memberSelected?(url.searchParams.get("session_before")==="10"?olderMemberView:(token==="fixture-member-token"?memberView:hostMemberTeamRead)):hostView;
+      if(memberSelected&&url.searchParams.get("session_before")==="10"&&delayedOlderPageGate){await delayedOlderPageGate;if(failDelayedOlderPage)return route.fulfill({status:503,contentType:"application/json",body:JSON.stringify({error:{message:"stale Project pagination failed"}})});}
+      body=otherAgentSelected?otherAgentView:memberSelected?(url.searchParams.get("project")==="fixture-project-b"?otherProjectMemberView:url.searchParams.get("session_before")==="10"?olderMemberView:(token==="fixture-member-token"?memberView:hostMemberTeamRead)):hostView;
     }
     else { unknownFixturePaths.push(url.pathname); return route.fulfill({status:404,contentType:"application/json",body:JSON.stringify({error:{message:url.pathname}})}); }
     return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(body)});
@@ -305,12 +312,51 @@ try{
     await localOperatorPage.locator(".aw-native-event-body").filter({hasText:"Earlier exact provider-native event loaded from the same native Session."}).waitFor();
     assert.deepEqual(await localOperatorPage.locator("[data-native-ordering-position]").evaluateAll(nodes=>nodes.map(node=>Number(node.getAttribute("data-native-ordering-position")))),[1,10,11,12,13],"provider-native rows without occurred_at were reordered by per-read observed_at after loading an earlier page");
     assert.equal(await localOperatorPage.getByRole("button",{name:"Load earlier native Session events",exact:true}).count(),0,"terminal native Session page kept offering an invalid earlier cursor");
+    await localOperatorPage.waitForTimeout(900);
+    assert.deepEqual(await localOperatorPage.locator("[data-native-ordering-position]").evaluateAll(nodes=>nodes.map(node=>Number(node.getAttribute("data-native-ordering-position")))),[1,10,11,12,13],"ambient RoleView refresh discarded an already loaded provider-native history page");
     const localOperatorEvent=localOperatorPage.locator(".aw-native-facts-trail .aw-stream-fact__trigger").nth(1);await localOperatorEvent.click();await localOperatorEvent.locator('xpath=ancestor::div[@data-boundary-aligned="true"]').locator(".aw-native-event-body").filter({hasText:"Validated Team-scoped native Session"}).waitFor();
     assert.equal(await localOperatorPage.getByText("Team-scoped native Session",{exact:true}).count(),1,"same-machine local Operator could not open the selected Team Session without a token");
+    const projectBUrl=new URL(localOperatorPage.url());projectBUrl.searchParams.set("project","fixture-project-b");
+    await localOperatorPage.goto(projectBUrl.toString(),{waitUntil:"domcontentloaded"});
+    await localOperatorPage.getByTestId("agent-workspace").waitFor();
+    await localOperatorPage.locator('[data-native-ordering-position="20"]').waitFor();
+    assert.match(await localOperatorPage.getByTestId("agent-workspace").innerText(),/Exact native event from the second Project only\./,"new Project native history did not render");
+    assert.deepEqual(await localOperatorPage.locator("[data-native-ordering-position]").evaluateAll(nodes=>nodes.map(node=>Number(node.getAttribute("data-native-ordering-position")))),[20],"same Session id/generation leaked native history across exact Project identity");
+    assert.equal(await localOperatorPage.getByText("Earlier exact provider-native event loaded from the same native Session.",{exact:true}).count(),0,"old Project native history survived an exact request identity change");
     await localOperatorPage.close();
+
+    let releaseOlderPage;
+    delayedOlderPageGate=new Promise(resolve=>{releaseOlderPage=resolve;});
+    const paginationRacePage=await makePage(null);
+    await open(paginationRacePage,`${base}/?surface=team&team=${routeState.teamRun}&conversation=${routeState.member}&memberRun=${routeState.memberRun}&space=${routeState.space}&project=fixture-project`);
+    await paginationRacePage.getByRole("button",{name:"Load earlier native Session events",exact:true}).click();
+    await paginationRacePage.getByRole("button",{name:"Loading provider-native events…",exact:true}).waitFor();
+    await paginationRacePage.getByRole("button",{name:/Noah Park/}).click();
+    await paginationRacePage.locator('[data-native-ordering-position="20"]').waitFor();
+    releaseOlderPage();
+    delayedOlderPageGate=null;
+    await paginationRacePage.waitForTimeout(200);
+    assert.deepEqual(await paginationRacePage.locator("[data-native-ordering-position]").evaluateAll(nodes=>nodes.map(node=>Number(node.getAttribute("data-native-ordering-position")))),[20],"late pagination response crossed the exact request identity fence");
+    await paginationRacePage.close();
+
+    failDelayedOlderPage=true;
+    delayedOlderPageGate=new Promise(resolve=>{releaseOlderPage=resolve;});
+    const paginationFailurePage=await makePage(null);
+    await open(paginationFailurePage,`${base}/?surface=team&team=${routeState.teamRun}&conversation=${routeState.member}&memberRun=${routeState.memberRun}&space=${routeState.space}&project=fixture-project`);
+    await paginationFailurePage.getByRole("button",{name:"Load earlier native Session events",exact:true}).click();
+    await paginationFailurePage.getByRole("button",{name:"Loading provider-native events…",exact:true}).waitFor();
+    await paginationFailurePage.getByRole("button",{name:/Noah Park/}).click();
+    await paginationFailurePage.locator('[data-native-ordering-position="20"]').waitFor();
+    releaseOlderPage();
+    delayedOlderPageGate=null;
+    await paginationFailurePage.waitForTimeout(200);
+    failDelayedOlderPage=false;
+    assert.equal(await paginationFailurePage.getByText(/Refresh failed; writes are disabled/).count(),0,"late old-identity pagination failure disabled the new exact identity");
+    assert.deepEqual(await paginationFailurePage.locator("[data-native-ordering-position]").evaluateAll(nodes=>nodes.map(node=>Number(node.getAttribute("data-native-ordering-position")))),[20],"late failed pagination response altered the new exact identity");
+    await paginationFailurePage.close();
   }
   const expectedFailureErrors=consoleErrors.filter(message=>message.includes("503 (Service Unavailable)"));
-  if(!liveConfig)assert.equal(expectedFailureErrors.length,2,`fixture should exercise exactly two expected 503 projection failures: ${expectedFailureErrors.join(" | ")}`);
+  if(!liveConfig)assert.equal(expectedFailureErrors.length,3,`fixture should exercise exactly three expected 503 projection failures: ${expectedFailureErrors.join(" | ")}`);
   const unexpectedConsoleErrors=consoleErrors.filter(message=>!message.includes("503 (Service Unavailable)")&&!message.includes("404"));
   const unexpectedHttpFailures=httpFailures.filter(failure=>!failure.startsWith("404 https://fonts.gstatic.com/"));
   assert.deepEqual(unexpectedConsoleErrors,[],`unexpected console errors: ${consoleErrors.join(" | ")}; HTTP failures: ${httpFailures.join(" | ")}; unknown fixture paths: ${unknownFixturePaths.join(", ")}`);
