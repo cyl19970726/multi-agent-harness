@@ -119,19 +119,35 @@ for (const moduleName of [
   }
 }
 
-const daemonProductionPaths = sourcePaths.filter(
-  (path) =>
-    path === daemonRootPath ||
-    (path.startsWith("crates/firm-cli/src/supervisor_daemon/") &&
-      !path.endsWith("/tests.rs")),
-);
+const isTestRustPath = (path) => {
+  const segments = path.split("/");
+  const basename = segments.at(-1) ?? "";
+  return (
+    segments.includes("tests") ||
+    segments.includes("main_tests") ||
+    basename === "tests.rs" ||
+    basename === "main_tests.rs" ||
+    basename.endsWith("_tests.rs")
+  );
+};
+const productionRustPaths = sourcePaths.filter((path) => !isTestRustPath(path));
+const testRustPaths = sourcePaths.filter(isTestRustPath);
+if (productionRustPaths.length + testRustPaths.length !== sourcePaths.length) {
+  failures.push("firm-cli Rust source classification is incomplete");
+}
+if (!productionRustPaths.includes(daemonRootPath)) {
+  failures.push(`${daemonRootPath}: NodeDaemon root was misclassified as test-only`);
+}
+if (testRustPaths.length === 0) {
+  failures.push("firm-cli test-only Rust source classification unexpectedly found zero files");
+}
 const authorityWriterTokens = [
   ".acquire_node_daemon_lease(",
   ".renew_node_daemon_lease(",
   ".drain_node_daemon_lease(",
   ".release_node_daemon_lease(",
 ];
-for (const path of daemonProductionPaths) {
+for (const path of productionRustPaths) {
   const content = read(path);
   for (const token of authorityWriterTokens) {
     if (path !== machineAuthorityPath && content.includes(token)) {
@@ -152,10 +168,9 @@ const teamLifecycleTokens = [
   "fn scan_and_adopt(",
   "fn start_supervising(",
   "TeamSupervisorRegistration::start(",
-  "drive_prepared_team_run(",
   "fn reap_finished(",
 ];
-for (const path of daemonProductionPaths) {
+for (const path of productionRustPaths) {
   const content = read(path);
   for (const token of teamLifecycleTokens) {
     if (path !== teamSupervisionPath && content.includes(token)) {
@@ -170,6 +185,27 @@ for (const token of teamLifecycleTokens) {
   if (!teamSupervision.includes(token)) {
     failures.push(`${teamSupervisionPath}: missing lifecycle operation ${token}`);
   }
+}
+
+const driveDefinitionPath =
+  "crates/firm-cli/src/main_modules/member_orchestration.rs";
+const countOccurrences = (content, token) => content.split(token).length - 1;
+for (const path of productionRustPaths) {
+  const count = countOccurrences(read(path), "drive_prepared_team_run(");
+  const expected =
+    path === driveDefinitionPath || path === teamSupervisionPath ? 1 : 0;
+  if (count !== expected) {
+    failures.push(
+      `${path}: expected ${expected} drive_prepared_team_run definition/call occurrence(s), found ${count}`,
+    );
+  }
+}
+if (
+  !read(driveDefinitionPath).includes(
+    "pub(crate) fn drive_prepared_team_run(",
+  )
+) {
+  failures.push(`${driveDefinitionPath}: missing canonical drive function definition`);
 }
 
 const forbiddenRenderedCommands = [
