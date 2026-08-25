@@ -4,8 +4,8 @@ Status: current contract through DEV-88.
 
 ## Authority boundary
 
-Provider transcripts remain provider-owned. AgentFirm performs a bounded read
-of a server-selected source and converts each supported native row into a
+Provider transcripts remain provider-owned. AgentFirm performs a paged read
+of a server-selected source and converts every complete native row into a
 `ProviderObservation` during an on-demand request. The observation is a
 disposable read-model value; it is never Message, Work,
 CanonicalMessageDelivery, Evidence,
@@ -13,10 +13,10 @@ review, or Decision truth.
 
 ```text
 provider source
-  -> bounded provider decoder
-  -> ProviderObservation (private/public/operator visibility fixed by server)
+  -> page scan in provider order (no content filtering or event truncation)
+  -> ProviderObservation + exact response-local native_event
   -> disposable generation-fenced in-memory fold
-       -> exact-owner SessionEventProjection
+       -> local-Operator SessionEventProjection
        -> allowlisted TeamRuntimeActivity
        -> validated recovery correlation (no command or evidence writes)
 ```
@@ -25,8 +25,8 @@ The source path is never returned. The envelope exposes only an opaque scoped
 `provider-source:` locator in `native_source_ref`—not a Harness Evidence
 reference—paired with a response-local content fingerprint that is also not
 Evidence. The reader rejects
-symlinks, root escape, invalid transient read positions, oversized lines, and
-invalid UTF-8. Incremental process-local reads leave an incomplete last line
+symlinks, root escape, invalid transient read positions, and invalid UTF-8. One
+event is never shortened to meet a page budget. Incremental process-local reads leave an incomplete last line
 unconsumed; the on-demand latest projection omits it and reports truncation.
 
 ## Identity and source authority
@@ -50,43 +50,47 @@ history and correctness authority.
 
 The historical projection is returned only inside the authenticated
 `AgentWorkspace.data.session_event_projection`. The deprecated run-addressed
-`/native-activity` routes are retired because they cannot prove the exact
-Session owner. Opening or resuming a provider UI/Session is a separate explicit
+`/native-activity` routes are retired because they cannot prove the canonical
+Team and AgentSession scope. Opening or resuming a provider UI/Session is a separate explicit
 control action and is not implied by reading this projection.
 
-## Privacy projections
+## Trusted local read boundary
 
-`SessionEventProjection` is available only to the exact owner AgentMember of
-the current AgentSession generation. Team Host status does not bypass this
-boundary. `TeamRuntimeActivity` is the only provider-derived shape eligible for
-a future Team projection: it is a separately constructed allowlist containing
-only interaction, runtime availability/interruption, and recovery summaries.
-DEV-20 does not compose that shape into a selected Member's public RoleView.
-Current Team pages continue to use canonical responsibility, Message, Work,
-CanonicalMessageDelivery, and allowlisted runtime-command summaries.
+`SessionEventProjection` is available to the same-machine loopback Dashboard
+Operator for every locally bound AgentSession. A local read does not require a
+per-Agent secret or Provider credential: the loopback connection plus the
+selected canonical Execution Space/Project/Team/AgentSession binding form the
+read boundary. Remote RoleView credentials remain coordination credentials;
+they do not grant provider-native Session content. Remote transcript browsing
+is not part of this contract.
 
-`LiveProviderActivity` is a different channel: provider sinks send typed,
-display-safe phase/tool/response progress into the serve process; its registry
+This grants no mutation capability. Work, Message, Accept, Close, Reopen, and
+every provider effect still travel through authenticated `firm` CLI/Supervisor
+authority and exact generation fences. Cross-machine transport continues to
+use NodeDaemon/gateway machine identity.
+
+`LiveProviderActivity` is a volatile channel: provider sinks send the complete
+provider event plus typed navigation metadata into the serve process; its registry
 holds at most 24 items per exact Execution Space + Project Binding +
 AgentSession + MemberRun generation for 10 seconds. The SSE event name is
 `live_provider_activity`, and the envelope is
-`agentfirm.live_provider_activity_event.v1`. Delivery requires an authenticated
-SSE subscription whose actor is the exact owner AgentMember. Same-project
-Hosts, siblings, anonymous streams, cross-project streams, and later reconnects
-receive no Member-private overlay. Terminal turn state clears the overlay
+`agentfirm.live_provider_activity_event.v1`. Delivery uses the same local-
+Operator read policy as history. The browser subscribes to one
+selected Team and AgentMember; SSE fanout remains scoped to that exact
+Execution Space, Project Binding, and AgentMember. Terminal turn state clears the overlay
 immediately; disconnect, TTL expiry, or process restart loses it.
 
 Provider transports are not required to be SSE themselves. Codex app-server,
 Claude SDK, Kimi ACP, Pi RPC, and DeepSeek Cordis events are normalized by
-their runtime adapters; only the owner-authenticated Dashboard delivery uses
-Harness SSE. NodeDaemon and `firm serve` are separate processes. When an exact
-AgentMember owner opens an authenticated private SSE stream, serve registers a
-process-memory callback for that owner only. Registration proves the existing
-browser capability and current NodeDaemon instance; a forged actor, stale
-daemon instance, anonymous process, or another Member cannot install or
-replace that owner's endpoint. A later valid serve instance replaces only the
-same owner's endpoint. Provider children explicitly do not inherit the HTTP
-credential registry. Neither callback capabilities nor live items are durable.
+their runtime adapters; Dashboard delivery uses Harness SSE. NodeDaemon and
+`firm serve` are separate processes. When the local Operator opens a stream,
+serve registers a machine-local callback for the selected AgentMember. The
+Unix control socket, exact current NodeDaemon instance, loopback callback
+authority, serve-instance capability, and callback token fence registration;
+the HTTP reader was locally admitted before registration. A stale daemon instance or
+non-loopback callback cannot install an endpoint. Provider children do not
+inherit callback capabilities. Neither callback capabilities nor live items
+are durable.
 
 The live scope carries `member_run_generation` and
 `agent_session_generation` as independent fences. Reopen advances the Team
@@ -97,22 +101,20 @@ populate or clear the reopened generation's overlay. Historical reads continue
 to resolve the exact native-session binding; they do not require those two
 independent generations to be numerically equal or the recorded NodeDaemon
 lease to remain active. A current lease fences execution effects, not read
-authority. Exact owner, Execution Space, Project Binding, Team,
+authority. Local-Operator read context, Execution Space, Project Binding, Team,
 AgentSession/native-session binding, recorded provenance, and provider source
 containment remain mandatory.
 
-Codex live reasoning accepts only provider-declared `summaryTextDelta`. Kimi
-thought text is discarded and becomes only a generic thinking phase; an ACP
-reverse permission request becomes only a generic interaction-waiting phase.
-Pi runs with provider thinking disabled. DeepSeek reasoning blocks and native
-tool names remain private; only generic live phases and closed generic tool
-lifecycle are projected. Claude Agent SDK thinking blocks are discarded
-because the SDK does not label them as display-safe summaries. Unknown provider
-tool names, arguments, paths, and status strings are also omitted. Raw
-chain-of-thought is never saved, reconstructed, or forwarded.
+The local Operator receives the provider event as it exists at the
+native boundary: user input, thinking/reasoning, assistant response, tool
+call/result, command/file event, and raw provider error are not semantically
+filtered or summarized. This content remains response-local/volatile and is
+never written into a Harness Store. Page size, lazy loading, and UI
+virtualization bound resource use without changing or truncating the original
+event. Live SSE and reopened provider history use the same raw-event display
+model.
 
-Authored text, reasoning, tool input/output, environment details, paths, and
-raw transcript rows are structurally absent from Team activity. Canonical
+Canonical
 Message, CanonicalMessageDelivery, Work, report, finding, failure, gate, review, and
 RuntimeCommand summaries remain owned by their existing stores and are
 composed by the Team RoleView; provider observations never manufacture them.
@@ -137,17 +139,18 @@ absent rather than being inferred for parity. Fixture conformance covers all
 five providers; only an actually available provider may be claimed as a live
 journey.
 
-The volatile live channel is intentionally not equal-fidelity. `terminal`
-clear is provider-neutral and emitted for every bounded cycle; phase rows are
-only emitted when the reviewed native transport exposes them:
+`terminal` clear is provider-neutral and emitted for every bounded cycle.
+Native event families remain provider-specific and are displayed honestly;
+typed navigation hints are emitted only when the reviewed transport exposes
+them:
 
 | Provider | thinking | response streaming | tool started | tool completed/failed | interaction waiting |
 | --- | --- | --- | --- | --- | --- |
-| Codex app-server | provider-declared summary only | yes | yes | completed | no |
-| Claude Agent SDK | no (thinking dropped) | yes | yes | no | no |
-| Kimi ACP | generic phase only | yes | yes | completed + failed | permission request |
-| Pi RPC | no (thinking disabled) | no | yes | completed + failed | no reviewed live mapping |
-| DeepSeek Harness | generic phase only | yes | yes | completed | no current runner emission |
+| Codex app-server | yes | yes | yes | completed | no |
+| Claude Agent SDK | when emitted | yes | yes | provider-native | no |
+| Kimi ACP | yes | yes | yes | completed + failed | permission request |
+| Pi RPC | when emitted | provider-native | yes | completed + failed | provider-native |
+| DeepSeek Harness | yes | yes | yes | completed | provider-native |
 
 This matrix is a capability disclosure, not a request to synthesize missing
 events. Historical fidelity is separately governed by
@@ -157,17 +160,18 @@ events. Historical fidelity is separately governed by
 
 Command-caused effect certainty requires an exact RuntimeCommand binding.
 Unknown native effect becomes `command_recovery_required` with `unknown`
-certainty and `recovery_required` completeness. Malformed native rows produce
-a redacted operator-only diagnostic. Missing or unprovable fields are never
+certainty and `recovery_required` completeness. Malformed complete rows remain
+visible as exact raw provider input with an operator diagnostic classification.
+Missing or unprovable fields are never
 treated as successful product facts.
 
 ## Executable contracts
 
 - `schemas/provider-events/`: closed JSON Schemas, manifests, and fixtures.
 - `crates/firm-provider-events/`: decoders, disposable fold, access policy, and
-  bounded on-demand reader. It has no persistent store.
+  paged on-demand reader. It has no persistent store.
 - Agent Workspace consumers bind directly to the versioned JSON Schemas. The
-  browser consumes typed projections and never reinterprets native JSON; its
+  browser displays typed navigation metadata and the exact `native_event`; its
   TypeScript ownership remains in the frontend Task.
 - `schemas/provider-events/session-event-projection.schema.json` is the
   historical response contract. `live-provider-activity.schema.json` and

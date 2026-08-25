@@ -423,31 +423,46 @@ impl HttpExchange<'_> {
                     )?
                 }
                 "/v1/events" => {
-                    let private_agent_member_id = match trust_transport_token.as_deref() {
-                        None => None,
-                        Some(_) => {
-                            match resolve_agentfirm_http_credential(
-                                trust_transport_token.as_deref(),
-                            ) {
-                                Ok(credential)
-                                    if credential.actor.kind
-                                        == harness_core::agentfirm_api::ActorKind::AgentMember =>
-                                {
-                                    Some(credential.actor.id)
-                                }
-                                Ok(_) => None,
-                                Err(message) => {
-                                    write_http_json(
-                                        stream,
-                                        "401 Unauthorized",
-                                        &serde_json::json!({"ok":false,"error":{"code":"NOT_AUTHORIZED","message":message}}),
-                                    )?;
-                                    return Ok(true);
-                                }
+                    let requested_agent_member_id = query_param(path, "agent_id");
+                    let requested_team_id = query_param(path, "team_id");
+                    let selected_agent_member_id = match (
+                        requested_agent_member_id.as_deref(),
+                        requested_team_id.as_deref(),
+                    ) {
+                        (None, None) => None,
+                        (Some(agent_member_id), Some(team_id)) => {
+                            let team = store.latest_teams()?.remove(team_id).filter(|team| {
+                                team.host_agent_id == agent_member_id
+                                    || team.member_ids.iter().any(|id| id == agent_member_id)
+                            });
+                            let Some(team) = team else {
+                                write_http_json(
+                                    stream,
+                                    "404 Not Found",
+                                    &serde_json::json!({"ok":false,"error":{"code":"AGENT_NOT_IN_TEAM","message":"selected AgentMember is not in the selected AgentTeam"}}),
+                                )?;
+                                return Ok(true);
+                            };
+                            if !local_operator_read {
+                                write_http_json(
+                                    stream,
+                                    "403 Forbidden",
+                                    &serde_json::json!({"ok":false,"error":{"code":"LOCAL_OPERATOR_REQUIRED","message":"provider-native live Session reads are available only from the same-machine Dashboard"}}),
+                                )?;
+                                return Ok(true);
                             }
+                            Some(agent_member_id.to_string())
+                        }
+                        _ => {
+                            write_http_json(
+                                stream,
+                                "400 Bad Request",
+                                &serde_json::json!({"ok":false,"error":{"code":"INVALID_SESSION_SCOPE","message":"team_id and agent_id must be supplied together"}}),
+                            )?;
+                            return Ok(true);
                         }
                     };
-                    let private_project_binding_id = if private_agent_member_id.is_some() {
+                    let selected_project_binding_id = if selected_agent_member_id.is_some() {
                         match projects
                             .exact_project_context_for(project_param.as_deref(), project_id)
                         {
@@ -465,14 +480,8 @@ impl HttpExchange<'_> {
                         None
                     };
                     #[cfg(unix)]
-                    if let (
-                        Some(agent_member_id),
-                        Some(credential_token),
-                        Some(callback),
-                        Some(firm_home),
-                    ) = (
-                        private_agent_member_id.as_deref(),
-                        trust_transport_token.as_deref(),
+                    if let (Some(agent_member_id), Some(callback), Some(firm_home)) = (
+                        selected_agent_member_id.as_deref(),
                         projects.live_provider_activity_callback.as_ref(),
                         projects.firm_home.as_deref(),
                     ) {
@@ -493,17 +502,16 @@ impl HttpExchange<'_> {
                                         authority: &callback.authority,
                                         token: &callback.token,
                                         agent_member_id,
-                                        credential_token,
                                         expected_daemon_instance_id: &daemon_instance_id,
                                         serve_instance_id: &callback.serve_instance_id,
                                     },
                                 ) {
                                     Some(Ok(response)) if response.contains("\"ok\":true") => {}
                                     Some(Ok(response)) => eprintln!(
-                                        "serve: NodeDaemon rejected private live sink: {response}"
+                                        "serve: NodeDaemon rejected Team Session live sink: {response}"
                                     ),
                                     Some(Err(error)) => eprintln!(
-                                        "serve: cannot register private live sink: {error}"
+                                        "serve: cannot register Team Session live sink: {error}"
                                     ),
                                     None => {}
                                 }
@@ -512,14 +520,14 @@ impl HttpExchange<'_> {
                     }
                     // Scope coordination to the selected Execution Space and Company
                     // invalidations to the independently selected Company Store.
-                    // Private live provider activity additionally requires the
-                    // exact AgentIdentity actor; Host authority never widens it.
+                    // Team Session live provider activity uses the same exact
+                    // selected AgentMember and Team/local read boundary.
                     handle_sse_stream(
                         store_owned,
                         project_id,
-                        private_project_binding_id.as_deref(),
+                        selected_project_binding_id.as_deref(),
                         None,
-                        private_agent_member_id.as_deref(),
+                        selected_agent_member_id.as_deref(),
                         stream.try_clone()?,
                         sse_manager,
                     )?
@@ -545,7 +553,7 @@ impl HttpExchange<'_> {
                         "410 Gone",
                         &serde_json::json!({
                             "error": "legacy_native_activity_route_retired",
-                            "detail": "This unscoped route cannot prove the exact Session owner. Use the authenticated AgentWorkspace session_event_projection; provider-native open/resume remains a separate authorized action."
+                            "detail": "This unscoped route cannot prove the canonical Team and AgentSession scope. Use AgentWorkspace session_event_projection; provider-native open/resume remains a separate authorized action."
                         }),
                     )?
                 }

@@ -5,38 +5,6 @@ mod tests_live_provider_preview {
     use super::*;
 
     #[test]
-    fn live_preview_is_bounded_single_line_and_redacts_secret_shapes() {
-        let preview = sanitize_live_member_preview(
-            "Inspecting\n/Users/alice/.config/private token=abc123 \
-             sk-123456789012345678901234 password=hunter2 /tmp/provider.log \
-             C:\\Users\\alice\\secret Bearer bearer-secret",
-        )
-        .expect("sanitized preview");
-        assert!(!preview.contains('\n'));
-        assert!(!preview.contains("/Users/alice"));
-        assert!(!preview.contains("abc123"));
-        assert!(!preview.contains("123456789012345678901234"));
-        assert!(!preview.contains("hunter2"));
-        assert!(!preview.contains("/tmp/provider.log"));
-        assert!(!preview.contains("C:\\Users"));
-        assert!(!preview.contains("bearer-secret"));
-        assert!(preview.contains("[REDACTED PATH]"));
-        assert!(preview.chars().count() <= LIVE_PROVIDER_ACTIVITY_MAX_CHARS);
-    }
-
-    #[test]
-    fn live_preview_replaces_private_key_blocks_and_drops_empty_input() {
-        assert_eq!(
-            sanitize_live_member_preview(
-                "-----BEGIN OPENSSH PRIVATE KEY----- secret -----END OPENSSH PRIVATE KEY-----"
-            )
-            .as_deref(),
-            Some("[REDACTED PRIVATE KEY]")
-        );
-        assert_eq!(sanitize_live_member_preview("\u{0}\n\t"), None);
-    }
-
-    #[test]
     fn stale_live_adapter_generation_is_fenced_before_registry_ingress() {
         require_live_member_run_generation("member-run-1", 2, 1)
             .expect_err("a pre-Reopen adapter must not publish into the current generation");

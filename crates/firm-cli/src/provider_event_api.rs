@@ -12,15 +12,16 @@ use std::{
 
 use harness_core::NativeSessionRef;
 use harness_provider_events::{
-    DecodeContext, ProjectionAuthority, ProjectionViewer, ProviderKind, ProviderProjectionService,
-    TranscriptReadBoundary,
+    DecodeContext, ProjectionAuthority, ProjectionReadScope, ProviderKind,
+    ProviderProjectionService, TranscriptReadBoundary,
 };
 use serde::Serialize;
 use serde_json::{json, Value};
 
 use crate::{CliError, CliResult};
 
-const MAX_HISTORICAL_EVENTS: usize = 10_000;
+pub(crate) const DEFAULT_SESSION_PAGE_SIZE: usize = 80;
+pub(crate) const MAX_SESSION_PAGE_SIZE: usize = 200;
 const MAX_LIVE_ITEMS: usize = 24;
 pub(crate) const LIVE_TTL_MS: u64 = 10_000;
 
@@ -42,7 +43,7 @@ struct LiveProviderItem {
     runtime_event_locator: String,
     kind: LiveProviderActivityKind,
     provider: String,
-    display_summary: String,
+    native_event: Value,
     emitted_unix_ms: u64,
     expires_unix_ms: u64,
 }
@@ -84,13 +85,14 @@ pub(crate) struct HistoricalProjectionRequest<'a> {
     pub agent_session_generation: u64,
     pub node_daemon_id: &'a str,
     pub node_daemon_generation: u64,
-    pub viewer_identity_id: &'a str,
+    pub before_position: Option<u64>,
+    pub page_limit: usize,
     pub native_session: &'a NativeSessionRef,
 }
 
-/// Decode a bounded private projection directly from the provider-owned
-/// Session. The service is disposable and no decoded row, fold state,
-/// fingerprint, or cursor is persisted by Harness.
+/// Decode one Team-scoped page directly from the provider-owned Session. The
+/// service is disposable and no decoded row, fold state, fingerprint, or
+/// cursor is persisted by Harness.
 pub(crate) fn read_historical_projection(
     request: HistoricalProjectionRequest<'_>,
 ) -> CliResult<Value> {
@@ -120,22 +122,20 @@ pub(crate) fn read_historical_projection(
         execution_space_id: request.execution_space_id.to_string(),
         project_binding_id: request.project_id.to_string(),
         team_id: request.team_id.to_string(),
-        agent_member_id: request.agent_member_id.to_string(),
         agent_session_id: request.agent_session_id.to_string(),
         agent_session_generation: request.agent_session_generation,
     };
-    let viewer = ProjectionViewer {
+    let scope = ProjectionReadScope {
         execution_space_id: request.execution_space_id.to_string(),
         project_binding_id: request.project_id.to_string(),
         team_id: request.team_id.to_string(),
-        agent_member_id: request.viewer_identity_id.to_string(),
-        is_team_host: false,
     };
     let mut service = ProviderProjectionService::open(context);
+    let page_limit = request.page_limit.clamp(1, MAX_SESSION_PAGE_SIZE);
     if provider == ProviderKind::DeepseekHarness {
         let content = crate::native_session::read_deepseek_session_jsonl(request.native_session)?;
         service
-            .refresh_latest_jsonl(&content, MAX_HISTORICAL_EVENTS)
+            .refresh_jsonl_page(&content, request.before_position, page_limit)
             .map_err(|error| CliError::Usage(error.to_string()))?;
     } else {
         let Some((allowed_root, transcript_path)) = crate::native_session::locate_read_boundary(
@@ -148,37 +148,39 @@ pub(crate) fn read_historical_projection(
             ));
         };
         service
-            .refresh_latest(
+            .refresh_page(
                 &TranscriptReadBoundary {
                     allowed_root,
                     transcript_path,
                 },
-                MAX_HISTORICAL_EVENTS,
+                request.before_position,
+                page_limit,
             )
             .map_err(|error| CliError::Usage(error.to_string()))?;
     }
-    serde_json::to_value(
+    let mut projection = serde_json::to_value(
         service
-            .private_session(&authority, &viewer, 300)
+            .team_session(&authority, &scope, page_limit)
             .map_err(|error| CliError::Usage(error.to_string()))?,
-    )
-    .map_err(Into::into)
+    )?;
+    projection["page"] = service.page_metadata(page_limit);
+    Ok(projection)
 }
 
 pub(crate) fn record_live(
     scope: LiveProviderScope,
     provider: &str,
     kind: LiveProviderActivityKind,
-    display_summary: String,
+    native_event: Value,
 ) -> Value {
-    record_live_at(scope, provider, kind, display_summary, now_unix_ms())
+    record_live_at(scope, provider, kind, native_event, now_unix_ms())
 }
 
 fn record_live_at(
     scope: LiveProviderScope,
     provider: &str,
     kind: LiveProviderActivityKind,
-    display_summary: String,
+    native_event: Value,
     now: u64,
 ) -> Value {
     let expires = now.saturating_add(LIVE_TTL_MS);
@@ -193,7 +195,7 @@ fn record_live_at(
         runtime_event_locator: format!("runtime-event-{locator}"),
         kind,
         provider: provider.to_string(),
-        display_summary,
+        native_event,
         emitted_unix_ms: now,
         expires_unix_ms: expires,
     });
@@ -472,7 +474,7 @@ mod tests {
             project_a.clone(),
             "kimi",
             LiveProviderActivityKind::Thinking,
-            "display-safe summary".into(),
+            serde_json::json!({"type": "thinking"}),
             100,
         );
         assert_eq!(activity["project_id"], "project-a");
@@ -493,14 +495,14 @@ mod tests {
             generation_one.clone(),
             "codex",
             LiveProviderActivityKind::ToolStarted,
-            "tool started".into(),
+            serde_json::json!({"type": "tool_started"}),
             100,
         );
         record_live_at(
             generation_two.clone(),
             "codex",
             LiveProviderActivityKind::ResponseStreaming,
-            "response streaming".into(),
+            serde_json::json!({"type": "response_streaming"}),
             100,
         );
         let event = clear_live_terminal(&generation_one);
@@ -520,7 +522,7 @@ mod tests {
             reopened_adapter.clone(),
             "codex",
             LiveProviderActivityKind::ResponseStreaming,
-            "response streaming".into(),
+            serde_json::json!({"type": "response_streaming"}),
             100,
         );
         clear_live_terminal(&old_adapter);
@@ -539,7 +541,7 @@ mod tests {
                 candidate.clone(),
                 "claude",
                 LiveProviderActivityKind::Thinking,
-                "provider supplied summary".into(),
+                serde_json::json!({"type": "thinking"}),
                 100,
             );
         }
@@ -566,14 +568,14 @@ mod tests {
             owner_one.clone(),
             "codex",
             LiveProviderActivityKind::Thinking,
-            "display-safe summary".into(),
+            serde_json::json!({"type": "thinking"}),
             100,
         );
         let sibling = record_live_at(
             owner_two,
             "kimi",
             LiveProviderActivityKind::Thinking,
-            "Kimi is thinking".into(),
+            serde_json::json!({"type": "thinking"}),
             101,
         );
         assert_eq!(first["runtime_snapshot_locator"], "runtime-snapshot-1");
@@ -592,7 +594,7 @@ mod tests {
             owner_one,
             "codex",
             LiveProviderActivityKind::ToolStarted,
-            "tool started".into(),
+            serde_json::json!({"type": "tool_started"}),
             102,
         );
         assert_eq!(

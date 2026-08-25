@@ -37,6 +37,22 @@ with an `exhausted` account is a normal, expressible state; so is an `unknown`
 adapter with an `available` account. Neither axis may be derived from the other,
 and `ProviderCapacitySnapshot` carries no compatibility field.
 
+## Provider login ownership
+
+Harness does not implement a second account-login flow or credential vault.
+Codex, Claude, Kimi, Pi, and DeepSeek runtimes consume their provider-native
+login state: OAuth/session state managed by the provider client, an API key
+supplied through the operator's runtime environment or keychain integration,
+or another provider-reviewed native source. OAuth refresh and interactive
+login remain provider-owned.
+
+Harness records only non-secret observations such as source kind, an optional
+provider-returned account identifier, availability, and a typed authentication
+failure. It never stores or returns API-key/token values, and a Provider login
+credential is never a Dashboard Session-visibility credential. Local native
+Session reading uses same-machine Operator context; remote machine identity and
+future remote transcript transport are separate concerns.
+
 ## The Snapshot
 
 `ProviderCapacitySnapshot` (`crates/firm-core/src/lib.rs`) is

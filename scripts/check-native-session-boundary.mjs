@@ -32,7 +32,11 @@ const requirements = new Map([
   // successor focus page, and the war-room surface no longer exists.
   [
     "docs/current/dashboard/pages/agent-member-focus.md",
-    ["NativeActivityProjection", "does not silently fall back to a mirrored history"],
+    [
+      "team_session_read",
+      "same-machine local Operator",
+      "mirrored history",
+    ],
   ],
 ]);
 

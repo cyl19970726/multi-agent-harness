@@ -49,39 +49,11 @@ assert.equal(unavailableTeam.allowed_actions.some(action=>String(action.kind).st
 
 const agentWorkspaceValidate=ajv.getSchema("agentfirm.role_views.v1/agent-workspace.schema.json");
 const privateAgentWorkspaceFixture=JSON.parse(fs.readFileSync(path.join(fixtureDir,"agent-workspace.json"),"utf8"));
-const publicAgentWorkspaceFixture=structuredClone(privateAgentWorkspaceFixture);
-publicAgentWorkspaceFixture.data.projection_scope="host_member_public";
-Object.assign(publicAgentWorkspaceFixture.data.selected_agent,{current_member_run_ref:null,provider:null,execution_mode:null,runtime_status:null,runtime_generation:null});
-for(const member of publicAgentWorkspaceFixture.data.roster){delete member.runtime_state;member.coordination_status=null;member.capacity="not_projected";}
-delete publicAgentWorkspaceFixture.data.live_provider_activity;
-delete publicAgentWorkspaceFixture.data.session_event_projection;
-delete publicAgentWorkspaceFixture.data.current_session;
-Object.assign(publicAgentWorkspaceFixture.data.configuration,{prompt_ref:null,tool_refs:[],provider_profile_ref:null,model_preference:null,workspace_policy:null,permission_ceiling:null,effective_permission_ceiling:null,resolved_workspace_cwd:null,forbidden_actions:[],workspace_binding:null});
-assert.equal(agentWorkspaceValidate(publicAgentWorkspaceFixture),true,`public Agent Workspace projection: ${ajv.errorsText(agentWorkspaceValidate.errors)}`);
-for(const [label,mutate] of [
-  ["Session list",fixture=>{fixture.data.sessions=[]}],
-  ["selected Session id",fixture=>{fixture.data.selected_session_id="private-session"}],
-  ["selected MemberRun",fixture=>{fixture.data.selected_agent.current_member_run_ref="private-member-run"}],
-  ["selected provider",fixture=>{fixture.data.selected_agent.provider="codex"}],
-  ["selected execution mode",fixture=>{fixture.data.selected_agent.execution_mode="codex_app_server"}],
-  ["selected runtime status",fixture=>{fixture.data.selected_agent.runtime_status="running"}],
-  ["selected runtime generation",fixture=>{fixture.data.selected_agent.runtime_generation=2}],
-  ["native activity",fixture=>{fixture.data.session_activity={items:[]}}],
-  ["Session event projection",fixture=>{fixture.data.session_event_projection=privateAgentWorkspaceFixture.data.session_event_projection}],
-  ["current AgentSession",fixture=>{fixture.data.current_session=privateAgentWorkspaceFixture.data.current_session}],
-  ["live provider activity",fixture=>{fixture.data.live_provider_activity=privateAgentWorkspaceFixture.data.live_provider_activity}],
-  ["provider profile",fixture=>{fixture.data.configuration.provider_profile_ref="private-profile"}],
-  ["model preference",fixture=>{fixture.data.configuration.model_preference="private-model"}],
-  ["configured tools",fixture=>{fixture.data.configuration.tool_refs=["private-tool"]}],
-  ["workspace policy",fixture=>{fixture.data.configuration.workspace_policy="private-policy"}],
-  ["permission ceiling",fixture=>{fixture.data.configuration.permission_ceiling="private-permission"}],
-  ["workspace binding",fixture=>{fixture.data.configuration.workspace_binding={kind:"workspace_binding",id:"private-workspace",work_id:null,member_run_id:"private-member-run",requirement_id:null,status:"active",version:1,actor_ref:null,summary:null,created_at:null,source_id:null,target_id:null,locator:"/private"}}],
-  ["runtime fabric",fixture=>{fixture.data.runtime_fabric={agent_sessions:[]}}],
-]){
-  const hostile=structuredClone(publicAgentWorkspaceFixture);
-  mutate(hostile);
-  assert.equal(agentWorkspaceValidate(hostile),false,`host_member_public must reject leaked ${label}`);
-}
+const teamSessionReadFixture=structuredClone(privateAgentWorkspaceFixture);
+teamSessionReadFixture.data.projection_scope="team_session_read";
+assert.equal(agentWorkspaceValidate(teamSessionReadFixture),true,`Team Session read projection: ${ajv.errorsText(agentWorkspaceValidate.errors)}`);
+delete teamSessionReadFixture.data.session_event_projection;
+assert.equal(agentWorkspaceValidate(teamSessionReadFixture),false,"Team Session read requires provider-native history projection");
 
 const operatorValidate=ajv.getSchema("agentfirm.role_views.v1/operator.schema.json");
 const operatorFixture=JSON.parse(fs.readFileSync(path.join(fixtureDir,"operator.json"),"utf8"));

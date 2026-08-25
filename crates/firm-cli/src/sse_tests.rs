@@ -800,21 +800,37 @@ fn typed_ledger_replace_delete_and_recreate_invalidate_without_append_noise() {
     std::fs::remove_dir_all(&root).expect("cleanup");
 }
 
-/// Transient provider activity is sent only to the current exact owner in
-/// its project. A same-project Host, sibling, anonymous subscriber, later
-/// owner subscriber, and other project all receive no replay or payload.
+/// Transient provider activity is routed only to streams selecting that exact
+/// Agent and Project. A stream selecting a different Agent, an unscoped
+/// subscriber, a later subscriber, and another project receive no payload.
 #[test]
 fn live_provider_activity_is_direct_only_and_project_isolated() {
     let manager = SseManager::new();
-    let owner =
-        manager.subscribe_scoped_private("space-a", None, Some("agent-owner"), Some("project-a"));
-    let host =
-        manager.subscribe_scoped_private("space-a", None, Some("agent-host"), Some("project-a"));
-    let other_binding =
-        manager.subscribe_scoped_private("space-a", None, Some("agent-owner"), Some("project-b"));
+    let owner = manager.subscribe_scoped_agent_session(
+        "space-a",
+        None,
+        Some("agent-owner"),
+        Some("project-a"),
+    );
+    let host = manager.subscribe_scoped_agent_session(
+        "space-a",
+        None,
+        Some("agent-host"),
+        Some("project-a"),
+    );
+    let other_binding = manager.subscribe_scoped_agent_session(
+        "space-a",
+        None,
+        Some("agent-owner"),
+        Some("project-b"),
+    );
     let anonymous = manager.subscribe("space-a");
-    let other_project =
-        manager.subscribe_scoped_private("space-b", None, Some("agent-owner"), Some("project-a"));
+    let other_project = manager.subscribe_scoped_agent_session(
+        "space-b",
+        None,
+        Some("agent-owner"),
+        Some("project-a"),
+    );
     let activity = serde_json::json!({
         "member_run_id": "mrun-a",
         "status": "working",
@@ -827,20 +843,24 @@ fn live_provider_activity_is_direct_only_and_project_isolated() {
         "agent-owner",
         activity.clone(),
     );
-    let late_owner =
-        manager.subscribe_scoped_private("space-a", None, Some("agent-owner"), Some("project-a"));
+    let late_owner = manager.subscribe_scoped_agent_session(
+        "space-a",
+        None,
+        Some("agent-owner"),
+        Some("project-a"),
+    );
 
     match owner.try_recv() {
         Ok(SseEventFrame::LiveProviderActivity(value)) => assert_eq!(value, activity),
-        other => panic!("exact owner should receive transient activity, got {other:?}"),
+        other => panic!("exact selected Agent should receive transient activity, got {other:?}"),
     }
     assert!(
         host.try_recv().is_err(),
-        "Host must not see Member-private live activity"
+        "a stream selecting the Host must not receive the selected Member's activity"
     );
     assert!(
         anonymous.try_recv().is_err(),
-        "anonymous stream must not see private activity"
+        "unscoped stream must not see Team Session activity"
     );
     assert!(
         other_binding.try_recv().is_err(),
@@ -852,7 +872,7 @@ fn live_provider_activity_is_direct_only_and_project_isolated() {
     );
     assert!(
         late_owner.try_recv().is_err(),
-        "a later owner subscriber receives no replay"
+        "a later selected-Agent subscriber receives no replay"
     );
     assert!(
         !WATCHED_FILES

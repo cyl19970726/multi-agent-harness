@@ -10,7 +10,7 @@
     "agent_session_generation", "node_daemon_id", "node_daemon_generation",
     "ordering_position", "observed_at", "semantic_kind", "lifecycle_phase",
     "completeness", "effect_certainty", "visibility", "redacted", "truncated",
-    "source_content_fingerprint", "payload"
+    "native_event", "source_content_fingerprint", "payload"
   ],
   "properties": {
     "schema_version": {"const": "agentfirm.provider_observation.v1"},
@@ -40,15 +40,16 @@
         "interaction_resolved", "runtime_started", "runtime_ready",
         "runtime_stopped", "transport_interrupted", "turn_completed",
         "turn_failed", "turn_cancelled", "command_recovery_required",
-        "malformed_or_incomplete"
+        "malformed_or_incomplete", "native_event"
       ]
     },
     "lifecycle_phase": {"enum": ["requested", "started", "progress", "terminal", "recovery"]},
     "completeness": {"enum": ["partial", "complete", "incomplete", "recovery_required"]},
     "effect_certainty": {"enum": ["none", "not_applied", "applied", "unknown"]},
-    "visibility": {"enum": ["session_owner_private", "team_public", "operator_only"]},
+    "visibility": {"enum": ["team_session", "team_public", "operator_only"]},
     "redacted": {"type": "boolean"},
     "truncated": {"type": "boolean"},
+    "native_event": {"description": "Exact response-local provider-native event. Never persisted in a Harness durable store."},
     "source_content_fingerprint": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$", "description": "Provider-native content fingerprint for response-local dedupe; not a Harness Evidence reference."},
     "payload": {"$ref": "#/$defs/payload"}
   },
@@ -65,7 +66,8 @@
         {"$ref": "#/$defs/transport"},
         {"$ref": "#/$defs/turn"},
         {"$ref": "#/$defs/recovery"},
-        {"$ref": "#/$defs/malformed"}
+        {"$ref": "#/$defs/malformed"},
+        {"$ref": "#/$defs/native"}
       ]
     },
     "authoredResponse": {"type": "object", "additionalProperties": false, "required": ["type", "text"], "properties": {"type": {"const": "authored_response"}, "text": {"type": "string", "maxLength": 4000}}},
@@ -78,7 +80,8 @@
     "transport": {"type": "object", "additionalProperties": false, "required": ["type", "reason_code"], "properties": {"type": {"const": "transport"}, "reason_code": {"type": "string", "maxLength": 160}}},
     "turn": {"type": "object", "additionalProperties": false, "required": ["type", "outcome"], "properties": {"type": {"const": "turn"}, "outcome": {"type": "string", "maxLength": 160}, "display_summary": {"type": ["string", "null"], "maxLength": 600}}},
     "recovery": {"type": "object", "additionalProperties": false, "required": ["type", "reason_code"], "properties": {"type": {"const": "recovery"}, "reason_code": {"type": "string", "maxLength": 160}}},
-    "malformed": {"type": "object", "additionalProperties": false, "required": ["type", "reason_code"], "properties": {"type": {"const": "malformed"}, "reason_code": {"type": "string", "maxLength": 160}}}
+    "malformed": {"type": "object", "additionalProperties": false, "required": ["type", "reason_code"], "properties": {"type": {"const": "malformed"}, "reason_code": {"type": "string", "maxLength": 160}}},
+    "native": {"type": "object", "additionalProperties": false, "required": ["type"], "properties": {"type": {"const": "native"}, "event_type": {"type": ["string", "null"]}}}
   },
   "allOf": [
     {
@@ -95,6 +98,7 @@
     {"if":{"properties":{"semantic_kind":{"const":"transport_interrupted"}}},"then":{"properties":{"payload":{"$ref":"#/$defs/transport"}}}},
     {"if":{"properties":{"semantic_kind":{"enum":["turn_completed","turn_failed","turn_cancelled"]}}},"then":{"properties":{"payload":{"$ref":"#/$defs/turn"}}}},
     {"if":{"properties":{"semantic_kind":{"const":"malformed_or_incomplete"}}},"then":{"properties":{"payload":{"$ref":"#/$defs/malformed"}}}},
+    {"if":{"properties":{"semantic_kind":{"const":"native_event"}}},"then":{"properties":{"payload":{"$ref":"#/$defs/native"}}}},
     {
       "if": {"properties": {"semantic_kind": {"const": "command_recovery_required"}}},
       "then": {

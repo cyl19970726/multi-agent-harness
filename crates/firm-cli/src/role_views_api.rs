@@ -31,6 +31,30 @@ pub(crate) struct ReadIdentity {
     pub local_operator: bool,
 }
 
+impl ReadIdentity {
+    fn has_agent_member(&self, agent_member_id: &str) -> bool {
+        let matches =
+            |actor: &ActorRef| actor.kind == ActorKind::AgentMember && actor.id == agent_member_id;
+        matches(&self.actor) || self.authority_actors.iter().any(matches)
+    }
+
+    fn has_team_member(&self, team: &AgentTeam) -> bool {
+        self.has_agent_member(&team.host_agent_id)
+            || team
+                .member_ids
+                .iter()
+                .any(|member_id| self.has_agent_member(member_id))
+    }
+
+    fn may_read_team(&self, team: &AgentTeam) -> bool {
+        self.local_operator || self.has_team_member(team)
+    }
+
+    fn may_read_native_session(&self) -> bool {
+        self.local_operator
+    }
+}
+
 #[derive(Default)]
 pub(crate) struct Query {
     values: BTreeMap<String, Vec<String>>,
@@ -49,6 +73,8 @@ impl Query {
             "host_id",
             "member_id",
             "agent_id",
+            "session_before",
+            "session_limit",
             "assignee_membership_id",
             "assignee_kind",
             "phase",
@@ -86,6 +112,29 @@ impl Query {
                         }
                     }
                     "cursor" => parsed.cursor = Some(value.to_string()),
+                    "session_before" => {
+                        value
+                            .parse::<u64>()
+                            .map_err(|_| "session_before must be an unsigned integer")?;
+                        parsed
+                            .values
+                            .entry(key.to_string())
+                            .or_default()
+                            .push(value.to_string());
+                    }
+                    "session_limit" => {
+                        let limit = value
+                            .parse::<usize>()
+                            .map_err(|_| "session_limit must be an integer")?;
+                        if !(1..=200).contains(&limit) {
+                            return Err("session_limit must be between 1 and 200".into());
+                        }
+                        parsed
+                            .values
+                            .entry(key.to_string())
+                            .or_default()
+                            .push(value.to_string());
+                    }
                     "delegated" => {
                         parsed.delegated = Some(match value {
                             "true" | "1" => true,

@@ -26,21 +26,21 @@ Messages and Work, and the right rail contains only selected/current facts.
 Clicking the Agent identity opens configuration, skills, permissions, runtime,
 workspace and Session history without replacing the conversation canvas.
 
-Provider-private Session projection is exact-owner only. A Member may inspect
-that Member's own Session; a Host may inspect only the Host's own Session. When
-the Host selects a Member, the server returns the `host_member_public` scope:
-public authored Messages, responsibility, Work state, evidence, and exact
-authorized coordination-control targets, but no Member Thinking, tool output,
-provider observation, runtime command, AgentSession id/generation, native event,
-or workspace binding. Authored Messages remain separate coordination records
+Provider-native Session reads use same-machine local Operator scope. The local
+Operator may inspect any locally bound Host or Member's complete provider-native
+Session without a per-Agent secret. Remote RoleView credentials remain limited
+to coordination data and receive no native Session content. `team_session_read` carries current
+AgentSession/native-session identity plus paged raw native events but grants no
+mutation action of its own. Authored Messages remain separate coordination records
 and are visible through their authenticated sender AgentMember/Session,
 recipients, optional Work link and per-recipient public delivery state.
 
 ## Read model
 
-Live activity renders from the ephemeral NativeActivityProjection over the
-provider-native session; when that projection is unavailable the page reports
-it and does not silently fall back to a mirrored history.
+Live activity renders from exact volatile provider events delivered over SSE;
+reopen reads the provider-native Session file through the same display model.
+When the projection is unavailable the page reports it and does not silently
+fall back to a mirrored history.
 
 The focus page joins by canonical ids:
 

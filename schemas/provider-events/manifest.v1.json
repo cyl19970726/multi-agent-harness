@@ -14,7 +14,7 @@
     "interaction_resolved", "runtime_started", "runtime_ready",
     "runtime_stopped", "transport_interrupted", "turn_completed",
     "turn_failed", "turn_cancelled", "command_recovery_required",
-    "malformed_or_incomplete"
+    "malformed_or_incomplete", "native_event"
   ],
   "team_public_allowlist": [
     "interaction_required", "interaction_resolved", "runtime_started",

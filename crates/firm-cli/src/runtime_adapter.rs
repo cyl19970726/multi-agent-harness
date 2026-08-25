@@ -806,10 +806,19 @@ pub(crate) fn run_team_member_with_adapter<A: TeamRuntimeAdapter<Error = CliErro
                     }
                 },
                 &mut |event| {
-                    if let Some((kind, preview)) = A::project_live(event) {
-                        if let Some(sink) = &live_sink {
-                            emit_live_provider_activity(sink, ledger, member_row, kind, preview);
-                        }
+                    if let Some(sink) = &live_sink {
+                        let kind = A::project_live(event)
+                            .map(|(kind, _preview)| kind)
+                            .unwrap_or(
+                                harness_runtime_contract::LiveProviderActivityKind::NativeEvent,
+                            );
+                        emit_live_provider_activity(
+                            sink,
+                            ledger,
+                            member_row,
+                            kind,
+                            event.clone(),
+                        );
                     }
                 },
                 &mut || {

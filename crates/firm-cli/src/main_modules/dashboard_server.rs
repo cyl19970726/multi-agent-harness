@@ -439,19 +439,19 @@ pub(super) fn broadcast_live_provider_activity(
 pub(super) fn handle_sse_stream(
     store: &HarnessStore,
     execution_space_id: &str,
-    private_project_binding_id: Option<&str>,
+    selected_project_binding_id: Option<&str>,
     company_scope_id: Option<&str>,
-    private_agent_member_id: Option<&str>,
+    selected_agent_member_id: Option<&str>,
     mut stream: TcpStream,
     sse_manager: sse::SseManager,
 ) -> CliResult<()> {
     use std::time::Duration;
 
-    // A private live overlay is valid only for one connected stream lifetime.
+    // A Team Session live overlay is valid only for one connected stream lifetime.
     // Clear any pre-connection residue before subscribing so reconnect cannot
     // turn process memory into a replay surface.
     if let (Some(agent_member_id), Some(project_binding_id)) =
-        (private_agent_member_id, private_project_binding_id)
+        (selected_agent_member_id, selected_project_binding_id)
     {
         provider_event_api::clear_live_for_agent(
             store,
@@ -465,11 +465,11 @@ pub(super) fn handle_sse_stream(
     // its authoritative GET after that marker; registering first guarantees
     // that a write crossing the marker -> GET boundary is queued for this
     // stream instead of falling into a gap between the GET and subscription.
-    let rx = sse_manager.subscribe_scoped_private(
+    let rx = sse_manager.subscribe_scoped_agent_session(
         execution_space_id,
         company_scope_id,
-        private_agent_member_id,
-        private_project_binding_id,
+        selected_agent_member_id,
+        selected_project_binding_id,
     );
 
     // Send SSE header
@@ -486,9 +486,9 @@ pub(super) fn handle_sse_stream(
     let snapshot_json = serde_json::json!({
         "generated_at": now_string(),
         "execution_space_id": execution_space_id,
-        "private_project_binding_id": private_project_binding_id,
+        "selected_project_binding_id": selected_project_binding_id,
         "company_scope_id": company_scope_id,
-        "private_provider_activity": private_agent_member_id.is_some(),
+        "team_session_provider_activity": selected_agent_member_id.is_some(),
         "stream_epoch": sse_manager.stream_epoch(),
     });
     sse::write_sse_frame(&mut stream, "snapshot", &snapshot_json)?;
@@ -611,7 +611,7 @@ pub(super) fn handle_sse_stream(
     }
 
     if let (Some(agent_member_id), Some(project_binding_id)) =
-        (private_agent_member_id, private_project_binding_id)
+        (selected_agent_member_id, selected_project_binding_id)
     {
         // The transport is already gone; cleanup is best-effort and must not
         // turn an ordinary disconnect into a new HTTP error response.
@@ -1073,9 +1073,9 @@ pub(super) fn serve_command(
     let sse_manager = sse::SseManager::new();
 
     // Prepare an exact process-memory callback capability. Registration is
-    // deferred until an authenticated AgentMember opens /v1/events so the
-    // daemon can bind the endpoint to that exact owner rather than trusting
-    // any same-user process that can reach its Unix socket.
+    // deferred until an authorized Team/local reader selects /v1/events. The
+    // callback token authenticates this serve process to the daemon; it is not
+    // a user-facing or per-Agent viewing credential.
     #[cfg(unix)]
     if projects.firm_home.is_some() && bound_addr.ip().is_loopback() {
         projects.live_provider_activity_callback = Some(LiveProviderActivityCallback {

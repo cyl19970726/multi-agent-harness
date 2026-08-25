@@ -15,9 +15,10 @@
   "lifecycle_phase": "progress",
   "completeness": "partial",
   "effect_certainty": "none",
-  "visibility": "session_owner_private",
+  "visibility": "team_session",
   "redacted": false,
   "truncated": false,
+  "native_event": {"type":"event_msg"},
   "source_content_fingerprint": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
   "payload": {"type": "authored_response", "text": "ok"},
   "raw_transcript": "forbidden"

@@ -25,6 +25,7 @@
   "visibility": "team_public",
   "redacted": false,
   "truncated": false,
+  "native_event": {"type":"event_msg","payload":{"type":"agent_message","message":"must never be public"}},
   "source_content_fingerprint": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
   "payload": {"type": "authored_response", "text": "must never be public"}
 }

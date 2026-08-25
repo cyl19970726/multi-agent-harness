@@ -1,9 +1,37 @@
 use super::*;
 use std::io::Write;
 use std::path::PathBuf;
+
+#[test]
+fn provider_native_session_read_is_local_operator_only() {
+    let mut identity = ReadIdentity {
+        actor: ActorRef {
+            kind: ActorKind::AgentMember,
+            id: "member-a".into(),
+        },
+        authority_actors: vec![ActorRef {
+            kind: ActorKind::AgentMember,
+            id: "host-a".into(),
+        }],
+        local_operator: false,
+    };
+    assert!(
+        !identity.may_read_native_session(),
+        "an AgentMember credential is not a provider-transcript grant"
+    );
+    identity.local_operator = true;
+    assert!(identity.may_read_native_session());
+}
+
 #[test]
 fn query_is_closed_and_bounded() {
     assert!(Query::parse("/v1/views/global-work?limit=201").is_err());
+    assert!(Query::parse("/v1/views/agent-workspace/team-a?session_limit=201").is_err());
+    assert!(Query::parse("/v1/views/agent-workspace/team-a?session_before=old").is_err());
+    assert!(Query::parse(
+        "/v1/views/agent-workspace/team-a?agent_id=member-a&session_before=81&session_limit=80"
+    )
+    .is_ok());
     assert!(Query::parse("/v1/views/global-work?mystery=x").is_err());
     assert_eq!(
         Query::parse("/v1/views/global-work?team_id=a&team_id=b")

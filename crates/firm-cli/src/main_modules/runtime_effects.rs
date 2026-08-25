@@ -116,10 +116,6 @@ pub(super) fn member_supervisor_test_idle_grace() -> Option<Duration> {
         .map(Duration::from_millis)
 }
 
-/// Display-safe provider activity is an ephemeral operator hint, never a
-/// ledger row. The serve process owns the TTL registry and current-subscriber
-/// SSE fan-out; provider supervisors only send short, typed updates into it.
-pub(super) const LIVE_PROVIDER_ACTIVITY_MAX_CHARS: usize = 240;
 pub(super) static LIVE_PROVIDER_ACTIVITY_TOKEN: OnceLock<String> = OnceLock::new();
 
 /// Process-local control plane for provider sessions started by `serve` or the
