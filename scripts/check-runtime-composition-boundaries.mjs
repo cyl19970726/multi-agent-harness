@@ -97,14 +97,124 @@ const sourcePaths = execFileSync(
   .toString("utf8")
   .trim()
   .split("\n")
-  .filter((path) => path.endsWith(".rs") && path !== contractPath);
+  .filter((path) => path.endsWith(".rs"));
+
+const daemonRootPath = "crates/firm-cli/src/supervisor_daemon.rs";
+const machineAuthorityPath =
+  "crates/firm-cli/src/supervisor_daemon/machine_authority.rs";
+const teamSupervisionPath =
+  "crates/firm-cli/src/supervisor_daemon/team_supervision.rs";
+const daemonRoot = read(daemonRootPath);
+for (const moduleName of [
+  "control_protocol",
+  "machine_authority",
+  "recovery",
+  "shutdown",
+  "team_supervision",
+]) {
+  if (!daemonRoot.includes(`mod ${moduleName};`)) {
+    failures.push(
+      `${daemonRootPath}: missing NodeDaemon responsibility module ${moduleName}`,
+    );
+  }
+}
+
+const isTestRustPath = (path) => {
+  const segments = path.split("/");
+  const basename = segments.at(-1) ?? "";
+  return (
+    segments.includes("tests") ||
+    segments.includes("main_tests") ||
+    basename === "tests.rs" ||
+    basename === "main_tests.rs" ||
+    basename.endsWith("_tests.rs")
+  );
+};
+const productionRustPaths = sourcePaths.filter((path) => !isTestRustPath(path));
+const testRustPaths = sourcePaths.filter(isTestRustPath);
+if (productionRustPaths.length + testRustPaths.length !== sourcePaths.length) {
+  failures.push("firm-cli Rust source classification is incomplete");
+}
+if (!productionRustPaths.includes(daemonRootPath)) {
+  failures.push(`${daemonRootPath}: NodeDaemon root was misclassified as test-only`);
+}
+if (testRustPaths.length === 0) {
+  failures.push("firm-cli test-only Rust source classification unexpectedly found zero files");
+}
+const authorityWriterTokens = [
+  ".acquire_node_daemon_lease(",
+  ".renew_node_daemon_lease(",
+  ".drain_node_daemon_lease(",
+  ".release_node_daemon_lease(",
+];
+for (const path of productionRustPaths) {
+  const content = read(path);
+  for (const token of authorityWriterTokens) {
+    if (path !== machineAuthorityPath && content.includes(token)) {
+      failures.push(
+        `${path}: NodeDaemon machine authority writer escaped ${machineAuthorityPath}: ${token}`,
+      );
+    }
+  }
+}
+const machineAuthority = read(machineAuthorityPath);
+for (const token of authorityWriterTokens) {
+  if (!machineAuthority.includes(token)) {
+    failures.push(`${machineAuthorityPath}: missing authority operation ${token}`);
+  }
+}
+
+const teamLifecycleTokens = [
+  "fn scan_and_adopt(",
+  "fn start_supervising(",
+  "TeamSupervisorRegistration::start(",
+  "fn reap_finished(",
+];
+for (const path of productionRustPaths) {
+  const content = read(path);
+  for (const token of teamLifecycleTokens) {
+    if (path !== teamSupervisionPath && content.includes(token)) {
+      failures.push(
+        `${path}: Team supervisor lifecycle escaped ${teamSupervisionPath}: ${token}`,
+      );
+    }
+  }
+}
+const teamSupervision = read(teamSupervisionPath);
+for (const token of teamLifecycleTokens) {
+  if (!teamSupervision.includes(token)) {
+    failures.push(`${teamSupervisionPath}: missing lifecycle operation ${token}`);
+  }
+}
+
+const driveDefinitionPath =
+  "crates/firm-cli/src/main_modules/member_orchestration.rs";
+const countOccurrences = (content, token) => content.split(token).length - 1;
+for (const path of productionRustPaths) {
+  const count = countOccurrences(read(path), "drive_prepared_team_run(");
+  const expected =
+    path === driveDefinitionPath || path === teamSupervisionPath ? 1 : 0;
+  if (count !== expected) {
+    failures.push(
+      `${path}: expected ${expected} drive_prepared_team_run definition/call occurrence(s), found ${count}`,
+    );
+  }
+}
+if (
+  !read(driveDefinitionPath).includes(
+    "pub(crate) fn drive_prepared_team_run(",
+  )
+) {
+  failures.push(`${driveDefinitionPath}: missing canonical drive function definition`);
+}
+
 const forbiddenRenderedCommands = [
   "member message send --recipient-agent-id <stable-agent-identity>",
   "member message send --response-required --recipient-agent-id",
   "member message reply --recipient-agent-id",
   "member message request-decision --work-id",
 ];
-for (const path of sourcePaths) {
+for (const path of sourcePaths.filter((path) => path !== contractPath)) {
   const content = read(path);
   for (const command of forbiddenRenderedCommands) {
     if (content.includes(command)) {
