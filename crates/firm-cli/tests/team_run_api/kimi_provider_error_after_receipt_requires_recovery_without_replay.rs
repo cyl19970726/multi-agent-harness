@@ -19,7 +19,10 @@ fn kimi_provider_error_after_receipt_requires_recovery_without_replay() {
                 "FAKE_KIMI_PROMPT_ERROR_ONCE_MARKER",
                 error_once_value.as_str(),
             ),
-            ("FIRM_MEMBER_SUPERVISOR_TEST_IDLE_MS", "30000"),
+            // Keep the test-only Supervisor alive across slow, cold CI
+            // runners. ServeHandle still terminates both child processes on
+            // drop, so this does not extend test teardown or production TTLs.
+            ("FIRM_MEMBER_SUPERVISOR_TEST_IDLE_MS", "180000"),
         ],
     );
     let (_, created) = serve.post_json(
