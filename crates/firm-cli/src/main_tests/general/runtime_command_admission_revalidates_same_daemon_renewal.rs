@@ -136,3 +136,64 @@ fn successor_after_durable_command_prepare_requires_exact_reconciliation() {
     assert!(matches!(error, CliError::RuntimeRecoveryRequired(_)));
     assert!(error.to_string().contains(&admitted.command_id));
 }
+
+#[test]
+fn reopened_member_generation_gets_a_distinct_resume_command_identity() {
+    let (store, _root) = temp_store("resume-command-reopened-member-generation");
+    let (ledger, first_generation) = persisted_native_test_member(
+        &store,
+        "codex",
+        "codex_app_server",
+        "thread-resume-command-generation",
+    );
+
+    let first = prepare_provider_process_effect(&ledger, &first_generation, 1)
+        .expect("prepare generation-1 ResumeNativeSession command");
+    settle_provider_effect_not_applied(
+        &ledger,
+        &first,
+        "generation-1 runtime was closed before provider effect".into(),
+    )
+    .expect("settle generation-1 command without provider effect");
+
+    let mut reopened = first_generation.clone();
+    reopened.runtime_generation += 1;
+    reopened.status = MemberRunStatus::Queued;
+    reopened.started_at = "unix-ms:reopened".into();
+    reopened.last_event_at = Some("unix-ms:reopened".into());
+    store
+        .compare_and_advance_member_run_generation(&first_generation, &reopened)
+        .expect("advance the durable MemberRun generation for Reopen");
+
+    let second = prepare_provider_process_effect(&ledger, &reopened, 1)
+        .expect("same transport-attempt ordinal in a new MemberRun generation must not collide");
+    assert_ne!(first.command_id, second.command_id);
+
+    let execution_space_id = store
+        .trust_member_run_scope(&reopened.id)
+        .expect("read MemberRun scope")
+        .expect("canonical MemberRun scope");
+    let commands = store
+        .runtime_commands(&execution_space_id)
+        .expect("read exact RuntimeCommands");
+    let first_record = commands
+        .iter()
+        .find(|command| command.id == first.command_id)
+        .expect("generation-1 command remains durable");
+    let second_record = commands
+        .iter()
+        .find(|command| command.id == second.command_id)
+        .expect("generation-2 command is independently durable");
+    assert_eq!(
+        first_record.binding.target_member_run_generation,
+        Some(first_generation.runtime_generation)
+    );
+    assert_eq!(
+        second_record.binding.target_member_run_generation,
+        Some(reopened.runtime_generation)
+    );
+    assert_eq!(
+        second_record.command,
+        harness_core::agentfirm_api::RuntimeCommandKind::ResumeNativeSession
+    );
+}
