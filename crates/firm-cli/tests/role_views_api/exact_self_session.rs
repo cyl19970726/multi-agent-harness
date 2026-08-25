@@ -391,6 +391,23 @@ fn exact_self_session_projection_follows_fresh_start_settle_sync() {
         "Host-selected Member must structurally omit the private Session projection"
     );
 
+    // The same active MemberRun is readable from the loopback Dashboard
+    // without borrowing either the Host or Member mutation authority.
+    let (status, local_operator_member) = serve.get_json(&member_agent_workspace_route);
+    assert_eq!(
+        status, 200,
+        "loopback Operator AgentWorkspace: {local_operator_member}"
+    );
+    assert_eq!(
+        local_operator_member["data"]["projection_scope"],
+        "host_member_public"
+    );
+    assert_eq!(
+        local_operator_member["allowed_actions"],
+        serde_json::json!([]),
+        "loopback Operator must not borrow AgentMember actions"
+    );
+
     // A Team sibling that never settled a native Session keeps the honest
     // unavailable shape: no fabricated session id, fingerprint, or episodes.
     let sibling_self_route = format!(

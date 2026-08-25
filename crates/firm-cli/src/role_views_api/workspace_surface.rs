@@ -476,15 +476,21 @@ pub(crate) fn agent_workspace_view(
             identity,
             query.company.as_deref(),
         )?
-    } else if let Some(member_run_id) = selected_member_run_id {
-        member_view(
-            space_id,
-            store,
-            member_run_id,
-            identity,
-            query.company.as_deref(),
-        )?
+    } else if exact_selected_identity {
+        if let Some(member_run_id) = selected_member_run_id {
+            member_view(
+                space_id,
+                store,
+                member_run_id,
+                identity,
+                query.company.as_deref(),
+            )?
+        } else {
+            json!({"allowed_actions":[]})
+        }
     } else {
+        // A loopback Operator may inspect the Team-scoped read model, but it
+        // never borrows an AgentMember's authenticated mutation authority.
         json!({"allowed_actions":[]})
     };
     let allowed_actions = authority_envelope["allowed_actions"]
