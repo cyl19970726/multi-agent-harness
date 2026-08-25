@@ -214,3 +214,23 @@ fn provider_activity_projects_only_closed_display_safe_kinds() {
     assert_eq!(summary.chars().count(), 240);
     assert!(!summary.contains("secret"));
 }
+
+#[test]
+fn runner_contract_accepts_known_enum_only_activity_kind_and_rejects_unknown_kind() {
+    let known = json!({
+        "event":"provider_activity",
+        "data":{"kind":"thinking","summary":"DeepSeek Harness is thinking"}
+    });
+    runner_contract::validate_runner_frame("eventPayloadSchemas", "event", "data", &known)
+        .expect("contract-valid enum-only activity kind");
+
+    let unknown = json!({
+        "event":"provider_activity",
+        "data":{"kind":"private_reasoning_payload","summary":"must fail closed"}
+    });
+    let error =
+        runner_contract::validate_runner_frame("eventPayloadSchemas", "event", "data", &unknown)
+            .expect_err("unknown activity kind must remain closed")
+            .to_string();
+    assert!(error.contains("provider_activity.data.kind is outside the allowed enum"));
+}
