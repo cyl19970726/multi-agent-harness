@@ -27,10 +27,10 @@ use firm_core::collaboration::{
     CollaborationMessageAuthority, MessageAdmissionAuthority, PeerTeamMessageAdmissionAuthority,
 };
 use firm_core::{
-    AgentTeam, AgentTeamStatus, ExecutionNodeStatus,
-    MemberCoordinationStatus as LegacyMemberCoordinationStatus, MemberRunStatus,
-    ProviderRuntimeProjection, TeamActorKind, TeamActorRef, Validate, Work, WorkCommandContext,
-    WorkDelegationRevision,
+    AgentTeam, AgentTeamStatus, ExecutionNodeStatus, HostAttention, HostAttentionKind,
+    HostAttentionStatus, MemberCoordinationStatus as LegacyMemberCoordinationStatus,
+    MemberRunStatus, ProviderRuntimeProjection, TeamActorKind, TeamActorRef, Validate, Work,
+    WorkCommandContext, WorkDelegationRevision,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;

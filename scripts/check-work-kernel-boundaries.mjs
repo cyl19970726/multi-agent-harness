@@ -310,14 +310,18 @@ if (!existsSync(resolve(root, applicationServicePath))) {
     }
   }
 }
-const canonicalWorkActionAdapters = [
-  "crates/firm-cli/src/main_modules/work_cli.rs",
-  "crates/firm-cli/src/role_actions_api.rs",
-  "crates/firm-cli/src/role_actions_api/work_records.rs",
-  "crates/firm-cli/src/role_actions_api/canonical_actions.rs",
-  "crates/firm-cli/src/main_modules/user_commands.rs",
-  "crates/firm-cli/src/main_modules/http_trust_routes.rs",
-];
+const canonicalWorkActionAdapters = trackedAndUntrackedFiles()
+  .filter((path) =>
+    path === "crates/firm-cli/src/main_modules/work_cli.rs"
+    || path === "crates/firm-cli/src/main_modules/user_commands.rs"
+    || path === "crates/firm-cli/src/role_actions_api.rs"
+    || (path.startsWith("crates/firm-cli/src/role_actions_api/") && extname(path) === ".rs")
+    || (/^crates\/firm-cli\/src\/main_modules\/http.*\.rs$/).test(path)
+  )
+  .sort();
+if (canonicalWorkActionAdapters.length < 8) {
+  failures.push("canonical Work adapter scan is unexpectedly narrow");
+}
 const forbiddenAdapterDispatch = /WorkApplication::new\(store\)|agentfirm_api::execute\(|store\.(?:accept_work|request_work_changes)\(/;
 for (const path of canonicalWorkActionAdapters) {
   const content = read(path);

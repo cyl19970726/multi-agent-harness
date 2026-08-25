@@ -370,6 +370,17 @@ impl HarnessStore {
         Ok(works)
     }
 
+    pub(crate) fn canonical_host_attention_outbox_unlocked(
+        &self,
+    ) -> StoreResult<Vec<HostAttention>> {
+        Ok(self
+            .trust_operation_envelopes_unlocked()?
+            .into_iter()
+            .flat_map(|envelope| envelope.operation.initial_outbox_records)
+            .filter_map(|record| serde_json::from_value::<HostAttention>(record).ok())
+            .collect())
+    }
+
     /// Decode-only compatibility view for callers that still resolve a
     /// historical/native WorkEvent reference. Current Work state is never
     /// reconstructed from these records; the canonical operation projection

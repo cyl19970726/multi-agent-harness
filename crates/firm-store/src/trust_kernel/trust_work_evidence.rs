@@ -202,6 +202,7 @@ impl HarnessStore {
             .into_iter()
             .map(serde_json::to_value)
             .collect::<Result<Vec<_>, _>>()?;
+        let mut initial_outbox_records = Vec::new();
         if report.kind == WorkReportKind::Result {
             let mut submitted_work = current_work;
             submitted_work.phase = firm_core::WorkPhase::Review;
@@ -223,6 +224,32 @@ impl HarnessStore {
             }
             submitted_work.github_links = candidate_links;
             submitted_work.updated_at = report.created_at.clone();
+            initial_outbox_records.push(serde_json::to_value(HostAttention {
+                id: format!("host-attention-{}", report.id),
+                team_run_id: submitted_work.team_run_id.clone(),
+                kind: HostAttentionKind::WorkReviewRequested,
+                work_id: submitted_work.id.clone(),
+                work_version: submitted_work.version,
+                source_event_ref: report.id.clone(),
+                member_run_id: submitted_work.active_member_run_id.clone(),
+                status: HostAttentionStatus::Actionable,
+                attempt: 0,
+                claim_id: None,
+                claimed_host_surface: None,
+                claimed_host_thread_id: None,
+                claimed_host_lease_id: None,
+                claimed_host_lease_generation: None,
+                claimed_host_lease_owner_id: None,
+                claimed_recipient_member_run_id: None,
+                claimed_recipient_session_id: None,
+                claimed_recipient_session_generation: None,
+                claimed_node_daemon_id: None,
+                claimed_node_daemon_generation: None,
+                provider_receipt_id: None,
+                last_failure_reason: None,
+                created_at: report.created_at.clone(),
+                updated_at: report.created_at.clone(),
+            })?);
             side_records.push(serde_json::to_value(submitted_work)?);
         }
         self.commit_trust_projection_unlocked(
@@ -233,7 +260,7 @@ impl HarnessStore {
             serde_json::to_value(&report)?,
             &report,
             side_records,
-            Vec::new(),
+            initial_outbox_records,
         )
     }
 

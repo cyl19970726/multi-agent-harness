@@ -25,7 +25,7 @@ use action_matrix_and_projection::{
 };
 use firm_env::{
     collect_named_sse_data, create_canonical_agent_member, current_project_id, current_space_id,
-    run_firm, ServeHandle, TempHome,
+    run_firm, run_firm_with_env, ServeHandle, TempHome,
 };
 use harness_core::agentfirm_api::{
     ActorKind, ActorRef, AgentSession, AgentSessionControlState, AgentSessionStatus,
@@ -1051,6 +1051,79 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
     assert_eq!(status, 200, "member claim replay: {claim_replay}");
     assert_eq!(claim_replay["event_id"], claimed["event_id"]);
     assert_eq!(claim_replay["replayed"], true);
+    let operations_before_cli_replay = store
+        .work_operations()
+        .expect("Work operations before CLI replay");
+    let claim_operation = operations_before_cli_replay
+        .iter()
+        .find(|operation| operation.event.idempotency_key == "claim-store-live-1")
+        .expect("HTTP claim Work operation");
+    assert_eq!(claim_operation.event.id, claimed["event_id"]);
+    assert_eq!(claim_operation.event.expected_version, 1);
+    assert_eq!(claim_operation.event.resulting_version, 2);
+    assert_eq!(
+        serde_json::to_value(&claim_operation.work).expect("claim Work projection"),
+        claimed["projection"]
+    );
+    let cli_claim_args = [
+        "--space",
+        space_id.as_str(),
+        "--project",
+        project_id.as_str(),
+        "team-run",
+        "work",
+        "claim",
+        "--team-run-id",
+        run_id,
+        "--work-id",
+        "work-store-live-1",
+        "--expected-version",
+        "1",
+        "--member-run-id",
+        member_run_id,
+        "--idempotency-key",
+        "claim-store-live-1",
+        "--event-id",
+        "role-action:claim-store-live-1",
+    ];
+    for attempt in 1..=2 {
+        let cli_claim = run_firm_with_env(
+            &home,
+            &root,
+            &cli_claim_args,
+            &[
+                ("FIRM_TEAM_RUN_ID", run_id),
+                ("FIRM_MEMBER_RUN_ID", member_run_id),
+            ],
+        );
+        assert!(
+            cli_claim.status.success(),
+            "CLI claim parity attempt {attempt}: {cli_claim:?}"
+        );
+        let cli_projection: serde_json::Value =
+            serde_json::from_slice(&cli_claim.stdout).expect("CLI claim Work projection");
+        assert_eq!(
+            cli_projection, claimed["projection"],
+            "CLI and HTTP must return the same committed Work projection"
+        );
+        let operations_after_cli = store
+            .work_operations()
+            .expect("Work operations after CLI replay");
+        assert_eq!(
+            operations_after_cli.len(),
+            operations_before_cli_replay.len(),
+            "CLI replay must not append another Work event"
+        );
+        let replayed_operation = operations_after_cli
+            .iter()
+            .find(|operation| operation.event.idempotency_key == "claim-store-live-1")
+            .expect("stable cross-surface claim operation");
+        assert_eq!(replayed_operation.event.id, claim_operation.event.id);
+        assert_eq!(
+            replayed_operation.event.resulting_version,
+            claim_operation.event.resulting_version
+        );
+    }
     let changed_claim_cas = action_headers(MEMBER_TOKEN, "claim-store-live-1", "2");
     let (status, changed_claim_cas_result) = serve.post_json_with_headers(
         &claim_route,

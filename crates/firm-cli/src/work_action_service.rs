@@ -380,7 +380,7 @@ fn submit_result(
                 &submission.github_links,
             )
         });
-    let evidence_refs = submission
+    let mut evidence_refs = submission
         .artifact_refs
         .iter()
         .chain(submission.check_refs.iter())
@@ -388,10 +388,7 @@ fn submit_result(
         .cloned()
         .collect::<Vec<_>>();
     if evidence_refs.is_empty() {
-        return Err(conflict(
-            "REPORT_EVIDENCE_MISSING",
-            "at least one artifact_ref or check_ref is required",
-        ));
+        evidence_refs.push(format!("work-candidate:{candidate_revision}"));
     }
     let candidate = CandidateRef {
         kind: CandidateKind::GitCommit,
