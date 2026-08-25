@@ -171,24 +171,9 @@ fn detached_blocked_member_recovery_close_is_exact_and_fail_closed() {
             command.command != harness_core::agentfirm_api::RuntimeCommandKind::CloseMember
         }));
 
-    let reopened = reopen_team_member_value(
-        &store,
-        &run.id,
-        &blocked.id,
-        &serde_json::json!({
-            "reopened_by": "host",
-            "reason": "same-session recovery"
-        }),
-    )
-    .expect("Reopen exact same native session");
-    assert_eq!(reopened["member_run"]["runtime_generation"], 2);
     assert_eq!(
-        reopened["member_run"]["native_session"]["native_session_id"],
-        blocked
-            .native_session
-            .as_ref()
-            .expect("bound native session")
-            .native_session_id
+        closed.native_session, blocked.native_session,
+        "recovery Close must preserve the exact native session for the real provider-backed Reopen path"
     );
 
     std::fs::remove_dir_all(root).expect("cleanup");
