@@ -862,7 +862,7 @@ pub(super) fn bound_member_inbox_command(store: &HarnessStore, args: &[String]) 
 pub(super) fn bound_member_message_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
     require_subcommand(
         args,
-        crate::collaboration::member_operating_contract::member_message_subcommand_usage(),
+        &crate::collaboration::member_operating_contract::member_message_subcommand_usage(),
     )?;
     let context = bound_member_role_context()?;
     let run = latest_team_run(store, &context.team_run_id)?;

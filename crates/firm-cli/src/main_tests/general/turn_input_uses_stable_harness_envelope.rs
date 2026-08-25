@@ -64,7 +64,7 @@ fn work_contract_keeps_host_messages_on_the_work_being_discussed() {
         .expect("response-required action spec");
     assert_eq!(
         response_required.work_binding,
-        crate::collaboration::member_operating_contract::WorkBinding::RecipientWorkFromBoard
+        crate::collaboration::member_operating_contract::WorkBinding::RecipientFromBoard
     );
     assert_eq!(
         response_required.wake_behavior,
@@ -72,12 +72,12 @@ fn work_contract_keeps_host_messages_on_the_work_being_discussed() {
     );
 
     assert!(prompt.contains("--work-id <discussed-work-id>"));
-    assert!(prompt.contains("informational canonical Work-linked Message"));
+    assert!(prompt.contains("send message — informational"));
     assert!(prompt.contains("does not wake an idle recipient"));
     assert!(prompt.contains("<recipient-work-id-from-board>"));
-    assert!(prompt.contains("A Member asks the Host to decide, review, or accept"));
+    assert!(prompt.contains("request-decision"));
     assert!(!prompt.contains("request-decision --recipient-agent-id"));
-    assert!(prompt.contains("a response-required Message wakes the Host"));
+    assert!(prompt.contains("response=response required"));
     assert!(prompt.contains("--work-id <incoming-work-id>"));
     assert!(prompt.contains(&format!("your current Work is {}", work.id)));
     assert!(prompt.contains(&work.id));
