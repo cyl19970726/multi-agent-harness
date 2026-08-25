@@ -609,6 +609,53 @@ fn five_provider_jsonl_corpora_decode_and_malformed_lines_are_bounded() {
 }
 
 #[test]
+fn pi_persisted_session_messages_project_text_and_redacted_terminal_failure() {
+    let authored = observation(
+        decode_native_json_line(
+            &context(ProviderKind::Pi),
+            Some("pi-session-message".into()),
+            None,
+            1,
+            Some("2026-08-25T07:53:01Z".into()),
+            r#"{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"pi persisted answer"}],"stopReason":"stop"}}"#,
+        )
+        .unwrap(),
+    );
+    assert!(matches!(
+        authored.payload,
+        ObservationPayload::AuthoredResponse { ref text } if text == "pi persisted answer"
+    ));
+
+    let failed = observation(
+        decode_native_json_line(
+            &context(ProviderKind::Pi),
+            Some("pi-session-error".into()),
+            None,
+            2,
+            Some("2026-08-25T07:53:14Z".into()),
+            r#"{"type":"message","message":{"role":"assistant","content":[],"stopReason":"error","errorMessage":"secret provider detail"}}"#,
+        )
+        .unwrap(),
+    );
+    assert_eq!(failed.semantic_kind, SemanticKind::TurnFailed);
+    let serialized = serde_json::to_string(&failed).unwrap();
+    assert!(!serialized.contains("secret provider detail"));
+
+    assert_eq!(
+        decode_native_json_line(
+            &context(ProviderKind::Pi),
+            Some("pi-user-message".into()),
+            None,
+            3,
+            None,
+            r#"{"type":"message","message":{"role":"user","content":[{"type":"text","text":"private prompt"}]}}"#,
+        )
+        .unwrap(),
+        DecodeOutcome::Unsupported
+    );
+}
+
+#[test]
 fn transcript_reader_uses_disposable_position_and_holds_incomplete_tail() {
     let root = unique_temp_path("reader");
     fs::create_dir_all(&root).unwrap();

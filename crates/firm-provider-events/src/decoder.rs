@@ -83,7 +83,7 @@ pub fn adapter_manifest(provider: ProviderKind) -> AdapterManifest {
             ][..],
         ),
         ProviderKind::Pi => (
-            &["rpc_event", "session_message"][..],
+            &["rpc_event", "message"][..],
             false,
             &[
                 SemanticKind::AuthoredResponse,
@@ -94,6 +94,7 @@ pub fn adapter_manifest(provider: ProviderKind) -> AdapterManifest {
                 SemanticKind::InteractionRequired,
                 SemanticKind::TransportInterrupted,
                 SemanticKind::TurnCompleted,
+                SemanticKind::TurnFailed,
             ][..],
         ),
         ProviderKind::DeepseekHarness => (
@@ -750,6 +751,12 @@ fn decode_kimi(event: &NativeEvent) -> Result<Option<Decoded>, DecodeError> {
 fn decode_pi(event: &NativeEvent) -> Result<Option<Decoded>, DecodeError> {
     let row_type = string(&event.raw, "/type")?;
     match row_type {
+        // Pi's provider-native JSONL persists completed messages rather than
+        // replaying the transient RPC `message_update` family. Keep user
+        // prompts, reasoning, raw errors and tool payloads private; only an
+        // assistant-authored text or a redacted terminal outcome is eligible
+        // for the disposable owner-bound projection.
+        "message" => decode_pi_persisted_message(&event.raw),
         "message_update" => {
             let content = event
                 .raw
@@ -781,6 +788,33 @@ fn decode_pi(event: &NativeEvent) -> Result<Option<Decoded>, DecodeError> {
         "transport_interrupted" => Ok(Some(transport("provider_transport_interrupted"))),
         _ => Ok(None),
     }
+}
+
+fn decode_pi_persisted_message(raw: &Value) -> Result<Option<Decoded>, DecodeError> {
+    if raw.pointer("/message/role").and_then(Value::as_str) != Some("assistant") {
+        return Ok(None);
+    }
+    let content = raw
+        .pointer("/message/content")
+        .ok_or(DecodeError::Malformed("Pi assistant content"))?;
+    if let Some(text) = text_from_parts(content) {
+        return Ok(Some(authored(&text)));
+    }
+    let stop_reason = raw.pointer("/message/stopReason").and_then(Value::as_str);
+    if stop_reason == Some("error") {
+        return Ok(Some(turn("failed")));
+    }
+    if content.as_array().is_some_and(|parts| {
+        parts.iter().any(|part| {
+            matches!(
+                part.get("type").and_then(Value::as_str),
+                Some("thinking" | "reasoning")
+            )
+        })
+    }) {
+        return Ok(Some(reasoning_drop()));
+    }
+    Ok(None)
 }
 
 fn decode_deepseek_harness(event: &NativeEvent) -> Result<Option<Decoded>, DecodeError> {
