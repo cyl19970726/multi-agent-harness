@@ -1,0 +1,24 @@
+{
+  "schema_version": "agentfirm.agent_team_dogfood_evidence.v1",
+  "scenario_id": "fixture-coordination-canary",
+  "scenario_class": "coordination_canary",
+  "claim": "A Host-owned Work can be accepted by an exact peer reviewer.",
+  "limitations": ["Does not prove repository editing or coding delivery."],
+  "team": {
+    "agent_team_id": "team-fixture",
+    "team_run_id": "team-run-fixture",
+    "host_agent_member_id": "host-fixture",
+    "implementer_agent_member_id": "host-fixture"
+  },
+  "sessions": [
+    {
+      "agent_member_id": "host-fixture",
+      "provider": "codex",
+      "agent_session_id": "agent-session-host",
+      "native_session_id": "native-host",
+      "tool_started": 0,
+      "tool_terminal": 0
+    }
+  ],
+  "transcript_persisted_to_harness_store": false
+}

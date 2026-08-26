@@ -126,6 +126,14 @@ scenario becomes a Host-triaged repair batch or tracked issue, then the original
 scenario is rerun before the matrix expands. Finding a bug is evidence, not
 closeout.
 
+Do not report a focused `coordination_canary` as coding self-hosting. A no-edit
+SHA check can prove a Work/Message/acceptance seam, but it cannot prove coding
+execution. A `coding_dogfood` completion additionally runs
+`pnpm verify:agent-team-dogfood -- <evidence.json>` and binds the changed
+candidate, changed files, checks, WorkReport, independent reviewer, exact Host
+acceptance, and implementer provider-native tool start/terminal counts. The
+evidence bundle records ids and counts only; transcripts remain provider-native.
+
 When a live Member appears stuck, inspect MemberRun/Supervisor health, Inbox
 delivery, unresolved `provider_interaction_request` Messages, WorkDelivery,
 RuntimeCommand status, AgentSession control state, and provider

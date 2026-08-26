@@ -1,5 +1,19 @@
 # Dev contract
 
+## Live Agent Team evidence
+
+When the Task requires native Agent Team evidence, name the scenario before it
+starts. A `coordination_canary` proves only its stated authority, delivery, or
+lifecycle seam and must report that limitation. Do not call a read-only SHA
+check, echo, or no-edit Work a coding dogfood run.
+
+A `coding_dogfood` must produce a changed candidate revision, real changed
+files and checks, a canonical WorkReport, independent AgentMember review, exact
+Host acceptance, and provider-native implementer tool start plus terminal tool
+evidence. Validate the response-local id/count bundle with
+`pnpm verify:agent-team-dogfood -- <evidence.json>`; never copy the provider
+transcript into Harness state or the evidence bundle.
+
 Dev owns implementation and decides when work is ready to review.
 
 ## Work
