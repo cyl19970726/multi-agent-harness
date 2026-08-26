@@ -157,6 +157,7 @@ function createFixture() {
     join(fakeBin, "node"),
     [
       "#!/bin/sh",
+      'if [ "${FAKE_PROCESS_EXISTENCE_UNKNOWN:-0}" = 1 ]; then case "$*" in *process.kill*) exit 1 ;; esac; fi',
       'case "$*" in',
       "  *symlinkSync*.star-harness-install.lock*)",
       '    if [ -n "${FAKE_SIGNAL_AFTER_LOCK_EFFECT:-}" ] || [ "${FAKE_BLOCK_LOCK_ON_ACQUIRE:-0}" = 1 ]; then',
@@ -411,6 +412,26 @@ withFixture((fixture) => {
   assert.equal(result.status, 0, "a broken lock with proof of a dead exact owner is reconciled");
   assert.equal(existsSync(lockPath), false);
   assert.equal(readlinkSync(fixture.binLink), join(fixture.root, "install", "fixture", "harness"));
+});
+
+withFixture((fixture) => {
+  const lockPath = `${fixture.binLink}.star-harness-install.lock`;
+  const malformedTarget = `${lockPath}.txn-2147483647-deadtoken-garbage`;
+  mkdirSync(dirname(lockPath), { recursive: true });
+  symlinkSync(malformedTarget, lockPath);
+  const result = runApply(fixture);
+  assert.notEqual(result.status, 0, "a non-canonical owner token cannot authorize stale cleanup");
+  assert.equal(readlinkSync(lockPath), malformedTarget);
+});
+
+withFixture((fixture) => {
+  const lockPath = `${fixture.binLink}.star-harness-install.lock`;
+  const uncertainTarget = `${lockPath}.txn-2147483647-deadtoken-1-1`;
+  mkdirSync(dirname(lockPath), { recursive: true });
+  symlinkSync(uncertainTarget, lockPath);
+  const result = runApply(fixture, { FAKE_PROCESS_EXISTENCE_UNKNOWN: "1" });
+  assert.notEqual(result.status, 0, "unknown process existence must fail closed");
+  assert.equal(readlinkSync(lockPath), uncertainTarget);
 });
 
 for (const signal of ["HUP", "INT", "TERM"]) {
@@ -961,6 +982,7 @@ withFixture((fixture) => {
         FAKE_FAIL_AFTER_PUBLICATION: "1",
         FAKE_HOLD_READY: ready,
         FAKE_HOLD_RELEASE: release,
+        TZ: "Asia/Shanghai",
       }),
       stdio: "ignore",
     },
@@ -968,7 +990,7 @@ withFixture((fixture) => {
   try {
     waitForPath(ready, first);
     const publishedTarget = readlinkSync(fixture.binLink);
-    const second = runApply(fixture);
+    const second = runApply(fixture, { TZ: "UTC0" });
     assert.notEqual(second.status, 0, "a concurrent installer must fail closed");
     assert.match(second.stderr, /publication is already owned by another installer/);
     const rejectedState = readFailureState(fixture);

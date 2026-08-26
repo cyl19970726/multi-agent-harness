@@ -201,7 +201,7 @@ bin_link_identity() {
 }
 
 process_start_identity() {
-  LC_ALL=C ps -o lstart= -p "$1" 2>/dev/null
+  LC_ALL=C TZ=UTC0 ps -o lstart= -p "$1" 2>/dev/null
 }
 
 process_start_token() {
@@ -210,6 +210,17 @@ process_start_token() {
   [[ -n "${identity}" ]] || return 1
   identity="${identity//[^[:alnum:]]/_}"
   printf '%s' "${identity}"
+}
+
+process_is_proven_absent() {
+  node -e '
+    try {
+      process.kill(Number(process.argv[1]), 0);
+      process.exit(1);
+    } catch (error) {
+      process.exit(error && error.code === "ESRCH" ? 0 : 1);
+    }
+  ' "$1"
 }
 
 initialize_bin_link_transaction_paths() {
@@ -315,11 +326,10 @@ reconcile_stale_bin_link_lock() {
       ;;
   esac
   owner_metadata="${stale_target#"${BIN_LINK_LOCK_DIR}.txn-"}"
-  owner_pid="${owner_metadata%%-*}"
-  owner_metadata="${owner_metadata#*-}"
-  owner_start_token="${owner_metadata%%-*}"
-  if [[ ! "${owner_pid}" =~ ^[0-9]+$ || -z "${owner_start_token}" \
-    || "${owner_metadata}" == "${owner_start_token}" ]]; then
+  if [[ "${owner_metadata}" =~ ^([0-9]+)-([[:alnum:]_]+)-([0-9]+)-([0-9]+)$ ]]; then
+    owner_pid="${BASH_REMATCH[1]}"
+    owner_start_token="${BASH_REMATCH[2]}"
+  else
     unlink "${BIN_LINK_STALE_LOCK_WITNESS}" 2>/dev/null || true
     return 1
   fi
@@ -328,7 +338,7 @@ reconcile_stale_bin_link_lock() {
     unlink "${BIN_LINK_STALE_LOCK_WITNESS}" 2>/dev/null || true
     return 1
   fi
-  if [[ -z "${current_start_token}" ]] && kill -0 "${owner_pid}" 2>/dev/null; then
+  if [[ -z "${current_start_token}" ]] && ! process_is_proven_absent "${owner_pid}"; then
     unlink "${BIN_LINK_STALE_LOCK_WITNESS}" 2>/dev/null || true
     return 1
   fi
