@@ -103,6 +103,7 @@ const daemon = productionRustTree([
 const server = productionRustTree([
   "crates/firm-cli/src/main.rs",
   "crates/firm-cli/src/main_modules",
+  "crates/firm-cli/src/runtime_composition",
   "crates/firm-cli/src/agentfirm_api.rs",
 ]);
 const providerAdapter = readFileSync("crates/firm-cli/src/provider_adapter.rs", "utf8");

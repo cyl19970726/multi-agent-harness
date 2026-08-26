@@ -77,6 +77,7 @@ mod role_actions_api;
 mod role_views_api;
 mod runtime_adapter;
 mod runtime_adapter_contract;
+mod runtime_composition;
 mod sse;
 mod store_resolution;
 #[cfg(unix)]
@@ -142,12 +143,7 @@ use provider_process_recovery::*;
 #[path = "main_modules/provider_admission_retry.rs"]
 mod provider_admission_retry;
 use provider_admission_retry::*;
-#[path = "main_modules/provider_effect_settlement.rs"]
-mod provider_effect_settlement;
-use provider_effect_settlement::*;
-#[path = "main_modules/runtime_binding_fence.rs"]
-mod runtime_binding_fence;
-use runtime_binding_fence::*;
+use runtime_composition::*;
 #[path = "main_modules/runtime_effects.rs"]
 mod runtime_effects;
 use runtime_effects::*;

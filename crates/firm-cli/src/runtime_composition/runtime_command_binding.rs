@@ -1,6 +1,6 @@
 use super::*;
 
-pub(super) fn runtime_command_binding_for_session(
+pub(crate) fn runtime_command_binding_for_session(
     session: &harness_core::agentfirm_api::AgentSession,
 ) -> harness_core::agentfirm_api::RuntimeCommandBinding {
     harness_core::agentfirm_api::RuntimeCommandBinding {
@@ -16,7 +16,7 @@ pub(super) fn runtime_command_binding_for_session(
     }
 }
 
-pub(super) fn runtime_command_binding_for_member_session(
+pub(crate) fn runtime_command_binding_for_member_session(
     member_run: &harness_core::agentfirm_api::MemberRun,
     session: &harness_core::agentfirm_api::AgentSession,
 ) -> harness_core::agentfirm_api::RuntimeCommandBinding {
@@ -27,7 +27,7 @@ pub(super) fn runtime_command_binding_for_member_session(
     }
 }
 
-pub(super) fn runtime_command_binding_for_current_session(
+pub(crate) fn runtime_command_binding_for_current_session(
     store: &harness_store::HarnessStore,
     execution_space_id: &str,
     session: &harness_core::agentfirm_api::AgentSession,
@@ -55,7 +55,7 @@ pub(super) fn runtime_command_binding_for_current_session(
     Ok(runtime_command_binding_for_member_session(member, session))
 }
 
-pub(super) fn runtime_binding_fence_for_admission(
+pub(crate) fn runtime_binding_fence_for_admission(
     ledger: &TeamRunLedger,
     admission: &harness_store::CanonicalMutationResult<
         harness_core::agentfirm_api::RuntimeCommandRecord,
