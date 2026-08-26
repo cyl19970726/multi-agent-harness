@@ -28,6 +28,7 @@ ROLLBACK_BINARY_STATUS="failed_before_binary_publication"
 STATE_FILE=""
 BIN_LINK_LOCK_DIR="${BIN_LINK}.star-harness-install.lock"
 BIN_LINK_LOCK_OWNED="false"
+BIN_LINK_LOCK_STATUS="not_acquired"
 
 acquire_bin_link_lock() {
   mkdir -p "$(dirname "${BIN_LINK}")"
@@ -36,15 +37,18 @@ acquire_bin_link_lock() {
     return 1
   fi
   BIN_LINK_LOCK_OWNED="true"
+  BIN_LINK_LOCK_STATUS="held"
 }
 
 release_bin_link_lock() {
   if [[ "${BIN_LINK_LOCK_OWNED}" == "true" ]]; then
     if ! rmdir "${BIN_LINK_LOCK_DIR}"; then
+      BIN_LINK_LOCK_STATUS="release_failed"
       echo "failed to release Harness binary publication lock: ${BIN_LINK_LOCK_DIR}" >&2
       return 1
     fi
     BIN_LINK_LOCK_OWNED="false"
+    BIN_LINK_LOCK_STATUS="released"
   fi
 }
 
@@ -129,19 +133,30 @@ rollback_published_bin_link() {
   fi
 }
 
-rollback_on_error() {
+rollback_binary_after_error() {
   local exit_status=$1
   if [[ "${exit_status}" -eq 0 || "${APPLY_IN_PROGRESS}" != "true" ]]; then
     return
   fi
   rollback_published_bin_link || true
+}
+
+write_failure_state() {
+  local original_exit_status=$1
+  local failure_status="${ROLLBACK_BINARY_STATUS}"
+  if [[ "${BIN_LINK_LOCK_STATUS}" == "release_failed" ]]; then
+    failure_status="failed_with_install_lock_residual"
+  fi
   if [[ -n "${STATE_FILE}" ]]; then
-    node - "${STATE_FILE}" "${VERSION:-unknown}" "${REPO_ROOT}" "${PREVIOUS_BIN}" "${ROLLBACK_BINARY_STATUS}" <<'NODE' || true
+    node - "${STATE_FILE}" "${VERSION:-unknown}" "${REPO_ROOT}" "${PREVIOUS_BIN}" "${failure_status}" "${ROLLBACK_BINARY_STATUS}" "${BIN_LINK_LOCK_STATUS}" "${original_exit_status}" <<'NODE' || true
 const fs = require("node:fs");
-const [path, version, sourceRoot, rollbackBinary, status] = process.argv.slice(2);
+const [path, version, sourceRoot, rollbackBinary, status, binaryRollbackStatus, installLockStatus, originalExitStatus] = process.argv.slice(2);
 fs.writeFileSync(path, `${JSON.stringify({
   schema_version: 1,
   status,
+  binary_rollback_status: binaryRollbackStatus,
+  install_lock_status: installLockStatus,
+  original_exit_status: Number(originalExitStatus),
   version,
   source_root: sourceRoot,
   rollback_harness_binary: rollbackBinary || null,
@@ -150,15 +165,17 @@ fs.writeFileSync(path, `${JSON.stringify({
 NODE
     echo "failure state: ${STATE_FILE}" >&2
   fi
-  return "${exit_status}"
 }
 
 finish_install() {
   local exit_status=$?
   trap - EXIT
-  rollback_on_error "${exit_status}" || true
+  rollback_binary_after_error "${exit_status}"
   if ! release_bin_link_lock && [[ "${exit_status}" -eq 0 ]]; then
     exit_status=1
+  fi
+  if [[ "${exit_status}" -ne 0 ]]; then
+    write_failure_state "${exit_status}"
   fi
   exit "${exit_status}"
 }

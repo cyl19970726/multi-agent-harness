@@ -73,10 +73,19 @@ function createFixture() {
   );
   write(
     join(fakeBin, "codex"),
-    "#!/bin/sh\nif [ \"$1 $2\" = 'plugin add' ] && [ \"${FAKE_FAIL_AFTER_PUBLICATION:-0}\" = 1 ]; then\n  if [ -n \"${FAKE_FOREIGN_TARGET:-}\" ]; then ln -sfn \"${FAKE_FOREIGN_TARGET}\" \"${STAR_HARNESS_BIN_LINK}\"; fi\n  if [ \"${FAKE_RECREATE_SAME_TARGET:-0}\" = 1 ]; then target=$(readlink \"${STAR_HARNESS_BIN_LINK}\"); unlink \"${STAR_HARNESS_BIN_LINK}\"; ln -s \"$target\" \"${STAR_HARNESS_BIN_LINK}\"; fi\n  if [ \"${FAKE_BLOCK_ROLLBACK:-0}\" = 1 ]; then chmod 0500 \"$(dirname \"${STAR_HARNESS_BIN_LINK}\")\"; fi\n  if [ -n \"${FAKE_HOLD_READY:-}\" ]; then touch \"${FAKE_HOLD_READY}\"; while [ ! -e \"${FAKE_HOLD_RELEASE}\" ]; do sleep 0.01; done; fi\n  exit 42\nfi\nexit 0\n",
+    "#!/bin/sh\nif [ \"$1 $2\" = 'plugin add' ]; then\n  if [ \"${FAKE_BLOCK_LOCK_RELEASE:-0}\" = 1 ]; then touch \"${STAR_HARNESS_BIN_LINK}.star-harness-install.lock/residual\"; fi\n  if [ \"${FAKE_FAIL_AFTER_PUBLICATION:-0}\" = 1 ]; then\n    if [ -n \"${FAKE_FOREIGN_TARGET:-}\" ]; then ln -sfn \"${FAKE_FOREIGN_TARGET}\" \"${STAR_HARNESS_BIN_LINK}\"; fi\n    if [ \"${FAKE_RECREATE_SAME_TARGET:-0}\" = 1 ]; then target=$(readlink \"${STAR_HARNESS_BIN_LINK}\"); unlink \"${STAR_HARNESS_BIN_LINK}\"; ln -s \"$target\" \"${STAR_HARNESS_BIN_LINK}\"; fi\n    if [ -n \"${FAKE_HOLD_READY:-}\" ]; then touch \"${FAKE_HOLD_READY}\"; while [ ! -e \"${FAKE_HOLD_RELEASE}\" ]; do sleep 0.01; done; fi\n    exit 42\n  fi\nfi\nexit 0\n",
     true,
   );
-  write(join(fakeBin, "claude"), "#!/bin/sh\nexit 0\n", true);
+  write(
+    join(fakeBin, "claude"),
+    "#!/bin/sh\nif [ \"$1 $2\" = 'plugin install' ] && [ \"${FAKE_CLAUDE_FAIL_AFTER_PUBLICATION:-0}\" = 1 ]; then exit 42; fi\nexit 0\n",
+    true,
+  );
+  write(
+    join(fakeBin, "unlink"),
+    "#!/bin/sh\nif [ \"${FAKE_UNLINK_FAIL_PATH:-}\" = \"$1\" ]; then exit 43; fi\nexec /bin/rm -f -- \"$1\"\n",
+    true,
+  );
 
   return { root, repo, fakeBin, home, binLink };
 }
@@ -212,16 +221,25 @@ withFixture((fixture) => {
 
 withFixture((fixture) => {
   const result = runApply(fixture, {
-    FAKE_FAIL_AFTER_PUBLICATION: "1",
-    FAKE_BLOCK_ROLLBACK: "1",
+    FAKE_CLAUDE_FAIL_AFTER_PUBLICATION: "1",
+    FAKE_UNLINK_FAIL_PATH: fixture.binLink,
   });
-  assert.notEqual(result.status, 0, "the injected post-publication failure must fail apply");
+  assert.equal(result.status, 42, "rollback failure must preserve the original installer exit code");
   assert.equal(existsSync(fixture.binLink), true, "failed rollback must retain its residual link");
   assert.equal(
     readFailureState(fixture).status,
     "failed_after_binary_publication_remove_failed",
   );
-  chmodSync(dirname(fixture.binLink), 0o700);
+});
+
+withFixture((fixture) => {
+  const result = runApply(fixture, { FAKE_BLOCK_LOCK_RELEASE: "1" });
+  assert.equal(result.status, 1, "lock release failure must turn an otherwise successful apply into failure");
+  const state = readFailureState(fixture);
+  assert.equal(state.status, "failed_with_install_lock_residual");
+  assert.equal(state.install_lock_status, "release_failed");
+  assert.equal(state.original_exit_status, 1);
+  assert.equal(existsSync(`${fixture.binLink}.star-harness-install.lock`), true);
 });
 
 {
