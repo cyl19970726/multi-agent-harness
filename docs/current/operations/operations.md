@@ -132,18 +132,21 @@ execution. A `coding_dogfood` completion additionally runs:
 
 ```bash
 pnpm verify:agent-team-dogfood -- <evidence.json> \
-  --trust-ledger <execution-space>/agentfirm_trust_operations.jsonl
+  --trust-ledger <execution-space>/agentfirm_trust_operations.jsonl \
+  --expected-execution-space-id <trusted-execution-space-id>
 ```
 
-`--trust-ledger` is mandatory for `coding_dogfood`. Verification fails closed
-unless exactly one canonical WorkReport, independent Pass review Message, exact
-Host acceptance, and native-session binding per evidenced AgentSession agree
-with the bundle's Work, version, candidate, TeamRun, AgentMember, provider,
-AgentSession, and native-session ids. Extra unrelated append-only rows are
-tolerated, but ambiguity, a malformed complete JSONL frame, a record from the
-wrong Execution Space, or any mismatch is rejected. An unterminated final
-append-crash fragment is ignored; whitespace-only frames and an uncommitted
-`.next` sibling are not evidence.
+Both options are mandatory for `coding_dogfood`. The expected Execution Space
+id must come from the trusted Execution Space selection that resolved the
+ledger, not from caller-controlled path components or ledger records.
+Verification fails closed unless exactly one canonical WorkReport, independent
+Pass review Message, exact Host acceptance, and native-session binding per
+evidenced AgentSession agree with the bundle's Work, version, candidate,
+AgentTeam, TeamRun, AgentMember, provider, AgentSession, and native-session ids.
+Extra unrelated append-only rows are tolerated, but ambiguity, a malformed
+complete JSONL frame, a record from the wrong Execution Space, or any mismatch
+is rejected. An unterminated final append-crash fragment is ignored;
+whitespace-only frames and an uncommitted `.next` sibling are not evidence.
 
 The changed candidate, changed files, checks, and implementer provider-native
 tool start/terminal counts are still required. The evidence bundle and trust

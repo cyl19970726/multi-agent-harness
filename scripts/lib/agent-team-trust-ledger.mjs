@@ -184,6 +184,7 @@ export function verifyCanonicalTrustLedger(evidence, records, expectedExecutionS
   if (reportRecord && !isObject(report)) {
     addFailure(failures, `WorkReport ${JSON.stringify(work.work_report_id)} has no resulting projection`);
   } else if (report) {
+    const event = eventOf(reportRecord);
     checkEqual(failures, report.id, work.work_report_id, "WorkReport id");
     checkEqual(failures, report.work_id, work.work_id, "WorkReport work id");
     checkEqual(failures, report.work_revision, work.accepted_version - 1, "WorkReport work revision");
@@ -193,6 +194,18 @@ export function verifyCanonicalTrustLedger(evidence, records, expectedExecutionS
       report.authored_by?.id,
       team.implementer_agent_member_id,
       "WorkReport author",
+    );
+    checkEqual(
+      failures,
+      event.performed_by_actor?.kind,
+      report.authored_by?.kind,
+      "WorkReport event actor kind",
+    );
+    checkEqual(
+      failures,
+      event.performed_by_actor?.id,
+      report.authored_by?.id,
+      "WorkReport event actor",
     );
     checkEqual(failures, report.candidate?.kind, "git_commit", "WorkReport candidate kind");
     checkEqual(failures, report.candidate?.value, revision.candidate, "WorkReport candidate revision");
@@ -236,6 +249,12 @@ export function verifyCanonicalTrustLedger(evidence, records, expectedExecutionS
       addFailure(failures, `acceptance event ${JSON.stringify(work.acceptance_event_id)} has no resulting projection`);
     } else {
       checkEqual(failures, acceptedWork.id, work.work_id, "accepted projection Work id");
+      checkEqual(
+        failures,
+        acceptedWork.team_run_id,
+        team.team_run_id,
+        "accepted projection TeamRun",
+      );
       checkEqual(failures, acceptedWork.version, work.accepted_version, "accepted projection version");
       checkEqual(failures, acceptedWork.phase, "closed", "accepted projection phase");
       checkEqual(failures, acceptedWork.resolution, "accepted", "accepted projection resolution");
@@ -250,18 +269,32 @@ export function verifyCanonicalTrustLedger(evidence, records, expectedExecutionS
   );
   if (reviewRecord) matchedRecords.push(["review Message", reviewRecord]);
   if (reviewRecord) {
+    const event = eventOf(reviewRecord);
     const review = projectionOf(reviewRecord);
     if (!isObject(review)) {
       addFailure(failures, `review Message ${JSON.stringify(work.review_message_id)} has no resulting projection`);
     } else {
       checkEqual(failures, review.id, work.review_message_id, "review Message id");
       checkEqual(failures, review.work_id, work.work_id, "review Message Work id");
+      checkEqual(failures, review.team_id, team.agent_team_id, "review Message Team");
       checkEqual(failures, review.team_run_id, team.team_run_id, "review Message TeamRun");
       checkEqual(
         failures,
         review.sender_agent_member_id,
         work.reviewer_agent_member_id,
         "review Message author",
+      );
+      checkEqual(
+        failures,
+        event.authority_actor?.kind,
+        "agent_member",
+        "review Message authority actor kind",
+      );
+      checkEqual(
+        failures,
+        event.authority_actor?.id,
+        review.sender_agent_member_id,
+        "review Message authority actor",
       );
       if (work.reviewer_agent_member_id === team.implementer_agent_member_id) {
         addFailure(failures, "review Message author must be independent from the implementer");

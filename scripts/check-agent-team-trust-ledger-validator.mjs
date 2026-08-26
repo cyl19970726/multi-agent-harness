@@ -126,11 +126,13 @@ function validRecords() {
         transition: "authored",
         resulting_version: 1,
         performed_by_actor: { kind: "service", id: "node-daemon:fixture" },
+        authority_actor: { kind: "agent_member", id: "host-fixture" },
         payload: {},
       },
       {
         id: reviewMessageId,
         work_id: workId,
+        team_id: "team-fixture",
         team_run_id: "team-run-fixture",
         sender_agent_member_id: "host-fixture",
         body: "REVIEW_RESULT\nVerdict: Pass",
@@ -147,7 +149,13 @@ function validRecords() {
         performed_by_actor: { kind: "agent_member", id: "host-fixture" },
         payload: { work_report_id: reportId, candidate_fingerprint: candidateFingerprint },
       },
-      { id: workId, version: 4, phase: "closed", resolution: "accepted" },
+      {
+        id: workId,
+        team_run_id: "team-run-fixture",
+        version: 4,
+        phase: "closed",
+        resolution: "accepted",
+      },
       "work.accept",
     ),
     ...evidence.sessions.map(nativeBinding),
@@ -210,9 +218,21 @@ expectRejected("wrong Work", clone(valid).map((record, index) => {
   if (index === 0) record.operation.resulting_projection.work_id = "work:wrong";
   return record;
 }));
+expectRejected("contradictory WorkReport event actor", clone(valid).map((record, index) => {
+  if (index === 0) record.operation.event.performed_by_actor.id = "host-fixture";
+  return record;
+}), () => {}, /WorkReport event actor mismatch/u);
 expectRejected("missing review Message", valid.filter((record) => record.command_name !== "runtime.authormessage.effect"));
 expectRejected("wrong review Message", valid, (value) => { value.work.review_message_id = "message:wrong"; });
 expectRejected("duplicate review Message", [...valid, clone(valid[1])]);
+expectRejected("wrong canonical Team identity", clone(valid).map((record, index) => {
+  if (index === 1) record.operation.resulting_projection.team_id = "team-foreign";
+  return record;
+}), () => {}, /review Message Team mismatch/u);
+expectRejected("contradictory review authority actor", clone(valid).map((record, index) => {
+  if (index === 1) record.operation.event.authority_actor.id = "member-fixture";
+  return record;
+}), () => {}, /review Message authority actor mismatch/u);
 expectRejected("non-Pass review Message", clone(valid).map((record, index) => {
   if (index === 1) record.operation.resulting_projection.body = "Verdict: Changes Required";
   return record;
@@ -234,6 +254,10 @@ expectRejected("mixed review verdicts", clone(valid).map((record, index) => {
 expectRejected("missing acceptance", valid.filter((record) => record.command_name !== "work.accept"));
 expectRejected("wrong acceptance", valid, (value) => { value.work.acceptance_event_id = "trust-event:wrong"; });
 expectRejected("duplicate acceptance", [...valid, clone(valid[2])]);
+expectRejected("wrong accepted projection TeamRun", clone(valid).map((record, index) => {
+  if (index === 2) record.operation.resulting_projection.team_run_id = "team-run-foreign";
+  return record;
+}), () => {}, /accepted projection TeamRun mismatch/u);
 expectRejected("wrong identity", valid, (value) => { value.work.acceptance_actor_agent_member_id = "member:wrong"; });
 expectRejected("wrong Work version", valid, (value) => { value.work.accepted_version = 5; });
 expectRejected("wrong AgentSession member", valid, (value) => { value.sessions[0].agent_member_id = "member:wrong"; });

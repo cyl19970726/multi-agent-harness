@@ -37,21 +37,25 @@ records before claiming coding dogfood:
 
 ```bash
 pnpm verify:agent-team-dogfood -- /path/to/evidence.json \
-  --trust-ledger /path/to/agentfirm_trust_operations.jsonl
+  --trust-ledger /path/to/agentfirm_trust_operations.jsonl \
+  --expected-execution-space-id <trusted-execution-space-id>
 ```
 
 The evidence schema is
 `schemas/agent-team-dogfood/evidence.schema.json`; canonical ledger examples and
 adversarial cases are indexed by
 `schemas/agent-team-dogfood/fixtures/canonical-ledger/manifest.json`. For
-`coding_dogfood`, `--trust-ledger` is required and identifies the current
-Execution Space's canonical `agentfirm_trust_operations.jsonl`. The verifier
-fails closed unless it finds exactly one matching WorkReport, independent Pass
-review Message, Host acceptance event, and native-session binding for each
-evidenced AgentSession. Those records must agree on the evidence bundle's exact
-Work, Work version, candidate revision, AgentMember identities, TeamRun,
-provider, AgentSession, and native-session ids. Missing, malformed, foreign,
-wrong, or ambiguous records fail verification.
+`coding_dogfood`, both options are required. `--trust-ledger` identifies the
+current Execution Space's canonical `agentfirm_trust_operations.jsonl`, while
+`--expected-execution-space-id` must come from the trusted Execution Space
+selection that located the ledger, never from the ledger contents or path. The
+verifier fails closed unless it finds exactly one matching WorkReport,
+independent Pass review Message, Host acceptance event, and native-session
+binding for each evidenced AgentSession. Those records must agree on the
+evidence bundle's exact Work, Work version, candidate revision, AgentTeam,
+AgentMember identities, TeamRun, provider, AgentSession, and native-session
+ids. Missing, malformed, foreign, wrong, or ambiguous records fail
+verification.
 
 The ledger is append-only coordination evidence, so unrelated complete rows do
 not invalidate an exact match. Read only complete newline-terminated frames:
