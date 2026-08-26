@@ -257,6 +257,9 @@ if [[ "${MODE}" == "check" ]]; then
 fi
 
 acquire_bin_link_lock
+mkdir -p "${STATE_BASE}/installations"
+INSTALLED_AT="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+STATE_FILE="${STATE_BASE}/installations/${INSTALLED_AT//:/-}-${VERSION}.json"
 prepare_bin_link_publication
 
 echo
@@ -271,9 +274,7 @@ VERSION_BIN="${VERSION_DIR}/harness"
 MARKETPLACE_SNAPSHOT="${VERSION_DIR}/marketplace"
 CLAUDE_RUNNER_INSTALL="${VERSION_DIR}/apps/claude-member-runner"
 DEEPSEEK_RUNNER_INSTALL="${VERSION_DIR}/apps/deepseek-member-runner"
-mkdir -p "${VERSION_DIR}" "$(dirname "${BIN_LINK}")" "${STATE_BASE}/installations"
-INSTALLED_AT="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
-STATE_FILE="${STATE_BASE}/installations/${INSTALLED_AT//:/-}-${VERSION}.json"
+mkdir -p "${VERSION_DIR}" "$(dirname "${BIN_LINK}")"
 APPLY_IN_PROGRESS="true"
 install -m 0755 "${REPO_ROOT}/target/debug/firm" "${VERSION_BIN}"
 

@@ -67,6 +67,11 @@ function createFixture() {
 
   write(join(fakeBin, "cargo"), "#!/bin/sh\nexit 0\n", true);
   write(
+    join(fakeBin, "mkdir"),
+    "#!/bin/sh\n/bin/mkdir \"$@\" || exit $?\nlast=\nfor arg in \"$@\"; do last=$arg; done\ncase \"$last\" in\n  *.star-harness-install.lock)\n    if [ \"${FAKE_BLOCK_LOCK_ON_ACQUIRE:-0}\" = 1 ]; then touch \"$last/residual\"; fi\n    ;;\nesac\n",
+    true,
+  );
+  write(
     join(fakeBin, "npm"),
     "#!/bin/sh\nif [ \"${FAKE_FAIL_BEFORE_PUBLICATION:-0}\" = 1 ]; then exit 41; fi\nexit 0\n",
     true,
@@ -144,6 +149,20 @@ withFixture((fixture) => {
   assert.notEqual(result.status, 0, "a pre-existing regular binary must be refused");
   assert.equal(readFileSync(fixture.binLink, "utf8"), original);
   assert.equal(lstatSync(fixture.binLink).isSymbolicLink(), false);
+});
+
+withFixture((fixture) => {
+  const original = "owned by user\n";
+  write(fixture.binLink, original);
+  const result = runApply(fixture, { FAKE_BLOCK_LOCK_ON_ACQUIRE: "1" });
+  assert.equal(result.status, 1);
+  assert.equal(readFileSync(fixture.binLink, "utf8"), original);
+  const state = readFailureState(fixture);
+  assert.equal(state.status, "failed_with_install_lock_residual");
+  assert.equal(state.binary_rollback_status, "failed_before_binary_publication");
+  assert.equal(state.install_lock_status, "release_failed");
+  assert.equal(state.original_exit_status, 1);
+  assert.equal(state.final_exit_status, 1);
 });
 
 withFixture((fixture) => {
