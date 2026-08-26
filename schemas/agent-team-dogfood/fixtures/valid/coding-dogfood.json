@@ -1,0 +1,48 @@
+{
+  "schema_version": "agentfirm.agent_team_dogfood_evidence.v1",
+  "scenario_id": "fixture-coding-dogfood",
+  "scenario_class": "coding_dogfood",
+  "claim": "A managed Codex Host and Member completed a real repository change.",
+  "team": {
+    "agent_team_id": "team-fixture",
+    "team_run_id": "team-run-fixture",
+    "host_agent_member_id": "host-fixture",
+    "implementer_agent_member_id": "member-fixture"
+  },
+  "revision": {
+    "base": "1111111111111111111111111111111111111111",
+    "candidate": "2222222222222222222222222222222222222222",
+    "changed_files": ["docs/example.md"],
+    "check_refs": ["check:docs"]
+  },
+  "work": {
+    "work_id": "work-fixture",
+    "work_report_id": "work-report-fixture",
+    "review_message_id": "message-fixture",
+    "reviewer_agent_member_id": "host-fixture",
+    "acceptance_event_id": "trust-event-fixture",
+    "acceptance_actor_agent_member_id": "host-fixture",
+    "accepted_version": 4,
+    "phase": "closed",
+    "resolution": "accepted"
+  },
+  "sessions": [
+    {
+      "agent_member_id": "host-fixture",
+      "provider": "codex",
+      "agent_session_id": "agent-session-host",
+      "native_session_id": "native-host",
+      "tool_started": 2,
+      "tool_terminal": 2
+    },
+    {
+      "agent_member_id": "member-fixture",
+      "provider": "codex",
+      "agent_session_id": "agent-session-member",
+      "native_session_id": "native-member",
+      "tool_started": 4,
+      "tool_terminal": 4
+    }
+  ],
+  "transcript_persisted_to_harness_store": false
+}

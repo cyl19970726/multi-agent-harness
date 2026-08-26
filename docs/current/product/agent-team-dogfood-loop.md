@@ -17,6 +17,40 @@ implementation-bound remainder below.
 
 ## Implementation-bound invariants
 
+### Name the claim before running it
+
+Every live scenario declares exactly one class before launch:
+
+- `coordination_canary` proves one bounded coordination, authority, delivery,
+  or lifecycle claim. A read-only SHA check, echo, no-edit task, or provider
+  receipt can be valid here, but the completion report must name the focused
+  claim and its limitations. It is never evidence that an Agent Team can
+  perform repository development.
+- `coding_dogfood` proves real coding delivery. It requires a changed candidate
+  revision, at least one changed file and one real check, a canonical Member
+  WorkReport, independent review by an AgentMember other than the implementer,
+  exact Host acceptance, and provider-native evidence containing both a tool
+  start and terminal tool result for the implementer.
+
+Validate the response-local evidence bundle before claiming coding dogfood:
+
+```bash
+pnpm verify:agent-team-dogfood -- /path/to/evidence.json
+```
+
+The evidence schema is
+`schemas/agent-team-dogfood/evidence.schema.json`. The verifier rejects a
+no-edit candidate, a same-revision candidate, missing WorkReport/review/Host
+acceptance, an implementer Session without terminal tool evidence, or changed
+files that do not exactly match Git's base-to-candidate diff. It does
+not persist provider-native content: the bundle carries only exact Session ids
+and event counts, while the provider-native store remains transcript authority.
+
+Passing a coordination canary can close only its focused claim. A Task or
+report may say `coding_dogfood` or “full Agent Team dogfood” only after the
+coding evidence verifier passes against the exact candidate and durable Team
+records.
+
 - Known-baseline gates before a dogfood run:
 
   ```bash

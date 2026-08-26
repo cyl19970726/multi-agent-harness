@@ -1,0 +1,106 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentfirm.dev/schemas/agent-team-dogfood/evidence.schema.json",
+  "title": "Agent Team dogfood evidence",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "scenario_id",
+    "scenario_class",
+    "claim",
+    "team",
+    "sessions",
+    "transcript_persisted_to_harness_store"
+  ],
+  "properties": {
+    "schema_version": {"const": "agentfirm.agent_team_dogfood_evidence.v1"},
+    "scenario_id": {"type": "string", "minLength": 1},
+    "scenario_class": {"enum": ["coordination_canary", "coding_dogfood"]},
+    "claim": {"type": "string", "minLength": 1},
+    "limitations": {"type": "array", "items": {"type": "string", "minLength": 1}, "uniqueItems": true},
+    "team": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["agent_team_id", "team_run_id", "host_agent_member_id", "implementer_agent_member_id"],
+      "properties": {
+        "agent_team_id": {"type": "string", "minLength": 1},
+        "team_run_id": {"type": "string", "minLength": 1},
+        "host_agent_member_id": {"type": "string", "minLength": 1},
+        "implementer_agent_member_id": {"type": "string", "minLength": 1}
+      }
+    },
+    "revision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["base", "candidate", "changed_files", "check_refs"],
+      "properties": {
+        "base": {"type": "string", "pattern": "^[0-9a-f]{40,64}$"},
+        "candidate": {"type": "string", "pattern": "^[0-9a-f]{40,64}$"},
+        "changed_files": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+        "check_refs": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}}
+      }
+    },
+    "work": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "work_id",
+        "work_report_id",
+        "review_message_id",
+        "reviewer_agent_member_id",
+        "acceptance_event_id",
+        "acceptance_actor_agent_member_id",
+        "accepted_version",
+        "phase",
+        "resolution"
+      ],
+      "properties": {
+        "work_id": {"type": "string", "minLength": 1},
+        "work_report_id": {"type": "string", "minLength": 1},
+        "review_message_id": {"type": "string", "minLength": 1},
+        "reviewer_agent_member_id": {"type": "string", "minLength": 1},
+        "acceptance_event_id": {"type": "string", "minLength": 1},
+        "acceptance_actor_agent_member_id": {"type": "string", "minLength": 1},
+        "accepted_version": {"type": "integer", "minimum": 1},
+        "phase": {"const": "closed"},
+        "resolution": {"const": "accepted"}
+      }
+    },
+    "sessions": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "agent_member_id",
+          "provider",
+          "agent_session_id",
+          "native_session_id",
+          "tool_started",
+          "tool_terminal"
+        ],
+        "properties": {
+          "agent_member_id": {"type": "string", "minLength": 1},
+          "provider": {"type": "string", "minLength": 1},
+          "agent_session_id": {"type": "string", "minLength": 1},
+          "native_session_id": {"type": "string", "minLength": 1},
+          "tool_started": {"type": "integer", "minimum": 0},
+          "tool_terminal": {"type": "integer", "minimum": 0}
+        }
+      }
+    },
+    "transcript_persisted_to_harness_store": {"const": false}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"scenario_class": {"const": "coordination_canary"}}},
+      "then": {"required": ["limitations"], "properties": {"limitations": {"minItems": 1}}}
+    },
+    {
+      "if": {"properties": {"scenario_class": {"const": "coding_dogfood"}}},
+      "then": {"required": ["revision", "work"], "properties": {"sessions": {"minItems": 2}}}
+    }
+  ]
+}
