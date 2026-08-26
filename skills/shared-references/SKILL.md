@@ -41,7 +41,7 @@ top-level execution driver:
 
 Never activate a native Goal and also start ordinary Harness cycles for the
 same Work. Provider Goal satisfaction, Provider turn completion, transport
-receipt, Work submission, and Host acceptance are different facts.
+receipt, Work submission, and Work acceptance are different facts.
 
 ## 3. Provider-Native Session Is Sole Execution Truth
 
@@ -56,12 +56,14 @@ blocker, a result, or a review decision, but it never changes Work owner or
 status. If conversation creates durable follow-up, create self-owned or
 unassigned Work explicitly.
 
-## 5. Host Acceptance Separates Submission From Done
+## 5. Independent Acceptance Separates Submission From Done
 
-Submission moves Work to `review`; it does not imply Host acceptance. A
-reviewer Member may recommend but cannot impersonate the Host's acceptance
-authority. Only explicit Host acceptance moves Work to `done`. Treat `review`
-as non-terminal: submission without Host acceptance must block TeamRun
+Submission moves Work to `review`; it does not imply acceptance. Ordinary
+Member-owned Work requires explicit acceptance by the exact Team Host. A Host
+cannot accept its own Work; one exact active non-owner Team peer in the same
+TeamRun may accept Host-owned Work. That peer cannot accept another Member's
+Work and is not a second durable Reviewer role. Treat `review` as non-terminal:
+submission without the authorized explicit acceptance blocks TeamRun
 completion.
 
 ## 6. Provider-Native Subagents Are Internal Only

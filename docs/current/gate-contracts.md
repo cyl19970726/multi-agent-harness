@@ -61,12 +61,21 @@ only after every dependency has an exact passing evaluation or an active
 authorized waiver. Changing the requirement set revises its fingerprint and
 invalidates stale evaluations.
 
-## Host review
+## Work review authority
 
-A reviewer reports findings and a verdict; only Host authority may accept Work.
+Submission moves Work to `review`; it is never acceptance. Ordinary
+Member-owned Work may be accepted only by the exact Team Host. Host-owned Work
+cannot be self-accepted: one exact active non-owner AgentMember peer in the same
+Team and TeamRun may accept it. The peer must have one active TeamMembership on
+the Team's exact Node and one active canonical MemberRun in that TeamRun. This
+reuses current Team identity and runtime authority; it does not introduce a
+Reviewer role or a second review ledger.
+
+A peer cannot accept another Member's Work. When a peer believes Host-owned Work
+needs changes, it sends a Work-linked Message and the Host revises and resubmits
+the same Work; the existing request-changes mutation remains Host authority.
 Provider completion, CI green status, a PR comment or an unbound historical
-Review is evidence, never acceptance authority. The owner cannot satisfy an
-independent-review requirement by self-attribution.
+Review is evidence, never acceptance authority.
 
 ## Transport parity
 

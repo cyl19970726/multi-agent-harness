@@ -24,6 +24,30 @@ fn provider_native_session_read_is_local_operator_only() {
 }
 
 #[test]
+fn role_view_exposes_host_work_accept_only_to_an_exact_active_peer() {
+    assert_eq!(
+        work_review_disabled(Some("host-a"), "host-a", true, false),
+        Some("Host-owned Work requires one exact active non-owner Team peer reviewer"),
+        "Host owner must not see self-accept as enabled"
+    );
+    assert_eq!(
+        work_review_disabled(Some("host-a"), "host-a", false, true),
+        None,
+        "one exact active peer may accept Host-owned Work"
+    );
+    assert_eq!(
+        work_review_disabled(Some("member-a"), "host-a", true, false),
+        None,
+        "ordinary Member Work remains Host-reviewed"
+    );
+    assert_eq!(
+        work_review_disabled(Some("member-a"), "host-a", false, true),
+        Some("authenticated actor is not this Team's exact Host"),
+        "a peer reviewer cannot accept another Member's Work"
+    );
+}
+
+#[test]
 fn query_is_closed_and_bounded() {
     assert!(Query::parse("/v1/views/global-work?limit=201").is_err());
     assert!(Query::parse("/v1/views/agent-workspace/team-a?session_limit=201").is_err());

@@ -63,9 +63,10 @@ resolution: Accepted | Cancelled | Failed       (exists only at Closed)
   guessed version. `CLAIM_LOST` means someone else owns it; do not perform its
   side effects.
 - **Provider "completed" is not Work "done."** Submission moves Work to
-  `review`; only explicit Host acceptance moves it to `done`. A green fixture,
-  a delivery receipt, or a provider completion status alone is never
-  acceptance.
+  `review`. Ordinary Member Work needs exact Host acceptance; Host-owned Work
+  needs one exact active non-owner Team peer in the same TeamRun because the
+  Host cannot self-accept. A green fixture, delivery receipt, or provider
+  completion status alone is never acceptance.
 - **Assignment never travels by message.** Work assignment is a Work-module
   operation; a Message may explain, ask, or announce — it never changes Work
   owner or status.

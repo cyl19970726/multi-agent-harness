@@ -97,6 +97,18 @@ pub(crate) fn member_view(
         .filter(|w| in_team_scope(w) && assigned_to_member(w))
         .map(|w| work_summary(&facts, team, w))
         .collect::<Vec<_>>();
+    let reviewable_host_works = facts
+        .works
+        .iter()
+        .filter(|work| {
+            in_team_scope(work)
+                && work.team_run_id == team_run_id
+                && work.owner_member_id.as_deref() == Some(team.host_agent_id.as_str())
+                && work.phase == harness_core::WorkPhase::Review
+                && work.condition == harness_core::WorkCondition::Normal
+        })
+        .map(|work| work_summary(&facts, team, work))
+        .collect::<Vec<_>>();
     let member_work_ids = facts
         .works
         .iter()
@@ -138,6 +150,17 @@ pub(crate) fn member_view(
     let mut actions = Vec::new();
     let addressed_generation_is_current =
         run["coordination_status"] == "active" && active_generations == 1;
+    let exact_active_membership = facts
+        .team_memberships
+        .iter()
+        .filter(|membership| {
+            membership["team_id"] == team.id
+                && membership["node_id"] == team.node_id
+                && membership["agent_member_id"] == member_id
+                && membership["state"] == "active"
+        })
+        .count()
+        == 1;
     let team_revision = facts.team_revisions.get(&team.id).copied().unwrap_or(0);
     if addressed_generation_is_current {
         let message_disabled = message_fabric_disabled(&facts, store, team);
@@ -196,6 +219,29 @@ pub(crate) fn member_view(
             actions.push(action("write_failure", "work", id, version, None));
         }
     }
+    for work in &reviewable_host_works {
+        let Some(version) = work["work_revision"].as_u64() else {
+            continue;
+        };
+        let gates = &work["gate_summary"];
+        let gates_satisfied = gates["failed"].as_u64() == Some(0)
+            && gates["pending"].as_u64() == Some(0)
+            && gates["required"].as_u64()
+                == Some(
+                    gates["passed"].as_u64().unwrap_or(0) + gates["waived"].as_u64().unwrap_or(0),
+                );
+        if !work["latest_report_ref"].is_null() && gates_satisfied {
+            let disabled = (!(addressed_generation_is_current && exact_active_membership))
+                .then_some("Host-owned Work requires this exact active Team peer generation");
+            actions.push(action(
+                "accept_work",
+                "work",
+                work["work_id"].as_str().unwrap_or_default(),
+                version,
+                disabled,
+            ));
+        }
+    }
     for w in &pool {
         if !addressed_generation_is_current {
             break;
@@ -230,7 +276,7 @@ pub(crate) fn member_view(
     Ok(envelope(
         "member_workbench",
         &facts,
-        json!({"agent_member":agent_member_summary(&member),"member_run":member_run_summary(run),"my_works":my,"eligible_ready_pool":pool,"unread_messages":unread,"queued_deliveries":record_summaries("message_delivery",queued),"workspace_binding":workspace.as_ref().map(|value|record_summary("workspace_binding",value)),"native_session_health":run["native_session"].get("availability").cloned().unwrap_or(json!("unknown")),"report_history":record_summaries("work_report",records(&facts,|v|v["authored_by"]["id"]==member_id&&v.get("report_revision").is_some()&&v["work_id"].as_str().is_some_and(|id|team_work_ids.contains(id)))),"finding_history":record_summaries("work_finding",records(&facts,|v|v["reported_by"]["id"]==member_id&&v.get("detail_markdown").is_some()&&v["work_id"].as_str().is_some_and(|id|team_work_ids.contains(id)))),"failure_history":record_summaries("failure_analysis",records(&facts,|v|v["reported_by"]["id"]==member_id&&v.get("observed_failure").is_some()&&v["work_id"].as_str().is_some_and(|id|team_work_ids.contains(id)))),"gate_requirements":record_summaries("gate_requirement",records(&facts,|v|v.get("requirement_set_fingerprint").is_some()&&v["work_id"].as_str().is_some_and(|id|team_work_ids.contains(id))&&facts.works.iter().any(|work|v["work_id"]==work.id&&v["work_revision"].as_u64()==Some(work.version)))),"collaboration":collaboration}),
+        json!({"agent_member":agent_member_summary(&member),"member_run":member_run_summary(run),"my_works":my,"reviewable_host_works":reviewable_host_works,"eligible_ready_pool":pool,"unread_messages":unread,"queued_deliveries":record_summaries("message_delivery",queued),"workspace_binding":workspace.as_ref().map(|value|record_summary("workspace_binding",value)),"native_session_health":run["native_session"].get("availability").cloned().unwrap_or(json!("unknown")),"report_history":record_summaries("work_report",records(&facts,|v|v["authored_by"]["id"]==member_id&&v.get("report_revision").is_some()&&v["work_id"].as_str().is_some_and(|id|team_work_ids.contains(id)))),"finding_history":record_summaries("work_finding",records(&facts,|v|v["reported_by"]["id"]==member_id&&v.get("detail_markdown").is_some()&&v["work_id"].as_str().is_some_and(|id|team_work_ids.contains(id)))),"failure_history":record_summaries("failure_analysis",records(&facts,|v|v["reported_by"]["id"]==member_id&&v.get("observed_failure").is_some()&&v["work_id"].as_str().is_some_and(|id|team_work_ids.contains(id)))),"gate_requirements":record_summaries("gate_requirement",records(&facts,|v|v.get("requirement_set_fingerprint").is_some()&&v["work_id"].as_str().is_some_and(|id|team_work_ids.contains(id))&&facts.works.iter().any(|work|v["work_id"]==work.id&&v["work_revision"].as_u64()==Some(work.version)))),"collaboration":collaboration}),
         vec![],
         actions,
     ))

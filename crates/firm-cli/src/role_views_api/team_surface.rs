@@ -1,5 +1,19 @@
 use super::*;
 
+pub(crate) fn work_review_disabled(
+    owner_member_id: Option<&str>,
+    host_member_id: &str,
+    exact_host_identity: bool,
+    exact_active_peer_reviewer: bool,
+) -> Option<&'static str> {
+    if owner_member_id == Some(host_member_id) {
+        (!exact_active_peer_reviewer)
+            .then_some("Host-owned Work requires one exact active non-owner Team peer reviewer")
+    } else {
+        (!exact_host_identity).then_some("authenticated actor is not this Team's exact Host")
+    }
+}
+
 pub(crate) fn team_view(
     space_id: &str,
     store: &HarnessStore,
@@ -290,6 +304,7 @@ pub(crate) fn team_view(
         };
         let phase = w["phase"].as_str().unwrap_or("unknown");
         let condition = w["condition"].as_str().unwrap_or("unknown");
+        let owner_id = w["owner_actor_ref"]["id"].as_str();
         let assigned = !w["owner_actor_ref"].is_null();
         if phase == "open" && condition == "normal" && !assigned {
             actions.push(action("assign_work", "work", id, version, disabled));
@@ -299,6 +314,8 @@ pub(crate) fn team_view(
             actions.push(action("release_work", "work", id, version, disabled));
         }
         if phase == "review" && condition == "normal" {
+            let review_disabled =
+                work_review_disabled(owner_id, &team.host_agent_id, host_authorized, false);
             actions.push(action("request_changes", "work", id, version, disabled));
             if !w["latest_report_ref"].is_null() {
                 actions.push(action(
@@ -318,7 +335,7 @@ pub(crate) fn team_view(
                             + gates["waived"].as_u64().unwrap_or(0),
                     );
             if !w["latest_report_ref"].is_null() && gates_satisfied {
-                actions.push(action("accept_work", "work", id, version, disabled));
+                actions.push(action("accept_work", "work", id, version, review_disabled));
             }
         }
         if phase != "closed" {

@@ -51,7 +51,7 @@ flowchart TB
 | Agent Teams and Membership | durable Team identity, immutable `node_id` placement, roster generations, Host membership | provider execution lifecycle, a second agent identity |
 | Agent Team Runs | TeamRun/MemberRun projections, attempts, lineage | a provider process, a provider effect authorization |
 | Team Supervision | one current Supervisor generation per run: delivery claims, live controls, reconnect | Work authority, Message authorship |
-| Work kernel | durable responsibility, three-axis lifecycle, cycle-safe hard dependencies, derived readiness, ordered WorkOperations, submission and Host acceptance | persistence mechanics, authored conversation, runtime control, provider transcripts |
+| Work kernel | durable responsibility, three-axis lifecycle, cycle-safe hard dependencies, derived readiness, ordered WorkOperations, submission and explicit acceptance | persistence mechanics, authored conversation, runtime control, provider transcripts |
 | Application services | core-facing `WorkPersistence` port and generic `WorkApplication<P>` use cases; typed ViewerContext principal/facts/projection policy; typed Runtime Recovery action policy and persistence port; separate runtime policy may use `firm-runtime-contract` | concrete Store/CLI/Provider imports, HTTP/JSON parsing, or transport-specific policy |
 | Work store | application-port implementation, atomic append/CAS/projections/outbox | lifecycle/readiness policy or CLI dependency |
 | CLI composition | concrete Store wiring plus HTTP/Role Action/RoleView adapters | a second Work use-case, ViewerContext authority/projection implementation, or Runtime Recovery policy implementation |
@@ -69,7 +69,7 @@ current `TeamSupervisorLease` generation owns delivery claims and live controls,
 while one selected execution driver owns provider cycles for a
 MemberRun/native session. Explicitly separate Sessions may share a cwd. A provider receipt proves
 transport acceptance, not semantic completion. Provider Goal satisfaction
-never implies Host acceptance. See
+never implies Work acceptance. See
 [Member Continuation Model](member-continuation-model.md) and
 [ADR 0041](../../decisions/0041-provider-neutral-member-continuation.md), plus
 [ADR 0044](../../decisions/0044-durable-team-supervision-and-typed-mail.md) for
