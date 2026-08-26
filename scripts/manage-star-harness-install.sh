@@ -24,28 +24,63 @@ PREVIOUS_BIN_PRESENT="false"
 PREVIOUS_BIN_IDENTITY=""
 PREVIOUS_BIN_OBJECT_IDENTITY=""
 BIN_LINK_PUBLICATION_ARMED="false"
+PUBLICATION_OBSERVED_LIVE="false"
 PUBLISHED_BIN_TARGET=""
 PUBLISHED_BIN_IDENTITY=""
 ROLLBACK_BINARY_STATUS="failed_before_binary_publication"
 STATE_FILE=""
 BIN_LINK_LOCK_DIR="${BIN_LINK}.star-harness-install.lock"
-PREVIOUS_BIN_WITNESS="${BIN_LINK_LOCK_DIR}/previous-link-witness"
-PUBLISHED_BIN_STAGED="${BIN_LINK_LOCK_DIR}/published-link-staged"
-PUBLISHED_BIN_WITNESS="${BIN_LINK_LOCK_DIR}/published-link-witness"
-DISPLACED_BIN_ENTRY="${BIN_LINK_LOCK_DIR}/displaced-live-entry"
-ROLLBACK_BIN_ENTRY="${BIN_LINK_LOCK_DIR}/rollback-live-entry"
+BIN_LINK_TRANSACTION_DIR="${BIN_LINK_LOCK_DIR}.txn-$$-${RANDOM}-${RANDOM}"
+PREVIOUS_BIN_WITNESS="${BIN_LINK_TRANSACTION_DIR}/previous-link-witness"
+PUBLISHED_BIN_STAGED="${BIN_LINK_TRANSACTION_DIR}/published-link-staged"
+PUBLISHED_BIN_WITNESS="${BIN_LINK_TRANSACTION_DIR}/published-link-witness"
+DISPLACED_BIN_ENTRY="${BIN_LINK_TRANSACTION_DIR}/displaced-live-entry"
+ROLLBACK_BIN_ENTRY="${BIN_LINK_TRANSACTION_DIR}/rollback-live-entry"
+INSTALL_FS_HELPER="${BIN_LINK_TRANSACTION_DIR}/install-fs-helper"
+INSTALL_FS_HELPER_REAL="${INSTALL_FS_HELPER}.real"
+INSTALL_FS_HELPER_SOURCE="${REPO_ROOT}/scripts/star-harness-install-fs.rs"
 BIN_LINK_LOCK_OWNED="false"
 BIN_LINK_LOCK_STATUS="not_acquired"
 PRESERVE_BIN_LINK_TRANSACTION="false"
+LOCK_ACQUIRE_CRITICAL="false"
+PENDING_INSTALL_SIGNAL=0
 
 acquire_bin_link_lock() {
+  local transaction_status=0
+  local lock_status=0
   mkdir -p "$(dirname "${BIN_LINK}")"
-  if ! mkdir "${BIN_LINK_LOCK_DIR}" 2>/dev/null; then
+  LOCK_ACQUIRE_CRITICAL="true"
+  mkdir "${BIN_LINK_TRANSACTION_DIR}" 2>/dev/null || transaction_status=$?
+  LOCK_ACQUIRE_CRITICAL="false"
+  if [[ "${PENDING_INSTALL_SIGNAL}" -ne 0 ]]; then
+    local pending_signal="${PENDING_INSTALL_SIGNAL}"
+    PENDING_INSTALL_SIGNAL=0
+    rmdir "${BIN_LINK_TRANSACTION_DIR}" 2>/dev/null || true
+    exit "${pending_signal}"
+  fi
+  if [[ "${transaction_status}" -ne 0 || ! -d "${BIN_LINK_TRANSACTION_DIR}" ]]; then
+    echo "failed to create Harness binary publication transaction directory: ${BIN_LINK_TRANSACTION_DIR}" >&2
+    return 1
+  fi
+
+  LOCK_ACQUIRE_CRITICAL="true"
+  node -e 'require("node:fs").symlinkSync(process.argv[1], process.argv[2])' \
+    "${BIN_LINK_TRANSACTION_DIR}" "${BIN_LINK_LOCK_DIR}" 2>/dev/null || lock_status=$?
+  if [[ -L "${BIN_LINK_LOCK_DIR}" && "$(readlink "${BIN_LINK_LOCK_DIR}" 2>/dev/null || true)" == "${BIN_LINK_TRANSACTION_DIR}" ]]; then
+    BIN_LINK_LOCK_OWNED="true"
+    BIN_LINK_LOCK_STATUS="held"
+  fi
+  LOCK_ACQUIRE_CRITICAL="false"
+  if [[ "${PENDING_INSTALL_SIGNAL}" -ne 0 ]]; then
+    local pending_signal="${PENDING_INSTALL_SIGNAL}"
+    PENDING_INSTALL_SIGNAL=0
+    exit "${pending_signal}"
+  fi
+  if [[ "${lock_status}" -ne 0 || "${BIN_LINK_LOCK_OWNED}" != "true" ]]; then
+    rmdir "${BIN_LINK_TRANSACTION_DIR}" 2>/dev/null || true
     echo "Harness binary publication is already owned by another installer: ${BIN_LINK_LOCK_DIR}" >&2
     return 1
   fi
-  BIN_LINK_LOCK_OWNED="true"
-  BIN_LINK_LOCK_STATUS="held"
 }
 
 release_bin_link_lock() {
@@ -61,7 +96,9 @@ release_bin_link_lock() {
       "${PUBLISHED_BIN_STAGED}" \
       "${PUBLISHED_BIN_WITNESS}" \
       "${DISPLACED_BIN_ENTRY}" \
-      "${ROLLBACK_BIN_ENTRY}"; do
+      "${ROLLBACK_BIN_ENTRY}" \
+      "${INSTALL_FS_HELPER}" \
+      "${INSTALL_FS_HELPER_REAL}"; do
       if [[ -e "${artifact}" || -L "${artifact}" ]]; then
         if ! unlink "${artifact}"; then
           BIN_LINK_LOCK_STATUS="release_failed"
@@ -70,10 +107,17 @@ release_bin_link_lock() {
         fi
       fi
     done
-    if ! rmdir "${BIN_LINK_LOCK_DIR}"; then
+    if ! rmdir "${BIN_LINK_TRANSACTION_DIR}"; then
       BIN_LINK_LOCK_STATUS="release_failed"
-      echo "failed to release Harness binary publication lock: ${BIN_LINK_LOCK_DIR}" >&2
+      echo "failed to remove Harness binary publication transaction directory: ${BIN_LINK_TRANSACTION_DIR}" >&2
       return 1
+    fi
+    if ! unlink "${BIN_LINK_LOCK_DIR}"; then
+      if [[ -e "${BIN_LINK_LOCK_DIR}" || -L "${BIN_LINK_LOCK_DIR}" ]]; then
+        BIN_LINK_LOCK_STATUS="release_failed"
+        echo "failed to release Harness binary publication lock: ${BIN_LINK_LOCK_DIR}" >&2
+        return 1
+      fi
     fi
     BIN_LINK_LOCK_OWNED="false"
     BIN_LINK_LOCK_STATUS="released"
@@ -118,9 +162,7 @@ path_matches_previous_snapshot() {
 }
 
 link_without_replace() {
-  # BSD and GNU ln both use -P to hard-link the symlink object itself. Without
-  # -f this is an atomic no-replace operation at the destination path.
-  ln -P "$1" "$2"
+  "${INSTALL_FS_HELPER}" hard-link-no-replace "$1" "$2"
 }
 
 move_to_transaction_entry() {
@@ -216,6 +258,15 @@ publish_bin_link() {
         return "${displace_status}"
       fi
       return 1
+    elif [[ ! -e "${BIN_LINK}" && ! -L "${BIN_LINK}" ]]; then
+      if ! restore_previous_without_overwrite; then
+        PRESERVE_BIN_LINK_TRANSACTION="true"
+        echo "failed to restore the previous Harness link after its uncertain displacement; ownership evidence is preserved in ${BIN_LINK_LOCK_DIR}" >&2
+      fi
+      if [[ "${displace_status}" -ne 0 ]]; then
+        return "${displace_status}"
+      fi
+      return 1
     else
       echo "refusing to publish after the Harness path changed concurrently" >&2
       if [[ "${displace_status}" -ne 0 ]]; then
@@ -227,6 +278,7 @@ publish_bin_link() {
 
   link_without_replace "${PUBLISHED_BIN_STAGED}" "${BIN_LINK}" || publish_status=$?
   if path_matches_object "${BIN_LINK}" "${PUBLISHED_BIN_IDENTITY}" "${PUBLISHED_BIN_TARGET}"; then
+    PUBLICATION_OBSERVED_LIVE="true"
     if [[ "${publish_status}" -ne 0 ]]; then
       return "${publish_status}"
     fi
@@ -269,11 +321,16 @@ rollback_published_bin_link() {
       ROLLBACK_BINARY_STATUS="failed_before_binary_publication"
       return
     fi
-    ROLLBACK_BINARY_STATUS="failed_after_binary_publication_link_changed"
+    if [[ "${PUBLICATION_OBSERVED_LIVE}" == "true" ]]; then
+      ROLLBACK_BINARY_STATUS="failed_after_binary_publication_link_changed"
+    else
+      ROLLBACK_BINARY_STATUS="failed_before_binary_publication_path_changed"
+    fi
     echo "preserved changed Harness path ${BIN_LINK}; it is no longer owned by this install" >&2
     return
   fi
 
+  PUBLICATION_OBSERVED_LIVE="true"
   move_to_transaction_entry "${BIN_LINK}" "${ROLLBACK_BIN_ENTRY}" || true
   if path_matches_object "${ROLLBACK_BIN_ENTRY}" "${PUBLISHED_BIN_IDENTITY}" "${PUBLISHED_BIN_TARGET}"; then
     :
@@ -292,6 +349,20 @@ rollback_published_bin_link() {
     PRESERVE_BIN_LINK_TRANSACTION="true"
     echo "failed to quarantine published Harness link ${BIN_LINK}; ownership evidence remains residual" >&2
     return 1
+  elif [[ "${PREVIOUS_BIN_PRESENT}" == "true" && ! -e "${BIN_LINK}" && ! -L "${BIN_LINK}" ]]; then
+    if restore_previous_without_overwrite; then
+      ROLLBACK_BINARY_STATUS="failed_and_previous_binary_restored"
+      echo "restored Harness link to ${PREVIOUS_BIN}" >&2
+      return
+    fi
+    ROLLBACK_BINARY_STATUS="failed_after_binary_publication_restore_failed"
+    PRESERVE_BIN_LINK_TRANSACTION="true"
+    echo "failed to restore Harness link ${BIN_LINK}; ownership evidence remains residual" >&2
+    return 1
+  elif [[ "${PREVIOUS_BIN_PRESENT}" != "true" && ! -e "${BIN_LINK}" && ! -L "${BIN_LINK}" ]]; then
+    ROLLBACK_BINARY_STATUS="failed_and_created_binary_link_removed"
+    echo "removed incomplete Harness link ${BIN_LINK}" >&2
+    return
   else
     ROLLBACK_BINARY_STATUS="failed_after_binary_publication_link_changed"
     echo "preserved concurrently changed Harness path ${BIN_LINK}" >&2
@@ -374,6 +445,12 @@ finish_install() {
 }
 
 handle_install_signal() {
+  if [[ "${LOCK_ACQUIRE_CRITICAL}" == "true" ]]; then
+    if [[ "${PENDING_INSTALL_SIGNAL}" -eq 0 ]]; then
+      PENDING_INSTALL_SIGNAL=$1
+    fi
+    return 0
+  fi
   trap '' HUP INT TERM
   exit "$1"
 }
@@ -383,7 +460,13 @@ trap 'handle_install_signal 129' HUP
 trap 'handle_install_signal 130' INT
 trap 'handle_install_signal 143' TERM
 
-for command_name in node npm cargo codex claude; do
+if [[ "${MODE}" == "apply" ]]; then
+  mkdir -p "${STATE_BASE}/installations"
+  INSTALLED_AT="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+  STATE_FILE="${STATE_BASE}/installations/${INSTALLED_AT//:/-}-unknown-$$.json"
+fi
+
+for command_name in node npm cargo rustc codex claude; do
   if ! command -v "${command_name}" >/dev/null 2>&1; then
     echo "missing required command: ${command_name}" >&2
     exit 1
@@ -450,11 +533,7 @@ if [[ "${MODE}" == "check" ]]; then
   exit 0
 fi
 
-mkdir -p "${STATE_BASE}/installations"
-INSTALLED_AT="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
-STATE_FILE="${STATE_BASE}/installations/${INSTALLED_AT//:/-}-${VERSION}-$$.json"
 acquire_bin_link_lock
-prepare_bin_link_publication
 
 echo
 echo "Building Harness..."
@@ -462,6 +541,8 @@ echo "Building Harness..."
   cd "${REPO_ROOT}"
   cargo build -p firm-cli
 )
+rustc --edition=2021 "${INSTALL_FS_HELPER_SOURCE}" -o "${INSTALL_FS_HELPER}"
+prepare_bin_link_publication
 
 VERSION_DIR="${INSTALL_BASE}/${VERSION}"
 VERSION_BIN="${VERSION_DIR}/harness"
