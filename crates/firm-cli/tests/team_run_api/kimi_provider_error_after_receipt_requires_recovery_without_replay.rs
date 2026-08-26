@@ -46,24 +46,6 @@ fn kimi_provider_error_after_receipt_requires_recovery_without_replay() {
     );
     assert_eq!(status, 202, "body: {started}");
     let store = HarnessStore::new(home.spaces_dir().join(&project_id));
-    let initial_supervisor_deadline = std::time::Instant::now() + Duration::from_secs(10);
-    let initial_supervisor = loop {
-        if let Some(lease) = store
-            .latest_team_supervisor_lease(&run_id)
-            .expect("initial Supervisor lease")
-            .filter(|lease| {
-                lease.status == harness_core::TeamSupervisorLeaseStatus::Active
-                    && lease.expires_unix_ms > current_unix_ms()
-            })
-        {
-            break lease;
-        }
-        assert!(
-            std::time::Instant::now() < initial_supervisor_deadline,
-            "initial Supervisor authority did not become current"
-        );
-        std::thread::sleep(Duration::from_millis(20));
-    };
 
     let mut recovery_required = false;
     for _ in 0..300 {
@@ -133,6 +115,17 @@ fn kimi_provider_error_after_receipt_requires_recovery_without_replay() {
         harness_core::agentfirm_api::RuntimePostconditionStatus::Satisfied,
         "the prompt receipt proves StartCycle independently of terminal provider failure"
     );
+    let (initial_supervisor_id, initial_supervisor_generation) = match &dispatches[0]
+        .binding
+        .target_driver
+    {
+        harness_core::agentfirm_api::RuntimeDriverRef::TeamSupervisor {
+            team_run_id,
+            team_supervisor_id,
+            team_supervisor_generation,
+        } if team_run_id == &run_id => (team_supervisor_id.clone(), *team_supervisor_generation),
+        other => panic!("StartCycle must bind the exact initial TeamSupervisor, got {other:?}"),
+    };
 
     let (_, before_recovery) = serve.get_json("/v1/snapshot");
     let blocked_member = before_recovery["member_runs"]
@@ -192,48 +185,50 @@ fn kimi_provider_error_after_receipt_requires_recovery_without_replay() {
     );
     let blocked_session_id = blocked_sessions[0].id.clone();
 
-    let exact_current_session_bound = |expected_residency| {
-        let Some(lease) = store
-            .latest_team_supervisor_lease(&run_id)
-            .expect("current Supervisor lease during recovery")
-        else {
-            return false;
+    let exact_current_session_bound =
+        |allowed_residencies: &[harness_core::agentfirm_api::RuntimeResidency]| {
+            let Some(lease) = store
+                .latest_team_supervisor_lease(&run_id)
+                .expect("current Supervisor lease during recovery")
+            else {
+                return false;
+            };
+            lease.status == harness_core::TeamSupervisorLeaseStatus::Active
+                && lease.expires_unix_ms > current_unix_ms().saturating_add(1_000)
+                && (lease.supervisor_id != initial_supervisor_id
+                    || lease.generation != initial_supervisor_generation)
+                && store
+                    .fabric_agent_sessions(&current_space_id(&home))
+                    .expect("AgentSessions during recovery")
+                    .into_iter()
+                    .any(|session| {
+                        session.id == blocked_session_id
+                            && session.agent_member_id == blocked_row.agent_member_id
+                            && session.execution_space_id == lease.execution_space_id
+                            && session.node_id == lease.node_id
+                            && session.node_daemon_id == lease.node_daemon_id
+                            && session.node_daemon_generation == lease.node_daemon_generation
+                            && allowed_residencies
+                                .contains(&session.control_state.runtime_residency)
+                            && session
+                                .native_session_ref
+                                .as_ref()
+                                .is_some_and(|native| native.native_session_id == native_session_id)
+                            && matches!(
+                                &session.control_state.driver_ref,
+                                harness_core::agentfirm_api::RuntimeDriverRef::TeamSupervisor {
+                                    team_run_id,
+                                    team_supervisor_id,
+                                    team_supervisor_generation,
+                                } if team_run_id == &run_id
+                                    && team_supervisor_id == &lease.supervisor_id
+                                    && *team_supervisor_generation == lease.generation
+                            )
+                    })
         };
-        lease.status == harness_core::TeamSupervisorLeaseStatus::Active
-            && lease.expires_unix_ms > current_unix_ms().saturating_add(1_000)
-            && (lease.supervisor_id != initial_supervisor.supervisor_id
-                || lease.generation != initial_supervisor.generation)
-            && store
-                .fabric_agent_sessions(&current_space_id(&home))
-                .expect("AgentSessions during recovery")
-                .into_iter()
-                .any(|session| {
-                    session.id == blocked_session_id
-                        && session.agent_member_id == blocked_row.agent_member_id
-                        && session.execution_space_id == lease.execution_space_id
-                        && session.node_id == lease.node_id
-                        && session.node_daemon_id == lease.node_daemon_id
-                        && session.node_daemon_generation == lease.node_daemon_generation
-                        && session.control_state.runtime_residency == expected_residency
-                        && session
-                            .native_session_ref
-                            .as_ref()
-                            .is_some_and(|native| native.native_session_id == native_session_id)
-                        && matches!(
-                            &session.control_state.driver_ref,
-                            harness_core::agentfirm_api::RuntimeDriverRef::TeamSupervisor {
-                                team_run_id,
-                                team_supervisor_id,
-                                team_supervisor_generation,
-                            } if team_run_id == &run_id
-                                && team_supervisor_id == &lease.supervisor_id
-                                && *team_supervisor_generation == lease.generation
-                        )
-                })
-    };
     let close_deadline = std::time::Instant::now() + Duration::from_secs(30);
     loop {
-        if exact_current_session_bound(harness_core::agentfirm_api::RuntimeResidency::Detached) {
+        if exact_current_session_bound(&[harness_core::agentfirm_api::RuntimeResidency::Detached]) {
             break;
         }
         assert!(
@@ -401,7 +396,10 @@ fn kimi_provider_error_after_receipt_requires_recovery_without_replay() {
         resumed_once = acknowledged
             && same_session_idle
             && start_cycles == 2
-            && exact_current_session_bound(harness_core::agentfirm_api::RuntimeResidency::Attached);
+            && exact_current_session_bound(&[
+                harness_core::agentfirm_api::RuntimeResidency::Attached,
+                harness_core::agentfirm_api::RuntimeResidency::Detached,
+            ]);
         if resumed_once {
             break;
         }
