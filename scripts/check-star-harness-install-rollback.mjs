@@ -404,14 +404,12 @@ withFixture((fixture) => {
 
 withFixture((fixture) => {
   const lockPath = `${fixture.binLink}.star-harness-install.lock`;
-  const staleTarget = `${lockPath}.txn-2147483647-dead-owner`;
+  const staleTarget = `${lockPath}.txn-2147483647-deadtoken-1-1`;
   mkdirSync(dirname(lockPath), { recursive: true });
   symlinkSync(staleTarget, lockPath);
-  write(`${staleTarget}.owner`, "2147483647\ndefinitely-not-a-live-start-identity\n");
   const result = runApply(fixture);
   assert.equal(result.status, 0, "a broken lock with proof of a dead exact owner is reconciled");
   assert.equal(existsSync(lockPath), false);
-  assert.equal(existsSync(`${staleTarget}.owner`), false);
   assert.equal(readlinkSync(fixture.binLink), join(fixture.root, "install", "fixture", "harness"));
 });
 

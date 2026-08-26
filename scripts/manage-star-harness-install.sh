@@ -30,20 +30,19 @@ PUBLISHED_BIN_IDENTITY=""
 ROLLBACK_BINARY_STATUS="failed_before_binary_publication"
 STATE_FILE=""
 BIN_LINK_LOCK_DIR="${BIN_LINK}.star-harness-install.lock"
-BIN_LINK_TRANSACTION_DIR="${BIN_LINK_LOCK_DIR}.txn-$$-${RANDOM}-${RANDOM}"
-PREVIOUS_BIN_WITNESS="${BIN_LINK_TRANSACTION_DIR}/previous-link-witness"
-PUBLISHED_BIN_STAGED="${BIN_LINK_TRANSACTION_DIR}/published-link-staged"
-PUBLISHED_BIN_WITNESS="${BIN_LINK_TRANSACTION_DIR}/published-link-witness"
-DISPLACED_BIN_ENTRY="${BIN_LINK_TRANSACTION_DIR}/displaced-live-entry"
-ROLLBACK_BIN_ENTRY="${BIN_LINK_TRANSACTION_DIR}/rollback-live-entry"
-INSTALL_FS_HELPER="${BIN_LINK_TRANSACTION_DIR}/install-fs-helper"
-INSTALL_FS_HELPER_REAL="${INSTALL_FS_HELPER}.real"
+BIN_LINK_TRANSACTION_DIR=""
+PREVIOUS_BIN_WITNESS=""
+PUBLISHED_BIN_STAGED=""
+PUBLISHED_BIN_WITNESS=""
+DISPLACED_BIN_ENTRY=""
+ROLLBACK_BIN_ENTRY=""
+INSTALL_FS_HELPER=""
+INSTALL_FS_HELPER_REAL=""
 INSTALL_FS_HELPER_SOURCE="${REPO_ROOT}/scripts/star-harness-install-fs.rs"
-BIN_LINK_LOCK_STAGED="${BIN_LINK_TRANSACTION_DIR}/lock-staged"
-BIN_LINK_LOCK_RELEASE_ENTRY="${BIN_LINK_TRANSACTION_DIR}/lock-release-entry"
-BIN_LINK_STALE_LOCK_WITNESS="${BIN_LINK_TRANSACTION_DIR}/stale-lock-witness"
-BIN_LINK_STALE_LOCK_ENTRY="${BIN_LINK_TRANSACTION_DIR}/stale-lock-entry"
-BIN_LINK_LOCK_OWNER="${BIN_LINK_TRANSACTION_DIR}.owner"
+BIN_LINK_LOCK_STAGED=""
+BIN_LINK_LOCK_RELEASE_ENTRY=""
+BIN_LINK_STALE_LOCK_WITNESS=""
+BIN_LINK_STALE_LOCK_ENTRY=""
 BIN_LINK_LOCK_OWNED="false"
 BIN_LINK_LOCK_STATUS="not_acquired"
 PRESERVE_BIN_LINK_TRANSACTION="false"
@@ -53,6 +52,13 @@ PENDING_INSTALL_SIGNAL=0
 acquire_bin_link_lock() {
   local transaction_status=0
   local lock_status=0
+  local owner_start_token
+  owner_start_token="$(process_start_token "$$")"
+  if [[ -z "${owner_start_token}" ]]; then
+    echo "failed to resolve the Harness installer lock owner identity" >&2
+    return 1
+  fi
+  initialize_bin_link_transaction_paths "$$" "${owner_start_token}"
   mkdir -p "$(dirname "${BIN_LINK}")"
   LOCK_ACQUIRE_CRITICAL="true"
   mkdir "${BIN_LINK_TRANSACTION_DIR}" 2>/dev/null || transaction_status=$?
@@ -72,13 +78,6 @@ acquire_bin_link_lock() {
     echo "failed to build the Harness installer filesystem helper" >&2
     return 1
   fi
-  local owner_start_identity
-  owner_start_identity="$(process_start_identity "$$")"
-  if [[ -z "${owner_start_identity}" ]]; then
-    echo "failed to resolve the Harness installer lock owner identity" >&2
-    return 1
-  fi
-  printf '%s\n%s\n' "$$" "${owner_start_identity}" >"${BIN_LINK_LOCK_OWNER}"
   ln -s "${BIN_LINK_TRANSACTION_DIR}" "${BIN_LINK_LOCK_STAGED}"
 
   if [[ -e "${BIN_LINK_LOCK_DIR}" || -L "${BIN_LINK_LOCK_DIR}" ]]; then
@@ -154,7 +153,6 @@ release_bin_link_lock() {
       "${BIN_LINK_LOCK_RELEASE_ENTRY}" \
       "${BIN_LINK_STALE_LOCK_WITNESS}" \
       "${BIN_LINK_STALE_LOCK_ENTRY}" \
-      "${BIN_LINK_LOCK_OWNER}" \
       "${INSTALL_FS_HELPER}" \
       "${INSTALL_FS_HELPER_REAL}"; do
       if [[ -e "${artifact}" || -L "${artifact}" ]]; then
@@ -182,7 +180,6 @@ release_bin_link_lock() {
       "${BIN_LINK_LOCK_STAGED}" \
       "${BIN_LINK_STALE_LOCK_WITNESS}" \
       "${BIN_LINK_STALE_LOCK_ENTRY}" \
-      "${BIN_LINK_LOCK_OWNER}" \
       "${INSTALL_FS_HELPER}" \
       "${INSTALL_FS_HELPER_REAL}"; do
       if [[ -e "${artifact}" || -L "${artifact}" ]]; then
@@ -205,6 +202,31 @@ bin_link_identity() {
 
 process_start_identity() {
   LC_ALL=C ps -o lstart= -p "$1" 2>/dev/null
+}
+
+process_start_token() {
+  local identity
+  identity="$(process_start_identity "$1")"
+  [[ -n "${identity}" ]] || return 1
+  identity="${identity//[^[:alnum:]]/_}"
+  printf '%s' "${identity}"
+}
+
+initialize_bin_link_transaction_paths() {
+  local owner_pid=$1
+  local owner_start_token=$2
+  BIN_LINK_TRANSACTION_DIR="${BIN_LINK_LOCK_DIR}.txn-${owner_pid}-${owner_start_token}-${RANDOM}-${RANDOM}"
+  PREVIOUS_BIN_WITNESS="${BIN_LINK_TRANSACTION_DIR}/previous-link-witness"
+  PUBLISHED_BIN_STAGED="${BIN_LINK_TRANSACTION_DIR}/published-link-staged"
+  PUBLISHED_BIN_WITNESS="${BIN_LINK_TRANSACTION_DIR}/published-link-witness"
+  DISPLACED_BIN_ENTRY="${BIN_LINK_TRANSACTION_DIR}/displaced-live-entry"
+  ROLLBACK_BIN_ENTRY="${BIN_LINK_TRANSACTION_DIR}/rollback-live-entry"
+  INSTALL_FS_HELPER="${BIN_LINK_TRANSACTION_DIR}/install-fs-helper"
+  INSTALL_FS_HELPER_REAL="${INSTALL_FS_HELPER}.real"
+  BIN_LINK_LOCK_STAGED="${BIN_LINK_TRANSACTION_DIR}/lock-staged"
+  BIN_LINK_LOCK_RELEASE_ENTRY="${BIN_LINK_TRANSACTION_DIR}/lock-release-entry"
+  BIN_LINK_STALE_LOCK_WITNESS="${BIN_LINK_TRANSACTION_DIR}/stale-lock-witness"
+  BIN_LINK_STALE_LOCK_ENTRY="${BIN_LINK_TRANSACTION_DIR}/stale-lock-entry"
 }
 
 bin_link_object_identity() {
@@ -273,11 +295,10 @@ reconcile_stale_bin_link_lock() {
   local stale_target=""
   local stale_identity=""
   local move_status=0
-  local owner_record=""
   local owner_pid=""
-  local owner_start_identity=""
-  local current_start_identity=""
-  local stale_owner_file=""
+  local owner_start_token=""
+  local current_start_token=""
+  local owner_metadata=""
   if ! link_without_replace "${BIN_LINK_LOCK_DIR}" "${BIN_LINK_STALE_LOCK_WITNESS}" 2>/dev/null; then
     return 1
   fi
@@ -293,26 +314,21 @@ reconcile_stale_bin_link_lock() {
       return 1
       ;;
   esac
-  stale_owner_file="${stale_target}.owner"
-  if [[ ! -f "${stale_owner_file}" ]]; then
+  owner_metadata="${stale_target#"${BIN_LINK_LOCK_DIR}.txn-"}"
+  owner_pid="${owner_metadata%%-*}"
+  owner_metadata="${owner_metadata#*-}"
+  owner_start_token="${owner_metadata%%-*}"
+  if [[ ! "${owner_pid}" =~ ^[0-9]+$ || -z "${owner_start_token}" \
+    || "${owner_metadata}" == "${owner_start_token}" ]]; then
     unlink "${BIN_LINK_STALE_LOCK_WITNESS}" 2>/dev/null || true
     return 1
   fi
-  owner_record="$(<"${stale_owner_file}")"
-  owner_pid="${owner_record%%$'\n'*}"
-  if [[ "${owner_record}" == *$'\n'* ]]; then
-    owner_start_identity="${owner_record#*$'\n'}"
-  fi
-  if [[ ! "${owner_pid}" =~ ^[0-9]+$ || -z "${owner_start_identity}" ]]; then
+  current_start_token="$(process_start_token "${owner_pid}" 2>/dev/null || true)"
+  if [[ "${current_start_token}" == "${owner_start_token}" ]]; then
     unlink "${BIN_LINK_STALE_LOCK_WITNESS}" 2>/dev/null || true
     return 1
   fi
-  current_start_identity="$(process_start_identity "${owner_pid}")"
-  if [[ "${current_start_identity}" == "${owner_start_identity}" ]]; then
-    unlink "${BIN_LINK_STALE_LOCK_WITNESS}" 2>/dev/null || true
-    return 1
-  fi
-  if [[ -z "${current_start_identity}" ]] && kill -0 "${owner_pid}" 2>/dev/null; then
+  if [[ -z "${current_start_token}" ]] && kill -0 "${owner_pid}" 2>/dev/null; then
     unlink "${BIN_LINK_STALE_LOCK_WITNESS}" 2>/dev/null || true
     return 1
   fi
@@ -328,7 +344,6 @@ reconcile_stale_bin_link_lock() {
     fi
     unlink "${BIN_LINK_STALE_LOCK_ENTRY}"
     unlink "${BIN_LINK_STALE_LOCK_WITNESS}"
-    unlink "${stale_owner_file}" 2>/dev/null || true
     return 0
   fi
   if [[ -e "${BIN_LINK_STALE_LOCK_ENTRY}" || -L "${BIN_LINK_STALE_LOCK_ENTRY}" ]]; then
