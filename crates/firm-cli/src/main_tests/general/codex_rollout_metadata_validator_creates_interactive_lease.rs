@@ -8,9 +8,15 @@ fn codex_rollout_metadata_validator_creates_interactive_lease() {
     let sessions = codex_home.join("sessions/2026/08/09");
     std::fs::create_dir_all(&sessions).expect("sessions");
     let session_id = "019f-rollout-bind";
+    let mut rollout =
+        format!("{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"{session_id}\"}}}}\n")
+            .into_bytes();
+    rollout.extend_from_slice(b"{\"type\":\"event_msg\",\"payload\":\"");
+    rollout.extend(std::iter::repeat_n(b'x', 1024 * 1024));
+    rollout.extend_from_slice(b"\"}\n");
     std::fs::write(
         sessions.join(format!("rollout-2026-08-09-{session_id}.jsonl")),
-        format!("{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"{session_id}\"}}}}\n"),
+        rollout,
     )
     .expect("rollout");
     let validator = RuntimeHostSessionValidator::for_codex_home(codex_home);
