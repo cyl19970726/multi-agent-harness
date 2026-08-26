@@ -207,18 +207,20 @@ Member Continuation Model and
 Provider cwd resolves as:
 
 ```text
-MemberRun.provider_cwd_hint > AgentTeamRun.execution_root > project_root
+MemberWorkspaceBinding.canonical_root > AgentTeamRun.execution_root > ProjectBinding.project_root
 ```
 
-It never resolves to `store_root`. Changing cwd changes which project
+The Host assigns the explicit binding; Harness validates and freezes it without
+allocating worktrees or claiming cwd exclusivity. It never resolves to
+`store_root`. Changing cwd changes which project
 instructions, skills, plugins, and MCP configuration Claude discovers and is
 therefore an execution boundary.
 
 Team members currently run with the approved broad tool posture needed for
 unattended development. `owned_paths` is a collaboration and review declaration,
-not an OS containment boundary. Real isolation requires a Git worktree,
-container, or other system boundary. The Host should assign disjoint worktrees
-or owned paths and make integration conflicts explicit.
+not an OS containment boundary. Multiple sessions may share one explicit cwd;
+when isolation is needed, the Host assigns a Git worktree, container, or other
+system boundary and makes integration conflicts explicit.
 
 ## Native session and Desktop
 

@@ -122,14 +122,16 @@ switch the active Execution Space.
 ### Provider cwd precedence
 
 ```text
-MemberRun.provider_cwd_hint
+MemberWorkspaceBinding.canonical_root
   > AgentTeamRun.execution_root
   > ProjectBinding.project_root
 ```
 
-An override must be the Project Binding root or a Git worktree with the same
-canonical Git common directory. External Codex worktrees are therefore valid;
-an unrelated directory is rejected.
+The Host explicitly assigns the binding when it creates the MemberRun/session;
+Harness validates and freezes it but does not allocate worktrees or impose cwd
+exclusivity. A binding must be the Project Binding root or a Git worktree with
+the same canonical Git common directory. Shared canonical cwd is allowed; an
+unrelated directory is rejected.
 
 `AgentTeamRun.project_binding_id` pins the binding used at creation. Historical
 Workflow binding fields remain archive evidence and cannot resume execution.

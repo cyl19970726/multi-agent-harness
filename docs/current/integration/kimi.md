@@ -191,21 +191,16 @@ an exact provider intent of `allow_once` or `allow_always`; option ids and
 labels never grant permission. This is the current trusted-development policy,
 not a claim that Kimi can enforce a narrower ceiling.
 
-Source: `crates/firm-cli/src/main.rs:14471-14478`,
-`crates/firm-cli/src/main.rs:14607-14612`.
+Source: `crates/firm-provider-kimi/src/team_runtime.rs` (session admission) and
+`crates/firm-provider-kimi/src/permission.rs` (provider permission mapping).
 
-Provider config remains provider-neutral:
-
-```json
-{
-  "provider": "kimi",
-  "provider_config": {
-    "approval_policy": "none" | "prompt_required",
-    "workspace_policy": "workspaceWrite" | "readOnly",
-    "service_tier": "free" | "pro" | "team"
-  }
-}
-```
+Current managed configuration is the canonical `AgentMember`/`AgentSession`
+contract: `permission_ceiling = full_access` plus the exact Host-assigned
+`MemberWorkspaceBinding.canonical_root`. Provider launch controls such as
+service tier remain adapter inputs; they cannot narrow, widen, or replace that
+durable permission and workspace authority. Legacy `ProviderLaunchProfile`
+fields may still be decoded for compatibility, but are not a second current
+configuration authority.
 
 ## ACP Session Driver (Agent Team v0)
 

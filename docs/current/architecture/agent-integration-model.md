@@ -244,28 +244,26 @@ safety", per [agent-runtime.md](agent-runtime.md)).
 
 ### Workspace contract
 
-The `WorkspaceProvider` interface from [agent-runtime.md](agent-runtime.md)
-owns workspace lifecycle:
-
-```text
-WorkspaceProvider
-  prepare_workspace(task)        # create/attach cwd, worktree, branch
-  attach_branch_or_pr(task)
-  inspect_changed_paths(task)    # what did the turn actually write?
-  cleanup_or_archive(task)
-```
+Workspace placement is a Host decision, not a Harness scheduler. The Host
+assigns an existing project root, cwd, or worktree; Harness validates the
+canonical path, freezes it for the exact MemberRun/AgentSession, and passes it
+to the provider. Harness does not create worktrees, allocate cwd ownership, or
+add a cwd-exclusive lease. Changed-path inspection and archive/cleanup remain
+ordinary task/review operations around that frozen binding.
 
 The fields that bind a member to a workspace:
 
 | Field | Meaning |
 | --- | --- |
-| `provider_cwd_hint` | The git worktree / branch this member operates in. |
-| `runtime_workspace_roots` | Roots the runtime is allowed to read/write. |
+| `MemberWorkspaceBinding.canonical_root` | Highest-precedence, Host-assigned canonical cwd for the exact MemberRun/session. |
+| `AgentTeamRun.execution_root` | Run-level fallback when no current member binding exists. |
+| `ProjectBinding.project_root` | Registered project fallback; never the coordination store. |
 | `owned_paths` (per task) | Paths a specific task may modify; basis for diff gating. |
-| `workspace_policy` | `read-only` vs writable; the abstract permission posture. |
 
-The launch spec's `workspace` field carries the resolved cwd / worktree root to
-the platform (`cwd` for Codex exec, `--add-dir` / process cwd for Claude).
+The launch spec's `workspace` field
+carries that resolved cwd to the platform (`cwd` for Codex, process cwd for
+Claude). `owned_paths` remains collaboration/review metadata, not a filesystem
+sandbox.
 
 ### MCP integration (WP-6 — implemented)
 
@@ -310,8 +308,9 @@ format (Codex `--config`, Claude `--mcp-config`). See
 ### Declaring resource requirements
 
 A provider declares resource needs through `provider_config` and the launch
-spec, not through prompt text. Today `provider_config.runtime_workspace_roots`
-and `environment_id` cover the workspace/environment surface. Any future
+spec, not through prompt text. Current workspace placement comes only from the
+canonical binding precedence above; provider roots and observations do not
+become placement authority. `environment_id` covers the environment surface. Any future
 resource a platform needs (network egress posture, secret refs, compute tier)
 should be added additively and surfaced through the provider capability
 declaration (Pillar 3) so the Dashboard can show whether the environment can
@@ -487,9 +486,11 @@ adapter starts `host_driven` and may promote a specific mode/version to
 
 ## The Provider-Neutral Launch Spec
 
-The launch spec is one normalized delivery request. For Workflow it maps to one
-bounded invocation. For Agent Team it is delivered into one persistent native
-session under the selected execution driver. The harness builds it from the
+The launch spec is one normalized provider delivery request for a managed flat
+Agent Team. It is delivered into one persistent native session under the
+selected execution driver. Historical one-shot Workflow adapters may translate
+the same shape for compatibility, but they are not current coordination
+authority. The harness builds it from the
 member (Pillars 1–2) and the claimed `Message`, and each platform adapter
 (Pillar 3) maps it onto its own protocol. This is the seam that keeps the
 operator composer and Dashboard uniform across Codex, Claude, and future
@@ -500,7 +501,7 @@ platforms.
 | `prompt_ref` | composed system/developer instructions (Pillar 1 stack), read as artifact | developer instructions / `--config` input | `--append-system-prompt` / SDK system prompt | adapter-provided |
 | `message_content` | the turn input (the claimed `Message` envelope + content) | exec prompt arg / stdin | `-p "<content>"` / SDK `prompt` | adapter-provided |
 | `model` | model selection | `--config model=` | `--model` / SDK `model` | adapter-provided |
-| `permission` | **neutral permission enum** (`read_only` / `workspace_write` / `full_access`) | sandbox/approval flags | `--permission-mode` | adapter-provided |
+| `permission` | neutral capability vocabulary; managed coding AgentSessions require frozen `full_access`, while legacy/compatibility modes may report narrower unsupported values | sandbox/approval flags | `--permission-mode` | adapter-provided |
 | `writable_roots` | paths the turn may write | sandbox writable roots / `cwd` | `--add-dir` | adapter-provided |
 | `tools` | abstract allowed-tool set | approval policy / tool config | `--allowedTools` / SDK `allowed_tools` | adapter-provided |
 | `workspace` | cwd / worktree root | `cwd` | `--add-dir` / process cwd | adapter-provided |
@@ -545,10 +546,12 @@ is the concrete "define X, Y, Z" deliverable.
    artifact and how it slots into the prompt stack; list the `skill_refs`
    (honoring the proposed skill contract); set member `capabilities`; choose
    `model` / `profile`.
-2. **Define Pillar 2 (environment).** Specify `provider_cwd_hint`,
-   `runtime_workspace_roots`, `owned_paths` per task, and `workspace_policy`. If
-   the platform uses MCP, write the neutral `mcp` block and how the platform
-   consumes it.
+2. **Define Pillar 2 (environment).** Specify how the Host-provided
+   `MemberWorkspaceBinding.canonical_root` reaches the provider after exact
+   project/worktree validation, preserve the TeamRun/project fallback, and
+   freeze managed coding permission as `FullAccess`. Keep `owned_paths` as
+   collaboration metadata. If the platform uses MCP, write the neutral `mcp`
+   block and how the platform consumes it; do not expose Harness mutation MCP.
 3. **Implement Pillar 3 for the selected executor.** For Agent Team, implement
    a persistent bidirectional mode. Do not restore the retired bounded Dynamic
    Workflow path. Implement `AgentProvider` (start / deliver / probe / ingest),

@@ -105,9 +105,10 @@ review evidence without introducing another Mission lifecycle object.
 
 ## Page Specs
 
-New product work starts from Mission detail, its Log, and the Agent Team
-page. Historical Vision/Goal/Task UI material is archived and must not be
-copied into Mission/Log IA.
+New product work starts from the durable flat AgentTeam, Team Workspace, and
+Global Work surfaces. Mission/Mission Log and historical Vision/Goal/Task UI
+material are archived evidence and must not re-enter current IA, navigation, or
+mutation flows.
 
 | Page spec | Owns |
 | --- | --- |

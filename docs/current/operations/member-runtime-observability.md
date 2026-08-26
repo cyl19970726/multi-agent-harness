@@ -57,9 +57,11 @@ Durable Harness data:
   authenticated Message sender AgentMember/Session, subscriptions, delivery
   claims/provider receipts/failures, and
   canonical per-recipient `CanonicalMessageDelivery`;
-- TeamRun `execution_root`, optional member `provider_cwd_hint`, and the launch-time
-  `provider_environment_observation` containing actual cwd, Git HEAD/branch, and only the
-  instruction/skill directory paths Harness discovered relative to that cwd;
+- current `MemberWorkspaceBinding.canonical_root`, TeamRun `execution_root`,
+  Project Binding, and the launch-time `provider_environment_observation`
+  containing actual cwd, Git HEAD/branch, and only the instruction/skill
+  directory paths Harness discovered relative to that cwd; observations never
+  become placement authority;
 - Work, append-only state transition, WorkDelivery, terminal source, and
   native-session reference;
 - Work blocker, submission, requested changes, Host acceptance, and

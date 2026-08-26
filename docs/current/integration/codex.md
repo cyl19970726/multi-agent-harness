@@ -233,13 +233,15 @@ implicit MemberRun or claim lifecycle control it does not possess.
 Provider cwd resolves in this order:
 
 ```text
-MemberRun.provider_cwd_hint
+MemberWorkspaceBinding.canonical_root
   > AgentTeamRun.execution_root
-  > registered project_root
+  > ProjectBinding.project_root
 ```
 
-It never resolves to the centralized Harness store. cwd is an instruction,
-Skill, Plugin, MCP, and permission boundary.
+The Host assigns the explicit binding; Harness validates and freezes it without
+allocating worktrees or claiming cwd exclusivity. It never resolves to the
+centralized Harness store. cwd is an instruction, Skill, Plugin, MCP, and
+permission boundary.
 
 The current temporary Team policy launches Codex with
 `danger-full-access` and approval policy `never`. This is an explicit product
