@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import {
   chmodSync,
   existsSync,
@@ -73,7 +73,7 @@ function createFixture() {
   );
   write(
     join(fakeBin, "codex"),
-    "#!/bin/sh\nif [ \"$1 $2\" = 'plugin add' ] && [ \"${FAKE_FAIL_AFTER_PUBLICATION:-0}\" = 1 ]; then\n  if [ -n \"${FAKE_FOREIGN_TARGET:-}\" ]; then ln -sfn \"${FAKE_FOREIGN_TARGET}\" \"${STAR_HARNESS_BIN_LINK}\"; fi\n  exit 42\nfi\nexit 0\n",
+    "#!/bin/sh\nif [ \"$1 $2\" = 'plugin add' ] && [ \"${FAKE_FAIL_AFTER_PUBLICATION:-0}\" = 1 ]; then\n  if [ -n \"${FAKE_FOREIGN_TARGET:-}\" ]; then ln -sfn \"${FAKE_FOREIGN_TARGET}\" \"${STAR_HARNESS_BIN_LINK}\"; fi\n  if [ \"${FAKE_RECREATE_SAME_TARGET:-0}\" = 1 ]; then target=$(readlink \"${STAR_HARNESS_BIN_LINK}\"); unlink \"${STAR_HARNESS_BIN_LINK}\"; ln -s \"$target\" \"${STAR_HARNESS_BIN_LINK}\"; fi\n  if [ \"${FAKE_BLOCK_ROLLBACK:-0}\" = 1 ]; then chmod 0500 \"$(dirname \"${STAR_HARNESS_BIN_LINK}\")\"; fi\n  if [ -n \"${FAKE_HOLD_READY:-}\" ]; then touch \"${FAKE_HOLD_READY}\"; while [ ! -e \"${FAKE_HOLD_RELEASE}\" ]; do sleep 0.01; done; fi\n  exit 42\nfi\nexit 0\n",
     true,
   );
   write(join(fakeBin, "claude"), "#!/bin/sh\nexit 0\n", true);
@@ -96,6 +96,29 @@ function runApply(fixture, extraEnv = {}) {
       KIMI_CODE_HOME: join(fixture.root, "kimi"),
     },
   });
+}
+
+function applyEnvironment(fixture, extraEnv = {}) {
+  return {
+    ...process.env,
+    ...extraEnv,
+    HOME: fixture.home,
+    PATH: `${fixture.fakeBin}:${process.env.PATH}`,
+    STAR_HARNESS_BIN_LINK: fixture.binLink,
+    STAR_HARNESS_INSTALL_ROOT: join(fixture.root, "install"),
+    STAR_HARNESS_STATE_ROOT: join(fixture.root, "state"),
+    KIMI_CODE_HOME: join(fixture.root, "kimi"),
+  };
+}
+
+function waitForPath(path, child) {
+  const sleeper = new Int32Array(new SharedArrayBuffer(4));
+  const deadline = Date.now() + 5_000;
+  while (!existsSync(path) && Date.now() < deadline) {
+    assert.equal(child.exitCode, null, "installer exited before reaching the publication hold");
+    Atomics.wait(sleeper, 0, 0, 10);
+  }
+  assert.equal(existsSync(path), true, `timed out waiting for ${path}`);
 }
 
 function withFixture(test) {
@@ -177,6 +200,37 @@ withFixture((fixture) => {
     readFailureState(fixture).status,
     "failed_after_binary_publication_link_changed",
   );
+});
+
+withFixture((fixture) => {
+  const result = runApply(fixture, {
+    FAKE_FAIL_AFTER_PUBLICATION: "1",
+    FAKE_RECREATE_SAME_TARGET: "1",
+  });
+  assert.notEqual(result.status, 0, "the injected post-publication failure must fail apply");
+  assert.equal(
+    readlinkSync(fixture.binLink),
+    join(fixture.root, "install", "fixture", "harness"),
+    "rollback must preserve a same-target link recreated by another owner",
+  );
+  assert.equal(
+    readFailureState(fixture).status,
+    "failed_after_binary_publication_link_changed",
+  );
+});
+
+withFixture((fixture) => {
+  const result = runApply(fixture, {
+    FAKE_FAIL_AFTER_PUBLICATION: "1",
+    FAKE_BLOCK_ROLLBACK: "1",
+  });
+  assert.notEqual(result.status, 0, "the injected post-publication failure must fail apply");
+  assert.equal(existsSync(fixture.binLink), true, "failed rollback must retain its residual link");
+  assert.equal(
+    readFailureState(fixture).status,
+    "failed_after_binary_publication_remove_failed",
+  );
+  chmodSync(dirname(fixture.binLink), 0o700);
 });
 
 console.log("star-harness installer rollback boundary: PASS");
