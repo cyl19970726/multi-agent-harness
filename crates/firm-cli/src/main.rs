@@ -451,6 +451,14 @@ fn run() -> CliResult<()> {
             "package_version": env!("CARGO_PKG_VERSION"),
         }));
     }
+    // Help is a store-less admission boundary. The handwritten nested parsers
+    // intentionally accept extra flags, so allowing `-h`/`--help` to reach a
+    // terminal mutation arm would make help execute the command (Issue #631).
+    // Admit it before selector resolution, Store construction, Supervisor
+    // lookup, RuntimeCommand preparation, or any provider-facing effect.
+    if admit_help_request(&args) {
+        return Ok(());
+    }
     // Optional debug flag: print which store was chosen and why (P7 "no silent
     // fallback"). Stripped before resolution so subcommands never see it.
     let store_source_debug = take_flag(&mut args, "--store-source");
