@@ -101,6 +101,9 @@ function invalidCases(valid) {
   return new Map([
     ["zero changed files", variant((value) => { value.revision.changed_files = []; })],
     ["same base and candidate", variant((value) => { value.revision.candidate = value.revision.base; })],
+    ["reviewer is implementer", variant((value) => {
+      value.work.reviewer_agent_member_id = value.team.implementer_agent_member_id;
+    })],
     ["missing WorkReport", variant((value) => { delete value.work.work_report_id; })],
     ["missing review Message", variant((value) => { delete value.work.review_message_id; })],
     ["missing Host acceptance", variant((value) => {
