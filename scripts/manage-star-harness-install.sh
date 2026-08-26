@@ -143,20 +143,22 @@ rollback_binary_after_error() {
 
 write_failure_state() {
   local original_exit_status=$1
+  local final_exit_status=$2
   local failure_status="${ROLLBACK_BINARY_STATUS}"
   if [[ "${BIN_LINK_LOCK_STATUS}" == "release_failed" ]]; then
     failure_status="failed_with_install_lock_residual"
   fi
   if [[ -n "${STATE_FILE}" ]]; then
-    node - "${STATE_FILE}" "${VERSION:-unknown}" "${REPO_ROOT}" "${PREVIOUS_BIN}" "${failure_status}" "${ROLLBACK_BINARY_STATUS}" "${BIN_LINK_LOCK_STATUS}" "${original_exit_status}" <<'NODE' || true
+    node - "${STATE_FILE}" "${VERSION:-unknown}" "${REPO_ROOT}" "${PREVIOUS_BIN}" "${failure_status}" "${ROLLBACK_BINARY_STATUS}" "${BIN_LINK_LOCK_STATUS}" "${original_exit_status}" "${final_exit_status}" <<'NODE' || true
 const fs = require("node:fs");
-const [path, version, sourceRoot, rollbackBinary, status, binaryRollbackStatus, installLockStatus, originalExitStatus] = process.argv.slice(2);
+const [path, version, sourceRoot, rollbackBinary, status, binaryRollbackStatus, installLockStatus, originalExitStatus, finalExitStatus] = process.argv.slice(2);
 fs.writeFileSync(path, `${JSON.stringify({
   schema_version: 1,
   status,
   binary_rollback_status: binaryRollbackStatus,
   install_lock_status: installLockStatus,
   original_exit_status: Number(originalExitStatus),
+  final_exit_status: Number(finalExitStatus),
   version,
   source_root: sourceRoot,
   rollback_harness_binary: rollbackBinary || null,
@@ -168,16 +170,21 @@ NODE
 }
 
 finish_install() {
-  local exit_status=$?
+  local original_exit_status=$?
+  local final_exit_status="${original_exit_status}"
   trap - EXIT
-  rollback_binary_after_error "${exit_status}"
-  if ! release_bin_link_lock && [[ "${exit_status}" -eq 0 ]]; then
-    exit_status=1
+  if [[ "${original_exit_status}" -eq 0 ]]; then
+    ROLLBACK_BINARY_STATUS="not_attempted_install_completed"
+  else
+    rollback_binary_after_error "${original_exit_status}"
   fi
-  if [[ "${exit_status}" -ne 0 ]]; then
-    write_failure_state "${exit_status}"
+  if ! release_bin_link_lock && [[ "${final_exit_status}" -eq 0 ]]; then
+    final_exit_status=1
   fi
-  exit "${exit_status}"
+  if [[ "${final_exit_status}" -ne 0 ]]; then
+    write_failure_state "${original_exit_status}" "${final_exit_status}"
+  fi
+  exit "${final_exit_status}"
 }
 
 trap finish_install EXIT

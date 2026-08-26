@@ -238,7 +238,26 @@ withFixture((fixture) => {
   const state = readFailureState(fixture);
   assert.equal(state.status, "failed_with_install_lock_residual");
   assert.equal(state.install_lock_status, "release_failed");
-  assert.equal(state.original_exit_status, 1);
+  assert.equal(state.original_exit_status, 0);
+  assert.equal(state.final_exit_status, 1);
+  assert.equal(state.binary_rollback_status, "not_attempted_install_completed");
+  assert.equal(readlinkSync(fixture.binLink), join(fixture.root, "install", "fixture", "harness"));
+  assert.equal(existsSync(`${fixture.binLink}.star-harness-install.lock`), true);
+});
+
+withFixture((fixture) => {
+  const result = runApply(fixture, {
+    FAKE_BLOCK_LOCK_RELEASE: "1",
+    FAKE_CLAUDE_FAIL_AFTER_PUBLICATION: "1",
+  });
+  assert.equal(result.status, 42, "cleanup failures cannot replace the primary exit code");
+  const state = readFailureState(fixture);
+  assert.equal(state.status, "failed_with_install_lock_residual");
+  assert.equal(state.install_lock_status, "release_failed");
+  assert.equal(state.original_exit_status, 42);
+  assert.equal(state.final_exit_status, 42);
+  assert.equal(state.binary_rollback_status, "failed_and_created_binary_link_removed");
+  assert.equal(existsSync(fixture.binLink), false);
   assert.equal(existsSync(`${fixture.binLink}.star-harness-install.lock`), true);
 });
 
