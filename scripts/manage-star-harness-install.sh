@@ -22,6 +22,7 @@ INSTALL_COMPLETED="false"
 PREVIOUS_BIN=""
 PREVIOUS_BIN_PRESENT="false"
 PREVIOUS_BIN_IDENTITY=""
+PREVIOUS_BIN_OBJECT_IDENTITY=""
 BIN_LINK_PUBLICATION_ARMED="false"
 PUBLISHED_BIN_TARGET=""
 PUBLISHED_BIN_IDENTITY=""
@@ -102,10 +103,12 @@ prepare_bin_link_publication() {
     ln -P "${BIN_LINK}" "${PREVIOUS_BIN_WITNESS}"
     PREVIOUS_BIN="$(readlink "${BIN_LINK}")"
     PREVIOUS_BIN_IDENTITY="$(bin_link_identity "${PREVIOUS_BIN_WITNESS}")"
+    PREVIOUS_BIN_OBJECT_IDENTITY="$(bin_link_object_identity "${PREVIOUS_BIN_WITNESS}")"
     PREVIOUS_BIN_PRESENT="true"
   else
     PREVIOUS_BIN=""
     PREVIOUS_BIN_IDENTITY=""
+    PREVIOUS_BIN_OBJECT_IDENTITY=""
     PREVIOUS_BIN_PRESENT="false"
   fi
 }
@@ -137,6 +140,7 @@ publish_bin_link() {
 
 rollback_published_bin_link() {
   local current_identity=""
+  local current_previous_identity=""
   if [[ "${BIN_LINK_PUBLICATION_ARMED}" != "true" ]]; then
     ROLLBACK_BINARY_STATUS="failed_before_binary_publication"
     return
@@ -145,6 +149,16 @@ rollback_published_bin_link() {
     current_identity="$(bin_link_object_identity "${BIN_LINK}" 2>/dev/null || true)"
   fi
   if [[ "${current_identity}" != "${PUBLISHED_BIN_IDENTITY}" || "$(readlink "${BIN_LINK}" 2>/dev/null || true)" != "${PUBLISHED_BIN_TARGET}" ]]; then
+    if [[ "${PREVIOUS_BIN_PRESENT}" == "true" && -L "${BIN_LINK}" ]]; then
+      current_previous_identity="$(bin_link_identity "${BIN_LINK}" 2>/dev/null || true)"
+      if [[ "${current_previous_identity}" == "${PREVIOUS_BIN_IDENTITY}" && "$(readlink "${BIN_LINK}" 2>/dev/null || true)" == "${PREVIOUS_BIN}" ]]; then
+        ROLLBACK_BINARY_STATUS="failed_before_binary_publication"
+        return
+      fi
+    elif [[ "${PREVIOUS_BIN_PRESENT}" != "true" && ! -e "${BIN_LINK}" && ! -L "${BIN_LINK}" ]]; then
+      ROLLBACK_BINARY_STATUS="failed_before_binary_publication"
+      return
+    fi
     ROLLBACK_BINARY_STATUS="failed_after_binary_publication_link_changed"
     echo "preserved changed Harness path ${BIN_LINK}; it is no longer owned by this install" >&2
     return
@@ -152,6 +166,15 @@ rollback_published_bin_link() {
   if [[ "${PREVIOUS_BIN_PRESENT}" == "true" ]]; then
     if ! node -e 'require("node:fs").renameSync(process.argv[1], process.argv[2])' \
       "${PREVIOUS_BIN_WITNESS}" "${BIN_LINK}"; then
+      current_previous_identity=""
+      if [[ -L "${BIN_LINK}" ]]; then
+        current_previous_identity="$(bin_link_object_identity "${BIN_LINK}" 2>/dev/null || true)"
+      fi
+      if [[ "${current_previous_identity}" == "${PREVIOUS_BIN_OBJECT_IDENTITY}" && "$(readlink "${BIN_LINK}" 2>/dev/null || true)" == "${PREVIOUS_BIN}" ]]; then
+        ROLLBACK_BINARY_STATUS="failed_and_previous_binary_restored"
+        echo "restored Harness link to ${PREVIOUS_BIN}; rename helper reported an uncertain completion" >&2
+        return 0
+      fi
       ROLLBACK_BINARY_STATUS="failed_after_binary_publication_restore_failed"
       PRESERVE_BIN_LINK_TRANSACTION="true"
       echo "failed to restore Harness link ${BIN_LINK}; published link remains residual" >&2
@@ -210,7 +233,8 @@ NODE
 finish_install() {
   local original_exit_status=$?
   local final_exit_status="${original_exit_status}"
-  trap - EXIT HUP INT TERM
+  trap - EXIT
+  trap '' HUP INT TERM
   if [[ "${INSTALL_COMPLETED}" == "true" || "${original_exit_status}" -eq 0 ]]; then
     ROLLBACK_BINARY_STATUS="not_attempted_install_completed"
   else
@@ -226,9 +250,8 @@ finish_install() {
 }
 
 handle_install_signal() {
-  local exit_status=$1
-  trap - HUP INT TERM
-  exit "${exit_status}"
+  trap '' HUP INT TERM
+  exit "$1"
 }
 
 trap finish_install EXIT
