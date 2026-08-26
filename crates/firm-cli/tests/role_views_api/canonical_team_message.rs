@@ -302,6 +302,38 @@ fn canonical_team_message_journey_uses_node_daemon_sessions_deliveries_and_curso
         "resolution":"confirm_not_applied",
         "evidence_ref":"check:provider-process-absent"
     });
+    let operations_before_resolution = store.canonical_operations().expect("operations");
+    let (status, missing_confirmation) =
+        serve.post_json_with_headers(&recovery_route, &recovery_intent, &recovery_headers[..3]);
+    assert_eq!(status, 409, "missing confirmation: {missing_confirmation}");
+    assert_eq!(
+        missing_confirmation["error"]["code"],
+        "CONFIRMATION_REQUIRED"
+    );
+    assert_eq!(
+        store.canonical_operations().expect("operations"),
+        operations_before_resolution,
+        "confirmation failure cannot reach canonical persistence"
+    );
+    let (status, missing_evidence) = serve.post_json_with_headers(
+        &recovery_route,
+        &serde_json::json!({
+            "action":"resolve_runtime_recovery",
+            "resolution":"confirm_not_applied",
+            "evidence_ref":"  "
+        }),
+        &recovery_headers,
+    );
+    assert_eq!(status, 409, "missing evidence: {missing_evidence}");
+    assert_eq!(
+        missing_evidence["error"]["code"],
+        "INVALID_STATE_TRANSITION"
+    );
+    assert_eq!(
+        store.canonical_operations().expect("operations"),
+        operations_before_resolution,
+        "evidence failure cannot append a canonical operation"
+    );
     let (status, resolved) =
         serve.post_json_with_headers(&recovery_route, &recovery_intent, &recovery_headers);
     assert_eq!(status, 200, "resolve RecoveryRequired: {resolved}");

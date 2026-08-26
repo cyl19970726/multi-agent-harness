@@ -27,6 +27,7 @@ use crate::agentfirm_api::AuthenticatedMutation;
 mod canonical_actions;
 mod operator_actions;
 mod protocol;
+mod runtime_recovery_adapter;
 mod work_records;
 
 use canonical_actions::*;

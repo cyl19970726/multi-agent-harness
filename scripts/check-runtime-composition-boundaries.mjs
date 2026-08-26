@@ -72,6 +72,47 @@ for (const forbidden of ["firm-store", "firm-cli", "firm-provider-", "harness_st
   }
 }
 
+const runtimeRecoveryApplicationPath =
+  "crates/firm-application/src/runtime_recovery_action.rs";
+const runtimeRecoveryApplication = read(runtimeRecoveryApplicationPath);
+for (const required of [
+  "pub struct ResolveRuntimeRecoveryCommand",
+  "pub struct RuntimeRecoveryCommit",
+  "pub struct RuntimeRecoveryActionOutcome",
+  "pub trait RuntimeRecoveryPersistence",
+  "pub enum RuntimeRecoveryActionError",
+  "pub fn resolve_runtime_recovery",
+  "RUNTIME_RECOVERY_COMMAND_NAME",
+]) {
+  if (!runtimeRecoveryApplication.includes(required)) {
+    failures.push(
+      `${runtimeRecoveryApplicationPath}: missing typed Runtime Recovery action owner ${required}`,
+    );
+  }
+}
+for (const forbidden of [
+  "HarnessStore",
+  "StoreError",
+  "serde_json",
+  "std::fs",
+  "TcpStream",
+  "/v1/",
+  "SystemTime",
+  "Work",
+  "Message",
+  "WorkDelivery",
+  "MessageDelivery",
+  "Provider",
+  "firm-provider-",
+  "firm_provider",
+]) {
+  if (runtimeRecoveryApplication.includes(forbidden)) {
+    failures.push(
+      `${runtimeRecoveryApplicationPath}: Runtime Recovery action depends on forbidden adapter/plane detail ${forbidden}`,
+    );
+  }
+}
+
 const contract = read(contractPath);
 for (const required of [
   "pub(crate) struct MemberOperatingContract",
@@ -201,6 +242,44 @@ if (!productionRustPaths.includes(daemonRootPath)) {
 }
 if (testRustPaths.length === 0) {
   failures.push("firm-cli test-only Rust source classification unexpectedly found zero files");
+}
+const runtimeRecoveryAdapterPath =
+  "crates/firm-cli/src/role_actions_api/runtime_recovery_adapter.rs";
+const runtimeRecoveryCanonicalPath =
+  "crates/firm-cli/src/role_actions_api/canonical_actions.rs";
+for (const path of productionRustPaths) {
+  const content = read(path);
+  if (
+    path !== runtimeRecoveryAdapterPath &&
+    content.includes(".resolve_runtime_command_recovery(")
+  ) {
+    failures.push(
+      `${path}: Runtime Recovery Store writer escaped ${runtimeRecoveryAdapterPath}`,
+    );
+  }
+}
+if (
+  !read(runtimeRecoveryAdapterPath).includes(
+    ".resolve_runtime_command_recovery(",
+  )
+) {
+  failures.push(
+    `${runtimeRecoveryAdapterPath}: missing exact Runtime Recovery Store adaptation`,
+  );
+}
+if (
+  !read(runtimeRecoveryAdapterPath).includes(
+    "harness_application::resolve_runtime_recovery(",
+  )
+) {
+  failures.push(
+    `${runtimeRecoveryAdapterPath}: adapter bypasses the Runtime Recovery application service`,
+  );
+}
+if (!read(runtimeRecoveryCanonicalPath).includes("runtime_recovery_adapter::execute(")) {
+  failures.push(
+    `${runtimeRecoveryCanonicalPath}: Runtime Recovery route bypasses its dedicated adapter`,
+  );
 }
 const authorityWriterTokens = [
   ".acquire_node_daemon_lease(",
