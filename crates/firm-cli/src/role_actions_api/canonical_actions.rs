@@ -791,64 +791,15 @@ pub(super) fn execute_canonical_role_action(
                     None,
                 ));
             };
-            if auth.actor.kind != ActorKind::Service || auth.actor.id != node_id {
-                return Err(encoded_error(
-                    "UNAUTHORIZED_ACTOR",
-                    "RuntimeCommand recovery requires the exact Execution Node Operator",
-                    "execution_node",
-                    node_id,
-                    None,
-                ));
-            }
-            if confirmed_action != Some("resolve_runtime_recovery") {
-                return Err(encoded_error(
-                    "CONFIRMATION_REQUIRED",
-                    "server confirmation must exactly confirm resolve_runtime_recovery",
-                    "runtime_command",
-                    command_id,
-                    None,
-                ));
-            }
-            let lease = store
-                .latest_node_daemon_lease(node_id)?
-                .filter(|lease| {
-                    lease.status == NodeDaemonLeaseStatus::Active
-                        && lease.expires_unix_ms > crate::current_unix_ms_u64()
-                })
-                .ok_or_else(|| {
-                    encoded_error(
-                        "NODE_DAEMON_GENERATION_FENCED",
-                        "RuntimeCommand recovery requires the exact current NodeDaemon",
-                        "execution_node",
-                        node_id,
-                        None,
-                    )
-                })?;
-            let context = MutationContext {
-                execution_space_id: auth.execution_space_id,
-                authenticated_actor: ActorRef {
-                    kind: ActorKind::Service,
-                    id: lease.daemon_id.clone(),
-                },
-                authority_actor: Some(auth.actor.clone()),
-                command_name: "node_daemon.runtime_command.resolve".into(),
-                idempotency_key: format!(
-                    "role-runtime-recovery:{}:{}",
-                    auth.actor.id, auth.idempotency_key
-                ),
-                expected_version: auth.expected_version,
-                request_fingerprint: auth.request_fingerprint,
-            };
-            canonical_mutation_result(store.resolve_runtime_command_recovery(
-                &context,
-                command_id,
+            super::runtime_recovery_adapter::execute(
+                store,
+                auth,
                 node_id,
-                &lease.daemon_id,
-                lease.generation,
+                command_id,
+                confirmed_action,
                 resolution,
-                &evidence_ref,
-                &now_string(),
-            )?)
+                evidence_ref,
+            )
         }
         CanonicalRoute::Operator { node_id, operation } => {
             execute_operator_action(store, auth, node_id, operation, body, confirmed_action)

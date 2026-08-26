@@ -273,6 +273,51 @@ fn canonical_team_message_journey_uses_node_daemon_sessions_deliveries_and_curso
             "2026-08-11T00:00:02Z",
         )
         .expect("mark RecoveryRequired");
+    let prepare_ambiguous_recovery = |command_id: &str| {
+        let mut command = recovery_command.clone();
+        command.id = command_id.into();
+        command.idempotency_key = command_id.into();
+        command.payload["delivery_id"] = command_id.into();
+        command.payload_fingerprint = harness_store::canonical_json_fingerprint(&command.payload);
+        let fingerprint = harness_store::runtime_command_envelope_fingerprint(&command)
+            .expect("additional recovery command fingerprint");
+        store
+            .prepare_runtime_command(
+                &MutationContext {
+                    execution_space_id: space_id.clone(),
+                    authenticated_actor: command.authenticated_actor.clone(),
+                    authority_actor: Some(command.authenticated_actor.clone()),
+                    command_name: "node_daemon.runtime.prepare".into(),
+                    idempotency_key: command.idempotency_key.clone(),
+                    expected_version: 0,
+                    request_fingerprint: Some(fingerprint),
+                },
+                &command,
+                unix_ms(),
+                "2026-08-11T00:00:01Z",
+            )
+            .expect("prepare additional ambiguous runtime effect");
+        store
+            .settle_runtime_command(
+                &MutationContext {
+                    execution_space_id: space_id.clone(),
+                    authenticated_actor: command.authenticated_actor.clone(),
+                    authority_actor: Some(command.authenticated_actor.clone()),
+                    command_name: "node_daemon.runtime.settle".into(),
+                    idempotency_key: format!("{command_id}:settle"),
+                    expected_version: 1,
+                    request_fingerprint: None,
+                },
+                &command.id,
+                harness_core::agentfirm_api::RuntimeCommandStatus::RecoveryRequired,
+                harness_core::agentfirm_api::RuntimeEffectCertainty::Unknown,
+                None,
+                Some("PROVIDER_EFFECT_AMBIGUOUS".into()),
+                "2026-08-11T00:00:02Z",
+            )
+            .expect("mark additional command RecoveryRequired");
+        command
+    };
     let operator_route = format!("/v1/views/operator/{node_id}?project={project_id}");
     let (status, operator_view) =
         serve.get_json_with_headers(&operator_route, &[("X-AgentFirm-Token", OPERATOR_TOKEN)]);
@@ -302,11 +347,56 @@ fn canonical_team_message_journey_uses_node_daemon_sessions_deliveries_and_curso
         "resolution":"confirm_not_applied",
         "evidence_ref":"check:provider-process-absent"
     });
+    let operations_before_resolution = store.canonical_operations().expect("operations");
+    let (status, missing_confirmation) =
+        serve.post_json_with_headers(&recovery_route, &recovery_intent, &recovery_headers[..3]);
+    assert_eq!(status, 409, "missing confirmation: {missing_confirmation}");
+    assert_eq!(
+        missing_confirmation["error"]["code"],
+        "CONFIRMATION_REQUIRED"
+    );
+    assert_eq!(
+        store.canonical_operations().expect("operations"),
+        operations_before_resolution,
+        "confirmation failure cannot reach canonical persistence"
+    );
+    let (status, missing_evidence) = serve.post_json_with_headers(
+        &recovery_route,
+        &serde_json::json!({
+            "action":"resolve_runtime_recovery",
+            "resolution":"confirm_not_applied",
+            "evidence_ref":"  "
+        }),
+        &recovery_headers,
+    );
+    assert_eq!(status, 409, "missing evidence: {missing_evidence}");
+    assert_eq!(
+        missing_evidence["error"]["code"],
+        "INVALID_STATE_TRANSITION"
+    );
+    assert_eq!(
+        store.canonical_operations().expect("operations"),
+        operations_before_resolution,
+        "evidence failure cannot append a canonical operation"
+    );
     let (status, resolved) =
         serve.post_json_with_headers(&recovery_route, &recovery_intent, &recovery_headers);
     assert_eq!(status, 200, "resolve RecoveryRequired: {resolved}");
     assert_eq!(resolved["projection"]["status"], "failed");
+    assert_eq!(resolved["projection"]["phase"], "rejected");
     assert_eq!(resolved["projection"]["effect_certainty"], "not_applied");
+    assert_eq!(
+        resolved["projection"]["failure_code"],
+        "RECOVERY_CONFIRMED_NOT_APPLIED"
+    );
+    assert_eq!(
+        resolved["projection"]["result"],
+        serde_json::json!({
+            "resolution":"confirm_not_applied",
+            "evidence_ref":"check:provider-process-absent",
+            "blind_replay":false
+        })
+    );
     let operations_after_resolution = store.canonical_operations().expect("operations");
     let (status, replayed) =
         serve.post_json_with_headers(&recovery_route, &recovery_intent, &recovery_headers);
@@ -317,6 +407,99 @@ fn canonical_team_message_journey_uses_node_daemon_sessions_deliveries_and_curso
         operations_after_resolution,
         "replayed recovery resolution cannot repeat a provider or durable effect"
     );
+
+    for (
+        command_id,
+        resolution,
+        expected_status,
+        expected_phase,
+        expected_certainty,
+        failure_code,
+    ) in [
+        (
+            "runtime-command-role-view-confirm-applied",
+            "confirm_applied",
+            "applied",
+            "settled",
+            "applied",
+            None,
+        ),
+        (
+            "runtime-command-role-view-keep-required",
+            "keep_recovery_required",
+            "recovery_required",
+            "recovery_required",
+            "unknown",
+            Some("RECOVERY_EVIDENCE_INSUFFICIENT"),
+        ),
+    ] {
+        let command = prepare_ambiguous_recovery(command_id);
+        let route = format!(
+            "/v1/agentfirm/nodes/{node_id}/runtime-commands/{}/resolve?project={project_id}",
+            command.id
+        );
+        let idempotency_key = format!("operator-resolve-{}", command.id);
+        let headers = [
+            ("X-AgentFirm-Token", OPERATOR_TOKEN),
+            ("Idempotency-Key", idempotency_key.as_str()),
+            ("If-Match", "2"),
+            ("X-AgentFirm-Confirm", "resolve_runtime_recovery"),
+        ];
+        let evidence_ref = format!("check:{resolution}");
+        let intent = serde_json::json!({
+            "action":"resolve_runtime_recovery",
+            "resolution":resolution,
+            "evidence_ref":evidence_ref
+        });
+        let (status, outcome) = serve.post_json_with_headers(&route, &intent, &headers);
+        assert_eq!(status, 200, "{resolution} outcome: {outcome}");
+        assert_eq!(outcome["projection"]["status"], expected_status);
+        assert_eq!(outcome["projection"]["phase"], expected_phase);
+        assert_eq!(
+            outcome["projection"]["effect_certainty"],
+            expected_certainty
+        );
+        match failure_code {
+            Some(code) => assert_eq!(outcome["projection"]["failure_code"], code),
+            None => assert!(outcome["projection"]["failure_code"].is_null()),
+        }
+        assert_eq!(
+            outcome["projection"]["result"],
+            serde_json::json!({
+                "resolution":resolution,
+                "evidence_ref":format!("check:{resolution}"),
+                "blind_replay":false
+            })
+        );
+
+        let operations_after_outcome = store.canonical_operations().expect("operations");
+        let (status, replay) = serve.post_json_with_headers(&route, &intent, &headers);
+        assert_eq!(status, 200, "{resolution} replay: {replay}");
+        assert_eq!(replay["replayed"], true);
+        assert_eq!(replay["projection"], outcome["projection"]);
+        assert_eq!(
+            store.canonical_operations().expect("operations"),
+            operations_after_outcome,
+            "{resolution} HTTP replay must have zero durable delta"
+        );
+
+        let (status, conflict) = serve.post_json_with_headers(
+            &route,
+            &serde_json::json!({
+                "action":"resolve_runtime_recovery",
+                "resolution":resolution,
+                "evidence_ref":format!("check:{resolution}:changed")
+            }),
+            &headers,
+        );
+        assert_eq!(status, 409, "{resolution} semantic conflict: {conflict}");
+        assert_eq!(conflict["error"]["code"], "IDEMPOTENCY_KEY_REUSED");
+        assert_eq!(
+            store.canonical_operations().expect("operations"),
+            operations_after_outcome,
+            "{resolution} HTTP semantic conflict must have zero durable delta"
+        );
+    }
 
     let host_view_route = format!("/v1/views/host-console/{}?project={project_id}", team.id);
     let (status, host_view) =
