@@ -155,13 +155,6 @@ fn map_message_authoring_error(
             &work_id,
             Some(version),
         ),
-        MessageAuthoringError::UnauthorizedWorkLink { work_id, version } => encoded_error(
-            "UNAUTHORIZED_ACTOR",
-            "member-owned Work mutation requires the exact accountable AgentMember and current active WorkExecutionBinding",
-            "work",
-            &work_id,
-            Some(version),
-        ),
         MessageAuthoringError::BodyOrRecipientsRequired => encoded_error(
             "INVALID_STATE_TRANSITION",
             "message body and recipients are required",

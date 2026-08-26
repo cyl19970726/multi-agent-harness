@@ -74,7 +74,6 @@ pub enum MessageAuthoringError {
     IntentRouteMismatch,
     WorkNotFound { work_id: String },
     WorkOutsideTeamRun { work_id: String, version: u64 },
-    UnauthorizedWorkLink { work_id: String, version: u64 },
     BodyOrRecipientsRequired,
     RecipientOutsideTeam { recipient_id: String },
     RecipientRouteUnavailable { recipient_id: String },
@@ -197,17 +196,6 @@ pub fn prepare_message_authoring(
                 work_id: work.id.clone(),
                 version: work.version,
             });
-        }
-        if !actor_is_host {
-            let sender_run_id = sender_runs[0].id.as_str();
-            if work.owner_member_id.as_deref() != Some(command.actor.id.as_str())
-                || work.active_member_run_id.as_deref() != Some(sender_run_id)
-            {
-                return Err(MessageAuthoringError::UnauthorizedWorkLink {
-                    work_id: work.id.clone(),
-                    version: work.version,
-                });
-            }
         }
     }
     if body.trim().is_empty() || recipient_ids.is_empty() {
@@ -628,7 +616,7 @@ mod tests {
     }
 
     #[test]
-    fn work_link_and_recipient_route_authority_fail_closed() {
+    fn work_link_is_team_run_context_not_work_mutation() {
         let intent = MessageAuthoringIntent::Send {
             recipient_ids: vec!["host-a".into()],
             body: "work status".into(),
@@ -645,10 +633,27 @@ mod tests {
         );
 
         let mut foreign_owner = command(MessageAuthoringOperation::Send, intent.clone());
-        foreign_owner.linked_work = Some(linked_work("other-member", "other-run"));
+        let foreign_owned_work = linked_work("other-member", "other-run");
+        foreign_owner.linked_work = Some(foreign_owned_work.clone());
+        let prepared = prepare_message_authoring(foreign_owner)
+            .expect("an active Team member may reference another member's Work");
+        assert_eq!(prepared.draft.work_id.as_deref(), Some("work-a"));
         assert_eq!(
-            prepare_message_authoring(foreign_owner),
-            Err(MessageAuthoringError::UnauthorizedWorkLink {
+            foreign_owned_work.owner_member_id.as_deref(),
+            Some("other-member")
+        );
+        assert_eq!(
+            foreign_owned_work.active_member_run_id.as_deref(),
+            Some("other-run")
+        );
+
+        let mut outside_run = command(MessageAuthoringOperation::Send, intent.clone());
+        let mut outside_work = linked_work("other-member", "other-run");
+        outside_work.team_run_id = "run-b".into();
+        outside_run.linked_work = Some(outside_work);
+        assert_eq!(
+            prepare_message_authoring(outside_run),
+            Err(MessageAuthoringError::WorkOutsideTeamRun {
                 work_id: "work-a".into(),
                 version: 4
             })
