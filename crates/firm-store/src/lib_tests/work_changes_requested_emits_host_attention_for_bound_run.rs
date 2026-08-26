@@ -17,6 +17,14 @@ fn host_authored_changes_requested_does_not_wake_the_same_host() {
             member_work_context(&member.id, "we-cr-2", "claim-cr-ha", "unix-ms:3"),
         )
         .expect("claim Work");
+    let claimed = start_claimed_work_for_test(
+        &store,
+        &claimed,
+        &member,
+        "we-cr-start",
+        "start-cr-ha",
+        "unix-ms:3.5",
+    );
     let submitted = store
         .submit_work(
             &claimed.id,

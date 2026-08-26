@@ -17,6 +17,109 @@ pub(super) struct ActionMatrixContext<'a> {
     pub member_view_route: &'a str,
 }
 
+fn bind_matrix_work(
+    store: &HarnessStore,
+    space_id: &str,
+    work_id: &str,
+    member: &harness_core::agentfirm_api::MemberRun,
+    team: &harness_core::AgentTeam,
+    node_id: &str,
+    binding_generation: u64,
+) {
+    let work = store
+        .latest_works()
+        .expect("matrix Works")
+        .into_iter()
+        .find(|work| work.id == work_id)
+        .expect("matrix Work");
+    let current_members = store
+        .trust_member_runs(space_id)
+        .expect("matrix MemberRuns")
+        .into_iter()
+        .filter(|current| {
+            current.team_run_id == work.team_run_id
+                && current.agent_member_id == member.agent_member_id
+                && current.coordination_status
+                    == harness_core::agentfirm_api::MemberCoordinationStatus::Active
+        })
+        .collect::<Vec<_>>();
+    let [member] = current_members.as_slice() else {
+        panic!("matrix responsibility must resolve exactly one active MemberRun");
+    };
+    let membership = store
+        .fabric_team_memberships(space_id)
+        .expect("matrix TeamMemberships")
+        .into_iter()
+        .find(|membership| Some(membership.id.as_str()) == work.assignee_membership_id.as_deref())
+        .expect("exact matrix TeamMembership");
+    let sessions = store
+        .fabric_agent_sessions(space_id)
+        .expect("matrix AgentSessions")
+        .into_iter()
+        .filter(|session| {
+            session.agent_member_id == member.agent_member_id
+                && session.lifecycle != harness_core::agentfirm_api::AgentSessionStatus::Closed
+        })
+        .collect::<Vec<_>>();
+    let [session] = sessions.as_slice() else {
+        panic!("matrix responsibility must resolve exactly one AgentSession");
+    };
+    let daemon = store
+        .latest_node_daemon_lease(node_id)
+        .expect("matrix NodeDaemon lease")
+        .expect("active matrix NodeDaemon lease");
+    let binding_id = format!("work-binding:{work_id}:{binding_generation}");
+    store
+        .bind_responsible_work_execution(
+            &MutationContext {
+                execution_space_id: space_id.into(),
+                authenticated_actor: ActorRef {
+                    kind: ActorKind::Service,
+                    id: daemon.daemon_id.clone(),
+                },
+                authority_actor: None,
+                command_name: "test.matrix.scheduler_admission".into(),
+                idempotency_key: binding_id.clone(),
+                expected_version: 0,
+                request_fingerprint: None,
+            },
+            &RuntimeCommandBinding {
+                target_member_run_id: Some(member.id.clone()),
+                target_member_run_generation: Some(member.runtime_generation),
+                target_session_id: Some(session.id.clone()),
+                target_runtime_generation: Some(session.runtime_generation),
+                target_driver_generation: Some(session.control_state.driver_generation),
+                target_driver: session.control_state.driver_ref.clone(),
+                native_session_ref: session.native_session_ref.clone(),
+                composition_fingerprint: session.control_state.composition_fingerprint.clone(),
+                capability_fingerprint: session.control_state.capability_fingerprint.clone(),
+                capability_profile_version: None,
+                permission_envelope_ref: Some(session.permission_envelope_ref.clone()),
+            },
+            WorkExecutionBinding {
+                id: binding_id,
+                work_id: work.id.clone(),
+                work_revision: work.version,
+                team_id: team.id.clone(),
+                team_membership_id: membership.id,
+                agent_member_id: member.agent_member_id.clone(),
+                agent_session_id: session.id.clone(),
+                agent_session_generation: session.runtime_generation,
+                delivery_id: format!("work-delivery:{work_id}:{binding_generation}"),
+                binding_generation,
+                status: WorkExecutionBindingStatus::Active,
+                version: 1,
+                created_by: ActorRef {
+                    kind: ActorKind::Service,
+                    id: daemon.daemon_id,
+                },
+                bound_at: "unix-ms:matrix-bind".into(),
+                ended_at: None,
+            },
+        )
+        .expect("matrix scheduler admission");
+}
+
 pub(super) fn assert_action_matrix_and_final_projections(context: ActionMatrixContext<'_>) {
     let ActionMatrixContext {
         serve,
@@ -227,25 +330,54 @@ pub(super) fn assert_action_matrix_and_final_projections(context: ActionMatrixCo
     &action_headers(MEMBER_TOKEN, "matrix-member-claim", "1"),
     "claim_work",
 );
+    let claimed_work = store
+        .latest_works()
+        .expect("claimed Work projection")
+        .into_iter()
+        .find(|work| work.id == "work-member-claim-replay")
+        .expect("claimed Work");
+    assert_eq!(claimed_work.phase, harness_core::WorkPhase::Open);
+    assert_eq!(claimed_work.active_member_run_id, None);
+    assert!(store
+        .fabric_work_execution_bindings(space_id)
+        .expect("bindings immediately after claim")
+        .into_iter()
+        .all(|binding| binding.work_id != claimed_work.id));
+    bind_matrix_work(
+        store,
+        space_id,
+        &claimed_work.id,
+        &trust_member_run,
+        team,
+        node_id,
+        1,
+    );
+    assert_exact_role_action_replay(
+        serve,
+        &format!("/v1/agentfirm/team-runs/{run_id}/works/work-member-claim-replay/start?project={project_id}"),
+        &serde_json::json!({"action":"start_work"}),
+        &action_headers(MEMBER_TOKEN, "matrix-claimed-start", "2"),
+        "claimed start_work",
+    );
     for (route_suffix, label, version, key, body) in [
         (
             "block",
             "claimed block_work",
-            "2",
+            "3",
             "matrix-claimed-block",
             serde_json::json!({"action":"block_work","reason":"claim-path blocker"}),
         ),
         (
             "resume",
             "claimed unblock_work",
-            "3",
+            "4",
             "matrix-claimed-resume",
             serde_json::json!({"action":"unblock_work","resolution":"claim-path blocker resolved"}),
         ),
         (
             "submit",
             "claimed submit_work",
-            "4",
+            "5",
             "matrix-claimed-submit",
             serde_json::json!({"action":"submit_work","result_summary":"claim path complete","candidate_revision":"3123456789abcdef0123456789abcdef01234567","check_refs":["check:claim-replay-matrix"]}),
         ),
@@ -259,7 +391,6 @@ pub(super) fn assert_action_matrix_and_final_projections(context: ActionMatrixCo
             label,
         );
     }
-
     let member_matrix_work = serde_json::json!({
         "action":"create_work",
         "work_id":"work-member-replay-matrix",
@@ -277,10 +408,22 @@ pub(super) fn assert_action_matrix_and_final_projections(context: ActionMatrixCo
     assert_exact_role_action_replay(
     serve,
     &format!("/v1/agentfirm/team-runs/{run_id}/works/work-member-replay-matrix/assign?project={project_id}"),
-    &serde_json::json!({"action":"assign_work","member_run_id":member_run_id}),
+    &serde_json::json!({
+        "action":"assign_work",
+        "membership_id":claimed_work.assignee_membership_id
+    }),
     &action_headers(TOKEN, "matrix-member-assign", "1"),
     "member-matrix assign",
 );
+    bind_matrix_work(
+        store,
+        space_id,
+        "work-member-replay-matrix",
+        &trust_member_run,
+        team,
+        node_id,
+        1,
+    );
     let member_steps = [
         (
             "start",
@@ -321,7 +464,6 @@ pub(super) fn assert_action_matrix_and_final_projections(context: ActionMatrixCo
             label,
         );
     }
-
     // An idle member on an unreviewed provider tuple keeps its runtime
     // availability fact but must not be counted Ready, and the adapter review
     // state rides along as its own fact with remediation metadata.

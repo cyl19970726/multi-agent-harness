@@ -452,6 +452,31 @@ fn insert_runtime_work(
         .unwrap()
 }
 
+fn assign_runtime_work(
+    store: &HarnessStore,
+    work: &firm_core::Work,
+    membership: &TeamMembership,
+) -> firm_core::Work {
+    let exact_host = store.exact_team_run_host_actor(&work.team_run_id).unwrap();
+    store
+        .assign_work_to_membership(
+            &work.id,
+            work.version,
+            &membership.id,
+            "space-test",
+            firm_core::WorkCommandContext {
+                event_id: format!("event-assign-{}", work.id),
+                performed_by_actor: exact_host.clone(),
+                authority_actor: Some(exact_host),
+                causation_ref: None,
+                idempotency_key: format!("assign-{}", work.id),
+                created_at: "t-assign".into(),
+                duplicate_ok: false,
+            },
+        )
+        .unwrap()
+}
+
 fn seed_membership_scope(store: &HarnessStore) {
     append_runtime_team(store, "team-membership-test", "team-run-membership-test");
     store

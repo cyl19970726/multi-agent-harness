@@ -6,19 +6,14 @@ fn submitted_and_blocked_work_reconcile_exactly_one_host_attention_each() {
     let store = HarnessStore::new(&root);
     let (_review_run, review_member, review_work) =
         seed_host_attention_fixture(&store, "review-run", Some("review-host-task"));
-    let started_review = store
-        .start_work(
-            &review_work.id,
-            review_work.version,
-            &review_member.id,
-            member_work_context(
-                &review_member.id,
-                "work-event-review-started",
-                "work-command-review-started",
-                "unix-ms:3",
-            ),
-        )
-        .expect("start review Work");
+    let started_review = start_claimed_work_for_test(
+        &store,
+        &review_work,
+        &review_member,
+        "work-event-review-started",
+        "work-command-review-started",
+        "unix-ms:3",
+    );
     let submitted = store
         .submit_work(
             &started_review.id,
@@ -38,19 +33,14 @@ fn submitted_and_blocked_work_reconcile_exactly_one_host_attention_each() {
 
     let (_blocked_run, blocked_member, blocked_work) =
         seed_host_attention_fixture(&store, "blocked-run", Some("blocked-host-task"));
-    let started_blocked = store
-        .start_work(
-            &blocked_work.id,
-            blocked_work.version,
-            &blocked_member.id,
-            member_work_context(
-                &blocked_member.id,
-                "work-event-blocked-started",
-                "work-command-blocked-started",
-                "unix-ms:5",
-            ),
-        )
-        .expect("start blocked Work");
+    let started_blocked = start_claimed_work_for_test(
+        &store,
+        &blocked_work,
+        &blocked_member,
+        "work-event-blocked-started",
+        "work-command-blocked-started",
+        "unix-ms:5",
+    );
     let blocked = store
         .block_work(
             &started_blocked.id,

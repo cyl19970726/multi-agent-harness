@@ -41,9 +41,6 @@ pub(super) fn execute_work_record_action(
         "request-changes" | "gate-requirements" => {
             require_host(&auth, &team.host_agent_id, "work", work_id)?;
         }
-        "revise" | "reports" | "findings" | "failure-analyses" => {
-            let _ = require_exact_work_member(store, &auth, &current)?;
-        }
         _ => {}
     }
     let replay = match operation {
@@ -112,7 +109,6 @@ pub(super) fn execute_work_record_action(
                 Some(current.version),
             ));
         };
-        let _member_run = require_exact_work_member(store, &auth, &current)?;
         return create_result_report(
             store,
             auth,
@@ -145,7 +141,6 @@ pub(super) fn execute_work_record_action(
                 recommended_next_action,
             },
         ) => {
-            let _member_run = require_exact_work_member(store, &auth, &current)?;
             let report = WorkReport {
                 id: deterministic_id("work-report", &auth),
                 work_id: work_id.into(),
@@ -188,7 +183,6 @@ pub(super) fn execute_work_record_action(
                 confidence,
             },
         ) => {
-            let _member_run = require_exact_work_member(store, &auth, &current)?;
             let finding = WorkFinding {
                 id: deterministic_id("work-finding", &auth),
                 work_id: work_id.into(),
@@ -228,7 +222,7 @@ pub(super) fn execute_work_record_action(
                 confidence,
             },
         ) => {
-            let member_run = require_exact_work_member(store, &auth, &current)?;
+            let member_run = resolve_member_run(store, &auth, &current.team_run_id)?;
             let analysis = FailureAnalysis {
                 id: deterministic_id("failure-analysis", &auth),
                 work_id: work_id.into(),

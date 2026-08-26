@@ -971,24 +971,23 @@ impl HarnessStore {
         if !current.is_claim_ready(works.iter()) {
             return Err(StoreError::Conflict(format!("work {work_id} is not ready")));
         }
-        if works.iter().any(|work| {
-            work.team_run_id == current.team_run_id
-                && work.phase == WorkPhase::Active
-                && work.condition == WorkCondition::Normal
-                && work.active_member_run_id.as_deref() == Some(member_run_id)
-        }) {
-            return Err(StoreError::Conflict(format!(
-                "MEMBER_BUSY: ProviderRuntimeProjection {member_run_id} already has active Work"
-            )));
-        }
         let mut next = current.clone();
         next.owner_member_id = Some(owner_id);
-        next.active_member_run_id = Some(member.id.clone());
         next.assignee_membership_id = self.resolve_assignee_membership_id_unlocked(
             next.accountable_team_id.as_deref(),
             next.owner_member_id.as_deref().unwrap_or_default(),
         )?;
-        next.phase = WorkPhase::Active;
+        if next.assignee_membership_id.is_none() {
+            return Err(StoreError::Conflict(format!(
+                "WORK_RESPONSIBILITY_UNRESOLVED: member {member_run_id} has no exact active TeamMembership for Work {work_id}"
+            )));
+        }
+        // Claim freezes only stable TeamMembership/AgentMember responsibility.
+        // Runtime ownership is resolved later by the canonical scheduler into
+        // one exact WorkExecutionBinding before Start; it is never copied into
+        // the Work projection.
+        next.active_member_run_id = None;
+        next.phase = WorkPhase::Open;
         next.condition = WorkCondition::Normal;
         next.resolution = None;
         next.version += 1;

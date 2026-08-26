@@ -17,6 +17,14 @@ fn work_submit_emits_host_attention_for_bound_run() {
             member_work_context(&member.id, "we-submit-2", "claim-submit-ha", "unix-ms:3"),
         )
         .expect("claim Work");
+    let claimed = start_claimed_work_for_test(
+        &store,
+        &claimed,
+        &member,
+        "we-submit-start",
+        "start-submit-ha",
+        "unix-ms:3.5",
+    );
     let _submitted = store
         .submit_work(
             &claimed.id,

@@ -16,6 +16,8 @@ use super::*;
 
 mod fixtures;
 use fixtures::*;
+mod work_execution_fixture;
+use work_execution_fixture::start_claimed_work_for_test;
 
 fn lock_policy_test_store(label: &str) -> HarnessStore {
     let root = std::env::temp_dir().join(format!(
@@ -430,7 +432,7 @@ fn seed_host_attention_fixture(
             Work {
                 id: format!("work-{run_id}"),
                 team_run_id: run_id.into(),
-                accountable_team_id: None,
+                accountable_team_id: Some(run.agent_team_id.clone()),
                 assignee_membership_id: None,
                 legacy_containment_ref: None,
                 title: "deliver exact Host attention".into(),
@@ -440,7 +442,7 @@ fn seed_host_attention_fixture(
                 condition: WorkCondition::Normal,
                 resolution: None,
                 owner_member_id: None,
-                active_member_run_id: Some(member.id.clone()),
+                active_member_run_id: None,
                 claim_mode: WorkClaimMode::HostAssign,
                 eligible_member_ids: Vec::new(),
                 prerequisite_work_ids: Vec::new(),
@@ -477,6 +479,30 @@ fn seed_host_attention_fixture(
             },
         )
         .expect("seed Work");
+    let membership_id = format!(
+        "membership:{}:{}",
+        run.agent_team_id, member.agent_member_id
+    );
+    let work = store
+        .assign_work_to_membership(
+            &work.id,
+            work.version,
+            &membership_id,
+            "unit-test-space",
+            WorkCommandContext {
+                event_id: format!("work-event-{run_id}-assigned"),
+                performed_by_actor: run
+                    .host_actor
+                    .clone()
+                    .expect("fixture has exact Host authority"),
+                authority_actor: None,
+                causation_ref: None,
+                idempotency_key: format!("assign-work-{run_id}"),
+                created_at: "unix-ms:2".into(),
+                duplicate_ok: false,
+            },
+        )
+        .expect("assign seeded Work responsibility");
     (run, member, work)
 }
 
@@ -948,15 +974,6 @@ fn host_work_context(id: &str, key: &str, at: &str) -> WorkCommandContext {
         created_at: at.into(),
         duplicate_ok: false,
     }
-}
-
-fn run_host_work_context(run: &AgentTeamRun, id: &str, key: &str, at: &str) -> WorkCommandContext {
-    let mut context = host_work_context(id, key, at);
-    context.performed_by_actor = run
-        .host_actor
-        .clone()
-        .expect("current TeamRun fixture has exact Host actor");
-    context
 }
 
 fn member_work_context(member_run_id: &str, id: &str, key: &str, at: &str) -> WorkCommandContext {

@@ -17,6 +17,14 @@ fn host_attention_dedup_ignores_duplicate_event() {
             member_work_context(&member.id, "we-dedup-2", "claim-dedup-ha", "unix-ms:3"),
         )
         .expect("claim Work");
+    let claimed = start_claimed_work_for_test(
+        &store,
+        &claimed,
+        &member,
+        "we-dedup-start",
+        "start-dedup-ha",
+        "unix-ms:3.5",
+    );
     let ctx = member_work_context(&member.id, "we-dedup-3", "submit-dedup-ha", "unix-ms:4");
     let _submitted = store
         .submit_work(

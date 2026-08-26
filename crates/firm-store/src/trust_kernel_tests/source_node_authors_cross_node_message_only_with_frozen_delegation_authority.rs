@@ -20,6 +20,7 @@ fn source_node_authors_cross_node_message_only_with_frozen_delegation_authority(
         .team_host_membership("space-test", "source-team", true)
         .unwrap();
     let source_work = insert_runtime_work(&store, "source-work", "source-team", "source-team-run");
+    let source_work = assign_runtime_work(&store, &source_work, &source_membership);
     store
         .bind_work_execution_fixture(
             &context("fixture-host", "work.bind", "source-work-binding", 0),
@@ -32,7 +33,7 @@ fn source_node_authors_cross_node_message_only_with_frozen_delegation_authority(
                 agent_member_id: "remote-sender".into(),
                 agent_session_id: "session-remote-sender".into(),
                 agent_session_generation: 1,
-                delivery_id: "source-work-delivery".into(),
+                delivery_id: format!("work-delivery:{}:1", source_work.id),
                 binding_generation: 1,
                 status: WorkExecutionBindingStatus::Active,
                 version: 1,

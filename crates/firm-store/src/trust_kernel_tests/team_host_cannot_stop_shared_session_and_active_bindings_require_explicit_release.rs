@@ -54,7 +54,9 @@ fn team_host_cannot_stop_shared_session_and_active_bindings_require_explicit_rel
         "host-b"
     );
     let work_a = insert_runtime_work(&store, "work-a", "team-a", "team-run-a");
+    let work_a = assign_runtime_work(&store, &work_a, &shared_a);
     let work_b = insert_runtime_work(&store, "work-b", "team-b", "team-run-b");
+    let work_b = assign_runtime_work(&store, &work_b, &shared_b);
     for (id, work, membership) in [
         ("binding-a", &work_a, &shared_a),
         ("binding-b", &work_b, &shared_b),
@@ -71,7 +73,7 @@ fn team_host_cannot_stop_shared_session_and_active_bindings_require_explicit_rel
                     agent_member_id: "shared-agent".into(),
                     agent_session_id: shared_session.id.clone(),
                     agent_session_generation: shared_session.runtime_generation,
-                    delivery_id: format!("delivery-{id}"),
+                    delivery_id: format!("work-delivery:{}:1", work.id),
                     binding_generation: 1,
                     status: WorkExecutionBindingStatus::Active,
                     version: 1,

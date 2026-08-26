@@ -861,26 +861,6 @@ pub(super) fn resolve_member_run(
     Ok(runs.remove(0).id)
 }
 
-pub(super) fn require_exact_work_member(
-    store: &HarnessStore,
-    auth: &AuthenticatedMutation,
-    work: &Work,
-) -> Result<String, StoreError> {
-    let member_run_id = resolve_member_run(store, auth, &work.team_run_id)?;
-    if work.owner_member_id.as_deref() != Some(auth.actor.id.as_str())
-        || work.active_member_run_id.as_deref() != Some(member_run_id.as_str())
-    {
-        return Err(encoded_error(
-            "UNAUTHORIZED_ACTOR",
-            "member-owned Work mutation requires the exact accountable AgentMember and current active WorkExecutionBinding",
-            "work",
-            &work.id,
-            Some(work.version),
-        ));
-    }
-    Ok(member_run_id)
-}
-
 pub(super) fn current_work(
     store: &HarnessStore,
     team_run_id: &str,

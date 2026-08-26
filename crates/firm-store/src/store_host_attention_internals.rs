@@ -795,13 +795,60 @@ impl HarnessStore {
             matches.extend(
                 self.fabric_team_memberships(&space_id)?
                     .into_iter()
-                    .filter(|membership| membership.id == membership_id),
+                    .filter(|membership| membership.id == membership_id)
+                    .map(|membership| (space_id.clone(), membership)),
             );
         }
-        Ok(matches.len() == 1
-            && matches[0].team_id == team_id
-            && matches[0].agent_member_id == member.agent_member_id
-            && matches[0].state == firm_core::agentfirm_api::TeamMembershipStatus::Active)
+        let [(space_id, membership)] = matches.as_slice() else {
+            return Ok(false);
+        };
+        if membership.team_id != team_id
+            || membership.agent_member_id != member.agent_member_id
+            || membership.state != firm_core::agentfirm_api::TeamMembershipStatus::Active
+        {
+            return Ok(false);
+        }
+        let active_bindings = self
+            .fabric_work_execution_bindings(space_id)?
+            .into_iter()
+            .filter(|binding| {
+                binding.work_id == work.id
+                    && binding.status
+                        == firm_core::agentfirm_api::WorkExecutionBindingStatus::Active
+            })
+            .collect::<Vec<_>>();
+        let [binding] = active_bindings.as_slice() else {
+            return Ok(false);
+        };
+        if binding.work_revision > work.version
+            || self.work_responsibility_changed_after_revision_unlocked(
+                &work.id,
+                binding.work_revision,
+            )?
+            || binding.team_id != team_id
+            || binding.team_membership_id != membership.id
+            || binding.agent_member_id != member.agent_member_id
+        {
+            return Ok(false);
+        }
+        let sessions = self
+            .fabric_agent_sessions(space_id)?
+            .into_iter()
+            .filter(|session| session.id == binding.agent_session_id)
+            .collect::<Vec<_>>();
+        let [session] = sessions.as_slice() else {
+            return Ok(false);
+        };
+        Ok(session.agent_member_id == member.agent_member_id
+            && session.runtime_generation == binding.agent_session_generation
+            && session.lifecycle != firm_core::agentfirm_api::AgentSessionStatus::Closed
+            && member.coordination_is_active()
+            && !matches!(
+                member.status,
+                firm_core::MemberRunStatus::Completed
+                    | firm_core::MemberRunStatus::Failed
+                    | firm_core::MemberRunStatus::Stopped
+            ))
     }
 
     /// Resolve the assignee TeamMembership for one (accountable Team,

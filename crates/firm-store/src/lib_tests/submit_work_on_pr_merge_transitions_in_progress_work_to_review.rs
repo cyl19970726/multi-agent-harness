@@ -17,6 +17,15 @@ fn submit_work_on_pr_merge_transitions_in_progress_work_to_review() {
             member_work_context(&member.id, "we-ms-2", "claim-github-merge", "unix-ms:3"),
         )
         .expect("claim Work");
+    assert_eq!(claimed.phase, WorkPhase::Open);
+    let claimed = start_claimed_work_for_test(
+        &store,
+        &claimed,
+        &member,
+        "we-ms-start",
+        "start-github-merge",
+        "unix-ms:3.5",
+    );
     assert_eq!(claimed.phase, WorkPhase::Active);
 
     // Refuses when no MERGED pull_request link is present.

@@ -54,6 +54,7 @@ fn work_execution_binding_rechecks_authoritative_dependency_readiness() {
             },
         )
         .unwrap();
+    let dependent = assign_runtime_work(&store, &dependent, &membership);
 
     let before = store.canonical_operations().unwrap();
     let error = store
@@ -68,7 +69,7 @@ fn work_execution_binding_rechecks_authoritative_dependency_readiness() {
                 agent_member_id: "builder".into(),
                 agent_session_id: session.id,
                 agent_session_generation: session.runtime_generation,
-                delivery_id: "delivery-dependent".into(),
+                delivery_id: format!("work-delivery:{}:1", dependent.id),
                 binding_generation: 1,
                 status: WorkExecutionBindingStatus::Active,
                 version: 1,

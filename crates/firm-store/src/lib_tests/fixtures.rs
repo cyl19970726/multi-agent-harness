@@ -1,5 +1,19 @@
 use super::*;
 
+pub(super) fn run_host_work_context(
+    run: &AgentTeamRun,
+    id: &str,
+    key: &str,
+    at: &str,
+) -> WorkCommandContext {
+    let mut context = host_work_context(id, key, at);
+    context.performed_by_actor = run
+        .host_actor
+        .clone()
+        .expect("current TeamRun fixture has exact Host actor");
+    context
+}
+
 pub(super) fn provider_compatibility_admission(
     id: &str,
     execution_mode: &str,

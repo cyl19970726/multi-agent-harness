@@ -17,14 +17,14 @@ fn closed_member_cannot_mutate_owned_work_until_reopen() {
             host_work_context("we-closed-2", "assign-owned", "unix-ms:3"),
         )
         .expect("assign Work");
-    let started = store
-        .start_work(
-            &assigned.id,
-            assigned.version,
-            &member.id,
-            member_work_context(&member.id, "we-closed-3", "start-owned", "unix-ms:4"),
-        )
-        .expect("start Work");
+    let started = start_claimed_work_for_test(
+        &store,
+        &assigned,
+        &member,
+        "we-closed-3",
+        "start-owned",
+        "unix-ms:4",
+    );
 
     // Close lands mid-execution: coordination flips Closed while the Work
     // stays owned and InProgress.
@@ -45,7 +45,9 @@ fn closed_member_cannot_mutate_owned_work_until_reopen() {
         )
         .expect_err("closed member cannot block owned Work");
     assert!(
-        blocked.to_string().contains("MEMBER_UNAVAILABLE"),
+        blocked
+            .to_string()
+            .contains("does not hold active Work responsibility"),
         "unexpected error: {blocked}"
     );
     let submitted = store
@@ -60,7 +62,9 @@ fn closed_member_cannot_mutate_owned_work_until_reopen() {
         )
         .expect_err("closed member cannot submit owned Work");
     assert!(
-        submitted.to_string().contains("MEMBER_UNAVAILABLE"),
+        submitted
+            .to_string()
+            .contains("does not hold active Work responsibility"),
         "unexpected error: {submitted}"
     );
     // The Work projection is untouched by both rejections.
