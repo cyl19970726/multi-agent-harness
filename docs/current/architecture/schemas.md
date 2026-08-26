@@ -3,15 +3,16 @@
 Schemas define object contracts shared by Rust types, API responses, CLI
 outputs, adapters, and the Agent Dashboard.
 
-## Native Mission Objects
+## Current Execution Foundation Objects
 
 | Object | Purpose |
 | --- | --- |
-| `Mission` | Durable intent/context, one owning AgentTeam, and closeout |
-| `MissionLogEntry` | One append-only Host judgment, replan, recovery, or closeout-evidence record inside a Mission; not a lifecycle object |
-| `AgentTeam` | One Mission's flat Team with required Host Agent and immutable Node placement |
+| `AgentTeam` | Durable flat Team with required Host Agent and immutable Node placement |
+| `TeamMembership` / `AgentMember` | Participation generation and the sole durable agent identity |
 | `AgentTeamRun` | One Team execution with required Team, Node, and Project Binding identity |
 | `MemberRun` | One role/provider execution instance inside a TeamRun |
+| `AgentSession` / `NativeSessionRef` | Exact runtime generation and provider-native session binding; no transcript mirror |
+| `RuntimeCommand` | Durable, generation-fenced provider effect preparation and settlement |
 | `Work` / `WorkOperation` / `WorkEvent` / `WorkDelivery` | Team-accountable flat DAG node, crash-atomic replay row, append-only semantic/dependency transition, and versioned runtime delivery |
 | `WorkModuleDefinition` / `WorkModuleBinding` / Gate records | Closed built-in Module definition, exact version/config binding, and candidate verification contract; not an open registry |
 | `WorkDelegation` / `WorkDelegationEvent` | Cross-Team responsibility handoff with CAS, idempotency, cycle prevention, and source rollup |

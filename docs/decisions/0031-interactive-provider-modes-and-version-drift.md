@@ -40,7 +40,7 @@ The shared product actions are:
 | Send message | steer current turn | start follow-up turn | queue for next round |
 | Interrupt | provider interrupt, then await terminal acknowledgement | no-op | unsupported unless a real process handle is controlled |
 | Stop member | interrupt active turn, close adapter runtime, then mark stopped | close runtime, then mark stopped | only after observed process termination |
-| Provider question | durable PendingInteraction routed to Lead/Human/Policy | same | explicit blocker/follow-up only |
+| Provider question | correlated identity-first Message routed to the exact recipient; permission callbacks outside the frozen AgentSession ceiling fail closed | same | explicit blocker/follow-up Message only |
 
 The Dashboard composer must show which result occurred: **Steered now**,
 **Started follow-up**, or **Queued for next round**. An interrupt control enters
@@ -233,7 +233,9 @@ prompts or treating an unreviewed binary as compatible.
   actually implements. ACP `session/cancel` must be sent as a notification
   without a JSON-RPC request id, and Interrupt acceptance must be backed by the
   terminal prompt response rather than an invented cancel response;
-- provider request routing is durable through PendingInteraction;
+- provider question/reply routing is durable through correlated identity-first
+  Messages; permission authority remains frozen on the AgentSession and is not
+  delegated to Message delivery;
 - restart-time Codex `thread/resume`/`exec resume` and Kimi
   `session/resume` (with an explicit older-server `session/load` fallback) use
   `NativeSessionRef` bindings and fail rather than silently opening a fresh

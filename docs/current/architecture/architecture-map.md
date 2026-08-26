@@ -55,6 +55,7 @@ flowchart TB
 | Application services | core-facing `WorkPersistence` port and generic `WorkApplication<P>` use cases; typed ViewerContext principal/facts/projection policy; typed Runtime Recovery action policy and persistence port; typed Message Authoring operation/intent/facts/error and deterministic `MessageDraft`; typed Member Close command/facts/authorization/runtime-kind plan; separate runtime policy may use `firm-runtime-contract` | concrete Store/CLI/Provider imports, HTTP/JSON parsing, Message/Delivery persistence, provider control receipts, or transport-specific policy |
 | Work store | application-port implementation, atomic append/CAS/projections/outbox | lifecycle/readiness policy or CLI dependency |
 | CLI composition | concrete Store wiring plus HTTP/Role Action/RoleView adapters and NodeDaemon RuntimeCommand transport | a second Work use-case, ViewerContext authority/projection implementation, Runtime Recovery policy implementation, canonical Message sender/recipient/intent policy, or Member Close actor/version/lifecycle policy |
+| RuntimeCommand composition | crate-private `firm-cli::runtime_composition`: admission and durable preparation, exact AgentSession/MemberRun/runtime-generation binding, post-admission daemon revalidation, postcondition mapping, and settlement | provider protocol, adapter-local retry policy, a second RuntimeCommand writer, or product lifecycle authority |
 | Work views | one RoleView feeds first-class Graph (`@xyflow/react`, deterministic presentation layout) and Kanban (Open/Active/Review/Closed), sharing Inspector/readiness/actions | persisted node positions, browser-derived readiness, hand-built semantic graph writes, or drag-authority |
 | Messages | application-prepared identity-first authoring intent; NodeDaemon-frozen source/session authority; Store-atomic MessageSubscription authorization and per-recipient CanonicalMessageDelivery | Work lifecycle mutation, RuntimeCommand authority, or a second Message ledger |
 | Execution Spaces and Project Bindings | coordination storage vs provider cwd/instructions/Skills/plugins/MCP selection | each other's scope; `--project` never switches the coordination store |
@@ -86,10 +87,10 @@ outcomes, artifact/check references, evidence, and decisions are promoted into
 Harness coordination truth. The retired Company OS ledgers are readable only
 as historical exports.
 
-The in-progress package ownership migration is recorded in the
+The provider-package migration history and its landed ownership crosswalk are recorded in the
 [Provider Runtime Package Crosswalk](provider-runtime-package-crosswalk.md).
-Target entries in that crosswalk are non-operative until their exact revision
-lands; current code and gates remain implementation truth during migration.
+Starting-revision columns in that document are historical; landed ownership is
+proved only by current code and gates.
 
 ## Retired layers
 

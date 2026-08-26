@@ -217,7 +217,7 @@
         "check-doc-links",
         "check-doc-governance"
       ],
-      "reviewAfter": "2026-08-22",
+      "reviewAfter": "2026-11-26",
       "lastVerifiedWith": [
         "harness governance check"
       ],
@@ -491,7 +491,7 @@
         "check-doc-links",
         "check-doc-governance"
       ],
-      "reviewAfter": "2026-09-30",
+      "reviewAfter": "2026-11-26",
       "lastVerifiedWith": [
         "npx pnpm@9.15.4 check"
       ],
@@ -514,6 +514,42 @@
         {
           "kind": "decision",
           "ref": "docs/decisions/0056-correlated-message-and-session-permission-cutover.md"
+        }
+      ]
+    },
+    {
+      "path": "docs/current/architecture/provider-runtime-package-crosswalk.md",
+      "ownerRole": "architecture",
+      "status": "stable",
+      "lifecycle": "volatile",
+      "canonicalFor": [
+        "provider runtime package migration starting-revision history and landed ownership crosswalk"
+      ],
+      "dependsOn": [
+        "docs/current/architecture/architecture-map.md",
+        "docs/current/architecture/agent-runtime.md"
+      ],
+      "machineConsumers": [
+        "check-doc-links",
+        "check-doc-governance",
+        "check-provider-runtime-packages"
+      ],
+      "reviewAfter": "2026-09-09",
+      "lastVerifiedWith": [
+        "pnpm check:provider-runtime-packages",
+        "pnpm check:runtime-composition-boundaries"
+      ],
+      "reorgTrigger": "Provider package ownership, runtime composition ownership, or compatibility execution surfaces change.",
+      "authorityClass": "implementation_reference",
+      "implementationState": "verified",
+      "truthRefs": [
+        {
+          "kind": "test",
+          "ref": "scripts/check-provider-runtime-package-boundaries.mjs"
+        },
+        {
+          "kind": "test",
+          "ref": "scripts/check-runtime-composition-boundaries.mjs"
         }
       ]
     },
@@ -1886,48 +1922,6 @@
       ]
     },
     {
-      "path": "docs/current/operations/master-recovery-design-2026-08-08.md",
-      "ownerRole": "recovery-lead",
-      "status": "stable",
-      "lifecycle": "volatile",
-      "canonicalFor": [
-        "master recovery architecture and phased acceptance for the 2026-08-08 incident",
-        "issue disposition, subagent-only recovery policy, and exact-revision release gates"
-      ],
-      "dependsOn": [
-        "AGENTS.md",
-        "docs/current/architecture/data-model.md",
-        "docs/current/operations/operations.md",
-        "docs/decisions/0032-provider-native-session-is-execution-truth.md",
-        "docs/decisions/0050-agent-team-work-board-and-message-boundary.md",
-        "docs/decisions/0051-single-intent-spine.md"
-      ],
-      "machineConsumers": [
-        "check-doc-links",
-        "check-doc-governance"
-      ],
-      "reviewAfter": "2026-08-22",
-      "lastVerifiedWith": [
-        "cargo fmt --all -- --check",
-        "cargo check --workspace --all-targets",
-        "cargo test --workspace -- --test-threads=1",
-        "npx pnpm@9.15.4 check"
-      ],
-      "reorgTrigger": "The recovery baseline, phase ordering, issue disposition, or exact-revision acceptance contract changes.",
-      "authorityClass": "design_intent",
-      "implementationState": "design_only",
-      "truthRefs": [
-        {
-          "kind": "decision",
-          "ref": "docs/decisions/0050-agent-team-work-board-and-message-boundary.md"
-        },
-        {
-          "kind": "decision",
-          "ref": "docs/decisions/0051-single-intent-spine.md"
-        }
-      ]
-    },
-    {
       "path": "docs/decisions/0027-company-os-primary-model.md",
       "ownerRole": "product-architecture",
       "status": "deprecated",
@@ -2125,7 +2119,7 @@
         "check-doc-links",
         "check-doc-governance"
       ],
-      "reviewAfter": "2026-08-22",
+      "reviewAfter": "2026-09-09",
       "lastVerifiedWith": [
         "npx pnpm@9.15.4 check"
       ],
@@ -2154,8 +2148,8 @@
     {
       "path": "docs/decisions/0030-provider-interaction-contract.md",
       "ownerRole": "architecture",
-      "status": "stable",
-      "lifecycle": "stable",
+      "status": "deprecated",
+      "lifecycle": "archival",
       "canonicalFor": [
         "historical provider interaction object contract"
       ],
@@ -2168,7 +2162,7 @@
         "check-doc-links",
         "check-doc-governance"
       ],
-      "reviewAfter": "2026-08-22",
+      "reviewAfter": "2026-11-14",
       "lastVerifiedWith": [
         "npx pnpm@9.15.4 check"
       ],
@@ -2279,7 +2273,7 @@
         "check-doc-links",
         "check-doc-governance"
       ],
-      "reviewAfter": "2026-08-22",
+      "reviewAfter": "2026-11-26",
       "lastVerifiedWith": [
         "npx pnpm@9.15.4 check"
       ],
@@ -2321,7 +2315,7 @@
         "check-doc-links",
         "check-doc-governance"
       ],
-      "reviewAfter": "2026-08-22",
+      "reviewAfter": "2026-11-26",
       "lastVerifiedWith": [
         "npx pnpm@9.15.4 check"
       ],
@@ -2353,26 +2347,27 @@
       "status": "stable",
       "lifecycle": "stable",
       "canonicalFor": [
-        "Agent Team store, project, run execution, and member worktree root separation",
-        "Agent Team provider cwd precedence and same-repository worktree validation",
-        "non-secret MemberRun workspace snapshot contract"
+        "Execution Space, Project Binding, TeamRun execution root, and MemberWorkspaceBinding separation",
+        "provider cwd precedence, explicit Host workspace assignment, and same-repository worktree validation",
+        "non-secret workspace observation contract"
       ],
       "dependsOn": [
         "docs/decisions/0025-agent-team-run-control-plane.md",
         "docs/decisions/0032-provider-native-session-is-execution-truth.md",
         "docs/current/operations/multi-project.md",
-        "docs/current/operations/member-runtime-observability.md"
+        "docs/current/operations/member-runtime-observability.md",
+        "docs/current/work-workspace.md"
       ],
       "machineConsumers": [
         "check-doc-links",
         "check-doc-governance"
       ],
-      "reviewAfter": "2026-08-22",
+      "reviewAfter": "2026-11-26",
       "lastVerifiedWith": [
         "npx pnpm@9.15.4 check",
         "cargo test -p firm-cli --test team_run_api --test team_run_daemon"
       ],
-      "reorgTrigger": "Agent Team execution-root precedence, worktree identity validation, provider cwd selection, or workspace snapshot privacy fields change.",
+      "reorgTrigger": "MemberWorkspaceBinding authority, TeamRun execution-root precedence, worktree identity validation, provider cwd selection, or workspace observation privacy changes.",
       "authorityClass": "canonical_contract",
       "implementationState": "verified",
       "truthRefs": [
@@ -2382,11 +2377,11 @@
         },
         {
           "kind": "schema",
-          "ref": "schemas/member-run.schema.json"
+          "ref": "schemas/member-workspace-binding.schema.json"
         },
         {
-          "kind": "api",
-          "ref": "crates/firm-cli/src/main.rs"
+          "kind": "store",
+          "ref": "crates/firm-store/src/trust_kernel/trust_workspace.rs"
         },
         {
           "kind": "test",
@@ -2416,7 +2411,7 @@
         "check-doc-governance",
         "live Agent Team acceptance"
       ],
-      "reviewAfter": "2026-08-21",
+      "reviewAfter": "2026-11-26",
       "lastVerifiedWith": [
         "harness dashboard snapshot",
         "cargo test -p firm-cli --test team_run_api",
@@ -3226,7 +3221,7 @@
         "check-doc-links",
         "check-doc-governance"
       ],
-      "reviewAfter": "2026-08-25",
+      "reviewAfter": "2026-10-04",
       "lastVerifiedWith": [
         "npx pnpm@9.15.4 check:docs-governance"
       ],
@@ -3256,7 +3251,7 @@
         "check-doc-links",
         "check-doc-governance"
       ],
-      "reviewAfter": "2026-08-25",
+      "reviewAfter": "2026-10-04",
       "lastVerifiedWith": [
         "npx pnpm@9.15.4 check:docs-governance"
       ],

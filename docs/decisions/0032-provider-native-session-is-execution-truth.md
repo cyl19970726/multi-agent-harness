@@ -25,8 +25,8 @@ Harness schema migrations.
 
 Harness still needs durable state above one agent: why a team exists, which
 Work a member owns, who may answer a provider question, which Work version was
-submitted and accepted, what outcome and artifacts were returned, and which
-Wave revision the Host advanced. Those are Harness facts and cannot be
+submitted and accepted, and what outcome and artifacts were returned. Those
+are Harness facts and cannot be
 delegated to a provider's private transcript.
 
 ## Decision
@@ -34,12 +34,11 @@ delegated to a provider's private transcript.
 ### Three truth layers
 
 ```text
-Company OS truth (retired by DOC-108; historical layer)
-  Document / WorkItem / Approval / Finance / Organization
-                     |
 Harness coordination truth
-  Mission / Wave / AgentTeamRun / MemberRun binding
-  Assignment / TeamMessage / PendingInteraction / outcome / artifact refs / gate
+  AgentTeam / TeamMembership / AgentMember / TeamRun / MemberRun / AgentSession
+  Work / WorkOperation / WorkEvent / WorkDelivery
+  Message / MessageSubscription / CanonicalMessageDelivery
+  RuntimeCommand / outcome / artifact refs / Host acceptance
                      |
 Provider-native execution truth
   native session / turns / chat / tools / commands / file events / native children
@@ -51,16 +50,14 @@ stream into JSONL ledgers.
 
 Harness is canonical for coordination and responsibility. It persists:
 
-- Mission, current Host-plan Wave, independent execution-run identity,
-  MemberRun identity, role, constraints, and lifecycle state owned by Harness;
-- assignment, handoff, blocker, review, and cross-member/Host messages whose
-  existence matters outside the provider session;
-- `PendingInteraction`, because routing an Agent question or permission request
-  to Lead, Policy, or Human crosses a governance boundary;
-- explicit outcome summaries, check results, artifact references, hashes, and
-  Wave gates;
-- control requests and acknowledgements such as steer, interrupt, stop, resume,
-  and recovery attestations.
+- flat AgentTeam membership, TeamRun/MemberRun/AgentSession identity, role,
+  constraints, and lifecycle state owned by Harness;
+- canonical Work responsibility, ordered operations/events, exact execution
+  binding, WorkDelivery, submission, and explicit Host acceptance;
+- identity-first Messages, subscriptions, correlated provider question/reply,
+  and per-recipient CanonicalMessageDelivery;
+- durable RuntimeCommands, control acknowledgements, explicit outcome
+  summaries, check results, artifact references, and hashes.
 
 Harness does not persist:
 
@@ -72,12 +69,12 @@ Harness does not persist:
 
 An explicit Harness outcome summary is not a transcript copy. It is a
 coordination fact authored at the TeamRun boundary or deliberately cited by a
-Host Wave decision.
+Host acceptance decision.
 
 ### Native session binding
 
-`MemberRun`, `WorkflowStep`, and addressable standing-agent runtime bindings use
-the implemented `NativeSessionRef` contract:
+`AgentSession` and its exact MemberRun/runtime-generation binding use the
+implemented `NativeSessionRef` contract:
 
 ```text
 provider
@@ -112,7 +109,7 @@ Harness coordination records
 
 The adapter may normalize native events in memory for display. A bounded cache
 is allowed only when it is deletable, rebuildable, explicitly non-evidence, and
-never used to resume or accept a Wave. Provider unavailability produces an
+never used to resume or accept Work. Provider unavailability produces an
 honest `missing`, `stale`, or `incompatible` state; it does not fall back to a
 secret Harness transcript.
 
@@ -160,8 +157,9 @@ read, copied by project migration, exported as active evidence, or exposed by
 compatibility endpoints. Codex, Kimi, and Claude adapters discover provider
 session ids, read native activity on demand, resume through their verified
 native mode, and expose compatibility/availability honestly. Harness retains
-only coordination facts, pending interaction routing, explicit outcomes,
-artifact/check references, delivery control state, and Wave gates.
+only coordination facts, correlated Message routing, explicit outcomes,
+artifact/check references, delivery control state, RuntimeCommands, and Host
+acceptance.
 
 ## Consequences
 
@@ -182,15 +180,16 @@ artifact/check references, delivery control state, and Wave gates.
   an explicit unsupported/missing state.
 - New runs create no Harness transcript, stdout/JSONL mirror, or provider tool /
   command / file `MemberAction` rows.
-- Team Activity still shows assignments, interactions, handoffs, outcomes,
-  control acknowledgements, artifacts, and gates from Harness.
+- Team Activity still shows canonical Work, Messages, delivery/control
+  acknowledgements, outcomes, artifacts, and Host acceptance from Harness.
 - Native activity disappears or becomes unavailable when its provider session
-  cannot be read, without changing the accepted Wave record.
+  cannot be read, without changing canonical Work or Host acceptance.
 - No thinking enters Harness persistence, caches, exports, or evidence.
 
 ## Non-goals
 
 - Standardizing every provider's native transcript format.
 - Making provider sessions company documents or cross-member message buses.
-- Inferring assignment, approval, or Wave acceptance from native chat.
+- Inferring Work responsibility, RuntimeCommand success, or Host acceptance
+  from native chat.
 - Promising resume for a mode before its adapter proves it.
