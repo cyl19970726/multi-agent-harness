@@ -846,6 +846,35 @@ for (const replacementKind of ["regular", "symlink", "directory"]) {
 }
 
 await withFixtureAsync(async (fixture) => {
+  const ready = join(fixture.root, "installer-holds-public-lock");
+  const release = join(fixture.root, "release-orphan-provider");
+  const installer = spawn(
+    "bash",
+    [join(fixture.repo, "scripts/manage-star-harness-install.sh"), "--apply"],
+    {
+      cwd: fixture.repo,
+      env: applyEnvironment(fixture, {
+        FAKE_HOLD_READY: ready,
+        FAKE_HOLD_RELEASE: release,
+      }),
+      stdio: "ignore",
+    },
+  );
+  waitForPath(ready, installer);
+  const exit = new Promise((resolvePromise) => installer.once("exit", resolvePromise));
+  installer.kill("SIGKILL");
+  await exit;
+  write(release, "continue\n");
+  const lockPath = `${fixture.binLink}.star-harness-install.lock`;
+  assert.equal(existsSync(lockPath), true);
+  assert.equal(existsSync(readlinkSync(lockPath)), true, "SIGKILL leaves the old private transaction");
+  const retry = runApply(fixture);
+  assert.equal(retry.status, 0, "a dead exact lock owner is safely reconciled on retry");
+  assert.equal(existsSync(lockPath), false);
+  assert.equal(transactionDirectories(fixture).length, 1, "only the dead owner's private evidence remains");
+});
+
+await withFixtureAsync(async (fixture) => {
   const ready = join(fixture.root, "public-lock-moved");
   const release = join(fixture.root, "release-orphan-helper");
   const installer = spawn(
