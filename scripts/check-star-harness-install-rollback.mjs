@@ -330,10 +330,11 @@ withFixture((fixture) => {
       publishedTarget,
       "the rejected installer cannot enter the publication critical section",
     );
-    write(release, "continue\n");
-    const [code] = await new Promise((resolvePromise) => {
+    const exit = new Promise((resolvePromise) => {
       first.once("exit", (...args) => resolvePromise(args));
     });
+    write(release, "continue\n");
+    const [code] = await exit;
     assert.notEqual(code, 0, "the held installer must take its injected failure");
     assert.equal(existsSync(fixture.binLink), false, "the owning installer rolls back its link");
     assert.equal(

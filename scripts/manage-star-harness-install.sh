@@ -33,6 +33,7 @@ PUBLISHED_BIN_STAGED="${BIN_LINK_LOCK_DIR}/published-link-staged"
 PUBLISHED_BIN_WITNESS="${BIN_LINK_LOCK_DIR}/published-link-witness"
 BIN_LINK_LOCK_OWNED="false"
 BIN_LINK_LOCK_STATUS="not_acquired"
+PRESERVE_BIN_LINK_TRANSACTION="false"
 
 acquire_bin_link_lock() {
   mkdir -p "$(dirname "${BIN_LINK}")"
@@ -46,6 +47,11 @@ acquire_bin_link_lock() {
 
 release_bin_link_lock() {
   if [[ "${BIN_LINK_LOCK_OWNED}" == "true" ]]; then
+    if [[ "${PRESERVE_BIN_LINK_TRANSACTION}" == "true" ]]; then
+      BIN_LINK_LOCK_STATUS="rollback_residual_preserved"
+      echo "preserved Harness binary publication lock and ownership witnesses after rollback failure: ${BIN_LINK_LOCK_DIR}" >&2
+      return 1
+    fi
     local artifact
     for artifact in "${PREVIOUS_BIN_WITNESS}" "${PUBLISHED_BIN_STAGED}" "${PUBLISHED_BIN_WITNESS}"; do
       if [[ -e "${artifact}" || -L "${artifact}" ]]; then
@@ -73,6 +79,17 @@ bin_link_identity() {
     const fs = require("node:fs");
     const stat = fs.lstatSync(process.argv[1], { bigint: true });
     process.stdout.write(`${stat.dev}:${stat.ino}:${stat.ctimeNs}:${stat.birthtimeNs}`);
+  ' "$1"
+}
+
+bin_link_object_identity() {
+  # A publication witness keeps this symlink inode alive, so dev:ino cannot be
+  # reused until the transaction releases the witness.
+  # shellcheck disable=SC2016
+  node -e '
+    const fs = require("node:fs");
+    const stat = fs.lstatSync(process.argv[1], { bigint: true });
+    process.stdout.write(`${stat.dev}:${stat.ino}`);
   ' "$1"
 }
 
@@ -112,10 +129,10 @@ publish_bin_link() {
   ln -s "${target}" "${PUBLISHED_BIN_STAGED}"
   ln -P "${PUBLISHED_BIN_STAGED}" "${PUBLISHED_BIN_WITNESS}"
   PUBLISHED_BIN_TARGET="${target}"
+  PUBLISHED_BIN_IDENTITY="$(bin_link_object_identity "${PUBLISHED_BIN_WITNESS}")"
   BIN_LINK_PUBLICATION_ARMED="true"
   node -e 'require("node:fs").renameSync(process.argv[1], process.argv[2])' \
     "${PUBLISHED_BIN_STAGED}" "${BIN_LINK}"
-  PUBLISHED_BIN_IDENTITY="$(bin_link_identity "${PUBLISHED_BIN_WITNESS}")"
 }
 
 rollback_published_bin_link() {
@@ -125,7 +142,7 @@ rollback_published_bin_link() {
     return
   fi
   if [[ -L "${BIN_LINK}" ]]; then
-    current_identity="$(bin_link_identity "${BIN_LINK}" 2>/dev/null || true)"
+    current_identity="$(bin_link_object_identity "${BIN_LINK}" 2>/dev/null || true)"
   fi
   if [[ "${current_identity}" != "${PUBLISHED_BIN_IDENTITY}" || "$(readlink "${BIN_LINK}" 2>/dev/null || true)" != "${PUBLISHED_BIN_TARGET}" ]]; then
     ROLLBACK_BINARY_STATUS="failed_after_binary_publication_link_changed"
@@ -136,6 +153,7 @@ rollback_published_bin_link() {
     if ! node -e 'require("node:fs").renameSync(process.argv[1], process.argv[2])' \
       "${PREVIOUS_BIN_WITNESS}" "${BIN_LINK}"; then
       ROLLBACK_BINARY_STATUS="failed_after_binary_publication_restore_failed"
+      PRESERVE_BIN_LINK_TRANSACTION="true"
       echo "failed to restore Harness link ${BIN_LINK}; published link remains residual" >&2
       return 1
     fi
@@ -144,6 +162,7 @@ rollback_published_bin_link() {
   else
     if ! unlink "${BIN_LINK}"; then
       ROLLBACK_BINARY_STATUS="failed_after_binary_publication_remove_failed"
+      PRESERVE_BIN_LINK_TRANSACTION="true"
       echo "failed to remove published Harness link ${BIN_LINK}; link remains residual" >&2
       return 1
     fi
@@ -191,7 +210,7 @@ NODE
 finish_install() {
   local original_exit_status=$?
   local final_exit_status="${original_exit_status}"
-  trap - EXIT
+  trap - EXIT HUP INT TERM
   if [[ "${INSTALL_COMPLETED}" == "true" || "${original_exit_status}" -eq 0 ]]; then
     ROLLBACK_BINARY_STATUS="not_attempted_install_completed"
   else
@@ -206,7 +225,16 @@ finish_install() {
   exit "${final_exit_status}"
 }
 
+handle_install_signal() {
+  local exit_status=$1
+  trap - HUP INT TERM
+  exit "${exit_status}"
+}
+
 trap finish_install EXIT
+trap 'handle_install_signal 129' HUP
+trap 'handle_install_signal 130' INT
+trap 'handle_install_signal 143' TERM
 
 for command_name in node npm cargo codex claude; do
   if ! command -v "${command_name}" >/dev/null 2>&1; then
