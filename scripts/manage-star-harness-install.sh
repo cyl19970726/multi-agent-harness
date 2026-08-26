@@ -19,27 +19,77 @@ BIN_LINK="${STAR_HARNESS_BIN_LINK:-${USER_HOME_DIR}/.local/bin/harness}"
 STATE_BASE="${STAR_HARNESS_STATE_ROOT:-${USER_HOME_DIR}/.local/state/star-harness}"
 APPLY_IN_PROGRESS="false"
 PREVIOUS_BIN=""
+PREVIOUS_BIN_PRESENT="false"
+BIN_LINK_PUBLICATION_ARMED="false"
+PUBLISHED_BIN_TARGET=""
+ROLLBACK_BINARY_STATUS="failed_before_binary_publication"
 STATE_FILE=""
+
+prepare_bin_link_publication() {
+  if [[ -e "${BIN_LINK}" && ! -L "${BIN_LINK}" ]]; then
+    echo "refusing to replace non-symlink ${BIN_LINK}" >&2
+    return 1
+  fi
+  if [[ -L "${BIN_LINK}" ]]; then
+    PREVIOUS_BIN="$(readlink "${BIN_LINK}")"
+    PREVIOUS_BIN_PRESENT="true"
+  else
+    PREVIOUS_BIN=""
+    PREVIOUS_BIN_PRESENT="false"
+  fi
+}
+
+publish_bin_link() {
+  local target=$1
+  if [[ "${PREVIOUS_BIN_PRESENT}" == "true" ]]; then
+    if [[ ! -L "${BIN_LINK}" || "$(readlink "${BIN_LINK}")" != "${PREVIOUS_BIN}" ]]; then
+      echo "refusing to publish over changed Harness link ${BIN_LINK}" >&2
+      return 1
+    fi
+  elif [[ -e "${BIN_LINK}" || -L "${BIN_LINK}" ]]; then
+    echo "refusing to publish over newly occupied Harness path ${BIN_LINK}" >&2
+    return 1
+  fi
+
+  PUBLISHED_BIN_TARGET="${target}"
+  BIN_LINK_PUBLICATION_ARMED="true"
+  ln -sfn "${target}" "${BIN_LINK}"
+}
+
+rollback_published_bin_link() {
+  if [[ "${BIN_LINK_PUBLICATION_ARMED}" != "true" ]]; then
+    ROLLBACK_BINARY_STATUS="failed_before_binary_publication"
+    return
+  fi
+  if [[ ! -L "${BIN_LINK}" || "$(readlink "${BIN_LINK}")" != "${PUBLISHED_BIN_TARGET}" ]]; then
+    ROLLBACK_BINARY_STATUS="failed_after_binary_publication_link_changed"
+    echo "preserved changed Harness path ${BIN_LINK}; it is no longer owned by this install" >&2
+    return
+  fi
+  if [[ "${PREVIOUS_BIN_PRESENT}" == "true" ]]; then
+    ln -sfn "${PREVIOUS_BIN}" "${BIN_LINK}"
+    ROLLBACK_BINARY_STATUS="failed_and_previous_binary_restored"
+    echo "restored Harness link to ${PREVIOUS_BIN}" >&2
+  else
+    unlink "${BIN_LINK}"
+    ROLLBACK_BINARY_STATUS="failed_and_created_binary_link_removed"
+    echo "removed incomplete Harness link ${BIN_LINK}" >&2
+  fi
+}
 
 rollback_on_error() {
   local exit_status=$?
   if [[ "${exit_status}" -eq 0 || "${APPLY_IN_PROGRESS}" != "true" ]]; then
     return
   fi
-  if [[ -n "${PREVIOUS_BIN}" ]]; then
-    ln -sfn "${PREVIOUS_BIN}" "${BIN_LINK}"
-    echo "restored Harness link to ${PREVIOUS_BIN}" >&2
-  else
-    unlink "${BIN_LINK}" 2>/dev/null || true
-    echo "removed incomplete Harness link ${BIN_LINK}" >&2
-  fi
+  rollback_published_bin_link
   if [[ -n "${STATE_FILE}" ]]; then
-    node - "${STATE_FILE}" "${VERSION:-unknown}" "${REPO_ROOT}" "${PREVIOUS_BIN}" <<'NODE' || true
+    node - "${STATE_FILE}" "${VERSION:-unknown}" "${REPO_ROOT}" "${PREVIOUS_BIN}" "${ROLLBACK_BINARY_STATUS}" <<'NODE' || true
 const fs = require("node:fs");
-const [path, version, sourceRoot, rollbackBinary] = process.argv.slice(2);
+const [path, version, sourceRoot, rollbackBinary, status] = process.argv.slice(2);
 fs.writeFileSync(path, `${JSON.stringify({
   schema_version: 1,
-  status: "failed_and_binary_rolled_back",
+  status,
   version,
   source_root: sourceRoot,
   rollback_harness_binary: rollbackBinary || null,
@@ -49,6 +99,7 @@ NODE
     echo "failure state: ${STATE_FILE}" >&2
   fi
 }
+
 trap rollback_on_error EXIT
 
 for command_name in node npm cargo codex claude; do
@@ -118,6 +169,8 @@ if [[ "${MODE}" == "check" ]]; then
   exit 0
 fi
 
+prepare_bin_link_publication
+
 echo
 echo "Building Harness..."
 (
@@ -130,9 +183,6 @@ VERSION_BIN="${VERSION_DIR}/harness"
 MARKETPLACE_SNAPSHOT="${VERSION_DIR}/marketplace"
 CLAUDE_RUNNER_INSTALL="${VERSION_DIR}/apps/claude-member-runner"
 DEEPSEEK_RUNNER_INSTALL="${VERSION_DIR}/apps/deepseek-member-runner"
-if [[ -L "${BIN_LINK}" ]]; then
-  PREVIOUS_BIN="$(readlink "${BIN_LINK}")"
-fi
 mkdir -p "${VERSION_DIR}" "$(dirname "${BIN_LINK}")" "${STATE_BASE}/installations"
 INSTALLED_AT="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
 STATE_FILE="${STATE_BASE}/installations/${INSTALLED_AT//:/-}-${VERSION}.json"
@@ -187,11 +237,7 @@ npm ci \
   --no-fund \
   --ignore-scripts
 
-if [[ -e "${BIN_LINK}" && ! -L "${BIN_LINK}" ]]; then
-  echo "refusing to replace non-symlink ${BIN_LINK}" >&2
-  exit 1
-fi
-ln -sfn "${VERSION_BIN}" "${BIN_LINK}"
+publish_bin_link "${VERSION_BIN}"
 
 echo
 echo "Refreshing Codex marketplace and installing one canonical owner..."
