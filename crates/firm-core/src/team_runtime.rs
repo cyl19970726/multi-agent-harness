@@ -231,6 +231,27 @@ pub enum TeamMemberCloseStatus {
     Applied,
 }
 
+/// Exact source fact for the provider-free detached recovery Close path.
+///
+/// This does not claim a provider `CloseMember` effect. It lets a concurrently
+/// admitted Supervisor identify the one in-flight recovery transaction and
+/// wait for its terminal coordination projection without treating ordinary
+/// Pending Close intent as a provider receipt.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DetachedRecoveryCloseFence {
+    pub execution_space_id: String,
+    pub member_run_generation: u64,
+    pub agent_session_id: String,
+    pub agent_session_generation: u64,
+    pub agent_session_version: u64,
+    pub agent_session_driver_generation: u64,
+    pub native_session_id: String,
+    pub node_daemon_id: String,
+    pub node_daemon_generation: u64,
+    pub authorizing_supervisor_id: String,
+    pub authorizing_supervisor_generation: u64,
+}
+
 /// Durable Host request to end one ProviderRuntimeProjection runtime. The owning Supervisor
 /// applies the latest pending row before starting or resuming provider work.
 /// Latest row wins by `member_run_id`.
@@ -245,6 +266,8 @@ pub struct TeamMemberCloseRequest {
     pub requested_at: String,
     #[serde(default)]
     pub applied_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detached_recovery_fence: Option<Box<DetachedRecoveryCloseFence>>,
 }
 
 /// Non-secret workspace facts observed when a member runtime starts.
@@ -1121,7 +1144,70 @@ impl Validate for TeamMemberCloseRequest {
         require_non_empty(&self.member_run_id, "TeamMemberCloseRequest.member_run_id")?;
         require_non_empty(&self.requested_by, "TeamMemberCloseRequest.requested_by")?;
         require_non_empty(&self.reason, "TeamMemberCloseRequest.reason")?;
-        require_non_empty(&self.requested_at, "TeamMemberCloseRequest.requested_at")
+        require_non_empty(&self.requested_at, "TeamMemberCloseRequest.requested_at")?;
+        if let Some(fence) = self.detached_recovery_fence.as_deref() {
+            fence.validate()?;
+        }
+        Ok(())
+    }
+}
+
+impl Validate for DetachedRecoveryCloseFence {
+    fn validate(&self) -> Result<(), ValidationError> {
+        require_non_empty(
+            &self.execution_space_id,
+            "DetachedRecoveryCloseFence.execution_space_id",
+        )?;
+        require_non_empty(
+            &self.agent_session_id,
+            "DetachedRecoveryCloseFence.agent_session_id",
+        )?;
+        require_non_empty(
+            &self.node_daemon_id,
+            "DetachedRecoveryCloseFence.node_daemon_id",
+        )?;
+        require_non_empty(
+            &self.native_session_id,
+            "DetachedRecoveryCloseFence.native_session_id",
+        )?;
+        require_non_empty(
+            &self.authorizing_supervisor_id,
+            "DetachedRecoveryCloseFence.authorizing_supervisor_id",
+        )?;
+        for (field, generation) in [
+            (
+                "DetachedRecoveryCloseFence.member_run_generation",
+                self.member_run_generation,
+            ),
+            (
+                "DetachedRecoveryCloseFence.agent_session_generation",
+                self.agent_session_generation,
+            ),
+            (
+                "DetachedRecoveryCloseFence.agent_session_version",
+                self.agent_session_version,
+            ),
+            (
+                "DetachedRecoveryCloseFence.agent_session_driver_generation",
+                self.agent_session_driver_generation,
+            ),
+            (
+                "DetachedRecoveryCloseFence.node_daemon_generation",
+                self.node_daemon_generation,
+            ),
+            (
+                "DetachedRecoveryCloseFence.authorizing_supervisor_generation",
+                self.authorizing_supervisor_generation,
+            ),
+        ] {
+            if generation == 0 {
+                return Err(ValidationError::Invalid {
+                    field,
+                    reason: "must be greater than zero",
+                });
+            }
+        }
+        Ok(())
     }
 }
 

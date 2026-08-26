@@ -1004,6 +1004,19 @@ export interface TeamMemberCloseRequest {
   status: "pending" | "applied" | string;
   requested_at: string;
   applied_at?: string | null;
+  detached_recovery_fence?: {
+    execution_space_id: string;
+    member_run_generation: number;
+    agent_session_id: string;
+    agent_session_generation: number;
+    agent_session_version: number;
+    agent_session_driver_generation: number;
+    native_session_id: string;
+    node_daemon_id: string;
+    node_daemon_generation: number;
+    authorizing_supervisor_id: string;
+    authorizing_supervisor_generation: number;
+  } | null;
 }
 
 /** One recorded action of a member run (tool call, progress note, …). */

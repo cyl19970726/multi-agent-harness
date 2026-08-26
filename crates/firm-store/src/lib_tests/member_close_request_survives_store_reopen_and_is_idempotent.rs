@@ -60,6 +60,7 @@ fn member_close_request_survives_store_reopen_and_is_idempotent() {
         status: TeamMemberCloseStatus::Pending,
         requested_at: "unix-ms:2".into(),
         applied_at: None,
+        detached_recovery_fence: None,
     };
     let latched = store
         .latch_team_member_close(&request)
@@ -71,6 +72,42 @@ fn member_close_request_survives_store_reopen_and_is_idempotent() {
         })
         .expect("repeat Close");
     assert_eq!(latched.id, repeated.id);
+
+    let mut forged_recovery = request.clone();
+    forged_recovery.id = "close-forged-recovery".into();
+    forged_recovery.detached_recovery_fence =
+        Some(Box::new(firm_core::DetachedRecoveryCloseFence {
+            execution_space_id: "space-forged".into(),
+            member_run_generation: 1,
+            agent_session_id: "session-forged".into(),
+            agent_session_generation: 1,
+            agent_session_version: 1,
+            agent_session_driver_generation: 1,
+            native_session_id: "native-forged".into(),
+            node_daemon_id: "daemon-forged".into(),
+            node_daemon_generation: 1,
+            authorizing_supervisor_id: "supervisor-forged".into(),
+            authorizing_supervisor_generation: 1,
+        }));
+    let forged_error = store
+        .latch_team_member_close(&forged_recovery)
+        .expect_err("generic Close writer must reject a recovery authority fence");
+    assert!(forged_error
+        .to_string()
+        .contains("DETACHED_RECOVERY_CLOSE_REQUIRES_SUPERVISOR_AUTHORITY"));
+    let no_supervisor_error = store
+        .latch_team_member_close_without_current_supervisor(&forged_recovery, 1)
+        .expect_err("no-Supervisor Close writer must reject a recovery authority fence");
+    assert!(no_supervisor_error
+        .to_string()
+        .contains("DETACHED_RECOVERY_CLOSE_REQUIRES_SUPERVISOR_AUTHORITY"));
+    assert_eq!(
+        store
+            .team_member_close_requests()
+            .expect("Close rows after rejected generic recovery write"),
+        vec![latched.clone()],
+        "rejected generic recovery fence must append no row"
+    );
 
     let reopened = HarnessStore::new(&root);
     let pending = reopened

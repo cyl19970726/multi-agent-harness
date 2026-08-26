@@ -164,6 +164,25 @@ Harness remains the communication authority in both driver modes:
 | Host explicitly reopens Member | Increment `runtime_generation`; a managed adapter resumes the exact recorded native session and frozen mail becomes actionable. |
 | Host deactivates/retires Member | End coordination permanently; delivery and Reopen are rejected. |
 
+A detached recovery Close is a narrow provider-free case, not a generic
+replacement for provider Close. The Store admits its source fence only through
+the exact current Supervisor transaction and snapshots the MemberRun,
+its exact `Blocked`/active state, AgentSession, native session, NodeDaemon and
+authorizing Supervisor generations under one writer lock. Generic and
+no-Supervisor Close writers reject that fence. If authority moves while the
+predecessor is settling the transaction,
+the exact current successor may bind the same detached, idle AgentSession and
+boundedly wait for that same Close id to become `Applied` with the exact
+`Closed`/`Stopped` MemberRun and native-session postcondition; the Store refuses
+to write `Applied` for that fenced request before the postcondition exists. A
+missing or replaced transaction,
+stale authority, different Session/daemon lineage, unknown provider effect or
+timeout remains `runtime_recovery_required`. The successor revalidates the same
+detached, idle Session authority and absence of unknown provider effects again
+at the terminal observation; it never
+fabricates a provider receipt and never replays previously provider-received
+Work.
+
 Ordinary message visibility is an explicit execution-mode capability, not a
 uniform mailbox promise:
 

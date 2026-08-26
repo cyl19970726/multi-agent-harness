@@ -355,6 +355,7 @@ pub(super) fn latch_member_close(
         status: TeamMemberCloseStatus::Pending,
         requested_at: now_string(),
         applied_at: None,
+        detached_recovery_fence: None,
     }))
 }
 
@@ -380,6 +381,38 @@ pub(super) fn latch_member_close_for_supervisor(
     }
 }
 
+pub(super) fn latch_detached_recovery_close_for_supervisor(
+    store: &HarnessStore,
+    team_run_id: &str,
+    member_run_id: &str,
+    requested_by: &str,
+    reason: &str,
+    fence: harness_core::DetachedRecoveryCloseFence,
+) -> CliResult<TeamMemberCloseRequest> {
+    let supervisor_id = fence.authorizing_supervisor_id.clone();
+    let supervisor_generation = fence.authorizing_supervisor_generation;
+    let mut close = pending_close_request(team_run_id, member_run_id, requested_by, reason);
+    close.detached_recovery_fence = Some(Box::new(fence.clone()));
+    match store.latch_team_member_close_for_supervisor(
+        &close,
+        &supervisor_id,
+        supervisor_generation,
+    ) {
+        Ok(close) if close.detached_recovery_fence.as_deref() == Some(&fence) => Ok(close),
+        Ok(close) => Err(CliError::RuntimeRecoveryRequired(format!(
+            "existing pending Close {} is not the same exact detached recovery transaction",
+            close.id
+        ))),
+        Err(StoreError::Conflict(message))
+            if message.starts_with("TEAM_SUPERVISOR_LEASE_LOST:")
+                || message.starts_with("TEAM_SUPERVISOR_PARENT_FENCED:") =>
+        {
+            Err(CliError::SupervisorLeaseLost(message))
+        }
+        Err(error) => store_conflict_as_usage(Err(error)),
+    }
+}
+
 pub(super) fn pending_close_request(
     team_run_id: &str,
     member_run_id: &str,
@@ -395,6 +428,7 @@ pub(super) fn pending_close_request(
         status: TeamMemberCloseStatus::Pending,
         requested_at: now_string(),
         applied_at: None,
+        detached_recovery_fence: None,
     }
 }
 

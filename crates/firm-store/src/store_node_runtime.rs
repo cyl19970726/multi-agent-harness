@@ -9,6 +9,92 @@ fn current_store_unix_ms() -> u64 {
 }
 
 impl HarnessStore {
+    fn require_detached_recovery_close_fence_unlocked(
+        &self,
+        value: &TeamMemberCloseRequest,
+        member: &ProviderRuntimeProjection,
+        supervisor_id: &str,
+        supervisor_generation: u64,
+    ) -> StoreResult<()> {
+        use firm_core::agentfirm_api::{
+            AgentSessionStatus, RuntimeActivity, RuntimeCommandStatus, RuntimeDriverRef,
+            RuntimeEffectCertainty, RuntimeResidency,
+        };
+
+        let Some(fence) = value.detached_recovery_fence.as_deref() else {
+            return Ok(());
+        };
+        let session = self
+            .fabric_agent_sessions(&fence.execution_space_id)?
+            .into_iter()
+            .find(|session| session.id == fence.agent_session_id)
+            .ok_or_else(|| {
+                StoreError::Conflict(format!(
+                    "DETACHED_RECOVERY_CLOSE_FENCE_MISMATCH: AgentSession {} is missing",
+                    fence.agent_session_id
+                ))
+            })?;
+        let ambiguous_command = self
+            .runtime_commands(&fence.execution_space_id)?
+            .into_iter()
+            .any(|command| {
+                command.target_session_id.as_deref() == Some(session.id.as_str())
+                    && command.target_session_generation == Some(session.runtime_generation)
+                    && matches!(
+                        command.status,
+                        RuntimeCommandStatus::Accepted
+                            | RuntimeCommandStatus::Quiesced
+                            | RuntimeCommandStatus::RecoveryRequired
+                    )
+                    && command.effect_certainty == RuntimeEffectCertainty::Unknown
+            });
+        if ambiguous_command {
+            return Err(StoreError::Conflict(format!(
+                "DETACHED_RECOVERY_CLOSE_AMBIGUOUS_COMMAND: AgentSession {} acquired an ambiguous RuntimeCommand before Close latch",
+                session.id
+            )));
+        }
+        let exact = fence.authorizing_supervisor_id == supervisor_id
+            && fence.authorizing_supervisor_generation == supervisor_generation
+            && fence.member_run_generation == member.runtime_generation
+            && member.status == firm_core::MemberRunStatus::Blocked
+            && member.coordination_is_active()
+            && session.agent_member_id == member.agent_member_id
+            && session.execution_space_id == fence.execution_space_id
+            && session.runtime_generation == fence.agent_session_generation
+            && session.version == fence.agent_session_version
+            && session.control_state.driver_generation == fence.agent_session_driver_generation
+            && session.node_daemon_id == fence.node_daemon_id
+            && session.node_daemon_generation == fence.node_daemon_generation
+            && session.lifecycle == AgentSessionStatus::Idle
+            && session.control_state.runtime_residency == RuntimeResidency::Detached
+            && session.control_state.activity == RuntimeActivity::Idle
+            && session.current_turn_id.is_none()
+            && session.native_session_ref.as_ref().is_some_and(|native| {
+                native.native_session_id == fence.native_session_id
+                    && member.native_session.as_ref().is_some_and(|member_native| {
+                        member_native.native_session_id == native.native_session_id
+                    })
+            })
+            && matches!(
+                &session.control_state.driver_ref,
+                RuntimeDriverRef::TeamSupervisor {
+                    team_run_id,
+                    team_supervisor_id,
+                    team_supervisor_generation,
+                } if team_run_id == &value.team_run_id
+                    && team_supervisor_id == supervisor_id
+                    && *team_supervisor_generation == supervisor_generation
+            );
+        if !exact {
+            return Err(StoreError::Conflict(format!(
+                "DETACHED_RECOVERY_CLOSE_FENCE_MISMATCH: Close {} does not match the exact detached MemberRun/AgentSession/Supervisor source fact",
+                value.id
+            )));
+        }
+        Ok(())
+    }
+
     pub(super) fn require_exact_supervisor_authority_unlocked(
         &self,
         team_run_id: &str,
@@ -572,6 +658,12 @@ impl HarnessStore {
     ) -> StoreResult<TeamMemberCloseRequest> {
         self.init()?;
         let _lock = self.acquire_write_lock()?;
+        if value.detached_recovery_fence.is_some() {
+            return Err(StoreError::Conflict(format!(
+                "DETACHED_RECOVERY_CLOSE_REQUIRES_SUPERVISOR_AUTHORITY: Close {} must use the exact Supervisor transaction",
+                value.id
+            )));
+        }
         let member = latest_by_id(
             self.read_jsonl::<ProviderRuntimeProjection>("member_runs.jsonl")?,
             |member| member.id.clone(),
@@ -643,6 +735,12 @@ impl HarnessStore {
             )));
         }
         self.require_current_member_mutation_scope_unlocked(&member)?;
+        self.require_detached_recovery_close_fence_unlocked(
+            value,
+            &member,
+            supervisor_id,
+            supervisor_generation,
+        )?;
         if let Some(current) = latest_by_id(
             self.read_jsonl::<TeamMemberCloseRequest>("team_member_close_requests.jsonl")?,
             |request| request.member_run_id.clone(),
@@ -674,6 +772,12 @@ impl HarnessStore {
     ) -> StoreResult<TeamMemberCloseRequest> {
         self.init()?;
         let _lock = self.acquire_write_lock()?;
+        if value.detached_recovery_fence.is_some() {
+            return Err(StoreError::Conflict(format!(
+                "DETACHED_RECOVERY_CLOSE_REQUIRES_SUPERVISOR_AUTHORITY: Close {} must use the exact Supervisor transaction",
+                value.id
+            )));
+        }
         if let Some(lease) = self.latest_lease_for_run_unlocked(&value.team_run_id)? {
             if lease.status == TeamSupervisorLeaseStatus::Active
                 && lease.expires_unix_ms > now_unix_ms
@@ -748,6 +852,32 @@ impl HarnessStore {
         self.current_team_run_execution_space_unlocked(&run)?;
         if request.status == TeamMemberCloseStatus::Applied {
             return Ok(request);
+        }
+        if let Some(fence) = request.detached_recovery_fence.as_deref() {
+            let member = latest_by_id(
+                self.read_jsonl::<ProviderRuntimeProjection>("member_runs.jsonl")?,
+                |member| member.id.clone(),
+            )
+            .remove(member_run_id)
+            .ok_or_else(|| {
+                StoreError::Conflict(format!(
+                    "DETACHED_RECOVERY_CLOSE_POSTCONDITION_MISMATCH: MemberRun {member_run_id} is missing"
+                ))
+            })?;
+            let exact_terminal = member.team_run_id == team_run_id
+                && member.runtime_generation == fence.member_run_generation
+                && member.coordination_is_closed()
+                && member.status == firm_core::MemberRunStatus::Stopped
+                && member
+                    .native_session
+                    .as_ref()
+                    .is_some_and(|native| native.native_session_id == fence.native_session_id);
+            if !exact_terminal {
+                return Err(StoreError::Conflict(format!(
+                    "DETACHED_RECOVERY_CLOSE_POSTCONDITION_MISMATCH: Close {} requires its exact Closed/Stopped MemberRun and native Session",
+                    request.id
+                )));
+            }
         }
         request.status = TeamMemberCloseStatus::Applied;
         request.applied_at = Some(applied_at.to_string());
