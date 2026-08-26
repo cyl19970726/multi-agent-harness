@@ -18,28 +18,185 @@ INSTALL_BASE="${STAR_HARNESS_INSTALL_ROOT:-${USER_HOME_DIR}/.local/lib/star-harn
 BIN_LINK="${STAR_HARNESS_BIN_LINK:-${USER_HOME_DIR}/.local/bin/harness}"
 STATE_BASE="${STAR_HARNESS_STATE_ROOT:-${USER_HOME_DIR}/.local/state/star-harness}"
 APPLY_IN_PROGRESS="false"
+INSTALL_COMPLETED="false"
 PREVIOUS_BIN=""
+PREVIOUS_BIN_PRESENT="false"
+PREVIOUS_BIN_IDENTITY=""
+BIN_LINK_PUBLICATION_ARMED="false"
+PUBLISHED_BIN_TARGET=""
+PUBLISHED_BIN_IDENTITY=""
+ROLLBACK_BINARY_STATUS="failed_before_binary_publication"
 STATE_FILE=""
+BIN_LINK_LOCK_DIR="${BIN_LINK}.star-harness-install.lock"
+PREVIOUS_BIN_WITNESS="${BIN_LINK_LOCK_DIR}/previous-link-witness"
+PUBLISHED_BIN_STAGED="${BIN_LINK_LOCK_DIR}/published-link-staged"
+PUBLISHED_BIN_WITNESS="${BIN_LINK_LOCK_DIR}/published-link-witness"
+BIN_LINK_LOCK_OWNED="false"
+BIN_LINK_LOCK_STATUS="not_acquired"
+PRESERVE_BIN_LINK_TRANSACTION="false"
 
-rollback_on_error() {
-  local exit_status=$?
-  if [[ "${exit_status}" -eq 0 || "${APPLY_IN_PROGRESS}" != "true" ]]; then
+acquire_bin_link_lock() {
+  mkdir -p "$(dirname "${BIN_LINK}")"
+  if ! mkdir "${BIN_LINK_LOCK_DIR}" 2>/dev/null; then
+    echo "Harness binary publication is already owned by another installer: ${BIN_LINK_LOCK_DIR}" >&2
+    return 1
+  fi
+  BIN_LINK_LOCK_OWNED="true"
+  BIN_LINK_LOCK_STATUS="held"
+}
+
+release_bin_link_lock() {
+  if [[ "${BIN_LINK_LOCK_OWNED}" == "true" ]]; then
+    if [[ "${PRESERVE_BIN_LINK_TRANSACTION}" == "true" ]]; then
+      BIN_LINK_LOCK_STATUS="rollback_residual_preserved"
+      echo "preserved Harness binary publication lock and ownership witnesses after rollback failure: ${BIN_LINK_LOCK_DIR}" >&2
+      return 1
+    fi
+    local artifact
+    for artifact in "${PREVIOUS_BIN_WITNESS}" "${PUBLISHED_BIN_STAGED}" "${PUBLISHED_BIN_WITNESS}"; do
+      if [[ -e "${artifact}" || -L "${artifact}" ]]; then
+        if ! unlink "${artifact}"; then
+          BIN_LINK_LOCK_STATUS="release_failed"
+          echo "failed to remove Harness binary publication artifact: ${artifact}" >&2
+          return 1
+        fi
+      fi
+    done
+    if ! rmdir "${BIN_LINK_LOCK_DIR}"; then
+      BIN_LINK_LOCK_STATUS="release_failed"
+      echo "failed to release Harness binary publication lock: ${BIN_LINK_LOCK_DIR}" >&2
+      return 1
+    fi
+    BIN_LINK_LOCK_OWNED="false"
+    BIN_LINK_LOCK_STATUS="released"
+  fi
+}
+
+bin_link_identity() {
+  # The template literal is evaluated by Node, not the shell.
+  # shellcheck disable=SC2016
+  node -e '
+    const fs = require("node:fs");
+    const stat = fs.lstatSync(process.argv[1], { bigint: true });
+    process.stdout.write(`${stat.dev}:${stat.ino}:${stat.ctimeNs}:${stat.birthtimeNs}`);
+  ' "$1"
+}
+
+bin_link_object_identity() {
+  # A publication witness keeps this symlink inode alive, so dev:ino cannot be
+  # reused until the transaction releases the witness.
+  # shellcheck disable=SC2016
+  node -e '
+    const fs = require("node:fs");
+    const stat = fs.lstatSync(process.argv[1], { bigint: true });
+    process.stdout.write(`${stat.dev}:${stat.ino}`);
+  ' "$1"
+}
+
+prepare_bin_link_publication() {
+  if [[ -e "${BIN_LINK}" && ! -L "${BIN_LINK}" ]]; then
+    echo "refusing to replace non-symlink ${BIN_LINK}" >&2
+    return 1
+  fi
+  if [[ -L "${BIN_LINK}" ]]; then
+    ln -P "${BIN_LINK}" "${PREVIOUS_BIN_WITNESS}"
+    PREVIOUS_BIN="$(readlink "${BIN_LINK}")"
+    PREVIOUS_BIN_IDENTITY="$(bin_link_identity "${PREVIOUS_BIN_WITNESS}")"
+    PREVIOUS_BIN_PRESENT="true"
+  else
+    PREVIOUS_BIN=""
+    PREVIOUS_BIN_IDENTITY=""
+    PREVIOUS_BIN_PRESENT="false"
+  fi
+}
+
+publish_bin_link() {
+  local target=$1
+  local current_identity=""
+  if [[ "${PREVIOUS_BIN_PRESENT}" == "true" ]]; then
+    if [[ -L "${BIN_LINK}" ]]; then
+      current_identity="$(bin_link_identity "${BIN_LINK}" 2>/dev/null || true)"
+    fi
+    if [[ "${current_identity}" != "${PREVIOUS_BIN_IDENTITY}" || "$(readlink "${BIN_LINK}" 2>/dev/null || true)" != "${PREVIOUS_BIN}" ]]; then
+      echo "refusing to publish over changed Harness link ${BIN_LINK}" >&2
+      return 1
+    fi
+  elif [[ -e "${BIN_LINK}" || -L "${BIN_LINK}" ]]; then
+    echo "refusing to publish over newly occupied Harness path ${BIN_LINK}" >&2
+    return 1
+  fi
+
+  ln -s "${target}" "${PUBLISHED_BIN_STAGED}"
+  ln -P "${PUBLISHED_BIN_STAGED}" "${PUBLISHED_BIN_WITNESS}"
+  PUBLISHED_BIN_TARGET="${target}"
+  PUBLISHED_BIN_IDENTITY="$(bin_link_object_identity "${PUBLISHED_BIN_WITNESS}")"
+  BIN_LINK_PUBLICATION_ARMED="true"
+  node -e 'require("node:fs").renameSync(process.argv[1], process.argv[2])' \
+    "${PUBLISHED_BIN_STAGED}" "${BIN_LINK}"
+}
+
+rollback_published_bin_link() {
+  local current_identity=""
+  if [[ "${BIN_LINK_PUBLICATION_ARMED}" != "true" ]]; then
+    ROLLBACK_BINARY_STATUS="failed_before_binary_publication"
     return
   fi
-  if [[ -n "${PREVIOUS_BIN}" ]]; then
-    ln -sfn "${PREVIOUS_BIN}" "${BIN_LINK}"
+  if [[ -L "${BIN_LINK}" ]]; then
+    current_identity="$(bin_link_object_identity "${BIN_LINK}" 2>/dev/null || true)"
+  fi
+  if [[ "${current_identity}" != "${PUBLISHED_BIN_IDENTITY}" || "$(readlink "${BIN_LINK}" 2>/dev/null || true)" != "${PUBLISHED_BIN_TARGET}" ]]; then
+    ROLLBACK_BINARY_STATUS="failed_after_binary_publication_link_changed"
+    echo "preserved changed Harness path ${BIN_LINK}; it is no longer owned by this install" >&2
+    return
+  fi
+  if [[ "${PREVIOUS_BIN_PRESENT}" == "true" ]]; then
+    if ! node -e 'require("node:fs").renameSync(process.argv[1], process.argv[2])' \
+      "${PREVIOUS_BIN_WITNESS}" "${BIN_LINK}"; then
+      ROLLBACK_BINARY_STATUS="failed_after_binary_publication_restore_failed"
+      PRESERVE_BIN_LINK_TRANSACTION="true"
+      echo "failed to restore Harness link ${BIN_LINK}; published link remains residual" >&2
+      return 1
+    fi
+    ROLLBACK_BINARY_STATUS="failed_and_previous_binary_restored"
     echo "restored Harness link to ${PREVIOUS_BIN}" >&2
   else
-    unlink "${BIN_LINK}" 2>/dev/null || true
+    if ! unlink "${BIN_LINK}"; then
+      ROLLBACK_BINARY_STATUS="failed_after_binary_publication_remove_failed"
+      PRESERVE_BIN_LINK_TRANSACTION="true"
+      echo "failed to remove published Harness link ${BIN_LINK}; link remains residual" >&2
+      return 1
+    fi
+    ROLLBACK_BINARY_STATUS="failed_and_created_binary_link_removed"
     echo "removed incomplete Harness link ${BIN_LINK}" >&2
   fi
+}
+
+rollback_binary_after_error() {
+  local exit_status=$1
+  if [[ "${exit_status}" -eq 0 || "${APPLY_IN_PROGRESS}" != "true" ]]; then
+    return 0
+  fi
+  rollback_published_bin_link || true
+}
+
+write_failure_state() {
+  local original_exit_status=$1
+  local final_exit_status=$2
+  local failure_status="${ROLLBACK_BINARY_STATUS}"
+  if [[ "${BIN_LINK_LOCK_STATUS}" == "release_failed" ]]; then
+    failure_status="failed_with_install_lock_residual"
+  fi
   if [[ -n "${STATE_FILE}" ]]; then
-    node - "${STATE_FILE}" "${VERSION:-unknown}" "${REPO_ROOT}" "${PREVIOUS_BIN}" <<'NODE' || true
+    node - "${STATE_FILE}" "${VERSION:-unknown}" "${REPO_ROOT}" "${PREVIOUS_BIN}" "${failure_status}" "${ROLLBACK_BINARY_STATUS}" "${BIN_LINK_LOCK_STATUS}" "${original_exit_status}" "${final_exit_status}" <<'NODE' || true
 const fs = require("node:fs");
-const [path, version, sourceRoot, rollbackBinary] = process.argv.slice(2);
+const [path, version, sourceRoot, rollbackBinary, status, binaryRollbackStatus, installLockStatus, originalExitStatus, finalExitStatus] = process.argv.slice(2);
 fs.writeFileSync(path, `${JSON.stringify({
   schema_version: 1,
-  status: "failed_and_binary_rolled_back",
+  status,
+  binary_rollback_status: binaryRollbackStatus,
+  install_lock_status: installLockStatus,
+  original_exit_status: Number(originalExitStatus),
+  final_exit_status: Number(finalExitStatus),
   version,
   source_root: sourceRoot,
   rollback_harness_binary: rollbackBinary || null,
@@ -49,7 +206,35 @@ NODE
     echo "failure state: ${STATE_FILE}" >&2
   fi
 }
-trap rollback_on_error EXIT
+
+finish_install() {
+  local original_exit_status=$?
+  local final_exit_status="${original_exit_status}"
+  trap - EXIT HUP INT TERM
+  if [[ "${INSTALL_COMPLETED}" == "true" || "${original_exit_status}" -eq 0 ]]; then
+    ROLLBACK_BINARY_STATUS="not_attempted_install_completed"
+  else
+    rollback_binary_after_error "${original_exit_status}" || true
+  fi
+  if ! release_bin_link_lock && [[ "${final_exit_status}" -eq 0 ]]; then
+    final_exit_status=1
+  fi
+  if [[ "${final_exit_status}" -ne 0 && ( "${INSTALL_COMPLETED}" != "true" || "${BIN_LINK_LOCK_STATUS}" == "release_failed" ) ]]; then
+    write_failure_state "${original_exit_status}" "${final_exit_status}"
+  fi
+  exit "${final_exit_status}"
+}
+
+handle_install_signal() {
+  local exit_status=$1
+  trap - HUP INT TERM
+  exit "${exit_status}"
+}
+
+trap finish_install EXIT
+trap 'handle_install_signal 129' HUP
+trap 'handle_install_signal 130' INT
+trap 'handle_install_signal 143' TERM
 
 for command_name in node npm cargo codex claude; do
   if ! command -v "${command_name}" >/dev/null 2>&1; then
@@ -118,6 +303,12 @@ if [[ "${MODE}" == "check" ]]; then
   exit 0
 fi
 
+mkdir -p "${STATE_BASE}/installations"
+INSTALLED_AT="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+STATE_FILE="${STATE_BASE}/installations/${INSTALLED_AT//:/-}-${VERSION}-$$.json"
+acquire_bin_link_lock
+prepare_bin_link_publication
+
 echo
 echo "Building Harness..."
 (
@@ -130,12 +321,7 @@ VERSION_BIN="${VERSION_DIR}/harness"
 MARKETPLACE_SNAPSHOT="${VERSION_DIR}/marketplace"
 CLAUDE_RUNNER_INSTALL="${VERSION_DIR}/apps/claude-member-runner"
 DEEPSEEK_RUNNER_INSTALL="${VERSION_DIR}/apps/deepseek-member-runner"
-if [[ -L "${BIN_LINK}" ]]; then
-  PREVIOUS_BIN="$(readlink "${BIN_LINK}")"
-fi
-mkdir -p "${VERSION_DIR}" "$(dirname "${BIN_LINK}")" "${STATE_BASE}/installations"
-INSTALLED_AT="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
-STATE_FILE="${STATE_BASE}/installations/${INSTALLED_AT//:/-}-${VERSION}.json"
+mkdir -p "${VERSION_DIR}" "$(dirname "${BIN_LINK}")"
 APPLY_IN_PROGRESS="true"
 install -m 0755 "${REPO_ROOT}/target/debug/firm" "${VERSION_BIN}"
 
@@ -187,11 +373,7 @@ npm ci \
   --no-fund \
   --ignore-scripts
 
-if [[ -e "${BIN_LINK}" && ! -L "${BIN_LINK}" ]]; then
-  echo "refusing to replace non-symlink ${BIN_LINK}" >&2
-  exit 1
-fi
-ln -sfn "${VERSION_BIN}" "${BIN_LINK}"
+publish_bin_link "${VERSION_BIN}"
 
 echo
 echo "Refreshing Codex marketplace and installing one canonical owner..."
@@ -271,7 +453,9 @@ fs.writeFileSync(path, `${JSON.stringify({
   installed_at: installedAt,
 }, null, 2)}\n`);
 NODE
+INSTALL_COMPLETED="true"
 APPLY_IN_PROGRESS="false"
+ROLLBACK_BINARY_STATUS="not_attempted_install_completed"
 
 echo
 echo "Installed Star Harness ${VERSION}."
