@@ -1,6 +1,6 @@
 use super::*;
 
-pub(super) fn settle_provider_effect(
+pub(crate) fn settle_provider_effect(
     ledger: &TeamRunLedger,
     admission: &ProviderEffectAdmission,
     applied: bool,
@@ -43,7 +43,7 @@ pub(super) fn settle_provider_effect(
         .map(|_| ())
 }
 
-pub(super) fn settle_provider_effect_not_applied(
+pub(crate) fn settle_provider_effect_not_applied(
     ledger: &TeamRunLedger,
     admission: &ProviderEffectAdmission,
     failure_code: String,
@@ -69,7 +69,7 @@ pub(super) fn settle_provider_effect_not_applied(
         .map(|_| ())
 }
 
-pub(super) fn record_provider_cycle_correlation(
+pub(crate) fn record_provider_cycle_correlation(
     ledger: &TeamRunLedger,
     admission: &ProviderEffectAdmission,
     correlation: &harness_core::agentfirm_api::ProviderCycleCorrelation,

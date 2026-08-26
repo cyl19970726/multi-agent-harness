@@ -410,6 +410,99 @@ if (!productionRustPaths.includes(daemonRootPath)) {
 if (testRustPaths.length === 0) {
   failures.push("firm-cli test-only Rust source classification unexpectedly found zero files");
 }
+
+const runtimeCompositionRootPath =
+  "crates/firm-cli/src/runtime_composition/mod.rs";
+const runtimeCommandAdmissionPath =
+  "crates/firm-cli/src/runtime_composition/runtime_command_admission.rs";
+const runtimeCommandBindingPath =
+  "crates/firm-cli/src/runtime_composition/runtime_command_binding.rs";
+const runtimeCommandSettlementPath =
+  "crates/firm-cli/src/runtime_composition/runtime_command_settlement.rs";
+const runtimeEffectsPath = "crates/firm-cli/src/main_modules/runtime_effects.rs";
+const runtimeCompositionRoot = read(runtimeCompositionRootPath);
+for (const moduleName of [
+  "runtime_command_admission",
+  "runtime_command_binding",
+  "runtime_command_settlement",
+]) {
+  if (!runtimeCompositionRoot.includes(`mod ${moduleName};`)) {
+    failures.push(
+      `${runtimeCompositionRootPath}: missing RuntimeCommand responsibility module ${moduleName}`,
+    );
+  }
+}
+for (const retiredPath of [
+  "crates/firm-cli/src/main_modules/runtime_binding_fence.rs",
+  "crates/firm-cli/src/main_modules/provider_effect_settlement.rs",
+]) {
+  if (existsSync(resolve(root, retiredPath))) {
+    failures.push(`${retiredPath}: retired flat RuntimeCommand owner still exists`);
+  }
+}
+const runtimeCommandOwners = new Map([
+  [
+    runtimeCommandAdmissionPath,
+    [
+      "struct ProviderEffectAdmission",
+      "fn prepared_command_recovery(",
+      "fn current_node_daemon_lease_after_admission_at(",
+      "fn current_node_daemon_lease_after_admission(",
+      "fn runtime_command_postcondition_for(",
+      "fn prepare_provider_effect_kind(",
+      "fn prepare_provider_effect(",
+      "fn prepare_provider_process_effect(",
+    ],
+  ],
+  [
+    runtimeCommandBindingPath,
+    [
+      "fn runtime_command_binding_for_session(",
+      "fn runtime_command_binding_for_member_session(",
+      "fn runtime_command_binding_for_current_session(",
+      "fn runtime_binding_fence_for_admission(",
+    ],
+  ],
+  [
+    runtimeCommandSettlementPath,
+    [
+      "fn settle_provider_effect(",
+      "fn settle_provider_effect_not_applied(",
+      "fn record_provider_cycle_correlation(",
+    ],
+  ],
+]);
+for (const [ownerPath, definitions] of runtimeCommandOwners) {
+  const owner = read(ownerPath);
+  for (const definition of definitions) {
+    if (!owner.includes(definition)) {
+      failures.push(`${ownerPath}: missing owned RuntimeCommand definition ${definition}`);
+    }
+    for (const path of productionRustPaths) {
+      if (path !== ownerPath && read(path).includes(definition)) {
+        failures.push(
+          `${path}: RuntimeCommand definition escaped ${ownerPath}: ${definition}`,
+        );
+      }
+    }
+  }
+}
+const runtimeEffects = read(runtimeEffectsPath);
+for (const escapedResponsibility of [
+  "ProviderEffectAdmission",
+  "current_node_daemon_lease_after_admission",
+  "runtime_command_postcondition_for",
+  "prepare_provider_effect_kind",
+  "prepare_provider_process_effect",
+  "settle_provider_effect",
+  "runtime_command_binding_for_session",
+]) {
+  if (runtimeEffects.includes(escapedResponsibility)) {
+    failures.push(
+      `${runtimeEffectsPath}: RuntimeCommand responsibility returned to mixed runtime effects: ${escapedResponsibility}`,
+    );
+  }
+}
 const runtimeRecoveryAdapterPath =
   "crates/firm-cli/src/role_actions_api/runtime_recovery_adapter.rs";
 const runtimeRecoveryCanonicalPath =
