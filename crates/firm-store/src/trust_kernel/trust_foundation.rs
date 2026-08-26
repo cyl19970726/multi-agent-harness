@@ -255,20 +255,7 @@ impl HarnessStore {
             ));
         };
         let responsibility_changed_after_binding = self
-            .work_operations_unlocked()?
-            .into_iter()
-            .any(|operation| {
-                operation.work.id == work.id
-                    && operation.event.resulting_version > binding.work_revision
-                    && matches!(
-                        operation.event.kind,
-                        WorkEventKind::Assigned
-                            | WorkEventKind::Claimed
-                            | WorkEventKind::Released
-                            | WorkEventKind::Rebound
-                            | WorkEventKind::ExecutionRetargeted
-                    )
-            });
+            .work_responsibility_changed_after_revision_unlocked(&work.id, binding.work_revision)?;
         if binding.work_revision > work.version
             || responsibility_changed_after_binding
             || binding.team_id != work.accountable_team_id.as_deref().unwrap_or_default()

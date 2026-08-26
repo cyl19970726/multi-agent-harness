@@ -139,7 +139,7 @@ fn execution_binding(
         agent_member_id: membership.agent_member_id.clone(),
         agent_session_id: session.id.clone(),
         agent_session_generation: session.runtime_generation,
-        delivery_id: format!("delivery-{id}"),
+        delivery_id: format!("work-delivery:{}:1", work.id),
         binding_generation: 1,
         status: WorkExecutionBindingStatus::Active,
         version: 1,
@@ -518,6 +518,14 @@ fn membership_work_binding_authorizes_message_and_result_without_accepting_work(
         submitted.resolution, None,
         "WorkReport is not Host acceptance"
     );
+    let current_deliveries = store
+        .current_work_deliveries("space-test")
+        .expect("ordinary Work lifecycle revisions keep the delivery readable");
+    assert!(current_deliveries.iter().any(|delivery| {
+        delivery.work_id == submitted.id
+            && delivery.work_revision == binding.work_revision
+            && delivery.work_execution_binding_id.as_deref() == Some(binding.id.as_str())
+    }));
 
     store
         .release_work_execution_binding(
@@ -660,6 +668,12 @@ fn responsibility_aba_and_stale_session_generation_do_not_revive_old_binding() {
             },
         )
         .unwrap();
+    let projection_error = store
+        .current_work_deliveries("space-test")
+        .expect_err("A to B to A cannot revive the old delivery projection");
+    assert!(projection_error
+        .to_string()
+        .contains("CURRENT_WORK_DELIVERY_CANONICAL_JOIN_CONFLICT"));
     let before_aba = store.canonical_operations().unwrap();
     let progress = WorkReport {
         id: "report-aba".into(),

@@ -30,7 +30,7 @@ use firm_core::{
     AgentTeam, AgentTeamStatus, ExecutionNodeStatus, HostAttention, HostAttentionKind,
     HostAttentionStatus, MemberCoordinationStatus as LegacyMemberCoordinationStatus,
     MemberRunStatus, ProviderRuntimeProjection, TeamActorKind, TeamActorRef, Validate, Work,
-    WorkCommandContext, WorkDelegationRevision, WorkEventKind,
+    WorkCommandContext, WorkDelegationRevision,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;

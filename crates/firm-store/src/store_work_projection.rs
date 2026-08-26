@@ -1,6 +1,28 @@
 use super::*;
 
 impl HarnessStore {
+    pub(super) fn work_responsibility_changed_after_revision_unlocked(
+        &self,
+        work_id: &str,
+        revision: u64,
+    ) -> StoreResult<bool> {
+        Ok(self
+            .work_operations_unlocked()?
+            .into_iter()
+            .any(|operation| {
+                operation.work.id == work_id
+                    && operation.event.resulting_version > revision
+                    && matches!(
+                        operation.event.kind,
+                        WorkEventKind::Assigned
+                            | WorkEventKind::Claimed
+                            | WorkEventKind::Released
+                            | WorkEventKind::Rebound
+                            | WorkEventKind::ExecutionRetargeted
+                    )
+            }))
+    }
+
     /// Versioned, append-only responsibility migration (DOC-106). Each legacy
     /// Work gains its durable `accountable_team_id` (resolved through its
     /// TeamRun) and, where one exact TeamMembership exists, its

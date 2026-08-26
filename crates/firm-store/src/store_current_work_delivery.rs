@@ -2,6 +2,7 @@ use super::*;
 use firm_application::{
     CurrentWorkDeliveryAuthority, CurrentWorkDeliveryIntegrityAnnotation, CurrentWorkDeliveryView,
 };
+use firm_core::agentfirm_api::{TeamMembershipStatus, WorkExecutionBindingStatus};
 
 fn insert_work_revision(
     revisions: &mut std::collections::BTreeMap<(String, u64), Work>,
@@ -142,6 +143,16 @@ impl HarnessStore {
                     delivery.id, delivery.work_id, delivery.work_revision
                 ))
             })?;
+            let current_work = work_revisions
+                .values()
+                .filter(|candidate| candidate.id == delivery.work_id)
+                .max_by_key(|candidate| candidate.version)
+                .ok_or_else(|| {
+                    StoreError::Conflict(format!(
+                        "CURRENT_WORK_DELIVERY_WORK_MISSING: delivery {} references missing current Work {}",
+                        delivery.id, delivery.work_id
+                    ))
+                })?;
             let binding = bindings
                 .get(&delivery.work_execution_binding_id)
                 .ok_or_else(|| {
@@ -169,6 +180,10 @@ impl HarnessStore {
                 ))
             })?;
             let mut integrity_annotations = Vec::new();
+            let responsibility_changed = self.work_responsibility_changed_after_revision_unlocked(
+                &delivery.work_id,
+                binding.work_revision,
+            )?;
             let binding_conflicts = binding.work_id != delivery.work_id
                 || binding.work_revision != delivery.work_revision
                 || binding.delivery_id != delivery.id
@@ -177,13 +192,26 @@ impl HarnessStore {
                 || binding.agent_session_generation != delivery.recipient_session_generation
                 || work.accountable_team_id.as_deref() != Some(binding.team_id.as_str())
                 || team_run.agent_team_id != binding.team_id;
+            let current_responsibility_conflicts = responsibility_changed
+                || binding.status != WorkExecutionBindingStatus::Active
+                || current_work.team_run_id != work.team_run_id
+                || current_work.accountable_team_id.as_deref() != Some(binding.team_id.as_str())
+                || current_work.assignee_membership_id.as_deref()
+                    != Some(binding.team_membership_id.as_str())
+                || current_work.owner_member_id.as_deref()
+                    != Some(binding.agent_member_id.as_str());
             let session_conflicts = session.execution_space_id != execution_space_id
                 || session.agent_member_id != delivery.recipient_agent_member_id
                 || session.runtime_generation != delivery.recipient_session_generation
                 || session.node_id != delivery.target_node_id;
             let membership_conflicts = membership.team_id != binding.team_id
-                || membership.agent_member_id != delivery.recipient_agent_member_id;
-            if binding_conflicts || session_conflicts || membership_conflicts {
+                || membership.agent_member_id != delivery.recipient_agent_member_id
+                || membership.state != TeamMembershipStatus::Active;
+            if binding_conflicts
+                || current_responsibility_conflicts
+                || session_conflicts
+                || membership_conflicts
+            {
                 return Err(StoreError::Conflict(format!(
                     "CURRENT_WORK_DELIVERY_CANONICAL_JOIN_CONFLICT: delivery {} does not match its exact Work, binding, session, membership, or TeamRun",
                     delivery.id

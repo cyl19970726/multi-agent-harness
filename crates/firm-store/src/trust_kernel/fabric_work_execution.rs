@@ -560,6 +560,10 @@ impl HarnessStore {
                     None,
                 )
             })?;
+        let expected_delivery_id = format!(
+            "work-delivery:{}:{}",
+            binding.work_id, binding.binding_generation
+        );
         if membership.state != TeamMembershipStatus::Active
             || membership.agent_member_id != binding.agent_member_id
             || session.agent_member_id != binding.agent_member_id
@@ -569,6 +573,7 @@ impl HarnessStore {
             || work.version != binding.work_revision
             || work.accountable_team_id.as_deref() != Some(membership.team_id.as_str())
             || binding.team_id != membership.team_id
+            || binding.delivery_id != expected_delivery_id
         {
             return Err(trust_error(
                 TrustErrorCode::UnauthorizedActor,

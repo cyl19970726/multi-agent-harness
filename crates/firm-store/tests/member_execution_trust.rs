@@ -562,7 +562,7 @@ fn seed_active_team_work(store: &HarnessStore, label: &str, work_id: &str) -> St
                 agent_member_id: "worker".into(),
                 agent_session_id: session.id,
                 agent_session_generation: 1,
-                delivery_id: format!("delivery-{work_id}"),
+                delivery_id: format!("work-delivery:{work_id}:1"),
                 binding_generation: 1,
                 status: WorkExecutionBindingStatus::Active,
                 version: 1,

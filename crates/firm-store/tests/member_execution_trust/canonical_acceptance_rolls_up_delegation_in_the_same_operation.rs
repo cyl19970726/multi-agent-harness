@@ -225,7 +225,7 @@ fn canonical_acceptance_rolls_up_delegation_in_the_same_operation() {
                 agent_member_id: "target-worker".into(),
                 agent_session_id: target_session.id,
                 agent_session_generation: 1,
-                delivery_id: "delivery-target-rollup".into(),
+                delivery_id: "work-delivery:target-rollup:1".into(),
                 binding_generation: 1,
                 status: WorkExecutionBindingStatus::Active,
                 version: 1,
