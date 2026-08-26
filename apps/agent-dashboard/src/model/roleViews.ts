@@ -316,7 +316,7 @@ export interface ViewerContextTeam {
   current_member_run_id:string|null;
 }
 export interface ViewerContextData {
-  viewer_actor_ref:{kind:"agent_member";id:string};
+  viewer_actor_ref:{kind:string;id:string};
   teams:ViewerContextTeam[];
 }
 /** One Team-subject canonical delivery in the shared Team Inbox (DOC-106). */

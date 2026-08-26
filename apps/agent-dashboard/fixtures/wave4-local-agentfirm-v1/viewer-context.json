@@ -1,0 +1,34 @@
+{
+  "view_kind": "viewer_context",
+  "schema_version": "agentfirm.role_views.v1",
+  "source_execution_space_id": "fixture-space",
+  "source_store_identity": "fixture-store",
+  "as_of_event_sequence": 7,
+  "generated_at": "2026-08-26T00:00:00Z",
+  "freshness": "current",
+  "data": {
+    "viewer_actor_ref": { "kind": "service", "id": "local-dashboard-operator" },
+    "teams": [
+      {
+        "team_id": "team-a",
+        "display_name": "Team A",
+        "viewer_role": "operator",
+        "viewer_agent_member_id": "host-a",
+        "default_conversation": "host",
+        "latest_run_id": "run-a",
+        "team_run_ids": ["run-a"],
+        "current_member_run_id": "host-run-a"
+      }
+    ],
+    "runtime_fabric": {
+      "agent_identities": [],
+      "agent_sessions": [],
+      "team_memberships": [],
+      "work_execution_bindings": [],
+      "messages": [],
+      "message_deliveries": []
+    }
+  },
+  "attention": [],
+  "allowed_actions": []
+}
