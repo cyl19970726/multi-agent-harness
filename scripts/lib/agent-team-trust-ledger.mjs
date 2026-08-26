@@ -2,6 +2,35 @@ function isObject(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
+const TRANSCRIPT_MIRROR_FIELDS = new Set([
+  "command_history",
+  "command_output",
+  "events",
+  "file_events",
+  "messages",
+  "reasoning",
+  "stderr",
+  "stdout",
+  "thinking",
+  "tool_calls",
+  "tool_results",
+  "transcript",
+  "transcript_items",
+  "turns",
+]);
+
+const TRANSCRIPT_MIRROR_AGGREGATES = new Set([
+  "command_output",
+  "file_event",
+  "provider_event",
+  "provider_message",
+  "provider_transcript",
+  "provider_turn",
+  "tool_call",
+  "tool_result",
+  "transcript",
+]);
+
 function addFailure(failures, message) {
   failures.push(`trust ledger: ${message}`);
 }
@@ -33,6 +62,52 @@ function checkEqual(failures, actual, expected, description) {
       failures,
       `${description} mismatch: expected ${JSON.stringify(expected)}, found ${JSON.stringify(actual)}`,
     );
+  }
+}
+
+function normalizedFieldName(value) {
+  return value.toLowerCase().replaceAll("-", "_");
+}
+
+function transcriptMirrorPath(value, path = [], seen = new WeakSet()) {
+  if (!isObject(value) && !Array.isArray(value)) return null;
+  if (seen.has(value)) return null;
+  seen.add(value);
+
+  for (const [key, child] of Object.entries(value)) {
+    const childPath = [...path, key];
+    if (TRANSCRIPT_MIRROR_FIELDS.has(normalizedFieldName(key))) return childPath.join(".");
+    const nested = transcriptMirrorPath(child, childPath, seen);
+    if (nested) return nested;
+  }
+  return null;
+}
+
+function isCanonicalPassReview(body) {
+  if (typeof body !== "string") return false;
+  const lines = body.split(/\r?\n/u).map((line) => line.trim()).filter(Boolean);
+  if (lines[0] !== "REVIEW_RESULT") return false;
+
+  const verdicts = lines.filter((line) => /^Verdict\s*:/u.test(line));
+  if (verdicts.length !== 1 || verdicts[0] !== "Verdict: Pass") return false;
+
+  const remainder = lines.filter((line) => line !== "REVIEW_RESULT" && line !== "Verdict: Pass");
+  return !remainder.some((line) =>
+    /\b(?:not\s+pass|changes?\s+required|fail(?:ed|ure)?|reject(?:ed|ion)?)\b/iu.test(line));
+}
+
+function checkExecutionSpaces(failures, matchedRecords) {
+  const spaces = new Set();
+  for (const [description, record] of matchedRecords) {
+    const space = record?.execution_space_id;
+    if (typeof space !== "string" || !space.trim()) {
+      addFailure(failures, `${description} has no non-empty execution_space_id`);
+    } else {
+      spaces.add(space);
+    }
+  }
+  if (spaces.size > 1) {
+    addFailure(failures, `matched records span multiple execution spaces: ${JSON.stringify([...spaces].sort())}`);
   }
 }
 
@@ -71,13 +146,27 @@ export function verifyCanonicalTrustLedger(evidence, records) {
     return ["trust ledger: parsed records must be an array"];
   }
 
+  for (const [index, record] of records.entries()) {
+    const aggregateKind = eventOf(record)?.aggregate_kind;
+    if (typeof aggregateKind === "string"
+        && TRANSCRIPT_MIRROR_AGGREGATES.has(normalizedFieldName(aggregateKind))) {
+      addFailure(failures, `record ${index + 1} uses forbidden transcript-mirror aggregate ${JSON.stringify(aggregateKind)}`);
+    }
+    const mirrorPath = transcriptMirrorPath(record);
+    if (mirrorPath) {
+      addFailure(failures, `record ${index + 1} contains forbidden transcript-mirror field ${mirrorPath}`);
+    }
+  }
+
   const { team, revision, work, sessions } = evidence;
+  const matchedRecords = [];
   const reportRecord = exactlyOne(
     records.filter((record) => hasEvent(record, "work_report", "created")
       && eventOf(record).aggregate_id === work.work_report_id),
     `WorkReport ${JSON.stringify(work.work_report_id)}`,
     failures,
   );
+  if (reportRecord) matchedRecords.push(["WorkReport", reportRecord]);
   const report = reportRecord && projectionOf(reportRecord);
   if (reportRecord && !isObject(report)) {
     addFailure(failures, `WorkReport ${JSON.stringify(work.work_report_id)} has no resulting projection`);
@@ -102,6 +191,7 @@ export function verifyCanonicalTrustLedger(evidence, records) {
     `acceptance event ${JSON.stringify(work.acceptance_event_id)}`,
     failures,
   );
+  if (acceptanceRecord) matchedRecords.push(["acceptance event", acceptanceRecord]);
   if (acceptanceRecord) {
     const event = eventOf(acceptanceRecord);
     const acceptedWork = projectionOf(acceptanceRecord);
@@ -145,6 +235,7 @@ export function verifyCanonicalTrustLedger(evidence, records) {
     `review Message ${JSON.stringify(work.review_message_id)}`,
     failures,
   );
+  if (reviewRecord) matchedRecords.push(["review Message", reviewRecord]);
   if (reviewRecord) {
     const review = projectionOf(reviewRecord);
     if (!isObject(review)) {
@@ -162,8 +253,8 @@ export function verifyCanonicalTrustLedger(evidence, records) {
       if (work.reviewer_agent_member_id === team.implementer_agent_member_id) {
         addFailure(failures, "review Message author must be independent from the implementer");
       }
-      if (typeof review.body !== "string" || !/\bpass\b/iu.test(review.body)) {
-        addFailure(failures, "review Message must contain an explicit Pass verdict");
+      if (!isCanonicalPassReview(review.body)) {
+        addFailure(failures, "review Message must be canonical REVIEW_RESULT with exactly one unambiguous Verdict: Pass");
       }
     }
   }
@@ -197,6 +288,7 @@ export function verifyCanonicalTrustLedger(evidence, records) {
       failures,
     );
     if (!bindingRecord) continue;
+    matchedRecords.push([`AgentSession ${JSON.stringify(session.agent_session_id)} binding`, bindingRecord]);
 
     const event = eventOf(bindingRecord);
     const boundSession = projectionOf(bindingRecord);
@@ -224,6 +316,8 @@ export function verifyCanonicalTrustLedger(evidence, records) {
       "native-session event/projection binding",
     );
   }
+
+  checkExecutionSpaces(failures, matchedRecords);
 
   return failures;
 }

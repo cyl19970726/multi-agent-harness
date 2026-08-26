@@ -7,47 +7,47 @@ import {
   verifyCanonicalTrustLedgerJsonl,
 } from "./lib/agent-team-trust-ledger.mjs";
 
-const workId = "work-624";
-const reportId = "work-report:624";
-const reviewMessageId = "message:review-624";
-const acceptanceEventId = "trust-event-624";
+const workId = "work-fixture";
+const reportId = "work-report-fixture";
+const reviewMessageId = "message-fixture";
+const acceptanceEventId = "trust-event-fixture";
 const candidate = "a".repeat(40);
-const candidateFingerprint = "sha256:candidate-624";
+const candidateFingerprint = "sha256:candidate-fixture";
 
 const evidence = {
   scenario_class: "coding_dogfood",
   team: {
-    agent_team_id: "team-624",
-    team_run_id: "team-run-624",
-    host_agent_member_id: "host-624",
-    implementer_agent_member_id: "implementer-624",
+    agent_team_id: "team-fixture",
+    team_run_id: "team-run-fixture",
+    host_agent_member_id: "host-fixture",
+    implementer_agent_member_id: "member-fixture",
   },
   revision: { base: "b".repeat(40), candidate, changed_files: ["scripts/example.mjs"], check_refs: ["node check"] },
   work: {
     work_id: workId,
     work_report_id: reportId,
     review_message_id: reviewMessageId,
-    reviewer_agent_member_id: "reviewer-624",
+    reviewer_agent_member_id: "host-fixture",
     acceptance_event_id: acceptanceEventId,
-    acceptance_actor_agent_member_id: "host-624",
+    acceptance_actor_agent_member_id: "host-fixture",
     accepted_version: 4,
     phase: "closed",
     resolution: "accepted",
   },
   sessions: [
     {
-      agent_member_id: "host-624",
+      agent_member_id: "host-fixture",
       provider: "codex",
-      agent_session_id: "agent-session:host-624:1",
-      native_session_id: "native-host-624",
+      agent_session_id: "agent-session-host",
+      native_session_id: "native-host",
       tool_started: 1,
       tool_terminal: 1,
     },
     {
-      agent_member_id: "implementer-624",
-      provider: "claude",
-      agent_session_id: "agent-session:implementer-624:1",
-      native_session_id: "native-implementer-624",
+      agent_member_id: "member-fixture",
+      provider: "codex",
+      agent_session_id: "agent-session-member",
+      native_session_id: "native-member",
       tool_started: 1,
       tool_terminal: 1,
     },
@@ -56,7 +56,7 @@ const evidence = {
 
 function envelope(event, resultingProjection, commandName = "fixture") {
   return {
-    execution_space_id: "space-624",
+    execution_space_id: "space-fixture",
     authenticated_actor_kind: "service",
     authenticated_actor_id: "fixture",
     command_name: commandName,
@@ -99,19 +99,19 @@ function validRecords() {
   return [
     envelope(
       {
-        id: "report-created-624",
+        id: "report-created-fixture",
         aggregate_kind: "work_report",
         aggregate_id: reportId,
         transition: "created",
         resulting_version: 1,
-        performed_by_actor: { kind: "agent_member", id: "implementer-624" },
+        performed_by_actor: { kind: "agent_member", id: "member-fixture" },
         payload: {},
       },
       {
         id: reportId,
         work_id: workId,
         work_revision: 3,
-        authored_by: { kind: "agent_member", id: "implementer-624" },
+        authored_by: { kind: "agent_member", id: "member-fixture" },
         candidate: { kind: "git_commit", value: candidate },
         candidate_fingerprint: candidateFingerprint,
       },
@@ -130,8 +130,8 @@ function validRecords() {
       {
         id: reviewMessageId,
         work_id: workId,
-        team_run_id: "team-run-624",
-        sender_agent_member_id: "reviewer-624",
+        team_run_id: "team-run-fixture",
+        sender_agent_member_id: "host-fixture",
         body: "REVIEW_RESULT\nVerdict: Pass",
       },
       "runtime.authormessage.effect",
@@ -143,7 +143,7 @@ function validRecords() {
         aggregate_id: workId,
         transition: "accepted",
         resulting_version: 4,
-        performed_by_actor: { kind: "agent_member", id: "host-624" },
+        performed_by_actor: { kind: "agent_member", id: "host-fixture" },
         payload: { work_report_id: reportId, candidate_fingerprint: candidateFingerprint },
       },
       { id: workId, version: 4, phase: "closed", resolution: "accepted" },
@@ -161,17 +161,26 @@ function clone(value) {
   return structuredClone(value);
 }
 
-function expectRejected(name, records, mutateEvidence = () => {}) {
+let rejectedCases = 0;
+
+function expectRejected(name, records, mutateEvidence = () => {}, expectedFailure = null) {
   const candidateEvidence = clone(evidence);
   mutateEvidence(candidateEvidence);
   const failures = verifyCanonicalTrustLedger(candidateEvidence, records);
   assert.ok(failures.length > 0, `${name}: expected rejection`);
+  if (expectedFailure) {
+    assert.match(failures.join("\n"), expectedFailure, `${name}: wrong rejection reason`);
+  }
+  rejectedCases += 1;
 }
 
 const valid = validRecords();
 assert.deepEqual(verifyCanonicalTrustLedger(evidence, valid), []);
 assert.deepEqual(verifyCanonicalTrustLedgerJsonl(evidence, `${valid.map(JSON.stringify).join("\n")}\n\n`), []);
 assert.equal(parseTrustOperationJsonl("\n\r\n").length, 0);
+const unrelatedForeignSpace = clone(valid);
+unrelatedForeignSpace.at(-1).execution_space_id = "space-unrelated";
+assert.deepEqual(verifyCanonicalTrustLedger(evidence, unrelatedForeignSpace), []);
 
 expectRejected("missing WorkReport", valid.filter((record) => record.command_name !== "work_report.create"));
 expectRejected("wrong WorkReport", valid, (value) => { value.work.work_report_id = "work-report:wrong"; });
@@ -187,6 +196,20 @@ expectRejected("non-Pass review Message", clone(valid).map((record, index) => {
   if (index === 1) record.operation.resulting_projection.body = "Verdict: Changes Required";
   return record;
 }));
+expectRejected("noncanonical Pass review Message", clone(valid).map((record, index) => {
+  if (index === 1) record.operation.resulting_projection.body = "Looks good\nVerdict: Pass";
+  return record;
+}), () => {}, /canonical REVIEW_RESULT/u);
+expectRejected("negated Pass review Message", clone(valid).map((record, index) => {
+  if (index === 1) record.operation.resulting_projection.body = "REVIEW_RESULT\nVerdict: Pass\nThis is not Pass";
+  return record;
+}), () => {}, /canonical REVIEW_RESULT/u);
+expectRejected("mixed review verdicts", clone(valid).map((record, index) => {
+  if (index === 1) {
+    record.operation.resulting_projection.body = "REVIEW_RESULT\nVerdict: Pass\nVerdict: Changes Required";
+  }
+  return record;
+}), () => {}, /canonical REVIEW_RESULT/u);
 expectRejected("missing acceptance", valid.filter((record) => record.command_name !== "work.accept"));
 expectRejected("wrong acceptance", valid, (value) => { value.work.acceptance_event_id = "trust-event:wrong"; });
 expectRejected("duplicate acceptance", [...valid, clone(valid[2])]);
@@ -198,6 +221,25 @@ expectRejected("wrong native session", valid, (value) => { value.sessions[0].nat
 expectRejected("wrong provider", valid, (value) => { value.sessions[0].provider = "wrong-provider"; });
 expectRejected("duplicate native binding", [...valid, clone(valid[3])]);
 expectRejected("duplicate Session member", valid, (value) => { value.sessions[1].agent_member_id = value.sessions[0].agent_member_id; });
+expectRejected("missing execution space", clone(valid).map((record, index) => {
+  if (index === 0) record.execution_space_id = "";
+  return record;
+}), () => {}, /no non-empty execution_space_id/u);
+expectRejected("foreign execution space substitution", clone(valid).map((record, index) => {
+  if (index === 3) record.execution_space_id = "space-foreign";
+  return record;
+}), () => {}, /span multiple execution spaces/u);
+expectRejected("transcript mirror field", clone(valid).map((record, index) => {
+  if (index === valid.length - 1) record.operation.resulting_projection.tool_calls = [];
+  return record;
+}), () => {}, /forbidden transcript-mirror field/u);
+expectRejected("transcript mirror aggregate", [
+  ...valid,
+  envelope(
+    { id: "provider-event-fixture", aggregate_kind: "provider_transcript", aggregate_id: "native-member", transition: "appended" },
+    { id: "provider-event-fixture", text: "mirrored provider output" },
+  ),
+], () => {}, /forbidden transcript-mirror aggregate/u);
 
 assert.match(verifyCanonicalTrustLedgerJsonl(evidence, "{not-json\n")[0], /line 1 is malformed JSON/u);
 assert.match(verifyCanonicalTrustLedgerJsonl(evidence, "[]\n")[0], /line 1 must contain a JSON object/u);
@@ -206,4 +248,4 @@ assert.match(
   /no canonical operation\.event envelope/u,
 );
 
-console.log("agent team trust-ledger validator PASS: valid ledger and 21 adversarial cases");
+console.log(`agent team trust-ledger validator PASS: valid ledger and ${rejectedCases} adversarial cases`);
