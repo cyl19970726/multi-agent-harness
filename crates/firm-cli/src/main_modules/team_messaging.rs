@@ -370,12 +370,141 @@ pub(super) fn prepare_team_message_as(
 pub(super) fn publish_team_message(
     store: &HarnessStore,
     sender: &TeamActorRef,
-    mut message: TeamMessageProjection,
+    message: TeamMessageProjection,
 ) -> CliResult<TeamMessageProjection> {
     use harness_core::agentfirm_api::{
-        ActorKind, ActorRef, MessageAddressKind, MessageDraft, MessageKind, MessageRecipientKind,
-        MessageRecipientRef, ResponseIntent, RuntimeCommandKind,
+        MessageAddressKind, MessageDraft, MessageKind, MessageRecipientKind, MessageRecipientRef,
+        ResponseIntent,
     };
+    let run = latest_team_run(store, &message.team_run_id)?;
+    let member_runs = latest_member_runs_in_append_order(store)?;
+    let recipients = message
+        .recipient_runtime_ids
+        .iter()
+        .map(|recipient| {
+            let stable = member_runs
+                .iter()
+                .find(|member| member.id == *recipient && member.team_run_id == run.id)
+                .ok_or_else(|| CliError::Usage(format!("member run not found: {recipient}")))?;
+            Ok(MessageRecipientRef {
+                kind: MessageRecipientKind::AgentMember,
+                id: stable.agent_member_id.clone(),
+            })
+        })
+        .collect::<CliResult<Vec<_>>>()?;
+    let target_ref = recipients
+        .first()
+        .cloned()
+        .ok_or_else(|| CliError::Usage("Message requires a recipient".into()))?;
+    let address_kind =
+        if recipients.len() == 1 && target_ref.kind == MessageRecipientKind::AgentMember {
+            MessageAddressKind::DirectAgent
+        } else {
+            MessageAddressKind::AuthorizedBroadcast
+        };
+    let kind = match message.kind {
+        ProviderDispatchIntent::ProviderInteractionRequest => {
+            MessageKind::ProviderInteractionRequest
+        }
+        ProviderDispatchIntent::ProviderInteractionResponse => {
+            MessageKind::ProviderInteractionResponse
+        }
+        ProviderDispatchIntent::Control => MessageKind::RequestDecision,
+        ProviderDispatchIntent::Message => {
+            if message.causation_id.is_some() {
+                MessageKind::Reply
+            } else {
+                MessageKind::Message
+            }
+        }
+    };
+    let response_intent = match message.effective_response_intent() {
+        ProviderResponseIntent::Informational => ResponseIntent::Informational,
+        ProviderResponseIntent::ResponseRequired => ResponseIntent::ResponseRequired,
+    };
+    let draft = MessageDraft {
+        address_kind,
+        target_ref,
+        recipients,
+        team_id: Some(run.agent_team_id.clone()),
+        team_run_id: Some(run.id.clone()),
+        work_id: message.work_id.clone(),
+        collaboration_scope: None,
+        kind,
+        body: message.body.clone(),
+        correlation_id: message.correlation_id.clone(),
+        causation_id: message.causation_id.clone(),
+        response_intent,
+        evidence_refs: message.evidence_refs.clone(),
+        schema_version: 1,
+    };
+    publish_team_message_with_draft(store, sender, message, draft).map(|outcome| outcome.message)
+}
+
+pub(super) struct PublishedTeamMessage {
+    pub(super) message: TeamMessageProjection,
+    pub(super) replayed: bool,
+}
+
+pub(super) fn publish_prepared_team_message(
+    store: &HarnessStore,
+    prepared: harness_application::PreparedMessageAuthoring,
+    compatibility_id: String,
+    created_at: String,
+) -> CliResult<PublishedTeamMessage> {
+    let team_run_id =
+        prepared.draft.team_run_id.clone().ok_or_else(|| {
+            CliError::Usage("application MessageDraft is not TeamRun-bound".into())
+        })?;
+    let kind = match prepared.draft.kind {
+        harness_core::agentfirm_api::MessageKind::RequestDecision => {
+            ProviderDispatchIntent::Control
+        }
+        _ => ProviderDispatchIntent::Message,
+    };
+    let response_intent = match prepared.draft.response_intent {
+        harness_core::agentfirm_api::ResponseIntent::ResponseRequired => {
+            ProviderResponseIntent::ResponseRequired
+        }
+        harness_core::agentfirm_api::ResponseIntent::Informational => {
+            ProviderResponseIntent::Informational
+        }
+    };
+    let message = TeamMessageProjection {
+        id: compatibility_id,
+        team_run_id,
+        work_id: prepared.draft.work_id.clone(),
+        source_plan_ref: None,
+        sender: Some(prepared.sender.clone()),
+        sender_runtime_id: prepared.sender_runtime_id,
+        recipients: prepared
+            .recipient_runtime_ids
+            .iter()
+            .map(|id| TeamRecipientRef {
+                kind: TeamRecipientKind::ProviderRuntimeProjection,
+                id: id.clone(),
+            })
+            .collect(),
+        recipient_runtime_ids: prepared.recipient_runtime_ids,
+        kind,
+        body: prepared.draft.body.clone(),
+        correlation_id: prepared.draft.correlation_id.clone(),
+        causation_id: prepared.draft.causation_id.clone(),
+        response_intent: Some(response_intent),
+        evidence_refs: prepared.draft.evidence_refs.clone(),
+        deliveries: Vec::new(),
+        created_at,
+    };
+    publish_team_message_with_draft(store, &prepared.sender, message, prepared.draft)
+}
+
+fn publish_team_message_with_draft(
+    store: &HarnessStore,
+    sender: &TeamActorRef,
+    mut message: TeamMessageProjection,
+    draft: harness_core::agentfirm_api::MessageDraft,
+) -> CliResult<PublishedTeamMessage> {
+    use harness_core::agentfirm_api::{ActorKind, ActorRef, RuntimeCommandKind};
     let run = latest_team_run(store, &message.team_run_id)?;
     let execution_space_id = team_run_execution_space_id(store, &run)?;
     let registration = store
@@ -424,67 +553,9 @@ pub(super) fn publish_team_message(
             id: sender.id.clone(),
         },
     };
-    let recipients = message
-        .recipient_runtime_ids
-        .iter()
-        .map(|recipient| {
-            let stable = member_runs
-                .iter()
-                .find(|member| member.id == *recipient && member.team_run_id == run.id)
-                .ok_or_else(|| CliError::Usage(format!("member run not found: {recipient}")))?;
-            Ok(MessageRecipientRef {
-                kind: MessageRecipientKind::AgentMember,
-                id: stable.agent_member_id.clone(),
-            })
-        })
-        .collect::<CliResult<Vec<_>>>()?;
-    let target_ref = recipients
-        .first()
-        .cloned()
-        .ok_or_else(|| CliError::Usage("Message requires a recipient".into()))?;
-    let address_kind =
-        if recipients.len() == 1 && target_ref.kind == MessageRecipientKind::AgentMember {
-            MessageAddressKind::DirectAgent
-        } else {
-            MessageAddressKind::AuthorizedBroadcast
-        };
-    let kind = match message.kind {
-        ProviderDispatchIntent::ProviderInteractionRequest => {
-            MessageKind::ProviderInteractionRequest
-        }
-        ProviderDispatchIntent::ProviderInteractionResponse => {
-            MessageKind::ProviderInteractionResponse
-        }
-        ProviderDispatchIntent::Control => MessageKind::RequestDecision,
-        ProviderDispatchIntent::Message => {
-            if message.causation_id.is_some() {
-                MessageKind::Reply
-            } else {
-                MessageKind::Message
-            }
-        }
-    };
-    let response_intent = match message.effective_response_intent() {
-        ProviderResponseIntent::Informational => ResponseIntent::Informational,
-        ProviderResponseIntent::ResponseRequired => ResponseIntent::ResponseRequired,
-    };
+    let canonical_message_id = format!("message:{}", message.id);
     let payload = serde_json::json!({
-        "draft": MessageDraft {
-            address_kind,
-            target_ref,
-            recipients,
-            team_id: Some(run.agent_team_id.clone()),
-            team_run_id: Some(run.id.clone()),
-            work_id: message.work_id.clone(),
-            collaboration_scope: None,
-            kind,
-            body: message.body.clone(),
-            correlation_id: message.correlation_id.clone(),
-            causation_id: message.causation_id.clone(),
-            response_intent,
-            evidence_refs: message.evidence_refs.clone(),
-            schema_version: 1,
-        }
+        "draft": draft
     });
     let command = harness_core::agentfirm_api::ControlCommandEnvelope {
         id: format!("runtime-command:message:{}", message.id),
@@ -497,13 +568,16 @@ pub(super) fn publish_team_message(
         required_capability: "message.author".into(),
         idempotency_key: message.id.clone(),
         expected_version: 0,
+        // This is a server-owned delivery deadline. AuthorMessage fingerprint
+        // identity excludes this rolling observation so an exact retry can
+        // cross a same-generation daemon lease renewal without semantic drift.
         expires_unix_ms: current_unix_ms_u64().saturating_add(30_000),
         binding: Default::default(),
         precondition: Default::default(),
         postcondition: runtime_command_postcondition_for(RuntimeCommandKind::AuthorMessage),
         payload_fingerprint: harness_store::canonical_json_fingerprint(&payload),
         payload,
-        issued_at: now_string(),
+        issued_at: format!("runtime-command:{}", message.id),
     };
     let firm_home = execution_space::firm_home().map_err(execution_space_err)?;
     let response = supervisor_daemon::runtime_command_via_socket(
@@ -517,8 +591,28 @@ pub(super) fn publish_team_message(
             response["error"].as_str().unwrap_or("unknown error")
         )));
     }
+    let replayed = response["replayed"].as_bool() == Some(true);
     if let Some(id) = response["result"]["id"].as_str() {
         message.id = id.to_string();
+    } else {
+        message.id = canonical_message_id;
+    }
+    let wait_deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    loop {
+        let committed = store
+            .fabric_messages(&registration.execution_space_id)?
+            .into_iter()
+            .any(|canonical| canonical.id == message.id);
+        if committed {
+            break;
+        }
+        if std::time::Instant::now() >= wait_deadline {
+            return Err(CliError::RuntimeRecoveryRequired(format!(
+                "canonical Message {} was not observable after RuntimeCommand settlement",
+                message.id
+            )));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
     }
     message.deliveries.clear();
     for delivery in store.fabric_message_deliveries(&registration.execution_space_id)? {
@@ -542,28 +636,30 @@ pub(super) fn publish_team_message(
             });
         }
     }
-    let seq = next_team_run_seq(store, &message.team_run_id)?;
-    append_team_run_event(
-        store,
-        &message.team_run_id,
-        seq,
-        team_event_source_for_actor(sender),
-        matches!(
+    let event = TeamRunEvent {
+        id: String::new(),
+        seq: 0,
+        team_run_id: message.team_run_id.clone(),
+        source_kind: team_event_source_for_actor(sender),
+        member_run_id: matches!(
             sender.kind,
             TeamActorKind::ProviderRuntimeProjection | TeamActorKind::AgentMember
         )
         .then(|| message.sender_runtime_id.clone()),
-        "message",
-        &message.id,
-        "created",
-        &format!(
+        delegation_run_id: None,
+        entity_type: "message".into(),
+        entity_id: message.id.clone(),
+        operation: "created".into(),
+        summary: format!(
             "{} from {} to [{}]",
             team_message_kind_label(&message.kind),
             sender.id,
             message.recipient_runtime_ids.join(",")
         ),
-    )?;
-    Ok(message)
+        occurred_at: message.created_at.clone(),
+    };
+    store.ensure_team_run_event_next(&format!("message-created:{}", message.id), event)?;
+    Ok(PublishedTeamMessage { message, replayed })
 }
 
 /// Latest-wins read model for one TeamRun recipient.

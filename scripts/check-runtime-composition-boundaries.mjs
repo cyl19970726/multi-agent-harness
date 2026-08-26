@@ -72,6 +72,48 @@ for (const forbidden of ["firm-store", "firm-cli", "firm-provider-", "harness_st
   }
 }
 
+const messageAuthoringApplicationPath =
+  "crates/firm-application/src/message_authoring.rs";
+const messageAuthoringApplication = read(messageAuthoringApplicationPath);
+const messageAuthoringProduction = messageAuthoringApplication.split("#[cfg(test)]")[0];
+for (const required of [
+  "pub enum MessageAuthoringOperation",
+  "pub enum MessageAuthoringIntent",
+  "pub struct PrepareMessageAuthoringCommand",
+  "pub struct PreparedMessageAuthoring",
+  "pub enum MessageAuthoringError",
+  "pub fn prepare_message_authoring",
+  "pub fn prepared_message_matches_canonical",
+  "message_body_digest(&canonical.body)",
+  "message_content_fingerprint(canonical)",
+  "MessageDraft",
+]) {
+  if (!messageAuthoringApplication.includes(required)) {
+    failures.push(
+      `${messageAuthoringApplicationPath}: missing typed Message Authoring owner ${required}`,
+    );
+  }
+}
+for (const forbidden of [
+  "HarnessStore",
+  "StoreError",
+  "serde_json",
+  "std::fs",
+  "TcpStream",
+  "/v1/",
+  "SystemTime",
+  "RuntimeCommand",
+  "CanonicalMessageDelivery",
+  "firm-provider-",
+  "firm_provider",
+]) {
+  if (messageAuthoringProduction.includes(forbidden)) {
+    failures.push(
+      `${messageAuthoringApplicationPath}: Message Authoring policy depends on forbidden adapter/runtime detail ${forbidden}`,
+    );
+  }
+}
+
 const runtimeRecoveryApplicationPath =
   "crates/firm-application/src/runtime_recovery_action.rs";
 const runtimeRecoveryApplication = read(runtimeRecoveryApplicationPath);
@@ -247,6 +289,66 @@ const runtimeRecoveryAdapterPath =
   "crates/firm-cli/src/role_actions_api/runtime_recovery_adapter.rs";
 const runtimeRecoveryCanonicalPath =
   "crates/firm-cli/src/role_actions_api/canonical_actions.rs";
+const messageAuthoringAdapterPath =
+  "crates/firm-cli/src/role_actions_api/message_authoring_adapter.rs";
+const messageAuthoringAdapter = read(messageAuthoringAdapterPath);
+if (!messageAuthoringAdapter.includes("prepare_message_authoring(command)")) {
+  failures.push(
+    `${messageAuthoringAdapterPath}: adapter bypasses the Message Authoring application service`,
+  );
+}
+const canonicalActions = read(runtimeRecoveryCanonicalPath);
+for (const required of [
+  "prepare_canonical_message(",
+  "publish_prepared_team_message(",
+]) {
+  if (!canonicalActions.includes(required)) {
+    failures.push(
+      `${runtimeRecoveryCanonicalPath}: canonical Message route bypasses ${required}`,
+    );
+  }
+}
+const teamMessagingPath =
+  "crates/firm-cli/src/main_modules/team_messaging.rs";
+const teamMessaging = read(teamMessagingPath);
+for (const required of [
+  'response["replayed"].as_bool()',
+  'format!("message-created:{}", message.id)',
+  "ensure_team_run_event_next",
+  "RuntimeRecoveryRequired",
+]) {
+  if (!teamMessaging.includes(required)) {
+    failures.push(
+      `${teamMessagingPath}: Message publish/replay boundary lost ${required}`,
+    );
+  }
+}
+const storeTrustKernel = read("crates/firm-store/src/trust_kernel.rs");
+if (
+  !storeTrustKernel.includes("command.command == RuntimeCommandKind::AuthorMessage") ||
+  !storeTrustKernel.includes('object.remove("expires_unix_ms")')
+) {
+  failures.push(
+    "firm-store RuntimeCommand fingerprint must keep exact Message replay stable across same-generation lease renewal",
+  );
+}
+if (!canonicalActions.includes('"RUNTIME_COMMAND_RECOVERY_REQUIRED"')) {
+  failures.push(
+    `${runtimeRecoveryCanonicalPath}: Message bounded-wait uncertainty was downgraded from typed recovery`,
+  );
+}
+for (const escapedPolicy of [
+  "Team Message requires the exact current Team revision",
+  "MessageSubscriptionStatus::Active",
+  "every message recipient must belong to the exact Team",
+  "message body and recipients are required",
+]) {
+  if (canonicalActions.includes(escapedPolicy)) {
+    failures.push(
+      `${runtimeRecoveryCanonicalPath}: Message Authoring policy escaped application owner: ${escapedPolicy}`,
+    );
+  }
+}
 for (const path of productionRustPaths) {
   const content = read(path);
   if (

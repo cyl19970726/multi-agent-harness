@@ -21,211 +21,7 @@ pub(super) fn execute_canonical_role_action(
                     None,
                 )
             })?;
-            let (_run, team) = team_for_run(store, team_run_id)?;
-            let actor_is_host = is_host(&auth, &team.host_agent_id);
-            let actor_member_run = resolve_member_run(store, &auth, team_run_id).ok();
-            if !actor_is_host && actor_member_run.is_none() {
-                return Err(encoded_error(
-                    "UNAUTHORIZED_ACTOR",
-                    "message sender must be the exact Team Host or one active Team Member",
-                    "team_run",
-                    team_run_id,
-                    None,
-                ));
-            }
-            let team_revision = store
-                .teams()?
-                .into_iter()
-                .filter(|candidate| candidate.id == team.id)
-                .count() as u64;
-            if auth.expected_version != team_revision {
-                return Err(encoded_error(
-                    "VERSION_CONFLICT",
-                    "Team Message requires the exact current Team revision",
-                    "team",
-                    &team.id,
-                    Some(team_revision),
-                ));
-            }
-            let (
-                recipient_ids,
-                message_body,
-                work_id,
-                evidence_refs,
-                response_required,
-                correlation_id,
-                causation_id,
-                message_kind,
-            ) = match (operation, intent) {
-                (
-                    "send",
-                    RoleActionIntent::SendMessage {
-                        recipient_ids,
-                        body,
-                        work_id,
-                        evidence_refs,
-                        response_required,
-                    },
-                ) => (
-                    recipient_ids,
-                    body,
-                    work_id,
-                    evidence_refs,
-                    response_required,
-                    deterministic_id("correlation", &auth),
-                    None,
-                    MessageKind::Message,
-                ),
-                (
-                    "reply",
-                    RoleActionIntent::ReplyMessage {
-                        recipient_ids,
-                        body,
-                        correlation_id,
-                        causation_id,
-                        work_id,
-                        evidence_refs,
-                        response_required,
-                    },
-                ) => (
-                    recipient_ids,
-                    body,
-                    work_id,
-                    evidence_refs,
-                    response_required,
-                    correlation_id,
-                    Some(causation_id),
-                    MessageKind::Reply,
-                ),
-                (
-                    "request-decision",
-                    RoleActionIntent::RequestDecision {
-                        body,
-                        work_id,
-                        evidence_refs,
-                    },
-                ) => (
-                    vec![team.host_agent_id.clone()],
-                    body,
-                    work_id,
-                    evidence_refs,
-                    true,
-                    deterministic_id("decision", &auth),
-                    None,
-                    MessageKind::RequestDecision,
-                ),
-                _ => {
-                    return Err(encoded_error(
-                        "INVALID_STATE_TRANSITION",
-                        "semantic action does not match message route",
-                        "team_run",
-                        team_run_id,
-                        None,
-                    ))
-                }
-            };
-            if let Some(work_id) = work_id.as_deref() {
-                let work = current_work(store, team_run_id, work_id)?;
-                if !actor_is_host {
-                    require_exact_work_member(store, &auth, &work)?;
-                }
-            }
-            if message_body.trim().is_empty() || recipient_ids.is_empty() {
-                return Err(encoded_error(
-                    "INVALID_STATE_TRANSITION",
-                    "message body and recipients are required",
-                    "team_run",
-                    team_run_id,
-                    None,
-                ));
-            }
-            let allowed = team
-                .member_ids
-                .iter()
-                .chain(std::iter::once(&team.host_agent_id))
-                .collect::<std::collections::BTreeSet<_>>();
-            if recipient_ids.iter().any(|id| !allowed.contains(id)) {
-                return Err(encoded_error(
-                    "UNAUTHORIZED_ACTOR",
-                    "every message recipient must belong to the exact Team",
-                    "team_run",
-                    team_run_id,
-                    None,
-                ));
-            }
-            let memberships = store.fabric_team_memberships(&auth.execution_space_id)?;
-            let subscriptions = store.fabric_message_subscriptions(&auth.execution_space_id)?;
-            for recipient_id in &recipient_ids {
-                let matching = memberships
-                    .iter()
-                    .filter(|membership| {
-                        membership.team_id == team.id
-                            && membership.agent_member_id == *recipient_id
-                            && membership.state
-                                == harness_core::agentfirm_api::TeamMembershipStatus::Active
-                    })
-                    .collect::<Vec<_>>();
-                if matching.len() != 1
-                    || !subscriptions.iter().any(|subscription| {
-                        subscription.subscriber_kind
-                            == harness_core::agentfirm_api::MessageSubjectKind::AgentMember
-                            && subscription.subscriber_ref == *recipient_id
-                            && subscription.membership_ref.as_deref()
-                                == Some(matching[0].id.as_str())
-                            && subscription.status
-                                == harness_core::agentfirm_api::MessageSubscriptionStatus::Active
-                    })
-                {
-                    return Err(encoded_error(
-                        "MESSAGE_ROUTE_UNAVAILABLE",
-                        "recipient requires one active canonical TeamMembership and MessageSubscription",
-                        "agent_identity",
-                        recipient_id,
-                        None,
-                    ));
-                }
-            }
-            let member_runs = store
-                .trust_member_runs(&auth.execution_space_id)?
-                .into_iter()
-                .filter(|run| run.team_run_id == team_run_id)
-                .collect::<Vec<_>>();
-            let recipient_runtime_ids = recipient_ids
-                .into_iter()
-                .map(|identity_id| {
-                    let matching = member_runs
-                        .iter()
-                        .filter(|run| {
-                            run.agent_member_id == identity_id
-                                && run.coordination_status == MemberCoordinationStatus::Active
-                        })
-                        .collect::<Vec<_>>();
-                    match matching.as_slice() {
-                        [run] => Ok(run.id.clone()),
-                        _ => Err(encoded_error(
-                            "AGENT_SESSION_AMBIGUOUS",
-                            "message recipient requires exactly one active Team MemberRun, including the Host",
-                            "agent_identity",
-                            &identity_id,
-                            None,
-                        )),
-                    }
-                })
-                .collect::<Result<Vec<_>, _>>()?;
-            let sender = TeamActorRef {
-                kind: if actor_is_host {
-                    TeamActorKind::Host
-                } else {
-                    TeamActorKind::AgentMember
-                },
-                id: if actor_is_host {
-                    team.host_agent_id.clone()
-                } else {
-                    auth.actor.id.clone()
-                },
-                display_name: None,
-                authn_source: Some("agentfirm_http_credential".into()),
-            };
+            let prepared = prepare_canonical_message(store, &auth, team_run_id, operation, intent)?;
             let compatibility_id = format!(
                 "role-message:{}",
                 canonical_json_fingerprint(&json!({
@@ -233,59 +29,92 @@ pub(super) fn execute_canonical_role_action(
                     "idempotency_key": &auth.idempotency_key,
                 }))
             );
-            let message = harness_core::TeamMessageProjection {
-                id: compatibility_id.clone(),
-                team_run_id: team_run_id.to_string(),
-                work_id,
-                source_plan_ref: None,
-                sender: Some(sender.clone()),
-                sender_runtime_id: actor_member_run
-                    .as_ref()
-                    .cloned()
-                    .unwrap_or_else(|| auth.actor.id.clone()),
-                recipients: recipient_runtime_ids
-                    .iter()
-                    .map(|id| harness_core::TeamRecipientRef {
-                        kind: harness_core::TeamRecipientKind::ProviderRuntimeProjection,
-                        id: id.clone(),
-                    })
-                    .collect(),
-                recipient_runtime_ids,
-                kind: match message_kind {
-                    MessageKind::RequestDecision => harness_core::ProviderDispatchIntent::Control,
-                    _ => harness_core::ProviderDispatchIntent::Message,
-                },
-                body: message_body,
-                correlation_id,
-                causation_id,
-                response_intent: Some(if response_required {
-                    harness_core::ProviderResponseIntent::ResponseRequired
-                } else {
-                    harness_core::ProviderResponseIntent::Informational
-                }),
-                evidence_refs,
-                deliveries: Vec::new(),
-                created_at: now_string(),
-            };
             let canonical_id = format!("message:{compatibility_id}");
-            let replayed = store
+            let existing = store
                 .fabric_messages(&auth.execution_space_id)?
-                .iter()
-                .any(|message| message.id == canonical_id);
-            let published =
-                crate::publish_team_message(store, &sender, message).map_err(|error| {
-                    encoded_error(
-                        "RUNTIME_COMMAND_REJECTED",
-                        error.to_string(),
+                .into_iter()
+                .find(|message| message.id == canonical_id);
+            if let Some(canonical) = existing {
+                if canonical.body_digest
+                    != harness_core::agentfirm_api::message_body_digest(&canonical.body)
+                    || canonical.content_fingerprint
+                        != harness_core::agentfirm_api::message_content_fingerprint(&canonical)
+                {
+                    return Err(encoded_error(
+                        "RUNTIME_COMMAND_RECOVERY_REQUIRED",
+                        "canonical Message immutable content evidence is invalid",
                         "message",
                         &canonical_id,
                         None,
-                    )
-                })?;
+                    ));
+                }
+                if !harness_application::prepared_message_matches_canonical(
+                    &prepared,
+                    &canonical,
+                    &compatibility_id,
+                ) {
+                    return Err(encoded_error(
+                        "RUNTIME_COMMAND_REJECTED",
+                        "NodeDaemon rejected Message: conflict: RuntimeCommand idempotency key was reused with different Message semantics",
+                        "message",
+                        &canonical_id,
+                        None,
+                    ));
+                }
+                let event = store
+                    .canonical_operations_for_space(&auth.execution_space_id)?
+                    .into_iter()
+                    .filter(|operation| {
+                        operation.event.aggregate_kind == "message"
+                            && operation.event.aggregate_id == canonical.id
+                    })
+                    .max_by_key(|operation| operation.event.sequence)
+                    .ok_or_else(|| {
+                        encoded_error(
+                            "RUNTIME_COMMAND_RECOVERY_REQUIRED",
+                            "canonical Message event is missing",
+                            "message",
+                            &canonical.id,
+                            None,
+                        )
+                    })?
+                    .event;
+                return Ok(RoleActionResult {
+                    ok: true,
+                    action_protocol_version: "agentfirm.role_actions.v1",
+                    projection: serde_json::to_value(canonical)?,
+                    event_id: event.id,
+                    resulting_version: event.resulting_version,
+                    store_sequence: event.store_sequence,
+                    replayed: true,
+                });
+            }
+            let published = crate::publish_prepared_team_message(
+                store,
+                prepared,
+                compatibility_id,
+                now_string(),
+            )
+            .map_err(|error| match error {
+                crate::CliError::RuntimeRecoveryRequired(message) => encoded_error(
+                    "RUNTIME_COMMAND_RECOVERY_REQUIRED",
+                    message,
+                    "message",
+                    &canonical_id,
+                    None,
+                ),
+                other => encoded_error(
+                    "RUNTIME_COMMAND_REJECTED",
+                    other.to_string(),
+                    "message",
+                    &canonical_id,
+                    None,
+                ),
+            })?;
             let canonical = store
                 .fabric_messages(&auth.execution_space_id)?
                 .into_iter()
-                .find(|message| message.id == published.id)
+                .find(|message| message.id == published.message.id)
                 .ok_or_else(|| {
                     encoded_error(
                         "RUNTIME_COMMAND_RECOVERY_REQUIRED",
@@ -320,7 +149,7 @@ pub(super) fn execute_canonical_role_action(
                 event_id: event.id,
                 resulting_version: event.resulting_version,
                 store_sequence: event.store_sequence,
-                replayed,
+                replayed: published.replayed,
             })
         }
         CanonicalRoute::MemberRun {
