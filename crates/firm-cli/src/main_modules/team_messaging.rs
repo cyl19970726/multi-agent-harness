@@ -568,9 +568,10 @@ fn publish_team_message_with_draft(
         required_capability: "message.author".into(),
         idempotency_key: message.id.clone(),
         expected_version: 0,
-        // Exact concurrent retries must prepare the same full envelope. The
-        // active lease already supplies the command's bounded lifetime.
-        expires_unix_ms: lease.expires_unix_ms,
+        // This is a server-owned delivery deadline. AuthorMessage fingerprint
+        // identity excludes this rolling observation so an exact retry can
+        // cross a same-generation daemon lease renewal without semantic drift.
+        expires_unix_ms: current_unix_ms_u64().saturating_add(30_000),
         binding: Default::default(),
         precondition: Default::default(),
         postcondition: runtime_command_postcondition_for(RuntimeCommandKind::AuthorMessage),

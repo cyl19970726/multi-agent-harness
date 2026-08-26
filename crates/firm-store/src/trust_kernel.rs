@@ -305,16 +305,20 @@ fn current_unix_ms() -> u64 {
 }
 
 /// Fingerprint every command-authority and effect field while excluding the
-/// server observation timestamp. The timestamp is metadata generated anew at
-/// the HTTP boundary, so including it would turn an otherwise exact retry into
-/// an idempotency conflict. Expiry, actor, target generations, capability and
-/// payload remain bound and any change still conflicts.
+/// server observation timestamp. Message authoring also excludes its
+/// server-owned rolling expiry: the first prepared command retains its actual
+/// deadline, while an exact retry across a same-generation daemon lease renewal
+/// must still identify the already-prepared effect. All actor, target
+/// generation, capability and payload fields remain bound.
 pub fn runtime_command_envelope_fingerprint(
     command: &ControlCommandEnvelope,
 ) -> StoreResult<String> {
     let mut value = serde_json::to_value(command)?;
     if let Some(object) = value.as_object_mut() {
         object.remove("issued_at");
+        if command.command == RuntimeCommandKind::AuthorMessage {
+            object.remove("expires_unix_ms");
+        }
     }
     Ok(crate::canonical_json_fingerprint(&value))
 }

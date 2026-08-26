@@ -95,14 +95,21 @@ pub(super) fn execute_canonical_role_action(
                 compatibility_id,
                 now_string(),
             )
-            .map_err(|error| {
-                encoded_error(
-                    "RUNTIME_COMMAND_REJECTED",
-                    error.to_string(),
+            .map_err(|error| match error {
+                crate::CliError::RuntimeRecoveryRequired(message) => encoded_error(
+                    "RUNTIME_COMMAND_RECOVERY_REQUIRED",
+                    message,
                     "message",
                     &canonical_id,
                     None,
-                )
+                ),
+                other => encoded_error(
+                    "RUNTIME_COMMAND_REJECTED",
+                    other.to_string(),
+                    "message",
+                    &canonical_id,
+                    None,
+                ),
             })?;
             let canonical = store
                 .fabric_messages(&auth.execution_space_id)?

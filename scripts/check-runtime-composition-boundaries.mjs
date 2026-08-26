@@ -315,13 +315,27 @@ for (const required of [
   'response["replayed"].as_bool()',
   'format!("message-created:{}", message.id)',
   "ensure_team_run_event_next",
-  "expires_unix_ms: lease.expires_unix_ms",
+  "RuntimeRecoveryRequired",
 ]) {
   if (!teamMessaging.includes(required)) {
     failures.push(
       `${teamMessagingPath}: Message publish/replay boundary lost ${required}`,
     );
   }
+}
+const storeTrustKernel = read("crates/firm-store/src/trust_kernel.rs");
+if (
+  !storeTrustKernel.includes("command.command == RuntimeCommandKind::AuthorMessage") ||
+  !storeTrustKernel.includes('object.remove("expires_unix_ms")')
+) {
+  failures.push(
+    "firm-store RuntimeCommand fingerprint must keep exact Message replay stable across same-generation lease renewal",
+  );
+}
+if (!canonicalActions.includes('"RUNTIME_COMMAND_RECOVERY_REQUIRED"')) {
+  failures.push(
+    `${runtimeRecoveryCanonicalPath}: Message bounded-wait uncertainty was downgraded from typed recovery`,
+  );
 }
 for (const escapedPolicy of [
   "Team Message requires the exact current Team revision",

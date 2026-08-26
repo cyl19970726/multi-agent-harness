@@ -1,6 +1,53 @@
 use super::*;
 
 #[test]
+fn author_message_fingerprint_replays_across_same_generation_lease_renewal() {
+    let (store, _root) = fabric_store();
+    let session = session("session-message-renewal", "member-message-renewal");
+    let (mut command, mut admission) = runtime_command_fixture(
+        "runtime-message-renewal",
+        RuntimeCommandKind::AuthorMessage,
+        &session,
+        "author-message",
+    );
+    let first_fingerprint = runtime_command_envelope_fingerprint(&command).unwrap();
+    admission.request_fingerprint = Some(first_fingerprint.clone());
+    let first = store
+        .prepare_runtime_command(&admission, &command, current_unix_ms(), "t-first")
+        .unwrap();
+    assert!(!first.replayed);
+
+    let renewed = store
+        .renew_node_daemon_lease(
+            &session.node_id,
+            &session.node_daemon_id,
+            session.node_daemon_generation,
+            "instance-1",
+            current_unix_ms(),
+            120_000,
+        )
+        .unwrap();
+    command.expires_unix_ms = renewed.expires_unix_ms;
+    let renewed_fingerprint = runtime_command_envelope_fingerprint(&command).unwrap();
+    assert_eq!(renewed_fingerprint, first_fingerprint);
+    admission.request_fingerprint = Some(renewed_fingerprint);
+    let replay = store
+        .prepare_runtime_command(&admission, &command, current_unix_ms(), "t-replay")
+        .unwrap();
+    assert!(replay.replayed);
+
+    let mut provider_command = command;
+    provider_command.command = RuntimeCommandKind::StopSession;
+    let before_expiry_change = runtime_command_envelope_fingerprint(&provider_command).unwrap();
+    provider_command.expires_unix_ms += 1;
+    assert_ne!(
+        runtime_command_envelope_fingerprint(&provider_command).unwrap(),
+        before_expiry_change,
+        "provider/runtime effects keep expiry in their full identity"
+    );
+}
+
+#[test]
 fn runtime_command_effect_matrix_is_exactly_replayable_and_fingerprint_closed() {
     let cases = [
         ("start", RuntimeCommandKind::StartSession, false),

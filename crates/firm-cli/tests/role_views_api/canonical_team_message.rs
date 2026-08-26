@@ -622,6 +622,92 @@ fn canonical_team_message_journey_uses_node_daemon_sessions_deliveries_and_curso
         );
     }
 
+    let linked_work_id = "work-message-link";
+    let (status, linked_work) = serve.post_json_with_headers(
+        &format!("/v1/agentfirm/team-runs/{run_id}/works?project={project_id}"),
+        &serde_json::json!({
+            "action":"create_work",
+            "work_id":linked_work_id,
+            "title":"Message link authority",
+            "completion_criteria_markdown":"Message may reference this Work without mutating it",
+            "eligible_member_ids":[member_id]
+        }),
+        &action_headers(TOKEN, "create-message-link-work", "0"),
+    );
+    assert_eq!(status, 200, "linked Work creation: {linked_work}");
+    let linked_message_intent = serde_json::json!({
+        "action":"send_message",
+        "recipient_ids":[member_id],
+        "body":"Message with canonical Work context",
+        "work_id":linked_work_id,
+        "response_required":false
+    });
+    let linked_message_headers = action_headers(TOKEN, "host-member-work-link", &host_version);
+    let (status, linked_message) =
+        serve.post_json_with_headers(&host_route, &linked_message_intent, &linked_message_headers);
+    assert_eq!(status, 200, "linked Message: {linked_message}");
+    assert_eq!(
+        linked_message["projection"]["work_id"],
+        serde_json::json!(linked_work_id)
+    );
+    let linked_operations = store
+        .canonical_operations_for_space(&space_id)
+        .expect("linked Message operations");
+    let linked_messages = store.fabric_messages(&space_id).expect("linked Messages");
+    let linked_deliveries = store
+        .fabric_message_deliveries(&space_id)
+        .expect("linked Deliveries");
+    let linked_events = store
+        .current_team_run_events(run_id)
+        .expect("linked TeamRun events");
+    let (status, linked_replay) =
+        serve.post_json_with_headers(&host_route, &linked_message_intent, &linked_message_headers);
+    assert_eq!(status, 200, "linked Message replay: {linked_replay}");
+    assert_eq!(linked_replay["replayed"], true);
+    assert_eq!(linked_replay["projection"], linked_message["projection"]);
+    let (status, removed_link_conflict) = serve.post_json_with_headers(
+        &host_route,
+        &serde_json::json!({
+            "action":"send_message",
+            "recipient_ids":[member_id],
+            "body":"Message with canonical Work context",
+            "response_required":false
+        }),
+        &linked_message_headers,
+    );
+    assert_eq!(
+        status, 409,
+        "removing Work link under the same key: {removed_link_conflict}"
+    );
+    assert_eq!(
+        removed_link_conflict["error"]["code"],
+        "RUNTIME_COMMAND_REJECTED"
+    );
+    assert_eq!(
+        store
+            .canonical_operations_for_space(&space_id)
+            .expect("operations after Work-link replay/conflict"),
+        linked_operations
+    );
+    assert_eq!(
+        store
+            .fabric_messages(&space_id)
+            .expect("Messages after Work-link replay/conflict"),
+        linked_messages
+    );
+    assert_eq!(
+        store
+            .fabric_message_deliveries(&space_id)
+            .expect("Deliveries after Work-link replay/conflict"),
+        linked_deliveries
+    );
+    assert_eq!(
+        store
+            .current_team_run_events(run_id)
+            .expect("TeamRun events after Work-link replay/conflict"),
+        linked_events
+    );
+
     let concurrent_intent = serde_json::json!({
         "action":"send_message",
         "recipient_ids":[member_id],
