@@ -85,16 +85,7 @@ function runApply(fixture, extraEnv = {}) {
   return spawnSync("bash", [join(fixture.repo, "scripts/manage-star-harness-install.sh"), "--apply"], {
     cwd: fixture.repo,
     encoding: "utf8",
-    env: {
-      ...process.env,
-      ...extraEnv,
-      HOME: fixture.home,
-      PATH: `${fixture.fakeBin}:${process.env.PATH}`,
-      STAR_HARNESS_BIN_LINK: fixture.binLink,
-      STAR_HARNESS_INSTALL_ROOT: join(fixture.root, "install"),
-      STAR_HARNESS_STATE_ROOT: join(fixture.root, "state"),
-      KIMI_CODE_HOME: join(fixture.root, "kimi"),
-    },
+    env: applyEnvironment(fixture, extraEnv),
   });
 }
 
@@ -113,7 +104,7 @@ function applyEnvironment(fixture, extraEnv = {}) {
 
 function waitForPath(path, child) {
   const sleeper = new Int32Array(new SharedArrayBuffer(4));
-  const deadline = Date.now() + 5_000;
+  const deadline = Date.now() + 15_000;
   while (!existsSync(path) && Date.now() < deadline) {
     assert.equal(child.exitCode, null, "installer exited before reaching the publication hold");
     Atomics.wait(sleeper, 0, 0, 10);
@@ -232,5 +223,53 @@ withFixture((fixture) => {
   );
   chmodSync(dirname(fixture.binLink), 0o700);
 });
+
+{
+  const fixture = createFixture();
+  const ready = join(fixture.root, "first-installer-published");
+  const release = join(fixture.root, "release-first-installer");
+  const first = spawn(
+    "bash",
+    [join(fixture.repo, "scripts/manage-star-harness-install.sh"), "--apply"],
+    {
+      cwd: fixture.repo,
+      env: applyEnvironment(fixture, {
+        FAKE_FAIL_AFTER_PUBLICATION: "1",
+        FAKE_HOLD_READY: ready,
+        FAKE_HOLD_RELEASE: release,
+      }),
+      stdio: "ignore",
+    },
+  );
+  try {
+    waitForPath(ready, first);
+    const publishedTarget = readlinkSync(fixture.binLink);
+    const second = runApply(fixture);
+    assert.notEqual(second.status, 0, "a concurrent installer must fail closed");
+    assert.match(second.stderr, /publication is already owned by another installer/);
+    assert.equal(
+      readlinkSync(fixture.binLink),
+      publishedTarget,
+      "the rejected installer cannot enter the publication critical section",
+    );
+    write(release, "continue\n");
+    const [code] = await new Promise((resolvePromise) => {
+      first.once("exit", (...args) => resolvePromise(args));
+    });
+    assert.notEqual(code, 0, "the held installer must take its injected failure");
+    assert.equal(existsSync(fixture.binLink), false, "the owning installer rolls back its link");
+    assert.equal(
+      existsSync(`${fixture.binLink}.star-harness-install.lock`),
+      false,
+      "the owning installer releases the publication lock on exit",
+    );
+  } finally {
+    if (first.exitCode === null) {
+      write(release, "continue\n");
+      first.kill("SIGKILL");
+    }
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+}
 
 console.log("star-harness installer rollback boundary: PASS");

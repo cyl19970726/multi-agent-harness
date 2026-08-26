@@ -40,7 +40,10 @@ acquire_bin_link_lock() {
 
 release_bin_link_lock() {
   if [[ "${BIN_LINK_LOCK_OWNED}" == "true" ]]; then
-    rmdir "${BIN_LINK_LOCK_DIR}" || true
+    if ! rmdir "${BIN_LINK_LOCK_DIR}"; then
+      echo "failed to release Harness binary publication lock: ${BIN_LINK_LOCK_DIR}" >&2
+      return 1
+    fi
     BIN_LINK_LOCK_OWNED="false"
   fi
 }
@@ -154,7 +157,9 @@ finish_install() {
   local exit_status=$?
   trap - EXIT
   rollback_on_error "${exit_status}" || true
-  release_bin_link_lock
+  if ! release_bin_link_lock && [[ "${exit_status}" -eq 0 ]]; then
+    exit_status=1
+  fi
   exit "${exit_status}"
 }
 
