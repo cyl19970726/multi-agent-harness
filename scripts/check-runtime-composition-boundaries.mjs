@@ -132,6 +132,89 @@ for (const required of [
     );
   }
 }
+
+const memberCloseApplicationPath =
+  "crates/firm-application/src/member_close_action.rs";
+const memberCloseApplication = read(memberCloseApplicationPath);
+const memberCloseProduction = memberCloseApplication.split("#[cfg(test)]")[0];
+for (const required of [
+  "pub enum MemberCloseRuntimeKind",
+  "pub struct PrepareMemberCloseCommand",
+  "pub struct MemberCloseFacts",
+  "pub struct PreparedMemberClose",
+  "pub enum MemberCloseActionError",
+  "pub fn prepare_member_close",
+  "MEMBER_CLOSE_CONFIRMATION",
+]) {
+  if (!memberCloseApplication.includes(required)) {
+    failures.push(
+      `${memberCloseApplicationPath}: missing typed Member Close action owner ${required}`,
+    );
+  }
+}
+for (const forbidden of [
+  "HarnessStore",
+  "StoreError",
+  "serde_json",
+  "std::fs",
+  "TcpStream",
+  "/v1/",
+  "SystemTime",
+  "RuntimeCommand",
+  "Message",
+  "WorkDelivery",
+  "firm-provider-",
+  "firm_provider",
+]) {
+  if (memberCloseProduction.includes(forbidden)) {
+    failures.push(
+      `${memberCloseApplicationPath}: Member Close policy depends on forbidden adapter/runtime detail ${forbidden}`,
+    );
+  }
+}
+const memberCloseAdapterPath =
+  "crates/firm-cli/src/role_actions_api/member_close_adapter.rs";
+const memberCloseAdapter = read(memberCloseAdapterPath);
+if (!memberCloseAdapter.includes("prepare_member_close(command, facts)")) {
+  failures.push(
+    `${memberCloseAdapterPath}: adapter bypasses the typed Member Close application owner`,
+  );
+}
+if (
+  !memberCloseAdapter.includes(
+    "runtime.runtime_generation != run.runtime_generation",
+  )
+) {
+  failures.push(
+    `${memberCloseAdapterPath}: Member Close facts are not fenced to the exact runtime generation`,
+  );
+}
+const httpTrustRoutes = read(
+  "crates/firm-cli/src/main_modules/http_trust_routes.rs",
+);
+if (
+  !httpTrustRoutes.includes(
+    "permit.runtime_kind == harness_application::MemberCloseRuntimeKind::Managed",
+  )
+) {
+  failures.push(
+    "http_trust_routes.rs: Member Close effect orchestration bypasses the prepared runtime kind",
+  );
+}
+const roleActionProtocol = read(
+  "crates/firm-cli/src/role_actions_api/protocol.rs",
+);
+for (const escapedPolicy of [
+  "pub(crate) fn authorize_member_close",
+  "struct AuthorizedMemberClose",
+  "MemberRun Close requires its exact current revision",
+]) {
+  if (roleActionProtocol.includes(escapedPolicy)) {
+    failures.push(
+      `crates/firm-cli/src/role_actions_api/protocol.rs: Member Close policy escaped application owner: ${escapedPolicy}`,
+    );
+  }
+}
 for (const forbidden of [
   "HarnessStore",
   "StoreError",

@@ -25,6 +25,7 @@ use serde_json::json;
 use crate::agentfirm_api::AuthenticatedMutation;
 
 mod canonical_actions;
+mod member_close_adapter;
 mod message_authoring_adapter;
 mod operator_actions;
 mod protocol;
@@ -37,8 +38,9 @@ use operator_actions::*;
 use protocol::*;
 use work_records::*;
 
+pub(crate) use member_close_adapter::authorize_member_close;
 pub(crate) use protocol::{
-    authorize_member_close, authorize_member_interrupt, provider_admission_action_binding,
+    authorize_member_interrupt, provider_admission_action_binding,
     OPERATOR_PROVIDER_ADMISSION_TUPLES,
 };
 pub use protocol::{is_http_mutation_path, is_retired_legacy_write_path, RoleActionResult};

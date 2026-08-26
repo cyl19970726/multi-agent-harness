@@ -6,6 +6,7 @@
 
 mod current_work_delivery;
 mod host_runtime_binding;
+mod member_close_action;
 mod message_authoring;
 mod projection_fold;
 mod provider_catalog;
@@ -17,6 +18,7 @@ mod work_service;
 
 pub use current_work_delivery::*;
 pub use host_runtime_binding::*;
+pub use member_close_action::*;
 pub use message_authoring::*;
 pub use projection_fold::*;
 pub use provider_catalog::*;
