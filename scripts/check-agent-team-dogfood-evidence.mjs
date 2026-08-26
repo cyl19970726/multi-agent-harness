@@ -1,4 +1,5 @@
 import Ajv2020 from "ajv/dist/2020.js";
+import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
@@ -101,6 +102,9 @@ function invalidCases(valid) {
   return new Map([
     ["zero changed files", variant((value) => { value.revision.changed_files = []; })],
     ["same base and candidate", variant((value) => { value.revision.candidate = value.revision.base; })],
+    ["reviewer is implementer", variant((value) => {
+      value.work.reviewer_agent_member_id = value.team.implementer_agent_member_id;
+    })],
     ["missing WorkReport", variant((value) => { delete value.work.work_report_id; })],
     ["missing review Message", variant((value) => { delete value.work.review_message_id; })],
     ["missing Host acceptance", variant((value) => {
@@ -115,7 +119,16 @@ function invalidCases(valid) {
   ]);
 }
 
-const paths = process.argv.slice(2);
+function normalizeEvidencePaths(args) {
+  return args.filter((path) => path !== "--");
+}
+
+assert.deepEqual(
+  normalizeEvidencePaths(["first.json", "--", "second.json", "--", "third.json"]),
+  ["first.json", "second.json", "third.json"],
+);
+
+const paths = normalizeEvidencePaths(process.argv.slice(2));
 if (paths.length) {
   for (const path of paths) {
     const evidence = readJson(path);
