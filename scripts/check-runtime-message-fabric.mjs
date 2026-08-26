@@ -196,7 +196,6 @@ if (!storeProduction.includes("resolve_runtime_command_recovery")) {
 
 const activeRuntimeSources = [
   ["CLI command surface", server],
-  ["MCP", productionRust("crates/firm-cli/src/mcp.rs")],
   ["NodeDaemon", productionRust("crates/firm-cli/src/supervisor_daemon.rs")],
   ["Store runtime authority", storeProduction],
   ["core runtime contracts", core],
@@ -279,7 +278,6 @@ const retiredWave4AMessageTokens = [
 for (const path of [
   "crates/firm-store/src/trust_kernel.rs",
   "crates/firm-cli/src/main.rs",
-  "crates/firm-cli/src/mcp.rs",
   "crates/firm-cli/src/supervisor_daemon.rs",
 ]) {
   const text = productionRust(path);
@@ -298,10 +296,6 @@ for (const command of ["send", "ack", "reconcile-delivery"]) {
     failures.push(`retired team-run ${command} CLI remains dispatchable instead of being absent`);
   }
 }
-const mcp = rustTree([
-  "crates/firm-cli/src/mcp.rs",
-  "crates/firm-cli/src/mcp",
-]);
 const memberTrustTransport = productionRust("crates/firm-cli/src/agentfirm_api.rs");
 if (memberTrustTransport.includes("CreateMemberRun")
     || memberTrustTransport.includes('path.ends_with("/member-runs")')) {
@@ -349,67 +343,6 @@ for (const productionOnlyTestSeam of [
 }
 if (runtimeStoreProduction.includes("fn legacy_import_append_member_run_projection(")) {
   failures.push("firm-store production surface still compiles the Legacy raw MemberRun reconstruction writer");
-}
-if (!mcp.includes("const MCP_MEMBER_TRUST_COMMANDS")
-    || mcp.includes('"create_member_run"')
-    || !mcp.includes("MemberRun creation is available only through team_run_create or team_run_add_member")) {
-  failures.push("MCP Member Trust inventory does not fail-close standalone MemberRun creation");
-}
-for (const removedTool of [
-  "team_run_send_message",
-  "team_message_acknowledge",
-  "team_run_reconcile_delivery",
-]) {
-  if (mcp.includes(`\"name\": \"${removedTool}\"`) || mcp.includes(`\"${removedTool}\" =>`)) {
-    failures.push(`${removedTool} remains advertised or dispatchable instead of failing closed as an unknown MCP tool`);
-  }
-}
-for (const retiredReader of [
-  "latest_team_messages_in_append_order",
-  "has_actionable_delivered_manual_ack",
-]) {
-  if (productionRust("crates/firm-cli/src/mcp.rs").includes(retiredReader)) {
-    failures.push(`MCP current status/inbox retains legacy TeamMessageProjection reader: ${retiredReader}`);
-  }
-}
-for (const canonicalReader of ["fabric_messages", "fabric_message_deliveries", "message_summary"]) {
-  if (!mcp.includes(canonicalReader)) {
-    failures.push(`MCP current status lacks canonical Message-fabric visibility: ${canonicalReader}`);
-  }
-}
-const mcpSpaceEnumerationCount = [...mcp.matchAll(/canonical_execution_space_ids/g)].length;
-if (mcpSpaceEnumerationCount !== 0
-    || !mcp.includes("fn mcp_team_run_execution_space_id")
-    || !mcp.includes("current_team_run_execution_space(run)")) {
-  failures.push("MCP must delegate exact TeamRun scope resolution to the locked Store authority without enumerating physical Spaces");
-}
-for (const currentProjection of [
-  "fn tool_team_run_board_summary",
-  "fn tool_team_run_status",
-  "fn tool_team_run_events",
-]) {
-  const start = mcp.indexOf(currentProjection);
-  const end = mcp.indexOf("\nfn ", start + currentProjection.length);
-  const body = start >= 0 ? mcp.slice(start, end > start ? end : undefined) : "";
-  if (!body.includes("require_current_team_run(store")) {
-    failures.push(`${currentProjection} bypasses strict whole-TeamRun completeness`);
-  }
-}
-const summaryStart = mcp.indexOf("fn canonical_message_summary_for_run");
-const summaryEnd = mcp.indexOf("fn mcp_team_run_execution_space_id", summaryStart);
-const summaryBody = summaryStart >= 0 && summaryEnd > summaryStart
-  ? mcp.slice(summaryStart, summaryEnd)
-  : "";
-if (!summaryBody.includes("execution_space_id: &str")
-    || summaryBody.includes("canonical_execution_space_ids")
-    || !summaryBody.includes("fabric_messages(execution_space_id)")
-    || !summaryBody.includes("fabric_message_deliveries(execution_space_id)")) {
-  failures.push("MCP TeamRun message summary is not bound to one resolved canonical Execution Space");
-}
-for (const authorityToken of ["current_team_run_execution_space(run)", "EXECUTION_SPACE_SCOPE_MISMATCH"]) {
-  if (!mcp.includes(authorityToken)) {
-    failures.push(`MCP TeamRun Execution Space resolver is missing: ${authorityToken}`);
-  }
 }
 const roleViewTransport = productionRustTree([
   "crates/firm-cli/src/role_views_api.rs",
@@ -520,7 +453,6 @@ for (const [label, text] of activeRuntimeSources) {
 // are stripped before this production audit.
 for (const path of [
   "crates/firm-cli/src/main.rs",
-  "crates/firm-cli/src/mcp.rs",
   "crates/firm-cli/src/supervisor_daemon.rs",
   "crates/firm-cli/src/fabric_runtime.rs",
   "crates/firm-cli/src/role_actions_api.rs",

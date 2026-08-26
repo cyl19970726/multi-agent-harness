@@ -21,7 +21,7 @@ WorkExecutionBinding. MemberRun and Workspace rows are coordination/history
 projections, not provider runtime authority. Your Provider-native subagents are
 implementation details.
 
-Use the exact `HARNESS_BIN` and identifiers supplied by the collaboration
+Use the exact `FIRM_BIN` and identifiers supplied by the collaboration
 envelope. Do not substitute another binary from `PATH` or infer identity from a
 display name.
 
@@ -35,19 +35,19 @@ delivered your Work context and set these env vars. Run these exact commands
 
 ```bash
 # 1. See your Work
-"$HARNESS_BIN" team-run work show --work-id "$HARNESS_WORK_ID" --json
+"$FIRM_BIN" team-run work show --work-id "$FIRM_WORK_ID" --json
 
 # 2. Mark it in progress (version from step 1)
-"$HARNESS_BIN" member work start \
-  --work-id "$HARNESS_WORK_ID" \
+"$FIRM_BIN" member work start \
+  --work-id "$FIRM_WORK_ID" \
   --expected-version <version-from-step-1> \
   --idempotency-key "start-$(date +%s)"
 
 # 3. Check for messages from Host or peers
-"$HARNESS_BIN" member inbox --all --json
+"$FIRM_BIN" member inbox --all --json
 
 # 4. Read the board to see other members' status
-"$HARNESS_BIN" team-run board-summary --id "$HARNESS_TEAM_RUN_ID"
+"$FIRM_BIN" team-run board-summary --id "$FIRM_TEAM_RUN_ID"
 ```
 
 ## Start From Work, Not Chat
@@ -72,7 +72,7 @@ Work criteria (written by Lead):
 Before any side effect, read the full Work with:
 
 ```bash
-"$HARNESS_BIN" team-run work show --work-id "$HARNESS_WORK_ID" --json
+"$FIRM_BIN" team-run work show --work-id "$FIRM_WORK_ID" --json
 ```
 
 Then confirm these facts from the output:
@@ -80,10 +80,10 @@ Then confirm these facts from the output:
 Read the board and exact Work:
 
 ```bash
-"$HARNESS_BIN" team-run work list \
-  --team-run-id "$HARNESS_TEAM_RUN_ID"
-"$HARNESS_BIN" team-run work show \
-  --work-id "$HARNESS_WORK_ID"
+"$FIRM_BIN" team-run work list \
+  --team-run-id "$FIRM_TEAM_RUN_ID"
+"$FIRM_BIN" team-run work show \
+  --work-id "$FIRM_WORK_ID"
 ```
 
 The board is the sole responsibility/status authority. TeamMessage is conversation only — see shared hard invariants §1 (no Assignment Message compatibility path) and §4 (messages never change Work state).
@@ -91,9 +91,9 @@ The board is the sole responsibility/status authority. TeamMessage is conversati
 For a compact board overview when context is limited:
 
 ```bash
-"$HARNESS_BIN" team-run board-summary --id "$HARNESS_TEAM_RUN_ID"
-"$HARNESS_BIN" team-run work list --team-run-id "$HARNESS_TEAM_RUN_ID" --brief
-"$HARNESS_BIN" team-run work list --team-run-id "$HARNESS_TEAM_RUN_ID" --since <cursor>
+"$FIRM_BIN" team-run board-summary --id "$FIRM_TEAM_RUN_ID"
+"$FIRM_BIN" team-run work list --team-run-id "$FIRM_TEAM_RUN_ID" --brief
+"$FIRM_BIN" team-run work list --team-run-id "$FIRM_TEAM_RUN_ID" --since <cursor>
 ```
 
 `board-summary` prints a ≤500-character summary: open/in-progress/blocked/review/done/cancelled counts plus each Member's idle/working/awaiting-review state. `--brief` prints one plain-text line per Work. `--since` takes a monotonic cursor from a prior `list` response and returns only new or updated Works.
@@ -103,7 +103,7 @@ For a compact board overview when context is limited:
 For a ready unassigned Work you are eligible to take, atomically claim it:
 
 ```bash
-"$HARNESS_BIN" member work claim \
+"$FIRM_BIN" member work claim \
   --work-id <work-id> \
   --expected-version <latest-version> \
   --idempotency-key <stable-command-key>
@@ -112,9 +112,9 @@ For a ready unassigned Work you are eligible to take, atomically claim it:
 For Work already assigned to you, explicitly start it:
 
 ```bash
-"$HARNESS_BIN" member work start \
-  --work-id "$HARNESS_WORK_ID" \
-  --expected-version "$HARNESS_WORK_VERSION" \
+"$FIRM_BIN" member work start \
+  --work-id "$FIRM_WORK_ID" \
+  --expected-version "$FIRM_WORK_VERSION" \
   --idempotency-key <stable-command-key>
 ```
 
@@ -149,8 +149,8 @@ Use Provider-native subagents for bounded internal lanes. They inherit your Work
 Read actionable mail, or include history when needed:
 
 ```bash
-"$HARNESS_BIN" member inbox --json
-"$HARNESS_BIN" member inbox --all --json
+"$FIRM_BIN" member inbox --json
+"$FIRM_BIN" member inbox --all --json
 ```
 
 Legacy TeamRun send/ACK commands are retired because they let a caller select
@@ -184,8 +184,8 @@ mail. A tool status of `completed` is not the semantic answer.
 When safe progress is impossible, preserve ownership and record the blocker:
 
 ```bash
-"$HARNESS_BIN" member work block \
-  --work-id "$HARNESS_WORK_ID" \
+"$FIRM_BIN" member work block \
+  --work-id "$FIRM_WORK_ID" \
   --expected-version <latest-version> \
   --reason "<specific blocker and required decision>" \
   --idempotency-key <stable-command-key>
@@ -207,9 +207,9 @@ same-level peer, cross a Team boundary, expand permission, or alter another
 Work's acceptance criteria.
 
 ```bash
-"$HARNESS_BIN" team-run work create \
-  --team-run-id "$HARNESS_TEAM_RUN_ID" \
-  --as-member-run-id "$HARNESS_MEMBER_RUN_ID" \
+"$FIRM_BIN" team-run work create \
+  --team-run-id "$FIRM_TEAM_RUN_ID" \
+  --as-member-run-id "$FIRM_MEMBER_RUN_ID" \
   --title "<follow-up responsibility>" \
   --context "<why it exists and relevant evidence>" \
   --completion-criteria "<observable completion criteria>" \
@@ -299,8 +299,8 @@ result summary. Add artifact and check refs when the completion criteria or
 Host review requires them; they are not universal submission fields:
 
 ```bash
-"$HARNESS_BIN" member work submit \
-  --work-id "$HARNESS_WORK_ID" \
+"$FIRM_BIN" member work submit \
+  --work-id "$FIRM_WORK_ID" \
   --expected-version <latest-version> \
   --result-summary "<concise result summary>" \
   --candidate-revision "<exact revision>" \

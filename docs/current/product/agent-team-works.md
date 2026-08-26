@@ -62,7 +62,7 @@ Provider package. The crate's separate provider/runtime policy may depend on
 the reviewed `firm-runtime-contract`. `firm-store` depends on core +
 application and implements that port with locks, CAS, atomic append,
 projections, notifications, and recovery. CLI composes the concrete Store and exposes the
-same application through HTTP, MCP, and Role Actions. RoleViews return derived
+same application through CLI, HTTP, and Role Actions. RoleViews return derived
 graph facts and Dashboard renders them without recomputing authority.
 NodeDaemon and providers execute effects but never own Work state.
 

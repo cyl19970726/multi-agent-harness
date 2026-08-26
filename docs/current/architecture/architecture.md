@@ -10,7 +10,7 @@ repository) for the current Notion location. The canonical diagrams live
 in [architecture-map.md](architecture-map.md). This repository file
 survives only as the implementation-bound remainder below, and stays
 registered in `docs/registry.json` as a `core_docs` entry enforced by
-`harness governance check`.
+`firm governance check`.
 
 Dynamic Workflow is retired. Current execution architecture consists of Agent
 Team coordination and Host/provider-local implementation details; historical
@@ -24,7 +24,7 @@ export/verify/restore-read and are never a second live ledger.
 | Docs | product hierarchy, architecture boundaries, migration plan | field truth and runtime truth |
 | Schemas | machine contracts | roadmap prose |
 | Rust code | real runtime, persistence, validation, transport | future-state narrative |
-| CLI / MCP / plugins | executable operator and host surfaces | hidden-only workflows |
+| CLI / HTTP / Role Actions / plugins | executable operator and host surfaces | hidden-only workflows |
 | Dashboard | read model and safe operator actions | canonical source of truth |
 
 When these surfaces disagree, schema and code describe current reality,
@@ -37,7 +37,7 @@ path between them.
 firm-core Work kernel
   <- firm-application: WorkPersistence port + generic WorkApplication<P>
        <- firm-store: concrete port implementation + atomic persistence
-            <- CLI composition root -> HTTP / MCP / Role Actions
+            <- CLI composition root -> HTTP / Role Actions
                                   -> server RoleViews -> Dashboard
 ```
 

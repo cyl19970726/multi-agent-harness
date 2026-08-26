@@ -65,7 +65,6 @@ mod kimi_acp;
 mod kimi_team_runtime;
 mod legacy_company_os;
 mod legacy_export;
-mod mcp;
 mod native_session;
 mod pi_rpc;
 mod project;
@@ -542,7 +541,6 @@ fn run() -> CliResult<()> {
         "serve" => serve_command(&store, &resolved, &args[1..])?,
         #[cfg(unix)]
         "fabric" => fabric_runtime::fabric_command(&store, &resolved, &args[1..])?,
-        "mcp" => mcp::run(&store, &resolved)?,
         #[cfg(unix)]
         "daemon" => daemon_command(&args[1..])?,
         command if retired_command(command) => return Err(retired_surface_error(command)),

@@ -20,7 +20,7 @@ Firm
 ```
 
 There is no public per-TeamRun daemon and no fallback that silently starts one.
-`firm team-run start`, HTTP, and MCP all validate the exact Team, Node,
+`firm team-run start` and HTTP validate the exact Team, Node,
 Execution Space, and project binding, then delegate to the NodeDaemon. An
 unreachable daemon is an explicit `NODE_DAEMON_UNAVAILABLE` failure.
 

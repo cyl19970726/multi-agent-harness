@@ -7,7 +7,7 @@ through the remote fabric.
 
 The current product model and operating control plane live in Notion
 (AgentFirm Home). This repository owns the implemented execution truth: code,
-schemas, stores, CLI/API/MCP surfaces, tests, and CI.
+schemas, stores, CLI/API surfaces, tests, and CI.
 
 The legacy Company OS layer — the Company Store registry, built-in Docs,
 Organization, Finance, generic Approval, and the legacy Mission, Wave, and
@@ -41,7 +41,8 @@ active development surface:
   delivery fabric, locally and across machines;
 - Execution Spaces own coordination; Project Bindings own provider cwd,
   instructions, Skills, plugins, and MCP configuration;
-- provider admission gates, plugins, MCP, artifacts, and events.
+- provider admission gates, plugins, provider-scoped MCP attachments, artifacts,
+  and events. Harness Agent coordination itself is CLI-only.
 
 Legacy Mission/Wave/Mission Log rows and the retired Company OS ledgers are
 historical evidence only, proven by the export/verify round-trip.

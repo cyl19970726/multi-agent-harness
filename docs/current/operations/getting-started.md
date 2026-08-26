@@ -35,7 +35,7 @@ pnpm install
 pnpm dashboard:dev
 ```
 
-Use the same Execution Space for CLI, MCP, service, and Dashboard coordination.
+Use the same Execution Space for CLI, service, and Dashboard coordination.
 Project selection may differ per TeamRun when the Host deliberately chooses a
 different binding. One machine-scoped NodeDaemon and the current Supervisor
 generation own provider effects and live controls; other surfaces route through

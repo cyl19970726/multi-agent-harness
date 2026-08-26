@@ -13,7 +13,7 @@ error and are documented here only as retired compatibility.
 ## Status labels
 
 - **Implemented**: routed by `crates/firm-cli/src/main.rs` and callable from
-  the compiled `harness` binary.
+  the compiled `firm` binary.
 - **Partial**: supported by store/API/UI/scripts, but the CLI is incomplete or
   only covers metadata/control slices.
 - **Missing / next**: expected product surface with no dedicated CLI command yet.
@@ -34,9 +34,9 @@ error and are documented here only as retired compatibility.
 | Global Work read | `work list` | Implemented | The read-only Global Work aggregate filters the one Work authority by accountable Team, assignee TeamMembership, phase, condition, resolution, priority, and owner; preserves exact ids and revisions. |
 | Dynamic Workflow | Former `workflow` command family | Retired | No current command route. Historical records are available only through legacy archive export, verify, and restore-read. |
 | Dashboard | `dashboard snapshot`, `dashboard doctor` | Implemented | Operator projection and read-only convergence checks. |
-| Serve/API | `serve [--addr] [--once]`, `mcp`, `node init/list/show/drain/retire/project`, `daemon start/status/stop/serve`, `hook record` | Implemented | One machine-scoped NodeDaemon supervises every admitted local TeamRun across registered Execution Spaces. All public start surfaces delegate to it and fail explicitly when unavailable; there is no per-run fallback. `hook record` is a compatibility ingress that validates the bound AgentMember and discards the provider frame. |
-| Mission legacy reads | `mission list`, `mission show`, `mission log show` | Retired compatibility | Read-only legacy reads over historical rows (DOC-108). `mission create/update-context/close/log append` and the `/v1/missions*` POST routes and `mission_*` MCP writers fail with an explicit DOC-108 retired-write error. |
-| Legacy Wave archive | `legacy wave list/show/history` | Retired compatibility | `wave create/update/advance/gate` and HTTP writes return the ADR 0051 retirement error. MCP publishes no `wave_*` capability at all. Existing `waves.jsonl` rows remain readable without becoming current planning context; no data migration. |
+| Serve/API | `serve [--addr] [--once]`, `node init/list/show/drain/retire/project`, `daemon start/status/stop/serve`, `hook record` | Implemented | One machine-scoped NodeDaemon supervises every admitted local TeamRun across registered Execution Spaces. All public start surfaces delegate to it and fail explicitly when unavailable; there is no per-run fallback. `hook record` is a compatibility ingress that validates the bound AgentMember and discards the provider frame. Harness coordination has no MCP server. |
+| Mission legacy reads | `mission list`, `mission show`, `mission log show` | Retired compatibility | Read-only legacy reads over historical rows (DOC-108). `mission create/update-context/close/log append` and the `/v1/missions*` POST routes fail with an explicit DOC-108 retired-write error. |
+| Legacy Wave archive | `legacy wave list/show/history` | Retired compatibility | `wave create/update/advance/gate` and HTTP writes return the ADR 0051 retirement error. Existing `waves.jsonl` rows remain readable without becoming current planning context; no data migration. |
 | Legacy Company OS export | `legacy-company-os export`, `legacy-company-os verify` | Retired compatibility | Stage A export/verify of every Company Store, Execution Space, compatibility, and machine store. The `company ...` command tree and the `/v1/company-os/*` routes are retired (410 tombstones); historical data is export/verify-only. |
 | Historical migration | `legacy-goal-task export`, `legacy-goal-task verify` | Retired compatibility | Export/verify only. |
 | Retired command families | old `goal`, `phase`, `task`, proposal/review/design surfaces | Retired compatibility | These fail explicitly and must not be used for new work. |
@@ -61,7 +61,7 @@ tests and ADRs.
 | Check | What it proves |
 | --- | --- |
 | `pnpm check` | Umbrella: JSON validity, schema fixtures, provider events, collaboration foundation, member execution trust, runtime message fabric, remote fabric, tool descriptors, native-session boundary, plugin contract, cross-layer consistency, role views, dashboard. |
-| `pnpm acceptance:legacy-retirement` | Deterministic Agent Team, MCP, Kimi ACP adapter, and Dashboard contracts plus the retired Mission/Wave legacy reads and retired-write errors. |
+| `pnpm acceptance:legacy-retirement` | Deterministic Agent Team, CLI, Kimi ACP adapter, and Dashboard contracts plus the retired Mission/Wave legacy reads and retired-write errors. |
 | `firm governance check` | Documentation registry/link/retired-surface governance. |
 
 ## Recommended CLI roadmap

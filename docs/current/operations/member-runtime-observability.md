@@ -162,7 +162,7 @@ a hidden Harness provider-event ledger. Provider read errors currently render
 an honest unavailable/empty state. Member Focus exposes only mode-backed
 controls. Interrupt stops the current turn; Close explicitly ends the Member
 runtime; Resume must use the bound provider-native session. The Host can
-perform the same lifecycle operations through CLI, HTTP, MCP, and Dashboard
+perform the same lifecycle operations through CLI, HTTP, and Dashboard
 application logic.
 
 Team and Member views show delivery claim, provider receipt or failure, and the

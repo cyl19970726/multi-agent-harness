@@ -86,7 +86,7 @@ exact question and repair the other projection. Neither file universally wins.
   dashboards for adapted projects remain separate.
 - Local gates and commands: [docs/current/operations/operations.md](../../../docs/current/operations/operations.md).
   `acceptance:legacy-retirement` (formerly `acceptance:mission-wave`) proves
-  the deterministic current Agent Team, MCP, Kimi ACP adapter, and Dashboard
+  the deterministic current Agent Team, CLI, Kimi ACP adapter, and Dashboard
   contracts plus the retired Mission/Wave legacy read and retired-write
   behavior; a real-provider claim still requires a separately recorded native
   live run.
@@ -128,7 +128,7 @@ New Agent Team members use only their persistent bidirectional mode:
 records only; they are not current routes or Team fallbacks. The one declared exception is
 `external_interactive`: a user's own already-open interactive provider CLI
 session may join a run as a non-driven member that Harness never spawns or
-drives — it polls its inbox and replies over the trusted loopback CLI/MCP,
+drives — it polls its inbox and replies over the trusted loopback CLI,
 and it has no provider-native session record (evidence claims about its work
 cannot resolve to one). The Host explicitly creates, messages,
 inspects, interrupts, closes, reopens, and retires members. Interrupt stops one
@@ -139,7 +139,7 @@ permanent coordination end. TeamRun completion never implies Close.
 Physical live control handles remain process-local to the Harness
 service that started them. A durable Team Supervisor lease is the cross-process
 control authority and contains a loopback service locator. Dashboard, CLI, and
-MCP clients route controls to that owner; the owner revalidates supervisor id,
+HTTP clients route controls to that owner; the owner revalidates supervisor id,
 generation, status, and expiry immediately before driving its handle. After a
 crash, a new Supervisor generation reattaches the recorded native sessions;
 uncertain claimed deliveries require explicit reconciliation, never blind

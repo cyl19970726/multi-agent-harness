@@ -5,7 +5,7 @@ Code, and Kimi.
 It installs experience adapters only:
 
 - generated mirrors of the canonical Host and Member skills;
-- optional Harness MCP registration over the same application services as CLI;
+- authenticated `firm` CLI collaboration through the exact live Supervisor;
 - Mission/Team shortcuts and historical Kimi command aliases;
 - fail-open lifecycle telemetry, exact native Host binding, bounded
   SessionStart/UserPromptSubmit Inbox context, and one-shot provider-reviewed
@@ -22,9 +22,10 @@ Bound Member hooks pass an explicit provider identity, so Claude/Kimi events
 cannot be mislabeled as Codex. Hooks never ACK mail, impersonate a Host or
 Member, or persist provider transcript/thinking.
 
-The optional unbound MCP surface authors only as the Host, an Operator, or a
-Service. It cannot select `member_run` or `agent_member` by id; Member mail
-originates from that Member's bound persistent Provider runtime.
+The plugin registers no Harness MCP server. Work, Message, acceptance, and
+runtime lifecycle mutations use the provisioned `firm` binary and its
+ephemeral exact-Supervisor collaboration capability. Unrelated provider MCP
+servers remain a provider launch capability and are not Harness coordination.
 
 The skill directories under `plugins/star-harness/skills/` are generated. Edit
 their canonical sources under `skills/`, then run:

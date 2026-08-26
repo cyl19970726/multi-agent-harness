@@ -5,7 +5,7 @@
   "interface": {
     "displayName": "Star Harness",
     "shortDescription": "Coordinate autonomous Agent Teams and durable Work.",
-    "longDescription": "Adds provider-neutral Member skills, Harness MCP registration, lifecycle status hooks, CLI shortcuts, and Dashboard deep links. Product state remains in Harness and provider execution remains in native sessions.",
+    "longDescription": "Adds provider-neutral Member skills, lifecycle status hooks, CLI shortcuts, and Dashboard deep links. Agent coordination uses the firm CLI; provider execution remains in native sessions.",
     "developerName": "Multi-Agent Harness",
     "websiteURL": "https://github.com/cyl19970726/multi-agent-harness"
   },
@@ -16,14 +16,6 @@
     "skill": "collaborate-as-agent-team-member"
   },
   "skillInstructions": "Use the Harness CLI as the complete path. Agent Team Works store responsibility, status, submission, and Host acceptance; correlated Messages carry conversation and provider questions. Members may use provider-native subagents internally; AgentSession permission is frozen before start, and provider-native sessions remain execution truth.",
-  "mcpServers": {
-    "harness": {
-      "command": "harness",
-      "args": [
-        "mcp"
-      ]
-    }
-  },
   "hooks": [
     {
       "event": "SessionStart",

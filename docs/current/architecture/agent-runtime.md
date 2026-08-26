@@ -117,7 +117,7 @@ Host-authored status updates do not recursively wake that same Host.
 
 `TeamRun` and `MemberRun` remain internal diagnostics and history
 projections. They are not provider runtime authority and never scope durable
-identity or Work responsibility. No CLI, HTTP, MCP,
+identity or Work responsibility. No CLI, HTTP,
 Dashboard, adapter, or mutable Store seam may dispatch, resume, interrupt, or
 stop a provider through them.
 
@@ -156,7 +156,7 @@ NodeDaemon lease, and Work owner under canonical Store authority. Work result,
 progress, finding, failure, revise, submit, gate, and acceptance remain Work
 operations.
 
-Every current CLI, HTTP, MCP, RoleView, recovery diagnostic, and Dashboard
+Every current CLI, HTTP, RoleView, recovery diagnostic, and Dashboard
 reader consumes the non-persisted `CurrentWorkDeliveryView`. The application
 projection joins canonical Work, `WorkExecutionBinding`,
 `CanonicalWorkDelivery`, AgentSession, MemberRun, and TeamRun facts inside one
@@ -166,7 +166,7 @@ no compatibility reader, export adapter, fallback, or migration path.
 
 | Reader | Current source |
 | --- | --- |
-| CLI and MCP Work show | TeamRun-scoped `CurrentWorkDeliveryView` |
+| CLI Work show | TeamRun-scoped `CurrentWorkDeliveryView` |
 | HTTP Work detail | TeamRun-scoped `CurrentWorkDeliveryView` |
 | Dashboard snapshot | one projection per explicit Execution Space |
 | RoleView and member status | same Execution-Space projection |
@@ -336,8 +336,8 @@ Codex, Claude, Kimi, Pi, and DeepSeek Harness expose separate, closed capability
 - the CLI submits the capability to the exact live Supervisor. Token,
   Supervisor, AgentSession and NodeDaemon generation mismatches fail before a
   Work or Message mutation. Dropping the live registration expires the
-  capability; Close/Reopen creates a new registration and secret. Harness MCP
-  mutation tools remain disabled for managed provider processes;
+  capability; Close/Reopen creates a new registration and secret. Harness
+  coordination has no MCP server or fallback;
 - the persistent Team member loop is provider-neutral: the monotonic round
   progression lives in `firm-runtime-supervisor` over an application port,
   while `firm-runtime-contract` owns the provider-facing lifecycle language.
@@ -390,7 +390,7 @@ Provider adapters consume only canonical claimed `CanonicalMessageDelivery` or
 `CanonicalWorkDelivery` plus a NodeDaemon-built `ProviderInvocation`. The
 retired dispatch envelope, run-addressed Work dispatch record, and associated
 update ledgers have no runtime type, writer, reader, fallback, SSE, RoleView,
-Dashboard, CLI, HTTP, MCP, recovery, adapter, audit/export, or migration path.
+Dashboard, CLI, HTTP, recovery, adapter, audit/export, or migration path.
 
 ## Product views and clients
 
@@ -437,7 +437,7 @@ runtime state uses AgentSession and RuntimeCommand. Historical TeamRun,
 MemberRun, native-session locator, and legacy export rows are labeled history
 and cannot enable actions.
 
-CLI, HTTP, MCP, Dashboard, skills, and plugin mirrors must expose only actions
+CLI, HTTP, Dashboard, skills, and plugin mirrors must expose only actions
 the server can bind to authenticated identity, authority, target, exact version,
 idempotency, confirmation, and current Node/Session generations. Retired
 message and runtime mutation routes fail closed with typed errors.

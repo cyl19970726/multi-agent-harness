@@ -444,7 +444,7 @@ for (const provider of providerCrates) {
 requireText(
   "crates/firm-provider-codex/src/lib.rs",
   /mcp_servers\.harness\.enabled=false/,
-  "managed Codex must keep Harness MCP mutations disabled",
+  "managed Codex must reject the retired Harness MCP server id",
 );
 requireText(
   "apps/deepseek-member-runner/src/member-role-action-env.mjs",
@@ -458,13 +458,6 @@ for (const retiredCliNativeFile of [
 ]) {
   if (fs.existsSync(path.join(root, retiredCliNativeFile))) {
     failures.push(`${retiredCliNativeFile}: native provider implementation belongs in a provider package`);
-  }
-}
-
-const mcpTools = read("crates/firm-cli/src/mcp/tool_definitions.rs");
-for (const mode of ["codex_app_server", "claude_agent_sdk", "kimi_acp", "pi_rpc", "deepseek_sdk"]) {
-  if (!mcpTools.includes(`\"${mode}\"`)) {
-    failures.push(`crates/firm-cli/src/mcp/tool_definitions.rs: missing current Team mode ${mode}`);
   }
 }
 

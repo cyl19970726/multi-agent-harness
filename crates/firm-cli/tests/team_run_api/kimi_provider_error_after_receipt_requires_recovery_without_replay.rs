@@ -171,7 +171,10 @@ fn kimi_provider_error_after_receipt_requires_recovery_without_replay() {
         let awaiting_successor_authority = response.0 == 400
             && response.1["error"].as_str().is_some_and(|error| {
                 error.contains("RUNTIME_COMMAND_RECOVERY_REQUIRED")
-                    && error.contains("no current provider-loop authority")
+                    && (error.contains("no current provider-loop authority")
+                        || error.contains(
+                            "not bound to the exact current Supervisor and NodeDaemon generations",
+                        ))
             });
         assert!(
             awaiting_successor_authority,

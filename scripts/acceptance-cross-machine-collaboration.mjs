@@ -40,7 +40,6 @@ const route = read("crates/firm-store/src/collaboration_fabric.rs");
 const trustKernel = read("crates/firm-store/src/trust_kernel.rs");
 const runtime = read("crates/firm-cli/src/fabric_runtime.rs");
 const http = read("crates/firm-cli/src/main.rs");
-const mcp = read("crates/firm-cli/src/mcp.rs");
 const architecture = read("docs/current/architecture/cross-machine-team-collaboration.md");
 const operations = read("docs/current/operations/cross-machine-collaboration.md");
 const normalizedDocs = `${architecture}\n${operations}`.replace(/\s+/g, " ");
@@ -80,13 +79,8 @@ for (const token of [
 ]) {
   if (!`${runtime}\n${http}`.includes(token)) failures.push(`closed HTTP contract missing: ${token}`);
 }
-for (const forbidden of [
-  "fn work_delegation_create_tool(",
-  "fn work_delegation_cancel_tool(",
-  'name: "work_delegation_create"',
-  'name: "work_delegation_cancel"',
-]) {
-  if (mcp.includes(forbidden)) failures.push(`retired local collaboration MCP authority remains: ${forbidden}`);
+if (existsSync("crates/firm-cli/src/mcp.rs")) {
+  failures.push("retired Harness coordination MCP server remains");
 }
 for (const token of [
   "Target Work completion does not complete source Work",
@@ -431,7 +425,6 @@ if (failures.length) {
 for (const args of [
   ["test", "-p", "firm-store", "--test", "cross_machine_collaboration", "--", "--test-threads=1"],
   ["test", "-p", "firm-fabric", "--test", "fabric_contract", "--", "--test-threads=1"],
-  ["test", "-p", "firm-cli", "--test", "mcp_stdio", "--", "--test-threads=1"],
 ]) {
   const result = spawnSync("cargo", args, {
     stdio: "inherit",

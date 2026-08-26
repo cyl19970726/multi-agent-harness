@@ -2370,7 +2370,7 @@
       "reviewAfter": "2026-08-22",
       "lastVerifiedWith": [
         "npx pnpm@9.15.4 check",
-        "cargo test -p firm-cli --test team_run_api --test team_run_daemon --test mcp_stdio"
+        "cargo test -p firm-cli --test team_run_api --test team_run_daemon"
       ],
       "reorgTrigger": "Agent Team execution-root precedence, worktree identity validation, provider cwd selection, or workspace snapshot privacy fields change.",
       "authorityClass": "canonical_contract",
@@ -2438,37 +2438,37 @@
       ]
     },
     {
-      "path": "docs/current/integration/host-agent-mcp.md",
+      "path": "docs/current/integration/host-agent-cli.md",
       "ownerRole": "provider-integration",
       "status": "stable",
       "lifecycle": "volatile",
       "canonicalFor": [
-        "Host Agent MCP integration and executable provider boundary"
+        "Host Agent CLI integration and executable Supervisor boundary"
       ],
       "dependsOn": [
         "docs/current/integration/README.md",
-        "docs/decisions/0056-correlated-message-and-session-permission-cutover.md",
-        "crates/firm-cli/src/mcp.rs"
+        "docs/decisions/0061-retire-harness-coordination-mcp.md",
+        "crates/firm-cli/src/main.rs"
       ],
       "machineConsumers": [
         "check-doc-links",
         "check-doc-governance"
       ],
-      "reviewAfter": "2026-08-22",
+      "reviewAfter": "2026-11-26",
       "lastVerifiedWith": [
-        "harness governance check"
+        "firm governance check"
       ],
-      "reorgTrigger": "Host MCP registration, TeamRun control, provider executability, or thinking boundary changes.",
+      "reorgTrigger": "Host CLI authentication, TeamRun control, provider executability, or Supervisor authority changes.",
       "authorityClass": "implementation_reference",
       "implementationState": "implemented",
       "truthRefs": [
         {
           "kind": "decision",
-          "ref": "docs/decisions/0056-correlated-message-and-session-permission-cutover.md"
+          "ref": "docs/decisions/0061-retire-harness-coordination-mcp.md"
         },
         {
           "kind": "api",
-          "ref": "crates/firm-cli/src/mcp.rs"
+          "ref": "crates/firm-cli/src/main.rs"
         }
       ]
     },
@@ -2599,10 +2599,6 @@
         {
           "kind": "test",
           "ref": "crates/firm-cli/tests/team_run_api.rs"
-        },
-        {
-          "kind": "test",
-          "ref": "crates/firm-cli/tests/mcp_stdio.rs"
         }
       ]
     },
@@ -3110,7 +3106,7 @@
       "reviewAfter": "2026-10-31",
       "lastVerifiedWith": [
         "cargo test -p firm-cli --test team_run_api",
-        "cargo test -p firm-cli --test mcp_stdio",
+        "cargo test -p firm-cli --test team_run_api",
         "npx pnpm@9.15.4 check:docs-governance"
       ],
       "reorgTrigger": "Close, Reopen, Retire, runtime generation, mailbox freeze, or native-session resume semantics change.",

@@ -32,8 +32,8 @@ the retired Mission/Wave or Goal/GoalPhase planning stacks.
 ```text
 docs/current/architecture/agent-runtime.md        # provider-neutral A-ROM and interfaces
 docs/current/integration/README.md   # provider documentation rules
-docs/current/integration/host-agent-mcp.md
-                                 # Host MCP control contract and Codex setup
+docs/current/integration/host-agent-cli.md
+                                 # Host CLI control and Supervisor authority
 docs/current/integration/native-session-storage.md
                                  # provider-native storage/read/resume contract
 docs/current/integration/provider-capacity.md
@@ -136,7 +136,7 @@ Provider
 
 | Provider | Doc | Status | Role |
 | --- | --- | --- | --- |
-| Host control | [host-agent-mcp.md](host-agent-mcp.md) | MCP implemented | Host is an AgentMember: managed mode uses the ordinary Team provider binding; external interactive mode is an explicit pull-only compatibility transport. |
+| Host control | [host-agent-cli.md](host-agent-cli.md) | CLI-only implemented | Host is an AgentMember: managed mode uses the ordinary Team provider binding and exact Supervisor-authenticated `firm` CLI; external interactive mode is an explicit pull-only compatibility transport. |
 | Codex | [codex.md](codex.md) | adapter implemented; installed `0.148.0-alpha.9` current for the reviewed host-driven slices | `codex_app_server` is the only new Codex Team mode; DEV-26 proved exact-thread open/resume, completed rounds, current-turn interrupt, narrow Close, and Reopen. Live steer and provider-driven Goal supervision remain review-required capability slices; `codex_exec` is historical/compatibility metadata and never a Team fallback. |
 | Codex message delivery | [codex-message-delivery.md](codex-message-delivery.md) | implemented | Identity-first Message, subscription expansion, per-recipient CanonicalMessageDelivery, NodeDaemon/AgentSession fencing, queue policy and delivery proof. |
 | Claude Code | [claude.md](claude.md) | adapter implemented; locked SDK 0.3.220 reports Claude Code 2.1.220 current | `claude_agent_sdk` is the managed Team mode for Host and Members; `claude_cli` remains historical Team metadata and an explicitly external compatibility transport only. |
@@ -198,7 +198,7 @@ README until they need their own file.
 
 The Host answers `provider_interaction_request` Messages with a correlated
 `provider_interaction_response` through the
-`team_run_answer_message` MCP tool (or the equivalent CLI/API route), passing
+`firm team-run answer-message` (or the equivalent authenticated HTTP route), passing
 the provider's exact option id. Authority is enforced by route: Lead
 accepts `host|lead`, Human accepts `operator|human`, and Policy accepts only
 `policy`. Dashboard controls therefore cannot turn a policy decision into an

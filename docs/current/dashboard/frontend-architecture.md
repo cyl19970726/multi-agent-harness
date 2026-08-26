@@ -158,5 +158,5 @@ npx pnpm@9.15.4 acceptance:legacy-retirement
 
 The first command proves types, selectors, operator controls, visual fixture
 semantics, and production build. The second proves the deterministic Agent
-Team, MCP, Kimi, Codex, and mixed-provider execution contracts plus the
+Team, CLI, Kimi, Codex, and mixed-provider execution contracts plus the
 retired Mission/Wave legacy reads.
