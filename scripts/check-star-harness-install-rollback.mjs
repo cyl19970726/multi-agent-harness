@@ -303,6 +303,9 @@ withFixture((fixture) => {
     const second = runApply(fixture);
     assert.notEqual(second.status, 0, "a concurrent installer must fail closed");
     assert.match(second.stderr, /publication is already owned by another installer/);
+    const rejectedState = readFailureState(fixture);
+    assert.equal(rejectedState.status, "failed_before_binary_publication");
+    assert.equal(rejectedState.install_lock_status, "not_acquired");
     assert.equal(
       readlinkSync(fixture.binLink),
       publishedTarget,
@@ -318,6 +321,11 @@ withFixture((fixture) => {
       existsSync(`${fixture.binLink}.star-harness-install.lock`),
       false,
       "the owning installer releases the publication lock on exit",
+    );
+    assert.equal(
+      readdirSync(join(fixture.root, "state", "installations")).length,
+      2,
+      "concurrent installers retain distinct failure states",
     );
   } finally {
     if (first.exitCode === null) {

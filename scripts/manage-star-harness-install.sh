@@ -256,10 +256,10 @@ if [[ "${MODE}" == "check" ]]; then
   exit 0
 fi
 
-acquire_bin_link_lock
 mkdir -p "${STATE_BASE}/installations"
 INSTALLED_AT="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
-STATE_FILE="${STATE_BASE}/installations/${INSTALLED_AT//:/-}-${VERSION}.json"
+STATE_FILE="${STATE_BASE}/installations/${INSTALLED_AT//:/-}-${VERSION}-$$.json"
+acquire_bin_link_lock
 prepare_bin_link_publication
 
 echo
