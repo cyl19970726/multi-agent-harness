@@ -39,6 +39,10 @@ ROLLBACK_BIN_ENTRY="${BIN_LINK_TRANSACTION_DIR}/rollback-live-entry"
 INSTALL_FS_HELPER="${BIN_LINK_TRANSACTION_DIR}/install-fs-helper"
 INSTALL_FS_HELPER_REAL="${INSTALL_FS_HELPER}.real"
 INSTALL_FS_HELPER_SOURCE="${REPO_ROOT}/scripts/star-harness-install-fs.rs"
+BIN_LINK_LOCK_STAGED="${BIN_LINK_TRANSACTION_DIR}/lock-staged"
+BIN_LINK_LOCK_RELEASE_ENTRY="${BIN_LINK_TRANSACTION_DIR}/lock-release-entry"
+BIN_LINK_STALE_LOCK_WITNESS="${BIN_LINK_TRANSACTION_DIR}/stale-lock-witness"
+BIN_LINK_STALE_LOCK_ENTRY="${BIN_LINK_TRANSACTION_DIR}/stale-lock-entry"
 BIN_LINK_LOCK_OWNED="false"
 BIN_LINK_LOCK_STATUS="not_acquired"
 PRESERVE_BIN_LINK_TRANSACTION="false"
@@ -63,10 +67,25 @@ acquire_bin_link_lock() {
     return 1
   fi
 
+  if ! rustc --edition=2021 "${INSTALL_FS_HELPER_SOURCE}" -o "${INSTALL_FS_HELPER}"; then
+    echo "failed to build the Harness installer filesystem helper" >&2
+    return 1
+  fi
+  ln -s "${BIN_LINK_TRANSACTION_DIR}" "${BIN_LINK_LOCK_STAGED}"
+
+  if [[ -e "${BIN_LINK_LOCK_DIR}" || -L "${BIN_LINK_LOCK_DIR}" ]]; then
+    if ! reconcile_stale_bin_link_lock; then
+      echo "Harness binary publication is already owned by another installer: ${BIN_LINK_LOCK_DIR}" >&2
+      return 1
+    fi
+  fi
+
   LOCK_ACQUIRE_CRITICAL="true"
-  node -e 'require("node:fs").symlinkSync(process.argv[1], process.argv[2])' \
-    "${BIN_LINK_TRANSACTION_DIR}" "${BIN_LINK_LOCK_DIR}" 2>/dev/null || lock_status=$?
-  if [[ -L "${BIN_LINK_LOCK_DIR}" && "$(readlink "${BIN_LINK_LOCK_DIR}" 2>/dev/null || true)" == "${BIN_LINK_TRANSACTION_DIR}" ]]; then
+  link_without_replace "${BIN_LINK_LOCK_STAGED}" "${BIN_LINK_LOCK_DIR}" 2>/dev/null || lock_status=$?
+  if path_matches_object \
+    "${BIN_LINK_LOCK_DIR}" \
+    "$(bin_link_object_identity "${BIN_LINK_LOCK_STAGED}")" \
+    "${BIN_LINK_TRANSACTION_DIR}"; then
     BIN_LINK_LOCK_OWNED="true"
     BIN_LINK_LOCK_STATUS="held"
   fi
@@ -77,7 +96,6 @@ acquire_bin_link_lock() {
     exit "${pending_signal}"
   fi
   if [[ "${lock_status}" -ne 0 || "${BIN_LINK_LOCK_OWNED}" != "true" ]]; then
-    rmdir "${BIN_LINK_TRANSACTION_DIR}" 2>/dev/null || true
     echo "Harness binary publication is already owned by another installer: ${BIN_LINK_LOCK_DIR}" >&2
     return 1
   fi
@@ -90,6 +108,33 @@ release_bin_link_lock() {
       echo "preserved Harness binary publication lock and ownership witnesses after rollback failure: ${BIN_LINK_LOCK_DIR}" >&2
       return 1
     fi
+    local release_status=0
+    local lock_identity
+    lock_identity="$(bin_link_object_identity "${BIN_LINK_LOCK_STAGED}" 2>/dev/null || true)"
+    if [[ -z "${lock_identity}" ]] || ! path_matches_object \
+      "${BIN_LINK_LOCK_DIR}" "${lock_identity}" "${BIN_LINK_TRANSACTION_DIR}"; then
+      BIN_LINK_LOCK_STATUS="release_failed"
+      PRESERVE_BIN_LINK_TRANSACTION="true"
+      echo "refusing to release a changed Harness binary publication lock: ${BIN_LINK_LOCK_DIR}" >&2
+      return 1
+    fi
+    move_without_replace "${BIN_LINK_LOCK_DIR}" "${BIN_LINK_LOCK_RELEASE_ENTRY}" || release_status=$?
+    if path_matches_object \
+      "${BIN_LINK_LOCK_RELEASE_ENTRY}" "${lock_identity}" "${BIN_LINK_TRANSACTION_DIR}"; then
+      BIN_LINK_LOCK_OWNED="false"
+    elif [[ -e "${BIN_LINK_LOCK_RELEASE_ENTRY}" || -L "${BIN_LINK_LOCK_RELEASE_ENTRY}" ]]; then
+      if ! restore_quarantined_entry_to_path "${BIN_LINK_LOCK_RELEASE_ENTRY}" "${BIN_LINK_LOCK_DIR}"; then
+        echo "failed to restore a concurrently changed Harness publication lock; evidence is preserved in ${BIN_LINK_TRANSACTION_DIR}" >&2
+      fi
+      BIN_LINK_LOCK_STATUS="release_failed"
+      PRESERVE_BIN_LINK_TRANSACTION="true"
+      return 1
+    else
+      BIN_LINK_LOCK_STATUS="release_failed"
+      PRESERVE_BIN_LINK_TRANSACTION="true"
+      echo "failed to atomically release Harness binary publication lock: ${BIN_LINK_LOCK_DIR}" >&2
+      return 1
+    fi
     local artifact
     for artifact in \
       "${PREVIOUS_BIN_WITNESS}" \
@@ -97,6 +142,10 @@ release_bin_link_lock() {
       "${PUBLISHED_BIN_WITNESS}" \
       "${DISPLACED_BIN_ENTRY}" \
       "${ROLLBACK_BIN_ENTRY}" \
+      "${BIN_LINK_LOCK_STAGED}" \
+      "${BIN_LINK_LOCK_RELEASE_ENTRY}" \
+      "${BIN_LINK_STALE_LOCK_WITNESS}" \
+      "${BIN_LINK_STALE_LOCK_ENTRY}" \
       "${INSTALL_FS_HELPER}" \
       "${INSTALL_FS_HELPER_REAL}"; do
       if [[ -e "${artifact}" || -L "${artifact}" ]]; then
@@ -112,15 +161,25 @@ release_bin_link_lock() {
       echo "failed to remove Harness binary publication transaction directory: ${BIN_LINK_TRANSACTION_DIR}" >&2
       return 1
     fi
-    if ! unlink "${BIN_LINK_LOCK_DIR}"; then
-      if [[ -e "${BIN_LINK_LOCK_DIR}" || -L "${BIN_LINK_LOCK_DIR}" ]]; then
-        BIN_LINK_LOCK_STATUS="release_failed"
-        echo "failed to release Harness binary publication lock: ${BIN_LINK_LOCK_DIR}" >&2
-        return 1
-      fi
+    if [[ "${release_status}" -ne 0 ]]; then
+      BIN_LINK_LOCK_STATUS="release_failed_no_residual"
+      echo "Harness publication lock moved but the filesystem helper reported failure" >&2
+      return "${release_status}"
     fi
-    BIN_LINK_LOCK_OWNED="false"
     BIN_LINK_LOCK_STATUS="released"
+  elif [[ "${PRESERVE_BIN_LINK_TRANSACTION}" != "true" && -d "${BIN_LINK_TRANSACTION_DIR}" ]]; then
+    local artifact
+    for artifact in \
+      "${BIN_LINK_LOCK_STAGED}" \
+      "${BIN_LINK_STALE_LOCK_WITNESS}" \
+      "${BIN_LINK_STALE_LOCK_ENTRY}" \
+      "${INSTALL_FS_HELPER}" \
+      "${INSTALL_FS_HELPER_REAL}"; do
+      if [[ -e "${artifact}" || -L "${artifact}" ]]; then
+        unlink "${artifact}" 2>/dev/null || true
+      fi
+    done
+    rmdir "${BIN_LINK_TRANSACTION_DIR}" 2>/dev/null || true
   fi
 }
 
@@ -165,24 +224,79 @@ link_without_replace() {
   "${INSTALL_FS_HELPER}" hard-link-no-replace "$1" "$2"
 }
 
-move_to_transaction_entry() {
-  node -e 'require("node:fs").renameSync(process.argv[1], process.argv[2])' "$1" "$2"
+move_without_replace() {
+  "${INSTALL_FS_HELPER}" move-no-replace "$1" "$2"
 }
 
-restore_quarantined_entry() {
+move_to_transaction_entry() {
+  move_without_replace "$1" "$2"
+}
+
+restore_quarantined_entry_to_path() {
   local entry=$1
+  local destination=$2
   local entry_identity=""
   local restore_status=0
   if [[ ! -e "${entry}" && ! -L "${entry}" ]]; then
     return 1
   fi
   entry_identity="$(bin_link_object_identity "${entry}" 2>/dev/null || true)"
-  link_without_replace "${entry}" "${BIN_LINK}" || restore_status=$?
-  if [[ -n "${entry_identity}" && "$(bin_link_object_identity "${BIN_LINK}" 2>/dev/null || true)" == "${entry_identity}" ]]; then
+  move_without_replace "${entry}" "${destination}" || restore_status=$?
+  if [[ -n "${entry_identity}" && "$(bin_link_object_identity "${destination}" 2>/dev/null || true)" == "${entry_identity}" ]]; then
     return 0
   fi
   if [[ "${restore_status}" -ne 0 ]]; then
     return "${restore_status}"
+  fi
+  return 1
+}
+
+restore_quarantined_entry() {
+  restore_quarantined_entry_to_path "$1" "${BIN_LINK}"
+}
+
+reconcile_stale_bin_link_lock() {
+  local stale_target=""
+  local stale_identity=""
+  local move_status=0
+  if ! link_without_replace "${BIN_LINK_LOCK_DIR}" "${BIN_LINK_STALE_LOCK_WITNESS}" 2>/dev/null; then
+    return 1
+  fi
+  if [[ ! -L "${BIN_LINK_STALE_LOCK_WITNESS}" ]]; then
+    unlink "${BIN_LINK_STALE_LOCK_WITNESS}" 2>/dev/null || true
+    return 1
+  fi
+  stale_target="$(readlink "${BIN_LINK_STALE_LOCK_WITNESS}" 2>/dev/null || true)"
+  case "${stale_target}" in
+    "${BIN_LINK_LOCK_DIR}.txn-"*) ;;
+    *)
+      unlink "${BIN_LINK_STALE_LOCK_WITNESS}" 2>/dev/null || true
+      return 1
+      ;;
+  esac
+  if [[ -e "${stale_target}" || -L "${stale_target}" ]]; then
+    unlink "${BIN_LINK_STALE_LOCK_WITNESS}" 2>/dev/null || true
+    return 1
+  fi
+  stale_identity="$(bin_link_object_identity "${BIN_LINK_STALE_LOCK_WITNESS}" 2>/dev/null || true)"
+  move_without_replace "${BIN_LINK_LOCK_DIR}" "${BIN_LINK_STALE_LOCK_ENTRY}" || move_status=$?
+  if [[ -n "${stale_identity}" \
+    && "$(bin_link_object_identity "${BIN_LINK_STALE_LOCK_ENTRY}" 2>/dev/null || true)" == "${stale_identity}" \
+    && "$(readlink "${BIN_LINK_STALE_LOCK_ENTRY}" 2>/dev/null || true)" == "${stale_target}" ]]; then
+    if [[ "${move_status}" -ne 0 ]]; then
+      PRESERVE_BIN_LINK_TRANSACTION="true"
+      echo "stale Harness lock moved but the filesystem helper reported failure; evidence is preserved" >&2
+      return "${move_status}"
+    fi
+    unlink "${BIN_LINK_STALE_LOCK_ENTRY}"
+    unlink "${BIN_LINK_STALE_LOCK_WITNESS}"
+    return 0
+  fi
+  if [[ -e "${BIN_LINK_STALE_LOCK_ENTRY}" || -L "${BIN_LINK_STALE_LOCK_ENTRY}" ]]; then
+    if ! restore_quarantined_entry_to_path "${BIN_LINK_STALE_LOCK_ENTRY}" "${BIN_LINK_LOCK_DIR}"; then
+      PRESERVE_BIN_LINK_TRANSACTION="true"
+      echo "failed to restore a concurrently changed publication lock; evidence is preserved" >&2
+    fi
   fi
   return 1
 }
@@ -403,6 +517,8 @@ write_failure_state() {
   local failure_status="${ROLLBACK_BINARY_STATUS}"
   if [[ "${BIN_LINK_LOCK_STATUS}" == "release_failed" ]]; then
     failure_status="failed_with_install_lock_residual"
+  elif [[ "${BIN_LINK_LOCK_STATUS}" == "release_failed_no_residual" ]]; then
+    failure_status="failed_install_lock_release"
   fi
   if [[ -n "${STATE_FILE}" ]]; then
     node - "${STATE_FILE}" "${VERSION:-unknown}" "${REPO_ROOT}" "${PREVIOUS_BIN}" "${failure_status}" "${ROLLBACK_BINARY_STATUS}" "${BIN_LINK_LOCK_STATUS}" "${original_exit_status}" "${final_exit_status}" <<'NODE' || true
@@ -438,7 +554,8 @@ finish_install() {
   if ! release_bin_link_lock && [[ "${final_exit_status}" -eq 0 ]]; then
     final_exit_status=1
   fi
-  if [[ "${final_exit_status}" -ne 0 && ( "${INSTALL_COMPLETED}" != "true" || "${BIN_LINK_LOCK_STATUS}" == "release_failed" ) ]]; then
+  if [[ "${final_exit_status}" -ne 0 \
+    && ( "${INSTALL_COMPLETED}" != "true" || "${BIN_LINK_LOCK_STATUS}" == release_failed* ) ]]; then
     write_failure_state "${original_exit_status}" "${final_exit_status}"
   fi
   exit "${final_exit_status}"
@@ -541,7 +658,6 @@ echo "Building Harness..."
   cd "${REPO_ROOT}"
   cargo build -p firm-cli
 )
-rustc --edition=2021 "${INSTALL_FS_HELPER_SOURCE}" -o "${INSTALL_FS_HELPER}"
 prepare_bin_link_publication
 
 VERSION_DIR="${INSTALL_BASE}/${VERSION}"
