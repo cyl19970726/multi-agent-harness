@@ -157,37 +157,44 @@ fn kimi_provider_error_after_receipt_requires_recovery_without_replay() {
         .expect("seed nonzero probation continuation streak");
 
     let close_deadline = std::time::Instant::now() + Duration::from_secs(30);
-    let (status, closed) = loop {
-        let response = serve.post_json(
-            &format!("/v1/team-runs/{run_id}/members/{member_id}/close"),
-            &serde_json::json!({
-                "requested_by": "host",
-                "reason": "explicitly close the detached failed runtime generation"
-            }),
-        );
-        if response.0 == 200 {
-            break response;
+    loop {
+        let lease = store
+            .latest_team_supervisor_lease(&run_id)
+            .expect("current Supervisor lease before recovery Close")
+            .expect("Supervisor lease before recovery Close");
+        let session = store
+            .fabric_agent_sessions(&current_space_id(&home))
+            .expect("AgentSessions before recovery Close")
+            .into_iter()
+            .find(|session| session.agent_member_id == blocked_row.agent_member_id)
+            .expect("blocked Member AgentSession");
+        let successor_bound = lease.status == harness_core::TeamSupervisorLeaseStatus::Active
+            && matches!(
+                &session.control_state.driver_ref,
+                harness_core::agentfirm_api::RuntimeDriverRef::TeamSupervisor {
+                    team_run_id,
+                    team_supervisor_id,
+                    team_supervisor_generation,
+                } if team_run_id == &run_id
+                    && team_supervisor_id == &lease.supervisor_id
+                    && *team_supervisor_generation == lease.generation
+            );
+        if successor_bound {
+            break;
         }
-        let awaiting_successor_authority = response.0 == 400
-            && response.1["error"].as_str().is_some_and(|error| {
-                error.contains("RUNTIME_COMMAND_RECOVERY_REQUIRED")
-                    && (error.contains("no current provider-loop authority")
-                        || error.contains(
-                            "not bound to the exact current Supervisor and NodeDaemon generations",
-                        ))
-            });
-        assert!(
-            awaiting_successor_authority,
-            "unexpected detached recovery Close failure: {}",
-            response.1
-        );
         assert!(
             std::time::Instant::now() < close_deadline,
-            "NodeDaemon did not re-adopt the detached blocked Member before recovery Close: {}",
-            response.1
+            "NodeDaemon did not bind the detached blocked Member to the exact current Supervisor before recovery Close"
         );
         std::thread::sleep(Duration::from_millis(50));
-    };
+    }
+    let (status, closed) = serve.post_json(
+        &format!("/v1/team-runs/{run_id}/members/{member_id}/close"),
+        &serde_json::json!({
+            "requested_by": "host",
+            "reason": "explicitly close the detached failed runtime generation"
+        }),
+    );
     assert_eq!(status, 200, "detached recovery Close: {closed}");
     assert_eq!(
         closed["result"]["runtime_effect"], "already_detached",
