@@ -18,6 +18,7 @@ INSTALL_BASE="${STAR_HARNESS_INSTALL_ROOT:-${USER_HOME_DIR}/.local/lib/star-harn
 BIN_LINK="${STAR_HARNESS_BIN_LINK:-${USER_HOME_DIR}/.local/bin/harness}"
 STATE_BASE="${STAR_HARNESS_STATE_ROOT:-${USER_HOME_DIR}/.local/state/star-harness}"
 APPLY_IN_PROGRESS="false"
+INSTALL_COMPLETED="false"
 PREVIOUS_BIN=""
 PREVIOUS_BIN_PRESENT="false"
 PREVIOUS_BIN_IDENTITY=""
@@ -27,6 +28,9 @@ PUBLISHED_BIN_IDENTITY=""
 ROLLBACK_BINARY_STATUS="failed_before_binary_publication"
 STATE_FILE=""
 BIN_LINK_LOCK_DIR="${BIN_LINK}.star-harness-install.lock"
+PREVIOUS_BIN_WITNESS="${BIN_LINK_LOCK_DIR}/previous-link-witness"
+PUBLISHED_BIN_STAGED="${BIN_LINK_LOCK_DIR}/published-link-staged"
+PUBLISHED_BIN_WITNESS="${BIN_LINK_LOCK_DIR}/published-link-witness"
 BIN_LINK_LOCK_OWNED="false"
 BIN_LINK_LOCK_STATUS="not_acquired"
 
@@ -42,6 +46,16 @@ acquire_bin_link_lock() {
 
 release_bin_link_lock() {
   if [[ "${BIN_LINK_LOCK_OWNED}" == "true" ]]; then
+    local artifact
+    for artifact in "${PREVIOUS_BIN_WITNESS}" "${PUBLISHED_BIN_STAGED}" "${PUBLISHED_BIN_WITNESS}"; do
+      if [[ -e "${artifact}" || -L "${artifact}" ]]; then
+        if ! unlink "${artifact}"; then
+          BIN_LINK_LOCK_STATUS="release_failed"
+          echo "failed to remove Harness binary publication artifact: ${artifact}" >&2
+          return 1
+        fi
+      fi
+    done
     if ! rmdir "${BIN_LINK_LOCK_DIR}"; then
       BIN_LINK_LOCK_STATUS="release_failed"
       echo "failed to release Harness binary publication lock: ${BIN_LINK_LOCK_DIR}" >&2
@@ -68,8 +82,9 @@ prepare_bin_link_publication() {
     return 1
   fi
   if [[ -L "${BIN_LINK}" ]]; then
+    ln -P "${BIN_LINK}" "${PREVIOUS_BIN_WITNESS}"
     PREVIOUS_BIN="$(readlink "${BIN_LINK}")"
-    PREVIOUS_BIN_IDENTITY="$(bin_link_identity "${BIN_LINK}")"
+    PREVIOUS_BIN_IDENTITY="$(bin_link_identity "${PREVIOUS_BIN_WITNESS}")"
     PREVIOUS_BIN_PRESENT="true"
   else
     PREVIOUS_BIN=""
@@ -94,10 +109,13 @@ publish_bin_link() {
     return 1
   fi
 
+  ln -s "${target}" "${PUBLISHED_BIN_STAGED}"
+  ln -P "${PUBLISHED_BIN_STAGED}" "${PUBLISHED_BIN_WITNESS}"
   PUBLISHED_BIN_TARGET="${target}"
   BIN_LINK_PUBLICATION_ARMED="true"
-  ln -sfn "${target}" "${BIN_LINK}"
-  PUBLISHED_BIN_IDENTITY="$(bin_link_identity "${BIN_LINK}")"
+  node -e 'require("node:fs").renameSync(process.argv[1], process.argv[2])' \
+    "${PUBLISHED_BIN_STAGED}" "${BIN_LINK}"
+  PUBLISHED_BIN_IDENTITY="$(bin_link_identity "${PUBLISHED_BIN_WITNESS}")"
 }
 
 rollback_published_bin_link() {
@@ -115,7 +133,8 @@ rollback_published_bin_link() {
     return
   fi
   if [[ "${PREVIOUS_BIN_PRESENT}" == "true" ]]; then
-    if ! ln -sfn "${PREVIOUS_BIN}" "${BIN_LINK}"; then
+    if ! node -e 'require("node:fs").renameSync(process.argv[1], process.argv[2])' \
+      "${PREVIOUS_BIN_WITNESS}" "${BIN_LINK}"; then
       ROLLBACK_BINARY_STATUS="failed_after_binary_publication_restore_failed"
       echo "failed to restore Harness link ${BIN_LINK}; published link remains residual" >&2
       return 1
@@ -173,7 +192,7 @@ finish_install() {
   local original_exit_status=$?
   local final_exit_status="${original_exit_status}"
   trap - EXIT
-  if [[ "${original_exit_status}" -eq 0 ]]; then
+  if [[ "${INSTALL_COMPLETED}" == "true" || "${original_exit_status}" -eq 0 ]]; then
     ROLLBACK_BINARY_STATUS="not_attempted_install_completed"
   else
     rollback_binary_after_error "${original_exit_status}"
@@ -181,7 +200,7 @@ finish_install() {
   if ! release_bin_link_lock && [[ "${final_exit_status}" -eq 0 ]]; then
     final_exit_status=1
   fi
-  if [[ "${final_exit_status}" -ne 0 ]]; then
+  if [[ "${final_exit_status}" -ne 0 && ( "${INSTALL_COMPLETED}" != "true" || "${BIN_LINK_LOCK_STATUS}" == "release_failed" ) ]]; then
     write_failure_state "${original_exit_status}" "${final_exit_status}"
   fi
   exit "${final_exit_status}"
@@ -406,7 +425,9 @@ fs.writeFileSync(path, `${JSON.stringify({
   installed_at: installedAt,
 }, null, 2)}\n`);
 NODE
+INSTALL_COMPLETED="true"
 APPLY_IN_PROGRESS="false"
+ROLLBACK_BINARY_STATUS="not_attempted_install_completed"
 
 echo
 echo "Installed Star Harness ${VERSION}."

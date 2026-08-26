@@ -196,9 +196,13 @@ withFixture((fixture) => {
   write(previousTarget, "#!/bin/sh\nexit 0\n", true);
   mkdirSync(dirname(fixture.binLink), { recursive: true });
   symlinkSync(previousTarget, fixture.binLink);
+  const previousIdentity = lstatSync(fixture.binLink);
   const result = runApply(fixture, { FAKE_FAIL_AFTER_PUBLICATION: "1" });
   assert.notEqual(result.status, 0, "the injected post-publication failure must fail apply");
   assert.equal(readlinkSync(fixture.binLink), previousTarget);
+  const restoredIdentity = lstatSync(fixture.binLink);
+  assert.equal(restoredIdentity.dev, previousIdentity.dev);
+  assert.equal(restoredIdentity.ino, previousIdentity.ino, "rollback restores the exact previous link object");
   assert.equal(readFailureState(fixture).status, "failed_and_previous_binary_restored");
 });
 
@@ -262,6 +266,21 @@ withFixture((fixture) => {
   assert.equal(state.binary_rollback_status, "not_attempted_install_completed");
   assert.equal(readlinkSync(fixture.binLink), join(fixture.root, "install", "fixture", "harness"));
   assert.equal(existsSync(`${fixture.binLink}.star-harness-install.lock`), true);
+});
+
+withFixture((fixture) => {
+  const installer = join(fixture.repo, "scripts/manage-star-harness-install.sh");
+  write(installer, `${readFileSync(installer, "utf8")}\nfalse\n`, true);
+  const result = runApply(fixture);
+  assert.equal(result.status, 1, "post-completion display failure remains a process failure");
+  const stateDir = join(fixture.root, "state", "installations");
+  const states = readdirSync(stateDir);
+  assert.equal(states.length, 1);
+  const state = JSON.parse(readFileSync(join(stateDir, states[0]), "utf8"));
+  assert.equal(state.version, "fixture");
+  assert.equal("status" in state, false, "completed installation state must not be rewritten as failure");
+  assert.equal(readlinkSync(fixture.binLink), join(fixture.root, "install", "fixture", "harness"));
+  assert.equal(existsSync(`${fixture.binLink}.star-harness-install.lock`), false);
 });
 
 withFixture((fixture) => {
