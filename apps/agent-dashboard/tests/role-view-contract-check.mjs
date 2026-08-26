@@ -48,6 +48,12 @@ unavailableTeam.data.collaboration={state:"unavailable",reason:"central projecti
 assert.equal(teamValidate(unavailableTeam),true,`explicit unavailable collaboration: ${ajv.errorsText(teamValidate.errors)}`);
 assert.equal(unavailableTeam.allowed_actions.some(action=>String(action.kind).startsWith("collaboration_")||String(action.kind).startsWith("delegation_")),false,"unavailable projection advertises no collaboration-dependent action");
 
+const memberWorkbenchValidate=ajv.getSchema("agentfirm.role_views.v1/member-workbench.schema.json");
+const memberWorkbenchFixture=JSON.parse(fs.readFileSync(path.join(fixtureDir,"member-workbench.json"),"utf8"));
+assert.deepEqual(memberWorkbenchFixture.data.reviewable_host_works,[],"MemberWorkbench fixture carries the explicit Host-owned Work review pool");
+delete memberWorkbenchFixture.data.reviewable_host_works;
+assert.equal(memberWorkbenchValidate(memberWorkbenchFixture),false,"MemberWorkbench requires the authoritative Host-owned Work review pool");
+
 const agentWorkspaceValidate=ajv.getSchema("agentfirm.role_views.v1/agent-workspace.schema.json");
 const privateAgentWorkspaceFixture=JSON.parse(fs.readFileSync(path.join(fixtureDir,"agent-workspace.json"),"utf8"));
 const teamSessionReadFixture=structuredClone(privateAgentWorkspaceFixture);

@@ -18,6 +18,7 @@
             "agent_member",
             "member_run",
             "my_works",
+            "reviewable_host_works",
             "eligible_ready_pool",
             "unread_messages",
             "queued_deliveries",
@@ -38,6 +39,12 @@
               "$ref": "common.schema.json#/$defs/memberRunSummary"
             },
             "my_works": {
+              "type": "array",
+              "items": {
+                "$ref": "common.schema.json#/$defs/workSummary"
+              }
+            },
+            "reviewable_host_works": {
               "type": "array",
               "items": {
                 "$ref": "common.schema.json#/$defs/workSummary"
