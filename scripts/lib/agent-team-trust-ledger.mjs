@@ -96,7 +96,7 @@ function isCanonicalPassReview(body) {
     /\b(?:not\s+pass|changes?\s+required|fail(?:ed|ure)?|reject(?:ed|ion)?)\b/iu.test(line));
 }
 
-function checkExecutionSpaces(failures, matchedRecords) {
+function checkExecutionSpaces(failures, matchedRecords, expectedExecutionSpaceId) {
   const spaces = new Set();
   for (const [description, record] of matchedRecords) {
     const space = record?.execution_space_id;
@@ -104,6 +104,12 @@ function checkExecutionSpaces(failures, matchedRecords) {
       addFailure(failures, `${description} has no non-empty execution_space_id`);
     } else {
       spaces.add(space);
+      if (space !== expectedExecutionSpaceId) {
+        addFailure(
+          failures,
+          `${description} execution_space_id mismatch: expected ${JSON.stringify(expectedExecutionSpaceId)}, found ${JSON.stringify(space)}`,
+        );
+      }
     }
   }
   if (spaces.size > 1) {
@@ -117,8 +123,11 @@ export function parseTrustOperationJsonl(jsonl) {
   }
 
   const records = [];
-  for (const [index, line] of jsonl.split(/\r?\n/u).entries()) {
-    if (!line.trim()) continue;
+  const finalNewline = jsonl.lastIndexOf("\n");
+  if (finalNewline < 0) return records;
+  const completeFrames = jsonl.slice(0, finalNewline).split("\n");
+  for (const [index, frame] of completeFrames.entries()) {
+    const line = frame.endsWith("\r") ? frame.slice(0, -1) : frame;
     let record;
     try {
       record = JSON.parse(line);
@@ -136,7 +145,7 @@ export function parseTrustOperationJsonl(jsonl) {
   return records;
 }
 
-export function verifyCanonicalTrustLedger(evidence, records) {
+export function verifyCanonicalTrustLedger(evidence, records, expectedExecutionSpaceId) {
   const failures = [];
   if (!isObject(evidence) || !isObject(evidence.team) || !isObject(evidence.revision)
       || !isObject(evidence.work) || !Array.isArray(evidence.sessions)) {
@@ -144,6 +153,9 @@ export function verifyCanonicalTrustLedger(evidence, records) {
   }
   if (!Array.isArray(records)) {
     return ["trust ledger: parsed records must be an array"];
+  }
+  if (typeof expectedExecutionSpaceId !== "string" || !expectedExecutionSpaceId.trim()) {
+    return ["trust ledger: expected execution_space_id must be a non-empty string"];
   }
 
   for (const [index, record] of records.entries()) {
@@ -317,14 +329,18 @@ export function verifyCanonicalTrustLedger(evidence, records) {
     );
   }
 
-  checkExecutionSpaces(failures, matchedRecords);
+  checkExecutionSpaces(failures, matchedRecords, expectedExecutionSpaceId);
 
   return failures;
 }
 
-export function verifyCanonicalTrustLedgerJsonl(evidence, jsonl) {
+export function verifyCanonicalTrustLedgerJsonl(evidence, jsonl, expectedExecutionSpaceId) {
   try {
-    return verifyCanonicalTrustLedger(evidence, parseTrustOperationJsonl(jsonl));
+    return verifyCanonicalTrustLedger(
+      evidence,
+      parseTrustOperationJsonl(jsonl),
+      expectedExecutionSpaceId,
+    );
   } catch (error) {
     return [
       error.message.startsWith("trust ledger") ? error.message : `trust ledger: ${error.message}`,

@@ -11,6 +11,7 @@ const workId = "work-fixture";
 const reportId = "work-report-fixture";
 const reviewMessageId = "message-fixture";
 const acceptanceEventId = "trust-event-fixture";
+const executionSpaceId = "space-fixture";
 const candidate = "a".repeat(40);
 const candidateFingerprint = "sha256:candidate-fixture";
 
@@ -56,7 +57,7 @@ const evidence = {
 
 function envelope(event, resultingProjection, commandName = "fixture") {
   return {
-    execution_space_id: "space-fixture",
+    execution_space_id: executionSpaceId,
     authenticated_actor_kind: "service",
     authenticated_actor_id: "fixture",
     command_name: commandName,
@@ -166,7 +167,7 @@ let rejectedCases = 0;
 function expectRejected(name, records, mutateEvidence = () => {}, expectedFailure = null) {
   const candidateEvidence = clone(evidence);
   mutateEvidence(candidateEvidence);
-  const failures = verifyCanonicalTrustLedger(candidateEvidence, records);
+  const failures = verifyCanonicalTrustLedger(candidateEvidence, records, executionSpaceId);
   assert.ok(failures.length > 0, `${name}: expected rejection`);
   if (expectedFailure) {
     assert.match(failures.join("\n"), expectedFailure, `${name}: wrong rejection reason`);
@@ -175,12 +176,23 @@ function expectRejected(name, records, mutateEvidence = () => {}, expectedFailur
 }
 
 const valid = validRecords();
-assert.deepEqual(verifyCanonicalTrustLedger(evidence, valid), []);
-assert.deepEqual(verifyCanonicalTrustLedgerJsonl(evidence, `${valid.map(JSON.stringify).join("\n")}\n\n`), []);
-assert.equal(parseTrustOperationJsonl("\n\r\n").length, 0);
+const validJsonl = `${valid.map(JSON.stringify).join("\n")}\n`;
+assert.deepEqual(verifyCanonicalTrustLedger(evidence, valid, executionSpaceId), []);
+assert.deepEqual(verifyCanonicalTrustLedgerJsonl(evidence, validJsonl, executionSpaceId), []);
+assert.deepEqual(verifyCanonicalTrustLedgerJsonl(evidence, `${validJsonl}{"incomplete":`, executionSpaceId), []);
+assert.deepEqual(
+  verifyCanonicalTrustLedgerJsonl(evidence, `${valid.map(JSON.stringify).join("\r\n")}\r\n`, executionSpaceId),
+  [],
+);
+assert.deepEqual(parseTrustOperationJsonl(""), []);
+assert.deepEqual(parseTrustOperationJsonl(JSON.stringify(valid[0])), []);
 const unrelatedForeignSpace = clone(valid);
 unrelatedForeignSpace.at(-1).execution_space_id = "space-unrelated";
-assert.deepEqual(verifyCanonicalTrustLedger(evidence, unrelatedForeignSpace), []);
+assert.deepEqual(verifyCanonicalTrustLedger(evidence, unrelatedForeignSpace, executionSpaceId), []);
+assert.match(
+  verifyCanonicalTrustLedger(evidence, valid, "")[0],
+  /expected execution_space_id must be a non-empty string/u,
+);
 
 expectRejected("missing WorkReport", valid.filter((record) => record.command_name !== "work_report.create"));
 expectRejected("wrong WorkReport", valid, (value) => { value.work.work_report_id = "work-report:wrong"; });
@@ -228,7 +240,11 @@ expectRejected("missing execution space", clone(valid).map((record, index) => {
 expectRejected("foreign execution space substitution", clone(valid).map((record, index) => {
   if (index === 3) record.execution_space_id = "space-foreign";
   return record;
-}), () => {}, /span multiple execution spaces/u);
+}), () => {}, /execution_space_id mismatch/u);
+expectRejected("all-foreign execution space substitution", clone(valid).map((record, index) => {
+  if (index < valid.length - 1) record.execution_space_id = "space-foreign";
+  return record;
+}), () => {}, /execution_space_id mismatch/u);
 expectRejected("transcript mirror field", clone(valid).map((record, index) => {
   if (index === valid.length - 1) record.operation.resulting_projection.tool_calls = [];
   return record;
@@ -241,10 +257,12 @@ expectRejected("transcript mirror aggregate", [
   ),
 ], () => {}, /forbidden transcript-mirror aggregate/u);
 
-assert.match(verifyCanonicalTrustLedgerJsonl(evidence, "{not-json\n")[0], /line 1 is malformed JSON/u);
-assert.match(verifyCanonicalTrustLedgerJsonl(evidence, "[]\n")[0], /line 1 must contain a JSON object/u);
+assert.match(verifyCanonicalTrustLedgerJsonl(evidence, "{not-json\n", executionSpaceId)[0], /line 1 is malformed JSON/u);
+assert.match(verifyCanonicalTrustLedgerJsonl(evidence, `${validJsonl}{not-json\n`, executionSpaceId)[0], /line 7 is malformed JSON/u);
+assert.match(verifyCanonicalTrustLedgerJsonl(evidence, "\n", executionSpaceId)[0], /line 1 is malformed JSON/u);
+assert.match(verifyCanonicalTrustLedgerJsonl(evidence, "[]\n", executionSpaceId)[0], /line 1 must contain a JSON object/u);
 assert.match(
-  verifyCanonicalTrustLedgerJsonl(evidence, '{"operation":{}}\n')[0],
+  verifyCanonicalTrustLedgerJsonl(evidence, '{"operation":{}}\n', executionSpaceId)[0],
   /no canonical operation\.event envelope/u,
 );
 
