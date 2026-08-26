@@ -613,19 +613,19 @@ impl HarnessStore {
         }
         require_member_actor(&context.performed_by_actor, member_run_id)?;
         let current = self.current_work_unlocked(work_id, expected_version)?;
-        if (current.phase, current.condition) != required_lifecycle
-            || current.active_member_run_id.as_deref() != Some(member_run_id)
-        {
-            return Err(StoreError::Conflict(format!(
-                "ProviderRuntimeProjection {member_run_id} does not own active work {work_id} in required state"
-            )));
-        }
         // A Closed or Retired ProviderRuntimeProjection no longer mutates its owned Work:
         // unfinished Work moves only via Host reassign/cancel or after an
         // explicit Reopen (docs/product/agent-team-works.md). This aligns
         // member-side transitions with insert/claim/start/receive, which
         // already require active coordination.
         let member = self.require_member_run_unlocked(member_run_id, &current.team_run_id)?;
+        if (current.phase, current.condition) != required_lifecycle
+            || !self.member_run_holds_work_responsibility_unlocked(&current, &member)?
+        {
+            return Err(StoreError::Conflict(format!(
+                "ProviderRuntimeProjection {member_run_id} does not hold active Work responsibility for {work_id} in required state"
+            )));
+        }
         if !member.coordination_is_active() {
             return Err(StoreError::Conflict(format!(
                 "MEMBER_UNAVAILABLE: ProviderRuntimeProjection {member_run_id} coordination is {:?}; Reopen before mutating owned Work",
@@ -680,7 +680,7 @@ impl HarnessStore {
                 "work {work_id} is not in required state"
             )));
         }
-        if current.active_member_run_id.is_none() || current.owner_member_id.is_none() {
+        if current.owner_member_id.is_none() {
             return Err(StoreError::Conflict(format!(
                 "work {work_id} has no owner to retain"
             )));
@@ -737,9 +737,11 @@ impl HarnessStore {
         match member_run_id {
             Some(member_run_id) => {
                 require_member_actor(&context.performed_by_actor, member_run_id)?;
-                if current.active_member_run_id.as_deref() != Some(member_run_id) {
+                let member =
+                    self.require_member_run_unlocked(member_run_id, &current.team_run_id)?;
+                if !self.member_run_holds_work_responsibility_unlocked(&current, &member)? {
                     return Err(StoreError::Conflict(format!(
-                        "ProviderRuntimeProjection {member_run_id} does not own open work {work_id}"
+                        "ProviderRuntimeProjection {member_run_id} does not hold responsibility for open Work {work_id}"
                     )));
                 }
             }

@@ -547,9 +547,13 @@ pub struct Work {
     /// Stable AgentMember identity of the assignee. This is a derived mirror
     /// of `assignee_membership_id`'s `agent_member_id` kept for provenance and
     /// display; the membership id is the assignee authority (DOC-106).
-    /// Runtime generations bind through `active_member_run_id`.
+    /// Runtime generations bind only through `WorkExecutionBinding` plus its
+    /// exact AgentSession/MemberRun admission fence.
     #[serde(default)]
     pub owner_member_id: Option<String>,
+    /// Legacy runtime-addressed responsibility evidence. New canonical Work
+    /// assignment leaves this unset; readers may use a matching value as an
+    /// additional compatibility fence, never as current responsibility.
     #[serde(default)]
     pub active_member_run_id: Option<String>,
     pub claim_mode: WorkClaimMode,

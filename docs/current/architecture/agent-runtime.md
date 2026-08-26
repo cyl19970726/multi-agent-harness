@@ -156,6 +156,16 @@ NodeDaemon lease, and Work owner under canonical Store authority. Work result,
 progress, finding, failure, revise, submit, gate, and acceptance remain Work
 operations.
 
+Work responsibility remains bound to the stable TeamMembership/AgentMember.
+Automatic scheduling resolves exactly one current active MemberRun for that
+responsible AgentMember and, under the same Store writer lock, revalidates the
+Work revision, membership, AgentSession/runtime generation, NodeDaemon and
+Supervisor before creating `WorkExecutionBinding` and
+`CanonicalWorkDelivery`. Missing, ambiguous, stale, or concurrently replaced
+runtime authority fails before delivery. `Work.active_member_run_id` is legacy
+compatibility evidence only; current assignment and execution never require or
+populate it.
+
 Every current CLI, HTTP, RoleView, recovery diagnostic, and Dashboard
 reader consumes the non-persisted `CurrentWorkDeliveryView`. The application
 projection joins canonical Work, `WorkExecutionBinding`,

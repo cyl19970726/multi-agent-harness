@@ -1014,15 +1014,15 @@ impl HarnessStore {
         }
         require_member_actor(&context.performed_by_actor, member_run_id)?;
         let current = self.current_work_unlocked(work_id, expected_version)?;
+        let member = self.require_member_run_unlocked(member_run_id, &current.team_run_id)?;
         if current.phase != WorkPhase::Open
             || current.condition != WorkCondition::Normal
-            || current.active_member_run_id.as_deref() != Some(member_run_id)
+            || !self.member_run_holds_work_responsibility_unlocked(&current, &member)?
         {
             return Err(StoreError::Conflict(format!(
-                "ProviderRuntimeProjection {member_run_id} does not own open work {work_id}"
+                "ProviderRuntimeProjection {member_run_id} does not hold responsibility for open Work {work_id}"
             )));
         }
-        let member = self.require_member_run_unlocked(member_run_id, &current.team_run_id)?;
         if !matches!(
             member.status,
             firm_core::MemberRunStatus::Idle | firm_core::MemberRunStatus::Running
@@ -1043,7 +1043,7 @@ impl HarnessStore {
             work.team_run_id == current.team_run_id
                 && work.phase == WorkPhase::Active
                 && work.condition == WorkCondition::Normal
-                && work.active_member_run_id.as_deref() == Some(member_run_id)
+                && work.owner_member_id.as_deref() == Some(member.agent_member_id.as_str())
         }) {
             return Err(StoreError::Conflict(format!(
                 "MEMBER_BUSY: ProviderRuntimeProjection {member_run_id} already has active Work"

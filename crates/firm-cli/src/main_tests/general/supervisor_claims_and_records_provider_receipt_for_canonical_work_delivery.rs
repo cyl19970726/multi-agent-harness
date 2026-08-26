@@ -21,8 +21,6 @@ fn supervisor_claims_and_records_provider_receipt_for_canonical_work_delivery() 
                     compatibility_team_actor("host", "test"),
                     "unix-ms:3".into(),
                 );
-                draft.owner_member_id = Some(member.agent_member_id.clone());
-                draft.active_member_run_id = Some(member.id.clone());
                 draft.eligible_member_ids = vec![member.agent_member_id.clone()];
                 draft.into_work()
             },
@@ -36,7 +34,34 @@ fn supervisor_claims_and_records_provider_receipt_for_canonical_work_delivery() 
                 duplicate_ok: false,
             },
         )
-        .expect("create assigned Work");
+        .expect("create unassigned Work");
+    let membership = store
+        .fabric_team_memberships("unit-test-space")
+        .expect("Team memberships")
+        .into_iter()
+        .find(|membership| {
+            membership.team_id == created.team_run.agent_team_id
+                && membership.agent_member_id == member.agent_member_id
+        })
+        .expect("exact member TeamMembership");
+    let work = store
+        .assign_work_to_membership(
+            &work.id,
+            work.version,
+            &membership.id,
+            "unit-test-space",
+            WorkCommandContext {
+                event_id: "canonical-supervisor-work-assigned".into(),
+                performed_by_actor: compatibility_team_actor("host", "test"),
+                authority_actor: None,
+                causation_ref: None,
+                idempotency_key: "canonical-supervisor-work-assign".into(),
+                created_at: "unix-ms:4".into(),
+                duplicate_ok: false,
+            },
+        )
+        .expect("assign stable TeamMembership responsibility");
+    assert_eq!(work.active_member_run_id, None);
     let lease = store
         .acquire_test_supervisor_lease(
             &created.team_run.id,
@@ -58,9 +83,21 @@ fn supervisor_claims_and_records_provider_receipt_for_canonical_work_delivery() 
     let claimed = claim_canonical_work_for_member(&ledger, &member)
         .expect("claim canonical Work")
         .expect("one canonical Work claim");
+    let bindings = store
+        .fabric_work_execution_bindings("unit-test-space")
+        .expect("canonical WorkExecutionBinding");
+    assert_eq!(bindings.len(), 1);
+    assert_eq!(bindings[0].team_membership_id, membership.id);
+    assert_eq!(bindings[0].agent_member_id, member.agent_member_id);
     ledger
         .complete_work_delivery(&claimed, "provider-work-receipt")
         .expect("record canonical provider receipt");
+    assert!(
+        claim_canonical_work_for_member(&ledger, &member)
+            .expect("repeat scheduler scan is safe")
+            .is_none(),
+        "provider-received Work must not create or claim a second delivery"
+    );
     let delivery = store
         .fabric_work_deliveries("unit-test-space")
         .expect("canonical WorkDelivery fabric")
@@ -90,9 +127,55 @@ fn supervisor_claims_and_records_provider_receipt_for_canonical_work_delivery() 
     );
     assert_eq!(current[0].attempt, 1);
     assert_eq!(
+        store
+            .fabric_work_execution_bindings("unit-test-space")
+            .expect("bindings after repeat scan")
+            .len(),
+        1,
+        "repeat scheduling is idempotent"
+    );
+    assert_eq!(
         current[0].authority,
         harness_application::CurrentWorkDeliveryAuthority::CanonicalTrust
     );
+    let started = store
+        .start_work(
+            &work.id,
+            work.version,
+            &member.id,
+            WorkCommandContext {
+                event_id: "canonical-supervisor-work-started".into(),
+                performed_by_actor: compatibility_team_actor(&member.id, "test"),
+                authority_actor: None,
+                causation_ref: None,
+                idempotency_key: "canonical-supervisor-work-start".into(),
+                created_at: "unix-ms:5".into(),
+                duplicate_ok: false,
+            },
+        )
+        .expect("current MemberRun starts stable responsibility Work");
+    assert_eq!(started.active_member_run_id, None);
+    let submitted = store
+        .submit_work(
+            &started.id,
+            started.version,
+            &member.id,
+            "canonical stable-responsibility result",
+            vec!["artifact:canonical-work".into()],
+            vec!["check:canonical-work".into()],
+            WorkCommandContext {
+                event_id: "canonical-supervisor-work-submitted".into(),
+                performed_by_actor: compatibility_team_actor(&member.id, "test"),
+                authority_actor: None,
+                causation_ref: None,
+                idempotency_key: "canonical-supervisor-work-submit".into(),
+                created_at: "unix-ms:6".into(),
+                duplicate_ok: false,
+            },
+        )
+        .expect("current MemberRun submits stable responsibility Work");
+    assert_eq!(submitted.phase, WorkPhase::Review);
+    assert_eq!(submitted.active_member_run_id, None);
     std::fs::remove_dir_all(root).expect("cleanup");
 }
 

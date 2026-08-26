@@ -765,6 +765,45 @@ impl HarnessStore {
         Ok(())
     }
 
+    /// Authorize one current MemberRun against stable Work responsibility.
+    /// Canonical Work is owned by TeamMembership/AgentMember; the MemberRun is
+    /// only the current authenticated runtime.  Legacy Work without a
+    /// membership remains fenced by its exact `active_member_run_id`.
+    pub(super) fn member_run_holds_work_responsibility_unlocked(
+        &self,
+        work: &Work,
+        member: &ProviderRuntimeProjection,
+    ) -> StoreResult<bool> {
+        if work.owner_member_id.as_deref() != Some(member.agent_member_id.as_str()) {
+            return Ok(false);
+        }
+        if work
+            .active_member_run_id
+            .as_deref()
+            .is_some_and(|runtime_id| runtime_id != member.id)
+        {
+            return Ok(false);
+        }
+        let Some(membership_id) = work.assignee_membership_id.as_deref() else {
+            return Ok(work.active_member_run_id.as_deref() == Some(member.id.as_str()));
+        };
+        let Some(team_id) = work.accountable_team_id.as_deref() else {
+            return Ok(false);
+        };
+        let mut matches = Vec::new();
+        for space_id in self.canonical_execution_space_ids()? {
+            matches.extend(
+                self.fabric_team_memberships(&space_id)?
+                    .into_iter()
+                    .filter(|membership| membership.id == membership_id),
+            );
+        }
+        Ok(matches.len() == 1
+            && matches[0].team_id == team_id
+            && matches[0].agent_member_id == member.agent_member_id
+            && matches[0].state == firm_core::agentfirm_api::TeamMembershipStatus::Active)
+    }
+
     /// Resolve the assignee TeamMembership for one (accountable Team,
     /// AgentMember) pair without ever guessing. Exactly one Active membership
     /// binds; with no Active row exactly one historical membership binds; zero

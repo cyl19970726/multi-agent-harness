@@ -349,6 +349,155 @@ impl HarnessStore {
     ) -> StoreResult<CanonicalMutationResult<WorkExecutionBinding>> {
         self.init()?;
         let _lock = self.acquire_write_lock()?;
+        self.bind_work_execution_unlocked(context, binding.clone(), serde_json::to_value(&binding)?)
+    }
+
+    /// Resolve stable Work responsibility into one exact current runtime
+    /// authority and commit the binding under the same Store writer lock.
+    ///
+    /// The Work continues to be owned by its TeamMembership/AgentMember.  The
+    /// supplied runtime binding is only an admission fence: it proves the
+    /// current MemberRun, AgentSession, NodeDaemon and TeamSupervisor
+    /// generations without copying runtime ownership into the Work ledger.
+    pub fn bind_responsible_work_execution(
+        &self,
+        context: &MutationContext,
+        runtime_binding: &firm_core::agentfirm_api::RuntimeCommandBinding,
+        binding: WorkExecutionBinding,
+    ) -> StoreResult<CanonicalMutationResult<WorkExecutionBinding>> {
+        self.init()?;
+        let _lock = self.acquire_write_lock()?;
+        let request_payload = serde_json::json!({
+            "binding": binding,
+            "runtime_binding": runtime_binding,
+        });
+        let fingerprint = context
+            .request_fingerprint
+            .clone()
+            .unwrap_or_else(|| canonical_json_fingerprint(&request_payload));
+        if let Some(replay) = self.replay_trust_projection_unlocked(
+            context,
+            "work_execution_binding",
+            &binding.id,
+            &fingerprint,
+        )? {
+            return Ok(replay);
+        }
+
+        let membership = self
+            .fabric_team_memberships(&context.execution_space_id)?
+            .into_iter()
+            .find(|row| row.id == binding.team_membership_id)
+            .ok_or_else(|| {
+                trust_error(
+                    TrustErrorCode::InvalidStateTransition,
+                    "WorkExecutionBinding references a missing TeamMembership",
+                    "work_execution_binding",
+                    &binding.id,
+                    None,
+                )
+            })?;
+        let session = self
+            .fabric_agent_sessions(&context.execution_space_id)?
+            .into_iter()
+            .find(|row| row.id == binding.agent_session_id)
+            .ok_or_else(|| {
+                trust_error(
+                    TrustErrorCode::InvalidStateTransition,
+                    "WorkExecutionBinding references a missing AgentSession",
+                    "work_execution_binding",
+                    &binding.id,
+                    None,
+                )
+            })?;
+        let work = self
+            .latest_works_unlocked()?
+            .remove(&binding.work_id)
+            .ok_or_else(|| {
+                trust_error(
+                    TrustErrorCode::WorkRevisionStale,
+                    "WorkExecutionBinding references a missing Work",
+                    "work",
+                    &binding.work_id,
+                    None,
+                )
+            })?;
+        if work.assignee_membership_id.as_deref() != Some(membership.id.as_str())
+            || work.owner_member_id.as_deref() != Some(binding.agent_member_id.as_str())
+            || membership.agent_member_id != binding.agent_member_id
+        {
+            return Err(trust_error(
+                TrustErrorCode::UnauthorizedActor,
+                "WorkExecutionBinding does not match the Work's exact current TeamMembership responsibility",
+                "work_execution_binding",
+                &binding.id,
+                Some(work.version),
+            ));
+        }
+        let (Some(member_run_id), Some(member_run_generation)) = (
+            runtime_binding.target_member_run_id.as_deref(),
+            runtime_binding.target_member_run_generation,
+        ) else {
+            return Err(trust_error(
+                TrustErrorCode::MemberRunGenerationFenced,
+                "Work execution admission requires an exact MemberRun identity and generation",
+                "work_execution_binding",
+                &binding.id,
+                Some(work.version),
+            ));
+        };
+        let active_member_runs = self
+            .trust_member_runs(&context.execution_space_id)?
+            .into_iter()
+            .filter(|member| {
+                member.team_run_id == work.team_run_id
+                    && member.agent_member_id == binding.agent_member_id
+                    && member.coordination_status == MemberCoordinationStatus::Active
+            })
+            .collect::<Vec<_>>();
+        let [current_member_run] = active_member_runs.as_slice() else {
+            return Err(trust_error(
+                TrustErrorCode::MemberRunGenerationFenced,
+                "Work responsibility does not resolve to exactly one active MemberRun",
+                "work_execution_binding",
+                &binding.id,
+                Some(work.version),
+            ));
+        };
+        if current_member_run.id != member_run_id
+            || current_member_run.runtime_generation != member_run_generation
+            || work
+                .active_member_run_id
+                .as_deref()
+                .is_some_and(|legacy| legacy != member_run_id)
+        {
+            return Err(trust_error(
+                TrustErrorCode::MemberRunGenerationFenced,
+                "Work execution admission used a stale or conflicting MemberRun generation",
+                "work_execution_binding",
+                &binding.id,
+                Some(work.version),
+            ));
+        }
+        self.require_live_runtime_binding_unlocked(
+            &session,
+            runtime_binding,
+            RuntimeBindingAdmission::RuntimeCommand {
+                allow_native_session_attachment: false,
+            },
+            "work_execution_binding",
+            &binding.id,
+            Some(work.version),
+        )?;
+        self.bind_work_execution_unlocked(context, binding, request_payload)
+    }
+
+    fn bind_work_execution_unlocked(
+        &self,
+        context: &MutationContext,
+        binding: WorkExecutionBinding,
+        request_payload: serde_json::Value,
+    ) -> StoreResult<CanonicalMutationResult<WorkExecutionBinding>> {
         if binding.version != 1 || binding.status != WorkExecutionBindingStatus::Active {
             return Err(trust_error(
                 TrustErrorCode::InvalidStateTransition,
@@ -437,7 +586,7 @@ impl HarnessStore {
             "work_execution_binding",
             &binding.id,
             "bound",
-            serde_json::to_value(&binding)?,
+            request_payload,
             &binding,
             vec![serde_json::to_value(CanonicalWorkDelivery {
                 id: format!(
