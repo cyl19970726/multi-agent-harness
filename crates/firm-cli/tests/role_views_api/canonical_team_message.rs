@@ -519,18 +519,83 @@ fn canonical_team_message_journey_uses_node_daemon_sessions_deliveries_and_curso
         .unwrap()
         .to_string();
     let host_route = format!("/v1/agentfirm/team-runs/{run_id}/messages/send?project={project_id}");
-    let (status, host_message) = serve.post_json_with_headers(
+    let host_intent = serde_json::json!({
+        "action":"send_message",
+        "recipient_ids":[member_id],
+        "body":"Host to Member canonical message",
+        "response_required":true
+    });
+    let host_headers = action_headers(TOKEN, "host-member-canonical", &host_version);
+    let (status, host_message) =
+        serve.post_json_with_headers(&host_route, &host_intent, &host_headers);
+    assert_eq!(status, 200, "Host message: {host_message}");
+    let host_message_id = host_message["projection"]["id"].as_str().unwrap();
+    let message_operations_after_first = store
+        .canonical_operations_for_space(&space_id)
+        .expect("message operations after first authoring");
+    let messages_after_first = store
+        .fabric_messages(&space_id)
+        .expect("messages after first");
+    let deliveries_after_first = store
+        .fabric_message_deliveries(&space_id)
+        .expect("deliveries after first");
+    let (status, host_replay) =
+        serve.post_json_with_headers(&host_route, &host_intent, &host_headers);
+    assert_eq!(status, 200, "Host message exact replay: {host_replay}");
+    assert_eq!(host_replay["replayed"], true);
+    assert_eq!(host_replay["projection"], host_message["projection"]);
+    assert_eq!(
+        store
+            .canonical_operations_for_space(&space_id)
+            .expect("operations after replay"),
+        message_operations_after_first,
+        "exact Message replay must append no canonical operation"
+    );
+    assert_eq!(
+        store
+            .fabric_messages(&space_id)
+            .expect("messages after replay"),
+        messages_after_first,
+        "exact Message replay must not create another Message"
+    );
+    assert_eq!(
+        store
+            .fabric_message_deliveries(&space_id)
+            .expect("deliveries after replay"),
+        deliveries_after_first,
+        "exact Message replay must not create another Delivery"
+    );
+    let (status, changed_message) = serve.post_json_with_headers(
         &host_route,
         &serde_json::json!({
             "action":"send_message",
             "recipient_ids":[member_id],
-            "body":"Host to Member canonical message",
+            "body":"changed body under the same key",
             "response_required":true
         }),
-        &action_headers(TOKEN, "host-member-canonical", &host_version),
+        &host_headers,
     );
-    assert_eq!(status, 200, "Host message: {host_message}");
-    let host_message_id = host_message["projection"]["id"].as_str().unwrap();
+    assert_eq!(status, 409, "changed Message replay: {changed_message}");
+    assert_eq!(changed_message["error"]["code"], "RUNTIME_COMMAND_REJECTED");
+    assert_eq!(
+        store
+            .canonical_operations_for_space(&space_id)
+            .expect("operations after changed replay"),
+        message_operations_after_first,
+        "changed Message replay must have zero canonical delta"
+    );
+    assert_eq!(
+        store
+            .fabric_messages(&space_id)
+            .expect("messages after changed replay"),
+        messages_after_first
+    );
+    assert_eq!(
+        store
+            .fabric_message_deliveries(&space_id)
+            .expect("deliveries after changed replay"),
+        deliveries_after_first
+    );
 
     let member_view_route =
         format!("/v1/views/member-workbench/{member_run_id}?project={project_id}");

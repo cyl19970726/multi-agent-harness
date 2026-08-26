@@ -9,10 +9,10 @@ use harness_application::{CreateWorkCommand, ReplaceWorkDependenciesCommand, Wor
 use harness_core::agentfirm_api::{
     ActorKind, ActorRef, CandidateKind, CandidateRef, Confidence, DeliveryReconcileOutcome,
     FailureAnalysis, GateEvaluation, GateRequirement, GateRequirementSource, GateVerdict,
-    GateWaiver, GateWaiverState, MemberCoordinationStatus, MemberWorkspaceBinding, MessageKind,
-    MutationContext, PrimaryCauseStatus, RetrySafety, RuntimeRecoveryResolution, WorkFinding,
-    WorkFindingKind, WorkReport, WorkReportKind, WorkspaceLifecycle, WorkspaceMode,
-    WorkspaceOwnership, WorkspaceSafetyProof,
+    GateWaiver, GateWaiverState, MemberCoordinationStatus, MemberWorkspaceBinding, MutationContext,
+    PrimaryCauseStatus, RetrySafety, RuntimeRecoveryResolution, WorkFinding, WorkFindingKind,
+    WorkReport, WorkReportKind, WorkspaceLifecycle, WorkspaceMode, WorkspaceOwnership,
+    WorkspaceSafetyProof,
 };
 use harness_core::{
     NodeDaemonLeaseStatus, TeamActorKind, TeamActorRef, Work, WorkCausationRef, WorkClaimMode,
@@ -25,12 +25,14 @@ use serde_json::json;
 use crate::agentfirm_api::AuthenticatedMutation;
 
 mod canonical_actions;
+mod message_authoring_adapter;
 mod operator_actions;
 mod protocol;
 mod runtime_recovery_adapter;
 mod work_records;
 
 use canonical_actions::*;
+use message_authoring_adapter::*;
 use operator_actions::*;
 use protocol::*;
 use work_records::*;

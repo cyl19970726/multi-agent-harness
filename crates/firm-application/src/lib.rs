@@ -6,6 +6,7 @@
 
 mod current_work_delivery;
 mod host_runtime_binding;
+mod message_authoring;
 mod projection_fold;
 mod provider_catalog;
 mod provider_outcome;
@@ -16,6 +17,7 @@ mod work_service;
 
 pub use current_work_delivery::*;
 pub use host_runtime_binding::*;
+pub use message_authoring::*;
 pub use projection_fold::*;
 pub use provider_catalog::*;
 pub use provider_outcome::*;
