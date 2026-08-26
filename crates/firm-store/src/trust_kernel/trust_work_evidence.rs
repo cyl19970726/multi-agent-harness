@@ -28,6 +28,7 @@ impl HarnessStore {
             &context.execution_space_id,
             &current_work,
             &context.authenticated_actor,
+            None,
         )?;
         if report.authored_by != context.authenticated_actor {
             return Err(trust_error(
@@ -305,6 +306,7 @@ impl HarnessStore {
             &context.execution_space_id,
             &work,
             &context.authenticated_actor,
+            None,
         )?;
         if finding.reported_by != context.authenticated_actor {
             return Err(trust_error(
@@ -341,6 +343,7 @@ impl HarnessStore {
             &context.execution_space_id,
             &work,
             &context.authenticated_actor,
+            None,
         )?;
         if analysis.reported_by != context.authenticated_actor
             || analysis.member_run_id.as_deref() != Some(run.id.as_str())

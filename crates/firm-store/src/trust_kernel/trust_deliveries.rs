@@ -140,6 +140,7 @@ impl HarnessStore {
                     &context.execution_space_id,
                     &work,
                     &context.authenticated_actor,
+                    None,
                 )?;
             }
         }

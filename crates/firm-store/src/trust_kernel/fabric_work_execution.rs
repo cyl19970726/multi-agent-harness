@@ -344,6 +344,21 @@ impl HarnessStore {
 
     pub fn bind_work_execution(
         &self,
+        _context: &MutationContext,
+        binding: WorkExecutionBinding,
+    ) -> StoreResult<CanonicalMutationResult<WorkExecutionBinding>> {
+        Err(trust_error(
+            TrustErrorCode::InvalidStateTransition,
+            "WORK_EXECUTION_ADMISSION_REQUIRED: WorkExecutionBinding must resolve stable responsibility through exact runtime admission",
+            "work_execution_binding",
+            &binding.id,
+            None,
+        ))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn bind_work_execution_fixture(
+        &self,
         context: &MutationContext,
         binding: WorkExecutionBinding,
     ) -> StoreResult<CanonicalMutationResult<WorkExecutionBinding>> {

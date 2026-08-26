@@ -166,6 +166,17 @@ runtime authority fails before delivery. `Work.active_member_run_id` is legacy
 compatibility evidence only; current assignment and execution never require or
 populate it.
 
+Member-authored WorkReport, Finding, FailureAnalysis, and Work-linked Message
+operations resolve the same unique active `WorkExecutionBinding` under the
+Store writer lock. The binding must still match the current stable
+responsibility, active membership, exact AgentSession generation, and the one
+current active MemberRun. A responsibility change after the binding revision
+invalidates it even if ownership later returns to the same member; this closes
+responsibility ABA without a second epoch. A linked Message never changes Work
+status, version, responsibility, or acceptance, and a WorkReport remains
+candidate evidence until the exact Host accepts it. The legacy unfenced binding
+writer rejects every call; only exact runtime admission may create a binding.
+
 Every current CLI, HTTP, RoleView, recovery diagnostic, and Dashboard
 reader consumes the non-persisted `CurrentWorkDeliveryView`. The application
 projection joins canonical Work, `WorkExecutionBinding`,

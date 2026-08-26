@@ -60,7 +60,7 @@ fn team_host_cannot_stop_shared_session_and_active_bindings_require_explicit_rel
         ("binding-b", &work_b, &shared_b),
     ] {
         store
-            .bind_work_execution(
+            .bind_work_execution_fixture(
                 &context("fixture-host", "work.bind", id, 0),
                 WorkExecutionBinding {
                     id: id.into(),

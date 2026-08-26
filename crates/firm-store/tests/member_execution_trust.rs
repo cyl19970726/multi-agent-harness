@@ -11,14 +11,16 @@ use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use firm_core::agentfirm_api::{
-    ActorKind, ActorRef, AgentMember, AgentMemberOrganizationStatus, CandidateKind, CandidateRef,
-    Confidence, FailureAnalysis, GateEvaluation, GateRequirement, GateRequirementSource,
-    GateVerdict, GateWaiver, GateWaiverState, MemberCoordinationStatus, MemberRun,
+    ActorKind, ActorRef, AgentMember, AgentMemberOrganizationStatus, AgentSession,
+    AgentSessionControlState, AgentSessionStatus, CandidateKind, CandidateRef, Confidence,
+    FailureAnalysis, GateEvaluation, GateRequirement, GateRequirementSource, GateVerdict,
+    GateWaiver, GateWaiverState, MemberCoordinationStatus, MemberExecutionDriver, MemberRun,
     MemberRuntimeStatus, MemberWorkspaceBinding, MutationContext, NativeSessionAvailability,
-    NativeSessionRef, PermissionCeiling, PrimaryCauseStatus, RetrySafety, TeamMembership,
-    TeamMembershipRole, TeamMembershipStatus, TrustError, TrustErrorCode, WorkFinding,
-    WorkFindingKind, WorkReport, WorkReportKind, WorkspaceLifecycle, WorkspaceMode,
-    WorkspaceOwnership, WorkspaceSafetyProof,
+    NativeSessionRef, PermissionCeiling, PrimaryCauseStatus, RetrySafety, RuntimeCommandBinding,
+    RuntimeDriverRef, TeamMembership, TeamMembershipRole, TeamMembershipStatus, TrustError,
+    TrustErrorCode, WorkExecutionBinding, WorkExecutionBindingStatus, WorkFinding, WorkFindingKind,
+    WorkReport, WorkReportKind, WorkspaceLifecycle, WorkspaceMode, WorkspaceOwnership,
+    WorkspaceSafetyProof,
 };
 use firm_core::{
     AgentTeam, AgentTeamRun, AgentTeamStatus, ExecutionNode, ExecutionNodeStatus, MemberRunStatus,
@@ -81,7 +83,6 @@ fn service(id: &str) -> ActorRef {
     }
 }
 
-#[cfg(any())]
 fn unix_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -472,6 +473,108 @@ fn seed_active_team_work(store: &HarnessStore, label: &str, work_id: &str) -> St
             },
         )
         .expect("assign Work");
+    store
+        .acquire_node_daemon_lease(
+            NODE,
+            "daemon-test",
+            "daemon-instance-test",
+            unix_ms(),
+            60_000,
+        )
+        .expect("acquire fixture NodeDaemon lease");
+    let session = AgentSession {
+        id: "session-runtime-worker".into(),
+        agent_member_id: "worker".into(),
+        node_id: NODE.into(),
+        execution_space_id: SPACE.into(),
+        node_daemon_id: "daemon-test".into(),
+        node_daemon_generation: 1,
+        provider_kind: "codex".into(),
+        provider_profile_ref: "codex-default".into(),
+        permission_envelope_ref: "permission-default".into(),
+        effective_permission_ceiling: PermissionCeiling::WorkspaceWrite,
+        workspace_cwd: None,
+        lifecycle: AgentSessionStatus::Idle,
+        runtime_generation: 1,
+        control_state: AgentSessionControlState {
+            execution_driver: MemberExecutionDriver::HostDriven,
+            driver_generation: 1,
+            driver_ref: RuntimeDriverRef::NodeDaemon {
+                node_daemon_id: "daemon-test".into(),
+                node_daemon_generation: 1,
+            },
+            composition_fingerprint: Some("composition:test".into()),
+            capability_fingerprint: Some("capability:test".into()),
+            ..Default::default()
+        },
+        native_session_ref: None,
+        current_turn_id: None,
+        queued_input_count: 0,
+        version: 1,
+        opened_at: "t2".into(),
+        last_active_at: "t2".into(),
+        closed_at: None,
+    };
+    store
+        .create_agent_session(
+            &context(
+                ActorRef {
+                    kind: ActorKind::Service,
+                    id: "daemon-test".into(),
+                },
+                "session.create",
+                "session-runtime-worker",
+                0,
+            ),
+            session.clone(),
+        )
+        .expect("create fixture AgentSession");
+    let runtime_binding = RuntimeCommandBinding {
+        target_member_run_id: Some(runtime_id.into()),
+        target_member_run_generation: Some(1),
+        target_session_id: Some(session.id.clone()),
+        target_runtime_generation: Some(1),
+        target_driver_generation: Some(1),
+        target_driver: session.control_state.driver_ref.clone(),
+        composition_fingerprint: session.control_state.composition_fingerprint.clone(),
+        capability_fingerprint: session.control_state.capability_fingerprint.clone(),
+        permission_envelope_ref: Some(session.permission_envelope_ref.clone()),
+        ..Default::default()
+    };
+    store
+        .bind_responsible_work_execution(
+            &context(
+                ActorRef {
+                    kind: ActorKind::Service,
+                    id: "daemon-test".into(),
+                },
+                "work.bind",
+                &format!("binding-{work_id}"),
+                0,
+            ),
+            &runtime_binding,
+            WorkExecutionBinding {
+                id: format!("binding-{work_id}"),
+                work_id: work_id.into(),
+                work_revision: 2,
+                team_id: team_id.clone(),
+                team_membership_id: format!("membership-team-{label}-worker"),
+                agent_member_id: "worker".into(),
+                agent_session_id: session.id,
+                agent_session_generation: 1,
+                delivery_id: format!("delivery-{work_id}"),
+                binding_generation: 1,
+                status: WorkExecutionBindingStatus::Active,
+                version: 1,
+                created_by: ActorRef {
+                    kind: ActorKind::Service,
+                    id: "daemon-test".into(),
+                },
+                bound_at: "t2".into(),
+                ended_at: None,
+            },
+        )
+        .expect("bind exact fixture execution authority");
     store
         .start_work(
             work_id,

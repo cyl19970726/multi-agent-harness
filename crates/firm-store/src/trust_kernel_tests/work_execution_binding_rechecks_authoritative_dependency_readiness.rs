@@ -57,7 +57,7 @@ fn work_execution_binding_rechecks_authoritative_dependency_readiness() {
 
     let before = store.canonical_operations().unwrap();
     let error = store
-        .bind_work_execution(
+        .bind_work_execution_fixture(
             &context("fixture-host", "work.bind", "binding-dependent", 0),
             WorkExecutionBinding {
                 id: "binding-dependent".into(),

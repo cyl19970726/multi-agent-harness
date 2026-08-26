@@ -225,6 +225,7 @@ impl HarnessStore {
         execution_space_id: &str,
         work: &Work,
         actor: &ActorRef,
+        actor_session_id: Option<&str>,
     ) -> StoreResult<MemberRun> {
         if actor.kind != ActorKind::AgentMember
             || work.owner_member_id.as_deref() != Some(actor.id.as_str())
@@ -237,41 +238,140 @@ impl HarnessStore {
                 Some(work.version),
             ));
         }
-        let active_member_run_id = work.active_member_run_id.as_deref().ok_or_else(|| {
-            trust_error(
-                TrustErrorCode::UnauthorizedActor,
-                "member-owned Work mutation requires an active WorkExecutionBinding",
+        let active_bindings = self
+            .fabric_work_execution_bindings(execution_space_id)?
+            .into_iter()
+            .filter(|binding| {
+                binding.work_id == work.id && binding.status == WorkExecutionBindingStatus::Active
+            })
+            .collect::<Vec<_>>();
+        let [binding] = active_bindings.as_slice() else {
+            return Err(trust_error(
+                TrustErrorCode::WorkExecutionBindingActive,
+                "member-owned Work mutation requires exactly one active WorkExecutionBinding",
                 "work",
                 &work.id,
                 Some(work.version),
-            )
-        })?;
-        let run = self
-            .latest_trust_envelopes_unlocked(execution_space_id, "member_run")?
-            .remove(active_member_run_id)
-            .ok_or_else(|| {
-                trust_error(
-                    TrustErrorCode::UnauthorizedActor,
-                    "WorkExecutionBinding references a missing MemberRun",
-                    "work",
-                    &work.id,
-                    Some(work.version),
-                )
-            })
-            .and_then(|envelope| event_projection::<MemberRun>(&envelope))?;
-        if run.agent_member_id != actor.id
-            || run.team_run_id != work.team_run_id
-            || run.coordination_status != MemberCoordinationStatus::Active
+            ));
+        };
+        let responsibility_changed_after_binding = self
+            .work_operations_unlocked()?
+            .into_iter()
+            .any(|operation| {
+                operation.work.id == work.id
+                    && operation.event.resulting_version > binding.work_revision
+                    && matches!(
+                        operation.event.kind,
+                        WorkEventKind::Assigned
+                            | WorkEventKind::Claimed
+                            | WorkEventKind::Released
+                            | WorkEventKind::Rebound
+                            | WorkEventKind::ExecutionRetargeted
+                    )
+            });
+        if binding.work_revision > work.version
+            || responsibility_changed_after_binding
+            || binding.team_id != work.accountable_team_id.as_deref().unwrap_or_default()
+            || Some(binding.team_membership_id.as_str()) != work.assignee_membership_id.as_deref()
+            || binding.agent_member_id != actor.id
         {
             return Err(trust_error(
                 TrustErrorCode::UnauthorizedActor,
-                "WorkExecutionBinding is not the authenticated Member's exact active MemberRun",
+                "active WorkExecutionBinding does not match current Work responsibility",
                 "work",
                 &work.id,
                 Some(work.version),
             ));
         }
-        Ok(run)
+        let membership = self
+            .fabric_team_memberships(execution_space_id)?
+            .into_iter()
+            .find(|membership| membership.id == binding.team_membership_id)
+            .ok_or_else(|| {
+                trust_error(
+                    TrustErrorCode::UnauthorizedActor,
+                    "WorkExecutionBinding references a missing TeamMembership",
+                    "work",
+                    &work.id,
+                    Some(work.version),
+                )
+            })?;
+        if membership.state != TeamMembershipStatus::Active
+            || membership.team_id != binding.team_id
+            || membership.agent_member_id != actor.id
+        {
+            return Err(trust_error(
+                TrustErrorCode::UnauthorizedActor,
+                "WorkExecutionBinding membership is not current Work responsibility",
+                "work",
+                &work.id,
+                Some(work.version),
+            ));
+        }
+        let session = self
+            .fabric_agent_sessions(execution_space_id)?
+            .into_iter()
+            .find(|session| session.id == binding.agent_session_id)
+            .ok_or_else(|| {
+                trust_error(
+                    TrustErrorCode::NativeSessionMissing,
+                    "WorkExecutionBinding references a missing AgentSession",
+                    "work",
+                    &work.id,
+                    Some(work.version),
+                )
+            })?;
+        if session.agent_member_id != actor.id
+            || session.runtime_generation != binding.agent_session_generation
+            || session.lifecycle == AgentSessionStatus::Closed
+            || actor_session_id.is_some_and(|id| id != session.id)
+        {
+            return Err(trust_error(
+                TrustErrorCode::NativeSessionIncompatible,
+                "WorkExecutionBinding does not reference the exact current AgentSession generation",
+                "work",
+                &work.id,
+                Some(work.version),
+            ));
+        }
+        let active_runs = self
+            .trust_member_runs(execution_space_id)?
+            .into_iter()
+            .filter(|run| {
+                run.agent_member_id == actor.id
+                    && run.team_run_id == work.team_run_id
+                    && run.coordination_status == MemberCoordinationStatus::Active
+                    && !matches!(
+                        run.runtime_status,
+                        MemberRuntimeStatus::Completed
+                            | MemberRuntimeStatus::Failed
+                            | MemberRuntimeStatus::Stopped
+                    )
+            })
+            .collect::<Vec<_>>();
+        let [run] = active_runs.as_slice() else {
+            return Err(trust_error(
+                TrustErrorCode::MemberRunGenerationFenced,
+                "Work responsibility does not resolve to exactly one current active MemberRun",
+                "work",
+                &work.id,
+                Some(work.version),
+            ));
+        };
+        if work
+            .active_member_run_id
+            .as_deref()
+            .is_some_and(|legacy| legacy != run.id)
+        {
+            return Err(trust_error(
+                TrustErrorCode::MemberRunGenerationFenced,
+                "legacy Work runtime evidence conflicts with the current active MemberRun",
+                "work",
+                &work.id,
+                Some(work.version),
+            ));
+        }
+        Ok(run.clone())
     }
 
     pub(super) fn trust_operation_envelopes_unlocked(

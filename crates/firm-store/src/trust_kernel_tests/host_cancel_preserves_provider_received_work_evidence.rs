@@ -79,7 +79,7 @@ fn claimed_work_fixture(
         ended_at: None,
     };
     store
-        .bind_work_execution(
+        .bind_work_execution_fixture(
             &context("fixture-host", "work.bind", &binding_id, 0),
             binding.clone(),
         )

@@ -273,6 +273,68 @@ impl HarnessStore {
                 ));
             }
         }
+        if admission_authority.is_none() {
+            if let Some(work_id) = message.work_id.as_deref() {
+                let work = self
+                    .latest_works_unlocked()?
+                    .remove(work_id)
+                    .ok_or_else(|| {
+                        trust_error(
+                            TrustErrorCode::WorkRevisionStale,
+                            "Work-linked Message references a missing current Work",
+                            "message",
+                            &message.id,
+                            None,
+                        )
+                    })?;
+                if work.team_run_id != message.team_run_id.as_deref().unwrap_or_default()
+                    || work.accountable_team_id.as_deref() != message.team_id.as_deref()
+                {
+                    return Err(trust_error(
+                        TrustErrorCode::UnauthorizedActor,
+                        "Work-linked Message must name current Work in the exact Team and TeamRun",
+                        "message",
+                        &message.id,
+                        Some(work.version),
+                    ));
+                }
+                if let Some(sender_id) = message.sender_agent_member_id.as_deref() {
+                    let sender_is_host = memberships.iter().any(|membership| {
+                        membership.team_id == message.team_id.as_deref().unwrap_or_default()
+                            && membership.agent_member_id == sender_id
+                            && membership.role == TeamMembershipRole::Host
+                            && membership.state == TeamMembershipStatus::Active
+                    });
+                    if work.owner_member_id.as_deref() == Some(sender_id) {
+                        self.require_exact_work_member_unlocked(
+                            &context.execution_space_id,
+                            &work,
+                            &message.sender_actor_ref,
+                            message.sender_session_id.as_deref(),
+                        )?;
+                    } else if !sender_is_host {
+                        return Err(trust_error(
+                            TrustErrorCode::UnauthorizedActor,
+                            "Work-linked Message requires the exact Work owner binding or Team Host membership",
+                            "message",
+                            &message.id,
+                            Some(work.version),
+                        ));
+                    }
+                } else {
+                    let exact_host = self.exact_team_run_host_actor(&work.team_run_id)?;
+                    if exact_host.id != message.sender_actor_ref.id {
+                        return Err(trust_error(
+                            TrustErrorCode::UnauthorizedActor,
+                            "control-plane Work-linked Message requires the exact TeamRun Host authority",
+                            "message",
+                            &message.id,
+                            Some(work.version),
+                        ));
+                    }
+                }
+            }
+        }
         let mut delivery_rows = Vec::new();
         let mut delivered_subjects = BTreeSet::new();
         // A peer-Team direct Message binds the recipient membership in the

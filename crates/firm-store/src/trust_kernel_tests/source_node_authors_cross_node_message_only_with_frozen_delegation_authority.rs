@@ -21,7 +21,7 @@ fn source_node_authors_cross_node_message_only_with_frozen_delegation_authority(
         .unwrap();
     let source_work = insert_runtime_work(&store, "source-work", "source-team", "source-team-run");
     store
-        .bind_work_execution(
+        .bind_work_execution_fixture(
             &context("fixture-host", "work.bind", "source-work-binding", 0),
             WorkExecutionBinding {
                 id: "source-work-binding".into(),

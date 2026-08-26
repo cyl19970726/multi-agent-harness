@@ -28,7 +28,7 @@ fn member_owned_work_records_require_the_exact_active_execution_binding() {
                 )
                 .expect_err("closed member must require an exact active Work rebind")
         ),
-        TrustErrorCode::UnauthorizedActor
+        TrustErrorCode::MemberRunGenerationFenced
     );
     let finding = WorkFinding {
         id: "closed-finding".into(),
@@ -56,7 +56,7 @@ fn member_owned_work_records_require_the_exact_active_execution_binding() {
                 )
                 .expect_err("closed member finding must require explicit Work rebind")
         ),
-        TrustErrorCode::UnauthorizedActor
+        TrustErrorCode::MemberRunGenerationFenced
     );
     let failure = FailureAnalysis {
         id: "closed-failure".into(),
@@ -91,7 +91,7 @@ fn member_owned_work_records_require_the_exact_active_execution_binding() {
                 )
                 .expect_err("closed member failure must require explicit Work rebind")
         ),
-        TrustErrorCode::UnauthorizedActor
+        TrustErrorCode::MemberRunGenerationFenced
     );
     assert_eq!(
         harness.store.canonical_operations().unwrap().len(),

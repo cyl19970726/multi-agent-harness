@@ -11,16 +11,19 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use firm_core::agentfirm_api::{
     ActorKind, ActorRef, AgentMember, AgentMemberOrganizationStatus, AgentSession,
-    AgentSessionStatus, MutationContext, PermissionCeiling, RuntimeDispatchMode, TeamMembership,
-    TeamMembershipRole, TeamMembershipStatus, WorkExecutionBinding, WorkExecutionBindingStatus,
+    AgentSessionControlState, AgentSessionStatus, MemberCoordinationStatus, MemberExecutionDriver,
+    MemberRun, MemberRuntimeStatus, MutationContext, PermissionCeiling, RuntimeCommandBinding,
+    RuntimeDispatchMode, RuntimeDriverRef, TeamMembership, TeamMembershipRole,
+    TeamMembershipStatus, WorkExecutionBinding, WorkExecutionBindingStatus,
 };
 use firm_core::{
-    AgentTeam, AgentTeamRun, AgentTeamStatus, ExecutionNode, ExecutionNodeStatus, Mission,
-    MissionStatus, NodeProjectRegistration, NodeProjectRegistrationStatus, TeamActorKind,
-    TeamActorRef, TeamRunStatus, Work, WorkClaimMode, WorkCommandContext, WorkCondition,
-    WorkEventKind, WorkOperation, WorkPhase, WorkPriority, WorkResponsibilityResolution,
+    AgentTeam, AgentTeamRun, AgentTeamStatus, ExecutionNode, ExecutionNodeStatus, MemberRunStatus,
+    Mission, MissionStatus, NodeProjectRegistration, NodeProjectRegistrationStatus,
+    ProviderRuntimeProjection, TeamActorKind, TeamActorRef, TeamRunStatus, Work, WorkClaimMode,
+    WorkCommandContext, WorkCondition, WorkEventKind, WorkOperation, WorkPhase, WorkPriority,
+    WorkResponsibilityResolution,
 };
-use firm_store::HarnessStore;
+use firm_store::{CanonicalMemberRunAdmission, HarnessStore};
 
 static NEXT_TEMP: AtomicU64 = AtomicU64::new(1);
 const SPACE: &str = "space-cutover-test";
@@ -687,6 +690,71 @@ fn execution_binding_fences_runtime_without_owning_responsibility() {
         )
         .expect("assign to membership");
     assert_eq!(assigned.version, 2);
+    let canonical_member_run = MemberRun {
+        id: "runtime-worker-binding".into(),
+        agent_member_id: "worker-binding".into(),
+        team_run_id: run.id.clone(),
+        role_snapshot: "worker".into(),
+        provider_profile_snapshot: Some("codex-default".into()),
+        requested_controls: serde_json::json!({}),
+        effective_controls: serde_json::json!({}),
+        coordination_status: MemberCoordinationStatus::Active,
+        runtime_status: MemberRuntimeStatus::Idle,
+        runtime_generation: 1,
+        workspace_binding_id: None,
+        native_session: None,
+        version: 1,
+        started_at: "t3".into(),
+        last_event_at: None,
+        finished_at: None,
+    };
+    let mut next_team_run = run.clone();
+    next_team_run
+        .member_run_ids
+        .push(canonical_member_run.id.clone());
+    next_team_run.updated_at = "t3".into();
+    store
+        .admit_member_run_with_canonical(
+            &run,
+            &next_team_run,
+            &ProviderRuntimeProjection {
+                id: canonical_member_run.id.clone(),
+                team_run_id: run.id.clone(),
+                slot_id: None,
+                agent_member_id: "worker-binding".into(),
+                name: "Worker binding".into(),
+                role: "worker".into(),
+                provider: "codex".into(),
+                model: None,
+                provider_controls: Default::default(),
+                provider_profile: None,
+                provider_capacity: None,
+                provider_compatibility_block_cause: None,
+                coordination_status: firm_core::MemberCoordinationStatus::Active,
+                runtime_generation: 1,
+                status: MemberRunStatus::Idle,
+                native_session: None,
+                provider_cwd_hint: None,
+                provider_environment_observation: None,
+                owned_paths: Vec::new(),
+                zero_output_streak: 0,
+                last_consumed_work_version: None,
+                started_at: "t3".into(),
+                last_event_at: None,
+                finished_at: None,
+            },
+            SPACE,
+            &CanonicalMemberRunAdmission {
+                context: trust_context(
+                    human("host-binding"),
+                    "member_run.create",
+                    "runtime-worker-binding",
+                    0,
+                ),
+                run: canonical_member_run,
+            },
+        )
+        .expect("create current MemberRun projections atomically");
 
     store
         .acquire_node_daemon_lease(
@@ -714,7 +782,17 @@ fn execution_binding_fences_runtime_without_owning_responsibility() {
         workspace_cwd: None,
         lifecycle: AgentSessionStatus::Idle,
         runtime_generation: 1,
-        control_state: Default::default(),
+        control_state: AgentSessionControlState {
+            execution_driver: MemberExecutionDriver::HostDriven,
+            driver_generation: 1,
+            driver_ref: RuntimeDriverRef::NodeDaemon {
+                node_daemon_id: "daemon-cutover".into(),
+                node_daemon_generation: 1,
+            },
+            composition_fingerprint: Some("composition:test".into()),
+            capability_fingerprint: Some("capability:test".into()),
+            ..Default::default()
+        },
         native_session_ref: None,
         current_turn_id: None,
         queued_input_count: 0,
@@ -737,11 +815,27 @@ fn execution_binding_fences_runtime_without_owning_responsibility() {
             session,
         )
         .expect("create AgentSession");
+    let runtime_binding = RuntimeCommandBinding {
+        target_member_run_id: Some("runtime-worker-binding".into()),
+        target_member_run_generation: Some(1),
+        target_session_id: Some("session-worker-binding".into()),
+        target_runtime_generation: Some(1),
+        target_driver_generation: Some(1),
+        target_driver: RuntimeDriverRef::NodeDaemon {
+            node_daemon_id: "daemon-cutover".into(),
+            node_daemon_generation: 1,
+        },
+        composition_fingerprint: Some("composition:test".into()),
+        capability_fingerprint: Some("capability:test".into()),
+        permission_envelope_ref: Some("permission-default".into()),
+        ..Default::default()
+    };
 
     // A stale Work revision cannot bind execution.
     let stale = store
-        .bind_work_execution(
+        .bind_responsible_work_execution(
             &trust_context(human("fixture-operator"), "work.bind", "bind-stale", 0),
+            &runtime_binding,
             WorkExecutionBinding {
                 id: "binding-stale".into(),
                 work_id: work.id.clone(),
@@ -765,8 +859,9 @@ fn execution_binding_fences_runtime_without_owning_responsibility() {
 
     // The exact current revision binds. Responsibility is untouched.
     store
-        .bind_work_execution(
+        .bind_responsible_work_execution(
             &trust_context(human("fixture-operator"), "work.bind", "bind-exact", 0),
+            &runtime_binding,
             WorkExecutionBinding {
                 id: "binding-exact".into(),
                 work_id: work.id.clone(),
