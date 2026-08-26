@@ -434,6 +434,21 @@ fn authorize(
     actor: &ActorRef,
     command: &TrustCommand,
 ) -> Result<(), StoreError> {
+    if let TrustCommand::AcceptWork {
+        team_id, work_id, ..
+    } = command
+    {
+        if actor.kind == ActorKind::AgentMember
+            && work_review_authorized(store, execution_space_id, actor, team_id, work_id)?
+        {
+            return Ok(());
+        }
+        return Err(unauthorized(
+            "agent_team",
+            team_id,
+            "Work acceptance requires the exact Team Host for Member Work or one exact active non-owner Team peer for Host-owned Work",
+        ));
+    }
     if matches!(actor.kind, ActorKind::Human | ActorKind::Service) {
         return Ok(());
     }
@@ -465,19 +480,6 @@ fn authorize(
                 "agent_team",
                 team_id,
                 "only the exact Team Host may request a Gate evaluation",
-            ));
-        }
-        if let TrustCommand::AcceptWork {
-            team_id, work_id, ..
-        } = command
-        {
-            if work_review_authorized(store, execution_space_id, actor, team_id, work_id)? {
-                return Ok(());
-            }
-            return Err(unauthorized(
-                "agent_team",
-                team_id,
-                "Work acceptance requires the exact Team Host for Member Work or one exact active non-owner Team peer for Host-owned Work",
             ));
         }
         let own_run = match command {

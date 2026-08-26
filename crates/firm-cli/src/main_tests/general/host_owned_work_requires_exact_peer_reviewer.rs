@@ -233,6 +233,54 @@ fn host_owned_work_requires_exact_active_peer_while_member_work_remains_host_rev
                 && action["target_ref"]["id"] == host_review.id
                 && action["disabled_reason"].is_null()
         })));
+    let host_report = store
+        .trust_work_reports(&lease.execution_space_id)
+        .expect("Host Work reports")
+        .into_iter()
+        .find(|report| {
+            report.work_id == host_review.id && report.work_revision == host_review.version
+        })
+        .expect("exact Host Work report");
+    for (kind, id) in [
+        (harness_core::agentfirm_api::ActorKind::Human, "operator"),
+        (
+            harness_core::agentfirm_api::ActorKind::Service,
+            "review-service",
+        ),
+    ] {
+        let before_generic_accept = durable_store_file_bytes(&store);
+        let error = crate::agentfirm_api::execute(
+            &store,
+            crate::agentfirm_api::AuthenticatedMutation {
+                execution_space_id: lease.execution_space_id.clone(),
+                actor: harness_core::agentfirm_api::ActorRef {
+                    kind,
+                    id: id.into(),
+                },
+                authorized_authority_actors: Vec::new(),
+                idempotency_key: format!("generic-{id}-cannot-accept"),
+                expected_version: host_review.version,
+                request_fingerprint: None,
+            },
+            crate::agentfirm_api::TrustCommand::AcceptWork {
+                team_id: created.team_run.agent_team_id.clone(),
+                work_id: host_review.id.clone(),
+                work_report_id: host_report.id.clone(),
+                candidate_fingerprint: host_report
+                    .candidate_fingerprint
+                    .clone()
+                    .expect("candidate fingerprint"),
+                updated_at: now_string(),
+            },
+        )
+        .expect_err("generic Trust HTTP/CLI actor cannot bypass Work reviewer authority");
+        assert!(error.to_string().contains("UNAUTHORIZED_ACTOR"));
+        assert_eq!(
+            durable_store_file_bytes(&store),
+            before_generic_accept,
+            "generic Trust rejection has zero durable effects"
+        );
+    }
     let before_self_accept = durable_store_file_bytes(&store);
     let self_accept = role_action(
         &store,

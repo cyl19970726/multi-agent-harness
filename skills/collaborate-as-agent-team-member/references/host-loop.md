@@ -106,9 +106,9 @@ the Host must not self-accept. Submit the Host Work, send one response-required
 Work-linked Message to an exact active non-owner peer in the same TeamRun, and
 wait for that peer's explicit `firm member work accept`. If the peer finds a
 problem, it reports the requested revision through the linked conversation;
-revise and resubmit the same Work. A solo Host may leave its Work in `review` or
-use an explicit Human/Service trust action; it must never fabricate peer
-acceptance.
+revise and resubmit the same Work. A solo Host leaves its Work in `review` until
+an exact active peer is available; it must never fabricate acceptance through a
+generic Human/Service control-plane credential.
 
 Cross-Team needs are an explicit `WorkDelegation` from a source Work you own
 to a target Work in the other flat Team; target completion never

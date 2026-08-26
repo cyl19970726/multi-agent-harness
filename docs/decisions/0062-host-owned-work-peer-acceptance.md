@@ -35,5 +35,5 @@ Owner self-acceptance continues to fail closed in Store authority. RoleView
 projects the accept action only to an eligible active peer for Host-owned Work
 and only to Host for ordinary Member Work. Provider completion, transport
 receipt, CI, PR merge, or conversation never imply acceptance. Solo Hosts do not
-receive a synthetic success path; Work stays in review unless an explicit
-Human/Service trust action applies.
+receive a synthetic success path; Work stays in review until an exact active
+peer is available.
