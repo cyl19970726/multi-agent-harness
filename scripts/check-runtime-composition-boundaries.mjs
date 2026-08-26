@@ -141,8 +141,11 @@ for (const required of [
   "pub enum MemberCloseRuntimeKind",
   "pub struct PrepareMemberCloseCommand",
   "pub struct MemberCloseFacts",
+  "pub struct AuthorizedMemberClose",
+  "pub struct MemberCloseRuntimeFacts",
   "pub struct PreparedMemberClose",
   "pub enum MemberCloseActionError",
+  "pub fn authorize_member_close",
   "pub fn prepare_member_close",
   "MEMBER_CLOSE_CONFIRMATION",
 ]) {
@@ -175,18 +178,28 @@ for (const forbidden of [
 const memberCloseAdapterPath =
   "crates/firm-cli/src/role_actions_api/member_close_adapter.rs";
 const memberCloseAdapter = read(memberCloseAdapterPath);
-if (!memberCloseAdapter.includes("prepare_member_close(command, facts)")) {
+const canonicalAuthorization =
+  "authorize_member_close_policy(command, facts)";
+const providerFactRead = "let runtime = store";
+const runtimePlanning = "prepare_member_close(authorized, runtime_facts)";
+if (!memberCloseAdapter.includes(canonicalAuthorization)) {
   failures.push(
-    `${memberCloseAdapterPath}: adapter bypasses the typed Member Close application owner`,
+    `${memberCloseAdapterPath}: adapter bypasses canonical Member Close application authorization`,
+  );
+}
+if (!memberCloseAdapter.includes(runtimePlanning)) {
+  failures.push(
+    `${memberCloseAdapterPath}: adapter bypasses exact-runtime Member Close application planning`,
   );
 }
 if (
-  !memberCloseAdapter.includes(
-    "runtime.runtime_generation != run.runtime_generation",
-  )
+  memberCloseAdapter.indexOf(canonicalAuthorization) === -1 ||
+  memberCloseAdapter.indexOf(providerFactRead) === -1 ||
+  memberCloseAdapter.indexOf(canonicalAuthorization) >
+    memberCloseAdapter.indexOf(providerFactRead)
 ) {
   failures.push(
-    `${memberCloseAdapterPath}: Member Close facts are not fenced to the exact runtime generation`,
+    `${memberCloseAdapterPath}: provider facts are read before canonical Close authorization`,
   );
 }
 const httpTrustRoutes = read(
@@ -200,6 +213,35 @@ if (
   failures.push(
     "http_trust_routes.rs: Member Close effect orchestration bypasses the prepared runtime kind",
   );
+}
+const memberCloseHttpStart = httpTrustRoutes.indexOf(
+  "if close_member_run_id.is_some()",
+);
+const memberCloseHttpEnd = httpTrustRoutes.indexOf(
+  "match role_actions_api::execute(",
+  memberCloseHttpStart,
+);
+if (memberCloseHttpStart === -1 || memberCloseHttpEnd === -1) {
+  failures.push("http_trust_routes.rs: cannot isolate Member Close production block");
+}
+const memberCloseCliProduction = `${memberCloseAdapter}\n${httpTrustRoutes.slice(
+  memberCloseHttpStart,
+  memberCloseHttpEnd,
+)}`;
+for (const [label, escapedPolicy] of [
+  ["confirmation comparison", /(?:confirmed_action|trust_confirmed_action)\s*(?:==|!=)/],
+  ["actor-kind comparison", /auth\.actor\.kind\s*(?:==|!=)/],
+  ["actor-id comparison", /auth\.actor\.id\s*(?:==|!=)/],
+  ["Host policy helper", /\b(?:is_host|require_member_or_host)\s*\(/],
+  ["version comparison", /(?:auth\.expected_version|run\.version)\s*(?:==|!=)/],
+  ["Retired comparison", /coordination_status\s*(?:==|!=)\s*MemberCoordinationStatus::Retired/],
+  ["Retired helper", /\.coordination_is_retired\s*\(/],
+]) {
+  if (escapedPolicy.test(memberCloseCliProduction)) {
+    failures.push(
+      `${memberCloseAdapterPath}/http_trust_routes.rs: Member Close ${label} escaped the application owner`,
+    );
+  }
 }
 const roleActionProtocol = read(
   "crates/firm-cli/src/role_actions_api/protocol.rs",

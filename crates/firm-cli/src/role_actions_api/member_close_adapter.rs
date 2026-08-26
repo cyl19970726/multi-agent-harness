@@ -1,6 +1,7 @@
 use super::*;
 use harness_application::{
-    prepare_member_close, MemberCloseActionError, MemberCloseFacts, MemberCloseRuntimeKind,
+    authorize_member_close as authorize_member_close_policy, prepare_member_close,
+    MemberCloseActionError, MemberCloseFacts, MemberCloseRuntimeFacts, MemberCloseRuntimeKind,
     PrepareMemberCloseCommand, PreparedMemberClose,
 };
 
@@ -47,34 +48,6 @@ pub(crate) fn authorize_member_close(
     };
 
     let (run, _, team) = team_for_member_run(store, &auth.execution_space_id, member_run_id)?;
-    let runtime = store
-        .member_runs()?
-        .into_iter()
-        .rev()
-        .find(|candidate| candidate.id == member_run_id)
-        .ok_or_else(|| {
-            encoded_error(
-                "INVALID_STATE_TRANSITION",
-                "MemberRun has no current provider runtime projection",
-                "member_run",
-                member_run_id,
-                Some(run.version),
-            )
-        })?;
-    if runtime.runtime_generation != run.runtime_generation {
-        return Err(encoded_error(
-            "INVALID_STATE_TRANSITION",
-            "MemberRun Close requires the exact current provider runtime generation",
-            "member_run",
-            member_run_id,
-            Some(run.version),
-        ));
-    }
-    let runtime_kind = if runtime.is_external_interactive() {
-        MemberCloseRuntimeKind::ExternalInteractive
-    } else {
-        MemberCloseRuntimeKind::Managed
-    };
     let command = PrepareMemberCloseCommand {
         member_run_id: member_run_id.to_string(),
         actor: auth.actor.clone(),
@@ -90,10 +63,45 @@ pub(crate) fn authorize_member_close(
         host_agent_member_id: team.host_agent_id,
         current_version,
         coordination_status: run.coordination_status,
+        runtime_generation: run.runtime_generation,
+    };
+    let authorized = authorize_member_close_policy(command, facts)
+        .map_err(|error| map_member_close_error(error, member_run_id, current_version))?;
+
+    let runtime = store
+        .member_runs()?
+        .into_iter()
+        .rev()
+        .find(|candidate| candidate.id == member_run_id)
+        .ok_or_else(|| {
+            encoded_error(
+                "INVALID_STATE_TRANSITION",
+                "MemberRun has no current provider runtime projection",
+                "member_run",
+                member_run_id,
+                Some(current_version),
+            )
+        })?;
+    let runtime_kind = if runtime.is_external_interactive() {
+        MemberCloseRuntimeKind::ExternalInteractive
+    } else {
+        MemberCloseRuntimeKind::Managed
+    };
+    let runtime_facts = MemberCloseRuntimeFacts {
+        runtime_generation: runtime.runtime_generation,
         runtime_kind,
     };
 
-    prepare_member_close(command, facts).map_err(|error| match error {
+    prepare_member_close(authorized, runtime_facts)
+        .map_err(|error| map_member_close_error(error, member_run_id, current_version))
+}
+
+fn map_member_close_error(
+    error: MemberCloseActionError,
+    member_run_id: &str,
+    current_version: u64,
+) -> StoreError {
+    match error {
         MemberCloseActionError::ConfirmationRequired => encoded_error(
             "CONFIRMATION_REQUIRED",
             "server confirmation must exactly confirm close_member_run",
@@ -129,5 +137,12 @@ pub(crate) fn authorize_member_close(
             member_run_id,
             Some(current_version),
         ),
-    })
+        MemberCloseActionError::RuntimeGenerationMismatch { .. } => encoded_error(
+            "INVALID_STATE_TRANSITION",
+            "MemberRun Close requires the exact current provider runtime generation",
+            "member_run",
+            member_run_id,
+            Some(current_version),
+        ),
+    }
 }

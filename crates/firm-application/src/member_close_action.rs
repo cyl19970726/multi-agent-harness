@@ -25,6 +25,20 @@ pub struct MemberCloseFacts {
     pub host_agent_member_id: String,
     pub current_version: u64,
     pub coordination_status: MemberCoordinationStatus,
+    pub runtime_generation: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AuthorizedMemberClose {
+    pub team_run_id: String,
+    pub member_run_id: String,
+    pub requested_by: String,
+    pub runtime_generation: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MemberCloseRuntimeFacts {
+    pub runtime_generation: u64,
     pub runtime_kind: MemberCloseRuntimeKind,
 }
 
@@ -43,18 +57,21 @@ pub enum MemberCloseActionError {
     UnauthorizedActor,
     VersionConflict { current_version: u64 },
     RetiredMemberRun { current_version: u64 },
+    RuntimeGenerationMismatch { current_runtime_generation: u64 },
 }
 
-/// Resolve the canonical reversible Close intent into an effect-free plan.
+/// Authorize the canonical reversible Close intent before reading provider
+/// runtime facts. This preserves confirmation, actor, version, and lifecycle
+/// error priority even when the provider projection is absent or stale.
 ///
 /// The application layer owns actor, confirmation, version and lifecycle
 /// policy. The caller still owns authoritative fact collection and the actual
 /// Supervisor/Store transaction. In particular, a managed plan is not a
 /// provider Close receipt and cannot authorize a Closed/Stopped projection.
-pub fn prepare_member_close(
+pub fn authorize_member_close(
     command: PrepareMemberCloseCommand,
     facts: MemberCloseFacts,
-) -> Result<PreparedMemberClose, MemberCloseActionError> {
+) -> Result<AuthorizedMemberClose, MemberCloseActionError> {
     if command.confirmation.as_deref() != Some(MEMBER_CLOSE_CONFIRMATION) {
         return Err(MemberCloseActionError::ConfirmationRequired);
     }
@@ -83,11 +100,30 @@ pub fn prepare_member_close(
         });
     }
 
-    Ok(PreparedMemberClose {
+    Ok(AuthorizedMemberClose {
         team_run_id: facts.team_run_id,
         member_run_id: facts.member_run_id,
         requested_by: command.actor.id,
-        runtime_kind: facts.runtime_kind,
+        runtime_generation: facts.runtime_generation,
+    })
+}
+
+/// Bind an authorized Close to the exact provider runtime generation and
+/// return an effect-free plan. This is not a provider Close receipt.
+pub fn prepare_member_close(
+    authorized: AuthorizedMemberClose,
+    runtime: MemberCloseRuntimeFacts,
+) -> Result<PreparedMemberClose, MemberCloseActionError> {
+    if runtime.runtime_generation != authorized.runtime_generation {
+        return Err(MemberCloseActionError::RuntimeGenerationMismatch {
+            current_runtime_generation: authorized.runtime_generation,
+        });
+    }
+    Ok(PreparedMemberClose {
+        team_run_id: authorized.team_run_id,
+        member_run_id: authorized.member_run_id,
+        requested_by: authorized.requested_by,
+        runtime_kind: runtime.runtime_kind,
     })
 }
 
@@ -112,7 +148,7 @@ mod tests {
         }
     }
 
-    fn facts(runtime_kind: MemberCloseRuntimeKind) -> MemberCloseFacts {
+    fn facts() -> MemberCloseFacts {
         MemberCloseFacts {
             member_run_id: "member-run-a".into(),
             team_run_id: "team-run-a".into(),
@@ -120,6 +156,13 @@ mod tests {
             host_agent_member_id: "host-a".into(),
             current_version: 4,
             coordination_status: MemberCoordinationStatus::Active,
+            runtime_generation: 2,
+        }
+    }
+
+    fn runtime(runtime_kind: MemberCloseRuntimeKind) -> MemberCloseRuntimeFacts {
+        MemberCloseRuntimeFacts {
+            runtime_generation: 2,
             runtime_kind,
         }
     }
@@ -139,8 +182,10 @@ mod tests {
             ),
         ] {
             command.confirmation = Some(MEMBER_CLOSE_CONFIRMATION.into());
-            let prepared = prepare_member_close(command, facts(MemberCloseRuntimeKind::Managed))
-                .expect("authorized close");
+            let authorized = authorize_member_close(command, facts()).expect("authorized close");
+            let prepared =
+                prepare_member_close(authorized, runtime(MemberCloseRuntimeKind::Managed))
+                    .expect("exact runtime plan");
             assert_eq!(prepared.team_run_id, "team-run-a");
             assert_eq!(prepared.member_run_id, "member-run-a");
             assert_eq!(prepared.requested_by, requested_by);
@@ -153,29 +198,26 @@ mod tests {
         let mut missing_confirmation = command("outsider-a");
         missing_confirmation.confirmation = None;
         assert_eq!(
-            prepare_member_close(missing_confirmation, facts(MemberCloseRuntimeKind::Managed)),
+            authorize_member_close(missing_confirmation, facts()),
             Err(MemberCloseActionError::ConfirmationRequired)
         );
 
         assert_eq!(
-            prepare_member_close(
-                command("outsider-a"),
-                facts(MemberCloseRuntimeKind::Managed)
-            ),
+            authorize_member_close(command("outsider-a"), facts()),
             Err(MemberCloseActionError::UnauthorizedActor)
         );
 
         let mut stale = command("member-a");
         stale.expected_version = 3;
         assert_eq!(
-            prepare_member_close(stale, facts(MemberCloseRuntimeKind::Managed)),
+            authorize_member_close(stale, facts()),
             Err(MemberCloseActionError::VersionConflict { current_version: 4 })
         );
 
-        let mut retired = facts(MemberCloseRuntimeKind::Managed);
+        let mut retired = facts();
         retired.coordination_status = MemberCoordinationStatus::Retired;
         assert_eq!(
-            prepare_member_close(command("member-a"), retired),
+            authorize_member_close(command("member-a"), retired),
             Err(MemberCloseActionError::RetiredMemberRun { current_version: 4 })
         );
     }
@@ -185,18 +227,54 @@ mod tests {
         let mut mismatched = command("member-a");
         mismatched.member_run_id = "member-run-b".into();
         assert_eq!(
-            prepare_member_close(mismatched, facts(MemberCloseRuntimeKind::Managed)),
+            authorize_member_close(mismatched, facts()),
             Err(MemberCloseActionError::MemberRunMismatch)
         );
 
+        let authorized = authorize_member_close(command("member-a"), facts())
+            .expect("authorized external close");
         let prepared = prepare_member_close(
-            command("member-a"),
-            facts(MemberCloseRuntimeKind::ExternalInteractive),
+            authorized,
+            runtime(MemberCloseRuntimeKind::ExternalInteractive),
         )
         .expect("external close plan");
         assert_eq!(
             prepared.runtime_kind,
             MemberCloseRuntimeKind::ExternalInteractive
+        );
+    }
+
+    #[test]
+    fn generation_drift_cannot_override_confirmation_actor_or_version_priority() {
+        let drifted_runtime = MemberCloseRuntimeFacts {
+            runtime_generation: 3,
+            runtime_kind: MemberCloseRuntimeKind::Managed,
+        };
+
+        let mut missing_confirmation = command("outsider-a");
+        missing_confirmation.confirmation = None;
+        assert_eq!(
+            authorize_member_close(missing_confirmation, facts()),
+            Err(MemberCloseActionError::ConfirmationRequired)
+        );
+        assert_eq!(
+            authorize_member_close(command("outsider-a"), facts()),
+            Err(MemberCloseActionError::UnauthorizedActor)
+        );
+        let mut stale = command("member-a");
+        stale.expected_version = 3;
+        assert_eq!(
+            authorize_member_close(stale, facts()),
+            Err(MemberCloseActionError::VersionConflict { current_version: 4 })
+        );
+
+        let authorized = authorize_member_close(command("member-a"), facts())
+            .expect("valid canonical authorization");
+        assert_eq!(
+            prepare_member_close(authorized, drifted_runtime),
+            Err(MemberCloseActionError::RuntimeGenerationMismatch {
+                current_runtime_generation: 2
+            })
         );
     }
 }
