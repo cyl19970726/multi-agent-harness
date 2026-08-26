@@ -58,7 +58,7 @@ bin_link_identity() {
   node -e '
     const fs = require("node:fs");
     const stat = fs.lstatSync(process.argv[1], { bigint: true });
-    process.stdout.write(`${stat.dev}:${stat.ino}`);
+    process.stdout.write(`${stat.dev}:${stat.ino}:${stat.ctimeNs}:${stat.birthtimeNs}`);
   ' "$1"
 }
 
