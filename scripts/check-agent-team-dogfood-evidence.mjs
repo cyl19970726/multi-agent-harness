@@ -2,7 +2,9 @@ import Ajv2020 from "ajv/dist/2020.js";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { readFileSync, readdirSync } from "node:fs";
-import { join } from "node:path";
+import { basename, join, resolve } from "node:path";
+
+import { verifyCanonicalTrustLedgerJsonl } from "./lib/agent-team-trust-ledger.mjs";
 
 const root = "schemas/agent-team-dogfood";
 const schema = JSON.parse(readFileSync(join(root, "evidence.schema.json"), "utf8"));
@@ -119,22 +121,153 @@ function invalidCases(valid) {
   ]);
 }
 
-function normalizeEvidencePaths(args) {
-  return args.filter((path) => path !== "--");
+function parseCliArguments(args) {
+  const evidencePaths = [];
+  let trustLedgerPath = null;
+  let expectedExecutionSpaceId = null;
+  for (let index = 0; index < args.length; index += 1) {
+    const argument = args[index];
+    if (argument === "--") continue;
+    if (argument === "--trust-ledger") {
+      if (trustLedgerPath !== null) throw new Error("--trust-ledger may be supplied only once");
+      const value = args[index + 1];
+      if (!value || value === "--" || value.startsWith("--")) {
+        throw new Error("--trust-ledger requires a path");
+      }
+      trustLedgerPath = value;
+      index += 1;
+      continue;
+    }
+    if (argument === "--expected-execution-space-id") {
+      if (expectedExecutionSpaceId !== null) {
+        throw new Error("--expected-execution-space-id may be supplied only once");
+      }
+      const value = args[index + 1];
+      if (!value || value === "--" || value.startsWith("--")) {
+        throw new Error("--expected-execution-space-id requires an id");
+      }
+      expectedExecutionSpaceId = value;
+      index += 1;
+      continue;
+    }
+    if (argument.startsWith("--")) throw new Error(`unknown option ${argument}`);
+    evidencePaths.push(argument);
+  }
+  return { evidencePaths, trustLedgerPath, expectedExecutionSpaceId };
 }
 
 assert.deepEqual(
-  normalizeEvidencePaths(["first.json", "--", "second.json", "--", "third.json"]),
-  ["first.json", "second.json", "third.json"],
+  parseCliArguments(["first.json", "--", "second.json", "--", "third.json"]),
+  {
+    evidencePaths: ["first.json", "second.json", "third.json"],
+    trustLedgerPath: null,
+    expectedExecutionSpaceId: null,
+  },
+);
+assert.deepEqual(
+  parseCliArguments([
+    "first.json",
+    "--trust-ledger",
+    "/space/agentfirm_trust_operations.jsonl",
+    "--expected-execution-space-id",
+    "space-fixture",
+  ]),
+  {
+    evidencePaths: ["first.json"],
+    trustLedgerPath: "/space/agentfirm_trust_operations.jsonl",
+    expectedExecutionSpaceId: "space-fixture",
+  },
+);
+assert.throws(() => parseCliArguments(["--trust-ledger"]), /requires a path/u);
+assert.throws(
+  () => parseCliArguments(["--trust-ledger", "one", "--trust-ledger", "two"]),
+  /only once/u,
+);
+assert.throws(
+  () => parseCliArguments(["--expected-execution-space-id"]),
+  /requires an id/u,
+);
+assert.throws(
+  () => parseCliArguments([
+    "--expected-execution-space-id",
+    "one",
+    "--expected-execution-space-id",
+    "two",
+  ]),
+  /only once/u,
 );
 
-const paths = normalizeEvidencePaths(process.argv.slice(2));
-if (paths.length) {
-  for (const path of paths) {
+function verifyTrustLedgerPath(evidence, trustLedgerPath, expectedExecutionSpaceId) {
+  if (evidence.scenario_class !== "coding_dogfood") return [];
+  if (!trustLedgerPath) return ["coding_dogfood requires --trust-ledger"];
+  if (!expectedExecutionSpaceId) {
+    return [
+      "coding_dogfood requires --expected-execution-space-id from a trusted Execution Space selection",
+    ];
+  }
+
+  const absoluteLedgerPath = resolve(trustLedgerPath);
+  if (basename(absoluteLedgerPath) !== "agentfirm_trust_operations.jsonl") {
+    return [
+      "--trust-ledger must name the current Execution Space's agentfirm_trust_operations.jsonl",
+    ];
+  }
+  try {
+    return verifyCanonicalTrustLedgerJsonl(
+      evidence,
+      readFileSync(absoluteLedgerPath, "utf8"),
+      expectedExecutionSpaceId,
+    );
+  } catch (error) {
+    return [`trust ledger: cannot read ${trustLedgerPath}: ${error.message}`];
+  }
+}
+
+function verifyManifestFixtureSuite() {
+  const fixtureRoot = join(root, "fixtures/canonical-ledger");
+  const manifest = readJson(join(fixtureRoot, "manifest.json"));
+  const evidence = readJson(resolve(fixtureRoot, manifest.evidence_fixture));
+  for (const fixtureCase of manifest.cases) {
+    let jsonl = readFileSync(join(fixtureRoot, fixtureCase.path), "utf8");
+    if (fixtureCase.input_transform) {
+      const prefix = "append_unterminated:";
+      if (!fixtureCase.input_transform.startsWith(prefix)) {
+        throw new Error(`${fixtureCase.id}: unknown input_transform`);
+      }
+      jsonl += fixtureCase.input_transform.slice(prefix.length);
+    }
+    const failures = verifyCanonicalTrustLedgerJsonl(
+      evidence,
+      jsonl,
+      manifest.execution_space_id,
+    );
+    if (fixtureCase.expect === "pass" && failures.length) {
+      throw new Error(`${fixtureCase.id}: expected pass\n${failures.join("\n")}`);
+    }
+    if (
+      fixtureCase.expect === "fail"
+      && !failures.some((failure) => failure.includes(fixtureCase.expected_failure))
+    ) {
+      throw new Error(
+        `${fixtureCase.id}: expected failure ${JSON.stringify(
+          fixtureCase.expected_failure,
+        )}\n${failures.join("\n")}`,
+      );
+    }
+  }
+  return manifest.cases.length;
+}
+
+const { evidencePaths, trustLedgerPath, expectedExecutionSpaceId } = parseCliArguments(
+  process.argv.slice(2),
+);
+if (evidencePaths.length) {
+  for (const path of evidencePaths) {
     const evidence = readJson(path);
     const failures = [
       ...verifyAgentTeamDogfoodEvidence(evidence),
       ...verifyRepositoryEvidence(evidence),
+      ...verifyTrustLedgerPath(evidence, trustLedgerPath, expectedExecutionSpaceId),
     ];
     if (failures.length) {
       console.error(`${path}:\n${failures.join("\n")}`);
@@ -147,13 +280,29 @@ if (paths.length) {
   const validDir = join(root, "fixtures/valid");
   for (const file of readdirSync(validDir).sort()) verifyPath(join(validDir, file), true);
   const codingFixture = readJson(join(validDir, "coding-dogfood.json"));
+  const coordinationFixture = readJson(join(validDir, "coordination-canary.json"));
+  assert.deepEqual(
+    verifyTrustLedgerPath(codingFixture, null, null),
+    ["coding_dogfood requires --trust-ledger"],
+  );
+  assert.deepEqual(
+    verifyTrustLedgerPath(codingFixture, "/space/agentfirm_trust_operations.jsonl", null),
+    [
+      "coding_dogfood requires --expected-execution-space-id from a trusted Execution Space selection",
+    ],
+  );
+  assert.deepEqual(verifyTrustLedgerPath(coordinationFixture, null, null), []);
   const rejected = invalidCases(codingFixture);
   for (const [name, evidence] of rejected) {
     if (!verifyAgentTeamDogfoodEvidence(evidence).length) {
       throw new Error(`${name}: expected rejection`);
     }
   }
-  console.log(
-    `agent team dogfood evidence PASS: ${readdirSync(validDir).length} valid fixtures and ${rejected.size} rejected variants`,
-  );
+  const manifestCases = verifyManifestFixtureSuite();
+  const validFixtures = readdirSync(validDir).length;
+  const summary = [
+    `agent team dogfood evidence PASS: ${validFixtures} valid fixtures,`,
+    `${rejected.size} rejected variants, and ${manifestCases} canonical ledger cases`,
+  ].join(" ");
+  console.log(summary);
 }
