@@ -438,7 +438,12 @@ pub(super) fn publish_team_message(
         evidence_refs: message.evidence_refs.clone(),
         schema_version: 1,
     };
-    publish_team_message_with_draft(store, sender, message, draft)
+    publish_team_message_with_draft(store, sender, message, draft).map(|outcome| outcome.message)
+}
+
+pub(super) struct PublishedTeamMessage {
+    pub(super) message: TeamMessageProjection,
+    pub(super) replayed: bool,
 }
 
 pub(super) fn publish_prepared_team_message(
@@ -446,7 +451,7 @@ pub(super) fn publish_prepared_team_message(
     prepared: harness_application::PreparedMessageAuthoring,
     compatibility_id: String,
     created_at: String,
-) -> CliResult<TeamMessageProjection> {
+) -> CliResult<PublishedTeamMessage> {
     let team_run_id =
         prepared.draft.team_run_id.clone().ok_or_else(|| {
             CliError::Usage("application MessageDraft is not TeamRun-bound".into())
@@ -498,7 +503,7 @@ fn publish_team_message_with_draft(
     sender: &TeamActorRef,
     mut message: TeamMessageProjection,
     draft: harness_core::agentfirm_api::MessageDraft,
-) -> CliResult<TeamMessageProjection> {
+) -> CliResult<PublishedTeamMessage> {
     use harness_core::agentfirm_api::{ActorKind, ActorRef, RuntimeCommandKind};
     let run = latest_team_run(store, &message.team_run_id)?;
     let execution_space_id = team_run_execution_space_id(store, &run)?;
@@ -548,6 +553,7 @@ fn publish_team_message_with_draft(
             id: sender.id.clone(),
         },
     };
+    let canonical_message_id = format!("message:{}", message.id);
     let payload = serde_json::json!({
         "draft": draft
     });
@@ -562,13 +568,15 @@ fn publish_team_message_with_draft(
         required_capability: "message.author".into(),
         idempotency_key: message.id.clone(),
         expected_version: 0,
-        expires_unix_ms: current_unix_ms_u64().saturating_add(30_000),
+        // Exact concurrent retries must prepare the same full envelope. The
+        // active lease already supplies the command's bounded lifetime.
+        expires_unix_ms: lease.expires_unix_ms,
         binding: Default::default(),
         precondition: Default::default(),
         postcondition: runtime_command_postcondition_for(RuntimeCommandKind::AuthorMessage),
         payload_fingerprint: harness_store::canonical_json_fingerprint(&payload),
         payload,
-        issued_at: now_string(),
+        issued_at: format!("runtime-command:{}", message.id),
     };
     let firm_home = execution_space::firm_home().map_err(execution_space_err)?;
     let response = supervisor_daemon::runtime_command_via_socket(
@@ -582,8 +590,28 @@ fn publish_team_message_with_draft(
             response["error"].as_str().unwrap_or("unknown error")
         )));
     }
+    let replayed = response["replayed"].as_bool() == Some(true);
     if let Some(id) = response["result"]["id"].as_str() {
         message.id = id.to_string();
+    } else {
+        message.id = canonical_message_id;
+    }
+    let wait_deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    loop {
+        let committed = store
+            .fabric_messages(&registration.execution_space_id)?
+            .into_iter()
+            .any(|canonical| canonical.id == message.id);
+        if committed {
+            break;
+        }
+        if std::time::Instant::now() >= wait_deadline {
+            return Err(CliError::RuntimeRecoveryRequired(format!(
+                "canonical Message {} was not observable after RuntimeCommand settlement",
+                message.id
+            )));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
     }
     message.deliveries.clear();
     for delivery in store.fabric_message_deliveries(&registration.execution_space_id)? {
@@ -607,28 +635,30 @@ fn publish_team_message_with_draft(
             });
         }
     }
-    let seq = next_team_run_seq(store, &message.team_run_id)?;
-    append_team_run_event(
-        store,
-        &message.team_run_id,
-        seq,
-        team_event_source_for_actor(sender),
-        matches!(
+    let event = TeamRunEvent {
+        id: String::new(),
+        seq: 0,
+        team_run_id: message.team_run_id.clone(),
+        source_kind: team_event_source_for_actor(sender),
+        member_run_id: matches!(
             sender.kind,
             TeamActorKind::ProviderRuntimeProjection | TeamActorKind::AgentMember
         )
         .then(|| message.sender_runtime_id.clone()),
-        "message",
-        &message.id,
-        "created",
-        &format!(
+        delegation_run_id: None,
+        entity_type: "message".into(),
+        entity_id: message.id.clone(),
+        operation: "created".into(),
+        summary: format!(
             "{} from {} to [{}]",
             team_message_kind_label(&message.kind),
             sender.id,
             message.recipient_runtime_ids.join(",")
         ),
-    )?;
-    Ok(message)
+        occurred_at: message.created_at.clone(),
+    };
+    store.ensure_team_run_event_next(&format!("message-created:{}", message.id), event)?;
+    Ok(PublishedTeamMessage { message, replayed })
 }
 
 /// Latest-wins read model for one TeamRun recipient.

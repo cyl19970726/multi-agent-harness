@@ -35,6 +35,19 @@ pub(super) fn execute_canonical_role_action(
                 .into_iter()
                 .find(|message| message.id == canonical_id);
             if let Some(canonical) = existing {
+                if canonical.body_digest
+                    != harness_core::agentfirm_api::message_body_digest(&canonical.body)
+                    || canonical.content_fingerprint
+                        != harness_core::agentfirm_api::message_content_fingerprint(&canonical)
+                {
+                    return Err(encoded_error(
+                        "RUNTIME_COMMAND_RECOVERY_REQUIRED",
+                        "canonical Message immutable content evidence is invalid",
+                        "message",
+                        &canonical_id,
+                        None,
+                    ));
+                }
                 if !harness_application::prepared_message_matches_canonical(
                     &prepared,
                     &canonical,
@@ -94,7 +107,7 @@ pub(super) fn execute_canonical_role_action(
             let canonical = store
                 .fabric_messages(&auth.execution_space_id)?
                 .into_iter()
-                .find(|message| message.id == published.id)
+                .find(|message| message.id == published.message.id)
                 .ok_or_else(|| {
                     encoded_error(
                         "RUNTIME_COMMAND_RECOVERY_REQUIRED",
@@ -129,7 +142,7 @@ pub(super) fn execute_canonical_role_action(
                 event_id: event.id,
                 resulting_version: event.resulting_version,
                 store_sequence: event.store_sequence,
-                replayed: false,
+                replayed: published.replayed,
             })
         }
         CanonicalRoute::MemberRun {

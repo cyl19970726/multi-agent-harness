@@ -1,5 +1,7 @@
 use super::*;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -113,6 +115,56 @@ pub struct Message {
     pub schema_version: u64,
     pub idempotency_key: String,
     pub created_at: String,
+}
+
+pub fn message_body_digest(body: &str) -> String {
+    format!("sha256:{:x}", Sha256::digest(body.as_bytes()))
+}
+
+/// Recompute the immutable authored-content identity without binding source
+/// daemon generation or observation time. Those fields prove authority, not
+/// the Message content itself.
+pub fn message_content_fingerprint(message: &Message) -> String {
+    fn canonicalize(value: &serde_json::Value) -> serde_json::Value {
+        match value {
+            serde_json::Value::Object(object) => serde_json::Value::Object(
+                object
+                    .iter()
+                    .map(|(key, value)| (key.clone(), canonicalize(value)))
+                    .collect::<BTreeMap<_, _>>()
+                    .into_iter()
+                    .collect(),
+            ),
+            serde_json::Value::Array(values) => {
+                serde_json::Value::Array(values.iter().map(canonicalize).collect())
+            }
+            other => other.clone(),
+        }
+    }
+
+    let value = serde_json::json!({
+        "sender_actor_ref": message.sender_actor_ref,
+        "sender_agent_member_id": message.sender_agent_member_id,
+        "sender_session_id": message.sender_session_id,
+        "address_kind": message.address_kind,
+        "target_ref": message.target_ref,
+        "recipients": message.recipients,
+        "team_id": message.team_id,
+        "team_run_id": message.team_run_id,
+        "work_id": message.work_id,
+        "collaboration_scope": message.collaboration_scope,
+        "kind": message.kind,
+        "body": message.body,
+        "body_digest": message.body_digest,
+        "correlation_id": message.correlation_id,
+        "causation_id": message.causation_id,
+        "response_intent": message.response_intent,
+        "evidence_refs": message.evidence_refs,
+        "schema_version": message.schema_version,
+        "idempotency_key": message.idempotency_key,
+    });
+    let bytes = serde_json::to_vec(&canonicalize(&value)).expect("canonical JSON serialization");
+    format!("sha256:{:x}", Sha256::digest(bytes))
 }
 
 /// Caller-visible message intent. Source Node/daemon/session identity,

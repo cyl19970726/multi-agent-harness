@@ -329,7 +329,10 @@ pub fn prepared_message_matches_canonical(
     canonical: &Message,
     idempotency_key: &str,
 ) -> bool {
-    canonical.id == format!("message:{idempotency_key}")
+    canonical.body_digest == firm_core::agentfirm_api::message_body_digest(&canonical.body)
+        && canonical.content_fingerprint
+            == firm_core::agentfirm_api::message_content_fingerprint(canonical)
+        && canonical.id == format!("message:{idempotency_key}")
         && canonical.sender_actor_ref
             == (ActorRef {
                 kind: ActorKind::AgentMember,
@@ -762,21 +765,69 @@ mod tests {
             collaboration_scope: None,
             kind: prepared.draft.kind,
             body: prepared.draft.body.clone(),
-            body_digest: "sha256:body".into(),
+            body_digest: firm_core::agentfirm_api::message_body_digest(&prepared.draft.body),
             correlation_id: prepared.draft.correlation_id.clone(),
             causation_id: prepared.draft.causation_id.clone(),
             response_intent: prepared.draft.response_intent,
             evidence_refs: prepared.draft.evidence_refs.clone(),
-            content_fingerprint: "sha256:content".into(),
+            content_fingerprint: String::new(),
             schema_version: 1,
             idempotency_key: "role-message-key".into(),
             created_at: "t1".into(),
         };
+        canonical.content_fingerprint =
+            firm_core::agentfirm_api::message_content_fingerprint(&canonical);
         assert!(prepared_message_matches_canonical(
             &prepared,
             &canonical,
             "role-message-key"
         ));
+        let mut corrupt_evidence = canonical.clone();
+        corrupt_evidence.content_fingerprint = "sha256:corrupt".into();
+        assert!(!prepared_message_matches_canonical(
+            &prepared,
+            &corrupt_evidence,
+            "role-message-key"
+        ));
+        for drifted in [
+            {
+                let mut value = canonical.clone();
+                value.recipients = vec![MessageRecipientRef {
+                    kind: MessageRecipientKind::AgentMember,
+                    id: "member-b".into(),
+                }];
+                value.content_fingerprint =
+                    firm_core::agentfirm_api::message_content_fingerprint(&value);
+                value
+            },
+            {
+                let mut value = canonical.clone();
+                value.response_intent = ResponseIntent::ResponseRequired;
+                value.content_fingerprint =
+                    firm_core::agentfirm_api::message_content_fingerprint(&value);
+                value
+            },
+            {
+                let mut value = canonical.clone();
+                value.causation_id = Some("message:other".into());
+                value.content_fingerprint =
+                    firm_core::agentfirm_api::message_content_fingerprint(&value);
+                value
+            },
+            {
+                let mut value = canonical.clone();
+                value.work_id = Some("work-other".into());
+                value.content_fingerprint =
+                    firm_core::agentfirm_api::message_content_fingerprint(&value);
+                value
+            },
+        ] {
+            assert!(!prepared_message_matches_canonical(
+                &prepared,
+                &drifted,
+                "role-message-key"
+            ));
+        }
         canonical.body = "changed".into();
         assert!(!prepared_message_matches_canonical(
             &prepared,

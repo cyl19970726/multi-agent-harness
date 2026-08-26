@@ -596,6 +596,124 @@ fn canonical_team_message_journey_uses_node_daemon_sessions_deliveries_and_curso
             .expect("deliveries after changed replay"),
         deliveries_after_first
     );
+    for changed_semantics in [
+        serde_json::json!({
+            "action":"send_message",
+            "recipient_ids":[member_id],
+            "body":"Host to Member canonical message",
+            "response_required":false
+        }),
+        serde_json::json!({
+            "action":"send_message",
+            "recipient_ids":[host_id],
+            "body":"Host to Member canonical message",
+            "response_required":true
+        }),
+    ] {
+        let (status, conflict) =
+            serve.post_json_with_headers(&host_route, &changed_semantics, &host_headers);
+        assert_eq!(status, 409, "changed Message semantics: {conflict}");
+        assert_eq!(conflict["error"]["code"], "RUNTIME_COMMAND_REJECTED");
+        assert_eq!(
+            store
+                .canonical_operations_for_space(&space_id)
+                .expect("operations after semantic conflict"),
+            message_operations_after_first
+        );
+    }
+
+    let concurrent_intent = serde_json::json!({
+        "action":"send_message",
+        "recipient_ids":[member_id],
+        "body":"concurrent exact canonical message",
+        "response_required":false
+    });
+    let concurrent_headers = action_headers(TOKEN, "host-member-concurrent-exact", &host_version);
+    let messages_before_concurrent = store
+        .fabric_messages(&space_id)
+        .expect("messages before concurrent exact requests");
+    let deliveries_before_concurrent = store
+        .fabric_message_deliveries(&space_id)
+        .expect("deliveries before concurrent exact requests");
+    let events_before_concurrent = store
+        .current_team_run_events(run_id)
+        .expect("events before concurrent exact requests");
+    let barrier = std::sync::Arc::new(std::sync::Barrier::new(8));
+    let concurrent_results = std::thread::scope(|scope| {
+        let handles = (0..8)
+            .map(|_| {
+                let barrier = barrier.clone();
+                let intent = concurrent_intent.clone();
+                let serve = &serve;
+                let route = &host_route;
+                let headers = &concurrent_headers;
+                scope.spawn(move || {
+                    barrier.wait();
+                    serve.post_json_with_headers(route, &intent, headers)
+                })
+            })
+            .collect::<Vec<_>>();
+        handles
+            .into_iter()
+            .map(|handle| handle.join().expect("concurrent message request"))
+            .collect::<Vec<_>>()
+    });
+    assert!(
+        concurrent_results.iter().all(|(status, _)| *status == 200),
+        "concurrent exact results: {concurrent_results:?}"
+    );
+    assert_eq!(
+        concurrent_results
+            .iter()
+            .filter(|(_, body)| body["replayed"] == false)
+            .count(),
+        1,
+        "exactly one concurrent request must report the initial apply"
+    );
+    assert_eq!(
+        concurrent_results
+            .iter()
+            .filter(|(_, body)| body["replayed"] == true)
+            .count(),
+        7,
+        "all concurrent followers must report replay"
+    );
+    let concurrent_message_id = concurrent_results[0].1["projection"]["id"]
+        .as_str()
+        .expect("concurrent Message id");
+    assert_eq!(
+        store
+            .fabric_messages(&space_id)
+            .expect("messages after concurrent exact requests")
+            .len(),
+        messages_before_concurrent.len() + 1
+    );
+    assert_eq!(
+        store
+            .fabric_message_deliveries(&space_id)
+            .expect("deliveries after concurrent exact requests")
+            .len(),
+        deliveries_before_concurrent.len() + 1
+    );
+    let events_after_concurrent = store
+        .current_team_run_events(run_id)
+        .expect("events after concurrent exact requests");
+    assert_eq!(
+        events_after_concurrent.len(),
+        events_before_concurrent.len() + 1
+    );
+    assert_eq!(
+        events_after_concurrent
+            .iter()
+            .filter(|event| {
+                event.entity_type == "message"
+                    && event.entity_id == concurrent_message_id
+                    && event.operation == "created"
+            })
+            .count(),
+        1,
+        "concurrent exact requests must ensure one durable TeamRun event"
+    );
 
     let member_view_route =
         format!("/v1/views/member-workbench/{member_run_id}?project={project_id}");
@@ -618,16 +736,78 @@ fn canonical_team_message_journey_uses_node_daemon_sessions_deliveries_and_curso
         .as_u64()
         .unwrap()
         .to_string();
-    let (status, member_message) = serve.post_json_with_headers(
-        &format!("/v1/agentfirm/team-runs/{run_id}/messages/request-decision?project={project_id}"),
-        &serde_json::json!({
-            "action":"request_decision",
-            "body":"Member to Host canonical decision request"
-        }),
-        &action_headers(MEMBER_TOKEN, "member-host-canonical", &member_version),
-    );
+    let decision_route =
+        format!("/v1/agentfirm/team-runs/{run_id}/messages/request-decision?project={project_id}");
+    let decision_intent = serde_json::json!({
+        "action":"request_decision",
+        "body":"Member to Host canonical decision request"
+    });
+    let decision_headers = action_headers(MEMBER_TOKEN, "member-host-canonical", &member_version);
+    let (status, member_message) =
+        serve.post_json_with_headers(&decision_route, &decision_intent, &decision_headers);
     assert_eq!(status, 200, "Member message: {member_message}");
     let member_message_id = member_message["projection"]["id"].as_str().unwrap();
+    let decision_operations = store
+        .canonical_operations_for_space(&space_id)
+        .expect("decision operations");
+    let decision_messages = store.fabric_messages(&space_id).expect("decision messages");
+    let decision_deliveries = store
+        .fabric_message_deliveries(&space_id)
+        .expect("decision deliveries");
+    let (status, decision_replay) =
+        serve.post_json_with_headers(&decision_route, &decision_intent, &decision_headers);
+    assert_eq!(status, 200, "decision replay: {decision_replay}");
+    assert_eq!(decision_replay["replayed"], true);
+    assert_eq!(decision_replay["projection"], member_message["projection"]);
+    assert_eq!(
+        store
+            .canonical_operations_for_space(&space_id)
+            .expect("decision replay operations"),
+        decision_operations
+    );
+    assert_eq!(
+        store
+            .fabric_messages(&space_id)
+            .expect("decision replay messages"),
+        decision_messages
+    );
+    assert_eq!(
+        store
+            .fabric_message_deliveries(&space_id)
+            .expect("decision replay deliveries"),
+        decision_deliveries
+    );
+    let (status, decision_conflict) = serve.post_json_with_headers(
+        &decision_route,
+        &serde_json::json!({
+            "action":"request_decision",
+            "body":"changed decision under the same key"
+        }),
+        &decision_headers,
+    );
+    assert_eq!(status, 409, "decision conflict: {decision_conflict}");
+    assert_eq!(
+        decision_conflict["error"]["code"],
+        "RUNTIME_COMMAND_REJECTED"
+    );
+    assert_eq!(
+        store
+            .canonical_operations_for_space(&space_id)
+            .expect("decision conflict operations"),
+        decision_operations
+    );
+    assert_eq!(
+        store
+            .fabric_messages(&space_id)
+            .expect("decision conflict messages"),
+        decision_messages
+    );
+    assert_eq!(
+        store
+            .fabric_message_deliveries(&space_id)
+            .expect("decision conflict deliveries"),
+        decision_deliveries
+    );
     let (status, actionable_host_view) =
         serve.get_json_with_headers(&host_view_route, &[("X-AgentFirm-Token", TOKEN)]);
     assert_eq!(status, 200, "actionable Host inbox: {actionable_host_view}");
@@ -656,19 +836,81 @@ fn canonical_team_message_journey_uses_node_daemon_sessions_deliveries_and_curso
         .unwrap()
         .to_string();
     let correlation_id = host_inbox[0]["correlation_id"].as_str().unwrap();
-    let (status, host_reply) = serve.post_json_with_headers(
-        &format!("/v1/agentfirm/team-runs/{run_id}/messages/reply?project={project_id}"),
+    let reply_route =
+        format!("/v1/agentfirm/team-runs/{run_id}/messages/reply?project={project_id}");
+    let reply_intent = serde_json::json!({
+        "action":"reply_message",
+        "recipient_ids":[member_id],
+        "body":"Host resolved the canonical decision request",
+        "correlation_id":correlation_id,
+        "causation_id":member_message_id
+    });
+    let reply_headers = action_headers(TOKEN, "host-member-canonical-reply", &reply_version);
+    let (status, host_reply) =
+        serve.post_json_with_headers(&reply_route, &reply_intent, &reply_headers);
+    assert_eq!(status, 200, "Host reply: {host_reply}");
+    let host_reply_id = host_reply["projection"]["id"].as_str().unwrap();
+    let reply_operations = store
+        .canonical_operations_for_space(&space_id)
+        .expect("reply operations");
+    let reply_messages = store.fabric_messages(&space_id).expect("reply messages");
+    let reply_deliveries = store
+        .fabric_message_deliveries(&space_id)
+        .expect("reply deliveries");
+    let (status, reply_replay) =
+        serve.post_json_with_headers(&reply_route, &reply_intent, &reply_headers);
+    assert_eq!(status, 200, "reply replay: {reply_replay}");
+    assert_eq!(reply_replay["replayed"], true);
+    assert_eq!(reply_replay["projection"], host_reply["projection"]);
+    assert_eq!(
+        store
+            .canonical_operations_for_space(&space_id)
+            .expect("reply replay operations"),
+        reply_operations
+    );
+    assert_eq!(
+        store
+            .fabric_messages(&space_id)
+            .expect("reply replay messages"),
+        reply_messages
+    );
+    assert_eq!(
+        store
+            .fabric_message_deliveries(&space_id)
+            .expect("reply replay deliveries"),
+        reply_deliveries
+    );
+    let (status, reply_conflict) = serve.post_json_with_headers(
+        &reply_route,
         &serde_json::json!({
             "action":"reply_message",
             "recipient_ids":[member_id],
             "body":"Host resolved the canonical decision request",
             "correlation_id":correlation_id,
-            "causation_id":member_message_id
+            "causation_id":host_message_id
         }),
-        &action_headers(TOKEN, "host-member-canonical-reply", &reply_version),
+        &reply_headers,
     );
-    assert_eq!(status, 200, "Host reply: {host_reply}");
-    let host_reply_id = host_reply["projection"]["id"].as_str().unwrap();
+    assert_eq!(status, 409, "reply lineage conflict: {reply_conflict}");
+    assert_eq!(reply_conflict["error"]["code"], "RUNTIME_COMMAND_REJECTED");
+    assert_eq!(
+        store
+            .canonical_operations_for_space(&space_id)
+            .expect("reply conflict operations"),
+        reply_operations
+    );
+    assert_eq!(
+        store
+            .fabric_messages(&space_id)
+            .expect("reply conflict messages"),
+        reply_messages
+    );
+    assert_eq!(
+        store
+            .fabric_message_deliveries(&space_id)
+            .expect("reply conflict deliveries"),
+        reply_deliveries
+    );
     let (status, resolved_host_view) =
         serve.get_json_with_headers(&host_view_route, &[("X-AgentFirm-Token", TOKEN)]);
     assert_eq!(status, 200, "resolved Host inbox: {resolved_host_view}");
@@ -821,4 +1063,40 @@ fn canonical_team_message_journey_uses_node_daemon_sessions_deliveries_and_curso
         .iter()
         .flat_map(|operation| &operation.immutable_side_records)
         .any(|record| record.get("cursor_revision").is_some()));
+
+    // A canonical projection can remain syntactically valid while its
+    // immutable content evidence is corrupt. Exact HTTP replay must reject
+    // that state before returning the existing Message as success.
+    let trust_ledger = space_store_root.join("agentfirm_trust_operations.jsonl");
+    let mut rows = std::fs::read_to_string(&trust_ledger)
+        .expect("trust ledger")
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("trust row"))
+        .collect::<Vec<_>>();
+    let corrupted = rows.iter_mut().find(|row| {
+        row["operation"]["resulting_projection"]["id"]
+            == serde_json::Value::String(host_message_id.to_string())
+    });
+    corrupted.expect("host Message operation")["operation"]["resulting_projection"]
+        ["content_fingerprint"] = serde_json::json!("sha256:corrupt");
+    let corrupt_bytes = rows
+        .into_iter()
+        .map(|row| serde_json::to_string(&row).expect("serialize trust row"))
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\n";
+    std::fs::write(&trust_ledger, corrupt_bytes).expect("inject content evidence corruption");
+    let ledger_after_corruption = std::fs::read(&trust_ledger).expect("corrupt ledger bytes");
+    let (status, corrupt_replay) =
+        serve.post_json_with_headers(&host_route, &host_intent, &host_headers);
+    assert_ne!(status, 200, "corrupt canonical replay: {corrupt_replay}");
+    assert_eq!(
+        corrupt_replay["error"]["code"],
+        "RUNTIME_COMMAND_RECOVERY_REQUIRED"
+    );
+    assert_eq!(
+        std::fs::read(&trust_ledger).expect("ledger after corrupt replay"),
+        ledger_after_corruption,
+        "fail-closed replay must not append over corrupt canonical evidence"
+    );
 }

@@ -84,6 +84,8 @@ for (const required of [
   "pub enum MessageAuthoringError",
   "pub fn prepare_message_authoring",
   "pub fn prepared_message_matches_canonical",
+  "message_body_digest(&canonical.body)",
+  "message_content_fingerprint(canonical)",
   "MessageDraft",
 ]) {
   if (!messageAuthoringApplication.includes(required)) {
@@ -303,6 +305,21 @@ for (const required of [
   if (!canonicalActions.includes(required)) {
     failures.push(
       `${runtimeRecoveryCanonicalPath}: canonical Message route bypasses ${required}`,
+    );
+  }
+}
+const teamMessagingPath =
+  "crates/firm-cli/src/main_modules/team_messaging.rs";
+const teamMessaging = read(teamMessagingPath);
+for (const required of [
+  'response["replayed"].as_bool()',
+  'format!("message-created:{}", message.id)',
+  "ensure_team_run_event_next",
+  "expires_unix_ms: lease.expires_unix_ms",
+]) {
+  if (!teamMessaging.includes(required)) {
+    failures.push(
+      `${teamMessagingPath}: Message publish/replay boundary lost ${required}`,
     );
   }
 }

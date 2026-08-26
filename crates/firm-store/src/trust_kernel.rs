@@ -677,27 +677,7 @@ fn team_inbox_subscription(
 /// NodeDaemon, target persistence, and read projections all recompute this
 /// exact shape; it is the cross-process content identity of the Message.
 pub fn message_content_fingerprint(message: &Message) -> String {
-    canonical_json_fingerprint(&serde_json::json!({
-        "sender_actor_ref": message.sender_actor_ref,
-        "sender_agent_member_id": message.sender_agent_member_id,
-        "sender_session_id": message.sender_session_id,
-        "address_kind": message.address_kind,
-        "target_ref": message.target_ref,
-        "recipients": message.recipients,
-        "team_id": message.team_id,
-        "team_run_id": message.team_run_id,
-        "work_id": message.work_id,
-        "collaboration_scope": message.collaboration_scope,
-        "kind": message.kind,
-        "body": message.body,
-        "body_digest": message.body_digest,
-        "correlation_id": message.correlation_id,
-        "causation_id": message.causation_id,
-        "response_intent": message.response_intent,
-        "evidence_refs": message.evidence_refs,
-        "schema_version": message.schema_version,
-        "idempotency_key": message.idempotency_key,
-    }))
+    firm_core::agentfirm_api::message_content_fingerprint(message)
 }
 
 fn event_projection<T: for<'de> Deserialize<'de>>(
