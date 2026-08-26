@@ -59,6 +59,7 @@ consequences, affected modules, and validation path.
 | [0059](0059-trusted-development-full-access-and-explicit-cwd.md) | accepted; DEV-65 implementation | Managed coding Hosts/Members use frozen FullAccess and exact cwd; shared cwd is allowed, worktrees are optional, and agent coordination is CLI-only |
 | [0060](0060-source-lifecycle-projection-folds.md) | accepted; DEV-74 implementation | Canonical WorkDelivery revisions and HostAttention source/lifecycle rows fold deterministically and fail closed on identity, version, or transition conflicts |
 | [0061](0061-retire-harness-coordination-mcp.md) | accepted; DEV-100 implementation | `firm` CLI is the sole Agent-facing Harness coordination transport; the duplicate Harness MCP server is deleted without migration |
+| [0062](0062-host-owned-work-peer-acceptance.md) | accepted; DEV-102 implementation | Member Work remains Host-reviewed; Host-owned Work requires one exact active non-owner peer in the same TeamRun, without a Reviewer ledger |
 
 ## Split Rule
 

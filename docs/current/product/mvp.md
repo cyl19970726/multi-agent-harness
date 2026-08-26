@@ -46,8 +46,9 @@ implementation details and do not create another durable ledger.
 5. Restart the daemon and prove parent-generation fencing, recovery without
    duplicate delivery, and isolation from one broken store.
 6. Verify CLI, HTTP, and Dashboard show the same Team/Node/delegation truth.
-7. Complete the TeamRun with explicit Host acceptance on the Work records —
-   without inventing Wave gates or deleting reusable records.
+7. Complete the TeamRun with explicit acceptance on the Work records: exact
+   Host acceptance for Member Work and exact active peer acceptance for
+   Host-owned Work — without inventing Wave gates or deleting reusable records.
 
 ## Non-goals
 

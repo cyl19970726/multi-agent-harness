@@ -1,13 +1,13 @@
 //! Transport-neutral application service for the Member Execution Trust Kernel.
 //!
-//! HTTP, MCP and CLI decode their own authenticated transport context and then
+//! HTTP and CLI decode their own authenticated transport context and then
 //! call [`execute`]. No request payload can select or override the actor.
 
 use harness_core::agentfirm_api::{
     ActorKind, ActorRef, AgentMember, AgentMemberOrganizationStatus, DeliveryReconcileOutcome,
-    FailureAnalysis, GateEvaluation, GateRequirement, GateWaiver, MemberWorkspaceBinding,
-    MutationContext, TeamMessage, WorkFinding, WorkModuleBinding, WorkReport, WorkspaceLifecycle,
-    WorkspaceSafetyProof,
+    FailureAnalysis, GateEvaluation, GateRequirement, GateWaiver, MemberCoordinationStatus,
+    MemberWorkspaceBinding, MutationContext, TeamMembershipStatus, TeamMessage, WorkFinding,
+    WorkModuleBinding, WorkReport, WorkspaceLifecycle, WorkspaceSafetyProof,
 };
 use harness_store::{
     CanonicalMutationResult, CurrentTeamMemberLifecycleTransition, HarnessStore, StoreError,
@@ -366,6 +366,63 @@ fn member_run_owned_by(
         .any(|run| run.id == member_run_id && run.agent_member_id == agent_member_id))
 }
 
+/// Resolve the one existing Team authority that may review a Work candidate.
+///
+/// Ordinary Member Work remains Host-reviewed. Host-owned Work instead needs
+/// one exact, active, non-owner Team peer with a current MemberRun in the same
+/// TeamRun. This deliberately reuses AgentMember, TeamMembership and MemberRun
+/// authority instead of introducing a second reviewer-role registry.
+pub(crate) fn work_review_authorized(
+    store: &HarnessStore,
+    execution_space_id: &str,
+    actor: &ActorRef,
+    team_id: &str,
+    work_id: &str,
+) -> Result<bool, StoreError> {
+    if actor.kind != ActorKind::AgentMember {
+        return Ok(false);
+    }
+    let Some(team) = store.latest_teams()?.remove(team_id) else {
+        return Ok(false);
+    };
+    let Some(work) = store
+        .latest_works()?
+        .into_iter()
+        .find(|work| work.id == work_id && work.accountable_team_id.as_deref() == Some(team_id))
+    else {
+        return Ok(false);
+    };
+    if actor.id == team.host_agent_id {
+        return Ok(true);
+    }
+    if work.owner_member_id.as_deref() != Some(team.host_agent_id.as_str()) {
+        return Ok(false);
+    }
+    let matching_memberships = store
+        .fabric_team_memberships(execution_space_id)?
+        .into_iter()
+        .filter(|membership| {
+            membership.team_id == team.id
+                && membership.node_id == team.node_id
+                && membership.agent_member_id == actor.id
+                && membership.state == TeamMembershipStatus::Active
+        })
+        .count();
+    if matching_memberships != 1 {
+        return Ok(false);
+    }
+    let matching_runs = store
+        .trust_member_runs(execution_space_id)?
+        .into_iter()
+        .filter(|run| {
+            run.team_run_id == work.team_run_id
+                && run.agent_member_id == actor.id
+                && run.coordination_status == MemberCoordinationStatus::Active
+        })
+        .count();
+    Ok(matching_runs == 1)
+}
+
 /// The transport proves who the caller is; this boundary decides what that
 /// identity may mutate. Wave 4A deliberately keeps the policy small: Human
 /// and Service actors operate the control plane, while AgentMember/External
@@ -377,6 +434,21 @@ fn authorize(
     actor: &ActorRef,
     command: &TrustCommand,
 ) -> Result<(), StoreError> {
+    if let TrustCommand::AcceptWork {
+        team_id, work_id, ..
+    } = command
+    {
+        if actor.kind == ActorKind::AgentMember
+            && work_review_authorized(store, execution_space_id, actor, team_id, work_id)?
+        {
+            return Ok(());
+        }
+        return Err(unauthorized(
+            "agent_team",
+            team_id,
+            "Work acceptance requires the exact Team Host for Member Work or one exact active non-owner Team peer for Host-owned Work",
+        ));
+    }
     if matches!(actor.kind, ActorKind::Human | ActorKind::Service) {
         return Ok(());
     }
@@ -408,20 +480,6 @@ fn authorize(
                 "agent_team",
                 team_id,
                 "only the exact Team Host may request a Gate evaluation",
-            ));
-        }
-        if let TrustCommand::AcceptWork { team_id, .. } = command {
-            let exact_host = store
-                .latest_teams()?
-                .get(team_id)
-                .is_some_and(|team| team.host_agent_id == actor.id);
-            if exact_host {
-                return Ok(());
-            }
-            return Err(unauthorized(
-                "agent_team",
-                team_id,
-                "only the exact Team Host may accept Work",
             ));
         }
         let own_run = match command {

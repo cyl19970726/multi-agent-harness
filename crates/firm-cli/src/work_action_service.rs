@@ -539,21 +539,6 @@ fn accept(
     team_id: &str,
     work_id: &str,
 ) -> Result<CanonicalWorkActionOutcome, StoreError> {
-    let team = store
-        .latest_teams()?
-        .remove(team_id)
-        .ok_or_else(|| conflict("INVALID_STATE_TRANSITION", "AgentTeam does not exist"))?;
-    let is_host =
-        (auth.actor.kind == ActorKind::AgentMember && auth.actor.id == team.host_agent_id)
-            || auth.authorized_authority_actors.iter().any(|actor| {
-                actor.kind == ActorKind::AgentMember && actor.id == team.host_agent_id
-            });
-    if !is_host {
-        return Err(conflict(
-            "UNAUTHORIZED_ACTOR",
-            "credential is not bound to this Team's exact Host authority",
-        ));
-    }
     if let Some(operation) = store
         .canonical_operations_for_space(&auth.execution_space_id)?
         .into_iter()

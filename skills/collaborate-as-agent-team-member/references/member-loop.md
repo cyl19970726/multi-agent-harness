@@ -291,7 +291,7 @@ Work; never keep executing a Work already in `review`, `blocked`, `done`, or
 
   The `--result-summary` should be pasted from this template, not re-typed.
   The `## WORKTREE` section tells Host where to find your changes.
-  After Host accepts, the review feedback is in the work's `result_summary`
+  After the authorized reviewer accepts, the review feedback is in the work's `result_summary`
   and the PR comments — check both.
 
 When criteria are met, refresh the latest Work version and submit a durable
@@ -311,7 +311,14 @@ When required, add one or more `--artifact-ref <artifact-or-path>` and
 `--check-ref "<command and actual result>"` arguments to that command.
 Attach a GitHub PR as its full URL in `--artifact-ref`.
 
-Submission moves Work to `review`; it does not imply Host acceptance. Send an optional linked Message only when review needs explanation. Remain available for `request-changes`; update the same Work and resubmit. Only Host acceptance moves Work to `done` — see shared hard invariants §5.
+Submission moves Work to `review`; it does not imply acceptance. Ordinary
+Member-owned Work is accepted only by the exact Host. When the Host asks you to
+review Host-owned Work, inspect its WorkReport and evidence; if you are an exact
+active non-owner peer in the same TeamRun, accept it with `firm member work
+accept`. You cannot accept another Member's Work. If Host-owned Work needs
+changes, send a Work-linked Message so the Host can revise and resubmit; do not
+invent a reviewer role or mutate another lifecycle. See shared hard invariants
+§5.
 
 ## Respect Workspace, Permissions, And Controls
 
@@ -355,7 +362,7 @@ Verify that:
 - durable follow-up is a Work, not prose hidden in chat;
 - blockers have structured reasons;
 - submission includes a result summary, any artifact/check refs required by
-  its criteria, and no false claim of Host acceptance;
+  its criteria, and no false claim of acceptance;
 - Provider-native records remain the only transcript/tool/turn truth (shared hard invariants §3); and
-- your MemberRun stays available until the Host requests changes, accepts,
+- your MemberRun stays available until the authorized reviewer requests changes, accepts,
   reassigns, closes, or retires it.

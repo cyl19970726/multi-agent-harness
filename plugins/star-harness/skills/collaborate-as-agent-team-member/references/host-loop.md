@@ -101,6 +101,15 @@ or read the named check refs, and walk the completion criteria line by line.
 - Never accept on a provider completion status, a delivery receipt, or a
   green fixture alone.
 
+These actions apply to ordinary Member-owned Work. For Work owned by the Host,
+the Host must not self-accept. Submit the Host Work, send one response-required
+Work-linked Message to an exact active non-owner peer in the same TeamRun, and
+wait for that peer's explicit `firm member work accept`. If the peer finds a
+problem, it reports the requested revision through the linked conversation;
+revise and resubmit the same Work. A solo Host leaves its Work in `review` until
+an exact active peer is available; it must never fabricate acceptance through a
+generic Human/Service control-plane credential.
+
 Cross-Team needs are an explicit `WorkDelegation` from a source Work you own
 to a target Work in the other flat Team; target completion never
 auto-completes your source Work.

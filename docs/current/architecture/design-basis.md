@@ -35,7 +35,7 @@ durable Team and Work context
   -> explicit Work responsibility and claim
   -> selected human or execution capability
   -> observable outcome, artifacts and evidence
-  -> explicit Host review and acceptance on the Work record
+  -> explicit independent review and acceptance on the Work record
 ```
 
 ## Design layers
@@ -60,7 +60,7 @@ flowchart TD
 | Layer | Why it exists | Must preserve |
 | --- | --- | --- |
 | Agent Teams | work needs durable accountable identity and roster generations | Team placement is immutable; membership authority is TeamMembership |
-| Execution | long or parallel work needs provider-neutral coordination | Work carries responsibility, submission, and Host acceptance; one execution driver per member; run completion never closes a runtime |
+| Execution | long or parallel work needs provider-neutral coordination | Work carries responsibility, submission, and explicit acceptance; Member Work is Host-reviewed while Host Work needs an exact active peer; one execution driver per member; run completion never closes a runtime |
 | Runtime / Project Binding | providers and repositories differ in process, session, tool, worktree, instruction, and observation capability | provider cwd comes from a project root or validated worktree; provider state never becomes organization identity |
 | Outcome/evidence | accepted claims must be reconstructable | outcomes point to useful artifacts, checks and durable records without storing private thinking |
 | Interface | humans and Agents need comprehensible operating views | the Agent Dashboard presents store truth, never a fabricated projection |

@@ -80,7 +80,8 @@ durable Team context -> append-only WorkEvent judgment/replan/recovery lineage
   -> one flat AgentTeam on one ExecutionNode
   -> shared Works / WorkDelivery / linked conversation / native sessions
   -> Member submit -> Host accept or request changes
-  -> Host judgment -> plan adjustment, recovery, or Work acceptance
+  -> Host submit -> exact active peer accept or send linked revision feedback
+  -> reviewer judgment -> plan adjustment, recovery, or Work acceptance
 ```
 
 The retired coordination views are absent from active product navigation and
