@@ -275,16 +275,168 @@ pub(super) fn require_latched_close_runtime_postcondition(
     )))
 }
 
+const DETACHED_RECOVERY_CLOSE_SETTLE_ATTEMPTS: usize = 200;
+const DETACHED_RECOVERY_CLOSE_SETTLE_INTERVAL: Duration = Duration::from_millis(10);
+
+fn detached_recovery_session_matches_current_authority(
+    ledger: &TeamRunLedger,
+    member: &ProviderRuntimeProjection,
+    fence: &harness_core::DetachedRecoveryCloseFence,
+) -> CliResult<bool> {
+    use harness_core::agentfirm_api::{RuntimeActivity, RuntimeDriverRef, RuntimeResidency};
+
+    let (execution_space_id, session) = provider_session_for_member(ledger, member)?;
+    let ambiguous_effect = ledger
+        .store
+        .runtime_commands(&execution_space_id)?
+        .into_iter()
+        .any(|command| {
+            command.target_session_id.as_deref() == Some(session.id.as_str())
+                && command.target_session_generation == Some(session.runtime_generation)
+                && matches!(
+                    command.status,
+                    harness_core::agentfirm_api::RuntimeCommandStatus::Accepted
+                        | harness_core::agentfirm_api::RuntimeCommandStatus::Quiesced
+                        | harness_core::agentfirm_api::RuntimeCommandStatus::RecoveryRequired
+                )
+                && command.effect_certainty
+                    == harness_core::agentfirm_api::RuntimeEffectCertainty::Unknown
+        });
+    let same_authorizer = ledger.supervisor_generation == fence.authorizing_supervisor_generation
+        && ledger.supervisor_id == fence.authorizing_supervisor_id;
+    let exact_successor = ledger.supervisor_generation > fence.authorizing_supervisor_generation;
+    Ok((same_authorizer || exact_successor)
+        && execution_space_id == fence.execution_space_id
+        && session.id == fence.agent_session_id
+        && session.runtime_generation == fence.agent_session_generation
+        && session.version >= fence.agent_session_version
+        && session.control_state.driver_generation >= fence.agent_session_driver_generation
+        && session.node_daemon_id == fence.node_daemon_id
+        && session.node_daemon_generation == fence.node_daemon_generation
+        && session.control_state.runtime_residency == RuntimeResidency::Detached
+        && session.control_state.activity == RuntimeActivity::Idle
+        && session.current_turn_id.is_none()
+        && !ambiguous_effect
+        && session
+            .native_session_ref
+            .as_ref()
+            .is_some_and(|native| native.native_session_id == fence.native_session_id)
+        && matches!(
+            &session.control_state.driver_ref,
+            RuntimeDriverRef::TeamSupervisor {
+                team_run_id,
+                team_supervisor_id,
+                team_supervisor_generation,
+            } if team_run_id == &ledger.run_id
+                && team_supervisor_id == &ledger.supervisor_id
+                && *team_supervisor_generation == ledger.supervisor_generation
+        ))
+}
+
+fn reconcile_in_flight_detached_recovery_close(
+    ledger: &TeamRunLedger,
+    member: &ProviderRuntimeProjection,
+    close: &TeamMemberCloseRequest,
+    on_exact_pending: &mut impl FnMut(&TeamMemberCloseRequest) -> CliResult<()>,
+) -> CliResult<Option<ProviderRuntimeProjection>> {
+    let Some(fence) = close.detached_recovery_fence.as_deref() else {
+        return Ok(None);
+    };
+    if close.team_run_id != ledger.run_id
+        || close.member_run_id != member.id
+        || fence.member_run_generation != member.runtime_generation
+    {
+        return Err(CliError::RuntimeRecoveryRequired(format!(
+            "detached recovery Close {} does not match the exact current TeamRun/MemberRun lineage",
+            close.id
+        )));
+    }
+    ledger.require_supervisor_lease()?;
+    if !detached_recovery_session_matches_current_authority(ledger, member, fence)? {
+        return Err(CliError::RuntimeRecoveryRequired(format!(
+            "detached recovery Close {} does not match the exact current successor, detached AgentSession authority, and settled provider effects",
+            close.id
+        )));
+    }
+
+    for attempt in 0..DETACHED_RECOVERY_CLOSE_SETTLE_ATTEMPTS {
+        ledger.require_supervisor_lease()?;
+        let current = ledger
+            .store
+            .latest_team_member_close_request(&member.id)?
+            .ok_or_else(|| {
+                CliError::RuntimeRecoveryRequired(format!(
+                    "detached recovery Close {} disappeared during successor admission",
+                    close.id
+                ))
+            })?;
+        if current.id != close.id || current.detached_recovery_fence.as_deref() != Some(fence) {
+            return Err(CliError::RuntimeRecoveryRequired(format!(
+                "detached recovery Close {} was replaced by a different transaction",
+                close.id
+            )));
+        }
+        if current.status == TeamMemberCloseStatus::Pending {
+            on_exact_pending(&current)?;
+        }
+        if current.status == TeamMemberCloseStatus::Applied {
+            let latest = ledger
+                .latest_member_run(&member.id)?
+                .ok_or_else(|| CliError::Usage(format!("member run not found: {}", member.id)))?;
+            if latest.runtime_generation == fence.member_run_generation
+                && latest.coordination_is_closed()
+                && latest.status == MemberRunStatus::Stopped
+                && latest.native_session == member.native_session
+                && current.applied_at.is_some()
+            {
+                if !detached_recovery_session_matches_current_authority(ledger, &latest, fence)? {
+                    return Err(CliError::RuntimeRecoveryRequired(format!(
+                        "detached recovery Close {} reached Applied after its exact detached AgentSession authority or provider-effect certainty changed",
+                        close.id
+                    )));
+                }
+                return Ok(Some(latest));
+            }
+            return Err(CliError::RuntimeRecoveryRequired(format!(
+                "detached recovery Close {} reached Applied without its exact Closed/Stopped MemberRun postcondition",
+                close.id
+            )));
+        }
+        if attempt + 1 < DETACHED_RECOVERY_CLOSE_SETTLE_ATTEMPTS {
+            std::thread::sleep(DETACHED_RECOVERY_CLOSE_SETTLE_INTERVAL);
+        }
+    }
+    Err(CliError::RuntimeRecoveryRequired(format!(
+        "detached recovery Close {} did not reach its exact Applied postcondition within the bounded admission window",
+        close.id
+    )))
+}
+
 pub(super) fn stop_member_for_latched_close(
     ledger: &TeamRunLedger,
     member_row: &mut ProviderRuntimeProjection,
     close: &TeamMemberCloseRequest,
+) -> CliResult<()> {
+    stop_member_for_latched_close_with_pending_hook(ledger, member_row, close, &mut |_| Ok(()))
+}
+
+pub(super) fn stop_member_for_latched_close_with_pending_hook(
+    ledger: &TeamRunLedger,
+    member_row: &mut ProviderRuntimeProjection,
+    close: &TeamMemberCloseRequest,
+    on_exact_pending: &mut impl FnMut(&TeamMemberCloseRequest) -> CliResult<()>,
 ) -> CliResult<()> {
     if close.team_run_id != ledger.run_id {
         return Err(CliError::Usage(format!(
             "latched close for member {} belongs to team run {}, not {}",
             member_row.id, close.team_run_id, ledger.run_id
         )));
+    }
+    if let Some(applied) =
+        reconcile_in_flight_detached_recovery_close(ledger, member_row, close, on_exact_pending)?
+    {
+        *member_row = applied;
+        return Ok(());
     }
     require_latched_close_runtime_postcondition(ledger, member_row)?;
     let session = require_provider_session_authority(ledger, &member_row.agent_member_id, false)?;

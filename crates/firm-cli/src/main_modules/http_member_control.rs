@@ -350,7 +350,30 @@ pub(super) fn close_detached_blocked_member_for_recovery_with_hook(
     supervisor: &TeamSupervisorLease,
     requested_by: &str,
     reason: &str,
+    before_terminal_cas: impl FnMut(usize) -> CliResult<()>,
+) -> CliResult<Option<serde_json::Value>> {
+    close_detached_blocked_member_for_recovery_with_hooks(
+        store,
+        team_run_id,
+        member,
+        supervisor,
+        requested_by,
+        reason,
+        before_terminal_cas,
+        |_| Ok(()),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn close_detached_blocked_member_for_recovery_with_hooks(
+    store: &HarnessStore,
+    team_run_id: &str,
+    member: &ProviderRuntimeProjection,
+    supervisor: &TeamSupervisorLease,
+    requested_by: &str,
+    reason: &str,
     mut before_terminal_cas: impl FnMut(usize) -> CliResult<()>,
+    mut after_terminal_cas: impl FnMut(&ProviderRuntimeProjection) -> CliResult<()>,
 ) -> CliResult<Option<serde_json::Value>> {
     use harness_core::agentfirm_api::{
         AgentSessionStatus, NativeSessionAvailability as AgentNativeSessionAvailability,
@@ -489,14 +512,30 @@ pub(super) fn close_detached_blocked_member_for_recovery_with_hook(
     // below through one Store writer-lock transaction that revalidates the
     // exact Supervisor/NodeDaemon, AgentSession, ambiguous-command set, and
     // MemberRun revision. No provider effect is issued on this path.
-    let close = latch_member_close_for_supervisor(
+    let close = latch_detached_recovery_close_for_supervisor(
         store,
         team_run_id,
         &member.id,
         requested_by,
         reason,
-        &supervisor.supervisor_id,
-        supervisor.generation,
+        harness_core::DetachedRecoveryCloseFence {
+            execution_space_id: execution_space_id.clone(),
+            member_run_generation: member.runtime_generation,
+            agent_session_id: session.id.clone(),
+            agent_session_generation: session.runtime_generation,
+            agent_session_version: session.version,
+            agent_session_driver_generation: session.control_state.driver_generation,
+            native_session_id: session
+                .native_session_ref
+                .as_ref()
+                .expect("detached recovery requires native Session")
+                .native_session_id
+                .clone(),
+            node_daemon_id: session.node_daemon_id.clone(),
+            node_daemon_generation: session.node_daemon_generation,
+            authorizing_supervisor_id: supervisor.supervisor_id.clone(),
+            authorizing_supervisor_generation: supervisor.generation,
+        },
     )?;
     let mut conflicted_expected = None;
     let closed = 'terminal_cas: {
@@ -584,6 +623,7 @@ pub(super) fn close_detached_blocked_member_for_recovery_with_hook(
         }
         unreachable!("bounded detached-recovery CAS loop returns on every path")
     };
+    after_terminal_cas(&closed)?;
     store_conflict_as_usage(store.complete_team_member_close(
         team_run_id,
         &member.id,

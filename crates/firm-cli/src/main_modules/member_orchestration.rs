@@ -605,11 +605,28 @@ pub(super) fn prepare_member_workspace_for_spawn(
     prepared: &ProviderRuntimeProjection,
     provider_environment_observation: &MemberWorkspaceSnapshot,
 ) -> CliResult<PreSpawnWorkspacePreparation> {
-    prepare_member_workspace_for_spawn_with_hook(
+    prepare_member_workspace_for_spawn_with_hooks(
         ledger,
         prepared,
         provider_environment_observation,
         |_, _| Ok(()),
+        |_| Ok(()),
+    )
+}
+
+#[cfg(test)]
+pub(super) fn prepare_member_workspace_for_spawn_with_recovery_pending_hook(
+    ledger: &TeamRunLedger,
+    prepared: &ProviderRuntimeProjection,
+    provider_environment_observation: &MemberWorkspaceSnapshot,
+    on_exact_pending: impl FnMut(&TeamMemberCloseRequest) -> CliResult<()>,
+) -> CliResult<PreSpawnWorkspacePreparation> {
+    prepare_member_workspace_for_spawn_with_hooks(
+        ledger,
+        prepared,
+        provider_environment_observation,
+        |_, _| Ok(()),
+        on_exact_pending,
     )
 }
 
@@ -655,11 +672,28 @@ pub(super) fn successor_may_take_over_active_member(
     )
 }
 
+#[cfg(test)]
 pub(super) fn prepare_member_workspace_for_spawn_with_hook(
     ledger: &TeamRunLedger,
     prepared: &ProviderRuntimeProjection,
     provider_environment_observation: &MemberWorkspaceSnapshot,
+    before_cas: impl FnMut(usize, &ProviderRuntimeProjection) -> CliResult<()>,
+) -> CliResult<PreSpawnWorkspacePreparation> {
+    prepare_member_workspace_for_spawn_with_hooks(
+        ledger,
+        prepared,
+        provider_environment_observation,
+        before_cas,
+        |_| Ok(()),
+    )
+}
+
+fn prepare_member_workspace_for_spawn_with_hooks(
+    ledger: &TeamRunLedger,
+    prepared: &ProviderRuntimeProjection,
+    provider_environment_observation: &MemberWorkspaceSnapshot,
     mut before_cas: impl FnMut(usize, &ProviderRuntimeProjection) -> CliResult<()>,
+    mut on_exact_pending: impl FnMut(&TeamMemberCloseRequest) -> CliResult<()>,
 ) -> CliResult<PreSpawnWorkspacePreparation> {
     for attempt in 0..PROVIDER_MEMBER_CAS_RETRIES {
         ledger.require_supervisor_lease()?;
@@ -667,7 +701,12 @@ pub(super) fn prepare_member_workspace_for_spawn_with_hook(
             return Ok(PreSpawnWorkspacePreparation::Superseded);
         };
         if let Some(close) = pending_member_close(&ledger.store, &latest.id)? {
-            match stop_member_for_latched_close(ledger, &mut latest, &close) {
+            match stop_member_for_latched_close_with_pending_hook(
+                ledger,
+                &mut latest,
+                &close,
+                &mut on_exact_pending,
+            ) {
                 Ok(()) => return Ok(PreSpawnWorkspacePreparation::Superseded),
                 Err(CliError::Store(StoreError::Conflict(_)))
                     if attempt + 1 < PROVIDER_MEMBER_CAS_RETRIES =>
