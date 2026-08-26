@@ -1,5 +1,61 @@
 use super::*;
 
+/// Admit `-h`/`--help` before any command parser or durable dependency is
+/// opened. This is intentionally one narrow boundary for the handwritten CLI:
+/// help wins over required-argument validation and mutation dispatch, while
+/// non-help arguments continue through the existing command-specific paths.
+pub(super) fn admit_help_request(args: &[String]) -> bool {
+    if !args
+        .iter()
+        .any(|arg| matches!(arg.as_str(), "-h" | "--help"))
+    {
+        return false;
+    }
+
+    let command_path = help_command_path(args);
+    if command_path.first().map(String::as_str) == Some("provider") {
+        print_provider_help();
+    } else if command_path.is_empty() {
+        print_help();
+    } else {
+        println!("Usage: firm {} [options]\n", command_path.join(" "));
+        print_help();
+    }
+    true
+}
+
+/// Extract only the leading command/subcommand path used to contextualize
+/// help. Global selectors may precede the command; option values after the
+/// command are deliberately excluded. Three tokens cover every current nested
+/// mutation family (`team-run work cancel`, `member work submit`, etc.).
+fn help_command_path(args: &[String]) -> Vec<String> {
+    let mut index = 0usize;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--store" | "--project" | "--company" | "--space" => index += 2,
+            "--store-source" => index += 1,
+            "-h" | "--help" => return Vec::new(),
+            value if value.starts_with('-') => index += 1,
+            _ => break,
+        }
+    }
+
+    let mut path = Vec::new();
+    while index < args.len() && path.len() < 3 {
+        let value = &args[index];
+        if value.starts_with('-') {
+            break;
+        }
+        path.push(value.clone());
+        index += 1;
+    }
+    path
+}
+
+pub(super) fn print_provider_help() {
+    println!("harness [--project <id|path>] provider admit --provider <name> --execution-mode <mode> --provider-version <version> --adapter-contract-version <version> --evidence <ref> [--evidence <ref>...] [--policy strict|advisory] [--actor <id>] [--json]\n\nWhen an Execution Space is resolved, the global --project flag is required; FIRM_PROJECT and ambient defaults are not explicit admission authorization.");
+}
+
 pub(super) fn require_subcommand(args: &[String], usage: &str) -> CliResult<()> {
     if args.is_empty() {
         Err(CliError::Usage(format!("usage: harness {usage}")))

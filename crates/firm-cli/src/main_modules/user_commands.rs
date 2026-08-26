@@ -384,7 +384,7 @@ pub(super) fn provider_command(
     args: &[String],
 ) -> CliResult<()> {
     if matches!(args.first().map(String::as_str), Some("help" | "--help")) {
-        println!("harness [--project <id|path>] provider admit --provider <name> --execution-mode <mode> --provider-version <version> --adapter-contract-version <version> --evidence <ref> [--evidence <ref>...] [--policy strict|advisory] [--actor <id>] [--json]\n\nWhen an Execution Space is resolved, the global --project flag is required; FIRM_PROJECT and ambient defaults are not explicit admission authorization.");
+        print_provider_help();
         return Ok(());
     }
     require_subcommand(args, "provider admit")?;
