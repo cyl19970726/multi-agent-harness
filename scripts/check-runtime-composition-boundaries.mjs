@@ -11,6 +11,67 @@ const contractPath =
 const read = (path) => readFileSync(resolve(root, path), "utf8");
 const failures = [];
 
+const viewerContextApplicationPath =
+  "crates/firm-application/src/viewer_context.rs";
+const viewerContextApplication = read(viewerContextApplicationPath);
+for (const required of [
+  "pub struct RoleViewReadPrincipal",
+  "pub struct ViewerContextFacts",
+  "pub struct ViewerContextProjection",
+  "pub fn validate_viewer_context_principal",
+  "pub fn project_viewer_context",
+  "ViewerContextQueryError",
+]) {
+  if (!viewerContextApplication.includes(required)) {
+    failures.push(
+      `${viewerContextApplicationPath}: missing typed ViewerContext owner ${required}`,
+    );
+  }
+}
+for (const forbidden of [
+  "HarnessStore",
+  "serde_json",
+  "std::fs",
+  "TcpStream",
+  "/v1/",
+  "SystemTime",
+  "WorkDelivery",
+  "firm_provider",
+]) {
+  if (viewerContextApplication.includes(forbidden)) {
+    failures.push(
+      `${viewerContextApplicationPath}: application query depends on forbidden adapter/runtime detail ${forbidden}`,
+    );
+  }
+}
+const viewerContextAdapterPath =
+  "crates/firm-cli/src/role_views_api/viewer_surface.rs";
+const viewerContextAdapter = read(viewerContextAdapterPath);
+if (!viewerContextAdapter.includes("harness_application::project_viewer_context")) {
+  failures.push(
+    `${viewerContextAdapterPath}: adapter bypasses the typed ViewerContext projector`,
+  );
+}
+for (const escapedPolicy of [
+  "enum ViewerTeamRole",
+  "fn viewer_team_role",
+  "max_by_key(|member_run|",
+]) {
+  if (viewerContextAdapter.includes(escapedPolicy)) {
+    failures.push(
+      `${viewerContextAdapterPath}: ViewerContext policy escaped application owner: ${escapedPolicy}`,
+    );
+  }
+}
+const applicationCargo = read("crates/firm-application/Cargo.toml");
+for (const forbidden of ["firm-store", "firm-cli", "firm-provider-", "harness_store"]) {
+  if (applicationCargo.includes(forbidden)) {
+    failures.push(
+      `crates/firm-application/Cargo.toml: application boundary depends on forbidden ${forbidden}`,
+    );
+  }
+}
+
 const contract = read(contractPath);
 for (const required of [
   "pub(crate) struct MemberOperatingContract",

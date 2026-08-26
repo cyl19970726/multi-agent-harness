@@ -1,0 +1,57 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "agentfirm.role_views.v1/viewer-context.schema.json",
+  "allOf": [
+    { "$ref": "role-view.schema.json" },
+    {
+      "type": "object",
+      "properties": {
+        "view_kind": { "const": "viewer_context" },
+        "data": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["viewer_actor_ref", "teams", "runtime_fabric"],
+          "properties": {
+            "viewer_actor_ref": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["kind", "id"],
+              "properties": {
+                "kind": { "enum": ["human", "agent_member", "external", "service"] },
+                "id": { "type": "string", "minLength": 1 }
+              }
+            },
+            "teams": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "team_id",
+                  "display_name",
+                  "viewer_role",
+                  "viewer_agent_member_id",
+                  "default_conversation",
+                  "latest_run_id",
+                  "team_run_ids",
+                  "current_member_run_id"
+                ],
+                "properties": {
+                  "team_id": { "type": "string", "minLength": 1 },
+                  "display_name": { "type": "string" },
+                  "viewer_role": { "enum": ["operator", "host", "member"] },
+                  "viewer_agent_member_id": { "type": "string", "minLength": 1 },
+                  "default_conversation": { "type": "string", "minLength": 1 },
+                  "latest_run_id": { "type": ["string", "null"] },
+                  "team_run_ids": { "type": "array", "items": { "type": "string" } },
+                  "current_member_run_id": { "type": ["string", "null"] }
+                }
+              }
+            },
+            "runtime_fabric": { "$ref": "common.schema.json#/$defs/runtimeFabric" }
+          }
+        }
+      }
+    }
+  ]
+}
