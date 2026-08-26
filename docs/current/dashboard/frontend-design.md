@@ -58,17 +58,20 @@ status:
 
 The Agent Workbench uses Tailwind v4 + shadcn/ui (Radix) + lucide-react + Geist
 with generated identity art and purpose-built execution primitives. Historical
-shell decisions are retained only as design provenance in
-the frontend IA. New
-Mission/Log changes must:
+shell decisions are retained only as design provenance in the frontend IA.
+New current product UI changes must:
 
-- start from the architecture map, ADR 0051, and the
-  implemented Mission Detail and Log and Agent Team War Room page specs;
+- start from the architecture map, ADR 0051, and the implemented flat
+  AgentTeam, Team Workspace, Global Work, and current RoleView page specs;
 - follow the architecture and stack decision in
   [frontend-architecture.md](frontend-architecture.md) and ADR
   [0016](../../decisions/0016-tailwind-shadcn-adoption.md);
 - keep desktop/tablet/mobile ASCII diagrams in each changed page spec current;
 - pass screenshot-first acceptance in acceptance.md.
+
+Mission Detail, Mission Log, and Agent Team War Room specs are historical
+design evidence only. They cannot authorize new navigation, writers, or current
+page requirements.
 
 ## Workbench Product Flow
 

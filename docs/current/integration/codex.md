@@ -299,16 +299,19 @@ strict thread/turn identity, effective permission receipts, failed terminal
 projection, and safe `requestUserInput` routing.
 
 The live protocol matrix was not repeated merely to add coordination records.
-Mission `mission-dev26-codex-01480-v1` supplies that missing durable half:
-TeamRun `team-run-1786846271494-p46553-0`, MemberRun
+The current durable coordination evidence consists of TeamRun
+`team-run-1786846271494-p46553-0`, MemberRun
 `member-run-1786846271495-p46553-1`, and accepted Work
-`work-1786846272156-p46553-4` are bound to Codex 0.148.0-alpha.9 native Thread
+`work-1786846272156-p46553-4`. Those records are bound to Codex
+0.148.0-alpha.9 native Thread
 `01a00856-e54a-7bb1-8a09-cd6c61b2e61a`. The provider-owned rollout at
 `~/.codex/sessions/2026/08/16/rollout-2026-08-16T10-11-47-01a00856-e54a-7bb1-8a09-cd6c61b2e61a.jsonl`
 contains the exact no-write response and bound Work start/submit commands. Host
 accepted revision 4, explicit Close settled `applied`, an idempotent retry
 reconciled `already_closed` without a second provider effect, the TeamRun
-completed, and the Mission recorded closeout evidence.
+completed, and Host acceptance closed the Work. The historical Mission row
+`mission-dev26-codex-01480-v1` is preserved only as pre-DOC-108 audit evidence;
+it is not current coordination or closeout authority.
 
 That canary did not exercise `turn/steer` or activate a provider-native Goal.
 Those semantic bindings remain `review_required`; strong quiesce/release also
