@@ -45,6 +45,25 @@ fn kimi_provider_error_after_receipt_requires_recovery_without_replay() {
         &serde_json::json!({}),
     );
     assert_eq!(status, 202, "body: {started}");
+    let store = HarnessStore::new(home.spaces_dir().join(&project_id));
+    let initial_supervisor_deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let initial_supervisor = loop {
+        if let Some(lease) = store
+            .latest_team_supervisor_lease(&run_id)
+            .expect("initial Supervisor lease")
+            .filter(|lease| {
+                lease.status == harness_core::TeamSupervisorLeaseStatus::Active
+                    && lease.expires_unix_ms > current_unix_ms()
+            })
+        {
+            break lease;
+        }
+        assert!(
+            std::time::Instant::now() < initial_supervisor_deadline,
+            "initial Supervisor authority did not become current"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    };
 
     let mut recovery_required = false;
     for _ in 0..300 {
@@ -92,7 +111,6 @@ fn kimi_provider_error_after_receipt_requires_recovery_without_replay() {
         "a provider failure after prompt acceptance must stop at RecoveryRequired"
     );
     assert!(error_once.exists(), "the scripted provider error fired");
-    let store = HarnessStore::new(home.spaces_dir().join(&project_id));
     let dispatches = store
         .runtime_commands(&current_space_id(&home))
         .expect("canonical RuntimeCommands")
@@ -155,31 +173,67 @@ fn kimi_provider_error_after_receipt_requires_recovery_without_replay() {
     store
         .compare_and_append_member_run(&blocked_row, &probation_blocked)
         .expect("seed nonzero probation continuation streak");
+    let blocked_sessions = store
+        .fabric_agent_sessions(&current_space_id(&home))
+        .expect("blocked Member AgentSessions")
+        .into_iter()
+        .filter(|session| {
+            session.agent_member_id == blocked_row.agent_member_id
+                && session
+                    .native_session_ref
+                    .as_ref()
+                    .is_some_and(|native| native.native_session_id == native_session_id)
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        blocked_sessions.len(),
+        1,
+        "the blocked runtime must resolve to one exact AgentSession"
+    );
+    let blocked_session_id = blocked_sessions[0].id.clone();
 
+    let exact_current_session_bound = |expected_residency| {
+        let Some(lease) = store
+            .latest_team_supervisor_lease(&run_id)
+            .expect("current Supervisor lease during recovery")
+        else {
+            return false;
+        };
+        lease.status == harness_core::TeamSupervisorLeaseStatus::Active
+            && lease.expires_unix_ms > current_unix_ms().saturating_add(1_000)
+            && (lease.supervisor_id != initial_supervisor.supervisor_id
+                || lease.generation != initial_supervisor.generation)
+            && store
+                .fabric_agent_sessions(&current_space_id(&home))
+                .expect("AgentSessions during recovery")
+                .into_iter()
+                .any(|session| {
+                    session.id == blocked_session_id
+                        && session.agent_member_id == blocked_row.agent_member_id
+                        && session.execution_space_id == lease.execution_space_id
+                        && session.node_id == lease.node_id
+                        && session.node_daemon_id == lease.node_daemon_id
+                        && session.node_daemon_generation == lease.node_daemon_generation
+                        && session.control_state.runtime_residency == expected_residency
+                        && session
+                            .native_session_ref
+                            .as_ref()
+                            .is_some_and(|native| native.native_session_id == native_session_id)
+                        && matches!(
+                            &session.control_state.driver_ref,
+                            harness_core::agentfirm_api::RuntimeDriverRef::TeamSupervisor {
+                                team_run_id,
+                                team_supervisor_id,
+                                team_supervisor_generation,
+                            } if team_run_id == &run_id
+                                && team_supervisor_id == &lease.supervisor_id
+                                && *team_supervisor_generation == lease.generation
+                        )
+                })
+    };
     let close_deadline = std::time::Instant::now() + Duration::from_secs(30);
     loop {
-        let lease = store
-            .latest_team_supervisor_lease(&run_id)
-            .expect("current Supervisor lease before recovery Close")
-            .expect("Supervisor lease before recovery Close");
-        let session = store
-            .fabric_agent_sessions(&current_space_id(&home))
-            .expect("AgentSessions before recovery Close")
-            .into_iter()
-            .find(|session| session.agent_member_id == blocked_row.agent_member_id)
-            .expect("blocked Member AgentSession");
-        let successor_bound = lease.status == harness_core::TeamSupervisorLeaseStatus::Active
-            && matches!(
-                &session.control_state.driver_ref,
-                harness_core::agentfirm_api::RuntimeDriverRef::TeamSupervisor {
-                    team_run_id,
-                    team_supervisor_id,
-                    team_supervisor_generation,
-                } if team_run_id == &run_id
-                    && team_supervisor_id == &lease.supervisor_id
-                    && *team_supervisor_generation == lease.generation
-            );
-        if successor_bound {
+        if exact_current_session_bound(harness_core::agentfirm_api::RuntimeResidency::Detached) {
             break;
         }
         assert!(
@@ -219,10 +273,46 @@ fn kimi_provider_error_after_receipt_requires_recovery_without_replay() {
     );
     assert_eq!(status, 202, "same-session Reopen: {reopened}");
 
-    // Reopen itself is not new provider input.  Give the Supervisor enough
-    // time to attach the replacement runtime and prove that the already
-    // provider-received Work is not injected again.
-    std::thread::sleep(Duration::from_millis(500));
+    // Reopen itself is not new provider input. Wait only for the durable new
+    // MemberRun generation while continuously proving that the provider-
+    // received Work is not injected again. The explicit Host Message below is
+    // what may start a new Supervisor and attach the same native Session.
+    let reopen_deadline = std::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        let start_cycles = store
+            .runtime_commands(&current_space_id(&home))
+            .expect("RuntimeCommands while awaiting Reopen authority")
+            .into_iter()
+            .filter(|command| {
+                command.command == harness_core::agentfirm_api::RuntimeCommandKind::StartCycle
+            })
+            .count();
+        assert_eq!(
+            start_cycles, 1,
+            "Reopen must not replay the provider-received Work"
+        );
+        let reopened_generation = store
+            .member_runs()
+            .expect("MemberRuns while awaiting Reopen authority")
+            .into_iter()
+            .rev()
+            .find(|member| member.id == member_id)
+            .is_some_and(|member| {
+                member.runtime_generation == initial_runtime_generation + 1
+                    && member
+                        .native_session
+                        .as_ref()
+                        .is_some_and(|native| native.native_session_id == native_session_id)
+            });
+        if reopened_generation {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < reopen_deadline,
+            "Reopen did not preserve the same native Session on the new MemberRun generation"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
     let commands_after_reopen = store
         .runtime_commands(&current_space_id(&home))
         .expect("RuntimeCommands after Reopen");
@@ -278,7 +368,8 @@ fn kimi_provider_error_after_receipt_requires_recovery_without_replay() {
         .to_string();
 
     let mut resumed_once = false;
-    for _ in 0..200 {
+    let follow_up_deadline = std::time::Instant::now() + Duration::from_secs(30);
+    while std::time::Instant::now() < follow_up_deadline {
         let (_, snapshot) = serve.get_json("/v1/snapshot");
         let acknowledged = snapshot["team_messages"]
             .as_array()
@@ -307,7 +398,10 @@ fn kimi_provider_error_after_receipt_requires_recovery_without_replay() {
                 command.command == harness_core::agentfirm_api::RuntimeCommandKind::StartCycle
             })
             .count();
-        resumed_once = acknowledged && same_session_idle && start_cycles == 2;
+        resumed_once = acknowledged
+            && same_session_idle
+            && start_cycles == 2
+            && exact_current_session_bound(harness_core::agentfirm_api::RuntimeResidency::Attached);
         if resumed_once {
             break;
         }
