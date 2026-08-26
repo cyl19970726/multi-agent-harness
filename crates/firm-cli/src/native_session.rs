@@ -295,8 +295,16 @@ where
         {
             let mut row_type = None;
             let mut session_meta_id = None;
+            let mut timestamp_seen = false;
             while let Some(key) = map.next_key::<String>()? {
                 match key.as_str() {
+                    "timestamp" => {
+                        if timestamp_seen {
+                            return Err(de::Error::duplicate_field("timestamp"));
+                        }
+                        map.next_value::<String>()?;
+                        timestamp_seen = true;
+                    }
                     "type" => {
                         if row_type.is_some() {
                             return Err(de::Error::duplicate_field("type"));
@@ -341,7 +349,12 @@ where
                             "Codex rollout payload precedes its row type",
                         ));
                     }
-                    _ => return Err(de::Error::unknown_field(&key, &["type", "payload"])),
+                    _ => {
+                        return Err(de::Error::unknown_field(
+                            &key,
+                            &["timestamp", "type", "payload"],
+                        ))
+                    }
                 }
             }
             match row_type.as_deref() {
@@ -703,7 +716,9 @@ mod tests {
             .join(format!("rollout-2026-08-09T00-00-00-{session_id}.jsonl"));
         fs::write(
             &rollout,
-            format!("{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"{session_id}\"}}}}\n"),
+            format!(
+                "{{\"timestamp\":\"2026-08-09T00:00:00Z\",\"type\":\"session_meta\",\"payload\":{{\"id\":\"{session_id}\"}}}}\n"
+            ),
         )
         .expect("rollout");
         assert_eq!(
@@ -822,7 +837,7 @@ mod tests {
             .join("sessions/2026/08/09")
             .join(format!("rollout-2026-08-09T00-00-00-{session_id}.jsonl"));
         let mut contents = format!(
-            "{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"{session_id}\"}}}}\n{{\"type\":\"event_msg\",\"payload\":\""
+            "{{\"timestamp\":\"2026-08-09T00:00:00Z\",\"type\":\"session_meta\",\"payload\":{{\"id\":\"{session_id}\"}}}}\n{{\"timestamp\":\"2026-08-09T00:00:01Z\",\"type\":\"event_msg\",\"payload\":\""
         )
         .into_bytes();
         contents.extend(std::iter::repeat_n(b'x', MAX_DISCOVERY_LINE_BYTES));
