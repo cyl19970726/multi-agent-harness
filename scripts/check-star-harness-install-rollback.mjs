@@ -301,7 +301,8 @@ function readFailureState(fixture) {
 function transactionDirectories(fixture) {
   return readdirSync(dirname(fixture.binLink))
     .filter((name) => name.startsWith("harness.star-harness-install.lock.txn-"))
-    .map((name) => join(dirname(fixture.binLink), name));
+    .map((name) => join(dirname(fixture.binLink), name))
+    .filter((path) => lstatSync(path).isDirectory());
 }
 
 async function terminateAfterPublication(fixture) {
@@ -395,8 +396,22 @@ withFixture((fixture) => {
   mkdirSync(dirname(lockPath), { recursive: true });
   symlinkSync(`${lockPath}.txn-stale-owner`, lockPath);
   const result = runApply(fixture);
-  assert.equal(result.status, 0, "a broken cooperative lock is reconciled without manual deletion");
+  assert.notEqual(result.status, 0, "an unknown broken lock without owner evidence fails closed");
+  assert.equal(readlinkSync(lockPath), `${lockPath}.txn-stale-owner`);
+  const state = readFailureState(fixture);
+  assert.equal(state.install_lock_status, "not_acquired");
+});
+
+withFixture((fixture) => {
+  const lockPath = `${fixture.binLink}.star-harness-install.lock`;
+  const staleTarget = `${lockPath}.txn-2147483647-dead-owner`;
+  mkdirSync(dirname(lockPath), { recursive: true });
+  symlinkSync(staleTarget, lockPath);
+  write(`${staleTarget}.owner`, "2147483647\ndefinitely-not-a-live-start-identity\n");
+  const result = runApply(fixture);
+  assert.equal(result.status, 0, "a broken lock with proof of a dead exact owner is reconciled");
   assert.equal(existsSync(lockPath), false);
+  assert.equal(existsSync(`${staleTarget}.owner`), false);
   assert.equal(readlinkSync(fixture.binLink), join(fixture.root, "install", "fixture", "harness"));
 });
 

@@ -43,7 +43,7 @@ BIN_LINK_LOCK_STAGED="${BIN_LINK_TRANSACTION_DIR}/lock-staged"
 BIN_LINK_LOCK_RELEASE_ENTRY="${BIN_LINK_TRANSACTION_DIR}/lock-release-entry"
 BIN_LINK_STALE_LOCK_WITNESS="${BIN_LINK_TRANSACTION_DIR}/stale-lock-witness"
 BIN_LINK_STALE_LOCK_ENTRY="${BIN_LINK_TRANSACTION_DIR}/stale-lock-entry"
-BIN_LINK_LOCK_OWNER="${BIN_LINK_TRANSACTION_DIR}/lock-owner"
+BIN_LINK_LOCK_OWNER="${BIN_LINK_TRANSACTION_DIR}.owner"
 BIN_LINK_LOCK_OWNED="false"
 BIN_LINK_LOCK_STATUS="not_acquired"
 PRESERVE_BIN_LINK_TRANSACTION="false"
@@ -277,6 +277,7 @@ reconcile_stale_bin_link_lock() {
   local owner_pid=""
   local owner_start_identity=""
   local current_start_identity=""
+  local stale_owner_file=""
   if ! link_without_replace "${BIN_LINK_LOCK_DIR}" "${BIN_LINK_STALE_LOCK_WITNESS}" 2>/dev/null; then
     return 1
   fi
@@ -292,29 +293,28 @@ reconcile_stale_bin_link_lock() {
       return 1
       ;;
   esac
-  if [[ -e "${stale_target}" || -L "${stale_target}" ]]; then
-    if [[ ! -f "${stale_target}/lock-owner" ]]; then
-      unlink "${BIN_LINK_STALE_LOCK_WITNESS}" 2>/dev/null || true
-      return 1
-    fi
-    owner_record="$(<"${stale_target}/lock-owner")"
-    owner_pid="${owner_record%%$'\n'*}"
-    if [[ "${owner_record}" == *$'\n'* ]]; then
-      owner_start_identity="${owner_record#*$'\n'}"
-    fi
-    if [[ ! "${owner_pid}" =~ ^[0-9]+$ || -z "${owner_start_identity}" ]]; then
-      unlink "${BIN_LINK_STALE_LOCK_WITNESS}" 2>/dev/null || true
-      return 1
-    fi
-    current_start_identity="$(process_start_identity "${owner_pid}")"
-    if [[ "${current_start_identity}" == "${owner_start_identity}" ]]; then
-      unlink "${BIN_LINK_STALE_LOCK_WITNESS}" 2>/dev/null || true
-      return 1
-    fi
-    if [[ -z "${current_start_identity}" ]] && kill -0 "${owner_pid}" 2>/dev/null; then
-      unlink "${BIN_LINK_STALE_LOCK_WITNESS}" 2>/dev/null || true
-      return 1
-    fi
+  stale_owner_file="${stale_target}.owner"
+  if [[ ! -f "${stale_owner_file}" ]]; then
+    unlink "${BIN_LINK_STALE_LOCK_WITNESS}" 2>/dev/null || true
+    return 1
+  fi
+  owner_record="$(<"${stale_owner_file}")"
+  owner_pid="${owner_record%%$'\n'*}"
+  if [[ "${owner_record}" == *$'\n'* ]]; then
+    owner_start_identity="${owner_record#*$'\n'}"
+  fi
+  if [[ ! "${owner_pid}" =~ ^[0-9]+$ || -z "${owner_start_identity}" ]]; then
+    unlink "${BIN_LINK_STALE_LOCK_WITNESS}" 2>/dev/null || true
+    return 1
+  fi
+  current_start_identity="$(process_start_identity "${owner_pid}")"
+  if [[ "${current_start_identity}" == "${owner_start_identity}" ]]; then
+    unlink "${BIN_LINK_STALE_LOCK_WITNESS}" 2>/dev/null || true
+    return 1
+  fi
+  if [[ -z "${current_start_identity}" ]] && kill -0 "${owner_pid}" 2>/dev/null; then
+    unlink "${BIN_LINK_STALE_LOCK_WITNESS}" 2>/dev/null || true
+    return 1
   fi
   stale_identity="$(bin_link_object_identity "${BIN_LINK_STALE_LOCK_WITNESS}" 2>/dev/null || true)"
   move_without_replace "${BIN_LINK_LOCK_DIR}" "${BIN_LINK_STALE_LOCK_ENTRY}" || move_status=$?
@@ -328,6 +328,7 @@ reconcile_stale_bin_link_lock() {
     fi
     unlink "${BIN_LINK_STALE_LOCK_ENTRY}"
     unlink "${BIN_LINK_STALE_LOCK_WITNESS}"
+    unlink "${stale_owner_file}" 2>/dev/null || true
     return 0
   fi
   if [[ -e "${BIN_LINK_STALE_LOCK_ENTRY}" || -L "${BIN_LINK_STALE_LOCK_ENTRY}" ]]; then
