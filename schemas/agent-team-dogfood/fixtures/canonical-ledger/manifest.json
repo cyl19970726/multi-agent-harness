@@ -9,13 +9,13 @@
     {"id": "missing-work-report", "path": "invalid/missing-work-report.jsonl", "expect": "fail", "expected_failure": "expected exactly one WorkReport \"work-report-fixture\", found 0"},
     {"id": "wrong-work-report-work", "path": "invalid/wrong-work-report-work.jsonl", "expect": "fail", "expected_failure": "WorkReport work id mismatch"},
     {"id": "duplicate-work-report", "path": "invalid/duplicate-work-report.jsonl", "expect": "fail", "expected_failure": "expected exactly one WorkReport \"work-report-fixture\", found 2"},
-    {"id": "non-pass-review", "path": "invalid/non-pass-review.jsonl", "expect": "fail", "expected_failure": "review Message must contain an explicit Pass verdict"},
+    {"id": "non-pass-review", "path": "invalid/non-pass-review.jsonl", "expect": "fail", "expected_failure": "review Message must be canonical REVIEW_RESULT with exactly one unambiguous Verdict: Pass"},
     {"id": "wrong-acceptance-actor", "path": "invalid/wrong-acceptance-actor.jsonl", "expect": "fail", "expected_failure": "acceptance actor mismatch"},
     {"id": "acceptance-version-mismatch", "path": "invalid/acceptance-version-mismatch.jsonl", "expect": "fail", "expected_failure": "accepted Work version mismatch"},
     {"id": "missing-native-binding", "path": "invalid/missing-native-binding.jsonl", "expect": "fail", "expected_failure": "expected exactly one native-session binding for AgentSession \"agent-session-member\", found 0"},
     {"id": "wrong-session-member", "path": "invalid/wrong-session-member.jsonl", "expect": "fail", "expected_failure": "AgentSession member mismatch"},
-    {"id": "foreign-execution-space", "path": "invalid/foreign-execution-space.jsonl", "expect": "fail", "expected_failure": "no exact records in execution space \"space-fixture\""},
+    {"id": "foreign-execution-space", "path": "invalid/foreign-execution-space.jsonl", "expect": "fail", "expected_failure": "WorkReport execution_space_id mismatch: expected \"space-fixture\", found \"space-foreign\""},
     {"id": "malformed-complete-frame", "path": "invalid/malformed-complete-frame.jsonl", "expect": "fail", "expected_failure": "malformed JSON"},
-    {"id": "transcript-mirror", "path": "invalid/transcript-mirror.jsonl", "expect": "fail", "expected_failure": "provider transcript content is forbidden in the Harness trust ledger"}
+    {"id": "transcript-mirror", "path": "invalid/transcript-mirror.jsonl", "expect": "fail", "expected_failure": "uses forbidden transcript-mirror aggregate \"provider_transcript\""}
   ]
 }
