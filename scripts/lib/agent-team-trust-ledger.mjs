@@ -128,6 +128,7 @@ export function parseTrustOperationJsonl(jsonl) {
   const completeFrames = jsonl.slice(0, finalNewline).split("\n");
   for (const [index, frame] of completeFrames.entries()) {
     const line = frame.endsWith("\r") ? frame.slice(0, -1) : frame;
+    if (!line.trim()) continue;
     let record;
     try {
       record = JSON.parse(line);

@@ -184,7 +184,16 @@ assert.deepEqual(
   verifyCanonicalTrustLedgerJsonl(evidence, `${valid.map(JSON.stringify).join("\r\n")}\r\n`, executionSpaceId),
   [],
 );
+assert.deepEqual(
+  verifyCanonicalTrustLedgerJsonl(
+    evidence,
+    `${JSON.stringify(valid[0])}\n \t\r\n${valid.slice(1).map(JSON.stringify).join("\n")}\n`,
+    executionSpaceId,
+  ),
+  [],
+);
 assert.deepEqual(parseTrustOperationJsonl(""), []);
+assert.deepEqual(parseTrustOperationJsonl("\n \t\r\n"), []);
 assert.deepEqual(parseTrustOperationJsonl(JSON.stringify(valid[0])), []);
 const unrelatedForeignSpace = clone(valid);
 unrelatedForeignSpace.at(-1).execution_space_id = "space-unrelated";
@@ -259,7 +268,6 @@ expectRejected("transcript mirror aggregate", [
 
 assert.match(verifyCanonicalTrustLedgerJsonl(evidence, "{not-json\n", executionSpaceId)[0], /line 1 is malformed JSON/u);
 assert.match(verifyCanonicalTrustLedgerJsonl(evidence, `${validJsonl}{not-json\n`, executionSpaceId)[0], /line 7 is malformed JSON/u);
-assert.match(verifyCanonicalTrustLedgerJsonl(evidence, "\n", executionSpaceId)[0], /line 1 is malformed JSON/u);
 assert.match(verifyCanonicalTrustLedgerJsonl(evidence, "[]\n", executionSpaceId)[0], /line 1 must contain a JSON object/u);
 assert.match(
   verifyCanonicalTrustLedgerJsonl(evidence, '{"operation":{}}\n', executionSpaceId)[0],
