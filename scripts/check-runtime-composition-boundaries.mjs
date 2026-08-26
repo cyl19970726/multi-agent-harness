@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -158,7 +158,7 @@ const sourcePaths = execFileSync(
   .toString("utf8")
   .trim()
   .split("\n")
-  .filter((path) => path.endsWith(".rs"));
+  .filter((path) => path.endsWith(".rs") && existsSync(resolve(root, path)));
 
 const daemonRootPath = "crates/firm-cli/src/supervisor_daemon.rs";
 const machineAuthorityPath =

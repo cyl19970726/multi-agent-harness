@@ -32,20 +32,14 @@ function checkWorkCreateExamples() {
   );
   const markdown = readFileSync(skillPath, "utf8");
   const commands = [
-    ...continuedCommands(markdown, "harness team-run work create"),
     ...continuedCommands(markdown, "firm team-run work create"),
-    // Member-skill convention: examples run through the provisioned binary
-    // variable, which is the installed `harness` executable by contract.
-    ...continuedCommands(markdown, '"$HARNESS_BIN" team-run work create'),
+    ...continuedCommands(markdown, '"$FIRM_BIN" team-run work create'),
   ];
   if (commands.length === 0) {
     errors.push(`${skillPath}: must contain executable team-run work create examples`);
     return;
   }
   for (const command of commands) {
-    if (command.startsWith("firm ")) {
-      errors.push(`${skillPath}: use the installed \`harness\` executable, not \`firm\`: ${command}`);
-    }
     for (const flag of ["--team-run-id", "--title", "--completion-criteria"]) {
       if (!command.includes(flag)) {
         errors.push(`${skillPath}: work create example is missing required ${flag}: ${command}`);
@@ -82,7 +76,6 @@ function readJson(path) {
 const codex = readJson(join(pluginRoot, ".codex-plugin", "plugin.json"));
 const claude = readJson(join(pluginRoot, ".claude-plugin", "plugin.json"));
 const kimi = readJson(join(pluginRoot, "kimi.plugin.json"));
-const mcp = readJson(join(pluginRoot, ".mcp.json"));
 const marketplace = readJson(join(repoRoot, ".claude-plugin", "marketplace.json"));
 
 if (
@@ -100,8 +93,17 @@ if (Object.hasOwn(claude, "hooks")) {
     "Claude manifest must not redeclare default hooks/hooks.json; Claude auto-discovers it",
   );
 }
-if (mcp.mcpServers?.harness?.command !== "harness") {
-  errors.push(".mcp.json must register the Harness MCP server");
+if (existsSync(join(pluginRoot, ".mcp.json"))) {
+  errors.push("Star Harness must not register a Harness MCP server; Agent coordination is CLI-only");
+}
+for (const [label, manifest] of [
+  ["Codex", codex],
+  ["Claude", claude],
+  ["Kimi", kimi],
+]) {
+  if (Object.hasOwn(manifest, "mcpServers")) {
+    errors.push(`${label} manifest must not register Harness MCP servers`);
+  }
 }
 const kimiHookEvents = new Set(
   Array.isArray(kimi.hooks) ? kimi.hooks.map((hook) => hook.event) : [],

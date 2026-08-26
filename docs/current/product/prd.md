@@ -15,7 +15,7 @@ through provider-native sessions across machines.
 The product intent and operating control plane for the company being built on
 top of this foundation live in Notion (AgentFirm Home). This repository is the
 versioned implementation truth for the execution substrate: code, schemas,
-stores, CLI/HTTP/MCP surfaces, tests, and CI.
+stores, CLI/HTTP surfaces, tests, and CI.
 
 ## Retired layer (DOC-108)
 
@@ -112,7 +112,7 @@ the coordination store. Provider cwd resolves the attached
 1. An operator dashboard (Agent Dashboard) presents Nodes, durable Teams,
    runs, member lifecycle, the shared Team Inbox, and Work boards from store
    truth with bounded snapshots.
-2. CLI, HTTP, and MCP surfaces share one TeamMembership and Work authority.
+2. CLI and HTTP surfaces share one TeamMembership and Work authority.
 3. Cross-machine Teams collaborate through the remote fabric with explicit,
    fenced delivery.
 4. Host/provider-local plans and native subagents may implement bounded work,

@@ -23,7 +23,7 @@ Decide, explicitly and durably, before `team-run start`:
   URL, named check command with exit code, artifact path). If you cannot name
   the evidence, the Work is not bounded yet.
 
-Create the durable Team once (`harness team create --name … --host-agent-id …
+Create the durable Team once (`firm team create --name … --host-agent-id …
 --node-id … --member …`); it persists across runs. Create a TeamRun per
 engagement; the Project Binding is frozen on the run and the returned
 execution/member roots are the members' worlds.
@@ -59,9 +59,9 @@ user the returned dashboard URL at once.
 Do not poll in a loop. The board is cursor-based and events are sequenced:
 
 ```bash
-harness team-run board-summary --id <team-run-id>
-harness team-run work list --team-run-id <team-run-id> --brief
-harness team-run work list --team-run-id <team-run-id> --since <cursor>
+firm team-run board-summary --id <team-run-id>
+firm team-run work list --team-run-id <team-run-id> --brief
+firm team-run work list --team-run-id <team-run-id> --since <cursor>
 ```
 
 `board-summary` is a ≤500-character overview (work counts + each member's

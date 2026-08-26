@@ -54,6 +54,23 @@ fn work_contract_keeps_host_messages_on_the_work_being_discussed() {
     };
 
     let prompt = work_contract_prompt("coordinate exact Works", &host, &work, &envelope);
+    let environment =
+        envelope.environment(harness_runtime_contract::CollaborationCapabilityEnvironment::empty());
+    let pairs = environment.as_pairs();
+    for expected in [
+        ("FIRM_BIN", "firm"),
+        ("FIRM_TEAM_RUN_ID", "team-run-test"),
+        ("FIRM_MEMBER_RUN_ID", "member-run-host"),
+        ("FIRM_SPACE", "space-test"),
+        ("FIRM_PROJECT", "project-test"),
+    ] {
+        assert!(
+            pairs
+                .iter()
+                .any(|(name, value)| name == expected.0 && value == expected.1),
+            "missing canonical CLI envelope {expected:?}"
+        );
+    }
 
     let response_required = crate::collaboration::member_operating_contract::MEMBER_OPERATING_ACTIONS
         .iter()

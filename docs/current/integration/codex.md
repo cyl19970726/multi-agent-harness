@@ -81,7 +81,7 @@ Close are different:
 
 Physical app-server handles remain process-local, but a durable Team Supervisor
 lease is the cross-process authority and publishes the owning service's
-loopback locator. Dashboard/MCP/CLI clients route controls to that service,
+loopback locator. Dashboard/HTTP/CLI clients route controls to that service,
 which fences the generation again before `turn/steer`, `turn/interrupt`, or
 Close. Another process cannot attach or claim mail while that lease is live.
 Re-running start after expiry or release acquires a new generation and
@@ -249,7 +249,7 @@ filesystem sandbox under this policy.
 
 ## Host Operations
 
-The Host has one coherent lifecycle surface across CLI, HTTP, MCP and
+The Host has one coherent lifecycle surface across CLI, HTTP and
 Dashboard application logic:
 
 ```text
@@ -263,7 +263,7 @@ explicitly close member runtime
 resume from native session
 ```
 
-MCP uses `team_run_close_member` and `team_run_reopen_member`. CLI uses:
+Harness coordination is CLI-only. Close and Reopen use:
 
 ```bash
 firm team-run close-member --id <team-run-id> \

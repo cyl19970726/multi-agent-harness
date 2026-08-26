@@ -45,7 +45,7 @@ implementation details and do not create another durable ledger.
    between Teams.
 5. Restart the daemon and prove parent-generation fencing, recovery without
    duplicate delivery, and isolation from one broken store.
-6. Verify CLI, HTTP, MCP, and Dashboard show the same Team/Node/delegation truth.
+6. Verify CLI, HTTP, and Dashboard show the same Team/Node/delegation truth.
 7. Complete the TeamRun with explicit Host acceptance on the Work records —
    without inventing Wave gates or deleting reusable records.
 

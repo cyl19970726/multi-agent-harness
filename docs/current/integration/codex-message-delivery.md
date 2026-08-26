@@ -167,7 +167,7 @@ Team membership and AgentSession for them.
 
 ## Read Surfaces And Authority
 
-CLI, MCP, HTTP and Dashboard inboxes project the same canonical Message and
+CLI, HTTP and Dashboard inboxes project the same canonical Message and
 CanonicalMessageDelivery records. Default Inbox returns actionable current
 mail; history views include terminal delivery lineage. Provider-native history
 is resolved on demand from its native locator and is never copied into inbox.
@@ -202,7 +202,7 @@ mutate, dual-write or fall back to them.
    RuntimeCommand result remain distinct.
 5. Closed, stale-generation or incompatible sessions reject delivery without
    a provider side effect.
-6. CLI, MCP, HTTP and Dashboard reconstruct the same canonical mailbox state
+6. CLI, HTTP and Dashboard reconstruct the same canonical mailbox state
    without reading the legacy TeamMessage ledger.
 7. Provider interaction request/response lineage is exact and authenticated.
 8. Provider final text never creates a duplicate Work submission or Message.

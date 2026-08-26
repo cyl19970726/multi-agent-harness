@@ -150,7 +150,7 @@ keys between machines.
    applies exactly once. A reconnect that merely self-reports a higher daemon
    generation under the predecessor certificate must fail with zero effects.
 7. Capture `remote_fabric_status` and `remote_fabric_operation_show` through
-   the local MCP surface or the equivalent authenticated Host REST reads.
+   the authenticated Host REST reads.
    Evidence must bind the immutable submitted SHA, Company/Node ids, Control
    Plane and gateway generations, operation ids, protocol/schema digest,
    disconnect/reconnect timestamps, terminal receipts and application count.

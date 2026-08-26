@@ -41,11 +41,11 @@ dependency DAG is defined by ADR 0058 and does not revive those objects.
 
 | Concept | Current maturity | Gateable now |
 | --- | --- | --- |
-| `Mission` | Rust + JSON schema + JSONL store + CLI/API/MCP/read model | yes |
-| `MissionLogEntry` | Rust + append-only `mission_log.jsonl` store + CLI/API/MCP/read model | yes |
+| `Mission` | Historical Rust + JSON schema + JSONL read/export model | legacy only |
+| `MissionLogEntry` | Historical append-only JSONL read/export model | legacy only |
 | `Wave` | Rust + JSON schema + historical JSONL reads/export only; create/update/advance/gate retired by ADR 0051 | legacy only |
-| `AgentTeamRun` family | Rust + JSON schemas + store + CLI/API/MCP/read model | yes |
-| `Work` / dependency operations / `WorkEvent` / `WorkDelivery` | Rust + JSON schemas + WorkOperation store + kernel DAG validation + CLI/API/MCP/read model | yes after DEV-60 exact-revision gate |
+| `AgentTeamRun` family | Rust + JSON schemas + store + CLI/API/read model | yes |
+| `Work` / dependency operations / `WorkEvent` / `WorkDelivery` | Rust + JSON schemas + WorkOperation store + kernel DAG validation + CLI/API/read model | yes after DEV-60 exact-revision gate |
 | Work Module definition/binding | schema + Rust + Store for closed built-in `integration-plan@1` only | yes for that exact built-in; no open registry |
 | `TeamSupervisorLease` | Rust + JSON schema + JSONL latest-wins store + cross-process routing | yes |
 | `Goal` | historical compatibility schema; retired for new coordination | no for new work |
@@ -121,7 +121,7 @@ JSON versions because it crosses machine and release boundaries.
 `WorkOperation` is the Store's crash-atomic replay envelope around one
 WorkEvent, its complete resulting Work, delivery creates/updates, and any
 `WorkDelegation` revisions caused by that exact target-Work transition. The
-embedded delegation revisions ensure HTTP, MCP, and CLI mutations cannot expose
+embedded delegation revisions ensure HTTP and CLI mutations cannot expose
 a newer target Work with a stale cross-Team roll-up after a crash. It is not a
 separately authored public lifecycle object and therefore has no standalone
 public JSON Schema in V1; the public schemas above define the projections and

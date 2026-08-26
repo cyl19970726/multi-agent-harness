@@ -134,19 +134,19 @@ Public callers cannot submit retention anchors.
   Read projections are restricted to the exact source owner, source Host or
   target Host resolved from the authenticated credential; Fabric tenant, Team
   and Execution Space are never caller-selected authority.
-- HTTP and MCP list endpoints return bounded, opaque server-signed cursors
+- HTTP list endpoints return bounded, opaque server-signed cursors
   bound to Fabric tenant, actor, filter and a frozen Store sequence. Hidden
   sibling rows advance the raw scan but never consume a visible page.
-- MCP collaboration tools are read-only central projections. Retired local
-  WorkDelegation writers are absent and fail as unknown tools with zero Store
-  delta.
+- Harness coordination has no MCP server. Cross-machine mutations use the
+  authenticated CLI or HTTP application surface; central projections remain
+  read-only.
 - OperatorView reports Node-local outbox/inbox depth, oldest age, current
   gateway generation, Control Plane-derived health, reconcile lag and exact
   recovery inventory. Local journal presence never implies remote health.
 - `firm team message send|inbox|claim` authors and reads ordinary peer-Team
   Messages through the source NodeDaemon RuntimeCommand; the shared Team Inbox
-  projection is served read-only at `GET /v1/views/team-inbox/<team-id>` and
-  via the MCP `team_inbox_list` tool. Direct TeamMembership targets bind one
+  projection is served read-only at `GET /v1/views/team-inbox/<team-id>`.
+  Direct TeamMembership targets bind one
   durable delivery at admission; Team targets stay queued until one exact
   membership generation claims them.
 

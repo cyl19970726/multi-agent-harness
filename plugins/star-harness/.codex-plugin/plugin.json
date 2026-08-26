@@ -13,18 +13,18 @@
   "keywords": [
     "codex",
     "agent-team",
-    "mcp"
+    "cli"
   ],
   "skills": "./skills/",
   "interface": {
     "displayName": "Star Harness",
     "shortDescription": "Coordinate autonomous Agent Teams and durable Work.",
-    "longDescription": "Adds provider-neutral Member skills, Harness MCP registration, lifecycle status hooks, CLI shortcuts, and Dashboard deep links. Product state remains in Harness and provider execution remains in native sessions.",
+    "longDescription": "Adds provider-neutral Member skills, lifecycle status hooks, CLI shortcuts, and Dashboard deep links. Agent coordination uses the firm CLI; provider execution remains in native sessions.",
     "developerName": "Multi-Agent Harness",
     "category": "Developer Tools",
     "capabilities": [
       "Skills",
-      "MCP",
+      "CLI",
       "Hooks",
       "Agent Teams"
     ],
@@ -37,6 +37,5 @@
       "Show the active Team inbox and pending Work."
     ],
     "brandColor": "#FF6B5E"
-  },
-  "mcpServers": "./.mcp.json"
+  }
 }

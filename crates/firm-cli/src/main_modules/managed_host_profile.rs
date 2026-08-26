@@ -44,15 +44,3 @@ pub(super) fn effective_member_permission_ceiling(
         .map_err(CliError::Usage)?;
     Ok(full_access)
 }
-
-pub(super) fn host_runtime_projection(mode: HostControlMode) -> serde_json::Value {
-    let managed = mode == HostControlMode::Managed;
-    serde_json::json!({
-        "mode": if managed { "managed" } else { "external_interactive" },
-        "delivery_guarantee": if managed { "daemon_managed" } else { "pull_only" },
-        "runtime_residency": if managed { "managed_member_run" } else { "detached_user_driven" },
-        "workspace_policy": if managed { "trusted_full_access_exact_cwd_shared_allowed" } else { "user_managed" },
-        "workspace_requirement": managed.then_some("exact_canonical_cwd_shared_or_isolated"),
-        "warning": (!managed).then_some("External Host delivery is weaker: Harness cannot drive or prove provider receipt; the Host must explicitly read and acknowledge its own inbox."),
-    })
-}

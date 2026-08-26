@@ -284,7 +284,7 @@ struct CommandBindings<'a> {
 impl MemberOperatingActionSpec {
     fn render_command(&self, current_work_id: &str, bindings: CommandBindings<'_>) -> String {
         let mut arguments = vec![
-            "\"$HARNESS_BIN\"".to_string(),
+            "\"$FIRM_BIN\"".to_string(),
             "member".to_string(),
             "message".to_string(),
             self.route.subcommand().to_string(),
@@ -510,7 +510,7 @@ mod tests {
                 "message-1",
                 Some("work-1")
             ),
-            "\"$HARNESS_BIN\" member message reply --recipient-agent-id agent-2 --correlation-id correlation-1 --causation-id message-1 --work-id work-1 --body '<markdown>'"
+            "\"$FIRM_BIN\" member message reply --recipient-agent-id agent-2 --correlation-id correlation-1 --causation-id message-1 --work-id work-1 --body '<markdown>'"
         );
         assert!(!render_incoming_message_reply_command(
             "agent-2",

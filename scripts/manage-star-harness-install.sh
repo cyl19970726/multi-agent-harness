@@ -246,11 +246,13 @@ fi
 	echo
 	echo "Installing Kimi Code plugin..."
 	mkdir -p "${KIMI_MANAGED_DIR}/scripts" "${KIMI_MANAGED_DIR}/skills" "${KIMI_MANAGED_DIR}/commands"
+	# Direct Kimi installs are upgraded in place, so explicitly remove the retired
+	# Harness coordination MCP registration before publishing the CLI-only plugin.
+	rm -f "${KIMI_MANAGED_DIR}/.mcp.json"
 	cp "${REPO_ROOT}/plugins/star-harness/kimi.plugin.json" "${KIMI_MANAGED_DIR}/"
 	cp "${REPO_ROOT}/plugins/star-harness/scripts/star-harness-hook.sh" "${KIMI_MANAGED_DIR}/scripts/"
 	cp -R "${REPO_ROOT}/plugins/star-harness/skills/" "${KIMI_MANAGED_DIR}/skills/"
 	cp -R "${REPO_ROOT}/plugins/star-harness/commands/" "${KIMI_MANAGED_DIR}/commands/"
-	cp "${REPO_ROOT}/plugins/star-harness/.mcp.json" "${KIMI_MANAGED_DIR}/"
 	echo "  installed ${VERSION} to ${KIMI_MANAGED_DIR}"
 	echo "  Run /reload in Kimi Code to activate the plugin."
 

@@ -128,7 +128,7 @@ not lost work).
 
 **A Member cannot execute without:** its own Work context (What / Mental
 Model / Workspace / Boundary / Gates / Evidence — read it fully before side
-effects); its exact identity envelope (`HARNESS_MEMBER_RUN_ID` etc. — never
+effects); its exact identity envelope (`FIRM_MEMBER_RUN_ID` etc. — never
 substituted); the version of the Work it is mutating; its inbox at safe
 boundaries; and the submission contract (result summary + artifact/check refs
 matching the declared gates).
@@ -151,7 +151,7 @@ The gate-checked command shapes both roles share:
 
 ```bash
 # Host creates an assigned Work (host_assign requires an explicit owner):
-harness team-run work create \
+firm team-run work create \
   --team-run-id <team-run-id> \
   --title "<one bounded responsibility>" \
   --context "<why it exists; mental model; boundary paths>" \
@@ -161,7 +161,7 @@ harness team-run work create \
   --idempotency-key <stable-command-key>
 
 # Either role creates an open Work for eligible claim:
-harness team-run work create \
+firm team-run work create \
   --team-run-id <team-run-id> \
   --title "<follow-up responsibility>" \
   --context "<why it exists and relevant evidence>" \
@@ -174,14 +174,14 @@ Member essentials (full sequence in the member loop reference):
 
 ```bash
 # start assigned Work (CAS on the freshly read version):
-"$HARNESS_BIN" member work start \
-  --work-id "$HARNESS_WORK_ID" \
+"$FIRM_BIN" member work start \
+  --work-id "$FIRM_WORK_ID" \
   --expected-version <version-from-work-show> \
   --idempotency-key <stable-command-key>
 
 # submit with evidence — moves Work to review, never to done:
-"$HARNESS_BIN" member work submit \
-  --work-id "$HARNESS_WORK_ID" \
+"$FIRM_BIN" member work submit \
+  --work-id "$FIRM_WORK_ID" \
   --expected-version <latest-version> \
   --result-summary "<RESULT/SUMMARY/COVERAGE/WORKTREE/ARTIFACTS template>" \
   --idempotency-key <stable-command-key>
@@ -212,7 +212,7 @@ exporter's `verify`.
     contracted ledger as uncontracted;
     test proves it; PR opened, CI green"
         │
-        └─▶ WorkDelivery reaches kiwi ──▶ 2. wakes with HARNESS_WORK_ID set:
+        └─▶ WorkDelivery reaches kiwi ──▶ 2. wakes with FIRM_WORK_ID set:
                                              work show → reads What/Boundary/
                                              Gates; work start --expected-
                                              version 3 → phase Active
@@ -287,11 +287,11 @@ a fresh agent that would re-learn everything.
 
 ## Envelope and provenance
 
-The runtime injects the collaboration envelope (`HARNESS_BIN`,
-`HARNESS_TEAM_RUN_ID`, `HARNESS_MEMBER_RUN_ID`, `HARNESS_SPACE`,
-`HARNESS_PROJECT`, `HARNESS_PROJECT_ID`, and `HARNESS_WORK_ID`/`_VERSION` when
+The runtime injects the collaboration envelope (`FIRM_BIN`,
+`FIRM_TEAM_RUN_ID`, `FIRM_MEMBER_RUN_ID`, `FIRM_SPACE`,
+`FIRM_PROJECT`, `FIRM_PROJECT_ID`, and `FIRM_WORK_ID`/`_VERSION` when
 Work is delivered). These bind identity and scope; bound commands reject
-caller-selected identity. Use the exact `HARNESS_BIN` — never another binary
+caller-selected identity. Use the exact `FIRM_BIN` — never another binary
 from `PATH`.
 
 Shared hard invariants live in

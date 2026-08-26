@@ -242,7 +242,7 @@ states. UI must not invent native activity or resume from a Harness replay.
 - Stop/Detach or daemon release does not erase readable provider-native
   history. Current NodeDaemon/Supervisor authority remains mandatory for every
   Resume, Interrupt, Close, delivery, and other provider effect.
-- A retry can bind a member to an earlier provider session with HTTP/MCP member
+- A retry can bind a member to an earlier provider session with HTTP/CLI member
   field `resume_native_session_id` or CLI
   `--resume-member <member-name>:<native-session-id>`. Resume is never inferred
   from the newest local session.
@@ -263,7 +263,7 @@ states. UI must not invent native activity or resume from a Harness replay.
 4. **Dashboard backend projection (complete for V1):** provider source,
    availability, paged exact activity, lazy loading, and virtualization. The UI
    binding belongs to the frontend Task; explicit resume selection remains on
-   TeamRun retry/create CLI, MCP, and HTTP inputs.
+   TeamRun retry/create CLI and HTTP inputs.
 5. **Removal (complete):** delete obsolete provider-event ledgers, transcript/stdout/JSONL
    fields, reducers, and old local mirrored data; no compatibility reader.
 6. **Acceptance (DEV-20 implementation evidence):** deterministic provider

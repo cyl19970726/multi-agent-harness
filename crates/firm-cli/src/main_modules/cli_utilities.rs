@@ -292,7 +292,6 @@ pub(super) fn print_help() {
   dashboard doctor --team-run-id <id> --api <base-url> [--expected-git-rev <rev>]
   hook record --agent <agent> [--runtime <runtime>]
   serve [--addr 127.0.0.1:8787] [--once]
-  mcp
   daemon start|status|stop|serve
   cheatsheet [team|work|mission|all]
 
@@ -300,7 +299,7 @@ Retired coordination commands fail explicitly. Historical rows are available onl
 through legacy-goal-task export|verify; retired Company OS records through
 legacy-company-os export|verify. `harness company ...` and the Mission writers
 (`mission create|update-context|close|log append`, POST /v1/missions*,
-mission_* MCP writers, POST /v1/company-os/*) were retired by DOC-108.
+POST /v1/company-os/*) were retired by DOC-108.
 
 Execution selection is independent: --space/FIRM_SPACE selects coordination
 storage; --project/FIRM_PROJECT selects the provider cwd/config/Skill boundary.

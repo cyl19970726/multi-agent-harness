@@ -67,8 +67,7 @@ Ordinary peer Messages are authored and read through the canonical surfaces:
 - `firm team message inbox --team <id> [--all] [--json]` reads the shared Team
   Inbox projection: delivery status, claim binding, correlation, and
   author/source-Team provenance. `GET /v1/views/team-inbox/<team-id>` serves
-  the same projection to an exact Team member identity, and the read-only MCP
-  tool `team_inbox_list` mirrors it.
+  the same projection to an exact Team member identity.
 - `firm team message claim --team <id> --delivery-id <id> --membership-id
   <id>` claims one queued Team-subject delivery for one exact active
   TeamMembership generation under the current NodeDaemon generation. A stale,

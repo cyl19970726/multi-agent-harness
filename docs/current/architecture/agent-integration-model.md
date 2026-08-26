@@ -100,9 +100,8 @@ receive current Messages or acknowledge previously queued
 same MemberRun and thaws that mailbox, but Harness still cannot restart or
 prove history continuity for the user-owned external conversation.
 Because such a member is explicitly declared non-driven, its mail is accepted
-from unbound trusted-local CLI/MCP clients
-and recorded with `authn_source = "mcp:external_interactive"` (or the local
-CLI equivalent). Driven members keep the full invariant: their
+from its explicitly bound trusted-local CLI and recorded with the local CLI
+authentication source. Driven members keep the full invariant: their
 member-originated messages must come from the bound provider runtime. An
 external interactive member has no provider-native session record, so its
 execution truth is NOT in Harness and evidence claims about its work cannot
@@ -274,10 +273,11 @@ The harness now implements MCP server attachment via a neutral contract. Both
 target platforms consume MCP servers uniformly.
 
 For managed Agent Team execution, this neutral provider capability does not
-make Harness coordination an MCP surface. Launch composition removes MCP server
-ids `harness`, `agentfirm`, and `star-harness`; Work, Message, accept, Close,
-and Reopen use the Supervisor-authenticated `firm` CLI. Unrelated reviewed MCP
-servers remain available to the provider.
+make Harness coordination an MCP surface. The Harness MCP server is physically
+absent, and launch composition rejects MCP server ids `harness`, `agentfirm`,
+and `star-harness`; Work, Message, accept, Close, and Reopen use the
+Supervisor-authenticated `firm` CLI. Unrelated reviewed MCP servers remain
+available to the provider.
 
 A neutral `mcp` block on the launch spec, sourced from the provider launch profile:
 

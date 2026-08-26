@@ -173,7 +173,6 @@ const currentDeliverySurfacePaths = [
   "crates/firm-cli/src/main_modules/member_work_coordination.rs",
   "crates/firm-cli/src/main_modules/team_recovery_work.rs",
   "crates/firm-cli/src/main_modules/work_cli.rs",
-  "crates/firm-cli/src/mcp/work_tools.rs",
   "crates/firm-cli/src/role_views_api.rs",
   "crates/firm-cli/src/role_views_api/member_surface.rs",
   "crates/firm-cli/src/role_views_api/team_surface.rs",

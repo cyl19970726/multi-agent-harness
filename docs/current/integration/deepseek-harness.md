@@ -100,7 +100,7 @@ the same Session without a fabricated `turn_complete`.
 
 Repository acceptance includes the runner protocol tests, exact-version
 profile admission, closed five-provider registry and dispatch tests, runtime
-control replay safety, Dashboard/MCP exposure, formatting, clippy, full
+control replay safety, Dashboard/CLI exposure, formatting, clippy, full
 workspace tests, documentation governance and the clean-archive gate. A
 release claim additionally requires a post-merge real Agent Team canary driven
 by the NodeDaemon, with exact MemberRun, AgentSession, RuntimeCommand, delivery,

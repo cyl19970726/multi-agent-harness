@@ -17,7 +17,7 @@
         "agent-team",
         "work",
         "collaboration",
-        "mcp",
+        "cli",
         "multi-agent"
       ],
       "source": "./plugins/star-harness"

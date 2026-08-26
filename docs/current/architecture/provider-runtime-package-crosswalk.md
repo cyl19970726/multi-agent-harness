@@ -184,8 +184,9 @@ Landed DEV-58 milestones:
   classification, terminal-control acknowledgement, zero-output progression,
   and circuit-breaker decisions into `firm-application`. The CLI loop now
   implements the durable coordination port rather than owning those policies.
-  The MCP tool contract includes all five current Team bindings, including
-  `pi_rpc` and `deepseek_sdk`, and `check:provider-runtime-packages` continuously enforces the
+  The provider catalog includes all five current Team bindings, including
+  `pi_rpc` and `deepseek_sdk`; Harness coordination is CLI-only, and
+  `check:provider-runtime-packages` continuously enforces the
   closed catalog and forbidden crate edges.
 - current Claude wire-contract slice: makes
   `apps/claude-member-runner/contract/runner-v1.json` the single command/event

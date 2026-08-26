@@ -105,7 +105,7 @@ npx pnpm@9.15.4 acceptance:legacy-retirement
 
 (Formerly `acceptance:mission-wave`; renamed with the DOC-108 legacy cutover.)
 It covers the Agent Team create/start,
-shared Works/WorkDelivery, Work-linked conversation, Host-facing MCP transport, the
+shared Works/WorkDelivery, Work-linked conversation, Host-facing CLI transport, the
 Dashboard read model and operator controls, plus deterministic persistent
 Codex app-server, Claude Agent SDK, Kimi ACP, Pi RPC, and DeepSeek Harness Team Member adapters, and the
 retired Mission/Wave legacy reads and retired-write errors. It also
@@ -141,7 +141,7 @@ not a replacement execution history.
 Use focused Rust tests while iterating on one slice:
 
 ```bash
-cargo test -p firm-cli --test mcp_stdio --test team_run_api --test team_run_daemon -- --test-threads=1
+cargo test -p firm-cli --test team_run_api --test team_run_daemon -- --test-threads=1
 cargo test -p firm-cli --test team_run_api \
   persistent_codex_supervisor_survives_handoffs_transport_loss_and_team_completion \
   -- --test-threads=1

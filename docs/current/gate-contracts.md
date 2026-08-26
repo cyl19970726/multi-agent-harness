@@ -70,7 +70,7 @@ independent-review requirement by self-attribution.
 
 ## Transport parity
 
-CLI, HTTP and MCP resolve authenticated transport identity and its authorized
+CLI and HTTP resolve authenticated transport identity and its authorized
 authority set from server-side credential/session state, overwrite any payload
 actor claim, and invoke the same trust application service. HTTP request
 headers and bodies cannot select or expand either identity. The

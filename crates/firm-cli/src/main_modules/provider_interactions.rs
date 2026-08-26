@@ -840,6 +840,8 @@ impl MemberCollaborationEnvelope {
         mut capability_environment: harness_runtime_contract::CollaborationCapabilityEnvironment,
     ) -> harness_runtime_contract::CollaborationCapabilityEnvironment {
         let mut values = vec![
+            ("FIRM_TEAM_RUN_ID".to_string(), self.team_run_id.clone()),
+            ("FIRM_MEMBER_RUN_ID".to_string(), self.member_run_id.clone()),
             ("HARNESS_TEAM_RUN_ID".to_string(), self.team_run_id.clone()),
             (
                 "HARNESS_MEMBER_RUN_ID".to_string(),
@@ -1035,14 +1037,14 @@ pub(super) fn work_contract_prompt(
          OPERATING CONTRACT\n\
          - Do NOT use EnterPlanMode, ExitPlanMode, or any provider-native plan gate. Harness has no Plan Gate; discuss a Markdown plan through the Work-linked conversation when the Host requests one.\n\
          - Before implementation, mark this assigned Work in progress:\n\
-           \"$HARNESS_BIN\" member work start --work-id {work_id} --expected-version {work_version}\n\
-         - Read the board: \"$HARNESS_BIN\" team-run work list --team-run-id {team_run_id}\n\
-         - Inspect the latest version before every transition: \"$HARNESS_BIN\" team-run work show --work-id {work_id}\n\
+           \"$FIRM_BIN\" member work start --work-id {work_id} --expected-version {work_version}\n\
+         - Read the board: \"$FIRM_BIN\" team-run work list --team-run-id {team_run_id}\n\
+         - Inspect the latest version before every transition: \"$FIRM_BIN\" team-run work show --work-id {work_id}\n\
          - Ordinary canonical Message is conversation only. Messages never change Work ownership or status. Link each discussion to the exact Work being discussed; your current Work is {work_id}. A Host assigning, retrying, or reviewing another member must use that member's exact Work id from the board, never the Host Work id.\n\
-         - Read actionable mail through the same exact-self Supervisor binding with: \"$HARNESS_BIN\" member inbox --all --json.\n\
+         - Read actionable mail through the same exact-self Supervisor binding with: \"$FIRM_BIN\" member inbox --all --json.\n\
 {member_operating_contract}\n\
-         - If blocked, inspect the latest version, then run: \"$HARNESS_BIN\" member work block --work-id {work_id} --expected-version <latest-version> --reason '<reason>'; follow it with a concise Work-linked Message. Resume with member work resume and the next exact version.\n\
-         - When complete, inspect the latest version, then run: \"$HARNESS_BIN\" member work submit --work-id {work_id} --expected-version <latest-version> --result-summary '<result>' --candidate-revision '<exact-revision>' --artifact-ref '<artifact>' --check-ref '<check>'. Host acceptance, not provider completion, moves Work to done.\n\
+         - If blocked, inspect the latest version, then run: \"$FIRM_BIN\" member work block --work-id {work_id} --expected-version <latest-version> --reason '<reason>'; follow it with a concise Work-linked Message. Resume with member work resume and the next exact version.\n\
+         - When complete, inspect the latest version, then run: \"$FIRM_BIN\" member work submit --work-id {work_id} --expected-version <latest-version> --result-summary '<result>' --candidate-revision '<exact-revision>' --artifact-ref '<artifact>' --check-ref '<check>'. Host acceptance, not provider completion, moves Work to done.\n\
          - You may propose scoped follow-up Work, and may use provider-native subagents as implementation details.\n\
          - Do not deploy, push, merge, or perform sensitive external actions unless the Host explicitly gave that authority.\n\
          \n\
