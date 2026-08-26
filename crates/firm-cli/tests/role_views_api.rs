@@ -958,30 +958,71 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
         &action_headers(SIBLING_MEMBER_TOKEN, "sibling-submit-spoof", "2"),
     );
     assert_eq!(status, 409, "sibling submit spoof: {sibling_submit}");
+    assert_eq!(
+        ledger_digest(serve.fixture_store_root()),
+        before_sibling_attempts,
+        "foreign Work mutations must have zero durable side effects"
+    );
+    let works_before_linked_messages = store.latest_works().expect("Works before linked Messages");
     let linked_message_headers = action_headers(
         SIBLING_MEMBER_TOKEN,
-        "sibling-linked-message-spoof",
+        "sibling-linked-message",
         &team_revision,
     );
+    let linked_message_route =
+        format!("/v1/agentfirm/team-runs/{run_id}/messages/send?project={project_id}");
     let (status, sibling_linked_message) = serve.post_json_with_headers(
-        &decision_route,
+        &linked_message_route,
         &serde_json::json!({
-            "action":"request_decision",
-            "body":"false Work linkage",
-            "work_id":"work-store-live-1"
+            "action":"send_message",
+            "recipient_ids":[host_id],
+            "body":"Review finding linked to another member's Work",
+            "work_id":"work-store-live-1",
+            "response_required":false
         }),
         &linked_message_headers,
     );
     assert_eq!(
-        status, 409,
-        "sibling linked message spoof: {sibling_linked_message}"
+        status, 200,
+        "sibling linked Message: {sibling_linked_message}"
     );
-    let (status, unknown_linked_message) = serve.post_json_with_headers(
-        &decision_route,
+    let sibling_message_id = sibling_linked_message["projection"]["id"]
+        .as_str()
+        .expect("linked Message id");
+    let sibling_correlation_id = sibling_linked_message["projection"]["correlation_id"]
+        .as_str()
+        .expect("linked Message correlation");
+    let (status, sibling_linked_reply) = serve.post_json_with_headers(
+        &format!("/v1/agentfirm/team-runs/{run_id}/messages/reply?project={project_id}"),
         &serde_json::json!({
-            "action":"request_decision",
+            "action":"reply_message",
+            "recipient_ids":[host_id],
+            "body":"Correlated clarification for the same reviewed Work",
+            "correlation_id":sibling_correlation_id,
+            "causation_id":sibling_message_id,
+            "work_id":"work-store-live-1"
+        }),
+        &action_headers(
+            SIBLING_MEMBER_TOKEN,
+            "sibling-linked-message-reply",
+            &team_revision,
+        ),
+    );
+    assert_eq!(status, 200, "sibling linked reply: {sibling_linked_reply}");
+    assert_eq!(
+        store.latest_works().expect("Works after linked Messages"),
+        works_before_linked_messages,
+        "Message context must not mutate the linked Work"
+    );
+    let after_linked_messages = ledger_digest(serve.fixture_store_root());
+    let (status, unknown_linked_message) = serve.post_json_with_headers(
+        &linked_message_route,
+        &serde_json::json!({
+            "action":"send_message",
+            "recipient_ids":[host_id],
             "body":"unknown Work linkage",
-            "work_id":"missing-work"
+            "work_id":"missing-work",
+            "response_required":false
         }),
         &action_headers(
             SIBLING_MEMBER_TOKEN,
@@ -992,8 +1033,8 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
     assert_eq!(status, 409, "unknown linked Work: {unknown_linked_message}");
     assert_eq!(
         ledger_digest(serve.fixture_store_root()),
-        before_sibling_attempts,
-        "rejected sibling/unknown Work mutations must have zero durable side effects"
+        after_linked_messages,
+        "unknown Work linkage must have zero durable side effects"
     );
     assert_ne!(member_run_id, sibling_member_run_id);
     let (status, claim_replay) = serve.post_json_with_headers(
