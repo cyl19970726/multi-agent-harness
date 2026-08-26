@@ -32,19 +32,40 @@ Every live scenario declares exactly one class before launch:
   exact Host acceptance, and provider-native evidence containing both a tool
   start and terminal tool result for the implementer.
 
-Validate the response-local evidence bundle before claiming coding dogfood:
+Validate the response-local evidence bundle and its canonical coordination
+records before claiming coding dogfood:
 
 ```bash
-pnpm verify:agent-team-dogfood -- /path/to/evidence.json
+pnpm verify:agent-team-dogfood -- /path/to/evidence.json \
+  --trust-ledger /path/to/agentfirm_trust_operations.jsonl
 ```
 
 The evidence schema is
-`schemas/agent-team-dogfood/evidence.schema.json`. The verifier rejects a
-no-edit candidate, a same-revision candidate, missing WorkReport/review/Host
-acceptance, an implementer Session without terminal tool evidence, or changed
-files that do not exactly match Git's base-to-candidate diff. It does
-not persist provider-native content: the bundle carries only exact Session ids
-and event counts, while the provider-native store remains transcript authority.
+`schemas/agent-team-dogfood/evidence.schema.json`; canonical ledger examples and
+adversarial cases are indexed by
+`schemas/agent-team-dogfood/fixtures/canonical-ledger/manifest.json`. For
+`coding_dogfood`, `--trust-ledger` is required and identifies the current
+Execution Space's canonical `agentfirm_trust_operations.jsonl`. The verifier
+fails closed unless it finds exactly one matching WorkReport, independent Pass
+review Message, Host acceptance event, and native-session binding for each
+evidenced AgentSession. Those records must agree on the evidence bundle's exact
+Work, Work version, candidate revision, AgentMember identities, TeamRun,
+provider, AgentSession, and native-session ids. Missing, malformed, foreign,
+wrong, or ambiguous records fail verification.
+
+The ledger is append-only coordination evidence, so unrelated complete rows do
+not invalidate an exact match. Read only complete newline-terminated frames:
+ignore an unterminated trailing fragment left by an append crash, but fail
+closed on malformed complete frames. Skip whitespace-only rows, never read a
+sibling `.next` file, and never fold records from another
+`execution_space_id` into the match. The ledger and evidence bundle carry only
+ids, counts, digests, and `NativeSessionRef` pointers. Provider conversation
+content remains solely in the provider-native store; a transcript mirror is a
+contract violation, not additional proof.
+
+The verifier also rejects a no-edit candidate, a same-revision candidate, an
+implementer Session without terminal tool evidence, or changed files that do
+not exactly match Git's base-to-candidate diff.
 
 Passing a coordination canary can close only its focused claim. A Task or
 report may say `coding_dogfood` or “full Agent Team dogfood” only after the
