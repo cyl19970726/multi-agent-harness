@@ -67,6 +67,11 @@ function createFixture() {
 
   write(join(fakeBin, "cargo"), "#!/bin/sh\nexit 0\n", true);
   write(
+    join(fakeBin, "node"),
+    `#!/bin/sh\ncase "$*" in\n  *renameSync*previous-link-witness*) if [ "\${FAKE_NODE_FAIL_RESTORE:-0}" = 1 ]; then exit 44; fi;;\nesac\nexec "${process.execPath}" "$@"\n`,
+    true,
+  );
+  write(
     join(fakeBin, "mkdir"),
     "#!/bin/sh\n/bin/mkdir \"$@\" || exit $?\nlast=\nfor arg in \"$@\"; do last=$arg; done\ncase \"$last\" in\n  *.star-harness-install.lock)\n    if [ \"${FAKE_BLOCK_LOCK_ON_ACQUIRE:-0}\" = 1 ]; then touch \"$last/residual\"; fi\n    ;;\nesac\n",
     true,
@@ -78,7 +83,7 @@ function createFixture() {
   );
   write(
     join(fakeBin, "codex"),
-    "#!/bin/sh\nif [ \"$1 $2\" = 'plugin add' ]; then\n  if [ \"${FAKE_BLOCK_LOCK_RELEASE:-0}\" = 1 ]; then touch \"${STAR_HARNESS_BIN_LINK}.star-harness-install.lock/residual\"; fi\n  if [ \"${FAKE_FAIL_AFTER_PUBLICATION:-0}\" = 1 ]; then\n    if [ -n \"${FAKE_FOREIGN_TARGET:-}\" ]; then ln -sfn \"${FAKE_FOREIGN_TARGET}\" \"${STAR_HARNESS_BIN_LINK}\"; fi\n    if [ \"${FAKE_RECREATE_SAME_TARGET:-0}\" = 1 ]; then target=$(readlink \"${STAR_HARNESS_BIN_LINK}\"); unlink \"${STAR_HARNESS_BIN_LINK}\"; ln -s \"$target\" \"${STAR_HARNESS_BIN_LINK}\"; fi\n    if [ -n \"${FAKE_HOLD_READY:-}\" ]; then touch \"${FAKE_HOLD_READY}\"; while [ ! -e \"${FAKE_HOLD_RELEASE}\" ]; do sleep 0.01; done; fi\n    exit 42\n  fi\nfi\nexit 0\n",
+    "#!/bin/sh\nif [ \"$1 $2\" = 'plugin add' ]; then\n  if [ \"${FAKE_BLOCK_LOCK_RELEASE:-0}\" = 1 ]; then touch \"${STAR_HARNESS_BIN_LINK}.star-harness-install.lock/residual\"; fi\n  if [ -n \"${FAKE_HOLD_READY:-}\" ]; then touch \"${FAKE_HOLD_READY}\"; while [ ! -e \"${FAKE_HOLD_RELEASE}\" ]; do sleep 0.01; done; fi\n  if [ \"${FAKE_FAIL_AFTER_PUBLICATION:-0}\" = 1 ]; then\n    if [ -n \"${FAKE_FOREIGN_TARGET:-}\" ]; then ln -sfn \"${FAKE_FOREIGN_TARGET}\" \"${STAR_HARNESS_BIN_LINK}\"; fi\n    if [ \"${FAKE_RECREATE_SAME_TARGET:-0}\" = 1 ]; then target=$(readlink \"${STAR_HARNESS_BIN_LINK}\"); unlink \"${STAR_HARNESS_BIN_LINK}\"; ln -s \"$target\" \"${STAR_HARNESS_BIN_LINK}\"; fi\n    exit 42\n  fi\nfi\nexit 0\n",
     true,
   );
   write(
@@ -135,11 +140,44 @@ function withFixture(test) {
   }
 }
 
+async function withFixtureAsync(test) {
+  const fixture = createFixture();
+  try {
+    await test(fixture);
+  } finally {
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+}
+
 function readFailureState(fixture) {
   const stateDir = join(fixture.root, "state", "installations");
   const files = readdirSync(stateDir);
   assert.equal(files.length, 1, "failed apply must write one installation state");
   return JSON.parse(readFileSync(join(stateDir, files[0]), "utf8"));
+}
+
+async function terminateAfterPublication(fixture) {
+  const ready = join(fixture.root, "signal-ready");
+  const release = join(fixture.root, "signal-release");
+  const child = spawn(
+    "bash",
+    [join(fixture.repo, "scripts/manage-star-harness-install.sh"), "--apply"],
+    {
+      cwd: fixture.repo,
+      detached: true,
+      env: applyEnvironment(fixture, {
+        FAKE_HOLD_READY: ready,
+        FAKE_HOLD_RELEASE: release,
+      }),
+      stdio: "ignore",
+    },
+  );
+  waitForPath(ready, child);
+  const exit = new Promise((resolvePromise) => {
+    child.once("exit", (code, signal) => resolvePromise({ code, signal }));
+  });
+  process.kill(-child.pid, "SIGTERM");
+  return exit;
 }
 
 withFixture((fixture) => {
@@ -182,6 +220,19 @@ withFixture((fixture) => {
   assert.notEqual(result.status, 0, "the injected pre-publication failure must fail apply");
   assert.equal(readlinkSync(fixture.binLink), foreignTarget);
   assert.equal(readFailureState(fixture).status, "failed_before_binary_publication");
+});
+
+withFixture((fixture) => {
+  const brokenTarget = join(fixture.root, "missing-harness");
+  mkdirSync(dirname(fixture.binLink), { recursive: true });
+  symlinkSync(brokenTarget, fixture.binLink);
+  const previousIdentity = lstatSync(fixture.binLink);
+  const result = runApply(fixture, { FAKE_FAIL_AFTER_PUBLICATION: "1" });
+  assert.notEqual(result.status, 0);
+  assert.equal(readlinkSync(fixture.binLink), brokenTarget);
+  const restoredIdentity = lstatSync(fixture.binLink);
+  assert.equal(restoredIdentity.dev, previousIdentity.dev);
+  assert.equal(restoredIdentity.ino, previousIdentity.ino);
 });
 
 withFixture((fixture) => {
@@ -253,6 +304,59 @@ withFixture((fixture) => {
     readFailureState(fixture).status,
     "failed_after_binary_publication_remove_failed",
   );
+  assert.equal(
+    readFailureState(fixture).install_lock_status,
+    "rollback_residual_preserved",
+  );
+  const lockDir = `${fixture.binLink}.star-harness-install.lock`;
+  assert.equal(existsSync(lockDir), true);
+  assert.equal(existsSync(join(lockDir, "published-link-witness")), true);
+});
+
+withFixture((fixture) => {
+  const previousTarget = join(fixture.root, "previous-harness");
+  write(previousTarget, "#!/bin/sh\nexit 0\n", true);
+  mkdirSync(dirname(fixture.binLink), { recursive: true });
+  symlinkSync(previousTarget, fixture.binLink);
+  const result = runApply(fixture, {
+    FAKE_CLAUDE_FAIL_AFTER_PUBLICATION: "1",
+    FAKE_NODE_FAIL_RESTORE: "1",
+  });
+  assert.equal(result.status, 42);
+  assert.notEqual(readlinkSync(fixture.binLink), previousTarget);
+  const state = readFailureState(fixture);
+  assert.equal(state.status, "failed_after_binary_publication_restore_failed");
+  assert.equal(state.install_lock_status, "rollback_residual_preserved");
+  const lockDir = `${fixture.binLink}.star-harness-install.lock`;
+  assert.equal(existsSync(join(lockDir, "previous-link-witness")), true);
+  assert.equal(existsSync(join(lockDir, "published-link-witness")), true);
+});
+
+await withFixtureAsync(async (fixture) => {
+  const result = await terminateAfterPublication(fixture);
+  assert.equal(result.code, 143);
+  assert.equal(result.signal, null);
+  assert.equal(existsSync(fixture.binLink), false);
+  const state = readFailureState(fixture);
+  assert.equal(state.status, "failed_and_created_binary_link_removed");
+  assert.equal(state.original_exit_status, 143);
+  assert.equal(state.final_exit_status, 143);
+  assert.equal(existsSync(`${fixture.binLink}.star-harness-install.lock`), false);
+});
+
+await withFixtureAsync(async (fixture) => {
+  const previousTarget = join(fixture.root, "previous-harness");
+  write(previousTarget, "#!/bin/sh\nexit 0\n", true);
+  mkdirSync(dirname(fixture.binLink), { recursive: true });
+  symlinkSync(previousTarget, fixture.binLink);
+  const previousIdentity = lstatSync(fixture.binLink);
+  const result = await terminateAfterPublication(fixture);
+  assert.equal(result.code, 143);
+  assert.equal(readlinkSync(fixture.binLink), previousTarget);
+  const restoredIdentity = lstatSync(fixture.binLink);
+  assert.equal(restoredIdentity.dev, previousIdentity.dev);
+  assert.equal(restoredIdentity.ino, previousIdentity.ino);
+  assert.equal(readFailureState(fixture).status, "failed_and_previous_binary_restored");
 });
 
 withFixture((fixture) => {
