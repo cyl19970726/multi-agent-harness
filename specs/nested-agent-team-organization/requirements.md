@@ -1,10 +1,15 @@
 # Nested Agent Team Organization Requirements
 
 ```text
-status: proposed implementation spec
+status: historical design; superseded by flat AgentTeam authority
 owner_role: product-architecture
-target: persistent recursive Agent Teams as the Organization agent model
+target: retired recursive Agent Team proposal
 ```
+
+> **Superseded historical evidence.** Current authority is flat AgentTeams with
+> immutable `node_id` placement. Cross-Team responsibility uses explicit Work
+> delegation, never parent/child Team topology. Nothing in this file authorizes
+> a recursive Team writer, migration, projection, API, or fallback.
 
 ## Problem
 

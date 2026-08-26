@@ -1,15 +1,18 @@
 # Provider Runtime Package Crosswalk
 
 ```text
-status: DEV-58 landed; DEV-59 Host convergence amendment; DEV-63 DeepSeek Harness amendment
+status: landed ownership crosswalk through DEV-105 RuntimeCommand composition
 issues: https://github.com/cyl19970726/multi-agent-harness/issues/499,
   https://github.com/cyl19970726/multi-agent-harness/issues/501
 starting_revision: 68fd9d33178f48d107a3a28d8580079263ff3e55
 ```
 
-This crosswalk records the package-ownership migration for current Agent Team
-and Host provider runtimes. It does not restore Dynamic Workflow. Historical
-Workflow records remain export, verify, and restore-read evidence only.
+This crosswalk preserves the starting-revision package map and records the
+ownership that subsequently landed for current Agent Team and Host provider
+runtimes. Columns explicitly labelled "starting revision" are historical, not
+current implementation claims. Current code and structural gates own shipped
+truth. This document does not restore Dynamic Workflow; historical Workflow
+records remain export, verify, and restore-read evidence only.
 
 ## Execution surfaces
 
@@ -30,7 +33,7 @@ acceptance update.
 
 ## Symbol ownership
 
-| Current source | Current responsibility | Classification | Target |
+| Source at starting revision | Responsibility at starting revision | Classification | Landed target |
 | --- | --- | --- | --- |
 | `runtime_adapter_contract.rs` | provider-neutral lifecycle intents, fences, receipts, capability admission, conformance tests | current Team contract | `firm-runtime-contract` (extracted in DEV-58) |
 | `runtime_adapter.rs` | Team wake/claim/cycle/settle loop plus runtime control | current Team durable port composition | provider-facing language lives in `firm-runtime-contract`; monotonic round progression lives in `firm-runtime-supervisor`; provider-neutral round classification, control acknowledgement, and circuit-breaker policy live in `firm-application`; CLI code is the durable Work/Message/Store/RuntimeCommand port and executable wiring |
@@ -86,7 +89,9 @@ Forbidden edges:
 
 ## Completion evidence
 
-This document describes a migration, not a shipped claim. Completion requires:
+The starting-revision tables describe a migration; the landed list below is a
+crosswalk to shipped owners, not an independent implementation authority.
+Completion evidence requires:
 
 - the crate graph and source paths proving every target owner;
 - catalog completeness tests proving intentional unsupported gaps;
@@ -96,7 +101,7 @@ This document describes a migration, not a shipped claim. Completion requires:
 - canonical repository checks at the submitted SHA and an independent Review
   of that same SHA.
 
-Landed DEV-58 milestones:
+Landed milestones:
 
 - `e78b533c`: extracted `firm-runtime-contract`, moved its conformance tests,
   and deleted 114 unreachable post-retirement Workflow test sources;
@@ -104,6 +109,12 @@ Landed DEV-58 milestones:
   descriptor and made Team selection/provider reporting derive from it;
 - DEV-63 extends that same closed descriptor to five providers with
   `deepseek_harness` / `deepseek_sdk`; the DSH bridge remains provider-owned;
+- DEV-105 gives `firm-cli::runtime_composition` the single crate-private owner
+  namespace for RuntimeCommand admission/durable preparation, exact binding,
+  post-admission daemon revalidation, postcondition mapping, and settlement.
+  The structural gate requires the three owner modules, rejects the retired
+  flat binding/settlement files, and prevents those responsibilities from
+  returning to `runtime_effects` or provider adapters;
 - current transport slice: extracts provider-neutral process-group teardown,
   idle/wall timeouts, NDJSON collection, and stderr draining to
   `firm-runtime-host`; removes unused orphan-pidfile and live-filename arguments;

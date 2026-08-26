@@ -21,12 +21,15 @@ Keep four explicit values:
 - `ExecutionSpace.store_root`: Harness coordination storage only;
 - `ProjectBinding.project_root`: registered execution-resource identity;
 - `AgentTeamRun.execution_root`: run-level cwd, defaulting to `project_root`;
-- `MemberRun.worktree_ref`: optional member-level cwd override.
+- `MemberWorkspaceBinding.canonical_root`: optional member-run workspace
+  binding and highest-precedence provider cwd.
 
-New CLI, HTTP, and MCP creation accepts the latter two overrides. With a
-registered project, each override must be the canonical project root or a Git
-worktree top level whose canonical Git common directory matches the project.
-Provider spawn resolves `worktree_ref > execution_root > project_root` and
+Host/operator creation surfaces accept the latter two explicit bindings;
+managed agents use authenticated `firm` CLI Role Actions and receive no
+Harness MCP mutation surface. With a registered project, each override must be
+the canonical project root or a Git worktree top level whose canonical Git
+common directory matches the project.
+Provider spawn resolves `MemberWorkspaceBinding.canonical_root > execution_root > project_root` and
 never falls back to an Execution Space or the legacy Company Store. The internal
 `ProjectContext` adapter may still carry a compatibility store locator, but it
 does not own native coordination writes.
@@ -51,25 +54,26 @@ discovered instruction/skill directory paths. It does not copy file contents,
 configuration values, credentials, environment dumps, provider transcript,
 tool stream, or thinking. The Dashboard projects these fields directly.
 
-All new fields are optional on read so historical JSONL remains valid.
+Historical sparse records remain readable, but they do not create a current
+workspace binding or authorize a fallback cwd.
 
-The Host assigns responsibility and conflict boundaries, not mandatory Git
-mechanics. A trusted development Member may decide to create its own linked
-worktree inside the same Git common directory. It reports the resolved absolute
-path, branch, commit, checks and shared-file conflicts; Harness validates the
-workspace when it becomes a launch override but does not schedule worktree
-steps or create a Task Graph.
+The Host explicitly assigns each MemberRun a project root, existing cwd, or
+worktree when it creates the Team/member/session. The Host may delegate the Git
+mechanics to a trusted development Member, but the resulting canonical root
+must still be explicitly bound before launch. Harness validates and freezes the
+assignment; it does not allocate worktrees, enforce cwd exclusivity, or create
+a scheduler or Task Graph.
 
 ## Consequences
 
 - Moving the centralized store cannot change provider context.
 - External linked worktrees are supported without weakening repository
   identity validation.
-- Member-owned worktree creation avoids Host micromanagement while keeping
-  responsibility and conflict boundaries explicit.
+- Host-assigned cwd/worktree placement keeps responsibility and conflict
+  boundaries explicit while allowing shared cwd or optional isolation.
 - Operators can compare requested and actual launch workspace facts.
-- Raw-store compatibility writes snapshot their creation cwd because no
-  registered project identity exists; raw-store use remains deprecated.
+- Missing current workspace authority fails closed instead of deriving a
+  provider cwd from a legacy store location.
 
 ## Validation
 

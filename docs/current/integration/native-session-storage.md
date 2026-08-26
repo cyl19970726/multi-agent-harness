@@ -15,9 +15,10 @@ becoming a second transcript database.
 
 This contract defines the adapter seam between:
 
-- Harness coordination truth (`AgentTeamRun`, `MemberRun`, Work, messages,
-  interactions, outcomes, artifact/check refs, and the retired read-only
-  Mission/Mission Log legacy rows); and
+- Harness coordination truth (`AgentTeamRun`, `MemberRun`, `AgentSession`,
+  Work/WorkDelivery, identity-first Messages and per-recipient delivery,
+  RuntimeCommands, outcomes, artifact/check refs, and retired read-only legacy
+  evidence); and
 - provider-native execution truth (chat, tools, commands, file events, turns,
   native children, and resume data).
 
@@ -124,7 +125,7 @@ promotes it into a coordination object. Automatic copying is prohibited.
 
 ```text
 GET Harness Team/Member projection
-  -> TeamRun/MemberRun/Work/WorkDelivery/messages/interactions/outcome (+ legacy Mission rows when present)
+  -> TeamRun/MemberRun/AgentSession/Work/WorkDelivery/Messages/RuntimeCommands/outcome
 
 GET AgentWorkspace from the same-machine loopback local Operator
   -> provider adapter probe
@@ -154,11 +155,13 @@ display detail, not state.
 ## Execution-root boundary
 
 `store_root` is only the centralized Harness coordination store. A provider's
-cwd is independently resolved as member `provider_cwd_hint`, TeamRun
-`execution_root`, then selected Workspace `project_root`. For new raw-store
-compatibility rows the process cwd is snapshotted as `execution_root` at create
-time. The provider-native session locator records what is needed to find
-the provider session; it does not turn `store_root` into a working directory.
+cwd is independently resolved as current
+`MemberWorkspaceBinding.canonical_root`, then TeamRun `execution_root`, then
+`ProjectBinding.project_root`. The resolved canonical cwd is frozen for the
+AgentSession; no legacy Store location or provider observation may supply a
+fallback authority. The provider-native session locator records what is needed
+to find the provider session; it does not turn `store_root` into a working
+directory.
 
 This distinction is observable behavior, not naming trivia. Codex discovers
 project `AGENTS.md` plus project/root skills and configuration from its launch
@@ -246,8 +249,9 @@ states. UI must not invent native activity or resume from a Harness replay.
   field `resume_native_session_id` or CLI
   `--resume-member <member-name>:<native-session-id>`. Resume is never inferred
   from the newest local session.
-- Codex Agent Team app-server uses `thread/resume`; Kimi ACP uses
-  `session/load`. An explicit legacy non-Team compatibility path may use
+- Codex Agent Team app-server uses `thread/resume`; Kimi ACP prefers
+  `session/resume` and uses `session/load` only as the reviewed
+  method-not-found compatibility path. An explicit legacy non-Team path may use
   `codex exec resume`, but
   Harness never falls back to it for a Team member. A provider rejection fails
   the member honestly instead of falling back to a fresh session.

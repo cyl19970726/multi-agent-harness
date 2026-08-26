@@ -1,10 +1,16 @@
 # Nested Agent Team Organization Design
 
 ```text
-status: proposed technical design
+status: historical design; superseded by flat AgentTeam authority
 owner_role: product-architecture
 requirements: specs/nested-agent-team-organization/requirements.md
 ```
+
+> **Superseded historical evidence.** Current authority is flat AgentTeams with
+> immutable `node_id` placement. Cross-Team responsibility uses explicit Work
+> delegation, never parent/child Team topology. The schemas, migration paths,
+> projections, APIs, and WorkDelivery discussion below are non-operative and
+> must not become a current writer, reader, migration, or fallback.
 
 ## Design thesis
 
