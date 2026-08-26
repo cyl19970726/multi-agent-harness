@@ -4,9 +4,11 @@
 //! AgentSession binding, then consumed by the disposable provider projection
 //! service. Harness never copies the transcript or keeps a replay cursor.
 
+use std::cell::Cell;
 use std::fs;
-use std::io::{BufRead, BufReader, Seek};
+use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 
 use harness_core::NativeSessionRef;
 use serde::de::{self, IgnoredAny, MapAccess, Visitor};
@@ -17,6 +19,7 @@ use crate::{CliError, CliResult};
 mod deepseek;
 
 const MAX_DISCOVERY_LINE_BYTES: usize = 1024 * 1024;
+const MAX_DISCOVERY_HEADER_BYTES: usize = 64 * 1024;
 
 /// Find the canonical Codex rollout whose own `session_meta.payload.id`
 /// exactly names `session_id`.
@@ -114,38 +117,46 @@ fn validate_codex_rollout_metadata(path: &Path, session_id: &str) -> CliResult<(
         if reader.fill_buf()?.is_empty() {
             break;
         }
-        let line_start = reader.stream_position()?;
-        let row = match CodexDiscoveryRow::deserialize(&mut serde_json::Deserializer::from_reader(
-            &mut reader,
-        )) {
+        let allow_oversized_event = session_meta_id.is_some();
+        let mut row_reader = JsonlRowReader::new(&mut reader);
+        let budget = Rc::clone(&row_reader.budget);
+        let mut buffered_row = BufReader::with_capacity(8 * 1024, &mut row_reader);
+        let row = match deserialize_codex_discovery_row(
+            &mut serde_json::Deserializer::from_reader(&mut buffered_row),
+            budget,
+            allow_oversized_event,
+        ) {
             Ok(row) => row,
-            Err(error) if error.is_eof() => break,
+            Err(error) if error.is_eof() => {
+                drain_codex_row(&mut buffered_row, false)?;
+                drop(buffered_row);
+                let terminated = row_reader.terminated;
+                if terminated {
+                    return Err(error.into());
+                }
+                break;
+            }
             Err(error) => return Err(error.into()),
         };
-        let mut terminator = Vec::new();
-        let terminator_bytes = reader.read_until(b'\n', &mut terminator)?;
-        if terminator_bytes == 0 || !terminator.ends_with(b"\n") {
+        drain_codex_row(&mut buffered_row, true)?;
+        drop(buffered_row);
+        if !row_reader.terminated {
             // The provider may be appending the final row. It is not valid
             // metadata yet and the projection reader will expose the omitted
             // tail as truncated; complete malformed rows remain errors.
             break;
         }
-        if !terminator[..terminator.len() - 1]
-            .iter()
-            .all(u8::is_ascii_whitespace)
-        {
+        let line_bytes = row_reader.bytes_read;
+        drop(row_reader);
+        let newline = reader.fill_buf()?;
+        if newline.first() != Some(&b'\n') {
             return Err(CliError::Usage(format!(
-                "Codex rollout row has trailing non-whitespace content: {}",
+                "Codex rollout row lost its JSONL terminator: {}",
                 path.display()
             )));
         }
-        let line_bytes = reader.stream_position()?.saturating_sub(line_start) as usize;
+        reader.consume(1);
         match row {
-            CodexDiscoveryRow::SessionMeta(_) if line_bytes > MAX_DISCOVERY_LINE_BYTES => {
-                return Err(CliError::Usage(
-                    "provider-native Session metadata line exceeds 1 MiB".into(),
-                ));
-            }
             CodexDiscoveryRow::SessionMeta(payload_id) => {
                 if session_meta_id.replace(payload_id).is_some() {
                     return Err(CliError::Usage(format!(
@@ -184,66 +195,149 @@ enum CodexDiscoveryRow {
     Other,
 }
 
-impl<'de> Deserialize<'de> for CodexDiscoveryRow {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        struct RowVisitor;
+struct JsonlRowReader<'a, R> {
+    inner: &'a mut R,
+    budget: Rc<Cell<Option<usize>>>,
+    bytes_read: usize,
+    terminated: bool,
+}
 
-        impl<'de> Visitor<'de> for RowVisitor {
-            type Value = CodexDiscoveryRow;
+impl<'a, R> JsonlRowReader<'a, R> {
+    fn new(inner: &'a mut R) -> Self {
+        Self {
+            inner,
+            budget: Rc::new(Cell::new(Some(MAX_DISCOVERY_HEADER_BYTES))),
+            bytes_read: 0,
+            terminated: false,
+        }
+    }
+}
 
-            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                formatter.write_str("a Codex provider-native JSON object")
-            }
+impl<R: BufRead> Read for JsonlRowReader<'_, R> {
+    fn read(&mut self, output: &mut [u8]) -> std::io::Result<usize> {
+        if output.is_empty() || self.terminated {
+            return Ok(0);
+        }
+        let available = self.inner.fill_buf()?;
+        if available.is_empty() {
+            return Ok(0);
+        }
+        let newline = available.iter().position(|byte| *byte == b'\n');
+        let before_newline = newline.unwrap_or(available.len());
+        if before_newline == 0 {
+            self.terminated = true;
+            return Ok(0);
+        }
+        let take = before_newline.min(output.len());
+        if self
+            .budget
+            .get()
+            .is_some_and(|limit| self.bytes_read.saturating_add(take) > limit)
+        {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "provider-native Session discovery row exceeds its bounded classification budget",
+            ));
+        }
+        output[..take].copy_from_slice(&available[..take]);
+        self.inner.consume(take);
+        self.bytes_read = self.bytes_read.saturating_add(take);
+        if newline == Some(take) {
+            self.terminated = true;
+        }
+        Ok(take)
+    }
+}
 
-            fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
-            where
-                A: MapAccess<'de>,
-            {
-                let mut row_type = None;
-                let mut session_meta_id = None;
-                while let Some(key) = map.next_key::<String>()? {
-                    match key.as_str() {
-                        "type" => {
-                            if row_type.is_some() {
-                                return Err(de::Error::duplicate_field("type"));
-                            }
-                            row_type = Some(map.next_value::<String>()?);
-                        }
-                        "payload" if row_type.as_deref() == Some("session_meta") => {
-                            #[derive(Deserialize)]
-                            struct SessionMetaPayload {
-                                id: String,
-                            }
-                            if session_meta_id.is_some() {
-                                return Err(de::Error::duplicate_field("payload"));
-                            }
-                            session_meta_id = Some(map.next_value::<SessionMetaPayload>()?.id);
-                        }
-                        "payload" if row_type.is_none() => {
-                            return Err(de::Error::custom(
-                                "Codex rollout payload precedes its row type",
-                            ));
-                        }
-                        _ => {
-                            map.next_value::<IgnoredAny>()?;
-                        }
-                    }
-                }
-                match row_type.as_deref() {
-                    Some("session_meta") => session_meta_id
-                        .map(CodexDiscoveryRow::SessionMeta)
-                        .ok_or_else(|| de::Error::missing_field("payload.id")),
-                    Some(_) => Ok(CodexDiscoveryRow::Other),
-                    None => Err(de::Error::missing_field("type")),
-                }
-            }
+fn drain_codex_row(reader: &mut impl Read, require_whitespace: bool) -> CliResult<()> {
+    let mut buffer = [0_u8; 1024];
+    loop {
+        let read = reader.read(&mut buffer)?;
+        if read == 0 {
+            return Ok(());
+        }
+        if require_whitespace && !buffer[..read].iter().all(u8::is_ascii_whitespace) {
+            return Err(CliError::Usage(
+                "Codex rollout row has trailing non-whitespace content".into(),
+            ));
+        }
+    }
+}
+
+fn deserialize_codex_discovery_row<'de, D>(
+    deserializer: D,
+    budget: Rc<Cell<Option<usize>>>,
+    allow_oversized_event: bool,
+) -> Result<CodexDiscoveryRow, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    struct RowVisitor {
+        budget: Rc<Cell<Option<usize>>>,
+        allow_oversized_event: bool,
+    }
+
+    impl<'de> Visitor<'de> for RowVisitor {
+        type Value = CodexDiscoveryRow;
+
+        fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter.write_str("one complete Codex provider-native JSONL object")
         }
 
-        deserializer.deserialize_map(RowVisitor)
+        fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+        where
+            A: MapAccess<'de>,
+        {
+            let mut row_type = None;
+            let mut session_meta_id = None;
+            while let Some(key) = map.next_key::<String>()? {
+                match key.as_str() {
+                    "type" => {
+                        if row_type.is_some() {
+                            return Err(de::Error::duplicate_field("type"));
+                        }
+                        let value = map.next_value::<String>()?;
+                        self.budget.set(match value.as_str() {
+                            "session_meta" => Some(MAX_DISCOVERY_HEADER_BYTES),
+                            _ if self.allow_oversized_event => None,
+                            _ => Some(MAX_DISCOVERY_LINE_BYTES),
+                        });
+                        row_type = Some(value);
+                    }
+                    "payload" if row_type.as_deref() == Some("session_meta") => {
+                        #[derive(Deserialize)]
+                        struct SessionMetaPayload {
+                            id: String,
+                        }
+                        if session_meta_id.is_some() {
+                            return Err(de::Error::duplicate_field("payload"));
+                        }
+                        session_meta_id = Some(map.next_value::<SessionMetaPayload>()?.id);
+                    }
+                    "payload" if row_type.is_none() => {
+                        return Err(de::Error::custom(
+                            "Codex rollout payload precedes its row type",
+                        ));
+                    }
+                    _ => {
+                        map.next_value::<IgnoredAny>()?;
+                    }
+                }
+            }
+            match row_type.as_deref() {
+                Some("session_meta") => session_meta_id
+                    .map(CodexDiscoveryRow::SessionMeta)
+                    .ok_or_else(|| de::Error::missing_field("payload.id")),
+                Some(_) => Ok(CodexDiscoveryRow::Other),
+                None => Err(de::Error::missing_field("type")),
+            }
+        }
     }
+
+    deserializer.deserialize_map(RowVisitor {
+        budget,
+        allow_oversized_event,
+    })
 }
 
 fn locate(session: &NativeSessionRef) -> CliResult<Option<PathBuf>> {
@@ -657,6 +751,49 @@ mod tests {
     }
 
     #[test]
+    fn complete_malformed_codex_tail_is_not_treated_as_an_active_partial_row() {
+        let home = codex_home("complete-malformed-tail");
+        let session_id = "019f-complete-malformed-tail";
+        let rollout = home
+            .join("sessions/2026/08/09")
+            .join(format!("rollout-2026-08-09T00-00-00-{session_id}.jsonl"));
+        fs::write(
+            rollout,
+            format!(
+                "{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"{session_id}\"}}}}\n{{\"type\":\"event_msg\"\n"
+            ),
+        )
+        .expect("rollout");
+        assert!(discover_codex_rollout(&home, session_id).is_err());
+        fs::remove_dir_all(home).expect("cleanup");
+    }
+
+    #[test]
+    fn codex_discovery_never_joins_json_across_physical_lines() {
+        for (label, contents) in [
+            (
+                "split-metadata",
+                "{\"type\":\n\"session_meta\",\"payload\":{\"id\":\"019f-split-metadata\"}}\n"
+                    .to_string(),
+            ),
+            (
+                "split-event",
+                "{\"type\":\"session_meta\",\"payload\":{\"id\":\"019f-split-event\"}}\n{\"type\":\"event_msg\",\n\"payload\":{}}\n"
+                    .to_string(),
+            ),
+        ] {
+            let home = codex_home(label);
+            let session_id = format!("019f-{label}");
+            let rollout = home
+                .join("sessions/2026/08/09")
+                .join(format!("rollout-2026-08-09T00-00-00-{session_id}.jsonl"));
+            fs::write(rollout, contents).expect("rollout");
+            assert!(discover_codex_rollout(&home, &session_id).is_err());
+            fs::remove_dir_all(home).expect("cleanup");
+        }
+    }
+
+    #[test]
     fn oversized_codex_event_after_exact_metadata_does_not_break_discovery() {
         let home = codex_home("oversized-event-after-metadata");
         let session_id = "019f-oversized-event-after-metadata";
@@ -695,8 +832,7 @@ mod tests {
         );
         fs::write(rollout, contents).expect("rollout");
 
-        let error = discover_codex_rollout(&home, session_id).expect_err("must fail closed");
-        assert!(error.to_string().contains("before session metadata"));
+        discover_codex_rollout(&home, session_id).expect_err("must fail closed");
         fs::remove_dir_all(home).expect("cleanup");
     }
 
@@ -733,6 +869,43 @@ mod tests {
             assert!(discover_codex_rollout(&home, &session_id).is_err());
             fs::remove_dir_all(home).expect("cleanup");
         }
+    }
+
+    #[test]
+    fn oversized_codex_metadata_id_and_large_trailing_whitespace_are_bounded() {
+        let metadata_home = codex_home("oversized-metadata-id");
+        let metadata_session_id = "019f-oversized-metadata-id";
+        let metadata_rollout = metadata_home.join("sessions/2026/08/09").join(format!(
+            "rollout-2026-08-09T00-00-00-{metadata_session_id}.jsonl"
+        ));
+        fs::write(
+            metadata_rollout,
+            format!(
+                "{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"{}\"}}}}\n",
+                "x".repeat(MAX_DISCOVERY_HEADER_BYTES)
+            ),
+        )
+        .expect("rollout");
+        assert!(discover_codex_rollout(&metadata_home, metadata_session_id).is_err());
+        fs::remove_dir_all(metadata_home).expect("cleanup");
+
+        let event_home = codex_home("large-trailing-whitespace");
+        let event_session_id = "019f-large-trailing-whitespace";
+        let event_rollout = event_home.join("sessions/2026/08/09").join(format!(
+            "rollout-2026-08-09T00-00-00-{event_session_id}.jsonl"
+        ));
+        let mut contents = format!(
+            "{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"{event_session_id}\"}}}}\n{{\"type\":\"event_msg\",\"payload\":{{}}}}"
+        )
+        .into_bytes();
+        contents.extend(std::iter::repeat_n(b' ', MAX_DISCOVERY_LINE_BYTES + 1));
+        contents.push(b'\n');
+        fs::write(&event_rollout, contents).expect("rollout");
+        assert_eq!(
+            discover_codex_rollout(&event_home, event_session_id).expect("bounded whitespace scan"),
+            Some(fs::canonicalize(&event_rollout).expect("canonical rollout"))
+        );
+        fs::remove_dir_all(event_home).expect("cleanup");
     }
 
     #[test]
