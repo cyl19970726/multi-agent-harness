@@ -1203,7 +1203,7 @@ impl HttpExchange<'_> {
                                 permit.member_run_id
                             ))
                         })?;
-                    if !member_before.is_external_interactive() {
+                    if permit.runtime_kind == harness_application::MemberCloseRuntimeKind::Managed {
                         let close_result = if managed_member_runtime_close_is_settled(
                             &role_store,
                             &member_before,

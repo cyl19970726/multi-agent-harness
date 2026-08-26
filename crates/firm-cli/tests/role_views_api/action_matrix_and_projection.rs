@@ -441,6 +441,45 @@ pub(super) fn assert_action_matrix_and_final_projections(context: ActionMatrixCo
     let lifecycle_route = |operation: &str| {
         format!("/v1/agentfirm/member-runs/{member_run_id}/{operation}?project={project_id}")
     };
+    let close_version = close_action["required_version"]
+        .as_u64()
+        .expect("Close required_version")
+        .to_string();
+    for (label, headers, expected_code) in [
+        (
+            "missing confirmation",
+            vec![
+                ("X-AgentFirm-Token", TOKEN),
+                ("Idempotency-Key", "matrix-member-close-unconfirmed"),
+                ("If-Match", close_version.as_str()),
+            ],
+            "CONFIRMATION_REQUIRED",
+        ),
+        (
+            "unauthorized actor",
+            vec![
+                ("X-AgentFirm-Token", SIBLING_MEMBER_TOKEN),
+                ("Idempotency-Key", "matrix-member-close-unauthorized"),
+                ("If-Match", close_version.as_str()),
+                ("X-AgentFirm-Confirm", "close_member_run"),
+            ],
+            "UNAUTHORIZED_ACTOR",
+        ),
+    ] {
+        let before = ledger_digest(serve.fixture_store_root());
+        let (status, rejected) = serve.post_json_with_headers(
+            &lifecycle_route("close"),
+            &serde_json::json!({"action":"close_member_run"}),
+            &headers,
+        );
+        assert_eq!(status, 409, "{label} Close rejection: {rejected}");
+        assert_eq!(rejected["error"]["code"], expected_code, "{label}");
+        assert_eq!(
+            ledger_digest(serve.fixture_store_root()),
+            before,
+            "{label} Close must have byte-zero durable side effects"
+        );
+    }
     let stale_close_version = u64::MAX.to_string();
     let stale_close_headers = [
         ("X-AgentFirm-Token", TOKEN),
