@@ -155,7 +155,7 @@ rollback_published_bin_link() {
 rollback_binary_after_error() {
   local exit_status=$1
   if [[ "${exit_status}" -eq 0 || "${APPLY_IN_PROGRESS}" != "true" ]]; then
-    return
+    return 0
   fi
   rollback_published_bin_link || true
 }
@@ -195,7 +195,7 @@ finish_install() {
   if [[ "${INSTALL_COMPLETED}" == "true" || "${original_exit_status}" -eq 0 ]]; then
     ROLLBACK_BINARY_STATUS="not_attempted_install_completed"
   else
-    rollback_binary_after_error "${original_exit_status}"
+    rollback_binary_after_error "${original_exit_status}" || true
   fi
   if ! release_bin_link_lock && [[ "${final_exit_status}" -eq 0 ]]; then
     final_exit_status=1
