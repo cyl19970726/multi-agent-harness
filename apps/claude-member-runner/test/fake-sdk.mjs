@@ -16,6 +16,7 @@ export function createFakeSdk({
   sessionId = "fake-session-0001",
   claudeCodeVersion = "2.1.220-test",
   model = "claude-sonnet-4-5",
+  emitInit = true,
   // When set, every turn ends in a provider API failure result, shaped exactly
   // like the real SDK's: `subtype` stays "success" while `is_error` carries the
   // truth (live probe, issue #293).
@@ -35,13 +36,15 @@ export function createFakeSdk({
     let interrupted = false;
 
     async function* run() {
-      yield {
-        type: "system",
-        subtype: "init",
-        session_id: sessionId,
-        claude_code_version: claudeCodeVersion,
-        model,
-      };
+      if (emitInit) {
+        yield {
+          type: "system",
+          subtype: "init",
+          session_id: sessionId,
+          claude_code_version: claudeCodeVersion,
+          model,
+        };
+      }
       // One turn per inbound user message. The stream ends only when the
       // mailbox closes — which is exactly the property under test.
       for await (const userMessage of prompt) {

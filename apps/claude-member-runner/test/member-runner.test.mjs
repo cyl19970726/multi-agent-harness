@@ -138,6 +138,45 @@ test("only the Host ends the member, and the reason is recorded", async () => {
   assert.deepEqual(closed[0].data.undelivered, []);
 });
 
+test("an adopted idle runner closes with its exact retained native session", async () => {
+  const events = [];
+  const sdk = createFakeSdk({ emitInit: false });
+  const runner = createMemberRunner({
+    sdk,
+    config: { ...baseConfig, resumeSessionId: "retained-native-session" },
+    emit: (event, data) => events.push({ event, data }),
+  });
+  const done = runner.start();
+
+  // Close before any new SDK frame. The receipt must identify the exact
+  // session supplied for resume, not wait for or invent another identity.
+  runner.close("daemon_adoption_close");
+  await done;
+
+  const closed = events.filter((event) => event.event === "member_closed");
+  assert.equal(closed.length, 1);
+  assert.equal(closed[0].data.sessionId, "retained-native-session");
+  assert.equal(events.filter((event) => event.event === "session_bound").length, 0);
+});
+
+test("a fresh runner closed before session bind keeps the no-session receipt", async () => {
+  const events = [];
+  const sdk = createFakeSdk({ emitInit: false });
+  const runner = createMemberRunner({
+    sdk,
+    config: { ...baseConfig },
+    emit: (event, data) => events.push({ event, data }),
+  });
+  const done = runner.start();
+  runner.close("fresh_before_bind");
+  await done;
+
+  assert.equal(
+    events.find((event) => event.event === "member_closed").data.sessionId,
+    null,
+  );
+});
+
 test("native session is bound once and registered under the TeamRun tag", async () => {
   const { runner, sdk, of } = harness();
   const done = runner.start();
