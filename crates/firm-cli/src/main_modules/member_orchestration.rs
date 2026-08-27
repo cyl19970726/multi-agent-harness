@@ -1049,13 +1049,6 @@ pub(crate) fn drive_prepared_team_run(
                         "github linkage poll: {} link(s) refreshed",
                         summary.links_refreshed
                     );
-                    if !summary.auto_submitted.is_empty() {
-                        detail.push_str(&format!(
-                            "; auto-submitted {} on PR merge: {}",
-                            summary.auto_submitted.len(),
-                            summary.auto_submitted.join(", ")
-                        ));
-                    }
                     if !summary.blocked_on_failure.is_empty() {
                         detail.push_str(&format!(
                             "; held {} on red CI: {}",

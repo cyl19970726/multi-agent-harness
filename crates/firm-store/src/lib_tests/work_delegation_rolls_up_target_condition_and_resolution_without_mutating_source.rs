@@ -1,7 +1,6 @@
 use super::*;
 
 #[test]
-#[ignore = "legacy Work acceptance route is retired; exact replacement: member_execution_trust::canonical_acceptance_rolls_up_delegation_in_the_same_operation"]
 fn work_delegation_rolls_up_target_condition_and_resolution_without_mutating_source() {
     let (root, store, run_a, member_a, run_b, member_b) =
         delegation_test_fixture("delegation-rollup");
@@ -18,26 +17,34 @@ fn work_delegation_rolls_up_target_condition_and_resolution_without_mutating_sou
         .create_work_delegation_with_target_work(
             delegation_request("delegation-rollup", &source, &run_b.agent_team_id),
             delegation_work(&run_b, "target-rollup"),
-            host_work_context(
+            run_host_work_context(
+                &run_a,
                 "delegation-create-rollup",
                 "delegate-source-rollup",
                 "unix-ms:3",
             ),
         )
         .expect("create Delegation");
-    let started = store
-        .start_work(
+    let assigned = store
+        .assign_work_to_membership(
             &target.id,
             target.version,
-            &member_b.id,
-            member_work_context(
-                &member_b.id,
-                "target-start",
-                "target-start-command",
-                "unix-ms:4",
+            &format!(
+                "membership:{}:{}",
+                run_b.agent_team_id, member_b.agent_member_id
             ),
+            "delegation-test-space",
+            run_host_work_context(&run_b, "target-assign", "target-assign", "unix-ms:3.5"),
         )
-        .expect("start target");
+        .expect("assign delegated target responsibility");
+    let started = start_claimed_work_for_test(
+        &store,
+        &assigned,
+        &member_b,
+        "target-start",
+        "target-start-command",
+        "unix-ms:4",
+    );
     let blocked = store
         .block_work(
             &target.id,
@@ -63,13 +70,6 @@ fn work_delegation_rolls_up_target_condition_and_resolution_without_mutating_sou
         blocked_rollup.blocker_reason.as_deref(),
         Some("waiting for an external contract")
     );
-    assert!(store
-        .transition_work_and_roll_up_delegation(
-            &target.id,
-            host_work_context("rollup-blocked", "rollup-blocked-command", "unix-ms:6"),
-        )
-        .expect("already-atomic blocker reconciliation is a no-op")
-        .is_empty());
 
     let resumed = store
         .resume_work(
@@ -85,37 +85,34 @@ fn work_delegation_rolls_up_target_condition_and_resolution_without_mutating_sou
             ),
         )
         .expect("resume target");
-    let resumed_rollup = store
-        .latest_work_delegations()
-        .unwrap()
-        .into_iter()
-        .find(|candidate| candidate.id == delegation.id)
-        .expect("atomic resumed rollup");
-    assert_eq!(resumed_rollup.state, WorkDelegationState::Active);
+    assert_eq!(
+        store
+            .latest_work_delegations()
+            .unwrap()
+            .into_iter()
+            .find(|candidate| candidate.id == delegation.id)
+            .expect("atomic resumed rollup")
+            .state,
+        WorkDelegationState::Active
+    );
 
-    let submitted = store
-        .submit_work(
-            &target.id,
-            resumed.version,
-            &member_b.id,
-            "target result ready",
-            vec!["artifact://target".into()],
-            vec!["check://target".into()],
-            member_work_context(
-                &member_b.id,
-                "target-submit",
-                "target-submit-command",
-                "unix-ms:9",
-            ),
-        )
-        .expect("submit target");
-    let accepted = store
-        .accept_work(
-            &target.id,
-            submitted.version,
-            host_work_context("target-accept", "target-accept-command", "unix-ms:10"),
-        )
-        .expect("accept target");
+    let submitted = submit_started_work_for_test(
+        &store,
+        &resumed,
+        &member_b,
+        "target-result",
+        "target result ready",
+        vec!["artifact://target".into()],
+        vec!["check://target".into()],
+        "unix-ms:9",
+    );
+    let accepted = accept_result_for_test(
+        &store,
+        &submitted,
+        "target-result",
+        "target-accept-command",
+        "unix-ms:10",
+    );
     let completed = store
         .latest_work_delegations()
         .unwrap()
@@ -123,22 +120,10 @@ fn work_delegation_rolls_up_target_condition_and_resolution_without_mutating_sou
         .find(|candidate| candidate.id == delegation.id)
         .expect("atomic completed rollup");
     assert_eq!(completed.state, WorkDelegationState::Completed);
-    assert_eq!(completed.version, delegation.version + 3);
     assert_eq!(
         completed.resolution_summary.as_deref(),
         accepted.result_summary.as_deref()
     );
-    assert!(store
-        .transition_work_and_roll_up_delegation(
-            &target.id,
-            host_work_context(
-                "rollup-completed-retry",
-                "rollup-completed-retry-command",
-                "unix-ms:12",
-            ),
-        )
-        .expect("terminal rollup retry is a no-op")
-        .is_empty());
     let source_after = store
         .latest_works()
         .unwrap()

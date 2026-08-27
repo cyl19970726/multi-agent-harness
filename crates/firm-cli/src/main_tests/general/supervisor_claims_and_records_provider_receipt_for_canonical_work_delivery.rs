@@ -318,6 +318,182 @@ fn supervisor_claims_and_records_provider_receipt_for_canonical_work_delivery() 
 }
 
 #[test]
+fn uncertain_work_reconciliation_does_not_end_the_persistent_member_runtime() {
+    let (store, root) = temp_store("uncertain-work-keeps-member-runtime-live");
+    let created = create_two_member_team_run(&store);
+    let member = created.member_runs[0].clone();
+    let work = store
+        .insert_work(
+            CurrentWorkDraft::new(
+                "work-uncertain-runtime-live".into(),
+                created.team_run.id.clone(),
+                created.team_run.agent_team_id.clone(),
+                "Keep persistent runtime live".into(),
+                "Separate Work reconciliation from provider runtime ownership".into(),
+                "An uncertain claim stays fenced without disconnecting the member".into(),
+                WorkClaimMode::HostAssign,
+                WorkPriority::Normal,
+                compatibility_team_actor("host", "test"),
+                "unix-ms:1".into(),
+            )
+            .into_work(),
+            WorkCommandContext {
+                event_id: "work-uncertain-runtime-live-created".into(),
+                performed_by_actor: compatibility_team_actor("host", "test"),
+                authority_actor: None,
+                causation_ref: None,
+                idempotency_key: "work-uncertain-runtime-live-create".into(),
+                created_at: "unix-ms:1".into(),
+                duplicate_ok: false,
+            },
+        )
+        .unwrap();
+    let lease = store
+        .acquire_test_supervisor_lease(
+            &created.team_run.id,
+            "uncertain-runtime-supervisor",
+            std::process::id(),
+            "test://uncertain-runtime-supervisor",
+            current_unix_ms_u64(),
+            60_000,
+        )
+        .unwrap();
+    ensure_test_runtime_fabric(&store, &created, &lease);
+    let work =
+        assign_test_work_to_member(&store, &lease.execution_space_id, &created, &member, &work);
+    let ledger = TeamRunLedger::new(
+        &store,
+        &created.team_run.id,
+        &lease.supervisor_id,
+        lease.generation,
+        Arc::new(AtomicBool::new(true)),
+    );
+    let claimed = claim_canonical_work_for_member(&ledger, &member)
+        .unwrap()
+        .expect("first scheduler pass claims the Work");
+    assert_eq!(
+        claimed.delivery.status,
+        harness_core::agentfirm_api::WorkDeliveryStatus::Claimed
+    );
+
+    let session = store
+        .fabric_agent_sessions(&lease.execution_space_id)
+        .unwrap()
+        .into_iter()
+        .find(|session| session.agent_member_id == member.agent_member_id)
+        .unwrap();
+    let mut drifted_control = session.control_state.clone();
+    drifted_control.driver_generation += 1;
+    store
+        .bind_agent_session_control_state(
+            &canonical_delivery_context(
+                &lease.execution_space_id,
+                &lease.node_daemon_id,
+                "node_daemon.agent_session.control.bind",
+                "uncertain-runtime-driver-drift".into(),
+                session.version,
+            ),
+            &session.id,
+            session.runtime_generation,
+            drifted_control,
+            "unix-ms:2",
+        )
+        .unwrap();
+    let next_work = store
+        .insert_work(
+            CurrentWorkDraft::new(
+                "work-after-uncertain-runtime".into(),
+                created.team_run.id.clone(),
+                created.team_run.agent_team_id.clone(),
+                "Schedule around uncertain Work".into(),
+                "One fenced Work must not stop unrelated scheduling".into(),
+                "The same persistent member receives this independent Work".into(),
+                WorkClaimMode::HostAssign,
+                WorkPriority::High,
+                compatibility_team_actor("host", "test"),
+                "unix-ms:3".into(),
+            )
+            .into_work(),
+            WorkCommandContext {
+                event_id: "work-after-uncertain-runtime-created".into(),
+                performed_by_actor: compatibility_team_actor("host", "test"),
+                authority_actor: None,
+                causation_ref: None,
+                idempotency_key: "work-after-uncertain-runtime-create".into(),
+                created_at: "unix-ms:3".into(),
+                duplicate_ok: false,
+            },
+        )
+        .unwrap();
+    let next_work = assign_test_work_to_member(
+        &store,
+        &lease.execution_space_id,
+        &created,
+        &member,
+        &next_work,
+    );
+    let member_before = store
+        .trust_member_runs(&lease.execution_space_id)
+        .unwrap()
+        .into_iter()
+        .find(|candidate| candidate.id == member.id)
+        .unwrap();
+    let actions_before = store.member_actions().unwrap();
+    let runtime_commands_before = store
+        .canonical_operations()
+        .unwrap()
+        .into_iter()
+        .filter(|operation| operation.event.aggregate_kind == "runtime_command")
+        .count();
+
+    let next_claim = claim_canonical_work_for_member(&ledger, &member)
+        .expect("uncertain Work reconciliation is not a provider transport failure")
+        .expect("another normal Work remains schedulable");
+    assert_eq!(next_claim.work.id, next_work.id);
+    assert_eq!(store.member_actions().unwrap(), actions_before);
+    assert_eq!(
+        store
+            .canonical_operations()
+            .unwrap()
+            .into_iter()
+            .filter(|operation| operation.event.aggregate_kind == "runtime_command")
+            .count(),
+        runtime_commands_before
+    );
+    assert_eq!(
+        store
+            .trust_member_runs(&lease.execution_space_id)
+            .unwrap()
+            .into_iter()
+            .find(|candidate| candidate.id == member.id)
+            .unwrap(),
+        member_before,
+        "scheduler diagnostics must not write disconnected/blocked lifecycle state"
+    );
+    assert_eq!(
+        store
+            .fabric_work_execution_bindings(&lease.execution_space_id)
+            .unwrap()
+            .into_iter()
+            .find(|binding| binding.work_id == work.id)
+            .unwrap()
+            .status,
+        harness_core::agentfirm_api::WorkExecutionBindingStatus::Active
+    );
+    assert_eq!(
+        store
+            .fabric_work_deliveries(&lease.execution_space_id)
+            .unwrap()
+            .into_iter()
+            .find(|delivery| delivery.work_id == work.id)
+            .unwrap()
+            .status,
+        harness_core::agentfirm_api::WorkDeliveryStatus::Claimed
+    );
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn responsibility_cutover_releases_only_stale_binding_and_rebinds_monotonically() {
     let (store, root) = temp_store("canonical-responsibility-cutover");
     let created = create_two_member_team_run(&store);

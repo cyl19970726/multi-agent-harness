@@ -25,17 +25,16 @@ fn host_authored_changes_requested_does_not_wake_the_same_host() {
         "start-cr-ha",
         "unix-ms:3.5",
     );
-    let submitted = store
-        .submit_work(
-            &claimed.id,
-            claimed.version,
-            &member.id,
-            "done",
-            vec!["artifact://x".into()],
-            vec![],
-            member_work_context(&member.id, "we-cr-3", "submit-cr-ha", "unix-ms:4"),
-        )
-        .expect("submit Work");
+    let submitted = submit_started_work_for_test(
+        &store,
+        &claimed,
+        &member,
+        "we-cr-3",
+        "done",
+        vec!["artifact://x".into()],
+        Vec::new(),
+        "unix-ms:4",
+    );
     let _changes = store
         .request_work_changes(
             &submitted.id,

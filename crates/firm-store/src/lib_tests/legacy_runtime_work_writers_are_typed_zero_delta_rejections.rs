@@ -53,17 +53,6 @@ fn legacy_runtime_work_writers_are_typed_zero_delta_rejections() {
             )
             .expect_err("historical runtime owner cannot Start"),
         store
-            .submit_work(
-                &canonical.id,
-                canonical.version,
-                &member.id,
-                "legacy submit",
-                vec!["artifact:legacy".into()],
-                vec![],
-                member_work_context(&member.id, "legacy-submit", "legacy-submit", "unix-ms:5"),
-            )
-            .expect_err("historical runtime owner cannot Submit"),
-        store
             .release_work(
                 &canonical.id,
                 canonical.version,

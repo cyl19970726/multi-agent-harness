@@ -28,13 +28,41 @@ impl HarnessStore {
         work: &Work,
     ) -> StoreResult<String> {
         let submitted_revision = work.version.saturating_sub(1);
+        let work_operations = self.work_operations_unlocked()?;
         let submitted_attentions = self
             .latest_host_attentions_unlocked()?
             .into_values()
             .filter(|attention| {
                 attention.work_id == work.id
-                    && attention.work_version == submitted_revision
+                    && attention.work_version <= submitted_revision
                     && attention.kind == HostAttentionKind::WorkReviewRequested
+            })
+            .filter(|attention| {
+                if attention.work_version == submitted_revision {
+                    return true;
+                }
+                let mut intervening = work_operations
+                    .iter()
+                    .filter(|operation| {
+                        operation.work.id == work.id
+                            && operation.event.resulting_version > attention.work_version
+                            && operation.event.resulting_version <= submitted_revision
+                    })
+                    .collect::<Vec<_>>();
+                intervening.sort_by_key(|operation| operation.event.resulting_version);
+                intervening.len() as u64 == submitted_revision - attention.work_version
+                    && intervening.iter().enumerate().all(|(offset, operation)| {
+                        operation.event.expected_version == attention.work_version + offset as u64
+                            && operation.event.resulting_version
+                                == attention.work_version + offset as u64 + 1
+                            && operation.event.kind == WorkEventKind::Updated
+                            && operation
+                                .event
+                                .payload
+                                .get("reason")
+                                .and_then(serde_json::Value::as_str)
+                                == Some("github_evidence_refresh")
+                    })
             })
             .collect::<Vec<_>>();
         if !submitted_attentions.is_empty() {

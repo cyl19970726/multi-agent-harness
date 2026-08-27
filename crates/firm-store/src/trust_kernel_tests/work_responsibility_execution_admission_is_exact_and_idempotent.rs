@@ -518,6 +518,92 @@ fn terminal_member_runtime_cannot_bind_or_claim_provider_work() {
         store.canonical_operations().unwrap(),
         operations_before_current
     );
+
+    let attached = store
+        .bind_agent_session_native_session(
+            &service_context("session.native.bind", "session-worker-admission:native", 1),
+            &target.id,
+            target.runtime_generation,
+            settled_native_session("native-worker-admission"),
+        )
+        .expect("the same exact Session may attach its first native id");
+    assert!(matches!(
+        store
+            .release_work_execution_binding_if_stale(
+                &service_context("work.reconcile", "binding-attached-current", 1),
+                &first_binding.id,
+                &target.node_id,
+                &target.node_daemon_id,
+                target.node_daemon_generation,
+                "t-attached-current",
+            )
+            .unwrap(),
+        WorkExecutionBindingReconciliation::Current
+    ));
+
+    let exact_native_work = assign_responsibility(&store, "work-exact-native", &membership.id);
+    let exact_native_binding = execution_binding(
+        &exact_native_work,
+        &membership,
+        &attached.projection,
+        "binding-exact-native",
+    );
+    let mut exact_native_runtime_binding = runtime_binding.clone();
+    exact_native_runtime_binding.native_session_ref =
+        attached.projection.native_session_ref.clone();
+    store
+        .bind_responsible_work_execution(
+            &service_context("work.bind", "binding-exact-native", 0),
+            &exact_native_runtime_binding,
+            exact_native_binding.clone(),
+        )
+        .expect("an already-attached native identity is frozen exactly");
+    let mut drifted_session = attached.projection.clone();
+    drifted_session.native_session_ref = Some(settled_native_session("native-worker-different"));
+    drifted_session.version += 1;
+    {
+        let _lock = store.acquire_write_lock().unwrap();
+        store
+            .commit_trust_projection_unlocked(
+                &service_context(
+                    "session.native.drift.fixture",
+                    "session-worker-admission:native-drift",
+                    attached.projection.version,
+                ),
+                "agent_session",
+                &drifted_session.id,
+                "native_session_drift_fixture",
+                serde_json::json!({"native_session_ref": drifted_session.native_session_ref}),
+                &drifted_session,
+                Vec::new(),
+                Vec::new(),
+            )
+            .unwrap();
+    }
+    assert!(matches!(
+        store
+            .release_work_execution_binding_if_stale(
+                &service_context("work.reconcile", "binding-native-drift", 1),
+                &exact_native_binding.id,
+                &target.node_id,
+                &target.node_daemon_id,
+                target.node_daemon_generation,
+                "t-native-drift",
+            )
+            .unwrap(),
+        WorkExecutionBindingReconciliation::Released(_)
+    ));
+    assert_eq!(
+        store
+            .fabric_work_execution_bindings("space-test")
+            .unwrap()
+            .into_iter()
+            .find(|binding| binding.id == exact_native_binding.id)
+            .unwrap()
+            .status,
+        WorkExecutionBindingStatus::Released
+    );
+    let operations_before_stale_generation = store.canonical_operations().unwrap();
     let stale_generation_error = store
         .release_work_execution_binding_if_stale(
             &service_context("work.reconcile", "binding-stale-daemon", 1),
@@ -533,7 +619,7 @@ fn terminal_member_runtime_cannot_bind_or_claim_provider_work() {
         .contains("SUPERVISOR_GENERATION_FENCED"));
     assert_eq!(
         store.canonical_operations().unwrap(),
-        operations_before_current
+        operations_before_stale_generation
     );
 
     let corrupt_work = assign_responsibility(&store, "work-missing-delivery", &membership.id);

@@ -25,17 +25,16 @@ fn work_submit_emits_host_attention_for_bound_run() {
         "start-submit-ha",
         "unix-ms:3.5",
     );
-    let _submitted = store
-        .submit_work(
-            &claimed.id,
-            claimed.version,
-            &member.id,
-            "done",
-            vec!["artifact://x".into()],
-            vec!["check://y".into()],
-            member_work_context(&member.id, "we-submit-3", "submit-submit-ha", "unix-ms:4"),
-        )
-        .expect("submit Work");
+    let _submitted = submit_started_work_for_test(
+        &store,
+        &claimed,
+        &member,
+        "we-submit-3",
+        "done",
+        vec!["artifact://x".into()],
+        vec!["check://y".into()],
+        "unix-ms:4",
+    );
     let attentions = store.host_attentions().expect("host attentions");
     let review = attentions
         .iter()

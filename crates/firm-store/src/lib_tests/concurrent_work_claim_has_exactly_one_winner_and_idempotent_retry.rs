@@ -94,20 +94,31 @@ fn concurrent_work_claim_has_exactly_one_winner_and_idempotent_retry() {
     assert!(start_error
         .to_string()
         .contains("does not hold responsibility"));
+    let unbound_report = result_report_for_test(
+        &winner,
+        contenders
+            .iter()
+            .find(|member| member.id == retry_member)
+            .expect("winning MemberRun fixture"),
+        "we-race-unbound-submit",
+        "unbound submit",
+        Vec::new(),
+        Vec::new(),
+        "unix-ms:5",
+    );
     let submit_error = store
-        .submit_work(
-            &winner.id,
-            winner.version,
-            retry_member,
-            "unbound submit",
-            Vec::new(),
-            Vec::new(),
-            member_work_context(
-                retry_member,
-                "we-race-unbound-submit",
-                "unbound-submit",
-                "unix-ms:5",
-            ),
+        .create_trust_work_report(
+            &firm_core::agentfirm_api::MutationContext {
+                execution_space_id: "unit-test-space".into(),
+                authenticated_actor: unbound_report.authored_by.clone(),
+                authority_actor: None,
+                command_name: "test.work_report.create".into(),
+                idempotency_key: unbound_report.id.clone(),
+                expected_version: 0,
+                request_fingerprint: None,
+            },
+            winner.accountable_team_id.as_deref().expect("team id"),
+            unbound_report,
         )
         .expect_err("claim alone must not authorize Submit");
     assert!(submit_error
@@ -129,22 +140,16 @@ fn concurrent_work_claim_has_exactly_one_winner_and_idempotent_retry() {
         "bound-start",
         "unix-ms:6",
     );
-    let submitted = store
-        .submit_work(
-            &started.id,
-            started.version,
-            retry_member,
-            "bound submit",
-            Vec::new(),
-            Vec::new(),
-            member_work_context(
-                retry_member,
-                "we-race-bound-submit",
-                "bound-submit",
-                "unix-ms:7",
-            ),
-        )
-        .expect("canonical binding authorizes Submit");
+    let submitted = submit_started_work_for_test(
+        &store,
+        &started,
+        winner_member,
+        "we-race-bound-submit",
+        "bound submit",
+        Vec::new(),
+        Vec::new(),
+        "unix-ms:7",
+    );
     assert_eq!(submitted.phase, WorkPhase::Review);
     std::fs::remove_dir_all(root).expect("remove temp store");
 }

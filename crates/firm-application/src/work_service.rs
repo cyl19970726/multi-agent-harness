@@ -91,7 +91,6 @@ pub trait WorkPersistence {
         resolution: &str,
         context: WorkCommandContext,
     ) -> Result<Work, Self::Error>;
-    fn submit_work(&self, command: SubmitWorkCommand) -> Result<Work, Self::Error>;
     fn request_work_changes(
         &self,
         work_id: &str,
@@ -152,7 +151,6 @@ pub enum WorkActionKind {
     BlockMember,
     ResumeHost,
     ResumeMember,
-    Submit,
     RequestChanges,
     Cancel,
 }
@@ -217,7 +215,6 @@ pub enum WorkAction {
         resolution: String,
         context: WorkCommandContext,
     },
-    Submit(SubmitWorkCommand),
     RequestChanges {
         work_id: String,
         expected_version: u64,
@@ -246,7 +243,6 @@ impl WorkAction {
             Self::BlockMember { .. } => WorkActionKind::BlockMember,
             Self::ResumeHost { .. } => WorkActionKind::ResumeHost,
             Self::ResumeMember { .. } => WorkActionKind::ResumeMember,
-            Self::Submit(_) => WorkActionKind::Submit,
             Self::RequestChanges { .. } => WorkActionKind::RequestChanges,
             Self::Cancel { .. } => WorkActionKind::Cancel,
         }
@@ -256,7 +252,6 @@ impl WorkAction {
         match self {
             Self::Create(command) => &command.context,
             Self::ReplaceDependencies(command) => &command.context,
-            Self::Submit(command) => &command.context,
             Self::AssignMembership { context, .. }
             | Self::ReleaseHost { context, .. }
             | Self::ReleaseMember { context, .. }
@@ -364,7 +359,6 @@ impl<'a, P: WorkPersistence + ?Sized> WorkApplication<'a, P> {
                 &resolution,
                 context,
             )?,
-            WorkAction::Submit(command) => self.submit(command)?,
             WorkAction::RequestChanges {
                 work_id,
                 expected_version,
@@ -540,10 +534,6 @@ impl<'a, P: WorkPersistence + ?Sized> WorkApplication<'a, P> {
         )
     }
 
-    pub fn submit(&self, command: SubmitWorkCommand) -> Result<Work, P::Error> {
-        self.port.submit_work(command)
-    }
-
     pub fn request_changes(
         &self,
         work_id: &str,
@@ -565,20 +555,6 @@ impl<'a, P: WorkPersistence + ?Sized> WorkApplication<'a, P> {
         self.port
             .cancel_work(work_id, expected_version, reason, context)
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SubmitWorkCommand {
-    pub work_id: String,
-    pub expected_version: u64,
-    pub member_run_id: String,
-    pub result_summary: String,
-    pub artifact_refs: Vec<String>,
-    pub check_refs: Vec<String>,
-    pub github_links: Vec<GitHubLink>,
-    pub base_revision: Option<String>,
-    pub candidate_revision: Option<String>,
-    pub context: WorkCommandContext,
 }
 
 /// A stable Host actor constructor for non-HTTP adapters. Authentication is
@@ -626,18 +602,6 @@ mod tests {
             check_refs: Vec::new(),
             github_links: Vec::new(),
             expected_version: 0,
-            context: context(),
-        };
-        let submit = || SubmitWorkCommand {
-            work_id: "work-1".into(),
-            expected_version: 1,
-            member_run_id: "member-run-1".into(),
-            result_summary: "done".into(),
-            artifact_refs: Vec::new(),
-            check_refs: Vec::new(),
-            github_links: Vec::new(),
-            base_revision: None,
-            candidate_revision: None,
             context: context(),
         };
         let actions = vec![
@@ -705,7 +669,6 @@ mod tests {
                 resolution: "fixed".into(),
                 context: context(),
             },
-            WorkAction::Submit(submit()),
             WorkAction::RequestChanges {
                 work_id: "work-1".into(),
                 expected_version: 1,
@@ -734,7 +697,6 @@ mod tests {
                 WorkActionKind::BlockMember,
                 WorkActionKind::ResumeHost,
                 WorkActionKind::ResumeMember,
-                WorkActionKind::Submit,
                 WorkActionKind::RequestChanges,
                 WorkActionKind::Cancel,
             ]

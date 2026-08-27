@@ -51,21 +51,34 @@ fn closed_member_cannot_mutate_owned_work_until_reopen() {
             .contains("does not hold active Work responsibility"),
         "unexpected error: {blocked}"
     );
+    let closed_report = result_report_for_test(
+        &started,
+        &member,
+        "we-closed-5",
+        "result from a closed runtime",
+        Vec::new(),
+        Vec::new(),
+        "unix-ms:6",
+    );
     let submitted = store
-        .submit_work(
-            &started.id,
-            started.version,
-            &member.id,
-            "result from a closed runtime",
-            Vec::new(),
-            Vec::new(),
-            member_work_context(&member.id, "we-closed-5", "submit-owned", "unix-ms:6"),
+        .create_trust_work_report(
+            &firm_core::agentfirm_api::MutationContext {
+                execution_space_id: "unit-test-space".into(),
+                authenticated_actor: closed_report.authored_by.clone(),
+                authority_actor: None,
+                command_name: "test.work_report.create".into(),
+                idempotency_key: closed_report.id.clone(),
+                expected_version: 0,
+                request_fingerprint: None,
+            },
+            started.accountable_team_id.as_deref().expect("team id"),
+            closed_report,
         )
         .expect_err("closed member cannot submit owned Work");
     assert!(
         submitted
             .to_string()
-            .contains("does not hold active Work responsibility"),
+            .contains("MEMBER_RUN_GENERATION_FENCED"),
         "unexpected error: {submitted}"
     );
     // The Work projection is untouched by both rejections.
@@ -87,20 +100,33 @@ fn closed_member_cannot_mutate_owned_work_until_reopen() {
     store
         .compare_and_advance_member_run_generation(&closed_member, &reopened_member)
         .expect("record reopened member");
+    let reopened_report = result_report_for_test(
+        &started,
+        &reopened_member,
+        "we-closed-6",
+        "result after reopen",
+        Vec::new(),
+        Vec::new(),
+        "unix-ms:7",
+    );
     let submitted = store
-        .submit_work(
-            &started.id,
-            started.version,
-            &member.id,
-            "result after reopen",
-            Vec::new(),
-            Vec::new(),
-            member_work_context(&member.id, "we-closed-6", "submit-reopened", "unix-ms:7"),
+        .create_trust_work_report(
+            &firm_core::agentfirm_api::MutationContext {
+                execution_space_id: "unit-test-space".into(),
+                authenticated_actor: reopened_report.authored_by.clone(),
+                authority_actor: None,
+                command_name: "test.work_report.create".into(),
+                idempotency_key: reopened_report.id.clone(),
+                expected_version: 0,
+                request_fingerprint: None,
+            },
+            started.accountable_team_id.as_deref().expect("team id"),
+            reopened_report,
         )
         .expect_err("Reopen alone cannot revive stale Work execution authority");
     assert!(submitted
         .to_string()
-        .contains("does not hold active Work responsibility"));
+        .contains("MEMBER_RUN_GENERATION_FENCED"));
 
     std::fs::remove_dir_all(root).expect("remove temp store");
 }

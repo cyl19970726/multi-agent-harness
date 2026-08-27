@@ -25,7 +25,7 @@ impl HarnessStore {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub(super) fn require_current_node_daemon_unlocked(
+    pub(crate) fn require_current_node_daemon_unlocked(
         &self,
         execution_space_id: &str,
         node_id: &str,

@@ -967,9 +967,43 @@ impl HarnessStore {
                 )
             })
             .and_then(|envelope| event_projection::<WorkReport>(&envelope))?;
+        let report_revision_is_current = if report.work_revision == current.version {
+            true
+        } else if report.work_revision < current.version {
+            let mut evidence_updates = self
+                .work_operations_unlocked()?
+                .into_iter()
+                .filter(|operation| {
+                    operation.work.id == current.id
+                        && operation.event.resulting_version > report.work_revision
+                        && operation.event.resulting_version <= current.version
+                })
+                .collect::<Vec<_>>();
+            evidence_updates.sort_by_key(|operation| operation.event.resulting_version);
+            evidence_updates.len() as u64 == current.version - report.work_revision
+                && evidence_updates
+                    .iter()
+                    .enumerate()
+                    .all(|(offset, operation)| {
+                        operation.event.expected_version == report.work_revision + offset as u64
+                            && operation.event.resulting_version
+                                == report.work_revision + offset as u64 + 1
+                            && operation.event.kind == firm_core::WorkEventKind::Updated
+                            && operation
+                                .event
+                                .payload
+                                .get("reason")
+                                .and_then(Value::as_str)
+                                == Some("github_evidence_refresh")
+                            && operation.work.phase == firm_core::WorkPhase::Review
+                            && operation.work.condition == firm_core::WorkCondition::Normal
+                    })
+        } else {
+            false
+        };
         if report.kind != WorkReportKind::Result
             || report.work_id != current.id
-            || report.work_revision != current.version
+            || !report_revision_is_current
             || report.candidate.is_none()
             || report.candidate_fingerprint.as_deref() != Some(candidate_fingerprint)
             || report.evidence_refs.is_empty()
@@ -985,7 +1019,7 @@ impl HarnessStore {
         self.trust_gate_satisfied(
             &context.execution_space_id,
             work_id,
-            current.version,
+            report.work_revision,
             report_id,
             candidate_fingerprint,
         )?;
@@ -994,7 +1028,7 @@ impl HarnessStore {
             .into_values()
             .filter(|requirement| {
                 requirement.work_id == work_id
-                    && requirement.work_revision == current.version
+                    && requirement.work_revision == report.work_revision
                     && requirement.work_report_id == report_id
                     && requirement.candidate_fingerprint == candidate_fingerprint
             })

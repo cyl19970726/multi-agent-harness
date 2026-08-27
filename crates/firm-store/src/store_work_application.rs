@@ -1,5 +1,5 @@
 use super::*;
-use firm_application::{SubmitWorkCommand, WorkPersistence};
+use firm_application::WorkPersistence;
 
 impl WorkPersistence for HarnessStore {
     type Error = StoreError;
@@ -145,22 +145,6 @@ impl WorkPersistence for HarnessStore {
             member_run_id,
             resolution,
             context,
-        )
-    }
-
-    fn submit_work(&self, command: SubmitWorkCommand) -> StoreResult<Work> {
-        HarnessStore::submit_work_with_revision_and_links(
-            self,
-            &command.work_id,
-            command.expected_version,
-            &command.member_run_id,
-            &command.result_summary,
-            command.artifact_refs,
-            command.check_refs,
-            command.github_links,
-            command.base_revision,
-            command.candidate_revision,
-            command.context,
         )
     }
 

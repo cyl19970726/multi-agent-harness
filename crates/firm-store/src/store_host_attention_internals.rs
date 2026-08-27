@@ -398,6 +398,18 @@ impl HarnessStore {
         if operation.event.performed_by_actor.kind == TeamActorKind::Host {
             return None;
         }
+        // A NodeDaemon GitHub poll records external evidence only. It must not
+        // manufacture a coordination request or impersonate a Member/Host.
+        if operation.event.kind == WorkEventKind::Updated
+            && operation
+                .event
+                .payload
+                .get("reason")
+                .and_then(serde_json::Value::as_str)
+                == Some("github_evidence_refresh")
+        {
+            return None;
+        }
         let kind = match operation.event.kind {
             WorkEventKind::Submitted => HostAttentionKind::WorkReviewRequested,
             WorkEventKind::Blocked => HostAttentionKind::WorkBlocked,

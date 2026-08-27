@@ -25,30 +25,40 @@ fn host_attention_dedup_ignores_duplicate_event() {
         "start-dedup-ha",
         "unix-ms:3.5",
     );
-    let ctx = member_work_context(&member.id, "we-dedup-3", "submit-dedup-ha", "unix-ms:4");
-    let _submitted = store
-        .submit_work(
-            &claimed.id,
-            claimed.version,
-            &member.id,
-            "done",
-            vec!["artifact://x".into()],
-            vec![],
-            ctx.clone(),
+    let _submitted = submit_started_work_for_test(
+        &store,
+        &claimed,
+        &member,
+        "we-dedup-3",
+        "done",
+        vec!["artifact://x".into()],
+        Vec::new(),
+        "unix-ms:4",
+    );
+    let report = result_report_for_test(
+        &claimed,
+        &member,
+        "we-dedup-3",
+        "done",
+        vec!["artifact://x".into()],
+        Vec::new(),
+        "unix-ms:4",
+    );
+    store
+        .create_trust_work_report(
+            &firm_core::agentfirm_api::MutationContext {
+                execution_space_id: "unit-test-space".into(),
+                authenticated_actor: report.authored_by.clone(),
+                authority_actor: None,
+                command_name: "test.work_report.create".into(),
+                idempotency_key: report.id.clone(),
+                expected_version: 0,
+                request_fingerprint: None,
+            },
+            claimed.accountable_team_id.as_deref().expect("team id"),
+            report,
         )
-        .expect("first submit");
-    // Second submit with same idempotency key should be a no-op (dedup).
-    let _again = store
-        .submit_work(
-            &claimed.id,
-            claimed.version,
-            &member.id,
-            "done",
-            vec!["artifact://x".into()],
-            vec![],
-            ctx,
-        )
-        .expect("idempotent second submit");
+        .expect("idempotent canonical Result replay");
     let attentions = store.host_attentions().expect("host attentions");
     let review_count = attentions
         .iter()

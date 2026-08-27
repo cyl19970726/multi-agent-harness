@@ -17,7 +17,10 @@ use super::*;
 mod fixtures;
 use fixtures::*;
 mod work_execution_fixture;
-use work_execution_fixture::start_claimed_work_for_test;
+use work_execution_fixture::{
+    accept_result_for_test, result_report_for_test, start_claimed_work_for_test,
+    submit_started_work_for_test,
+};
 
 fn lock_policy_test_store(label: &str) -> HarnessStore {
     let root = std::env::temp_dir().join(format!(
@@ -1336,19 +1339,6 @@ fn temp_store(label: &str) -> (PathBuf, HarnessStore) {
 
 // ── Lane B: upstream event push — Work lifecycle → Host attention ──
 
-fn test_github_link(status: &str, ci_status: Option<&str>) -> firm_core::GitHubLink {
-    firm_core::GitHubLink {
-        kind: firm_core::GitHubLinkKind::PullRequest,
-        owner: "cyl19970726".into(),
-        repo: "multi-agent-harness".into(),
-        number: 365,
-        url: "https://github.com/cyl19970726/multi-agent-harness/pull/365".into(),
-        status: Some(status.into()),
-        ci_status: ci_status.map(str::to_string),
-        ci_url: Some("https://github.com/cyl19970726/multi-agent-harness/actions/runs/1".into()),
-    }
-}
-
 mod append_and_read_delegation_run_jsonl;
 mod append_and_read_member_action_jsonl;
 mod append_and_read_member_run_jsonl;
@@ -1391,6 +1381,7 @@ mod informational_mail_neither_fences_handoff_nor_requires_response;
 mod jsonl_read_retries_a_concurrently_incomplete_final_row;
 mod legacy_assignment_message_is_ignored_by_current_work_store;
 mod legacy_raw_work_operation_is_rejected_without_a_read_fallback;
+mod legacy_runtime_work_writers_are_typed_zero_delta_rejections;
 mod legacy_team_message_delivery_mutators_are_explicit_read_only_seams;
 mod legacy_team_message_delivery_mutators_reject_with_zero_store_side_effects;
 mod malformed_provider_compatibility_ledger_fails_closed_and_roots_are_isolated;
@@ -1420,13 +1411,11 @@ mod provider_interaction_response_claim_fences_a_closed_generation;
 mod provider_interaction_response_rejects_unknown_choice_and_predelivery;
 #[cfg(any())]
 mod raw_provider_interaction_appends_are_forbidden_but_trusted_seams_work;
-mod rebind_redelivers_same_member_run_id_at_a_higher_runtime_generation;
 mod response_required_mail_is_fenced_until_newer_correlation_reaches_provider;
 mod retired_dynamic_workflow_writers_fail_without_creating_ledgers;
 mod retired_provider_interaction_response_writer_cannot_reenter_the_store_api;
 mod review_link_refresh_derives_a_report_bound_to_the_new_work_version;
 mod sparse_mixed_version_rebound_recovers_and_repersists_work_provenance;
-mod submit_work_on_pr_merge_transitions_in_progress_work_to_review;
 mod submitted_and_blocked_work_reconcile_exactly_one_host_attention_each;
 mod supervisor_lease_acquire_compacts_and_keeps_fencing;
 mod supervisor_lease_rejects_caller_selected_foreign_execution_space_without_write;

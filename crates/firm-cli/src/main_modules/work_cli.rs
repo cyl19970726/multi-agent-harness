@@ -453,7 +453,8 @@ pub(super) fn team_run_work_command(
             // #369). Both auto-populate artifact_refs (object URL) and PR
             // links also populate check_refs (CI checks URL). A create-time
             // PR link is what lets the daemon poll CI on the open/in-progress
-            // Work and auto-submit when the PR merges (Phase 2).
+            // Work while the daemon refreshes GitHub evidence. A merge never
+            // substitutes for a canonical Member Result.
             let mut github_links = Vec::new();
             let mut artifact_refs = Vec::new();
             let mut check_refs = Vec::new();
@@ -853,7 +854,6 @@ pub(super) fn team_run_work_command(
                 "team_run_id": team_run_id,
                 "works_checked": summary.works_checked,
                 "links_refreshed": summary.links_refreshed,
-                "auto_submitted": summary.auto_submitted,
                 "blocked_on_failure": summary.blocked_on_failure,
                 "gate_ready": summary.gate_ready,
                 "gh_unavailable": summary.gh_unavailable,

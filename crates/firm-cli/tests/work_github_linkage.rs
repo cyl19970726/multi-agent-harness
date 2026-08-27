@@ -240,6 +240,69 @@ fn github_fixture(tag: &str) -> (TempHome, String, String, String) {
     (home, project_id, run_id, member_id)
 }
 
+fn record_provider_received_work(
+    home: &TempHome,
+    project_id: &str,
+    run_id: &str,
+    work_id: &str,
+    key: &str,
+) {
+    let store = harness_store::HarnessStore::new(home.spaces_dir().join(project_id));
+    let team_run = store
+        .team_runs()
+        .expect("TeamRuns")
+        .into_iter()
+        .find(|run| run.id == run_id)
+        .expect("TeamRun");
+    let daemon = store
+        .latest_node_daemon_lease(&team_run.execution_node_id)
+        .expect("NodeDaemon lease")
+        .expect("fixture NodeDaemon");
+    let binding = store
+        .fabric_work_execution_bindings(project_id)
+        .expect("bindings")
+        .into_iter()
+        .find(|binding| binding.work_id == work_id)
+        .expect("bound Work");
+    let context = |command_name: &str, suffix: &str| harness_core::agentfirm_api::MutationContext {
+        execution_space_id: project_id.to_string(),
+        authenticated_actor: harness_core::agentfirm_api::ActorRef {
+            kind: harness_core::agentfirm_api::ActorKind::Service,
+            id: daemon.daemon_id.clone(),
+        },
+        authority_actor: None,
+        command_name: command_name.into(),
+        idempotency_key: format!("{key}:{suffix}"),
+        expected_version: 0,
+        request_fingerprint: None,
+    };
+    let claim_id = format!("{key}:claim");
+    store
+        .claim_work_for_provider(
+            &context("test.work.claim", "claim"),
+            &binding.delivery_id,
+            &daemon.node_id,
+            &daemon.daemon_id,
+            daemon.generation,
+            &claim_id,
+            harness_core::agentfirm_api::RuntimeDispatchMode::QueueOnly,
+            "unix-ms:claim",
+        )
+        .expect("claim Work delivery");
+    store
+        .record_work_provider_receipt(
+            &context("test.work.receipt", "receipt"),
+            &binding.delivery_id,
+            &daemon.node_id,
+            &daemon.daemon_id,
+            daemon.generation,
+            &claim_id,
+            &format!("provider-receipt:{key}"),
+            "unix-ms:receipt",
+        )
+        .expect("record provider receipt");
+}
+
 #[test]
 fn github_pr_submit_preserves_structured_link_without_explicit_candidate_revision() {
     let (home, project_id, run_id, member_id) = github_fixture("github-linkage-offline-submit");
@@ -302,6 +365,13 @@ fi
     let created = serde_json::to_value(assigned).expect("assigned Work JSON");
     let work_id = created["id"].as_str().expect("work id");
     assert_eq!(created["github_links"][0]["kind"].as_str(), Some("issue"));
+    record_provider_received_work(
+        &home,
+        &project_id,
+        &run_id,
+        work_id,
+        "github-submit-provider-received",
+    );
     member_firm_json(
         &home,
         &project_id,
@@ -569,31 +639,62 @@ fn github_issue_and_pr_linkage_roundtrip() {
 }
 
 #[test]
-fn github_pr_merge_auto_submits_in_progress_work() {
-    if !gh_ready() {
-        eprintln!("skipping live GitHub linkage assertions: `gh` is not authenticated");
-        return;
-    }
-    let (home, project_id, run_id, member_id) = github_fixture("github-merge-auto-submit");
-    // Merged PR with green CI (all checks SUCCESS).
-    let pr_ref = format!("{GH_REPO}#362");
-    let created = host_firm_json(
+fn github_pr_merge_refresh_is_read_only_for_provider_received_work() {
+    let (home, project_id, run_id, member_id) = github_fixture("github-merge-read-only");
+    let fake_bin = home.base().join("fake-gh-merged");
+    std::fs::create_dir_all(&fake_bin).expect("fake gh bin");
+    let fake_gh = fake_bin.join("gh");
+    std::fs::write(
+        &fake_gh,
+        r##"#!/bin/sh
+if [ "$1" = "--version" ]; then
+  printf '%s\n' 'gh version test'
+elif [ "$2" = "view" ]; then
+  if [ -f "$0.seen" ]; then
+    printf '%s\n' '{"state":"MERGED","url":"https://github.com/example/project/pull/362"}'
+  else
+    : > "$0.seen"
+    printf '%s\n' '{"state":"OPEN","url":"https://github.com/example/project/pull/362"}'
+  fi
+else
+  printf '%s\n' '[{"name":"unit","state":"SUCCESS","link":"https://github.com/example/project/actions/runs/362"}]'
+fi
+"##,
+    )
+    .expect("fake gh");
+    let mut permissions = std::fs::metadata(&fake_gh)
+        .expect("fake gh metadata")
+        .permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(&fake_gh, permissions).expect("fake gh executable");
+    let path = format!(
+        "{}:{}",
+        fake_bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let created = run_firm_with_env(
         &home,
-        &project_id,
+        home.base(),
         &[
+            "--project",
+            &project_id,
             "team-run",
             "work",
             "create",
             "--team-run-id",
             &run_id,
             "--title",
-            "Auto-submit on merge",
+            "Merged PR remains evidence",
             "--completion-criteria",
-            "daemon submits when the linked PR merges",
+            "only an exact Member Result reaches review",
             "--github-pr",
-            &pr_ref,
+            "example/project#362",
         ],
+        &[("PATH", &path)],
     );
+    assert!(created.status.success(), "create failed: {created:?}");
+    let created: serde_json::Value =
+        serde_json::from_slice(&created.stdout).expect("created Work JSON");
     let assigned = firm_env::assign_work_for_member_run(
         &home,
         &project_id,
@@ -602,18 +703,60 @@ fn github_pr_merge_auto_submits_in_progress_work() {
         true,
     );
     let created = serde_json::to_value(assigned).expect("assigned Work JSON");
-    assert_eq!(created["phase"].as_str(), Some("open"));
-    assert_eq!(
-        created["github_links"][0]["kind"].as_str(),
-        Some("pull_request")
-    );
-    assert_eq!(
-        created["github_links"][0]["status"].as_str(),
-        Some("MERGED")
-    );
     let work_id = created["id"].as_str().expect("work id").to_string();
-
-    // Member starts; the Work is in_progress carrying the linked PR.
+    let store = harness_store::HarnessStore::new(home.spaces_dir().join(&project_id));
+    let team_run = store
+        .team_runs()
+        .expect("TeamRuns")
+        .into_iter()
+        .find(|run| run.id == run_id)
+        .expect("TeamRun");
+    let daemon = store
+        .latest_node_daemon_lease(&team_run.execution_node_id)
+        .expect("NodeDaemon lease")
+        .expect("fixture NodeDaemon");
+    let binding = store
+        .fabric_work_execution_bindings(&project_id)
+        .expect("bindings")
+        .into_iter()
+        .find(|binding| binding.work_id == work_id)
+        .expect("bound Work");
+    let daemon_context = |name: &str, key: &str| harness_core::agentfirm_api::MutationContext {
+        execution_space_id: project_id.clone(),
+        authenticated_actor: harness_core::agentfirm_api::ActorRef {
+            kind: harness_core::agentfirm_api::ActorKind::Service,
+            id: daemon.daemon_id.clone(),
+        },
+        authority_actor: None,
+        command_name: name.into(),
+        idempotency_key: key.into(),
+        expected_version: 0,
+        request_fingerprint: None,
+    };
+    store
+        .claim_work_for_provider(
+            &daemon_context("test.work.claim", "github-merge-claim"),
+            &binding.delivery_id,
+            &daemon.node_id,
+            &daemon.daemon_id,
+            daemon.generation,
+            "github-merge-claim",
+            harness_core::agentfirm_api::RuntimeDispatchMode::QueueOnly,
+            "unix-ms:claim",
+        )
+        .expect("claim Work delivery");
+    store
+        .record_work_provider_receipt(
+            &daemon_context("test.work.receipt", "github-merge-receipt"),
+            &binding.delivery_id,
+            &daemon.node_id,
+            &daemon.daemon_id,
+            daemon.generation,
+            "github-merge-claim",
+            "provider-receipt:github-merge",
+            "unix-ms:receipt",
+        )
+        .expect("record provider receipt");
     member_firm_json(
         &home,
         &project_id,
@@ -633,42 +776,88 @@ fn github_pr_merge_auto_submits_in_progress_work() {
             &member_id,
         ],
     );
-
-    // The poll observes the merged green PR and auto-submits to review.
-    let polled = host_firm_json(
+    let before_work = store
+        .latest_works()
+        .expect("Works")
+        .into_iter()
+        .find(|work| work.id == work_id)
+        .expect("active Work");
+    let before_operations = store.canonical_operations().expect("canonical operations");
+    let before_work_operations = store.work_operations().expect("Work operations");
+    let before_attentions = store.host_attentions().expect("HostAttentions");
+    let before_binding = store
+        .fabric_work_execution_bindings(&project_id)
+        .expect("bindings")
+        .into_iter()
+        .find(|candidate| candidate.id == binding.id)
+        .expect("active binding");
+    let before_delivery = store
+        .fabric_work_deliveries(&project_id)
+        .expect("deliveries")
+        .into_iter()
+        .find(|delivery| delivery.id == binding.delivery_id)
+        .expect("provider-received delivery");
+    let polled = run_firm_with_env(
         &home,
-        &project_id,
+        home.base(),
         &[
+            "--project",
+            &project_id,
             "team-run",
             "work",
             "poll-github-ci",
             "--team-run-id",
             &run_id,
         ],
+        &[("PATH", &path)],
     );
+    assert!(polled.status.success(), "poll failed: {polled:?}");
+    let polled: serde_json::Value = serde_json::from_slice(&polled.stdout).expect("poll JSON");
     assert_eq!(polled["gh_unavailable"].as_bool(), Some(false));
-    assert!(
-        polled["auto_submitted"]
-            .as_array()
-            .expect("auto_submitted")
-            .iter()
-            .any(|value| value.as_str() == Some(work_id.as_str())),
-        "merged green PR must auto-submit the Work: {polled}"
+    let refreshed = store
+        .latest_works()
+        .expect("Works after poll")
+        .into_iter()
+        .find(|work| work.id == work_id)
+        .expect("Work after poll");
+    assert_eq!(refreshed.phase, harness_core::WorkPhase::Active);
+    assert_eq!(refreshed.version, before_work.version + 1);
+    assert_eq!(refreshed.github_links[0].status.as_deref(), Some("MERGED"));
+    assert_eq!(
+        refreshed.github_links[0].ci_status.as_deref(),
+        Some("success")
     );
-    let submitted = host_firm_json(
-        &home,
-        &project_id,
-        &["team-run", "work", "show", "--work-id", &work_id],
+    assert_eq!(store.canonical_operations().unwrap(), before_operations);
+    let after_work_operations = store.work_operations().expect("Work operations after poll");
+    assert_eq!(
+        after_work_operations.len(),
+        before_work_operations.len() + 1
     );
-    assert_eq!(submitted["work"]["phase"].as_str(), Some("review"));
-    let result = submitted["work"]["result_summary"]
-        .as_str()
-        .expect("result");
-    assert!(
-        result.contains("auto-submitted by GitHub merge observation"),
-        "result must explain the merge observation: {result}"
+    let refresh_operation = after_work_operations.last().expect("refresh operation");
+    assert_eq!(
+        refresh_operation.event.kind,
+        harness_core::WorkEventKind::Updated
     );
-    assert!(result.contains("#362"), "result names the PR: {result}");
+    assert!(refresh_operation.reports.is_empty());
+    assert_eq!(store.host_attentions().unwrap(), before_attentions);
+    assert_eq!(
+        store
+            .fabric_work_execution_bindings(&project_id)
+            .unwrap()
+            .into_iter()
+            .find(|candidate| candidate.id == binding.id)
+            .unwrap(),
+        before_binding
+    );
+    assert_eq!(
+        store
+            .fabric_work_deliveries(&project_id)
+            .unwrap()
+            .into_iter()
+            .find(|delivery| delivery.id == binding.delivery_id)
+            .unwrap(),
+        before_delivery
+    );
 }
 
 #[test]

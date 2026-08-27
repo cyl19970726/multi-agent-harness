@@ -14,22 +14,16 @@ fn submitted_and_blocked_work_reconcile_exactly_one_host_attention_each() {
         "work-command-review-started",
         "unix-ms:3",
     );
-    let submitted = store
-        .submit_work(
-            &started_review.id,
-            started_review.version,
-            &review_member.id,
-            "ready for exact Host review",
-            Vec::new(),
-            vec!["cargo:test".into()],
-            member_work_context(
-                &review_member.id,
-                "work-event-review-submitted",
-                "work-command-review-submitted",
-                "unix-ms:4",
-            ),
-        )
-        .expect("submit Work");
+    let submitted = submit_started_work_for_test(
+        &store,
+        &started_review,
+        &review_member,
+        "work-event-review-submitted",
+        "ready for exact Host review",
+        Vec::new(),
+        vec!["cargo:test".into()],
+        "unix-ms:4",
+    );
 
     let (_blocked_run, blocked_member, blocked_work) =
         seed_host_attention_fixture(&store, "blocked-run", Some("blocked-host-task"));

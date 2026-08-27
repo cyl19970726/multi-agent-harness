@@ -204,7 +204,7 @@ pub(super) fn claim_canonical_work_for_member(
         binding.team_id == run.agent_team_id
             && binding.status == harness_core::agentfirm_api::WorkExecutionBindingStatus::Active
     }) {
-        ledger.store.release_work_execution_binding_if_stale(
+        let reconciliation = ledger.store.release_work_execution_binding_if_stale(
             &canonical_delivery_context(
                 &execution_space_id,
                 &daemon.daemon_id,
@@ -220,7 +220,19 @@ pub(super) fn claim_canonical_work_for_member(
             &daemon.daemon_id,
             daemon.generation,
             &now_string(),
-        )?;
+        );
+        if let Err(error) = reconciliation {
+            if error.trust_error().is_some_and(|error| {
+                error.code == harness_core::agentfirm_api::TrustErrorCode::DeliveryRecoveryUncertain
+            }) {
+                // This is a Work-attempt recovery fence, not a provider
+                // transport failure.  Keep the persistent runtime/live
+                // control registered so it can still answer Close/Retire,
+                // while preventing this Work from being released or replayed.
+                continue;
+            }
+            return Err(error.into());
+        }
     }
     bindings = ledger
         .store

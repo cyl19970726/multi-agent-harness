@@ -1156,9 +1156,8 @@ pub(super) const GITHUB_CI_POLL_INTERVAL: Duration = Duration::from_secs(60);
 pub(crate) struct GithubPollSummary {
     pub works_checked: usize,
     pub links_refreshed: usize,
-    pub auto_submitted: Vec<String>,
-    /// Work(s) whose linked PR merged but whose CI was `failure`; left for the
-    /// Host to decide instead of auto-submitting a red submission.
+    /// Work(s) whose linked PR merged but whose CI was `failure`; surfaced as
+    /// evidence for the Host without changing Work lifecycle.
     pub blocked_on_failure: Vec<String>,
     /// Work(s) whose declared gates all pass after this poll (meaning they are
     /// ready for `work accept`).
@@ -1169,7 +1168,6 @@ pub(crate) struct GithubPollSummary {
 impl GithubPollSummary {
     pub fn is_noop(&self) -> bool {
         self.links_refreshed == 0
-            && self.auto_submitted.is_empty()
             && self.blocked_on_failure.is_empty()
             && self.gate_ready.is_empty()
     }
@@ -1180,11 +1178,10 @@ impl GithubPollSummary {
 /// `GITHUB_CI_POLL_INTERVAL`, and `team-run work poll-github-ci` triggers it
 /// on demand.
 ///
-/// - CI status/`ci_url` are re-fetched from `gh pr checks` and persisted only
-///   when they changed, so a steady-state poll never churns Work versions.
-/// - When a linked PR is observed `MERGED` and the Work is `in_progress` (and
-///   not on red CI), the Work is auto-submitted to `review`; Host acceptance
-///   still moves it to `done`.
+/// - CI status/`ci_url` are re-fetched from `gh pr checks` for notification;
+///   the poll never rewrites Work, Result, delivery or acceptance facts.
+/// - A merged PR and CI status remain external evidence only. They never
+///   impersonate the Member's canonical Result or the Host's acceptance.
 /// - `gh` missing/unauthenticated is a soft skip: stored snapshots are kept.
 pub(crate) fn poll_team_run_github_linkages(
     store: &HarnessStore,
@@ -1227,40 +1224,13 @@ pub(crate) fn poll_team_run_github_linkages(
                 if *stored != fresh {
                     *stored = fresh.clone();
                     changed = true;
-                    summary.links_refreshed += 1;
                 }
             } else {
                 refreshed_links.push(fresh.clone());
                 changed = true;
-                summary.links_refreshed += 1;
             }
-            // A merge observation may auto-submit even when the link fields
-            // themselves changed, so evaluate against the fresh link.
-            let merged_and_green = fresh.status.as_deref() == Some("MERGED")
-                && fresh.ci_status.as_deref() != Some("failure");
-            if merged_and_green && work.phase == WorkPhase::Active {
-                let context = github_poll_host_context(store, run_id, &work.id)?;
-                let result = format!(
-                    "auto-submitted by GitHub merge observation: PR {}/{}#{} merged; CI: {}",
-                    fresh.owner,
-                    fresh.repo,
-                    fresh.number,
-                    fresh.ci_status.as_deref().unwrap_or("unknown")
-                );
-                store
-                    .submit_work_on_pr_merge(
-                        &work.id,
-                        work.version,
-                        &result,
-                        refreshed_links.clone(),
-                        context,
-                    )
-                    .map_err(|error| {
-                        CliError::Usage(format!("github poll auto-submit failed: {error}"))
-                    })?;
-                summary.auto_submitted.push(work.id.clone());
-                changed = false; // transition already persisted the snapshot
-                break;
+            if *link != fresh {
+                summary.links_refreshed += 1;
             }
             if fresh.status.as_deref() == Some("MERGED")
                 && fresh.ci_status.as_deref() == Some("failure")
@@ -1272,10 +1242,33 @@ pub(crate) fn poll_team_run_github_linkages(
         }
         if changed {
             let context = github_poll_host_context(store, run_id, &work.id)?;
+            let run = store
+                .team_runs()?
+                .into_iter()
+                .rev()
+                .find(|run| run.id == run_id)
+                .ok_or_else(|| CliError::Usage(format!("TeamRun not found: {run_id}")))?;
+            let daemon = store
+                .latest_node_daemon_lease(&run.execution_node_id)?
+                .ok_or_else(|| {
+                    CliError::Usage(format!(
+                        "NODE_DAEMON_LEASE_REQUIRED: GitHub evidence refresh for {run_id} requires the current NodeDaemon"
+                    ))
+                })?;
+            let execution_space_id = store.current_team_run_execution_space(&run)?;
             store
-                .update_work_github_links(&work.id, work.version, refreshed_links, context)
+                .update_work_github_links(
+                    &work.id,
+                    work.version,
+                    refreshed_links,
+                    &execution_space_id,
+                    &run.execution_node_id,
+                    &daemon.daemon_id,
+                    daemon.generation,
+                    context,
+                )
                 .map_err(|error| {
-                    CliError::Usage(format!("github poll link update failed: {error}"))
+                    CliError::Usage(format!("github poll evidence refresh failed: {error}"))
                 })?;
         }
     }
@@ -1291,20 +1284,32 @@ pub(super) fn gh_available() -> bool {
         .unwrap_or(false)
 }
 
-/// Exact Host-authority context for daemon/poll store mutations (issue #369
-/// Phase 2). Each operation gets its own generated idempotency key.
 pub(super) fn github_poll_host_context(
     store: &HarnessStore,
     run_id: &str,
     work_id: &str,
 ) -> CliResult<WorkCommandContext> {
+    let run = store
+        .team_runs()?
+        .into_iter()
+        .rev()
+        .find(|run| run.id == run_id)
+        .ok_or_else(|| CliError::Usage(format!("TeamRun not found: {run_id}")))?;
+    let daemon = store
+        .latest_node_daemon_lease(&run.execution_node_id)?
+        .ok_or_else(|| {
+            CliError::Usage(format!(
+                "NODE_DAEMON_LEASE_REQUIRED: GitHub evidence refresh for {run_id} requires the current NodeDaemon"
+            ))
+        })?;
     let host_actor = store.exact_team_run_host_actor(run_id)?;
     Ok(WorkCommandContext {
         event_id: generated_id("github-poll-event"),
         performed_by_actor: TeamActorRef {
-            display_name: Some(format!("GitHub CI poll for {run_id}")),
+            kind: TeamActorKind::Service,
+            id: daemon.daemon_id,
+            display_name: Some(format!("NodeDaemon GitHub evidence poll for {run_id}")),
             authn_source: Some("supervisor_daemon".to_string()),
-            ..host_actor.clone()
         },
         authority_actor: Some(host_actor),
         causation_ref: None,

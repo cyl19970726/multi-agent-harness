@@ -226,7 +226,11 @@ impl HarnessStore {
             session,
             &runtime_binding,
             RuntimeBindingAdmission::RuntimeCommand {
-                allow_native_session_attachment: false,
+                // A Work may be bound before the first provider Open returns
+                // the native session id.  Attaching that id to the same exact
+                // AgentSession/runtime/driver generation is durable progress,
+                // not a stale execution authority.
+                allow_native_session_attachment: true,
             },
             "work_execution_binding",
             &binding.id,

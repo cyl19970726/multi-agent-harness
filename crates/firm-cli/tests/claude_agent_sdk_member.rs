@@ -443,7 +443,7 @@ fn start_with_fake_runner(
         .current_dir(root)
         .envs(home.envs())
         .env("FIRM_CLAUDE_MEMBER_RUNNER", runner)
-        .env("FIRM_CLAUDE_AGENT_SDK_IDLE_GRACE_MS", grace_ms)
+        .env("FIRM_MEMBER_SUPERVISOR_TEST_IDLE_MS", grace_ms)
         .env("FIRM_BIN", env!("CARGO_BIN_EXE_firm"))
         .env_remove("FIRM_ROOT")
         .env_remove("FIRM_PROJECT")
@@ -457,7 +457,7 @@ fn start_with_fake_runner(
         .current_dir(root)
         .envs(home.envs())
         .env("FIRM_CLAUDE_MEMBER_RUNNER", runner)
-        .env("FIRM_CLAUDE_AGENT_SDK_IDLE_GRACE_MS", grace_ms)
+        .env("FIRM_MEMBER_SUPERVISOR_TEST_IDLE_MS", grace_ms)
         .env("FIRM_BIN", env!("CARGO_BIN_EXE_firm"))
         .env_remove("FIRM_ROOT")
         .env_remove("FIRM_PROJECT")
@@ -922,7 +922,9 @@ fn agent_sdk_close_releases_runtime_and_reopen_resumes_the_exact_native_session(
     let runner = write_fake_runner(&runner_root, false, FakeTurnShape::Report);
 
     let run_id = create_run(&home, &root);
-    let out = start_with_fake_runner(&home, &root, &runner, "500", &run_id);
+    // A persistent provider runtime has no implicit idle retirement. The
+    // explicit Close below is the only authority that may end this handle.
+    let out = start_with_fake_runner(&home, &root, &runner, "", &run_id);
     assert!(out.status.success(), "start failed: {out:?}");
 
     let initial = wait_for_member_detail(&home, &root, &run_id, |detail| {
