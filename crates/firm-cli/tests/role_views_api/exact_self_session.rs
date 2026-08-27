@@ -196,7 +196,7 @@ fn exact_self_session_projection_follows_fresh_start_settle_sync() {
         ],
     );
     assert!(live_work.status.success(), "live Work: {live_work:?}");
-    firm_env::assign_work_for_member_run(
+    firm_env::work_execution::assign_work_for_member_run(
         &home,
         &space_id,
         "work-live-provider-sse",

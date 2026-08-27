@@ -355,7 +355,7 @@ fi
     assert!(created.status.success(), "create failed: {created:?}");
     let created: serde_json::Value =
         serde_json::from_slice(&created.stdout).expect("created Work JSON");
-    let assigned = firm_env::assign_work_for_member_run(
+    let assigned = firm_env::work_execution::assign_work_for_member_run(
         &home,
         &project_id,
         created["id"].as_str().expect("work id"),
@@ -485,7 +485,7 @@ fn github_issue_and_pr_linkage_roundtrip() {
             &github_issue,
         ],
     );
-    let assigned = firm_env::assign_work_for_member_run(
+    let assigned = firm_env::work_execution::assign_work_for_member_run(
         &home,
         &project_id,
         created["id"].as_str().expect("work id"),
@@ -695,7 +695,7 @@ fi
     assert!(created.status.success(), "create failed: {created:?}");
     let created: serde_json::Value =
         serde_json::from_slice(&created.stdout).expect("created Work JSON");
-    let assigned = firm_env::assign_work_for_member_run(
+    let assigned = firm_env::work_execution::assign_work_for_member_run(
         &home,
         &project_id,
         created["id"].as_str().expect("work id"),
@@ -886,7 +886,7 @@ fn github_pr_merge_on_red_ci_is_held_for_host() {
             &pr_ref,
         ],
     );
-    let assigned = firm_env::assign_work_for_member_run(
+    let assigned = firm_env::work_execution::assign_work_for_member_run(
         &home,
         &project_id,
         created["id"].as_str().expect("work id"),

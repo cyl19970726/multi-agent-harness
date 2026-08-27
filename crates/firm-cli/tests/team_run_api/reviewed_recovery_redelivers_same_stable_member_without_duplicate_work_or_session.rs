@@ -69,7 +69,7 @@ fn reviewed_recovery_advances_runtime_without_mutating_stable_work_responsibilit
             "--json",
         ],
     );
-    let work = serde_json::to_value(firm_env::assign_work_for_member_run(
+    let work = serde_json::to_value(firm_env::work_execution::assign_work_for_member_run(
         &home,
         &project_id,
         "work-stable-recovery",

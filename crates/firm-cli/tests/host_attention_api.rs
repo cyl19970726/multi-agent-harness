@@ -9,8 +9,8 @@ use std::time::{Duration, Instant};
 mod fake_provider;
 mod firm_env;
 use firm_env::{
-    assign_work_for_member_run, create_canonical_agent_member, current_project_id,
-    member_run_for_work_owner, run_firm, run_firm_with_env, ServeHandle, TempHome,
+    create_canonical_agent_member, current_project_id, member_run_for_work_owner, run_firm,
+    run_firm_with_env, ServeHandle, TempHome,
 };
 
 fn init_project(home: &TempHome, name: &str) -> (String, String, String) {
@@ -247,7 +247,13 @@ fn host_attentions_read_and_console_ack_lifecycle() {
     );
     assert_eq!(status, 202, "body: {body}");
     wait_for_member_runtime_ready(&serve, &project_id, &member_id, Duration::from_secs(15));
-    let bound = assign_work_for_member_run(&home, &project_id, &work_id, &member_id, true);
+    let bound = firm_env::work_execution::assign_work_for_member_run(
+        &home,
+        &project_id,
+        &work_id,
+        &member_id,
+        true,
+    );
     assert_eq!(bound.version, work_version);
     firm_env::provider_received_work::record_provider_received_work(
         &home,
@@ -255,6 +261,10 @@ fn host_attentions_read_and_console_ack_lifecycle() {
         &work_id,
         "host-attention",
     );
+    // The live Supervisor may own the provider turn that produced the
+    // canonical receipt. Wait for that turn to settle before this fixture
+    // exercises the separate Member-authored Start/Result path.
+    wait_for_member_runtime_ready(&serve, &project_id, &member_id, Duration::from_secs(15));
 
     // Submitting the initial Work derives a WorkReviewRequested HostAttention.
     let started = run_member_json(
