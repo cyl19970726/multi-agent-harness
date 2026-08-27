@@ -272,6 +272,29 @@ fn resumed_session_materialization_and_readmission_share_preflight_identity() {
     )
     .expect("message admission preserves the versionless canonical identity");
 
+    let mut unsynchronized = PreparedTeamRunBody {
+        run_id: body.run_id.clone(),
+        objective: body.objective.clone(),
+        run: body.run.clone(),
+        members: body.members.clone(),
+    };
+    unsynchronized.members[0]
+        .native_session
+        .as_mut()
+        .expect("durable resume locator")
+        .provider_version = Some("0.148.0-alpha.9".into());
+    let error = ensure_team_runtime_fabric(
+        &store,
+        &unsynchronized,
+        "unit-test-space",
+        &lease.node_daemon_id,
+        lease.node_daemon_generation,
+    )
+    .expect_err("a concrete MemberRun version requires synchronized AgentSession truth");
+    assert!(error
+        .to_string()
+        .contains("AGENT_SESSION_RECOVERY_REQUIRED"));
+
     let ledger = TeamRunLedger::new(
         &store,
         &created.team_run.id,
@@ -283,13 +306,19 @@ fn resumed_session_materialization_and_readmission_share_preflight_identity() {
         .latest_member_run(&body.members[0].id)
         .expect("latest member")
         .expect("member exists");
-    let mut settled = expected.clone();
+    let mut versionless = expected.clone();
+    versionless.native_session = Some(exact_codex_native_session(None));
+    versionless.last_event_at = Some(now_string());
+    ledger
+        .save_member_run(&expected, &versionless)
+        .expect("resume locator is first synchronized without a version claim");
+    let mut settled = versionless.clone();
     settled.native_session = Some(exact_codex_native_session(Some("0.148.0-alpha.9")));
     settled.status = MemberRunStatus::Idle;
     settled.last_event_at = Some(now_string());
     ledger
-        .save_member_run(&expected, &settled)
-        .expect("successful provider settlement owns native version truth");
+        .save_member_run(&versionless, &settled)
+        .expect("same-id provider settlement propagates the observed version");
     body.members[0] = settled;
     let enriched = store
         .fabric_agent_sessions("unit-test-space")

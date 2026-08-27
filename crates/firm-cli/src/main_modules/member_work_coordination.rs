@@ -673,7 +673,7 @@ impl TeamRunLedger {
     ) -> CliResult<()> {
         let binding_changed = match (&expected.native_session, &next.native_session) {
             (None, Some(_)) => true,
-            (Some(before), Some(after)) => before.native_session_id != after.native_session_id,
+            (Some(before), Some(after)) => before != after,
             _ => false,
         };
         let Some(native) = next.native_session.as_ref().filter(|_| binding_changed) else {
@@ -697,11 +697,7 @@ impl TeamRunLedger {
             if trust_run.runtime_generation != next.runtime_generation {
                 break;
             }
-            if trust_run
-                .native_session
-                .as_ref()
-                .is_some_and(|current| current.native_session_id == native.native_session_id)
-            {
+            if trust_run.native_session.as_ref() == Some(&native_ref) {
                 break;
             }
             let context = harness_core::agentfirm_api::MutationContext {

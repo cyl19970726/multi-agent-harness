@@ -318,7 +318,8 @@ pub(super) fn agentfirm_native_session_identity_matches_for_admission(
                 && current.execution_mode == expected.execution_mode
                 && current.native_session_id == expected.native_session_id
                 && current.native_locator_kind == expected.native_locator_kind
-                && (current.provider_version.is_none() || expected.provider_version.is_none())
+                && current.provider_version.is_some()
+                && expected.provider_version.is_none()
                 && current.adapter_contract_version == expected.adapter_contract_version
         }
         _ => false,
