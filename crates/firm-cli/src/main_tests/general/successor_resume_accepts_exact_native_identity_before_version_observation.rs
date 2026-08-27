@@ -322,6 +322,11 @@ fn resumed_session_materialization_and_readmission_share_preflight_identity() {
     ledger
         .save_member_run(&versionless, &settled)
         .expect("an exact retry converges after the MemberRun revision already committed");
+    let mut foreign_expected = versionless.clone();
+    foreign_expected.id = "member-run-foreign".into();
+    ledger
+        .save_member_run(&foreign_expected, &settled)
+        .expect_err("an unrelated expected identity cannot use exact-next retry convergence");
     body.members[0] = settled;
     let enriched = store
         .fabric_agent_sessions("unit-test-space")

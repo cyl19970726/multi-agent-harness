@@ -644,10 +644,11 @@ impl TeamRunLedger {
     ) -> CliResult<()> {
         let _guard = self.write_lock();
         if let Err(error) = self.store.compare_and_append_member_run(expected, next) {
-            let already_committed = self
-                .latest_member_run(&next.id)?
-                .as_ref()
-                .is_some_and(|current| current == next);
+            let already_committed = expected.id == next.id
+                && self
+                    .latest_member_run(&next.id)?
+                    .as_ref()
+                    .is_some_and(|current| current == next);
             if !already_committed {
                 return Err(CliError::Store(error));
             }
