@@ -94,10 +94,11 @@ result. Review means: open the artifact refs (the PR diff, the file), rerun
 or read the named check refs, and walk the completion criteria line by line.
 
 - **Accept** → Work closes with resolution `Accepted`.
-- **Request changes** → Work returns to `Active` with your reasons recorded
-  in the WorkEvent history; the member continues in the same MemberRun,
-  workspace, and native session. Do not spawn a replacement agent for a
-  revision — the existing member holds all the context.
+- **Request changes** → Work returns to `Open` with your reasons recorded in
+  WorkEvent history. Stable AgentMember/TeamMembership responsibility remains;
+  the scheduler must create the next exact WorkExecutionBinding and delivery
+  generation before Start. Reuse a compatible Workspace/native session when
+  its runtime fences pass; do not treat MemberRun continuity as ownership.
 - Never accept on a provider completion status, a delivery receipt, or a
   green fixture alone.
 

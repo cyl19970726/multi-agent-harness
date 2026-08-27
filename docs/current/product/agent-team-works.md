@@ -68,13 +68,16 @@ NodeDaemon and providers execute effects but never own Work state.
 
 ## Creation and dependency authority
 
-The Host governs Team-level Work and dependency mutation. A Member may create a
-self-owned or eligible unassigned peer Work inside its current Work's scope and
-acceptance boundary; it cannot create a Team-level goal, assign a peer, cross a
-Team boundary, expand permission, or change another Work's acceptance
-criteria. A Member dependency proposal has no effect until the kernel accepts
-the versioned operation. A Message can explain or request the change but never
-mutates the graph.
+The Host governs Team-level Work and dependency mutation. Every current Work is
+created unassigned. A Member may create an eligible unassigned peer Work inside
+its current Work's scope and acceptance boundary; canonical TeamMembership
+assignment or claim separately freezes responsibility, and scheduler admission
+separately binds the current MemberRun/AgentSession generation. Creation never
+records runtime ownership. A Member cannot create a Team-level goal, assign a
+peer, cross a Team boundary, expand permission, or change another Work's
+acceptance criteria. A Member dependency proposal has no effect until the
+kernel accepts the versioned operation. A Message can explain or request the
+change but never mutates the graph.
 
 ## Module scope
 

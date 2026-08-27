@@ -176,10 +176,13 @@ responsibility ABA without a second epoch. A linked Message never changes Work
 status, version, responsibility, or acceptance, and a WorkReport remains
 candidate evidence until the exact Host accepts it. The legacy unfenced binding
 writer rejects every call; only exact runtime admission may create a binding.
-`CurrentWorkDeliveryView` uses this same responsibility-history check: ordinary
-Start/Submit/Review revisions keep the frozen delivery readable, while a real
-responsibility cutover, released binding, or stale runtime authority fails the
-canonical join closed.
+`CurrentWorkDeliveryView` uses this same responsibility-history check. Released
+bindings and their exact ProviderReceived or Failed deliveries remain readable
+as immutable historical evidence; only the unique Active binding may project
+current runtime authority. Ordinary lifecycle revisions preserve frozen
+evidence, while malformed/conflicting joins or stale current authority fail
+closed. Host Request Changes moves Review → Open so the scheduler can create a
+fresh monotonic binding/delivery generation for the next attempt.
 
 Every current CLI, HTTP, RoleView, recovery diagnostic, and Dashboard
 reader consumes the non-persisted `CurrentWorkDeliveryView`. The application

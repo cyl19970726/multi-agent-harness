@@ -64,6 +64,50 @@ function checkWorkCreateExamples() {
   }
 }
 
+function checkCurrentWorkAuthorityGuidance() {
+  const paths = [
+    join(repoRoot, "skills", "shared-references", "SKILL.md"),
+    join(repoRoot, "skills", "collaborate-as-agent-team-member", "SKILL.md"),
+    join(
+      repoRoot,
+      "skills",
+      "collaborate-as-agent-team-member",
+      "references",
+      "host-loop.md",
+    ),
+    join(
+      repoRoot,
+      "skills",
+      "collaborate-as-agent-team-member",
+      "references",
+      "member-loop.md",
+    ),
+  ];
+  const guidance = paths.map((path) => readFileSync(path, "utf8")).join("\n");
+  for (const required of [
+    "Review → Open",
+    "WorkExecutionBinding",
+    "binding/delivery generation",
+  ]) {
+    if (!guidance.includes(required)) {
+      errors.push(`current Agent Team skills must describe ${required}`);
+    }
+  }
+  for (const retired of [
+    /\brebind\b/i,
+    /phase back to Active/i,
+    /returns to `Active`/i,
+    /bound MemberRun\/native turn/i,
+    /continues in the SAME MemberRun/i,
+    /create self-owned/i,
+    /create a self-owned/i,
+  ]) {
+    if (retired.test(guidance)) {
+      errors.push(`current Agent Team skills retain retired guidance: ${retired}`);
+    }
+  }
+}
+
 function readJson(path) {
   try {
     return JSON.parse(readFileSync(path, "utf8"));
@@ -155,6 +199,7 @@ for (const skill of ["collaborate-as-agent-team-member"]) {
   }
 }
 checkWorkCreateExamples();
+checkCurrentWorkAuthorityGuidance();
 
 if (errors.length) {
   for (const error of errors) console.error(error);

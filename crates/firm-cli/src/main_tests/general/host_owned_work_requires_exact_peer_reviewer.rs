@@ -130,6 +130,19 @@ fn advance_to_review(
         .expect("submitted Work")
 }
 
+fn receive_bound_work(
+    ledger: &TeamRunLedger,
+    owner: &ProviderRuntimeProjection,
+    provider_receipt_id: &str,
+) {
+    let claimed = claim_canonical_work_for_member(ledger, owner)
+        .expect("claim exact bound Work delivery")
+        .expect("one exact bound Work delivery");
+    ledger
+        .complete_work_delivery(&claimed, provider_receipt_id)
+        .expect("record exact provider receipt before semantic Result");
+}
+
 #[test]
 fn host_owned_work_requires_exact_active_peer_while_member_work_remains_host_reviewed() {
     let (store, _root) = temp_store("host-owned-peer-review");
@@ -195,6 +208,7 @@ fn host_owned_work_requires_exact_active_peer_while_member_work_remains_host_rev
 
     let host_work = create_assigned_review_work(&store, &created, &lease, &host, "host-owned-work");
     bind_test_responsible_work_execution(&store, &lease, &host, &host_work);
+    receive_bound_work(&ledger, &host, "provider-receipt:host-owned-work");
     let host_review = advance_to_review(
         &store,
         &created,
@@ -334,6 +348,7 @@ fn host_owned_work_requires_exact_active_peer_while_member_work_remains_host_rev
     let member_work =
         create_assigned_review_work(&store, &created, &lease, &worker, "member-owned-work");
     bind_test_responsible_work_execution(&store, &lease, &worker, &member_work);
+    receive_bound_work(&ledger, &worker, "provider-receipt:member-owned-work");
     let member_review = advance_to_review(
         &store,
         &created,
