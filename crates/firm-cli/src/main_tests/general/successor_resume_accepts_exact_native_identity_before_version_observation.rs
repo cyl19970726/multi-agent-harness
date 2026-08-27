@@ -194,8 +194,8 @@ fn resumed_session_materialization_and_readmission_share_preflight_identity() {
         .provider_profile
         .as_mut()
         .expect("provider profile")
-        .provider_version = Some("0.148.0-alpha.9".into());
-    let body = PreparedTeamRunBody {
+        .provider_version = None;
+    let mut body = PreparedTeamRunBody {
         run_id: created.team_run.id.clone(),
         objective: created.team_run.objective.clone(),
         run: created.team_run.clone(),
@@ -209,15 +209,43 @@ fn resumed_session_materialization_and_readmission_share_preflight_identity() {
         &lease.node_daemon_id,
         lease.node_daemon_generation,
     )
-    .expect("materialize preflight-versioned resume identity");
-    let materialized = store
+    .expect("message-path materialization accepts the versionless preflight identity");
+    let precreated = store
         .fabric_agent_sessions("unit-test-space")
         .expect("read materialized AgentSessions")
         .into_iter()
         .find(|session| session.agent_member_id == body.members[0].agent_member_id)
-        .expect("materialized resumed AgentSession");
+        .expect("precreated resumed AgentSession");
     assert_eq!(
-        materialized
+        precreated
+            .native_session_ref
+            .as_ref()
+            .and_then(|session| session.provider_version.as_deref()),
+        None
+    );
+
+    body.members[0]
+        .provider_profile
+        .as_mut()
+        .expect("provider profile")
+        .provider_version = Some("0.148.0-alpha.9".into());
+
+    ensure_team_runtime_fabric(
+        &store,
+        &body,
+        "unit-test-space",
+        &lease.node_daemon_id,
+        lease.node_daemon_generation,
+    )
+    .expect("start preflight enriches the exact precreated AgentSession");
+    let enriched = store
+        .fabric_agent_sessions("unit-test-space")
+        .expect("read enriched AgentSessions")
+        .into_iter()
+        .find(|session| session.agent_member_id == body.members[0].agent_member_id)
+        .expect("enriched resumed AgentSession");
+    assert_eq!(
+        enriched
             .native_session_ref
             .as_ref()
             .and_then(|session| session.provider_version.as_deref()),
@@ -231,7 +259,25 @@ fn resumed_session_materialization_and_readmission_share_preflight_identity() {
         &lease.node_daemon_id,
         lease.node_daemon_generation,
     )
-    .expect("readmission before provider settlement preserves exact identity");
+    .expect("readmission before provider settlement preserves enriched identity");
+
+    let mut conflicting = body;
+    conflicting.members[0]
+        .provider_profile
+        .as_mut()
+        .expect("provider profile")
+        .provider_version = Some("0.149.0".into());
+    let error = ensure_team_runtime_fabric(
+        &store,
+        &conflicting,
+        "unit-test-space",
+        &lease.node_daemon_id,
+        lease.node_daemon_generation,
+    )
+    .expect_err("an observed provider-version conflict remains fail-closed");
+    assert!(error
+        .to_string()
+        .contains("AGENT_SESSION_RECOVERY_REQUIRED"));
 
     std::fs::remove_dir_all(root).expect("cleanup");
 }
