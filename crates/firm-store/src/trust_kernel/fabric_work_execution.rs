@@ -4,8 +4,8 @@ use super::*;
 #[derive(Debug, Clone, PartialEq)]
 pub enum WorkExecutionBindingReconciliation {
     Current,
-    Released(CanonicalMutationResult<WorkExecutionBinding>),
-    AlreadySettled(WorkExecutionBinding),
+    Released(Box<CanonicalMutationResult<WorkExecutionBinding>>),
+    AlreadySettled(Box<WorkExecutionBinding>),
 }
 
 impl HarnessStore {
@@ -223,7 +223,7 @@ impl HarnessStore {
             return Ok(false);
         }
         match self.require_live_runtime_binding_unlocked(
-            &session,
+            session,
             &runtime_binding,
             RuntimeBindingAdmission::RuntimeCommand {
                 allow_native_session_attachment: false,
@@ -1032,17 +1032,21 @@ impl HarnessStore {
             binding_id,
             &fingerprint,
         )? {
-            return Ok(WorkExecutionBindingReconciliation::Released(replay));
+            return Ok(WorkExecutionBindingReconciliation::Released(Box::new(
+                replay,
+            )));
         }
         if binding.status != WorkExecutionBindingStatus::Active {
-            return Ok(WorkExecutionBindingReconciliation::AlreadySettled(binding));
+            return Ok(WorkExecutionBindingReconciliation::AlreadySettled(
+                Box::new(binding),
+            ));
         }
         if self.work_execution_binding_is_current_unlocked(&context.execution_space_id, &binding)? {
             return Ok(WorkExecutionBindingReconciliation::Current);
         }
-        Ok(WorkExecutionBindingReconciliation::Released(
+        Ok(WorkExecutionBindingReconciliation::Released(Box::new(
             self.release_work_execution_binding_unlocked(context, &mut binding, ended_at, true)?,
-        ))
+        )))
     }
 
     fn require_exact_binding_node_daemon_unlocked(
@@ -1174,9 +1178,67 @@ impl HarnessStore {
             &binding.id,
             "released",
             serde_json::json!({"ended_at": ended_at}),
-            &binding,
+            binding,
             side_records,
             Vec::new(),
         )
+    }
+
+    pub(super) fn result_submission_released_binding_unlocked(
+        &self,
+        execution_space_id: &str,
+        work: &Work,
+        binding: &WorkExecutionBinding,
+        ended_at: &str,
+    ) -> StoreResult<WorkExecutionBinding> {
+        if binding.status != WorkExecutionBindingStatus::Active
+            || binding.work_id != work.id
+            || binding.work_revision > work.version
+        {
+            return Err(trust_error(
+                TrustErrorCode::WorkExecutionBindingActive,
+                "Result submission requires the exact active WorkExecutionBinding",
+                "work_execution_binding",
+                &binding.id,
+                Some(binding.version),
+            ));
+        }
+        let delivery = self
+            .canonical_fabric_work_deliveries_unlocked(execution_space_id)?
+            .remove(&binding.delivery_id)
+            .ok_or_else(|| {
+                trust_error(
+                    TrustErrorCode::DeliveryRecoveryUncertain,
+                    "Result submission requires the exact canonical WorkDelivery",
+                    "work_delivery",
+                    &binding.delivery_id,
+                    None,
+                )
+            })?;
+        if delivery.work_execution_binding_id != binding.id
+            || delivery.work_id != binding.work_id
+            || delivery.work_revision != binding.work_revision
+            || delivery.recipient_agent_member_id != binding.agent_member_id
+            || delivery.recipient_session_id != binding.agent_session_id
+            || delivery.recipient_session_generation != binding.agent_session_generation
+            || delivery.status != WorkDeliveryStatus::ProviderReceived
+            || delivery
+                .provider_receipt_id
+                .as_deref()
+                .is_none_or(str::is_empty)
+        {
+            return Err(trust_error(
+                TrustErrorCode::DeliveryRecoveryUncertain,
+                "Result submission requires exact provider-received delivery evidence",
+                "work_delivery",
+                &delivery.id,
+                Some(delivery.version),
+            ));
+        }
+        let mut released = binding.clone();
+        released.status = WorkExecutionBindingStatus::Released;
+        released.version += 1;
+        released.ended_at = Some(ended_at.to_string());
+        Ok(released)
     }
 }

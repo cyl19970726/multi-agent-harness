@@ -155,27 +155,165 @@ fn supervisor_claims_and_records_provider_receipt_for_canonical_work_delivery() 
         )
         .expect("current MemberRun starts stable responsibility Work");
     assert_eq!(started.active_member_run_id, None);
+    let candidate = harness_core::agentfirm_api::CandidateRef {
+        kind: harness_core::agentfirm_api::CandidateKind::GitCommit,
+        value: "abcdef0123456789".into(),
+    };
+    let candidate_fingerprint = harness_store::canonical_json_fingerprint(
+        &serde_json::to_value(&candidate).expect("serialize exact candidate"),
+    );
+    let result_report = harness_core::agentfirm_api::WorkReport {
+        id: "canonical-supervisor-work-result".into(),
+        work_id: started.id.clone(),
+        work_revision: started.version + 1,
+        report_revision: 1,
+        kind: harness_core::agentfirm_api::WorkReportKind::Result,
+        authored_by: harness_core::agentfirm_api::ActorRef {
+            kind: harness_core::agentfirm_api::ActorKind::AgentMember,
+            id: member.agent_member_id.clone(),
+        },
+        summary: "canonical stable-responsibility result".into(),
+        base_revision: None,
+        candidate: Some(candidate),
+        candidate_fingerprint: Some(candidate_fingerprint.clone()),
+        finding_refs: Vec::new(),
+        failure_analysis_ref: None,
+        artifact_refs: vec!["artifact:canonical-work".into()],
+        check_refs: vec!["check:canonical-work".into()],
+        github_links: Vec::new(),
+        evidence_refs: vec!["evidence:canonical-work".into()],
+        known_risks: Vec::new(),
+        confidence: None,
+        recommended_next_action: None,
+        created_at: "unix-ms:6".into(),
+    };
+    store
+        .create_trust_work_report(
+            &harness_core::agentfirm_api::MutationContext {
+                execution_space_id: "unit-test-space".into(),
+                authenticated_actor: result_report.authored_by.clone(),
+                authority_actor: None,
+                command_name: "work_report.create".into(),
+                idempotency_key: "canonical-supervisor-work-result".into(),
+                expected_version: 0,
+                request_fingerprint: None,
+            },
+            &created.team_run.agent_team_id,
+            result_report,
+        )
+        .expect("ProviderReceived execution submits exact semantic Result");
     let submitted = store
-        .submit_work(
-            &started.id,
-            started.version,
-            &member.id,
-            "canonical stable-responsibility result",
-            vec!["artifact:canonical-work".into()],
-            vec!["check:canonical-work".into()],
+        .latest_works()
+        .unwrap()
+        .into_iter()
+        .find(|candidate| candidate.id == started.id)
+        .unwrap();
+    assert_eq!(submitted.phase, WorkPhase::Review);
+    assert_eq!(submitted.active_member_run_id, None);
+    let released = store
+        .fabric_work_execution_bindings("unit-test-space")
+        .unwrap()
+        .into_iter()
+        .find(|binding| binding.work_id == submitted.id)
+        .unwrap();
+    assert_eq!(
+        released.status,
+        harness_core::agentfirm_api::WorkExecutionBindingStatus::Released
+    );
+    let preserved_delivery = store
+        .fabric_work_deliveries("unit-test-space")
+        .unwrap()
+        .into_iter()
+        .find(|candidate| candidate.id == delivery.id)
+        .unwrap();
+    assert_eq!(
+        preserved_delivery.status,
+        harness_core::agentfirm_api::WorkDeliveryStatus::ProviderReceived
+    );
+    assert_eq!(
+        preserved_delivery.provider_receipt_id.as_deref(),
+        Some("provider-work-receipt")
+    );
+    let accepted = store
+        .accept_trust_work(
+            &harness_core::agentfirm_api::MutationContext {
+                execution_space_id: "unit-test-space".into(),
+                authenticated_actor: harness_core::agentfirm_api::ActorRef {
+                    kind: harness_core::agentfirm_api::ActorKind::AgentMember,
+                    id: "host".into(),
+                },
+                authority_actor: None,
+                command_name: "work.accept".into(),
+                idempotency_key: "canonical-supervisor-work-accept".into(),
+                expected_version: submitted.version,
+                request_fingerprint: None,
+            },
+            &created.team_run.agent_team_id,
+            &submitted.id,
+            "canonical-supervisor-work-result",
+            &candidate_fingerprint,
+            "unix-ms:7",
+        )
+        .expect("Host acceptance remains independent from provider receipt and Result");
+    assert_eq!(accepted.projection.phase, WorkPhase::Closed);
+
+    let next_work = store
+        .insert_work(
+            CurrentWorkDraft::new(
+                "canonical-supervisor-next-work".into(),
+                created.team_run.id.clone(),
+                created.team_run.agent_team_id.clone(),
+                "Next canonical Work".into(),
+                "Prove released execution does not wedge scheduling".into(),
+                "The same Member receives one new exact admission".into(),
+                WorkClaimMode::HostAssign,
+                WorkPriority::Normal,
+                compatibility_team_actor("host", "test"),
+                "unix-ms:8".into(),
+            )
+            .into_work(),
             WorkCommandContext {
-                event_id: "canonical-supervisor-work-submitted".into(),
-                performed_by_actor: compatibility_team_actor(&member.id, "test"),
+                event_id: "canonical-supervisor-next-work-created".into(),
+                performed_by_actor: compatibility_team_actor("host", "test"),
                 authority_actor: None,
                 causation_ref: None,
-                idempotency_key: "canonical-supervisor-work-submit".into(),
-                created_at: "unix-ms:6".into(),
+                idempotency_key: "canonical-supervisor-next-work-create".into(),
+                created_at: "unix-ms:8".into(),
                 duplicate_ok: false,
             },
         )
-        .expect("current MemberRun submits stable responsibility Work");
-    assert_eq!(submitted.phase, WorkPhase::Review);
-    assert_eq!(submitted.active_member_run_id, None);
+        .unwrap();
+    let next_work = store
+        .assign_work_to_membership(
+            &next_work.id,
+            next_work.version,
+            &membership.id,
+            "unit-test-space",
+            WorkCommandContext {
+                event_id: "canonical-supervisor-next-work-assigned".into(),
+                performed_by_actor: compatibility_team_actor("host", "test"),
+                authority_actor: None,
+                causation_ref: None,
+                idempotency_key: "canonical-supervisor-next-work-assign".into(),
+                created_at: "unix-ms:9".into(),
+                duplicate_ok: false,
+            },
+        )
+        .unwrap();
+    let next_claim = claim_canonical_work_for_member(&ledger, &member)
+        .expect("scheduler remains live after semantic Result")
+        .expect("same Member receives next canonical Work");
+    assert_eq!(next_claim.work.id, next_work.id);
+    assert_eq!(
+        store
+            .fabric_work_deliveries("unit-test-space")
+            .unwrap()
+            .into_iter()
+            .filter(|candidate| candidate.work_id == submitted.id)
+            .count(),
+        1,
+        "completed Work is never replayed as a new delivery"
+    );
     std::fs::remove_dir_all(root).expect("cleanup");
 }
 

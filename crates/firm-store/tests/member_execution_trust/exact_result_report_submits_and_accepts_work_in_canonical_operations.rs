@@ -47,21 +47,17 @@ fn exact_result_report_submits_and_accepts_work_in_canonical_operations() {
         before_rejected,
         "rejected acceptance has zero side effects"
     );
-    harness
+    let released_binding = harness
         .store
-        .release_work_execution_binding(
-            &context(
-                member_actor("worker"),
-                "work_binding.release",
-                "release-before-acceptance",
-                1,
-            ),
-            "binding-work-1",
-            "runtime-worker",
-            1,
-            "t4-release",
-        )
-        .expect("submitted execution binding may release before independent acceptance");
+        .fabric_work_execution_bindings(SPACE)
+        .unwrap()
+        .into_iter()
+        .find(|binding| binding.id == "binding-work-1")
+        .expect("submitted execution binding remains durable evidence");
+    assert_eq!(
+        released_binding.status,
+        WorkExecutionBindingStatus::Released
+    );
     let command = context(reviewer, "work.accept", "accept-exact", 4);
     let accepted = harness
         .store

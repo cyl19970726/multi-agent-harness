@@ -227,6 +227,22 @@ impl HarnessStore {
         actor: &ActorRef,
         actor_session_id: Option<&str>,
     ) -> StoreResult<MemberRun> {
+        self.require_exact_work_member_binding_unlocked(
+            execution_space_id,
+            work,
+            actor,
+            actor_session_id,
+        )
+        .map(|(run, _binding)| run)
+    }
+
+    pub(super) fn require_exact_work_member_binding_unlocked(
+        &self,
+        execution_space_id: &str,
+        work: &Work,
+        actor: &ActorRef,
+        actor_session_id: Option<&str>,
+    ) -> StoreResult<(MemberRun, WorkExecutionBinding)> {
         if actor.kind != ActorKind::AgentMember
             || work.owner_member_id.as_deref() != Some(actor.id.as_str())
         {
@@ -362,7 +378,7 @@ impl HarnessStore {
                 Some(work.version),
             ));
         }
-        Ok(run.clone())
+        Ok((run.clone(), binding.clone()))
     }
 
     pub(super) fn trust_operation_envelopes_unlocked(

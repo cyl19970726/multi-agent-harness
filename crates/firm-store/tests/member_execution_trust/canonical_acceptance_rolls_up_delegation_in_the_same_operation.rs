@@ -84,9 +84,7 @@ fn canonical_acceptance_rolls_up_delegation_in_the_same_operation() {
                 id: "target-rollup".into(),
                 team_run_id: target_run.id.clone(),
                 accountable_team_id: None,
-                assignee_membership_id: Some(
-                    "membership-team-delegation-target-target-worker".into(),
-                ),
+                assignee_membership_id: None,
                 created_by_member_id: None,
                 legacy_containment_ref: None,
                 title: "Delegated target".into(),
@@ -95,7 +93,7 @@ fn canonical_acceptance_rolls_up_delegation_in_the_same_operation() {
                 phase: WorkPhase::Open,
                 condition: WorkCondition::Normal,
                 resolution: None,
-                owner_member_id: Some("target-worker".into()),
+                owner_member_id: None,
                 active_member_run_id: None,
                 claim_mode: WorkClaimMode::HostAssign,
                 eligible_member_ids: Vec::new(),
@@ -122,6 +120,28 @@ fn canonical_acceptance_rolls_up_delegation_in_the_same_operation() {
             },
         )
         .expect("atomically create Delegation and target Work");
+    let target_host = harness
+        .store
+        .exact_team_run_host_actor(&target_run.id)
+        .expect("resolve exact target TeamRun Host");
+    let target = harness
+        .store
+        .assign_work_to_membership(
+            &target.id,
+            target.version,
+            "membership-team-delegation-target-target-worker",
+            SPACE,
+            WorkCommandContext {
+                event_id: "delegation-target-assign".into(),
+                performed_by_actor: target_host,
+                authority_actor: None,
+                causation_ref: None,
+                idempotency_key: "delegation-target-assign".into(),
+                created_at: "t2.1".into(),
+                duplicate_ok: false,
+            },
+        )
+        .expect("assign delegated target through stable TeamMembership responsibility");
     let target_session = AgentSession {
         id: "session-runtime-target-worker".into(),
         agent_member_id: "target-worker".into(),
@@ -219,6 +239,48 @@ fn canonical_acceptance_rolls_up_delegation_in_the_same_operation() {
             },
         )
         .expect("bind delegated target execution authority");
+    harness
+        .store
+        .claim_work_for_provider(
+            &context(
+                ActorRef {
+                    kind: ActorKind::Service,
+                    id: "daemon-test".into(),
+                },
+                "work.claim",
+                "claim-target-rollup",
+                0,
+            ),
+            "work-delivery:target-rollup:1",
+            NODE,
+            "daemon-test",
+            1,
+            "claim-target-rollup",
+            RuntimeDispatchMode::QueueOnly,
+            "t2.5",
+        )
+        .expect("claim delegated target delivery");
+    harness
+        .store
+        .record_work_provider_receipt(
+            &context(
+                ActorRef {
+                    kind: ActorKind::Service,
+                    id: "daemon-test".into(),
+                },
+                "work.receipt",
+                "receipt-target-rollup",
+                0,
+            ),
+            "work-delivery:target-rollup:1",
+            NODE,
+            "daemon-test",
+            1,
+            "claim-target-rollup",
+            "provider-receipt-target-rollup",
+            "t2.75",
+        )
+        .expect("record delegated target provider receipt");
     let started = harness
         .store
         .start_work(

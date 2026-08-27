@@ -17,10 +17,10 @@ use firm_core::agentfirm_api::{
     GateWaiver, GateWaiverState, MemberCoordinationStatus, MemberExecutionDriver, MemberRun,
     MemberRuntimeStatus, MemberWorkspaceBinding, MutationContext, NativeSessionAvailability,
     NativeSessionRef, PermissionCeiling, PrimaryCauseStatus, RetrySafety, RuntimeCommandBinding,
-    RuntimeDriverRef, TeamMembership, TeamMembershipRole, TeamMembershipStatus, TrustError,
-    TrustErrorCode, WorkExecutionBinding, WorkExecutionBindingStatus, WorkFinding, WorkFindingKind,
-    WorkReport, WorkReportKind, WorkspaceLifecycle, WorkspaceMode, WorkspaceOwnership,
-    WorkspaceSafetyProof,
+    RuntimeDispatchMode, RuntimeDriverRef, TeamMembership, TeamMembershipRole,
+    TeamMembershipStatus, TrustError, TrustErrorCode, WorkExecutionBinding,
+    WorkExecutionBindingStatus, WorkFinding, WorkFindingKind, WorkReport, WorkReportKind,
+    WorkspaceLifecycle, WorkspaceMode, WorkspaceOwnership, WorkspaceSafetyProof,
 };
 use firm_core::{
     AgentTeam, AgentTeamRun, AgentTeamStatus, ExecutionNode, ExecutionNodeStatus, MemberRunStatus,
@@ -583,6 +583,46 @@ fn seed_active_team_work(store: &HarnessStore, label: &str, work_id: &str) -> St
             },
         )
         .expect("bind exact fixture execution authority");
+    store
+        .claim_work_for_provider(
+            &context(
+                ActorRef {
+                    kind: ActorKind::Service,
+                    id: "daemon-test".into(),
+                },
+                "work.claim",
+                &format!("claim-{work_id}"),
+                0,
+            ),
+            &format!("work-delivery:{work_id}:1"),
+            NODE,
+            "daemon-test",
+            1,
+            &format!("claim-{work_id}"),
+            RuntimeDispatchMode::QueueOnly,
+            "t2.5",
+        )
+        .expect("claim exact fixture WorkDelivery");
+    store
+        .record_work_provider_receipt(
+            &context(
+                ActorRef {
+                    kind: ActorKind::Service,
+                    id: "daemon-test".into(),
+                },
+                "work.receipt",
+                &format!("receipt-{work_id}"),
+                0,
+            ),
+            &format!("work-delivery:{work_id}:1"),
+            NODE,
+            "daemon-test",
+            1,
+            &format!("claim-{work_id}"),
+            &format!("provider-receipt-{work_id}"),
+            "t2.75",
+        )
+        .expect("record exact fixture provider receipt");
     store
         .start_work(
             work_id,

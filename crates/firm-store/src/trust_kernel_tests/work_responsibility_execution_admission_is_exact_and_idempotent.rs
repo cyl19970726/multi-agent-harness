@@ -713,10 +713,7 @@ fn terminal_member_runtime_cannot_bind_or_claim_provider_work() {
         .expect("the exact daemon atomically rechecks and releases the stale binding");
     assert!(matches!(
         released,
-        WorkExecutionBindingReconciliation::Released(CanonicalMutationResult {
-            replayed: false,
-            ..
-        })
+        WorkExecutionBindingReconciliation::Released(result) if !result.replayed
     ));
     let operation_count_after_release = store.canonical_operations().unwrap().len();
     let stale_replay_error = store
@@ -744,10 +741,7 @@ fn terminal_member_runtime_cannot_bind_or_claim_provider_work() {
         .expect("the same exact release context replays idempotently");
     assert!(matches!(
         replay,
-        WorkExecutionBindingReconciliation::Released(CanonicalMutationResult {
-            replayed: true,
-            ..
-        })
+        WorkExecutionBindingReconciliation::Released(result) if result.replayed
     ));
     assert_eq!(
         store.canonical_operations().unwrap().len(),
@@ -867,6 +861,30 @@ fn membership_work_binding_authorizes_message_and_result_without_accepting_work(
             binding.clone(),
         )
         .unwrap();
+    store
+        .claim_work_for_provider(
+            &service_context("work.claim", "claim-report-message", 0),
+            &binding.delivery_id,
+            &worker_session.node_id,
+            &worker_session.node_daemon_id,
+            worker_session.node_daemon_generation,
+            "claim-report-message",
+            firm_core::agentfirm_api::RuntimeDispatchMode::QueueOnly,
+            "t-claim-report-message",
+        )
+        .expect("claim exact delivery before starting provider execution");
+    store
+        .record_work_provider_receipt(
+            &service_context("work.receipt", "receipt-report-message", 0),
+            &binding.delivery_id,
+            &worker_session.node_id,
+            &worker_session.node_daemon_id,
+            worker_session.node_daemon_generation,
+            "claim-report-message",
+            "provider-receipt-report-message",
+            "t-receipt-report-message",
+        )
+        .expect("record exact provider receipt before semantic Result submission");
     let active = store
         .start_work(
             &assigned.id,
@@ -1060,7 +1078,7 @@ fn membership_work_binding_authorizes_message_and_result_without_accepting_work(
         .create_trust_work_report(
             &member_context("worker-admission", "report.create", &report.id, 0),
             "team-admission",
-            report,
+            report.clone(),
         )
         .expect("exact owner binding may submit Result evidence");
     let submitted = store
@@ -1074,6 +1092,28 @@ fn membership_work_binding_authorizes_message_and_result_without_accepting_work(
         submitted.resolution, None,
         "WorkReport is not Host acceptance"
     );
+    let released_binding = store
+        .fabric_work_execution_bindings("space-test")
+        .unwrap()
+        .into_iter()
+        .find(|candidate| candidate.id == binding.id)
+        .unwrap();
+    assert_eq!(
+        released_binding.status,
+        WorkExecutionBindingStatus::Released,
+        "Result submission atomically releases exact execution authority"
+    );
+    let provider_received_delivery = store
+        .fabric_work_deliveries("space-test")
+        .unwrap()
+        .into_iter()
+        .find(|delivery| delivery.id == binding.delivery_id)
+        .unwrap();
+    assert_eq!(
+        provider_received_delivery.status,
+        WorkDeliveryStatus::ProviderReceived,
+        "Result submission preserves provider receipt evidence"
+    );
     let current_deliveries = store
         .current_work_deliveries("space-test")
         .expect("ordinary Work lifecycle revisions keep the delivery readable");
@@ -1083,58 +1123,24 @@ fn membership_work_binding_authorizes_message_and_result_without_accepting_work(
             && delivery.work_execution_binding_id.as_deref() == Some(binding.id.as_str())
     }));
 
-    let release_context = member_context(
-        "worker-admission",
-        "work_binding.release",
-        "release-report-message",
-        1,
-    );
-    store
-        .release_work_execution_binding(
-            &release_context,
-            &binding.id,
-            "member-run-admission",
-            1,
-            "t-release",
-        )
-        .unwrap();
     let operation_count_after_release = store.canonical_operations().unwrap().len();
-    let mut foreign_replay_context = release_context.clone();
+    let exact_report_replay = store
+        .create_trust_work_report(
+            &member_context("worker-admission", "report.create", &report.id, 0),
+            "team-admission",
+            report.clone(),
+        )
+        .expect("the exact member replays Result after atomic binding release");
+    assert!(exact_report_replay.replayed);
+    let mut foreign_replay_context =
+        member_context("worker-admission", "report.create", &report.id, 0);
     foreign_replay_context.authenticated_actor.id = "reviewer-admission".into();
     let foreign_replay_error = store
-        .release_work_execution_binding(
-            &foreign_replay_context,
-            &binding.id,
-            "member-run-admission",
-            1,
-            "t-release",
-        )
-        .expect_err("a foreign member cannot replay another member's release");
+        .create_trust_work_report(&foreign_replay_context, "team-admission", report)
+        .expect_err("a foreign member cannot replay another member's Result");
     assert!(foreign_replay_error
         .to_string()
         .contains("UNAUTHORIZED_ACTOR"));
-    let stale_generation_replay_error = store
-        .release_work_execution_binding(
-            &release_context,
-            &binding.id,
-            "member-run-admission",
-            2,
-            "t-release",
-        )
-        .expect_err("a stale MemberRun generation cannot replay a release");
-    assert!(stale_generation_replay_error
-        .to_string()
-        .contains("MEMBER_RUN_GENERATION_FENCED"));
-    let exact_replay = store
-        .release_work_execution_binding(
-            &release_context,
-            &binding.id,
-            "member-run-admission",
-            1,
-            "t-release",
-        )
-        .expect("the exact original member replays idempotently");
-    assert!(exact_replay.replayed);
     assert_eq!(
         store.canonical_operations().unwrap().len(),
         operation_count_after_release

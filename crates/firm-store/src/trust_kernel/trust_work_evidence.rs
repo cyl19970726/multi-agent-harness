@@ -9,6 +9,28 @@ impl HarnessStore {
     ) -> StoreResult<CanonicalMutationResult<WorkReport>> {
         self.init()?;
         let _trust_lock = self.acquire_write_lock()?;
+        if report.authored_by != context.authenticated_actor {
+            return Err(trust_error(
+                TrustErrorCode::UnauthorizedActor,
+                "WorkReport.authored_by must equal the authenticated actor",
+                "work_report",
+                &report.id,
+                None,
+            ));
+        }
+        let request_payload = serde_json::to_value(&report)?;
+        let request_fingerprint = context
+            .request_fingerprint
+            .clone()
+            .unwrap_or_else(|| canonical_json_fingerprint(&request_payload));
+        if let Some(replay) = self.replay_trust_projection_unlocked(
+            context,
+            "work_report",
+            &report.id,
+            &request_fingerprint,
+        )? {
+            return Ok(replay);
+        }
         let source_work_revision = if report.kind == WorkReportKind::Result {
             report.work_revision.checked_sub(1).ok_or_else(|| {
                 trust_error(
@@ -24,21 +46,13 @@ impl HarnessStore {
         };
         let current_work =
             self.trust_team_work_unlocked(team_id, &report.work_id, source_work_revision)?;
-        let authoring_member_run = self.require_exact_work_member_unlocked(
-            &context.execution_space_id,
-            &current_work,
-            &context.authenticated_actor,
-            None,
-        )?;
-        if report.authored_by != context.authenticated_actor {
-            return Err(trust_error(
-                TrustErrorCode::UnauthorizedActor,
-                "WorkReport.authored_by must equal the authenticated actor",
-                "work_report",
-                &report.id,
+        let (authoring_member_run, execution_binding) = self
+            .require_exact_work_member_binding_unlocked(
+                &context.execution_space_id,
+                &current_work,
+                &context.authenticated_actor,
                 None,
-            ));
-        }
+            )?;
         if report.kind == WorkReportKind::Result
             && (report.candidate.is_none()
                 || report
@@ -205,6 +219,12 @@ impl HarnessStore {
             .collect::<Result<Vec<_>, _>>()?;
         let mut initial_outbox_records = Vec::new();
         if report.kind == WorkReportKind::Result {
+            let released_binding = self.result_submission_released_binding_unlocked(
+                &context.execution_space_id,
+                &current_work,
+                &execution_binding,
+                &report.created_at,
+            )?;
             let mut submitted_work = current_work;
             submitted_work.phase = firm_core::WorkPhase::Review;
             submitted_work.condition = firm_core::WorkCondition::Normal;
@@ -252,13 +272,14 @@ impl HarnessStore {
                 updated_at: report.created_at.clone(),
             })?);
             side_records.push(serde_json::to_value(submitted_work)?);
+            side_records.push(serde_json::to_value(released_binding)?);
         }
         self.commit_trust_projection_unlocked(
             context,
             "work_report",
             &report.id,
             "created",
-            serde_json::to_value(&report)?,
+            request_payload,
             &report,
             side_records,
             initial_outbox_records,
