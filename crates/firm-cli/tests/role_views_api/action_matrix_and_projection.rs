@@ -69,6 +69,7 @@ fn bind_matrix_work(
         .expect("matrix NodeDaemon lease")
         .expect("active matrix NodeDaemon lease");
     let binding_id = format!("work-binding:{work_id}:{binding_generation}");
+    let delivery_id = format!("work-delivery:{work_id}:{binding_generation}");
     store
         .bind_responsible_work_execution(
             &MutationContext {
@@ -105,19 +106,56 @@ fn bind_matrix_work(
                 agent_member_id: member.agent_member_id.clone(),
                 agent_session_id: session.id.clone(),
                 agent_session_generation: session.runtime_generation,
-                delivery_id: format!("work-delivery:{work_id}:{binding_generation}"),
+                delivery_id: delivery_id.clone(),
                 binding_generation,
                 status: WorkExecutionBindingStatus::Active,
                 version: 1,
                 created_by: ActorRef {
                     kind: ActorKind::Service,
-                    id: daemon.daemon_id,
+                    id: daemon.daemon_id.clone(),
                 },
                 bound_at: "unix-ms:matrix-bind".into(),
                 ended_at: None,
             },
         )
         .expect("matrix scheduler admission");
+    let daemon_context = |command_name: &str, idempotency_key: String| MutationContext {
+        execution_space_id: space_id.into(),
+        authenticated_actor: ActorRef {
+            kind: ActorKind::Service,
+            id: daemon.daemon_id.clone(),
+        },
+        authority_actor: None,
+        command_name: command_name.into(),
+        idempotency_key,
+        expected_version: 0,
+        request_fingerprint: None,
+    };
+    let claim_id = format!("claim:{delivery_id}");
+    store
+        .claim_work_for_provider(
+            &daemon_context("test.matrix.work_claim", claim_id.clone()),
+            &delivery_id,
+            node_id,
+            &daemon.daemon_id,
+            daemon.generation,
+            &claim_id,
+            RuntimeDispatchMode::QueueOnly,
+            "unix-ms:matrix-claim",
+        )
+        .expect("matrix provider claims exact admitted delivery");
+    store
+        .record_work_provider_receipt(
+            &daemon_context("test.matrix.work_receipt", format!("receipt:{delivery_id}")),
+            &delivery_id,
+            node_id,
+            &daemon.daemon_id,
+            daemon.generation,
+            &claim_id,
+            &format!("provider-receipt:{delivery_id}"),
+            "unix-ms:matrix-receipt",
+        )
+        .expect("matrix semantic Result follows provider-received delivery");
 }
 
 pub(super) fn assert_action_matrix_and_final_projections(context: ActionMatrixContext<'_>) {

@@ -17,7 +17,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 static COUNTER: AtomicU64 = AtomicU64::new(0);
 
-fn current_unix_ms_for_fixture() -> u64 {
+pub fn unix_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .expect("fixture clock")
@@ -568,7 +568,7 @@ impl ServeHandle {
         let request = serde_json::json!({
             "target_node_id": run.execution_node_id,
             "command": "author_message",
-            "expires_unix_ms": current_unix_ms_for_fixture() + 30_000,
+            "expires_unix_ms": unix_ms() + 30_000,
             "payload": {"draft": {
                 "address_kind": if recipients.len() == 1 { "direct_agent" } else { "authorized_broadcast" },
                 "target_ref": target_ref,
@@ -723,7 +723,7 @@ impl ServeHandle {
                 .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '-' })
                 .collect::<String>();
             let id = format!("agent-it-{fixture_generation}-{index}-{safe_name}");
-            let now = format!("unix-ms:{}", current_unix_ms_for_fixture());
+            let now = format!("unix-ms:{}", unix_ms());
             store
                 .create_trust_agent_member(
                     &MutationContext {
@@ -1346,7 +1346,7 @@ pub fn assign_work_for_member_run(
     if !bind_execution {
         return work;
     }
-    let now = current_unix_ms_for_fixture();
+    let now = unix_ms();
     let daemon = store
         .latest_node_daemon_lease(&team_run.execution_node_id)
         .expect("read fixture NodeDaemon lease")

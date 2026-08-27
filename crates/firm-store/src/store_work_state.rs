@@ -405,7 +405,10 @@ impl HarnessStore {
             )));
         }
         let mut next = current.clone();
-        next.phase = WorkPhase::Active;
+        // A submitted execution has already settled its exact binding. Host
+        // changes therefore return the stable responsibility to the scheduler
+        // queue; a new execution admission must Start the next attempt.
+        next.phase = WorkPhase::Open;
         next.condition = WorkCondition::Normal;
         next.resolution = None;
         next.blocker_reason = Some(reason.to_string());

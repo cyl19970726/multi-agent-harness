@@ -176,10 +176,13 @@ mod tests {
                 "id":"member-run-worker",
                 "team_run_id":"team-run-runtime-projection",
                 "agent_member_id":"worker",
+                "role_snapshot":"builder",
                 "coordination_status":"active",
                 "runtime_status":runtime_status,
                 "runtime_generation":2,
-                "native_session":null
+                "native_session":null,
+                "version":2,
+                "started_at":"t1"
             })],
             provider_runtime_projections: Vec::new(),
             messages: Vec::new(),

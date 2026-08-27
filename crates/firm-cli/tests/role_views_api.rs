@@ -12,6 +12,8 @@ mod delivery_projection;
 mod exact_self_session;
 mod fake_provider;
 mod firm_env;
+#[path = "role_views_api/provider_received_work_attempt.rs"]
+mod provider_received_work_attempt;
 #[path = "role_views_api/remote_fabric_health.rs"]
 mod remote_fabric_health;
 #[path = "role_views_api/standalone_codex_session.rs"]
@@ -22,19 +24,23 @@ use action_matrix_and_projection::{
 };
 use firm_env::{
     collect_named_sse_data, create_canonical_agent_member, current_project_id, current_space_id,
-    run_firm, run_firm_with_env, ServeHandle, TempHome,
+    run_firm, run_firm_with_env, unix_ms, ServeHandle, TempHome,
 };
 use harness_core::agentfirm_api::{
     ActorKind, ActorRef, AgentSession, AgentSessionControlState, AgentSessionStatus,
     MutationContext, NativeSessionAvailability, NativeSessionRef, PermissionCeiling,
     RuntimeActivity, RuntimeCommandBinding, RuntimeDispatchMode, RuntimeDriverRef,
-    RuntimeResidency, WorkExecutionBinding, WorkExecutionBindingStatus,
+    RuntimeResidency, WorkDeliveryStatus, WorkExecutionBinding, WorkExecutionBindingStatus,
 };
 use harness_core::{
     ExecutionNode, ExecutionNodeStatus, MemberCoordinationStatus, MemberRunStatus,
     NodeProjectRegistration, NodeProjectRegistrationStatus, ProviderCompatibilityStatus,
 };
 use harness_store::{CurrentTeamMemberLifecycleTransition, HarnessStore};
+use provider_received_work_attempt::{
+    admit_provider_received_work_attempt, assert_released_provider_received_attempt,
+    ProviderReceivedWorkAttemptInput,
+};
 
 const TOKEN: &str = "role-view-local-capability";
 const MEMBER_TOKEN: &str = "role-view-member-capability";
@@ -94,13 +100,6 @@ fn action_headers<'a>(token: &'a str, key: &'a str, version: &'a str) -> [(&'a s
         ("Idempotency-Key", key),
         ("If-Match", version),
     ]
-}
-
-fn unix_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .expect("system clock")
-        .as_millis() as u64
 }
 
 fn assert_exact_role_action_replay(
@@ -499,56 +498,19 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
         .into_iter()
         .find(|session| session.id == "agent-session:role-view-owner:1")
         .expect("exact worker AgentSession");
-    let runtime_binding = RuntimeCommandBinding {
-        target_member_run_id: Some(member_run_id.into()),
-        target_member_run_generation: Some(1),
-        target_session_id: Some(worker_session.id.clone()),
-        target_runtime_generation: Some(worker_session.runtime_generation),
-        target_driver_generation: Some(worker_session.control_state.driver_generation),
-        target_driver: worker_session.control_state.driver_ref.clone(),
-        native_session_ref: worker_session.native_session_ref.clone(),
-        composition_fingerprint: worker_session.control_state.composition_fingerprint.clone(),
-        capability_fingerprint: worker_session.control_state.capability_fingerprint.clone(),
-        capability_profile_version: None,
-        permission_envelope_ref: Some(worker_session.permission_envelope_ref.clone()),
-    };
-    store
-        .bind_responsible_work_execution(
-            &MutationContext {
-                execution_space_id: space_id.clone(),
-                authenticated_actor: ActorRef {
-                    kind: ActorKind::Service,
-                    id: daemon.daemon_id.clone(),
-                },
-                authority_actor: None,
-                command_name: "test.work_execution.bind".into(),
-                idempotency_key: "bind-store-live-1".into(),
-                expected_version: 0,
-                request_fingerprint: None,
-            },
-            &runtime_binding,
-            WorkExecutionBinding {
-                id: "work-binding:work-store-live-1:1".into(),
-                work_id: assigned_work.id.clone(),
-                work_revision: assigned_work.version,
-                team_id: team.id.clone(),
-                team_membership_id: worker_membership.id.clone(),
-                agent_member_id: worker_id.into(),
-                agent_session_id: worker_session.id.clone(),
-                agent_session_generation: worker_session.runtime_generation,
-                delivery_id: "work-delivery:work-store-live-1:1".into(),
-                binding_generation: 1,
-                status: WorkExecutionBindingStatus::Active,
-                version: 1,
-                created_by: ActorRef {
-                    kind: ActorKind::Service,
-                    id: daemon.daemon_id.clone(),
-                },
-                bound_at: "2026-08-13T00:00:01Z".into(),
-                ended_at: None,
-            },
-        )
-        .expect("exact Work execution admission");
+    let first_attempt = admit_provider_received_work_attempt(ProviderReceivedWorkAttemptInput {
+        store: &store,
+        space_id: &space_id,
+        node_id,
+        daemon: &daemon,
+        member_run_id,
+        work: &assigned_work,
+        team: &team,
+        membership: &worker_membership,
+        worker_id,
+        session: &worker_session,
+        binding_generation: 1,
+    });
     let view_route = format!("/v1/views/host-console/{}?project={project_id}", team.id);
     let (status, refreshed) =
         serve.get_json_with_headers(&view_route, &[("X-AgentFirm-Token", TOKEN)]);
@@ -1301,6 +1263,7 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
     assert_eq!(status, 200, "member submit: {submitted}");
     assert_eq!(submitted["projection"]["kind"], "result");
     assert_eq!(submitted["projection"]["work_revision"], 4);
+    assert_released_provider_received_attempt(&store, &space_id, &first_attempt);
     let (status, submit_replay) = serve.post_json_with_headers(
         &submit_route,
         &serde_json::json!({
@@ -1373,6 +1336,10 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
     );
     assert_eq!(status, 200, "request changes: {changes_requested}");
     assert_eq!(changes_requested["projection"]["version"], 5);
+    assert_eq!(
+        changes_requested["projection"]["phase"], "open",
+        "Host changes return stable responsibility to canonical scheduling"
+    );
     let (status, changes_replay) = serve.post_json_with_headers(
         &request_changes_route,
         &request_changes_intent,
@@ -1381,16 +1348,49 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
     assert_eq!(status, 200, "request changes replay: {changes_replay}");
     assert_eq!(changes_replay["event_id"], changes_requested["event_id"]);
     assert_eq!(changes_replay["replayed"], true);
+    let changes_requested_work = store
+        .latest_works()
+        .expect("Works after request changes")
+        .into_iter()
+        .find(|work| work.id == "work-store-live-1")
+        .expect("Work awaiting revised Result");
+    assert_eq!(changes_requested_work.version, 5);
+    let revised_attempt = admit_provider_received_work_attempt(ProviderReceivedWorkAttemptInput {
+        store: &store,
+        space_id: &space_id,
+        node_id,
+        daemon: &daemon,
+        member_run_id,
+        work: &changes_requested_work,
+        team: &team,
+        membership: &worker_membership,
+        worker_id,
+        session: &worker_session,
+        binding_generation: 2,
+    });
+    let revised_start_headers = action_headers(MEMBER_TOKEN, "start-store-live-1-revision", "5");
+    let (status, revised_started) = serve.post_json_with_headers(
+        &start_route,
+        &serde_json::json!({"action":"start_work"}),
+        &revised_start_headers,
+    );
+    assert_eq!(
+        status, 200,
+        "member starts revised attempt: {revised_started}"
+    );
+    assert_eq!(revised_started["projection"]["version"], 6);
+    assert_eq!(revised_started["projection"]["phase"], "active");
     let revise_route = format!(
         "/v1/agentfirm/teams/{}/works/work-store-live-1/revise?project={project_id}",
         team.id
     );
-    let revise_headers = action_headers(MEMBER_TOKEN, "revise-store-live-1", "5");
+    let revise_headers = action_headers(MEMBER_TOKEN, "revise-store-live-1", "6");
     let revise_intent = serde_json::json!({"action":"revise_work","result_summary":"Revised Store-live loop","candidate_revision":"1123456789abcdef0123456789abcdef01234567","check_refs":["check:role-action-revise"]});
     let (status, revised) =
         serve.post_json_with_headers(&revise_route, &revise_intent, &revise_headers);
     assert_eq!(status, 200, "member revise: {revised}");
-    assert_eq!(revised["projection"]["work_revision"], 6);
+    assert_eq!(revised["projection"]["work_revision"], 7);
+    assert_released_provider_received_attempt(&store, &space_id, &revised_attempt);
     let (status, revise_replay) =
         serve.post_json_with_headers(&revise_route, &revise_intent, &revise_headers);
     assert_eq!(status, 200, "member revise replay: {revise_replay}");
@@ -1404,7 +1404,7 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
         .canonical_operations_for_space(&space_id)
         .expect("before accept")
         .len();
-    let no_confirm_headers = action_headers(TOKEN, "accept-no-confirm", "6");
+    let no_confirm_headers = action_headers(TOKEN, "accept-no-confirm", "7");
     let (status, no_confirm) = serve.post_json_with_headers(
         &accept_route,
         &serde_json::json!({"action":"accept_work"}),
@@ -1414,7 +1414,7 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
     let member_accept_headers = [
         ("X-AgentFirm-Token", MEMBER_TOKEN),
         ("Idempotency-Key", "accept-member-spoof"),
-        ("If-Match", "6"),
+        ("If-Match", "7"),
         ("X-AgentFirm-Confirm", "accept"),
     ];
     let (status, member_accept) = serve.post_json_with_headers(
@@ -1426,7 +1426,7 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
     let stale_accept_headers = [
         ("X-AgentFirm-Token", TOKEN),
         ("Idempotency-Key", "accept-stale"),
-        ("If-Match", "5"),
+        ("If-Match", "6"),
         ("X-AgentFirm-Confirm", "accept"),
     ];
     let (status, stale_accept) = serve.post_json_with_headers(
@@ -1446,7 +1446,7 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
     let accept_headers = [
         ("X-AgentFirm-Token", TOKEN),
         ("Idempotency-Key", "accept-store-live-1"),
-        ("If-Match", "6"),
+        ("If-Match", "7"),
         ("X-AgentFirm-Confirm", "accept"),
     ];
     let (status, accepted) = serve.post_json_with_headers(
@@ -1467,8 +1467,8 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
     assert_eq!(accept_replay["replayed"], true);
     assert_eq!(
         store.work_operations().expect("accept roll-up").len(),
-        before + 4,
-        "canonical accept must not fabricate a second legacy Work transition beyond membership assignment, start, and request-changes"
+        before + 5,
+        "canonical accept must not fabricate a legacy Work transition beyond membership assignment, the two exact starts, and request-changes"
     );
     assert!(store
         .canonical_operations_for_space(&space_id)
