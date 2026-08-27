@@ -40,7 +40,7 @@ pub(crate) use harness_runtime_contract::{
     NativeControlPrimitive, ProviderControlAction, ProviderControlPlan, ProviderNativeControl,
 };
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub(crate) struct PendingProviderControl {
     admission: ProviderEffectAdmission,
     pub action: ProviderControlAction,
@@ -54,7 +54,7 @@ impl PendingProviderControl {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub(crate) enum ProviderControlDispatch {
     Pending(Box<PendingProviderControl>),
     Replayed,

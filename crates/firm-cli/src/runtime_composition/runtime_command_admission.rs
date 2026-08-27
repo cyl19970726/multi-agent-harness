@@ -44,13 +44,98 @@ fn current_node_daemon_lease_after_admission(
     )
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub(crate) struct ProviderEffectAdmission {
     pub(crate) command_id: String,
     pub(crate) settle_context: harness_core::agentfirm_api::MutationContext,
     pub(crate) control_plan: Option<crate::provider_adapter::ProviderControlPlan>,
     pub(crate) target_session: harness_core::agentfirm_api::AgentSession,
     pub(crate) fence: crate::runtime_adapter_contract::RuntimeBindingFence,
+    store: harness_store::HarnessStore,
+}
+
+impl Drop for ProviderEffectAdmission {
+    fn drop(&mut self) {
+        let Ok(Some(current)) = self
+            .store
+            .runtime_commands(&self.settle_context.execution_space_id)
+            .map(|commands| {
+                commands
+                    .into_iter()
+                    .find(|command| command.id == self.command_id)
+            })
+        else {
+            return;
+        };
+        if current.status != harness_core::agentfirm_api::RuntimeCommandStatus::Accepted
+            || current.phase != harness_core::agentfirm_api::RuntimeCommandPhase::Prepared
+            || current.effect_certainty
+                != harness_core::agentfirm_api::RuntimeEffectCertainty::Unknown
+        {
+            return;
+        }
+        let mut context = self.settle_context.clone();
+        context.expected_version = current.version;
+        if let Err(error) = settle_prepared_runtime_command_recovery(
+            &self.store,
+            &context,
+            &self.command_id,
+            "PREPARED_PROVIDER_EFFECT_SCOPE_EXITED_WITHOUT_RECEIPT",
+        ) {
+            eprintln!(
+                "PREPARED_PROVIDER_EFFECT_RECOVERY_PERSIST_FAILED command_id={} error={error}",
+                self.command_id
+            );
+        }
+    }
+}
+
+fn finish_provider_effect_admission(
+    ledger: &TeamRunLedger,
+    admission: &harness_store::CanonicalMutationResult<
+        harness_core::agentfirm_api::RuntimeCommandRecord,
+    >,
+    session: &harness_core::agentfirm_api::AgentSession,
+    canonical_member: &harness_core::agentfirm_api::MemberRun,
+    admitted_lease: &harness_core::NodeDaemonLease,
+    command_id: &str,
+    settle_context: &harness_core::agentfirm_api::MutationContext,
+) -> CliResult<crate::runtime_adapter_contract::RuntimeBindingFence> {
+    let current_lease = match current_node_daemon_lease_after_admission(
+        &ledger.store,
+        admitted_lease,
+        command_id,
+    ) {
+        Ok(current_lease) => current_lease,
+        Err(error) => {
+            settle_prepared_runtime_command_recovery(
+                &ledger.store,
+                settle_context,
+                command_id,
+                format!("PROVIDER_EFFECT_POST_PREPARE_FENCE_FAILED: {error}"),
+            )?;
+            return Err(error);
+        }
+    };
+    match runtime_binding_fence_for_admission(
+        ledger,
+        admission,
+        session,
+        canonical_member,
+        &current_lease,
+    ) {
+        Ok(fence) => Ok(fence),
+        Err(error) => {
+            let error = prepared_command_recovery(command_id, error);
+            settle_prepared_runtime_command_recovery(
+                &ledger.store,
+                settle_context,
+                command_id,
+                format!("PROVIDER_EFFECT_POST_PREPARE_BINDING_FAILED: {error}"),
+            )?;
+            Err(error)
+        }
+    }
 }
 
 pub(crate) fn runtime_command_postcondition_for(
@@ -285,30 +370,31 @@ pub(crate) fn prepare_provider_effect_kind(
         };
         return replay;
     }
-    let current_lease =
-        current_node_daemon_lease_after_admission(&ledger.store, &lease, &command_id)?;
-    let fence = runtime_binding_fence_for_admission(
+    let settle_context = harness_core::agentfirm_api::MutationContext {
+        execution_space_id: admission_context.execution_space_id.clone(),
+        authenticated_actor: daemon_actor.clone(),
+        authority_actor: None,
+        command_name: "node_daemon.provider_effect.settle".into(),
+        idempotency_key: format!("{}:settle", admission_context.idempotency_key),
+        expected_version: admission.projection.version,
+        request_fingerprint: None,
+    };
+    let fence = finish_provider_effect_admission(
         ledger,
         &admission,
         &session,
         &canonical_member,
-        &current_lease,
-    )
-    .map_err(|error| prepared_command_recovery(&command_id, error))?;
+        &lease,
+        &command_id,
+        &settle_context,
+    )?;
     Ok(ProviderEffectAdmission {
         command_id,
         control_plan: None,
         target_session: session,
         fence,
-        settle_context: harness_core::agentfirm_api::MutationContext {
-            execution_space_id: admission_context.execution_space_id,
-            authenticated_actor: daemon_actor,
-            authority_actor: None,
-            command_name: "node_daemon.provider_effect.settle".into(),
-            idempotency_key: format!("{}:settle", admission_context.idempotency_key),
-            expected_version: admission.projection.version,
-            request_fingerprint: None,
-        },
+        store: ledger.store.clone(),
+        settle_context,
     })
 }
 
@@ -439,29 +525,30 @@ pub(crate) fn prepare_provider_process_effect(
             admission.projection.effect_certainty
         )));
     }
-    let current_lease =
-        current_node_daemon_lease_after_admission(&ledger.store, &lease, &command_id)?;
-    let fence = runtime_binding_fence_for_admission(
+    let settle_context = harness_core::agentfirm_api::MutationContext {
+        execution_space_id: context.execution_space_id.clone(),
+        authenticated_actor: daemon_actor.clone(),
+        authority_actor: None,
+        command_name: "node_daemon.provider_process.settle".into(),
+        idempotency_key: format!("{idempotency_key}:settle"),
+        expected_version: admission.projection.version,
+        request_fingerprint: None,
+    };
+    let fence = finish_provider_effect_admission(
         ledger,
         &admission,
         &session,
         &canonical_member,
-        &current_lease,
-    )
-    .map_err(|error| prepared_command_recovery(&command_id, error))?;
+        &lease,
+        &command_id,
+        &settle_context,
+    )?;
     Ok(ProviderEffectAdmission {
         command_id,
         control_plan: None,
         target_session: session,
         fence,
-        settle_context: harness_core::agentfirm_api::MutationContext {
-            execution_space_id: context.execution_space_id,
-            authenticated_actor: daemon_actor,
-            authority_actor: None,
-            command_name: "node_daemon.provider_process.settle".into(),
-            idempotency_key: format!("{idempotency_key}:settle"),
-            expected_version: admission.projection.version,
-            request_fingerprint: None,
-        },
+        store: ledger.store.clone(),
+        settle_context,
     })
 }
