@@ -1124,25 +1124,17 @@ fn create_fixture_work(
         "Done when the fixture says so",
     ];
     let created = team_run_json(home, project_id, &args);
+    let work_id = created["id"].as_str().expect("Work id");
     if let Some(owner) = owner {
-        firm_env::assign_work_for_member_run(
-            home,
-            project_id,
-            created["id"].as_str().expect("Work id"),
-            owner,
-            true,
-        );
+        firm_env::assign_work_for_member_run(home, project_id, work_id, owner, true);
         firm_env::record_provider_received_work(
             home,
             project_id,
-            created["id"].as_str().expect("Work id"),
-            &format!(
-                "board-fixture-{0}",
-                created["id"].as_str().expect("Work id")
-            ),
+            work_id,
+            &format!("board-fixture-{work_id}"),
         );
     }
-    created["id"].as_str().expect("Work id").to_string()
+    work_id.to_string()
 }
 
 fn seed_board_read_fixture(tag: &str) -> BoardReadFixture {
