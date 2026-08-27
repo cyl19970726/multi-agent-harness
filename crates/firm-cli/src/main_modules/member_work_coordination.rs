@@ -751,11 +751,13 @@ impl TeamRunLedger {
             let session = match sessions.as_slice() {
                 [] => return Ok(()),
                 [session] => session,
-                _ => return Err(CliError::RuntimeRecoveryRequired(format!(
+                _ => {
+                    return Err(CliError::RuntimeRecoveryRequired(format!(
                     "NATIVE_SESSION_BINDING_AMBIGUOUS: MemberRun {} has {} current AgentSessions",
                     next.id,
                     sessions.len()
-                ))),
+                )))
+                }
             };
             if session.native_session_ref.as_ref() == Some(&native_ref) {
                 break;
