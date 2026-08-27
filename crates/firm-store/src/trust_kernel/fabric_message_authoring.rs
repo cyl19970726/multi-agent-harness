@@ -299,23 +299,22 @@ impl HarnessStore {
                     ));
                 }
                 if let Some(sender_id) = message.sender_agent_member_id.as_deref() {
-                    let sender_is_host = memberships.iter().any(|membership| {
-                        membership.team_id == message.team_id.as_deref().unwrap_or_default()
-                            && membership.agent_member_id == sender_id
-                            && membership.role == TeamMembershipRole::Host
-                            && membership.state == TeamMembershipStatus::Active
-                    });
-                    if work.owner_member_id.as_deref() == Some(sender_id) {
-                        self.require_exact_work_member_unlocked(
-                            &context.execution_space_id,
-                            &work,
-                            &message.sender_actor_ref,
-                            message.sender_session_id.as_deref(),
-                        )?;
-                    } else if !sender_is_host {
+                    // A Work link supplies immutable conversation context. It
+                    // must fence the sender to this TeamRun, but it must not
+                    // borrow the Work owner's mutation binding or delivery.
+                    let active_sender_runs = self
+                        .trust_member_runs(&context.execution_space_id)?
+                        .into_iter()
+                        .filter(|run| {
+                            run.agent_member_id == sender_id
+                                && run.team_run_id == work.team_run_id
+                                && run.has_live_runtime_authority()
+                        })
+                        .count();
+                    if active_sender_runs != 1 {
                         return Err(trust_error(
-                            TrustErrorCode::UnauthorizedActor,
-                            "Work-linked Message requires the exact Work owner binding or Team Host membership",
+                            TrustErrorCode::MemberRunGenerationFenced,
+                            "Work-linked Message requires exactly one current active sender MemberRun in the addressed TeamRun",
                             "message",
                             &message.id,
                             Some(work.version),

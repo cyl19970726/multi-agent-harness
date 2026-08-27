@@ -1032,12 +1032,6 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
         "foreign Work mutations must have zero durable side effects"
     );
     let works_before_linked_messages = store.latest_works().expect("Works before linked Messages");
-    let messages_before_sibling_link = store
-        .fabric_messages(&project_id)
-        .expect("Messages before sibling Work link");
-    let message_deliveries_before_sibling_link = store
-        .fabric_message_deliveries(&project_id)
-        .expect("Message deliveries before sibling Work link");
     let work_deliveries_before_sibling_link = store
         .fabric_work_deliveries(&project_id)
         .expect("Work deliveries before sibling Work link");
@@ -1053,43 +1047,46 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
         &serde_json::json!({
             "action":"send_message",
             "recipient_ids":[host_id],
-            "body":"A sibling cannot link another member's Work",
+            "body":"A sibling may use another member's Work as Message context",
             "work_id":"work-store-live-1",
             "response_required":false
         }),
         &sibling_linked_message_headers,
     );
     assert_eq!(
-        status, 409,
+        status, 200,
         "sibling linked Message: {sibling_linked_message}"
     );
-    assert_eq!(
-        store
-            .fabric_messages(&project_id)
-            .expect("Messages after rejected sibling Work link"),
-        messages_before_sibling_link,
-        "foreign Work-linked Message must not author a Message"
-    );
-    assert_eq!(
-        store
-            .fabric_message_deliveries(&project_id)
-            .expect("Message deliveries after rejected sibling Work link"),
-        message_deliveries_before_sibling_link,
-        "foreign Work-linked Message must not create a Message delivery"
-    );
+    let messages_after_sibling_link = store
+        .fabric_messages(&project_id)
+        .expect("Messages after sibling Work link");
+    let linked_message_id = sibling_linked_message["projection"]["id"]
+        .as_str()
+        .expect("linked Message response carries its canonical id");
+    assert!(messages_after_sibling_link.iter().any(|message| {
+        message.id == linked_message_id
+            && message.work_id.as_deref() == Some("work-store-live-1")
+            && message.sender_agent_member_id.as_deref() == Some(sibling_worker_id)
+    }));
+    let message_deliveries_after_sibling_link = store
+        .fabric_message_deliveries(&project_id)
+        .expect("Message deliveries after sibling Work link");
+    assert!(message_deliveries_after_sibling_link
+        .iter()
+        .any(|delivery| delivery.message_id == linked_message_id));
     assert_eq!(
         store
             .fabric_work_deliveries(&project_id)
             .expect("Work deliveries after rejected sibling Work link"),
         work_deliveries_before_sibling_link,
-        "foreign Work-linked Message must not mutate Work delivery authority"
+        "peer Work-linked Message must not mutate Work delivery authority"
     );
     assert_eq!(
         store
             .latest_works()
-            .expect("Works after rejected sibling Work link"),
+            .expect("Works after accepted sibling Work link"),
         works_before_linked_messages,
-        "foreign Work-linked Message must not mutate Work"
+        "peer Work-linked Message must not mutate Work"
     );
     assert_eq!(
         store.latest_works().expect("Works after linked Messages"),

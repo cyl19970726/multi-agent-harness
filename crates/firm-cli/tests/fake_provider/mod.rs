@@ -761,7 +761,7 @@ pub fn install_pi_rpc_shim(
     // Use Python for reliable JSON handling (avoids shell escaping hell).
     let script = format!(
         r##"#!/usr/bin/env python3
-import sys, json, os, subprocess
+import sys, json, os, subprocess, time
 
 if '--version' in sys.argv[1:]:
     print('0.84.2')
@@ -893,6 +893,29 @@ for line in sys.stdin:
             ], text=True))
             work = works[0]['id']
             version = int(works[0]['version'])
+            # The prompt response and canonical WorkDelivery receipt are
+            # intentionally separate durable facts. Wait until the receipt is
+            # readable before exercising a semantic Work mutation; otherwise
+            # this fixture races the supervisor's receipt settlement.
+            deadline = time.monotonic() + 5.0
+            while True:
+                shown = json.loads(subprocess.check_output([
+                    harness, 'team-run', 'work', 'show',
+                    '--work-id', work,
+                ], text=True))
+                if any(
+                    delivery.get('work_revision') == version
+                    and delivery.get('status') == 'provider_received'
+                    and delivery.get('provider_receipt_id')
+                    for delivery in shown.get('deliveries', [])
+                ):
+                    break
+                if time.monotonic() >= deadline:
+                    raise RuntimeError(
+                        'timed out waiting for provider-received WorkDelivery '
+                        'before fake Pi Work start'
+                    )
+                time.sleep(0.01)
             subprocess.run([
                 harness, 'team-run', 'work', 'start',
                 '--team-run-id', team_run, '--work-id', work,

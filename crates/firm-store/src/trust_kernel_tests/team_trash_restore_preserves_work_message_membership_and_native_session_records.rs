@@ -18,6 +18,34 @@ fn team_trash_restore_preserves_work_message_membership_and_native_session_recor
             settled_native_session("native-trash-host"),
         )
         .unwrap();
+    store
+        .legacy_import_create_trust_member_run_projection(
+            &context(
+                "fixture-host",
+                "member_run.create",
+                "member-run-trash-host",
+                0,
+            ),
+            MemberRun {
+                id: "member-run-trash-host".into(),
+                agent_member_id: "fixture-host".into(),
+                team_run_id: "run-trash".into(),
+                role_snapshot: "host".into(),
+                provider_profile_snapshot: None,
+                requested_controls: serde_json::json!({}),
+                effective_controls: serde_json::json!({}),
+                coordination_status: MemberCoordinationStatus::Active,
+                runtime_status: MemberRuntimeStatus::Idle,
+                runtime_generation: 1,
+                workspace_binding_id: None,
+                native_session: None,
+                version: 1,
+                started_at: "t-member-run".into(),
+                last_event_at: None,
+                finished_at: None,
+            },
+        )
+        .unwrap();
     insert_runtime_work(&store, "work-trash", "team-trash", "run-trash");
     let recipients = vec![firm_core::agentfirm_api::MessageRecipientRef {
         kind: MessageRecipientKind::Team,

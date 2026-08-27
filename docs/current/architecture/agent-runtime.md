@@ -166,16 +166,27 @@ runtime authority fails before delivery. `Work.active_member_run_id` is legacy
 compatibility evidence only; current assignment and execution never require or
 populate it.
 
-Member-authored WorkReport, Finding, FailureAnalysis, and Work-linked Message
-operations resolve the same unique active `WorkExecutionBinding` under the
-Store writer lock. The binding must still match the current stable
-responsibility, active membership, exact AgentSession generation, and the one
-current active MemberRun. A responsibility change after the binding revision
-invalidates it even if ownership later returns to the same member; this closes
-responsibility ABA without a second epoch. A linked Message never changes Work
-status, version, responsibility, or acceptance, and a WorkReport remains
-candidate evidence until the exact Host accepts it. The legacy unfenced binding
-writer rejects every call; only exact runtime admission may create a binding.
+Member-authored WorkReport, Finding, and FailureAnalysis operations resolve the
+same unique active `WorkExecutionBinding` under the Store writer lock. The
+binding must still match the current stable responsibility, active membership,
+exact AgentSession generation, and the one current active MemberRun. A
+responsibility change after the binding revision invalidates it even if
+ownership later returns to the same member; this closes responsibility ABA
+without a second epoch.
+
+A Work-linked Message is different: the Work id is immutable conversation
+context, not Work mutation authority. Any exact current active Member of the
+same TeamRun may send or reply with that Work link, including after Result
+submission releases the WorkExecutionBinding and including a peer Member who
+does not own the Work. Store settlement still fences the authenticated sender,
+current AgentSession, active TeamMembership and active MemberRun, and rejects a
+missing Work or a Work outside the exact Team/TeamRun. It never requires or
+revives a WorkExecutionBinding and never changes Work status, version,
+responsibility, delivery, or acceptance.
+
+A WorkReport remains candidate evidence until the exact Host accepts it. The
+legacy unfenced binding writer rejects every call; only exact runtime admission
+may create a binding.
 `CurrentWorkDeliveryView` uses this same responsibility-history check. Released
 bindings and their exact ProviderReceived or Failed deliveries remain readable
 as immutable historical evidence; only the unique Active binding may project
