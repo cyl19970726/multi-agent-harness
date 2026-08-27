@@ -77,6 +77,7 @@ pub(crate) fn ensure_team_runtime_fabric(
     execution_space_id: &str,
     daemon_id: &str,
     daemon_generation: u64,
+    provider_version_observed_at_boundary: bool,
 ) -> CliResult<()> {
     use harness_core::agentfirm_api::{
         ActorKind, ActorRef, AgentSession, AgentSessionStatus, MutationContext,
@@ -155,7 +156,10 @@ pub(crate) fn ensure_team_runtime_fabric(
                     session.id
                 )));
             }
-            let expected_native_session = expected_agentfirm_native_session_ref(member);
+            let expected_native_session = expected_agentfirm_native_session_ref(
+                member,
+                provider_version_observed_at_boundary,
+            );
             let native_session_matches = agentfirm_native_session_identity_matches(
                 session.native_session_ref.as_ref(),
                 expected_native_session.as_ref(),
@@ -231,7 +235,10 @@ pub(crate) fn ensure_team_runtime_fabric(
                 ));
             }
         } else {
-            let native_session_ref = expected_agentfirm_native_session_ref(member);
+            let native_session_ref = expected_agentfirm_native_session_ref(
+                member,
+                provider_version_observed_at_boundary,
+            );
             store.create_agent_session(
                 &MutationContext {
                     execution_space_id: execution_space_id.to_string(),
@@ -423,6 +430,7 @@ pub(crate) fn ensure_team_message_fabric(
         execution_space_id,
         daemon_id,
         daemon_generation,
+        false,
     )
 }
 

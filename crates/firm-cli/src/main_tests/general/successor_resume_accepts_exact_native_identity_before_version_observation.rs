@@ -117,7 +117,7 @@ fn successor_resume_accepts_exact_native_identity_before_version_observation() {
         .as_mut()
         .expect("provider profile")
         .provider_version = Some("0.148.0-alpha.9".into());
-    let expected_admission = expected_agentfirm_native_session_ref(successor_resume)
+    let expected_admission = expected_agentfirm_native_session_ref(successor_resume, true)
         .expect("preflight supplies the exact admission identity");
     assert_eq!(
         expected_admission.provider_version.as_deref(),
@@ -135,6 +135,7 @@ fn successor_resume_accepts_exact_native_identity_before_version_observation() {
         "unit-test-space",
         &lease.node_daemon_id,
         lease.node_daemon_generation,
+        true,
     )
     .expect("exact native identity resumes before provider-version observation is refreshed");
 
@@ -194,7 +195,7 @@ fn resumed_session_materialization_and_readmission_share_preflight_identity() {
         .provider_profile
         .as_mut()
         .expect("provider profile")
-        .provider_version = None;
+        .provider_version = Some("0.147.0-cached".into());
     let mut body = PreparedTeamRunBody {
         run_id: created.team_run.id.clone(),
         objective: created.team_run.objective.clone(),
@@ -208,8 +209,9 @@ fn resumed_session_materialization_and_readmission_share_preflight_identity() {
         "unit-test-space",
         &lease.node_daemon_id,
         lease.node_daemon_generation,
+        false,
     )
-    .expect("message-path materialization accepts the versionless preflight identity");
+    .expect("message path does not promote a cached profile version into native-session truth");
     let precreated = store
         .fabric_agent_sessions("unit-test-space")
         .expect("read materialized AgentSessions")
@@ -236,6 +238,7 @@ fn resumed_session_materialization_and_readmission_share_preflight_identity() {
         "unit-test-space",
         &lease.node_daemon_id,
         lease.node_daemon_generation,
+        true,
     )
     .expect("start preflight enriches the exact precreated AgentSession");
     let enriched = store
@@ -258,6 +261,7 @@ fn resumed_session_materialization_and_readmission_share_preflight_identity() {
         "unit-test-space",
         &lease.node_daemon_id,
         lease.node_daemon_generation,
+        true,
     )
     .expect("readmission before provider settlement preserves enriched identity");
 
@@ -273,6 +277,7 @@ fn resumed_session_materialization_and_readmission_share_preflight_identity() {
         "unit-test-space",
         &lease.node_daemon_id,
         lease.node_daemon_generation,
+        true,
     )
     .expect_err("an observed provider-version conflict remains fail-closed");
     assert!(error

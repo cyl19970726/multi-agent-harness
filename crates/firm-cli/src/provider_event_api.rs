@@ -304,10 +304,10 @@ pub(crate) fn exact_live_scope(
     // client-supplied Session selector: the exact Active AgentSession is bound
     // to this TeamSupervisor, AgentMember, provider and NodeDaemon generation.
     // Once MemberRun has a native binding, require it as an additional fence.
-    let expected_native = member_run
-        .native_session
-        .as_ref()
-        .map(crate::agentfirm_native_session_ref);
+    // A live Supervisor exists only after start preflight. Use that boundary's
+    // persisted ProviderProfile observation when TeamRun creation left the
+    // durable resume locator versionless.
+    let expected_native = crate::expected_agentfirm_native_session_ref(member_run, true);
     let run = store
         .team_runs()
         .map_err(|_| "TeamRun registry is unavailable")?

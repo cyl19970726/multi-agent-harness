@@ -333,12 +333,13 @@ pub(super) fn agentfirm_native_session_identity_can_enrich_provider_version(
 /// admitted observation without rewriting the durable native locator.
 pub(super) fn expected_agentfirm_native_session_ref(
     member: &ProviderRuntimeProjection,
+    provider_version_observed_at_boundary: bool,
 ) -> Option<harness_core::agentfirm_api::NativeSessionRef> {
     let mut expected = member
         .native_session
         .as_ref()
         .map(agentfirm_native_session_ref)?;
-    if expected.provider_version.is_none() {
+    if provider_version_observed_at_boundary && expected.provider_version.is_none() {
         expected.provider_version = member
             .provider_profile
             .as_ref()
