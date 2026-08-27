@@ -1326,23 +1326,27 @@ pub fn assign_work_for_member_run(
         .find(|work| work.id == work_id)
         .expect("fixture Work");
     let membership_id = membership_id_for_member_run(home, execution_space_id, member_run_id);
-    let work = store
-        .assign_work_to_membership(
-            &work.id,
-            work.version,
-            &membership_id,
-            execution_space_id,
-            harness_core::WorkCommandContext {
-                event_id: format!("test-assign-{work_id}"),
-                performed_by_actor: team_run.host_actor.clone().expect("exact fixture Host"),
-                authority_actor: None,
-                causation_ref: None,
-                idempotency_key: format!("test-assign-{work_id}"),
-                created_at: "unix-ms:test-assign".into(),
-                duplicate_ok: false,
-            },
-        )
-        .expect("assign fixture Work responsibility");
+    let work = if work.assignee_membership_id.as_deref() == Some(membership_id.as_str()) {
+        work
+    } else {
+        store
+            .assign_work_to_membership(
+                &work.id,
+                work.version,
+                &membership_id,
+                execution_space_id,
+                harness_core::WorkCommandContext {
+                    event_id: format!("test-assign-{work_id}"),
+                    performed_by_actor: team_run.host_actor.clone().expect("exact fixture Host"),
+                    authority_actor: None,
+                    causation_ref: None,
+                    idempotency_key: format!("test-assign-{work_id}"),
+                    created_at: "unix-ms:test-assign".into(),
+                    duplicate_ok: false,
+                },
+            )
+            .expect("assign fixture Work responsibility")
+    };
     if !bind_execution {
         return work;
     }

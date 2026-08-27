@@ -59,9 +59,11 @@ impl HarnessStore {
     }
 
     /// Refresh external GitHub/CI evidence without impersonating a Member
-    /// Result or touching execution authority. The authenticated Host poll may
-    /// update only the Work's evidence snapshot; lifecycle, responsibility,
-    /// reports, attention, bindings and deliveries remain independent.
+    /// Result or touching execution authority. The authenticated NodeDaemon,
+    /// with the exact TeamRun Host as its authority source, may update only the
+    /// Work's external evidence snapshot and append its `Updated` revision;
+    /// lifecycle, responsibility, reports, attention, bindings and deliveries
+    /// remain independent.
     pub fn update_work_github_links(
         &self,
         work_id: &str,

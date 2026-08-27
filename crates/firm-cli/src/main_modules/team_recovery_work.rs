@@ -1178,8 +1178,11 @@ impl GithubPollSummary {
 /// `GITHUB_CI_POLL_INTERVAL`, and `team-run work poll-github-ci` triggers it
 /// on demand.
 ///
-/// - CI status/`ci_url` are re-fetched from `gh pr checks` for notification;
-///   the poll never rewrites Work, Result, delivery or acceptance facts.
+/// - CI status/`ci_url` are re-fetched from `gh pr checks`; the authenticated
+///   NodeDaemon, with the exact Host as authority source, may rewrite only the
+///   Work's external GitHub evidence snapshot and append an `Updated` revision.
+///   It never rewrites lifecycle phase, Result, delivery, acceptance, binding,
+///   or HostAttention facts.
 /// - A merged PR and CI status remain external evidence only. They never
 ///   impersonate the Member's canonical Result or the Host's acceptance.
 /// - `gh` missing/unauthenticated is a soft skip: stored snapshots are kept.

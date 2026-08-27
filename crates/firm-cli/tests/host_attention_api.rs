@@ -9,8 +9,8 @@ use std::time::{Duration, Instant};
 mod fake_provider;
 mod firm_env;
 use firm_env::{
-    create_canonical_agent_member, current_project_id, member_run_for_work_owner, run_firm,
-    run_firm_with_env, ServeHandle, TempHome,
+    assign_work_for_member_run, create_canonical_agent_member, current_project_id,
+    member_run_for_work_owner, run_firm, run_firm_with_env, ServeHandle, TempHome,
 };
 
 fn init_project(home: &TempHome, name: &str) -> (String, String, String) {
@@ -247,6 +247,56 @@ fn host_attentions_read_and_console_ack_lifecycle() {
     );
     assert_eq!(status, 202, "body: {body}");
     wait_for_member_runtime_ready(&serve, &project_id, &member_id, Duration::from_secs(15));
+    let bound = assign_work_for_member_run(&home, &project_id, &work_id, &member_id, true);
+    assert_eq!(bound.version, work_version);
+    let store = harness_store::HarnessStore::new(home.spaces_dir().join(&project_id));
+    let daemon = store
+        .latest_node_daemon_lease(&node_id)
+        .expect("read exact NodeDaemon")
+        .expect("live exact NodeDaemon");
+    let delivery = store
+        .fabric_work_deliveries(&project_id)
+        .expect("read canonical Work deliveries")
+        .into_iter()
+        .find(|delivery| delivery.work_id == work_id)
+        .expect("exact bound Work delivery");
+    let context = |command_name: &str, key: &str| harness_core::agentfirm_api::MutationContext {
+        execution_space_id: project_id.clone(),
+        authenticated_actor: harness_core::agentfirm_api::ActorRef {
+            kind: harness_core::agentfirm_api::ActorKind::Service,
+            id: daemon.daemon_id.clone(),
+        },
+        authority_actor: None,
+        command_name: command_name.into(),
+        idempotency_key: key.into(),
+        expected_version: 0,
+        request_fingerprint: None,
+    };
+    let claim_id = "host-attention-provider-claim";
+    store
+        .claim_work_for_provider(
+            &context("test.work.claim", claim_id),
+            &delivery.id,
+            &daemon.node_id,
+            &daemon.daemon_id,
+            daemon.generation,
+            claim_id,
+            harness_core::agentfirm_api::RuntimeDispatchMode::QueueOnly,
+            "unix-ms:test-provider-claim",
+        )
+        .expect("claim exact Work delivery through canonical daemon authority");
+    store
+        .record_work_provider_receipt(
+            &context("test.work.receipt", "host-attention-provider-receipt"),
+            &delivery.id,
+            &daemon.node_id,
+            &daemon.daemon_id,
+            daemon.generation,
+            claim_id,
+            "provider-receipt:host-attention",
+            "unix-ms:test-provider-receipt",
+        )
+        .expect("record exact provider receipt before Member Result");
 
     // Submitting the initial Work derives a WorkReviewRequested HostAttention.
     let started = run_member_json(
