@@ -639,6 +639,24 @@ fn responsibility_cutover_releases_only_stale_binding_and_rebinds_monotonically(
             "unix-ms:5.25",
         )
         .expect("freeze unrelated A provider effect before lifecycle revision");
+    store
+        .record_work_provider_receipt(
+            &canonical_delivery_context(
+                "unit-test-space",
+                &session_a.node_daemon_id,
+                "node_daemon.work_delivery.provider_received",
+                "unrelated-a-provider-received".into(),
+                0,
+            ),
+            &unrelated_delivery.id,
+            &session_a.node_id,
+            &session_a.node_daemon_id,
+            session_a.node_daemon_generation,
+            "unrelated-a-claim",
+            "provider-receipt-unrelated-a",
+            "unix-ms:5.4",
+        )
+        .expect("record unrelated A provider receipt before lifecycle revision");
     let unrelated_started = store
         .start_work(
             &unrelated.id,
@@ -1026,9 +1044,42 @@ fn supervisor_skips_not_ready_delivery_and_claims_ready_predecessor() {
             .all(|delivery| delivery.work_id != dependent.id),
         "an unready Work must not appear in the canonical delivery projection"
     );
-    let ready_after_claim = ledger
-        .queued_works_for(&member.id)
-        .expect("readiness-filtered current queue");
-    assert!(ready_after_claim.is_empty());
+    let retry = claim_canonical_work_for_member(&ledger, &member)
+        .expect("failed delivery is reconciled before retry")
+        .expect("the same ready Work receives a monotonic replacement binding");
+    assert_eq!(retry.work.id, predecessor.id);
+    assert_eq!(retry.delivery.id, "work-delivery:z-ready-predecessor:2");
+    let bindings = store
+        .fabric_work_execution_bindings("unit-test-space")
+        .expect("canonical execution bindings after retry");
+    assert!(bindings.iter().any(|binding| {
+        binding.work_id == predecessor.id
+            && binding.binding_generation == 1
+            && binding.status == harness_core::agentfirm_api::WorkExecutionBindingStatus::Released
+    }));
+    assert!(bindings.iter().any(|binding| {
+        binding.work_id == predecessor.id
+            && binding.binding_generation == 2
+            && binding.status == harness_core::agentfirm_api::WorkExecutionBindingStatus::Active
+    }));
+    let deliveries = store
+        .fabric_work_deliveries("unit-test-space")
+        .expect("canonical deliveries after retry");
+    assert_eq!(
+        deliveries
+            .iter()
+            .find(|delivery| delivery.id == "work-delivery:z-ready-predecessor:1")
+            .expect("failed generation one evidence")
+            .status,
+        harness_core::agentfirm_api::WorkDeliveryStatus::Failed
+    );
+    assert_eq!(
+        deliveries
+            .iter()
+            .find(|delivery| delivery.id == "work-delivery:z-ready-predecessor:2")
+            .expect("claimed generation two delivery")
+            .status,
+        harness_core::agentfirm_api::WorkDeliveryStatus::Claimed
+    );
     std::fs::remove_dir_all(root).expect("cleanup");
 }

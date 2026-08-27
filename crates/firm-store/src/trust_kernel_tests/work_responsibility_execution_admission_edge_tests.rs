@@ -1,8 +1,8 @@
 use super::*;
-use firm_core::agentfirm_api::{Confidence, PrimaryCauseStatus, RetrySafety};
+use firm_core::agentfirm_api::{Confidence, PrimaryCauseStatus, RetrySafety, WorkFindingKind};
 
 #[test]
-fn result_submission_requires_provider_received_delivery() {
+fn start_requires_provider_received_delivery() {
     for claimed in [false, true] {
         let suffix = if claimed { "claimed" } else { "queued" };
         let (store, _root) = fabric_store();
@@ -69,7 +69,8 @@ fn result_submission_requires_provider_received_delivery() {
                 )
                 .unwrap();
         }
-        let active = store
+        let operations_before = store.canonical_operations().unwrap();
+        let error = store
             .start_work(
                 &work.id,
                 work.version,
@@ -89,46 +90,7 @@ fn result_submission_requires_provider_received_delivery() {
                     duplicate_ok: false,
                 },
             )
-            .unwrap();
-        let candidate = firm_core::agentfirm_api::CandidateRef {
-            kind: firm_core::agentfirm_api::CandidateKind::GitCommit,
-            value: format!("candidate-{suffix}"),
-        };
-        let report = WorkReport {
-            id: format!("report-result-{suffix}"),
-            work_id: active.id,
-            work_revision: active.version + 1,
-            report_revision: 1,
-            kind: WorkReportKind::Result,
-            authored_by: ActorRef {
-                kind: ActorKind::AgentMember,
-                id: "worker-admission".into(),
-            },
-            summary: "receipt is required".into(),
-            base_revision: None,
-            candidate_fingerprint: Some(canonical_json_fingerprint(
-                &serde_json::to_value(&candidate).unwrap(),
-            )),
-            candidate: Some(candidate),
-            finding_refs: Vec::new(),
-            failure_analysis_ref: None,
-            artifact_refs: Vec::new(),
-            check_refs: Vec::new(),
-            github_links: Vec::new(),
-            evidence_refs: vec!["evidence://receipt-required".into()],
-            known_risks: Vec::new(),
-            confidence: None,
-            recommended_next_action: None,
-            created_at: "t-result".into(),
-        };
-        let operations_before = store.canonical_operations().unwrap();
-        let error = store
-            .create_trust_work_report(
-                &member_context("worker-admission", "report.create", &report.id, 0),
-                "team-admission",
-                report,
-            )
-            .expect_err("Result requires exact ProviderReceived evidence");
+            .expect_err("Start requires exact ProviderReceived evidence");
         assert!(error.to_string().contains("DELIVERY_RECOVERY_UNCERTAIN"));
         assert_eq!(store.canonical_operations().unwrap(), operations_before);
         assert_eq!(
@@ -145,7 +107,7 @@ fn result_submission_requires_provider_received_delivery() {
 }
 
 #[test]
-fn failure_submission_requires_provider_received_delivery() {
+fn every_member_work_authoring_path_requires_provider_received_delivery() {
     for claimed in [false, true] {
         let suffix = if claimed { "claimed" } else { "queued" };
         let (store, _root) = fabric_store();
@@ -212,29 +174,75 @@ fn failure_submission_requires_provider_received_delivery() {
                 )
                 .unwrap();
         }
-        let active = store
-            .start_work(
-                &work.id,
-                work.version,
-                "member-run-admission",
-                firm_core::WorkCommandContext {
-                    event_id: format!("event-start-failure-{suffix}"),
-                    performed_by_actor: firm_core::TeamActorRef {
-                        kind: firm_core::TeamActorKind::ProviderRuntimeProjection,
-                        id: "member-run-admission".into(),
-                        display_name: None,
-                        authn_source: Some("test".into()),
+        let active = work.clone();
+        let operations_before = store.canonical_operations().unwrap();
+        let progress = WorkReport {
+            id: format!("report-progress-{suffix}"),
+            work_id: active.id.clone(),
+            work_revision: active.version,
+            report_revision: 1,
+            kind: WorkReportKind::Progress,
+            authored_by: ActorRef {
+                kind: ActorKind::AgentMember,
+                id: "worker-admission".into(),
+            },
+            summary: "receipt is required".into(),
+            base_revision: None,
+            candidate: None,
+            candidate_fingerprint: None,
+            finding_refs: Vec::new(),
+            failure_analysis_ref: None,
+            artifact_refs: Vec::new(),
+            check_refs: Vec::new(),
+            github_links: Vec::new(),
+            evidence_refs: vec!["evidence://receipt-required".into()],
+            known_risks: Vec::new(),
+            confidence: Some(Confidence::High),
+            recommended_next_action: Some("await provider receipt".into()),
+            created_at: "t-progress".into(),
+        };
+        let progress_error = store
+            .create_trust_work_report(
+                &member_context("worker-admission", "report.create", &progress.id, 0),
+                "team-admission",
+                progress,
+            )
+            .expect_err("Progress requires exact ProviderReceived evidence");
+        assert!(progress_error
+            .to_string()
+            .contains("DELIVERY_RECOVERY_UNCERTAIN"));
+
+        let finding_id = format!("finding-{suffix}");
+        let finding_error = store
+            .create_trust_finding(
+                &member_context("worker-admission", "finding.create", &finding_id, 0),
+                "team-admission",
+                WorkFinding {
+                    id: finding_id,
+                    work_id: active.id.clone(),
+                    work_revision: active.version,
+                    kind: WorkFindingKind::Discovery,
+                    summary: "receipt is required".into(),
+                    detail_markdown: "provider has not acknowledged this Work delivery".into(),
+                    affected_work_refs: Vec::new(),
+                    reusable_asset_refs: Vec::new(),
+                    invalidated_assumptions: Vec::new(),
+                    evidence_refs: Vec::new(),
+                    confidence: Confidence::High,
+                    reported_by: ActorRef {
+                        kind: ActorKind::AgentMember,
+                        id: "worker-admission".into(),
                     },
-                    authority_actor: None,
-                    causation_ref: None,
-                    idempotency_key: format!("command-start-failure-{suffix}"),
-                    created_at: "t-start-failure".into(),
-                    duplicate_ok: false,
+                    created_at: "t-finding".into(),
                 },
             )
-            .unwrap();
+            .expect_err("Finding requires exact ProviderReceived evidence");
+        assert!(finding_error
+            .to_string()
+            .contains("DELIVERY_RECOVERY_UNCERTAIN"));
+
         let analysis_id = format!("analysis-failure-{suffix}");
-        store
+        let analysis_error = store
             .create_trust_failure_analysis(
                 &member_context(
                     "worker-admission",
@@ -244,7 +252,7 @@ fn failure_submission_requires_provider_received_delivery() {
                 ),
                 "team-admission",
                 FailureAnalysis {
-                    id: analysis_id.clone(),
+                    id: analysis_id,
                     work_id: active.id.clone(),
                     work_revision: active.version,
                     member_run_id: Some("member-run-admission".into()),
@@ -269,41 +277,31 @@ fn failure_submission_requires_provider_received_delivery() {
                     created_at: "t-failure-analysis".into(),
                 },
             )
-            .unwrap();
-        let report = WorkReport {
-            id: format!("report-failure-{suffix}"),
-            work_id: active.id,
-            work_revision: active.version,
-            report_revision: 1,
-            kind: WorkReportKind::Failure,
-            authored_by: ActorRef {
-                kind: ActorKind::AgentMember,
-                id: "worker-admission".into(),
-            },
-            summary: "receipt is required".into(),
-            base_revision: None,
-            candidate_fingerprint: None,
-            candidate: None,
-            finding_refs: Vec::new(),
-            failure_analysis_ref: Some(analysis_id),
-            artifact_refs: Vec::new(),
-            check_refs: Vec::new(),
-            github_links: Vec::new(),
-            evidence_refs: vec!["evidence://receipt-required".into()],
-            known_risks: Vec::new(),
-            confidence: Some(Confidence::High),
-            recommended_next_action: Some("await provider receipt".into()),
-            created_at: "t-failure".into(),
-        };
-        let operations_before = store.canonical_operations().unwrap();
-        let error = store
-            .create_trust_work_report(
-                &member_context("worker-admission", "report.create", &report.id, 0),
-                "team-admission",
-                report,
+            .expect_err("FailureAnalysis requires exact ProviderReceived evidence");
+        assert!(analysis_error
+            .to_string()
+            .contains("DELIVERY_RECOVERY_UNCERTAIN"));
+
+        let message_id = format!("message-{suffix}");
+        let message_error = store
+            .author_message(
+                &service_context("message.author", &message_id, 0),
+                work_message(
+                    &message_id,
+                    &active,
+                    "worker-admission",
+                    &target.id,
+                    "worker-admission",
+                ),
             )
-            .expect_err("Failure requires exact ProviderReceived evidence");
-        assert!(error.to_string().contains("DELIVERY_RECOVERY_UNCERTAIN"));
+            .expect_err("Work-linked Message requires exact ProviderReceived evidence");
+        assert!(
+            message_error
+                .to_string()
+                .contains("DELIVERY_RECOVERY_UNCERTAIN"),
+            "{message_error}"
+        );
+
         assert_eq!(store.canonical_operations().unwrap(), operations_before);
         assert_eq!(
             store

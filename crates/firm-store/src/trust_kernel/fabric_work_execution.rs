@@ -202,12 +202,19 @@ impl HarnessStore {
             delivery.status,
             WorkDeliveryStatus::Claimed | WorkDeliveryStatus::ProviderReceived
         );
+        let delivery_is_current = matches!(
+            delivery.status,
+            WorkDeliveryStatus::Queued
+                | WorkDeliveryStatus::Claimed
+                | WorkDeliveryStatus::ProviderReceived
+        );
         let revision_is_current = binding.work_revision == work.version
             || (binding.work_revision < work.version && effect_is_frozen);
         let stable_authority_matches = work.active_member_run_id.is_none()
             && !work.is_terminal()
             && !responsibility_changed
             && revision_is_current
+            && delivery_is_current
             && work.accountable_team_id.as_deref() == Some(binding.team_id.as_str())
             && work.owner_member_id.as_deref() == Some(binding.agent_member_id.as_str())
             && work.assignee_membership_id.as_deref() == Some(binding.team_membership_id.as_str())
@@ -1215,7 +1222,7 @@ impl HarnessStore {
         Ok(released)
     }
 
-    pub(super) fn require_provider_received_work_delivery_unlocked(
+    pub(crate) fn require_provider_received_work_delivery_unlocked(
         &self,
         execution_space_id: &str,
         binding: &WorkExecutionBinding,

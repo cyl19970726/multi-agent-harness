@@ -123,6 +123,12 @@ fn member_role_action_capability_binds_sender_to_live_supervisor_identity() {
     let work =
         assign_test_work_to_member(&store, &lease.execution_space_id, &created, &first, &work);
     bind_test_responsible_work_execution(&store, &lease, &first, &work);
+    let claimed = claim_canonical_work_for_member(&ledger, &first)
+        .expect("claim exact member Work")
+        .expect("one canonical Work claim");
+    ledger
+        .complete_work_delivery(&claimed, "provider-receipt-member-capability")
+        .expect("record provider receipt before the Member Work action");
     let route = format!(
         "/v1/agentfirm/team-runs/{}/works/{}/start",
         created.team_run.id, work.id
