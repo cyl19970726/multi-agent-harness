@@ -96,6 +96,8 @@ mod save_member_run_settle_syncs_native_binding_to_trust_fabric;
 mod successor_generation_between_live_close_precheck_and_latch_has_zero_side_effects;
 #[path = "../general/successor_lease_takes_over_stale_running_member_once.rs"]
 mod successor_lease_takes_over_stale_running_member_once;
+#[path = "../general/successor_resume_accepts_exact_native_identity_before_version_observation.rs"]
+mod successor_resume_accepts_exact_native_identity_before_version_observation;
 #[path = "../general/supervisor_heartbeat_diagnostics_name_run_generation_error_and_action.rs"]
 mod supervisor_heartbeat_diagnostics_name_run_generation_error_and_action;
 #[path = "../general/supervisor_renewal_error_classification.rs"]

@@ -155,14 +155,17 @@ pub(crate) fn ensure_team_runtime_fabric(
                     session.id
                 )));
             }
-            let expected_native_session = member
-                .native_session
-                .as_ref()
-                .map(agentfirm_native_session_ref);
-            if !agentfirm_native_session_identity_matches(
+            let expected_native_session = expected_agentfirm_native_session_ref(member);
+            let native_session_matches = agentfirm_native_session_identity_matches(
                 session.native_session_ref.as_ref(),
                 expected_native_session.as_ref(),
-            ) {
+            );
+            let admission_native_session_matches =
+                agentfirm_native_session_identity_matches_for_admission(
+                    session.native_session_ref.as_ref(),
+                    expected_native_session.as_ref(),
+                );
+            if !native_session_matches && !admission_native_session_matches {
                 return Err(CliError::Usage(format!(
                     "AGENT_SESSION_RECOVERY_REQUIRED: {} does not match MemberRun {} native-session truth",
                     session.id, member.id
@@ -193,10 +196,7 @@ pub(crate) fn ensure_team_runtime_fabric(
                 )?;
             }
         } else {
-            let native_session_ref = member
-                .native_session
-                .as_ref()
-                .map(agentfirm_native_session_ref);
+            let native_session_ref = expected_agentfirm_native_session_ref(member);
             store.create_agent_session(
                 &MutationContext {
                     execution_space_id: execution_space_id.to_string(),

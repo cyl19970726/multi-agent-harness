@@ -308,6 +308,36 @@ pub(super) fn agentfirm_native_session_identity_matches(
     }
 }
 
+pub(super) fn agentfirm_native_session_identity_matches_for_admission(
+    current: Option<&harness_core::agentfirm_api::NativeSessionRef>,
+    expected: Option<&harness_core::agentfirm_api::NativeSessionRef>,
+) -> bool {
+    match (current, expected) {
+        (Some(current), Some(expected)) => {
+            current.provider == expected.provider
+                && current.execution_mode == expected.execution_mode
+                && current.native_session_id == expected.native_session_id
+                && current.native_locator_kind == expected.native_locator_kind
+                && current.provider_version.is_some()
+                && expected.provider_version.is_none()
+                && current.adapter_contract_version == expected.adapter_contract_version
+        }
+        _ => false,
+    }
+}
+
+/// Build the native-session identity asserted by durable MemberRun truth.
+/// ProviderProfile is only an executable compatibility observation; it cannot
+/// claim which provider version successfully opened this native session.
+pub(super) fn expected_agentfirm_native_session_ref(
+    member: &ProviderRuntimeProjection,
+) -> Option<harness_core::agentfirm_api::NativeSessionRef> {
+    member
+        .native_session
+        .as_ref()
+        .map(agentfirm_native_session_ref)
+}
+
 pub(super) fn canonical_member_run_admission(
     execution_space_id: &str,
     runtime: &ProviderRuntimeProjection,

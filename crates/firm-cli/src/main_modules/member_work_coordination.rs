@@ -643,17 +643,17 @@ impl TeamRunLedger {
         next: &ProviderRuntimeProjection,
     ) -> CliResult<()> {
         let _guard = self.write_lock();
-        self.store.compare_and_append_member_run(expected, next)?;
-        if let Err(error) = self.sync_trust_native_session_binding(expected, next) {
-            // The ledger append above is the committed MemberRun revision; the
-            // trust write-back is a projection sync and must never turn a
-            // successful save into a failure. The skip is loud so a missing
-            // binding is diagnosable from the driver log.
-            eprintln!(
-                "[team-run-ledger] trust native-session binding sync skipped for {}: {error}",
-                next.id
-            );
+        if let Err(error) = self.store.compare_and_append_member_run(expected, next) {
+            let already_committed = expected.id == next.id
+                && self
+                    .latest_member_run(&next.id)?
+                    .as_ref()
+                    .is_some_and(|current| current == next);
+            if !already_committed {
+                return Err(CliError::Store(error));
+            }
         }
+        self.sync_trust_native_session_binding(next)?;
         Ok(())
     }
 
@@ -668,21 +668,18 @@ impl TeamRunLedger {
     /// rebinds a newer trust row.
     pub(super) fn sync_trust_native_session_binding(
         &self,
-        expected: &ProviderRuntimeProjection,
         next: &ProviderRuntimeProjection,
     ) -> CliResult<()> {
-        let binding_changed = match (&expected.native_session, &next.native_session) {
-            (None, Some(_)) => true,
-            (Some(before), Some(after)) => before.native_session_id != after.native_session_id,
-            _ => false,
-        };
-        let Some(native) = next.native_session.as_ref().filter(|_| binding_changed) else {
+        let Some(native) = next.native_session.as_ref() else {
             return Ok(());
         };
         let Some(space_id) = self.store.trust_member_run_scope(&next.id)? else {
             return Ok(());
         };
         let native_ref = agentfirm_native_session_ref(native);
+        let binding_fingerprint = harness_store::canonical_json_fingerprint(
+            &serde_json::to_value(&native_ref).map_err(CliError::Json)?,
+        );
         // Trust MemberRun binding. One re-read retry absorbs a concurrent trust
         // mutation (close/reopen) racing this settle.
         for attempt in 0..2 {
@@ -692,16 +689,18 @@ impl TeamRunLedger {
                 .into_iter()
                 .find(|run| run.id == next.id)
             else {
-                break;
+                return Err(CliError::RuntimeRecoveryRequired(format!(
+                    "NATIVE_SESSION_BINDING_INCOMPLETE: canonical MemberRun {} is missing",
+                    next.id
+                )));
             };
             if trust_run.runtime_generation != next.runtime_generation {
-                break;
+                return Err(CliError::RuntimeRecoveryRequired(format!(
+                    "NATIVE_SESSION_BINDING_GENERATION_FENCED: canonical MemberRun {} is generation {}, settlement is generation {}",
+                    next.id, trust_run.runtime_generation, next.runtime_generation
+                )));
             }
-            if trust_run
-                .native_session
-                .as_ref()
-                .is_some_and(|current| current.native_session_id == native.native_session_id)
-            {
+            if trust_run.native_session.as_ref() == Some(&native_ref) {
                 break;
             }
             let context = harness_core::agentfirm_api::MutationContext {
@@ -713,8 +712,8 @@ impl TeamRunLedger {
                 authority_actor: None,
                 command_name: "team_run.member_run_native_session.bind".into(),
                 idempotency_key: format!(
-                    "member-run-native-bind:{}:{}",
-                    next.id, native.native_session_id
+                    "member-run-native-bind:{}:{}:{}",
+                    next.id, native.native_session_id, binding_fingerprint
                 ),
                 expected_version: trust_run.version,
                 request_fingerprint: None,
@@ -749,14 +748,18 @@ impl TeamRunLedger {
                             != harness_core::agentfirm_api::AgentSessionStatus::Closed
                 })
                 .collect::<Vec<_>>();
-            let [session] = sessions.as_slice() else {
-                break;
+            let session = match sessions.as_slice() {
+                [] => return Ok(()),
+                [session] => session,
+                _ => {
+                    return Err(CliError::RuntimeRecoveryRequired(format!(
+                    "NATIVE_SESSION_BINDING_AMBIGUOUS: MemberRun {} has {} current AgentSessions",
+                    next.id,
+                    sessions.len()
+                )))
+                }
             };
-            if session
-                .native_session_ref
-                .as_ref()
-                .is_some_and(|current| current.native_session_id == native.native_session_id)
-            {
+            if session.native_session_ref.as_ref() == Some(&native_ref) {
                 break;
             }
             let context = harness_core::agentfirm_api::MutationContext {
@@ -768,8 +771,8 @@ impl TeamRunLedger {
                 authority_actor: None,
                 command_name: "runtime_fabric.session_native_session.bind".into(),
                 idempotency_key: format!(
-                    "agent-session-native-bind:{}:{}",
-                    session.id, native.native_session_id
+                    "agent-session-native-bind:{}:{}:{}",
+                    session.id, native.native_session_id, binding_fingerprint
                 ),
                 expected_version: session.version,
                 request_fingerprint: None,
