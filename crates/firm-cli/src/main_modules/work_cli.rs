@@ -434,7 +434,7 @@ pub(super) fn team_run_work_command(
                     "--idempotency-key",
                     "--caused-by-message-id",
                 ],
-                &["--duplicate-ok"],
+                &["--duplicate-ok", "--json"],
             )?;
             let team_run_id = required(args, "--team-run-id")?;
             let run = latest_team_run(store, &team_run_id)?;
@@ -530,7 +530,7 @@ pub(super) fn team_run_work_command(
                     "--idempotency-key",
                     "--caused-by-message-id",
                 ],
-                &["--duplicate-ok"],
+                &["--duplicate-ok", "--json"],
             )?;
             let membership_id = required(args, "--membership-id")?;
             let space_id = resolved
@@ -973,7 +973,7 @@ pub(super) fn team_run_work_command(
                     "--idempotency-key",
                     "--caused-by-message-id",
                 ],
-                &["--duplicate-ok"],
+                &["--duplicate-ok", "--json"],
             )?;
             let work_id = required(args, "--work-id")?;
             print_json(&store.retarget_work_execution(

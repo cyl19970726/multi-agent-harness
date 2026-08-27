@@ -1132,6 +1132,15 @@ fn create_fixture_work(
             owner,
             true,
         );
+        firm_env::record_provider_received_work(
+            home,
+            project_id,
+            created["id"].as_str().expect("Work id"),
+            &format!(
+                "board-fixture-{0}",
+                created["id"].as_str().expect("Work id")
+            ),
+        );
     }
     created["id"].as_str().expect("Work id").to_string()
 }
