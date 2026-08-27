@@ -1,4 +1,5 @@
 use super::*;
+use firm_core::agentfirm_api::{Confidence, PrimaryCauseStatus, RetrySafety};
 
 #[test]
 fn result_submission_requires_provider_received_delivery() {
@@ -128,6 +129,180 @@ fn result_submission_requires_provider_received_delivery() {
                 report,
             )
             .expect_err("Result requires exact ProviderReceived evidence");
+        assert!(error.to_string().contains("DELIVERY_RECOVERY_UNCERTAIN"));
+        assert_eq!(store.canonical_operations().unwrap(), operations_before);
+        assert_eq!(
+            store
+                .fabric_work_execution_bindings("space-test")
+                .unwrap()
+                .into_iter()
+                .find(|candidate| candidate.id == binding.id)
+                .unwrap()
+                .status,
+            WorkExecutionBindingStatus::Active
+        );
+    }
+}
+
+#[test]
+fn failure_submission_requires_provider_received_delivery() {
+    for claimed in [false, true] {
+        let suffix = if claimed { "claimed" } else { "queued" };
+        let (store, _root) = fabric_store();
+        append_runtime_team(&store, "team-admission", "run-admission");
+        store
+            .migrate_legacy_agent_identity_same_id(
+                &context("operator", "identity.create", "identity-worker", 0),
+                identity("worker-admission"),
+            )
+            .unwrap();
+        let membership = join_runtime_membership(
+            &store,
+            "membership-worker-admission",
+            "team-admission",
+            "worker-admission",
+            TeamMembershipRole::Member,
+        );
+        let target = session("session-worker-admission", "worker-admission");
+        store
+            .create_agent_session(
+                &service_context("session.create", &target.id, 0),
+                target.clone(),
+            )
+            .unwrap();
+        admit_member_run(
+            &store,
+            canonical_member_run("member-run-admission", "worker-admission", "run-admission"),
+        );
+        let mut runtime_binding = runtime_command_fixture(
+            "runtime-failure-receipt-fence",
+            RuntimeCommandKind::StartCycle,
+            &target,
+            "start_cycle",
+        )
+        .0
+        .binding;
+        runtime_binding.target_member_run_id = Some("member-run-admission".into());
+        runtime_binding.target_member_run_generation = Some(1);
+        let work = assign_responsibility(&store, &format!("work-failure-{suffix}"), &membership.id);
+        let binding = execution_binding(
+            &work,
+            &membership,
+            &target,
+            &format!("binding-failure-{suffix}"),
+        );
+        store
+            .bind_responsible_work_execution(
+                &service_context("work.bind", &binding.id, 0),
+                &runtime_binding,
+                binding.clone(),
+            )
+            .unwrap();
+        if claimed {
+            store
+                .claim_work_for_provider(
+                    &service_context("work.claim", &format!("claim-failure-{suffix}"), 0),
+                    &binding.delivery_id,
+                    &target.node_id,
+                    &target.node_daemon_id,
+                    target.node_daemon_generation,
+                    &format!("claim-failure-{suffix}"),
+                    firm_core::agentfirm_api::RuntimeDispatchMode::QueueOnly,
+                    "t-claim-failure",
+                )
+                .unwrap();
+        }
+        let active = store
+            .start_work(
+                &work.id,
+                work.version,
+                "member-run-admission",
+                firm_core::WorkCommandContext {
+                    event_id: format!("event-start-failure-{suffix}"),
+                    performed_by_actor: firm_core::TeamActorRef {
+                        kind: firm_core::TeamActorKind::ProviderRuntimeProjection,
+                        id: "member-run-admission".into(),
+                        display_name: None,
+                        authn_source: Some("test".into()),
+                    },
+                    authority_actor: None,
+                    causation_ref: None,
+                    idempotency_key: format!("command-start-failure-{suffix}"),
+                    created_at: "t-start-failure".into(),
+                    duplicate_ok: false,
+                },
+            )
+            .unwrap();
+        let analysis_id = format!("analysis-failure-{suffix}");
+        store
+            .create_trust_failure_analysis(
+                &member_context(
+                    "worker-admission",
+                    "failure_analysis.create",
+                    &analysis_id,
+                    0,
+                ),
+                "team-admission",
+                FailureAnalysis {
+                    id: analysis_id.clone(),
+                    work_id: active.id.clone(),
+                    work_revision: active.version,
+                    member_run_id: Some("member-run-admission".into()),
+                    candidate: None,
+                    observed_failure: "provider execution failed".into(),
+                    impact: "work incomplete".into(),
+                    primary_cause_status: PrimaryCauseStatus::Confirmed,
+                    primary_cause: Some("provider failure".into()),
+                    contributing_causes: Vec::new(),
+                    attempts_already_made: Vec::new(),
+                    last_safe_checkpoint: None,
+                    retry_safety: RetrySafety::Unknown,
+                    side_effect_summary: Some("none".into()),
+                    recovery_options: vec!["retry after Host review".into()],
+                    recommended_host_decision: "review failure".into(),
+                    evidence_refs: vec!["evidence://failure".into()],
+                    confidence: Confidence::High,
+                    reported_by: ActorRef {
+                        kind: ActorKind::AgentMember,
+                        id: "worker-admission".into(),
+                    },
+                    created_at: "t-failure-analysis".into(),
+                },
+            )
+            .unwrap();
+        let report = WorkReport {
+            id: format!("report-failure-{suffix}"),
+            work_id: active.id,
+            work_revision: active.version,
+            report_revision: 1,
+            kind: WorkReportKind::Failure,
+            authored_by: ActorRef {
+                kind: ActorKind::AgentMember,
+                id: "worker-admission".into(),
+            },
+            summary: "receipt is required".into(),
+            base_revision: None,
+            candidate_fingerprint: None,
+            candidate: None,
+            finding_refs: Vec::new(),
+            failure_analysis_ref: Some(analysis_id),
+            artifact_refs: Vec::new(),
+            check_refs: Vec::new(),
+            github_links: Vec::new(),
+            evidence_refs: vec!["evidence://receipt-required".into()],
+            known_risks: Vec::new(),
+            confidence: Some(Confidence::High),
+            recommended_next_action: Some("await provider receipt".into()),
+            created_at: "t-failure".into(),
+        };
+        let operations_before = store.canonical_operations().unwrap();
+        let error = store
+            .create_trust_work_report(
+                &member_context("worker-admission", "report.create", &report.id, 0),
+                "team-admission",
+                report,
+            )
+            .expect_err("Failure requires exact ProviderReceived evidence");
         assert!(error.to_string().contains("DELIVERY_RECOVERY_UNCERTAIN"));
         assert_eq!(store.canonical_operations().unwrap(), operations_before);
         assert_eq!(

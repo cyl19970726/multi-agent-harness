@@ -1207,13 +1207,26 @@ impl HarnessStore {
                 Some(binding.version),
             ));
         }
+        self.require_provider_received_work_delivery_unlocked(execution_space_id, binding)?;
+        let mut released = binding.clone();
+        released.status = WorkExecutionBindingStatus::Released;
+        released.version += 1;
+        released.ended_at = Some(ended_at.to_string());
+        Ok(released)
+    }
+
+    pub(super) fn require_provider_received_work_delivery_unlocked(
+        &self,
+        execution_space_id: &str,
+        binding: &WorkExecutionBinding,
+    ) -> StoreResult<CanonicalWorkDelivery> {
         let delivery = self
             .canonical_fabric_work_deliveries_unlocked(execution_space_id)?
             .remove(&binding.delivery_id)
             .ok_or_else(|| {
                 trust_error(
                     TrustErrorCode::DeliveryRecoveryUncertain,
-                    "Result submission requires the exact canonical WorkDelivery",
+                    "semantic Work report requires the exact canonical WorkDelivery",
                     "work_delivery",
                     &binding.delivery_id,
                     None,
@@ -1233,16 +1246,12 @@ impl HarnessStore {
         {
             return Err(trust_error(
                 TrustErrorCode::DeliveryRecoveryUncertain,
-                "Result submission requires exact provider-received delivery evidence",
+                "semantic Work report requires exact provider-received delivery evidence",
                 "work_delivery",
                 &delivery.id,
                 Some(delivery.version),
             ));
         }
-        let mut released = binding.clone();
-        released.status = WorkExecutionBindingStatus::Released;
-        released.version += 1;
-        released.ended_at = Some(ended_at.to_string());
-        Ok(released)
+        Ok(delivery)
     }
 }
