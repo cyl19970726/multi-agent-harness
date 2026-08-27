@@ -190,10 +190,7 @@ pub(crate) fn ensure_team_runtime_fabric(
                 )?;
             }
         } else {
-            let native_session_ref = member
-                .native_session
-                .as_ref()
-                .map(agentfirm_native_session_ref);
+            let native_session_ref = expected_agentfirm_native_session_ref(member);
             store.create_agent_session(
                 &MutationContext {
                     execution_space_id: execution_space_id.to_string(),

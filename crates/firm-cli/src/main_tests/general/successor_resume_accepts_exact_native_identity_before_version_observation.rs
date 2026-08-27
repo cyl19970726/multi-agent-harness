@@ -169,3 +169,69 @@ fn successor_resume_accepts_exact_native_identity_before_version_observation() {
 
     std::fs::remove_dir_all(root).expect("cleanup");
 }
+
+#[test]
+fn resumed_session_materialization_and_readmission_share_preflight_identity() {
+    let (store, root) = temp_store("resume-materialization-native-identity");
+    let created = create_two_member_team_run(&store);
+    let lease = store
+        .acquire_test_supervisor_lease(
+            &created.team_run.id,
+            "supervisor-resume-materialization",
+            std::process::id(),
+            "test://resume-materialization",
+            current_unix_ms_u64(),
+            60_000,
+        )
+        .expect("acquire Supervisor lease");
+
+    let mut members = created.member_runs.clone();
+    let resumed = members
+        .first_mut()
+        .expect("managed member for resume materialization");
+    resumed.native_session = Some(exact_codex_native_session(None));
+    resumed
+        .provider_profile
+        .as_mut()
+        .expect("provider profile")
+        .provider_version = Some("0.148.0-alpha.9".into());
+    let body = PreparedTeamRunBody {
+        run_id: created.team_run.id.clone(),
+        objective: created.team_run.objective.clone(),
+        run: created.team_run.clone(),
+        members,
+    };
+
+    ensure_team_runtime_fabric(
+        &store,
+        &body,
+        "unit-test-space",
+        &lease.node_daemon_id,
+        lease.node_daemon_generation,
+    )
+    .expect("materialize preflight-versioned resume identity");
+    let materialized = store
+        .fabric_agent_sessions("unit-test-space")
+        .expect("read materialized AgentSessions")
+        .into_iter()
+        .find(|session| session.agent_member_id == body.members[0].agent_member_id)
+        .expect("materialized resumed AgentSession");
+    assert_eq!(
+        materialized
+            .native_session_ref
+            .as_ref()
+            .and_then(|session| session.provider_version.as_deref()),
+        Some("0.148.0-alpha.9")
+    );
+
+    ensure_team_runtime_fabric(
+        &store,
+        &body,
+        "unit-test-space",
+        &lease.node_daemon_id,
+        lease.node_daemon_generation,
+    )
+    .expect("readmission before provider settlement preserves exact identity");
+
+    std::fs::remove_dir_all(root).expect("cleanup");
+}
