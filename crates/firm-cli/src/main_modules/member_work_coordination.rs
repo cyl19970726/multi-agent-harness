@@ -644,16 +644,7 @@ impl TeamRunLedger {
     ) -> CliResult<()> {
         let _guard = self.write_lock();
         self.store.compare_and_append_member_run(expected, next)?;
-        if let Err(error) = self.sync_trust_native_session_binding(expected, next) {
-            // The ledger append above is the committed MemberRun revision; the
-            // trust write-back is a projection sync and must never turn a
-            // successful save into a failure. The skip is loud so a missing
-            // binding is diagnosable from the driver log.
-            eprintln!(
-                "[team-run-ledger] trust native-session binding sync skipped for {}: {error}",
-                next.id
-            );
-        }
+        self.sync_trust_native_session_binding(expected, next)?;
         Ok(())
     }
 
@@ -683,6 +674,9 @@ impl TeamRunLedger {
             return Ok(());
         };
         let native_ref = agentfirm_native_session_ref(native);
+        let binding_fingerprint = harness_store::canonical_json_fingerprint(
+            &serde_json::to_value(&native_ref).map_err(CliError::Json)?,
+        );
         // Trust MemberRun binding. One re-read retry absorbs a concurrent trust
         // mutation (close/reopen) racing this settle.
         for attempt in 0..2 {
@@ -709,8 +703,8 @@ impl TeamRunLedger {
                 authority_actor: None,
                 command_name: "team_run.member_run_native_session.bind".into(),
                 idempotency_key: format!(
-                    "member-run-native-bind:{}:{}",
-                    next.id, native.native_session_id
+                    "member-run-native-bind:{}:{}:{}",
+                    next.id, native.native_session_id, binding_fingerprint
                 ),
                 expected_version: trust_run.version,
                 request_fingerprint: None,
@@ -760,8 +754,8 @@ impl TeamRunLedger {
                 authority_actor: None,
                 command_name: "runtime_fabric.session_native_session.bind".into(),
                 idempotency_key: format!(
-                    "agent-session-native-bind:{}:{}",
-                    session.id, native.native_session_id
+                    "agent-session-native-bind:{}:{}:{}",
+                    session.id, native.native_session_id, binding_fingerprint
                 ),
                 expected_version: session.version,
                 request_fingerprint: None,
