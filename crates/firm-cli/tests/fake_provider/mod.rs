@@ -897,14 +897,14 @@ for line in sys.stdin:
                 harness, 'team-run', 'work', 'start',
                 '--team-run-id', team_run, '--work-id', work,
                 '--member-run-id', member_run, '--expected-version', str(version),
-            ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            ], check=True, stdout=subprocess.DEVNULL)
             subprocess.run([
                 harness, 'team-run', 'work', 'submit',
                 '--team-run-id', team_run, '--work-id', work,
                 '--member-run-id', member_run, '--expected-version', str(version + 1),
                 '--result', 'Fake Pi submitted the initial Work',
                 '--check-ref', 'check:fake-pi-round-1',
-            ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            ], check=True, stdout=subprocess.DEVNULL)
         for event in [
             {{"type": "agent_start"}},
             {{"type": "turn_start"}},
