@@ -921,6 +921,14 @@ fn membership_work_binding_authorizes_message_and_result_without_accepting_work(
         &store,
         canonical_member_run("member-run-admission", "worker-admission", "run-admission"),
     );
+    admit_member_run(
+        &store,
+        canonical_member_run(
+            "member-run-reviewer-admission",
+            "reviewer-admission",
+            "run-admission",
+        ),
+    );
     let assigned = assign_responsibility(&store, "work-report-message", &worker_membership.id);
     assert_eq!(assigned.active_member_run_id, None);
 
@@ -1031,8 +1039,8 @@ fn membership_work_binding_authorizes_message_and_result_without_accepting_work(
     );
 
     create_direct_subscription(&store, "worker-admission", &reviewer_membership);
+    create_direct_subscription(&store, "reviewer-admission", &worker_membership);
     rewrite_work_active_member_run(&root, &active.id, Some("member-run-admission"));
-    let before_equal_legacy = store.canonical_operations().unwrap();
     let legacy_progress = WorkReport {
         id: "report-equal-legacy".into(),
         work_id: active.id.clone(),
@@ -1066,7 +1074,13 @@ fn membership_work_binding_authorizes_message_and_result_without_accepting_work(
         )
         .expect_err("equal legacy runtime identity cannot authorize Work evidence");
     assert!(error.to_string().contains("MEMBER_RUN_GENERATION_FENCED"));
-    let error = store
+    let work_before_legacy_message = store
+        .latest_works()
+        .unwrap()
+        .into_iter()
+        .find(|work| work.id == active.id)
+        .unwrap();
+    store
         .author_message(
             &service_context("message.author", "message-equal-legacy", 0),
             work_message(
@@ -1077,9 +1091,14 @@ fn membership_work_binding_authorizes_message_and_result_without_accepting_work(
                 "reviewer-admission",
             ),
         )
-        .expect_err("equal legacy runtime identity cannot authorize a Work-linked Message");
-    assert!(error.to_string().contains("MEMBER_RUN_GENERATION_FENCED"));
-    assert_eq!(store.canonical_operations().unwrap(), before_equal_legacy);
+        .expect("Work-linked Message ignores retired Work runtime identity");
+    let work_after_legacy_message = store
+        .latest_works()
+        .unwrap()
+        .into_iter()
+        .find(|work| work.id == active.id)
+        .unwrap();
+    assert_eq!(work_after_legacy_message, work_before_legacy_message);
     let error = store
         .current_work_deliveries("space-test")
         .expect_err("mixed legacy Work cannot project a current delivery");
@@ -1087,47 +1106,6 @@ fn membership_work_binding_authorizes_message_and_result_without_accepting_work(
         .to_string()
         .contains("CURRENT_WORK_DELIVERY_CANONICAL_JOIN_CONFLICT"));
     rewrite_work_active_member_run(&root, &active.id, None);
-    let work_before_message = store
-        .latest_works()
-        .unwrap()
-        .into_iter()
-        .find(|work| work.id == active.id)
-        .unwrap();
-    store
-        .author_message(
-            &service_context("message.author", "message-report-work", 0),
-            work_message(
-                "message-report-work",
-                &active,
-                "worker-admission",
-                &worker_session.id,
-                "reviewer-admission",
-            ),
-        )
-        .expect("exact owner session may author a Work-linked Message");
-    let work_after_message = store
-        .latest_works()
-        .unwrap()
-        .into_iter()
-        .find(|work| work.id == active.id)
-        .unwrap();
-    assert_eq!(work_after_message, work_before_message);
-
-    let before_foreign = store.canonical_operations().unwrap();
-    let error = store
-        .author_message(
-            &service_context("message.author", "message-foreign-work", 0),
-            work_message(
-                "message-foreign-work",
-                &active,
-                "reviewer-admission",
-                &reviewer_session.id,
-                "worker-admission",
-            ),
-        )
-        .expect_err("foreign member cannot use another member's Work binding");
-    assert!(error.to_string().contains("UNAUTHORIZED_ACTOR"));
-    assert_eq!(store.canonical_operations().unwrap(), before_foreign);
 
     let candidate = firm_core::agentfirm_api::CandidateRef {
         kind: firm_core::agentfirm_api::CandidateKind::GitCommit,
@@ -1208,6 +1186,136 @@ fn membership_work_binding_authorizes_message_and_result_without_accepting_work(
             && delivery.work_revision == binding.work_revision
             && delivery.work_execution_binding_id.as_deref() == Some(binding.id.as_str())
     }));
+
+    let operations_before_invalid_links = store.canonical_operations().unwrap();
+    let mut missing_work_message = work_message(
+        "message-post-submit-missing-work",
+        &submitted,
+        "worker-admission",
+        &worker_session.id,
+        "reviewer-admission",
+    );
+    missing_work_message.work_id = Some("work-missing".into());
+    missing_work_message.content_fingerprint = message_content_fingerprint(&missing_work_message);
+    let missing_work_error = store
+        .author_message(
+            &service_context("message.author", "message-post-submit-missing-work", 0),
+            missing_work_message,
+        )
+        .expect_err("a missing Work cannot be used as Message context");
+    assert!(missing_work_error
+        .to_string()
+        .contains("WORK_REVISION_STALE"));
+    let mut foreign_run_message = work_message(
+        "message-post-submit-foreign-run",
+        &submitted,
+        "worker-admission",
+        &worker_session.id,
+        "reviewer-admission",
+    );
+    foreign_run_message.team_run_id = Some("run-foreign".into());
+    foreign_run_message.content_fingerprint = message_content_fingerprint(&foreign_run_message);
+    let foreign_run_error = store
+        .author_message(
+            &service_context("message.author", "message-post-submit-foreign-run", 0),
+            foreign_run_message,
+        )
+        .expect_err("a Work outside the addressed TeamRun cannot be linked");
+    assert!(foreign_run_error.to_string().contains("UNAUTHORIZED_ACTOR"));
+    assert_eq!(
+        store.canonical_operations().unwrap(),
+        operations_before_invalid_links,
+        "invalid Work context must have zero durable side effects"
+    );
+
+    let work_before_post_submit_messages = submitted.clone();
+    let (mut message_command, mut message_admission) = runtime_command_fixture(
+        "runtime-message-post-submit-owner",
+        RuntimeCommandKind::AuthorMessage,
+        &worker_session,
+        "author-message",
+    );
+    message_command.authenticated_actor = ActorRef {
+        kind: ActorKind::AgentMember,
+        id: "worker-admission".into(),
+    };
+    message_admission.authority_actor = Some(message_command.authenticated_actor.clone());
+    message_admission.request_fingerprint =
+        Some(runtime_command_envelope_fingerprint(&message_command).unwrap());
+    let accepted_message_command = store
+        .prepare_runtime_command(
+            &message_admission,
+            &message_command,
+            current_unix_ms(),
+            "t-message-command-accepted",
+        )
+        .expect("admit exact AuthorMessage RuntimeCommand");
+    let message_effect_context = MutationContext {
+        execution_space_id: "space-test".into(),
+        authenticated_actor: ActorRef {
+            kind: ActorKind::Service,
+            id: "daemon-1".into(),
+        },
+        authority_actor: Some(message_command.authenticated_actor.clone()),
+        command_name: "runtime.authormessage.effect".into(),
+        idempotency_key: "runtime-message-post-submit-owner:effect".into(),
+        expected_version: 0,
+        request_fingerprint: None,
+    };
+    store
+        .author_message(
+            &message_effect_context,
+            work_message(
+                "message-post-submit-owner",
+                &submitted,
+                "worker-admission",
+                &worker_session.id,
+                "reviewer-admission",
+            ),
+        )
+        .expect("owner may send a Work-linked Message after Result released the binding");
+    store
+        .settle_runtime_command(
+            &service_context(
+                "node_daemon.runtime.settle",
+                "runtime-message-post-submit-owner:settle",
+                accepted_message_command.projection.version,
+            ),
+            &message_command.id,
+            RuntimeCommandStatus::Applied,
+            RuntimeEffectCertainty::Applied,
+            Some(serde_json::json!({"message_id": "message-post-submit-owner"})),
+            None,
+            "t-message-command-applied",
+        )
+        .expect("settle the exact AuthorMessage RuntimeCommand as Applied");
+    let mut peer_reply = work_message(
+        "message-post-submit-peer-reply",
+        &submitted,
+        "reviewer-admission",
+        &reviewer_session.id,
+        "worker-admission",
+    );
+    peer_reply.kind = firm_core::agentfirm_api::MessageKind::Reply;
+    peer_reply.correlation_id = "correlation-message-post-submit-owner".into();
+    peer_reply.causation_id = Some("message-post-submit-owner".into());
+    peer_reply.content_fingerprint = message_content_fingerprint(&peer_reply);
+    store
+        .author_message(
+            &service_context("message.author", "message-post-submit-peer-reply", 0),
+            peer_reply,
+        )
+        .expect("peer may reply with the submitted Work as immutable context");
+    let work_after_post_submit_messages = store
+        .latest_works()
+        .unwrap()
+        .into_iter()
+        .find(|work| work.id == submitted.id)
+        .unwrap();
+    assert_eq!(
+        work_after_post_submit_messages, work_before_post_submit_messages,
+        "Message send/reply must not mutate Work projection or version"
+    );
 
     let operation_count_after_release = store.canonical_operations().unwrap().len();
     let exact_report_replay = store

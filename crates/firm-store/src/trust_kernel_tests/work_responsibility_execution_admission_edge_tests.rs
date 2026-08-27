@@ -282,8 +282,15 @@ fn every_member_work_authoring_path_requires_provider_received_delivery() {
             .to_string()
             .contains("DELIVERY_RECOVERY_UNCERTAIN"));
 
+        assert_eq!(store.canonical_operations().unwrap(), operations_before);
+        let work_before_message = store
+            .latest_works()
+            .unwrap()
+            .into_iter()
+            .find(|candidate| candidate.id == active.id)
+            .unwrap();
         let message_id = format!("message-{suffix}");
-        let message_error = store
+        store
             .author_message(
                 &service_context("message.author", &message_id, 0),
                 work_message(
@@ -294,15 +301,15 @@ fn every_member_work_authoring_path_requires_provider_received_delivery() {
                     "worker-admission",
                 ),
             )
-            .expect_err("Work-linked Message requires exact ProviderReceived evidence");
-        assert!(
-            message_error
-                .to_string()
-                .contains("DELIVERY_RECOVERY_UNCERTAIN"),
-            "{message_error}"
-        );
+            .expect("Message authoring is independent of Work delivery receipt state");
+        let work_after_message = store
+            .latest_works()
+            .unwrap()
+            .into_iter()
+            .find(|candidate| candidate.id == active.id)
+            .unwrap();
+        assert_eq!(work_after_message, work_before_message);
 
-        assert_eq!(store.canonical_operations().unwrap(), operations_before);
         assert_eq!(
             store
                 .fabric_work_execution_bindings("space-test")
@@ -488,8 +495,13 @@ fn responsibility_aba_and_stale_session_generation_do_not_revive_old_binding() {
             )
             .unwrap();
     }
-    let before_stale_session = store.canonical_operations().unwrap();
-    let error = store
+    let work_before_message = store
+        .latest_works()
+        .unwrap()
+        .into_iter()
+        .find(|candidate| candidate.id == stale_generation_work.id)
+        .unwrap();
+    store
         .author_message(
             &service_context("message.author", "message-stale-session", 0),
             work_message(
@@ -500,9 +512,14 @@ fn responsibility_aba_and_stale_session_generation_do_not_revive_old_binding() {
                 "alternate-admission",
             ),
         )
-        .expect_err("stale binding generation cannot authorize a Work-linked Message");
-    assert!(error.to_string().contains("NATIVE_SESSION_INCOMPATIBLE"));
-    assert_eq!(store.canonical_operations().unwrap(), before_stale_session);
+        .expect("a current sender Session may link Work without inheriting its stale binding");
+    let work_after_message = store
+        .latest_works()
+        .unwrap()
+        .into_iter()
+        .find(|candidate| candidate.id == stale_generation_work.id)
+        .unwrap();
+    assert_eq!(work_after_message, work_before_message);
 }
 
 #[test]
