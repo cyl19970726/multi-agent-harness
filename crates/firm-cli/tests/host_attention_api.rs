@@ -9,8 +9,8 @@ use std::time::{Duration, Instant};
 mod fake_provider;
 mod firm_env;
 use firm_env::{
-    create_canonical_agent_member, current_project_id, run_firm, run_firm_with_env, ServeHandle,
-    TempHome,
+    create_canonical_agent_member, current_project_id, member_run_for_work_owner, run_firm,
+    run_firm_with_env, ServeHandle, TempHome,
 };
 
 fn init_project(home: &TempHome, name: &str) -> (String, String, String) {
@@ -157,15 +157,8 @@ fn create_mission_and_run(
         .as_str()
         .expect("run id")
         .to_string();
-    let owner_member_id = body["result"]["works"][0]["owner_member_id"]
+    let member_id = member_run_for_work_owner(&body["result"], 0)["id"]
         .as_str()
-        .expect("Work owner AgentMember");
-    let member_id = body["result"]["member_runs"]
-        .as_array()
-        .expect("member runs")
-        .iter()
-        .find(|member| member["agent_member_id"].as_str() == Some(owner_member_id))
-        .and_then(|member| member["id"].as_str())
         .expect("Work owner MemberRun")
         .to_string();
     let work_id = body["result"]["works"][0]["id"]

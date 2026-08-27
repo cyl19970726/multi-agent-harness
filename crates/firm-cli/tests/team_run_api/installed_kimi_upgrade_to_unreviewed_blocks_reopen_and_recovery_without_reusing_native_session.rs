@@ -34,7 +34,7 @@ fn installed_kimi_upgrade_to_unreviewed_blocks_reopen_and_recovery_without_reusi
         .as_str()
         .expect("run id")
         .to_string();
-    let member_id = created["result"]["member_runs"][0]["id"]
+    let member_id = member_run_for_work_owner(&created["result"], 0)["id"]
         .as_str()
         .expect("member id")
         .to_string();

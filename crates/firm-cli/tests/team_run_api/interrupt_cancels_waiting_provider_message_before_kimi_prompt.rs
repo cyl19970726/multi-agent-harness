@@ -27,7 +27,7 @@ fn interrupt_cancels_waiting_provider_message_before_kimi_prompt() {
         .as_str()
         .unwrap()
         .to_string();
-    let member_id = created["result"]["member_runs"][0]["id"]
+    let member_id = member_run_for_work_owner(&created["result"], 0)["id"]
         .as_str()
         .unwrap()
         .to_string();

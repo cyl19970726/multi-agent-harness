@@ -1079,7 +1079,7 @@ pub(super) fn create_team_run(
                 },
             )?;
             let membership = store
-                .fabric_team_memberships(&execution_space_id)?
+                .fabric_team_memberships(execution_space_id)?
                 .into_iter()
                 .filter(|membership| {
                     membership.team_id == team_run.agent_team_id
@@ -1098,7 +1098,7 @@ pub(super) fn create_team_run(
                 &created_work.id,
                 created_work.version,
                 &membership.id,
-                &execution_space_id,
+                execution_space_id,
                 WorkCommandContext {
                     event_id: generated_id("work-event"),
                     performed_by_actor: team_run

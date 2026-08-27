@@ -30,7 +30,7 @@ fn kimi_model_switch_uses_only_the_new_models_advertised_effort_controls() {
         .as_str()
         .unwrap()
         .to_string();
-    let member_id = created["result"]["member_runs"][0]["id"]
+    let member_id = member_run_for_work_owner(&created["result"], 0)["id"]
         .as_str()
         .unwrap()
         .to_string();
@@ -130,7 +130,7 @@ fn kimi_model_switch_uses_only_the_new_models_advertised_effort_controls() {
         .as_str()
         .unwrap()
         .to_string();
-    let member_id = created["result"]["member_runs"][0]["id"]
+    let member_id = member_run_for_work_owner(&created["result"], 0)["id"]
         .as_str()
         .unwrap()
         .to_string();

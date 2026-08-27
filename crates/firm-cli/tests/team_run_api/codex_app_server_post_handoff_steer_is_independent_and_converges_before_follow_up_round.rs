@@ -39,7 +39,7 @@ fn codex_app_server_post_handoff_steer_is_independent_and_converges_before_follo
         .as_str()
         .expect("run id")
         .to_string();
-    let member_id = created["result"]["member_runs"][0]["id"]
+    let member_id = member_run_for_work_owner(&created["result"], 0)["id"]
         .as_str()
         .expect("member id")
         .to_string();

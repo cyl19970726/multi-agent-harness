@@ -32,7 +32,7 @@ fn kimi_incomplete_stop_reason_requires_recovery_without_replay() {
             .as_str()
             .unwrap()
             .to_string();
-        let member_id = created["result"]["member_runs"][0]["id"]
+        let member_id = member_run_for_work_owner(&created["result"], 0)["id"]
             .as_str()
             .unwrap()
             .to_string();

@@ -379,19 +379,21 @@ for await (const line of rl) {{
       content: [{{ type: "text", text: `## RESULT\ndone\n\n## SUMMARY\nturn-${{turns}}` }}],
     }});
     if (payload.kind === "work") {{
+      const workVersion = process.env.HARNESS_WORK_VERSION;
+      if (!workVersion) throw new Error("missing HARNESS_WORK_VERSION");
       harness([
         "team-run", "work", "start",
         "--team-run-id", cfg.teamRunId,
         "--work-id", payload.correlation_id,
         "--member-run-id", cfg.memberRunId,
-        "--expected-version", "1",
+        "--expected-version", workVersion,
       ]);
       harness([
         "team-run", "work", "submit",
         "--team-run-id", cfg.teamRunId,
         "--work-id", payload.correlation_id,
         "--member-run-id", cfg.memberRunId,
-        "--expected-version", "2",
+        "--expected-version", String(Number(workVersion) + 1),
         "--result", `turn-${{turns}} completed`,
         "--artifact-ref", "src/member.ts",
       ]);

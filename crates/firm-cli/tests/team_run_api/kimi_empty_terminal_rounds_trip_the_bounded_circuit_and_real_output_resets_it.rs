@@ -36,9 +36,11 @@ fn kimi_empty_terminal_rounds_trip_the_bounded_circuit_and_real_output_resets_it
         .as_str()
         .unwrap()
         .to_string();
-    let member_id = created["result"]["member_runs"][0]["id"]
+    let accountable_member = member_run_for_work_owner(&created["result"], 0);
+    let member_id = accountable_member["id"].as_str().unwrap().to_string();
+    let agent_member_id = accountable_member["agent_member_id"]
         .as_str()
-        .unwrap()
+        .expect("accountable AgentMember")
         .to_string();
     let (status, started) = serve.post_json(
         &format!("/v1/team-runs/{run_id}/start"),
@@ -142,8 +144,9 @@ fn kimi_empty_terminal_rounds_trip_the_bounded_circuit_and_real_output_resets_it
         .as_array()
         .into_iter()
         .flatten()
-        .find(|work| work["active_member_run_id"].as_str() == Some(member_id.as_str()))
+        .find(|work| work["owner_member_id"].as_str() == Some(agent_member_id.as_str()))
         .expect("the circuit must preserve the member's active Work");
+    assert!(active_work["active_member_run_id"].is_null());
     assert_eq!(
         active_work["phase"].as_str(),
         Some("active"),
@@ -162,6 +165,19 @@ fn kimi_empty_terminal_rounds_trip_the_bounded_circuit_and_real_output_resets_it
         .find(|work| work.id == work_id)
         .expect("stored active Work");
     assert_eq!(stored_work.phase, harness_core::WorkPhase::Active);
+    let active_bindings = store
+        .fabric_work_execution_bindings(&current_space_id(&home))
+        .expect("canonical Work execution bindings")
+        .into_iter()
+        .filter(|binding| {
+            binding.work_id == work_id
+                && binding.status == harness_core::agentfirm_api::WorkExecutionBindingStatus::Active
+        })
+        .collect::<Vec<_>>();
+    let [active_binding] = active_bindings.as_slice() else {
+        panic!("active Work must retain one exact execution binding: {active_bindings:?}");
+    };
+    assert_eq!(active_binding.agent_member_id, agent_member_id);
     let canonical_deliveries = store
         .fabric_work_deliveries(&current_space_id(&home))
         .expect("canonical Work deliveries");

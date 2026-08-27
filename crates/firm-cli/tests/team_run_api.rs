@@ -18,7 +18,7 @@ mod fake_provider;
 mod firm_env;
 use firm_env::{
     collect_sse_data, create_canonical_agent_member, current_project_id, current_space_id,
-    run_firm, run_firm_with_env, ServeHandle, TempHome,
+    member_run_for_work_owner, run_firm, run_firm_with_env, ServeHandle, TempHome,
 };
 
 const NATIVE_SELECTOR_CLEAN_ENV: &[(&str, &str)] = &[
@@ -745,15 +745,11 @@ fn persistent_codex_supervisor_survives_handoffs_transport_loss_and_team_complet
         .as_str()
         .unwrap()
         .to_string();
-    let builder_id = created["result"]["member_runs"][0]["id"]
-        .as_str()
-        .unwrap()
-        .to_string();
-    let reviewer_id = created["result"]["member_runs"][1]["id"]
-        .as_str()
-        .unwrap()
-        .to_string();
-    let builder_agent_member_id = created["result"]["member_runs"][0]["agent_member_id"]
+    let builder = member_run_for_work_owner(&created["result"], 0);
+    let reviewer = member_run_for_work_owner(&created["result"], 1);
+    let builder_id = builder["id"].as_str().unwrap().to_string();
+    let reviewer_id = reviewer["id"].as_str().unwrap().to_string();
+    let builder_agent_member_id = builder["agent_member_id"]
         .as_str()
         .expect("Builder AgentMember");
     let builder_work_id = created["result"]["works"]

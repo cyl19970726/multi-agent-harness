@@ -43,7 +43,7 @@ fn kimi_terminal_frame_is_fenced_before_stale_semantic_writes() {
         .as_str()
         .expect("run id")
         .to_string();
-    let member_id = created["result"]["member_runs"][0]["id"]
+    let member_id = member_run_for_work_owner(&created["result"], 0)["id"]
         .as_str()
         .expect("member id")
         .to_string();
