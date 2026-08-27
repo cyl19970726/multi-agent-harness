@@ -385,13 +385,35 @@ pub(crate) fn operator_view(
         })
         .count();
     let backlog = message_backlog + work_backlog;
+    let mut publicly_recoverable_runtime_commands = BTreeSet::new();
+    for command in store.runtime_commands(space_id).map_err(|error| {
+        (
+            "500 Internal Server Error",
+            "ROLE_VIEW_BUILD_FAILED",
+            error.to_string(),
+        )
+    })? {
+        if store
+            .runtime_command_is_publicly_recoverable(&command, crate::current_unix_ms_u64())
+            .map_err(|error| {
+                (
+                    "500 Internal Server Error",
+                    "ROLE_VIEW_BUILD_FAILED",
+                    error.to_string(),
+                )
+            })?
+        {
+            publicly_recoverable_runtime_commands.insert(command.id);
+        }
+    }
     let runtime_recovery = facts
         .runtime_commands
         .iter()
         .filter(|command| {
             command["target_node_id"] == node_id
-                && command["status"] == "recovery_required"
-                && command["effect_certainty"] == "unknown"
+                && command["id"].as_str().is_some_and(|command_id| {
+                    publicly_recoverable_runtime_commands.contains(command_id)
+                })
         })
         .map(|command| {
             let mut projected = command.clone();

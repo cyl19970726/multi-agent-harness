@@ -2,6 +2,46 @@ use super::fabric_foundation::RuntimeBindingAdmission;
 use super::*;
 
 impl HarnessStore {
+    /// A prepared command is publicly recoverable only after its exact
+    /// TeamSupervisor generation has demonstrably lost authority. This keeps
+    /// Operator recovery from racing a healthy in-flight prepare/effect window.
+    pub fn runtime_command_is_publicly_recoverable(
+        &self,
+        record: &RuntimeCommandRecord,
+        now_unix_ms: u64,
+    ) -> StoreResult<bool> {
+        if record.status == RuntimeCommandStatus::RecoveryRequired
+            && record.effect_certainty == RuntimeEffectCertainty::Unknown
+        {
+            return Ok(true);
+        }
+        if record.status != RuntimeCommandStatus::Accepted
+            || record.phase != RuntimeCommandPhase::Prepared
+            || record.effect_certainty != RuntimeEffectCertainty::Unknown
+        {
+            return Ok(false);
+        }
+        let RuntimeDriverRef::TeamSupervisor {
+            team_run_id,
+            team_supervisor_id,
+            team_supervisor_generation,
+        } = &record.binding.target_driver
+        else {
+            return Ok(false);
+        };
+        let current = self.latest_team_supervisor_lease(team_run_id)?;
+        Ok(!current.is_some_and(|lease| {
+            lease.execution_space_id == record.execution_space_id
+                && lease.node_id == record.target_node_id
+                && lease.node_daemon_id == record.target_node_daemon_id
+                && lease.node_daemon_generation == record.target_node_daemon_generation
+                && lease.supervisor_id == *team_supervisor_id
+                && lease.generation == *team_supervisor_generation
+                && lease.status == firm_core::TeamSupervisorLeaseStatus::Active
+                && lease.expires_unix_ms > now_unix_ms
+        }))
+    }
+
     pub fn validate_runtime_command(
         &self,
         command: &ControlCommandEnvelope,
@@ -612,12 +652,16 @@ impl HarnessStore {
                 Some(record.version),
             ));
         }
-        if record.status != RuntimeCommandStatus::RecoveryRequired
-            || record.effect_certainty != RuntimeEffectCertainty::Unknown
-        {
+        let is_recovery_required = record.status == RuntimeCommandStatus::RecoveryRequired
+            && record.effect_certainty == RuntimeEffectCertainty::Unknown;
+        let is_abandoned_prepared = record.status == RuntimeCommandStatus::Accepted
+            && record.phase == RuntimeCommandPhase::Prepared
+            && record.effect_certainty == RuntimeEffectCertainty::Unknown
+            && self.runtime_command_is_publicly_recoverable(&record, current_unix_ms())?;
+        if !is_recovery_required && !is_abandoned_prepared {
             return Err(trust_error(
                 TrustErrorCode::InvalidStateTransition,
-                "only an Unknown RecoveryRequired RuntimeCommand can be resolved",
+                "only an Unknown RecoveryRequired or abandoned Prepared RuntimeCommand can be resolved",
                 "runtime_command",
                 command_id,
                 Some(record.version),
@@ -625,6 +669,15 @@ impl HarnessStore {
         }
         match resolution {
             RuntimeRecoveryResolution::ConfirmApplied => {
+                if is_abandoned_prepared {
+                    return Err(trust_error(
+                        TrustErrorCode::InvalidStateTransition,
+                        "an abandoned Prepared RuntimeCommand cannot be confirmed Applied without a provider receipt",
+                        "runtime_command",
+                        command_id,
+                        Some(record.version),
+                    ));
+                }
                 if runtime_command_requires_exact_binding(record.command) {
                     let session_id = record.target_session_id.as_deref().ok_or_else(|| {
                         trust_error(
@@ -698,7 +751,9 @@ impl HarnessStore {
                 record.failure_code = Some("RECOVERY_CONFIRMED_NOT_APPLIED".into());
             }
             RuntimeRecoveryResolution::KeepRecoveryRequired => {
+                record.status = RuntimeCommandStatus::RecoveryRequired;
                 record.phase = RuntimeCommandPhase::RecoveryRequired;
+                record.effect_certainty = RuntimeEffectCertainty::Unknown;
                 record.failure_code = Some("RECOVERY_EVIDENCE_INSUFFICIENT".into());
             }
         }
@@ -758,6 +813,82 @@ impl HarnessStore {
             result,
             failure_code,
             now,
+        )
+    }
+
+    /// Monotonically fail a prepared provider effect closed when its executor
+    /// leaves scope before obtaining a provider receipt. Unlike normal effect
+    /// settlement, this transition deliberately does not require the old
+    /// NodeDaemon/runtime binding to remain live: losing that authority is one
+    /// of the reasons the command must become recovery-required. The exact
+    /// daemon identity, command version, and prepared/unknown state still fence
+    /// the mutation.
+    pub fn mark_prepared_runtime_command_recovery(
+        &self,
+        context: &MutationContext,
+        command_id: &str,
+        failure_code: String,
+        now: &str,
+    ) -> StoreResult<CanonicalMutationResult<RuntimeCommandRecord>> {
+        self.init()?;
+        let _lock = self.acquire_write_lock()?;
+        let mut record = self
+            .latest_trust_envelopes_unlocked(&context.execution_space_id, "runtime_command")?
+            .remove(command_id)
+            .ok_or_else(|| {
+                trust_error(
+                    TrustErrorCode::InvalidStateTransition,
+                    "RuntimeCommand was not durably accepted",
+                    "runtime_command",
+                    command_id,
+                    None,
+                )
+            })
+            .and_then(|envelope| event_projection::<RuntimeCommandRecord>(&envelope))?;
+        if context.authenticated_actor.kind != ActorKind::Service
+            || context.authenticated_actor.id != record.target_node_daemon_id
+        {
+            return Err(trust_error(
+                TrustErrorCode::UnauthorizedActor,
+                "only the exact admitted NodeDaemon identity can fail a prepared RuntimeCommand closed",
+                "runtime_command",
+                command_id,
+                Some(record.version),
+            ));
+        }
+        if context.expected_version != record.version
+            || record.status != RuntimeCommandStatus::Accepted
+            || record.phase != RuntimeCommandPhase::Prepared
+            || record.effect_certainty != RuntimeEffectCertainty::Unknown
+        {
+            return Err(trust_error(
+                TrustErrorCode::InvalidStateTransition,
+                "only the exact current Accepted/Prepared/Unknown RuntimeCommand can enter scope-exit recovery",
+                "runtime_command",
+                command_id,
+                Some(record.version),
+            ));
+        }
+        record.status = RuntimeCommandStatus::RecoveryRequired;
+        record.phase = RuntimeCommandPhase::RecoveryRequired;
+        record.effect_certainty = RuntimeEffectCertainty::Unknown;
+        record.postcondition_status = RuntimePostconditionStatus::Unknown;
+        record.result = None;
+        record.failure_code = Some(failure_code);
+        record.version += 1;
+        record.updated_at = now.to_string();
+        self.commit_trust_projection_unlocked(
+            context,
+            "runtime_command",
+            command_id,
+            "prepared_scope_exit_recovery_required",
+            serde_json::json!({
+                "effect_certainty": RuntimeEffectCertainty::Unknown,
+                "failure_code": record.failure_code,
+            }),
+            &record,
+            Vec::new(),
+            Vec::new(),
         )
     }
 

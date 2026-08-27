@@ -1,6 +1,59 @@
 use super::*;
 
 #[test]
+fn operator_cannot_race_an_active_prepared_command() {
+    let (store, root) = fabric_store();
+    store
+        .migrate_legacy_agent_identity_same_id(
+            &context("host", "identity.create", "identity-abandoned-prepared", 0),
+            identity("abandoned-prepared"),
+        )
+        .unwrap();
+    let target_session = session("session-abandoned-prepared", "abandoned-prepared");
+    store
+        .create_agent_session(
+            &service_context("session.create", "session-abandoned-prepared", 0),
+            target_session.clone(),
+        )
+        .unwrap();
+    let (command, admission_context) = runtime_command_fixture(
+        "runtime-abandoned-prepared",
+        RuntimeCommandKind::ResumeNativeSession,
+        &target_session,
+        "runtime.native_session.resume",
+    );
+    store
+        .prepare_runtime_command(&admission_context, &command, current_unix_ms(), "t-prepare")
+        .unwrap();
+
+    let mut resolve_context = service_context(
+        "operator.runtime.resolve",
+        "runtime-abandoned-prepared:confirm-not-applied",
+        1,
+    );
+    resolve_context.authority_actor = Some(ActorRef {
+        kind: ActorKind::Service,
+        id: target_session.node_id.clone(),
+    });
+    let error = store
+        .resolve_runtime_command_recovery(
+            &resolve_context,
+            &command.id,
+            &target_session.node_id,
+            &target_session.node_daemon_id,
+            target_session.node_daemon_generation,
+            RuntimeRecoveryResolution::ConfirmNotApplied,
+            "evidence:premature",
+            "t-rejected",
+        )
+        .expect_err("Operator recovery cannot race an actively owned Prepared command");
+    assert!(error
+        .to_string()
+        .contains("only an Unknown RecoveryRequired"));
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn runtime_recovery_resolution_is_operator_fenced_replay_safe_and_never_blind_replays() {
     let (store, root) = fabric_store();
     store

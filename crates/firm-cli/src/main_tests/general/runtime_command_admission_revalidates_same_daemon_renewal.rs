@@ -1,6 +1,98 @@
 use super::*;
 
 #[test]
+fn partial_provider_lane_scope_exit_is_recovery_required_and_next_attempt_can_start() {
+    let (store, _root) = temp_store("partial-provider-lane-prepared-command-recovery");
+    let (ledger, member) = persisted_native_test_member(
+        &store,
+        "deepseek_harness",
+        "deepseek_sdk",
+        "session-partial-provider-lane",
+    );
+    let execution_space_id = store
+        .trust_member_run_scope(&member.id)
+        .expect("read MemberRun scope")
+        .expect("canonical MemberRun scope");
+
+    let abandoned_command_id = {
+        let prepared = prepare_provider_process_effect_with_retry(&ledger, &member, 1)
+            .expect("first lane prepares its exact provider-process command");
+        let command_id = prepared.command_id.clone();
+        // Model a later lane failing composition before this lane receives a
+        // provider receipt. Dropping the shared guard is the real production
+        // cleanup path used by every provider runner.
+        command_id
+    };
+
+    let abandoned = store
+        .runtime_commands(&execution_space_id)
+        .expect("read RuntimeCommands")
+        .into_iter()
+        .find(|command| command.id == abandoned_command_id)
+        .expect("prepared command remains durable");
+    assert_eq!(
+        abandoned.status,
+        harness_core::agentfirm_api::RuntimeCommandStatus::RecoveryRequired
+    );
+    assert_eq!(
+        abandoned.phase,
+        harness_core::agentfirm_api::RuntimeCommandPhase::RecoveryRequired
+    );
+    assert_eq!(
+        abandoned.effect_certainty,
+        harness_core::agentfirm_api::RuntimeEffectCertainty::Unknown
+    );
+
+    let mut resolution_context = harness_core::agentfirm_api::MutationContext {
+        execution_space_id: execution_space_id.clone(),
+        authenticated_actor: harness_core::agentfirm_api::ActorRef {
+            kind: harness_core::agentfirm_api::ActorKind::Service,
+            id: abandoned.target_node_daemon_id.clone(),
+        },
+        authority_actor: Some(harness_core::agentfirm_api::ActorRef {
+            kind: harness_core::agentfirm_api::ActorKind::Service,
+            id: abandoned.target_node_id.clone(),
+        }),
+        command_name: "operator.runtime.resolve".into(),
+        idempotency_key: format!("{}:confirm-not-applied", abandoned.id),
+        expected_version: abandoned.version,
+        request_fingerprint: None,
+    };
+    let resolution_fingerprint = harness_store::canonical_json_fingerprint(&serde_json::json!({
+        "command_id": abandoned.id,
+        "resolution": harness_core::agentfirm_api::RuntimeRecoveryResolution::ConfirmNotApplied,
+        "evidence_ref": "test:partial-lane-no-child",
+    }));
+    resolution_context.request_fingerprint = Some(resolution_fingerprint);
+    let resolved = store
+        .resolve_runtime_command_recovery(
+            &resolution_context,
+            &abandoned.id,
+            &abandoned.target_node_id,
+            &abandoned.target_node_daemon_id,
+            abandoned.target_node_daemon_generation,
+            harness_core::agentfirm_api::RuntimeRecoveryResolution::ConfirmNotApplied,
+            "test:partial-lane-no-child",
+            "unix-ms:resolved",
+        )
+        .expect("the exact Node Operator resolves no-effect evidence publicly");
+    assert_eq!(
+        resolved.projection.effect_certainty,
+        harness_core::agentfirm_api::RuntimeEffectCertainty::NotApplied
+    );
+
+    let next = prepare_provider_process_effect_with_retry(&ledger, &member, 2)
+        .expect("a distinct reconciled transport attempt can start");
+    assert_ne!(next.command_id, abandoned_command_id);
+    settle_provider_effect_not_applied(
+        &ledger,
+        &next,
+        "test ends before crossing the provider boundary".into(),
+    )
+    .expect("terminally settle the next attempt");
+}
+
+#[test]
 fn runtime_command_admission_revalidates_same_daemon_renewal() {
     let (store, _root) = temp_store("runtime-command-current-daemon-lease");
     let node_id = "83f00000-0000-4000-8000-000000000001";
@@ -135,6 +227,23 @@ fn successor_after_durable_command_prepare_requires_exact_reconciliation() {
             .expect_err("successor authority after prepare requires reconciliation");
     assert!(matches!(error, CliError::RuntimeRecoveryRequired(_)));
     assert!(error.to_string().contains(&admitted.command_id));
+
+    let command_id = admitted.command_id.clone();
+    drop(admitted);
+    let recovered = store
+        .runtime_commands(&execution_space_id)
+        .expect("read recovered RuntimeCommand")
+        .into_iter()
+        .find(|command| command.id == command_id)
+        .expect("prepared command remains durable after authority loss");
+    assert_eq!(
+        recovered.status,
+        harness_core::agentfirm_api::RuntimeCommandStatus::RecoveryRequired
+    );
+    assert_eq!(
+        recovered.effect_certainty,
+        harness_core::agentfirm_api::RuntimeEffectCertainty::Unknown
+    );
 }
 
 #[test]

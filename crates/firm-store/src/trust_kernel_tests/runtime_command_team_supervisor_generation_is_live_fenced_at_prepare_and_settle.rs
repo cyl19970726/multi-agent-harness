@@ -138,6 +138,63 @@ fn runtime_command_team_supervisor_generation_is_live_fenced_at_prepare_and_sett
     assert!(error.to_string().contains("SUPERVISOR_GENERATION_FENCED"));
     assert_eq!(store.canonical_operations().unwrap(), before_settle);
 
+    assert!(store
+        .runtime_command_is_publicly_recoverable(&accepted.projection, current_unix_ms())
+        .unwrap());
+    let mut confirm_applied = service_context(
+        "operator.runtime.resolve",
+        "supervisor-live-command:confirm-applied",
+        accepted.projection.version,
+    );
+    confirm_applied.authority_actor = Some(ActorRef {
+        kind: ActorKind::Service,
+        id: target.node_id.clone(),
+    });
+    let error = store
+        .resolve_runtime_command_recovery(
+            &confirm_applied,
+            &command.id,
+            &target.node_id,
+            &target.node_daemon_id,
+            target.node_daemon_generation,
+            RuntimeRecoveryResolution::ConfirmApplied,
+            "evidence:no-provider-receipt",
+            "t-confirm-applied-rejected",
+        )
+        .expect_err("an abandoned Prepared command cannot fabricate Applied");
+    assert!(error.to_string().contains("cannot be confirmed Applied"));
+
+    let mut confirm_not_applied = service_context(
+        "operator.runtime.resolve",
+        "supervisor-live-command:confirm-not-applied",
+        accepted.projection.version,
+    );
+    confirm_not_applied.authority_actor = Some(ActorRef {
+        kind: ActorKind::Service,
+        id: target.node_id.clone(),
+    });
+    let resolved = store
+        .resolve_runtime_command_recovery(
+            &confirm_not_applied,
+            &command.id,
+            &target.node_id,
+            &target.node_daemon_id,
+            target.node_daemon_generation,
+            RuntimeRecoveryResolution::ConfirmNotApplied,
+            "evidence:released-supervisor-and-provider-process-absent",
+            "t-confirmed-not-applied",
+        )
+        .expect("exact Operator resolves the abandoned prepared command");
+    assert_eq!(resolved.projection.status, RuntimeCommandStatus::Failed);
+    assert_eq!(
+        resolved.projection.effect_certainty,
+        RuntimeEffectCertainty::NotApplied
+    );
+    assert_eq!(
+        resolved.projection.result.as_ref().unwrap()["blind_replay"],
+        false
+    );
+
     let successor = store
         .acquire_team_supervisor_under_node_lease(
             "run-supervisor",

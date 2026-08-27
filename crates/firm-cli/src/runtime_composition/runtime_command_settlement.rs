@@ -1,5 +1,26 @@
 use super::*;
 
+pub(crate) fn settle_prepared_runtime_command_recovery(
+    store: &harness_store::HarnessStore,
+    context: &harness_core::agentfirm_api::MutationContext,
+    command_id: &str,
+    failure_code: impl Into<String>,
+) -> CliResult<()> {
+    store
+        .mark_prepared_runtime_command_recovery(
+            context,
+            command_id,
+            failure_code.into(),
+            &now_string(),
+        )
+        .map_err(|error| {
+            CliError::RuntimeRecoveryRequired(format!(
+                "prepared runtime command {command_id} could not enter recovery: {error}"
+            ))
+        })
+        .map(|_| ())
+}
+
 pub(crate) fn settle_provider_effect(
     ledger: &TeamRunLedger,
     admission: &ProviderEffectAdmission,
