@@ -93,6 +93,8 @@ try{
   const unknownFixturePaths=[];
   const agentWorkspaceRequests=[];
   let failMemberRefresh=false;
+  let memberRefreshRetryGate=null;
+  let observeMemberRefreshRetry=null;
   let failHostMemberProjection=false;
   let hostMemberProjectionGate=null;
   let firstMemberWorkspaceRequestAt=null;
@@ -123,9 +125,10 @@ try{
       if(memberSelected&&token==="fixture-member-token"&&firstMemberWorkspaceRequestAt===null)firstMemberWorkspaceRequestAt=Date.now();
       if(memberSelected&&token==="fixture-member-token")await new Promise(resolve=>setTimeout(resolve,40));
       if(memberSelected&&token==="fixture-member-token"&&failMemberRefresh)return route.fulfill({status:503,contentType:"application/json",body:JSON.stringify({error:{message:"fixture member refresh failed"}})});
+      if(memberSelected&&token==="fixture-member-token"&&memberRefreshRetryGate){observeMemberRefreshRetry?.();await memberRefreshRetryGate;}
       if(memberSelected&&token==="fixture-host-token"){
         if(hostMemberProjectionGate)await hostMemberProjectionGate;
-        if(failHostMemberProjection)return route.fulfill({status:503,contentType:"application/json",body:JSON.stringify({error:{message:"fixture Team Session projection failed"}})});
+        if(failHostMemberProjection)return route.abort("failed");
       }
       if(memberSelected&&url.searchParams.get("session_before")==="10"&&delayedOlderPageGate){await delayedOlderPageGate;if(failDelayedOlderPage)return route.fulfill({status:503,contentType:"application/json",body:JSON.stringify({error:{message:"stale Project pagination failed"}})});}
       body=otherAgentSelected?otherAgentView:memberSelected?(url.searchParams.get("project")==="fixture-project-b"?otherProjectMemberView:url.searchParams.get("session_before")==="10"?olderMemberView:(token==="fixture-member-token"?memberView:hostMemberTeamRead)):hostView;
@@ -233,6 +236,20 @@ try{
     assert.equal(await page.locator('textarea[aria-label="Message"]').count(),0,"refresh failure retained a writable message composer");
     assert.equal(await page.getByLabel("Composer action").count(),0,"refresh failure retained a writable action selector");
     failMemberRefresh=false;
+    let releaseMemberRefreshRetry;
+    let markMemberRefreshRetryStarted;
+    memberRefreshRetryGate=new Promise(resolve=>{releaseMemberRefreshRetry=resolve;});
+    const memberRefreshRetryStarted=new Promise(resolve=>{markMemberRefreshRetryStarted=resolve;});
+    observeMemberRefreshRetry=markMemberRefreshRetryStarted;
+    await page.getByRole("button",{name:"Retry authenticated view",exact:true}).click();
+    await memberRefreshRetryStarted;
+    assert.equal(await page.getByRole("alert").filter({hasText:"Refresh failed; writes are disabled"}).count(),1,"pending retry cleared the authoritative refresh failure before success");
+    assert.equal(await page.locator('textarea[aria-label="Message"]').count(),0,"pending retry restored a writable message composer before success");
+    assert.equal(await page.getByLabel("Composer action").count(),0,"pending retry restored a writable action selector before success");
+    releaseMemberRefreshRetry();memberRefreshRetryGate=null;observeMemberRefreshRetry=null;
+    await page.getByRole("alert").filter({hasText:"Refresh failed; writes are disabled"}).waitFor({state:"detached"});
+    await page.locator('textarea[aria-label="Message"]').waitFor();
+    await page.getByTestId("agent-workspace-identity").getByText("Session session-mira-current · gen 3",{exact:true}).waitFor();
   }
   const hostPage=await makePage(liveConfig?.hostToken??"fixture-host-token");
   await open(hostPage,`${base}/?surface=team&team=${routeState.teamRun}&conversation=${routeState.host}&space=${routeState.space}&project=${routeState.project}`);
@@ -271,11 +288,19 @@ try{
     await open(hostPage,`${base}/?surface=team&team=${routeState.teamRun}&conversation=${routeState.host}&space=${routeState.space}&project=${routeState.project}`);
     failHostMemberProjection=true;
     await hostPage.getByRole("button",{name:/Mira Chen/}).first().click();
-    await hostPage.getByRole("alert").filter({hasText:"Agent Workspace"}).waitFor();
+    const selectedMemberUrl=hostPage.url();
+    await hostPage.getByRole("alert").filter({hasText:"Failed to fetch"}).waitFor();
     assert.equal(await hostPage.getByText("Read Lead inbox",{exact:true}).count(),0,"failed identity switch restored the old Host Session activity");
     assert.equal(await hostPage.locator('textarea[aria-label="Message"]').count(),0,"failed identity switch retained a writable composer");
     assert.equal(await hostPage.getByLabel("Composer action").count(),0,"failed identity switch retained an action selector");
     failHostMemberProjection=false;
+    await hostPage.getByRole("button",{name:"Retry authenticated view",exact:true}).click();
+    await hostPage.getByTestId("agent-workspace-identity").getByText("Mira Chen",{exact:true}).waitFor();
+    await hostPage.getByTestId("agent-workspace-identity").getByText("Session session-mira-current · gen 3",{exact:true}).waitFor();
+    const recoveredMemberEvents=hostPage.locator(".aw-native-facts-trail .aw-stream-fact__trigger");
+    assert.ok(await recoveredMemberEvents.count()>=3,"same-page retry did not recover the selected Member native activity");
+    const recoveredMemberTool=recoveredMemberEvents.nth(1);await recoveredMemberTool.click();await recoveredMemberTool.locator('xpath=ancestor::div[@data-boundary-aligned="true"]').locator(".aw-native-event-body").filter({hasText:"Validated Team-scoped native Session"}).waitFor();
+    assert.equal(hostPage.url(),selectedMemberUrl,"same-page retry changed the exact selected Member route");
   }
   if(!liveConfig){
     const routePage=await makePage("fixture-member-token");
@@ -356,8 +381,10 @@ try{
     await paginationFailurePage.close();
   }
   const expectedFailureErrors=consoleErrors.filter(message=>message.includes("503 (Service Unavailable)"));
-  if(!liveConfig)assert.equal(expectedFailureErrors.length,3,`fixture should exercise exactly three expected 503 projection failures: ${expectedFailureErrors.join(" | ")}`);
-  const unexpectedConsoleErrors=consoleErrors.filter(message=>!message.includes("503 (Service Unavailable)")&&!message.includes("404"));
+  if(!liveConfig)assert.equal(expectedFailureErrors.length,2,`fixture should exercise exactly two expected 503 projection failures: ${expectedFailureErrors.join(" | ")}`);
+  const expectedFetchErrors=consoleErrors.filter(message=>message.includes("net::ERR_FAILED"));
+  if(!liveConfig)assert.equal(expectedFetchErrors.length,1,`fixture should exercise exactly one initial Failed-to-fetch recovery: ${expectedFetchErrors.join(" | ")}`);
+  const unexpectedConsoleErrors=consoleErrors.filter(message=>!message.includes("503 (Service Unavailable)")&&!message.includes("net::ERR_FAILED")&&!message.includes("404"));
   const unexpectedHttpFailures=httpFailures.filter(failure=>!failure.startsWith("404 https://fonts.gstatic.com/"));
   assert.deepEqual(unexpectedConsoleErrors,[],`unexpected console errors: ${consoleErrors.join(" | ")}; HTTP failures: ${httpFailures.join(" | ")}; unknown fixture paths: ${unknownFixturePaths.join(", ")}`);
   assert.deepEqual(unexpectedHttpFailures.filter(failure=>!failure.startsWith("503 ")),[],`unexpected HTTP failures: ${httpFailures.join(" | ")}`);

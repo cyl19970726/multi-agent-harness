@@ -86,7 +86,6 @@ export function AgentConversationWorkspace({
   useEffect(()=>{
     let live=true;
     if(committedPathRef.current!==requestIdentity)setLoading(true);
-    setError(null);
     fetchRoleView<AgentWorkspaceData>(apiUrl,requestPath,{space,project,company})
       .then((next)=>{if(live){
         const identityChanged=committedPathRef.current!==requestIdentity;
@@ -196,7 +195,7 @@ export function AgentConversationWorkspace({
             <Button size="icon" variant="secondary" className="lg:hidden" onClick={()=>setContextOpen(true)} aria-label="Open Agent context"><PanelRight className="size-4"/></Button>
           </header>
 
-          {error&&<div role="alert" className="border-b border-status-warn/25 bg-status-warn/5 px-6 py-2 text-[11px]">Refresh failed; writes are disabled until the authoritative view returns. {error}</div>}
+          {error&&<div role="alert" className="flex items-center gap-3 border-b border-status-warn/25 bg-status-warn/5 px-6 py-2 text-[11px]"><span className="min-w-0 flex-1">Refresh failed; writes are disabled until the authoritative view returns. {error}</span><Button size="sm" variant="secondary" onClick={()=>setRefresh(value=>value+1)}>Retry authenticated view</Button></div>}
           <Tabs.Root value={mode} onValueChange={value=>{setContextSelection(null);onSelectionChange({agentWorkspaceMode:value as WorkspaceMode});}} className="flex min-h-0 flex-1 flex-col">
             <div data-testid="agent-workspace-modebar" className="aw-modebar flex min-h-12 shrink-0 items-end border-b border-border px-4 sm:px-7">
               <Tabs.List aria-label="Agent Workspace modes" className="agent-workspace-tabs flex h-full items-end gap-7">
