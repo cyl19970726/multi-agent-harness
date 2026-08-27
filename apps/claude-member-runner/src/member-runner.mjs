@@ -54,7 +54,10 @@ export function createMemberRunner({ sdk, config, emit }) {
   const consumedMessageIds = [];
 
   const state = {
-    sessionId: null,
+    // A resumed runtime already has one exact native identity before the SDK
+    // emits another system/init frame. Keep that retained identity available
+    // for an immediate idle Close receipt; a fresh runtime still starts null.
+    sessionId: config.resumeSessionId ?? null,
     registered: false,
     pending: () => mailbox.pending,
   };
