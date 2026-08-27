@@ -45,7 +45,10 @@ pub(crate) fn member_view(
         .filter(|candidate| {
             candidate["agent_member_id"] == member_id
                 && candidate["team_run_id"] == team_run_id
-                && candidate["coordination_status"] == "active"
+                && serde_json::from_value::<harness_core::agentfirm_api::MemberRun>(
+                    (*candidate).clone(),
+                )
+                .is_ok_and(|run| run.has_live_runtime_authority())
         })
         .count();
     if active_generations > 1 {
@@ -63,15 +66,16 @@ pub(crate) fn member_view(
         .find(|r| r.id == team_run_id)
         .and_then(|r| facts.teams.iter().find(|t| t.id == r.agent_team_id))
         .ok_or(("404 Not Found", "TEAM_NOT_FOUND", team_run_id.to_string()))?;
-    // DOC-106: Member responsibility follows the assignee TeamMembership, not
-    // a MemberRun or runtime. Legacy rows still resolve through the mirrored
-    // owner identity until responsibility migration binds their membership.
+    // Member responsibility follows one current active TeamMembership. The
+    // mirrored owner identity is display/history evidence and cannot restore
+    // a missing or inactive responsibility assignment.
     let my_membership_ids = facts
         .team_memberships
         .iter()
         .filter(|membership| {
             membership["agent_member_id"].as_str() == Some(member_id)
                 && membership["team_id"].as_str() == Some(team.id.as_str())
+                && membership["state"] == "active"
         })
         .filter_map(|membership| membership["id"].as_str())
         .collect::<BTreeSet<_>>();
@@ -83,7 +87,6 @@ pub(crate) fn member_view(
         work.assignee_membership_id
             .as_deref()
             .is_some_and(|id| my_membership_ids.contains(id))
-            || work.owner_member_id.as_deref() == Some(member_id)
     };
     let team_work_ids = facts
         .works
@@ -148,8 +151,9 @@ pub(crate) fn member_view(
         .collect::<Vec<_>>();
     let workspace = current_workspace(&facts, member_run_id).cloned();
     let mut actions = Vec::new();
-    let addressed_generation_is_current =
-        run["coordination_status"] == "active" && active_generations == 1;
+    let addressed_generation_is_current = active_generations == 1
+        && serde_json::from_value::<harness_core::agentfirm_api::MemberRun>(run.clone())
+            .is_ok_and(|run| run.has_live_runtime_authority());
     let exact_active_membership = facts
         .team_memberships
         .iter()
@@ -162,7 +166,7 @@ pub(crate) fn member_view(
         .count()
         == 1;
     let team_revision = facts.team_revisions.get(&team.id).copied().unwrap_or(0);
-    if addressed_generation_is_current {
+    if addressed_generation_is_current && exact_active_membership {
         let message_disabled = message_fabric_disabled(&facts, store, team);
         actions.push(action(
             "send_message",
@@ -187,7 +191,7 @@ pub(crate) fn member_view(
         ));
     }
     for w in &my {
-        if !addressed_generation_is_current {
+        if !(addressed_generation_is_current && exact_active_membership) {
             break;
         }
         let id = w["work_id"].as_str().unwrap_or_default();
@@ -196,6 +200,9 @@ pub(crate) fn member_view(
         };
         let phase = w["phase"].as_str().unwrap_or("unknown");
         let condition = w["condition"].as_str().unwrap_or("unknown");
+        if w["runtime_summary"]["freshness"] != "current" {
+            continue;
+        }
         if phase == "open" && condition == "normal" && w["readiness"]["state"] == "ready" {
             actions.push(action("start_work", "work", id, version, None));
         } else if phase == "active" && condition == "normal" {
@@ -243,7 +250,7 @@ pub(crate) fn member_view(
         }
     }
     for w in &pool {
-        if !addressed_generation_is_current {
+        if !(addressed_generation_is_current && exact_active_membership) {
             break;
         }
         actions.push(action(
@@ -261,16 +268,18 @@ pub(crate) fn member_view(
             && value["evaluator_ref"]["kind"] == "agent_member"
             && value["evaluator_ref"]["id"] == member_id
     }) {
-        if let (Some(id), Some(version)) =
-            (requirement["id"].as_str(), requirement["version"].as_u64())
-        {
-            actions.push(action(
-                "evaluate_gate",
-                "gate_requirement",
-                id,
-                version,
-                None,
-            ));
+        if exact_active_membership && addressed_generation_is_current {
+            if let (Some(id), Some(version)) =
+                (requirement["id"].as_str(), requirement["version"].as_u64())
+            {
+                actions.push(action(
+                    "evaluate_gate",
+                    "gate_requirement",
+                    id,
+                    version,
+                    None,
+                ));
+            }
         }
     }
     Ok(envelope(

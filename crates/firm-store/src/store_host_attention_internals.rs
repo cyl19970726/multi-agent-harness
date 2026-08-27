@@ -828,7 +828,7 @@ impl HarnessStore {
             return Ok(false);
         };
         let admission = self.work_execution_runtime_binding(space_id, &binding.id)?;
-        Ok(session.agent_member_id == member.agent_member_id
+        let exact_runtime_matches = session.agent_member_id == member.agent_member_id
             && session.runtime_generation == binding.agent_session_generation
             && session.lifecycle != firm_core::agentfirm_api::AgentSessionStatus::Closed
             && admission.target_member_run_id.as_deref() == Some(member.id.as_str())
@@ -841,7 +841,12 @@ impl HarnessStore {
                 firm_core::MemberRunStatus::Completed
                     | firm_core::MemberRunStatus::Failed
                     | firm_core::MemberRunStatus::Stopped
-            ))
+            );
+        if !exact_runtime_matches {
+            return Ok(false);
+        }
+        self.require_provider_received_work_delivery_unlocked(space_id, binding)?;
+        Ok(true)
     }
 
     /// Resolve the assignee TeamMembership for one (accountable Team,

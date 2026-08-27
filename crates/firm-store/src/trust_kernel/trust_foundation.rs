@@ -378,6 +378,7 @@ impl HarnessStore {
                 Some(work.version),
             ));
         }
+        self.require_provider_received_work_delivery_unlocked(execution_space_id, binding)?;
         Ok((run.clone(), binding.clone()))
     }
 

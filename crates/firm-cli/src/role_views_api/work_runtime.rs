@@ -51,12 +51,47 @@ pub(super) fn current_work_runtime<'a>(
                 && binding["status"] == "active"
                 && binding["team_membership_id"] == membership_id
                 && binding["agent_member_id"] == agent_member_id
+                && work
+                    .accountable_team_id
+                    .as_deref()
+                    .is_some_and(|team_id| binding["team_id"] == team_id)
                 && binding["work_revision"]
                     .as_u64()
                     .is_some_and(|revision| revision <= work.version)
         })
         .collect::<Vec<_>>();
     let [binding] = active_bindings.as_slice() else {
+        return None;
+    };
+    let memberships = facts
+        .team_memberships
+        .iter()
+        .filter(|membership| {
+            membership["id"] == membership_id
+                && membership["team_id"] == binding["team_id"]
+                && membership["agent_member_id"] == agent_member_id
+                && membership["state"] == "active"
+        })
+        .collect::<Vec<_>>();
+    let [_membership] = memberships.as_slice() else {
+        return None;
+    };
+    let deliveries = facts
+        .work_deliveries
+        .iter()
+        .filter(|delivery| {
+            delivery["work_id"] == work.id
+                && delivery["work_revision"] == binding["work_revision"]
+                && delivery["work_execution_binding_id"] == binding["id"]
+                && delivery["delivery_id"] == binding["delivery_id"]
+                && delivery["recipient_agent_member_id"] == agent_member_id
+                && delivery["recipient_agent_session_id"] == binding["agent_session_id"]
+                && delivery["recipient_agent_session_generation"]
+                    == binding["agent_session_generation"]
+                && delivery["status"] == "provider_received"
+        })
+        .collect::<Vec<_>>();
+    let [_delivery] = deliveries.as_slice() else {
         return None;
     };
     let sessions = facts
@@ -195,16 +230,23 @@ mod tests {
                 "lifecycle":"idle",
                 "native_session_ref":null
             })],
-            team_memberships: Vec::new(),
+            team_memberships: vec![json!({
+                "id":"membership-worker",
+                "team_id":"team-runtime-projection",
+                "agent_member_id":"worker",
+                "state":"active"
+            })],
             message_subscriptions: Vec::new(),
             work_execution_bindings: vec![json!({
                 "id":"binding-worker",
                 "work_id":"work-runtime-projection",
                 "work_revision":2,
+                "team_id":"team-runtime-projection",
                 "team_membership_id":"membership-worker",
                 "agent_member_id":"worker",
                 "agent_session_id":"session-worker",
                 "agent_session_generation":7,
+                "delivery_id":"delivery-worker",
                 "status":"active"
             })],
             work_execution_runtime_bindings: vec![json!({
@@ -219,7 +261,16 @@ mod tests {
             canonical_messages: Vec::new(),
             canonical_message_deliveries: Vec::new(),
             runtime_commands: Vec::new(),
-            work_deliveries: Vec::new(),
+            work_deliveries: vec![json!({
+                "work_id":"work-runtime-projection",
+                "work_revision":2,
+                "work_execution_binding_id":"binding-worker",
+                "delivery_id":"delivery-worker",
+                "recipient_agent_member_id":"worker",
+                "recipient_agent_session_id":"session-worker",
+                "recipient_agent_session_generation":7,
+                "status":"provider_received"
+            })],
             work_events: Vec::new(),
             side: vec![json!({
                 "id":"workspace-worker",
@@ -250,5 +301,21 @@ mod tests {
                 .is_some(),
             "exact MemberRun generation projects its workspace"
         );
+    }
+
+    #[test]
+    fn inactive_membership_or_non_received_delivery_is_not_current_authority() {
+        let mut inactive = facts("idle", 2);
+        inactive.team_memberships[0]["state"] = json!("inactive");
+        assert!(current_work_runtime(&inactive, &work()).is_none());
+
+        for status in ["queued", "claimed", "failed"] {
+            let mut without_receipt = facts("idle", 2);
+            without_receipt.work_deliveries[0]["status"] = json!(status);
+            assert!(
+                current_work_runtime(&without_receipt, &work()).is_none(),
+                "{status} delivery must not project member Work authority"
+            );
+        }
     }
 }

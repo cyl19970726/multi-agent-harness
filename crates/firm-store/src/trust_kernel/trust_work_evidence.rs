@@ -132,12 +132,6 @@ impl HarnessStore {
                 ));
             }
         }
-        if report.kind == WorkReportKind::Failure {
-            self.require_provider_received_work_delivery_unlocked(
-                &context.execution_space_id,
-                &execution_binding,
-            )?;
-        }
         let mut resolved_requirements = Vec::new();
         if report.kind == WorkReportKind::Result {
             let candidate_fingerprint = report

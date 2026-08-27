@@ -275,6 +275,48 @@ fn member_owned_work_records_require_the_exact_active_execution_binding() {
             },
         )
         .expect("bind exact reopened MemberRun generation");
+    harness
+        .store
+        .claim_work_for_provider(
+            &context(
+                ActorRef {
+                    kind: ActorKind::Service,
+                    id: "daemon-test".into(),
+                },
+                "work.claim",
+                "claim-generation-2",
+                0,
+            ),
+            "work-delivery:work-generation-2:1",
+            NODE,
+            "daemon-test",
+            1,
+            "claim-generation-2",
+            RuntimeDispatchMode::QueueOnly,
+            "t8.5",
+        )
+        .expect("claim generation-two Work delivery");
+    harness
+        .store
+        .record_work_provider_receipt(
+            &context(
+                ActorRef {
+                    kind: ActorKind::Service,
+                    id: "daemon-test".into(),
+                },
+                "work.receipt",
+                "receipt-generation-2",
+                0,
+            ),
+            "work-delivery:work-generation-2:1",
+            NODE,
+            "daemon-test",
+            1,
+            "claim-generation-2",
+            "provider-receipt-generation-2",
+            "t8.75",
+        )
+        .expect("record generation-two provider receipt");
     let mut current_progress = report("generation-2-progress", WorkReportKind::Progress, &worker);
     current_progress.work_id = "work-generation-2".into();
     current_progress.work_revision = 2;

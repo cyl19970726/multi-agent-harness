@@ -1026,9 +1026,42 @@ fn supervisor_skips_not_ready_delivery_and_claims_ready_predecessor() {
             .all(|delivery| delivery.work_id != dependent.id),
         "an unready Work must not appear in the canonical delivery projection"
     );
-    let ready_after_claim = ledger
-        .queued_works_for(&member.id)
-        .expect("readiness-filtered current queue");
-    assert!(ready_after_claim.is_empty());
+    let retry = claim_canonical_work_for_member(&ledger, &member)
+        .expect("failed delivery is reconciled before retry")
+        .expect("the same ready Work receives a monotonic replacement binding");
+    assert_eq!(retry.work.id, predecessor.id);
+    assert_eq!(retry.delivery.id, "work-delivery:z-ready-predecessor:2");
+    let bindings = store
+        .fabric_work_execution_bindings("unit-test-space")
+        .expect("canonical execution bindings after retry");
+    assert!(bindings.iter().any(|binding| {
+        binding.work_id == predecessor.id
+            && binding.binding_generation == 1
+            && binding.status == harness_core::agentfirm_api::WorkExecutionBindingStatus::Released
+    }));
+    assert!(bindings.iter().any(|binding| {
+        binding.work_id == predecessor.id
+            && binding.binding_generation == 2
+            && binding.status == harness_core::agentfirm_api::WorkExecutionBindingStatus::Active
+    }));
+    let deliveries = store
+        .fabric_work_deliveries("unit-test-space")
+        .expect("canonical deliveries after retry");
+    assert_eq!(
+        deliveries
+            .iter()
+            .find(|delivery| delivery.id == "work-delivery:z-ready-predecessor:1")
+            .expect("failed generation one evidence")
+            .status,
+        harness_core::agentfirm_api::WorkDeliveryStatus::Failed
+    );
+    assert_eq!(
+        deliveries
+            .iter()
+            .find(|delivery| delivery.id == "work-delivery:z-ready-predecessor:2")
+            .expect("claimed generation two delivery")
+            .status,
+        harness_core::agentfirm_api::WorkDeliveryStatus::Claimed
+    );
     std::fs::remove_dir_all(root).expect("cleanup");
 }
