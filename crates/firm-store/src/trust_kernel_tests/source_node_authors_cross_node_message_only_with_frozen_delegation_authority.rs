@@ -9,13 +9,15 @@ fn source_node_authors_cross_node_message_only_with_frozen_delegation_authority(
             identity("remote-sender"),
         )
         .unwrap();
+    let remote_session = session("session-remote-sender", "remote-sender");
     store
         .create_agent_session(
             &service_context("session.create", "remote-sender-session", 0),
-            session("session-remote-sender", "remote-sender"),
+            remote_session.clone(),
         )
         .unwrap();
     append_runtime_team(&store, "source-team", "source-team-run");
+    admit_fixture_member_run_for_session(&store, "source-team-run", &remote_session);
     let source_membership = store
         .team_host_membership("space-test", "source-team", true)
         .unwrap();

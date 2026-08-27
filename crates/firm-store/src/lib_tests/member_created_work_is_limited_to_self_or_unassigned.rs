@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn member_created_work_is_limited_to_self_or_unassigned() {
+fn member_created_work_cannot_embed_runtime_ownership() {
     let (root, store, run, member_a, member_b) = work_test_fixture("member-work-authority");
 
     let mut peer_owned = unassigned_test_work(&run.id, "work-peer-owned");
@@ -18,17 +18,14 @@ fn member_created_work_is_limited_to_self_or_unassigned() {
             ),
         )
         .expect_err("ordinary Member must not assign peer-owned Work");
-    assert!(
-        error
-            .to_string()
-            .contains("only self-owned or unassigned Work"),
-        "error: {error}"
-    );
+    assert!(error
+        .to_string()
+        .contains("LEGACY_RUNTIME_WORK_AUTHORITY_RETIRED"));
 
     let mut self_owned = unassigned_test_work(&run.id, "work-self-owned");
     self_owned.active_member_run_id = Some(member_a.id.clone());
     self_owned.claim_mode = WorkClaimMode::HostAssign;
-    let self_owned = store
+    let self_owned_error = store
         .insert_work(
             self_owned,
             member_work_context(
@@ -38,12 +35,10 @@ fn member_created_work_is_limited_to_self_or_unassigned() {
                 "unix-ms:3",
             ),
         )
-        .expect("Member creates self-owned Work");
-    assert_eq!(
-        self_owned.active_member_run_id.as_deref(),
-        Some(member_a.id.as_str())
-    );
-    assert_eq!(self_owned.owner_member_id.as_deref(), Some("agent-a"));
+        .expect_err("Member cannot create runtime-owned Work");
+    assert!(self_owned_error
+        .to_string()
+        .contains("LEGACY_RUNTIME_WORK_AUTHORITY_RETIRED"));
 
     let unassigned = store
         .insert_work(

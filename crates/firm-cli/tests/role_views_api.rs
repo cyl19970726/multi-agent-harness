@@ -1,5 +1,3 @@
-//! HTTP boundary coverage for the Wave 4B local RoleViews.
-
 mod fake_provider;
 mod firm_env;
 
@@ -53,11 +51,6 @@ fn ledger_digest(root: &std::path::Path) -> Vec<(String, Vec<u8>)> {
         .flatten()
         .filter_map(|entry| {
             let name = entry.file_name().into_string().ok()?;
-            // Lease ledgers are autonomous control bookkeeping: the NodeDaemon
-            // and Team Supervisor renew and compact them on their own timers,
-            // independent of any HTTP action under test. Whole-ledger purity
-            // here must cover product state only, or a legitimate background
-            // renewal racing the before/after snapshots fails the comparison.
             let autonomous_bookkeeping = matches!(
                 name.as_str(),
                 "node_daemon_leases.jsonl" | "team_supervisor_leases.jsonl"
@@ -557,7 +550,6 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
             },
         )
         .expect("exact Work execution admission");
-
     let view_route = format!("/v1/views/host-console/{}?project={project_id}", team.id);
     let (status, refreshed) =
         serve.get_json_with_headers(&view_route, &[("X-AgentFirm-Token", TOKEN)]);
@@ -577,6 +569,26 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
         .is_some_and(|items| items
             .iter()
             .any(|work| work["work_id"] == "work-store-live-1")));
+    let projected_work = refreshed["data"]["all_works"]
+        .as_array()
+        .and_then(|items| {
+            items
+                .iter()
+                .find(|work| work["work_id"] == "work-store-live-1")
+        })
+        .expect("canonical Work projection");
+    assert_eq!(
+        projected_work["current_member_run_ref"], member_run_id,
+        "canonical runtime projection: {projected_work}"
+    );
+    assert_eq!(
+        projected_work["runtime_summary"]["work_execution_binding_id"],
+        "work-binding:work-store-live-1:1"
+    );
+    assert_eq!(
+        projected_work["runtime_summary"]["agent_session_id"],
+        worker_session.id
+    );
     assert!(refreshed["data"]["work_queues"]["ready"]
         .as_array()
         .is_some_and(|items| items
@@ -592,6 +604,9 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
         .is_some_and(|actions| actions
             .iter()
             .all(|action| action["required_version"].is_u64())));
+    assert!(refreshed["allowed_actions"]
+        .as_array()
+        .is_some_and(|actions| actions.iter().all(|action| action["kind"] != "rebind_work")));
     let run_identity_route = format!("/v1/views/host-console/{run_id}?project={project_id}");
     let (status, run_identity_view) =
         serve.get_json_with_headers(&run_identity_route, &[("X-AgentFirm-Token", TOKEN)]);

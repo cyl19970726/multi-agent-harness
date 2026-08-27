@@ -7,8 +7,6 @@ fn duplicate_title_guard_allows_when_existing_is_done() {
     let ctx1 = host_work_context("dup-ctx-done-1", "create-first", "unix-ms:3");
     let mut work = work_with_title(&run.id, "work-audit-1", "Audit Company Docs");
     work.claim_mode = WorkClaimMode::HostAssign;
-    work.active_member_run_id = Some(member_a.id.clone());
-    work.owner_member_id = Some(member_a.agent_member_id.clone());
     let first = store.insert_work(work, ctx1).expect("create first Work");
 
     // Start → Submit → Accept to make the work Done.

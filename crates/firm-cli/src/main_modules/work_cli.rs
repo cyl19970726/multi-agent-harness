@@ -3,6 +3,31 @@ use harness_core::CurrentWorkDraft;
 
 struct CliWorkActionOutcome(crate::work_action_service::CanonicalWorkActionOutcome);
 
+fn reject_unknown_work_options(
+    args: &[String],
+    value_options: &[&str],
+    flags: &[&str],
+) -> CliResult<()> {
+    let mut index = 1;
+    while index < args.len() {
+        let option = args[index].as_str();
+        if value_options.contains(&option) {
+            if index + 1 >= args.len() || args[index + 1].starts_with("--") {
+                return Err(CliError::Usage(format!("{option} requires a value")));
+            }
+            index += 2;
+        } else if flags.contains(&option) {
+            index += 1;
+        } else {
+            return Err(CliError::Usage(format!(
+                "unknown work option for {}: {option}",
+                args.first().map(String::as_str).unwrap_or("command")
+            )));
+        }
+    }
+    Ok(())
+}
+
 impl std::ops::Deref for CliWorkActionOutcome {
     type Target = Work;
 
@@ -390,12 +415,27 @@ pub(super) fn team_run_work_command(
             }
         }
         "create" => {
-            if value(args, "--owner-member-run-id").is_some() {
-                return Err(CliError::Usage(
-                    "create-time MemberRun ownership is retired; create Work, then assign one canonical TeamMembership"
-                        .into(),
-                ));
-            }
+            reject_unknown_work_options(
+                args,
+                &[
+                    "--team-run-id",
+                    "--as-member-run-id",
+                    "--claim-mode",
+                    "--github-issue",
+                    "--github-pr",
+                    "--context",
+                    "--work-id",
+                    "--title",
+                    "--completion-criteria",
+                    "--eligible-member-id",
+                    "--prerequisite-work-id",
+                    "--priority",
+                    "--event-id",
+                    "--idempotency-key",
+                    "--caused-by-message-id",
+                ],
+                &["--duplicate-ok"],
+            )?;
             let team_run_id = required(args, "--team-run-id")?;
             let run = latest_team_run(store, &team_run_id)?;
             let acting_member_run_id = value(args, "--as-member-run-id");
@@ -479,11 +519,18 @@ pub(super) fn team_run_work_command(
             print_json(&work)
         }
         "assign" => {
-            if value(args, "--member-run-id").is_some() {
-                return Err(CliError::Usage(
-                    "runtime-bound Work assignment is retired; use --membership-id".into(),
-                ));
-            }
+            reject_unknown_work_options(
+                args,
+                &[
+                    "--work-id",
+                    "--membership-id",
+                    "--expected-version",
+                    "--event-id",
+                    "--idempotency-key",
+                    "--caused-by-message-id",
+                ],
+                &["--duplicate-ok"],
+            )?;
             let membership_id = required(args, "--membership-id")?;
             let space_id = resolved
                 .execution_space_context
@@ -921,7 +968,6 @@ pub(super) fn team_run_work_command(
                 &work_id,
                 required_work_version(args)?,
                 &required(args, "--successor-team-run-id")?,
-                value(args, "--successor-member-run-id").as_deref(),
                 host_work_context_for_work(store, &work_id, args)?,
             )?)
         }

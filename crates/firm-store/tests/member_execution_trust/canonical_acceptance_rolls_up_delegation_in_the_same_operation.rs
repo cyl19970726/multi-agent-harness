@@ -84,7 +84,9 @@ fn canonical_acceptance_rolls_up_delegation_in_the_same_operation() {
                 id: "target-rollup".into(),
                 team_run_id: target_run.id.clone(),
                 accountable_team_id: None,
-                assignee_membership_id: None,
+                assignee_membership_id: Some(
+                    "membership-team-delegation-target-target-worker".into(),
+                ),
                 created_by_member_id: None,
                 legacy_containment_ref: None,
                 title: "Delegated target".into(),
@@ -94,7 +96,7 @@ fn canonical_acceptance_rolls_up_delegation_in_the_same_operation() {
                 condition: WorkCondition::Normal,
                 resolution: None,
                 owner_member_id: Some("target-worker".into()),
-                active_member_run_id: Some(target_runtime_id.into()),
+                active_member_run_id: None,
                 claim_mode: WorkClaimMode::HostAssign,
                 eligible_member_ids: Vec::new(),
                 prerequisite_work_ids: Vec::new(),
@@ -120,27 +122,6 @@ fn canonical_acceptance_rolls_up_delegation_in_the_same_operation() {
             },
         )
         .expect("atomically create Delegation and target Work");
-    let target = harness
-        .store
-        .assign_work_to_membership(
-            &target.id,
-            target.version,
-            "membership-team-delegation-target-target-worker",
-            SPACE,
-            WorkCommandContext {
-                event_id: "target-membership-assign".into(),
-                performed_by_actor: harness
-                    .store
-                    .exact_team_run_host_actor(&target_run.id)
-                    .expect("resolve exact target TeamRun Host"),
-                authority_actor: None,
-                causation_ref: None,
-                idempotency_key: "target-membership-assign".into(),
-                created_at: "t2-assigned".into(),
-                duplicate_ok: false,
-            },
-        )
-        .expect("assign delegated target to canonical TeamMembership");
     let target_session = AgentSession {
         id: "session-runtime-target-worker".into(),
         agent_member_id: "target-worker".into(),

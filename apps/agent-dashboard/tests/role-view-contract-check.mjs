@@ -109,7 +109,7 @@ assert.equal(manifest.schema_version,"agentfirm.role_actions.v1");
 assert.deepEqual(manifest.transport,{authentication:"X-AgentFirm-Token",idempotency:"Idempotency-Key",expected_version:"If-Match",identity_override:"forbidden"});
 const actions=new Set(manifest.actions.map(item=>item.ui_action));
 for(const required of [
-  "create_work","assign_work","rebind_work","release_work","request_changes","accept_work","cancel_work",
+  "create_work","assign_work","release_work","request_changes","accept_work","cancel_work",
   "send_message","reply_message","interrupt_member_run","close_member_run","reopen_member_run","retire_member_run","resume_native_session",
   "provision_workspace","attach_workspace","archive_workspace","cleanup_workspace","request_gate_evaluation","evaluate_gate","waive_gate","revoke_waiver",
   "claim_work","start_work","block_work","unblock_work","submit_work","revise_work","write_report","write_finding","write_failure","request_decision",

@@ -80,6 +80,8 @@ pub(super) fn start_claimed_work_for_test(
                         },
                         runtime_residency: RuntimeResidency::Detached,
                         activity: RuntimeActivity::Idle,
+                        composition_fingerprint: Some("test-composition-v1".into()),
+                        capability_fingerprint: Some("test-capability-v1".into()),
                         ..Default::default()
                     },
                     native_session_ref: None,

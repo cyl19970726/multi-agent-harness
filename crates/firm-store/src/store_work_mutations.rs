@@ -8,6 +8,12 @@ impl HarnessStore {
     pub fn insert_work(&self, mut work: Work, context: WorkCommandContext) -> StoreResult<Work> {
         self.init()?;
         let _lock = self.acquire_write_lock()?;
+        if work.active_member_run_id.is_some() {
+            return Err(StoreError::Conflict(
+                "LEGACY_RUNTIME_WORK_AUTHORITY_RETIRED: Work creation cannot carry active_member_run_id; assign one canonical TeamMembership, then admit execution through WorkExecutionBinding"
+                    .to_string(),
+            ));
+        }
         if let Some(existing) = self.idempotent_work_operation_unlocked(
             &context.idempotency_key,
             &work.id,
@@ -75,25 +81,6 @@ impl HarnessStore {
         work.resolution = None;
         work.created_at = context.created_at.clone();
         work.updated_at = context.created_at.clone();
-        if let Some(member_run_id) = work.active_member_run_id.as_deref() {
-            let member = self.require_member_run_unlocked(member_run_id, &work.team_run_id)?;
-            self.ensure_member_can_receive_work_unlocked(&member)?;
-            let stable_identity = member_identity(&member);
-            if work
-                .owner_member_id
-                .as_deref()
-                .is_some_and(|owner| owner != stable_identity)
-            {
-                return Err(StoreError::Conflict(
-                    "owner_member_id does not match active ProviderRuntimeProjection stable identity".to_string(),
-                ));
-            }
-            work.owner_member_id = Some(stable_identity);
-            work.assignee_membership_id = self.resolve_assignee_membership_id_unlocked(
-                work.accountable_team_id.as_deref(),
-                work.owner_member_id.as_deref().unwrap_or_default(),
-            )?;
-        }
         work.created_by_actor = context.performed_by_actor.clone();
         match context.performed_by_actor.kind {
             firm_core::TeamActorKind::ProviderRuntimeProjection => {
@@ -122,10 +109,6 @@ impl HarnessStore {
                     .owner_member_id
                     .as_deref()
                     .is_some_and(|owner| owner != own_identity)
-                    || work
-                        .active_member_run_id
-                        .as_deref()
-                        .is_some_and(|owner| owner != member.id)
                 {
                     return Err(StoreError::Conflict(
                         "an ordinary Member may create only self-owned or unassigned Work"
@@ -436,54 +419,6 @@ impl HarnessStore {
         Ok((delegation, target_work))
     }
 
-    pub fn assign_work(
-        &self,
-        work_id: &str,
-        expected_version: u64,
-        owner_member_run_id: &str,
-        context: WorkCommandContext,
-    ) -> StoreResult<Work> {
-        self.init()?;
-        let _lock = self.acquire_write_lock()?;
-        if let Some(existing) = self.idempotent_work_operation_unlocked(
-            &context.idempotency_key,
-            work_id,
-            WorkEventKind::Assigned,
-        )? {
-            return Ok(existing.work);
-        }
-        require_host_actor(&context.performed_by_actor)?;
-        let current = self.current_work_unlocked(work_id, expected_version)?;
-        self.require_exact_team_run_host_actor(&context.performed_by_actor, &current.team_run_id)?;
-        if current.is_terminal()
-            || current.phase != WorkPhase::Open
-            || current.condition != WorkCondition::Normal
-            || current.owner_member_id.is_some()
-            || current.active_member_run_id.is_some()
-        {
-            return Err(StoreError::Conflict(format!(
-                "work {work_id} must be open to assign"
-            )));
-        }
-        self.ensure_deliveries_reassignable_unlocked(&current)?;
-        let member = self.require_member_run_unlocked(owner_member_run_id, &current.team_run_id)?;
-        self.ensure_member_can_receive_work_unlocked(&member)?;
-        let owner_id = member_identity(&member);
-        let mut next = current.clone();
-        next.owner_member_id = Some(owner_id);
-        next.active_member_run_id = Some(member.id.clone());
-        // Keep the DOC-106 assignee authority populated when exactly one
-        // TeamMembership binds this (Team, AgentMember); legacy stores without
-        // membership fabric stay honestly unresolved for the migration pass.
-        next.assignee_membership_id = self.resolve_assignee_membership_id_unlocked(
-            next.accountable_team_id.as_deref(),
-            next.owner_member_id.as_deref().unwrap_or_default(),
-        )?;
-        next.version += 1;
-        next.updated_at = context.created_at.clone();
-        self.append_work_transition_unlocked(current, next, WorkEventKind::Assigned, context)
-    }
-
     /// Assign or reassign Work responsibility to exactly one TeamMembership of
     /// the Work's accountable Team (DOC-106). This is the canonical
     /// responsibility mutation: it fences on the expected Work version, never
@@ -511,6 +446,14 @@ impl HarnessStore {
         require_host_actor(&context.performed_by_actor)?;
         let current = self.current_work_unlocked(work_id, expected_version)?;
         self.require_exact_team_run_host_actor(&context.performed_by_actor, &current.team_run_id)?;
+        if current.active_member_run_id.is_some()
+            || (current.owner_member_id.is_some() && current.assignee_membership_id.is_none())
+        {
+            return Err(StoreError::Conflict(
+                "LEGACY_RUNTIME_WORK_AUTHORITY_RETIRED: historical runtime-owned Work cannot be assigned; export or verify it without creating current authority"
+                    .to_string(),
+            ));
+        }
         if current.is_terminal() {
             return Err(StoreError::Conflict(format!(
                 "work {work_id} is terminal and cannot be reassigned"
@@ -580,131 +523,6 @@ impl HarnessStore {
                 "assignee_membership_state": membership.state,
                 "automatic_execution_authority": automatic_execution_authority,
                 "cleared_active_member_run_id": cleared_member_run_id,
-            }),
-        )
-    }
-
-    /// Rebind non-terminal Work to a replacement runtime generation of the
-    /// same stable member identity. This is the sole safe Host primitive after
-    /// a runtime dies: the version bump fences the old runtime, the Rebound
-    /// event records both bindings. The NodeDaemon creates a fresh canonical
-    /// WorkExecutionBinding and WorkDelivery for the new runtime generation.
-    ///
-    /// A still-claimed delivery is an uncertain handoff and must first be
-    /// completed, failed by its current lease owner, or reconciled by a
-    /// successor. Provider-received/acknowledged deliveries remain immutable
-    /// evidence and do not prevent a new-version rebind.
-    pub fn rebind_work(
-        &self,
-        work_id: &str,
-        expected_version: u64,
-        new_member_run_id: &str,
-        context: WorkCommandContext,
-    ) -> StoreResult<Work> {
-        self.init()?;
-        let _lock = self.acquire_write_lock()?;
-        if let Some(existing) = self.idempotent_work_operation_unlocked(
-            &context.idempotency_key,
-            work_id,
-            WorkEventKind::Rebound,
-        )? {
-            return Ok(existing.work);
-        }
-        require_host_actor(&context.performed_by_actor)?;
-        let current = self.current_work_unlocked(work_id, expected_version)?;
-        self.require_exact_team_run_host_actor(&context.performed_by_actor, &current.team_run_id)?;
-        if current.is_terminal() {
-            return Err(StoreError::Conflict(format!(
-                "work {work_id} is terminal and cannot be rebound"
-            )));
-        }
-        let old_member_run_id = current.active_member_run_id.clone().ok_or_else(|| {
-            StoreError::Conflict(format!("work {work_id} has no runtime binding to replace"))
-        })?;
-        let owner_member_id = current.owner_member_id.clone().ok_or_else(|| {
-            StoreError::Conflict(format!("work {work_id} has no stable owner identity"))
-        })?;
-        let (previous, replacement) = if old_member_run_id == new_member_run_id {
-            let revisions = self
-                .read_jsonl::<ProviderRuntimeProjection>("member_runs.jsonl")?
-                .into_iter()
-                .filter(|member| {
-                    member.id == old_member_run_id && member.team_run_id == current.team_run_id
-                })
-                .collect::<Vec<_>>();
-            let replacement = revisions.last().cloned().ok_or_else(|| {
-                StoreError::Conflict(format!("member run not found: {new_member_run_id}"))
-            })?;
-            if compare_store_timestamps(&replacement.started_at, &current.updated_at)
-                != std::cmp::Ordering::Greater
-            {
-                return Err(StoreError::Conflict(format!(
-                    "WORK_ALREADY_BOUND: ProviderRuntimeProjection {new_member_run_id} generation {} does not postdate Work version {}",
-                    replacement.runtime_generation, current.version
-                )));
-            }
-            let previous = revisions
-                .iter()
-                .rev()
-                .skip(1)
-                .find(|member| member.runtime_generation < replacement.runtime_generation)
-                .cloned()
-                .ok_or_else(|| {
-                    StoreError::Conflict(format!(
-                        "WORK_ALREADY_BOUND: ProviderRuntimeProjection {new_member_run_id} has no higher replacement runtime generation"
-                    ))
-                })?;
-            (previous, replacement)
-        } else {
-            (
-                self.require_member_run_unlocked(&old_member_run_id, &current.team_run_id)?,
-                self.require_member_run_unlocked(new_member_run_id, &current.team_run_id)?,
-            )
-        };
-        if previous.coordination_is_active()
-            && !matches!(
-                previous.status,
-                firm_core::MemberRunStatus::Completed
-                    | firm_core::MemberRunStatus::Failed
-                    | firm_core::MemberRunStatus::Stopped
-            )
-        {
-            return Err(StoreError::Conflict(format!(
-                "OLD_RUNTIME_ACTIVE: ProviderRuntimeProjection {old_member_run_id} must be closed or terminal before Work rebind"
-            )));
-        }
-        if self
-            .canonical_work_deliveries_for_work_unlocked(&current)?
-            .iter()
-            .any(|delivery| delivery.status == WorkDeliveryStatus::Claimed)
-        {
-            return Err(StoreError::Conflict(
-                "RECONCILIATION_REQUIRED: Work has a claimed delivery".to_string(),
-            ));
-        }
-        self.ensure_member_can_receive_work_unlocked(&replacement)?;
-        let replacement_identity = member_identity(&replacement);
-        if replacement_identity != owner_member_id {
-            return Err(StoreError::Conflict(format!(
-                "OWNER_MISMATCH: replacement ProviderRuntimeProjection {new_member_run_id} belongs to {replacement_identity}, expected {owner_member_id}"
-            )));
-        }
-
-        let mut next = current.clone();
-        next.active_member_run_id = Some(replacement.id.clone());
-        next.version += 1;
-        next.updated_at = context.created_at.clone();
-        self.append_work_transition_with_payload_unlocked(
-            current,
-            next,
-            WorkEventKind::Rebound,
-            context,
-            serde_json::json!({
-                "previous_member_run_id": old_member_run_id,
-                "replacement_member_run_id": new_member_run_id,
-                "previous_runtime_generation": previous.runtime_generation,
-                "replacement_runtime_generation": replacement.runtime_generation,
-                "owner_member_id": owner_member_id,
             }),
         )
     }
@@ -784,7 +602,6 @@ impl HarnessStore {
         work_id: &str,
         expected_version: u64,
         successor_team_run_id: &str,
-        successor_member_run_id: Option<&str>,
         context: WorkCommandContext,
     ) -> StoreResult<Work> {
         self.init()?;
@@ -799,6 +616,14 @@ impl HarnessStore {
         require_host_actor(&context.performed_by_actor)?;
         let current = self.current_work_unlocked(work_id, expected_version)?;
         self.require_exact_team_run_host_actor(&context.performed_by_actor, &current.team_run_id)?;
+        if current.active_member_run_id.is_some()
+            || (current.owner_member_id.is_some() && current.assignee_membership_id.is_none())
+        {
+            return Err(StoreError::Conflict(
+                "LEGACY_RUNTIME_WORK_AUTHORITY_RETIRED: historical runtime-owned Work cannot be retargeted; export or verify it without creating current authority"
+                    .to_string(),
+            ));
+        }
         if current.is_terminal() {
             return Err(StoreError::Conflict(format!(
                 "work {work_id} is terminal and cannot be retargeted"
@@ -845,22 +670,6 @@ impl HarnessStore {
                 successor.id
             )));
         }
-        if let Some(previous_member_run_id) = current.active_member_run_id.as_deref() {
-            let previous =
-                self.require_member_run_unlocked(previous_member_run_id, &current.team_run_id)?;
-            if previous.coordination_is_active()
-                && !matches!(
-                    previous.status,
-                    firm_core::MemberRunStatus::Completed
-                        | firm_core::MemberRunStatus::Failed
-                        | firm_core::MemberRunStatus::Stopped
-                )
-            {
-                return Err(StoreError::Conflict(format!(
-                    "OLD_RUNTIME_ACTIVE: ProviderRuntimeProjection {previous_member_run_id} must be closed or terminal before execution retarget"
-                )));
-            }
-        }
         if self
             .canonical_work_deliveries_for_work_unlocked(&current)?
             .iter()
@@ -871,39 +680,12 @@ impl HarnessStore {
             ));
         }
 
-        let new_binding = match (current.owner_member_id.as_deref(), successor_member_run_id) {
-            (None, None) => None,
-            (None, Some(_)) => {
-                return Err(StoreError::Conflict(
-                    "unassigned Work cannot gain an execution binding during retarget".to_string(),
-                ));
-            }
-            (Some(_), None) => {
-                return Err(StoreError::Conflict(
-                    "owned Work requires --successor-member-run-id during retarget".to_string(),
-                ));
-            }
-            (Some(owner_id), Some(member_run_id)) => {
-                let member =
-                    self.require_member_run_unlocked(member_run_id, successor_team_run_id)?;
-                self.ensure_member_can_receive_work_unlocked(&member)?;
-                let successor_identity = member_identity(&member);
-                if successor_identity != owner_id {
-                    return Err(StoreError::Conflict(format!(
-                        "OWNER_MISMATCH: successor ProviderRuntimeProjection {member_run_id} belongs to {successor_identity}, expected {owner_id}"
-                    )));
-                }
-                Some(member.id)
-            }
-        };
-
         let previous_team_run_id = current.team_run_id.clone();
-        let previous_member_run_id = current.active_member_run_id.clone();
         let mut next = current.clone();
         next.team_run_id = successor_team_run_id.to_string();
-        next.active_member_run_id = new_binding.clone();
         next.version += 1;
         next.updated_at = context.created_at.clone();
+        let responsibility_membership_id = next.assignee_membership_id.clone();
         self.append_work_transition_with_payload_unlocked(
             current,
             next,
@@ -913,8 +695,7 @@ impl HarnessStore {
                 "team_id": team_id,
                 "previous_team_run_id": previous_team_run_id,
                 "successor_team_run_id": successor_team_run_id,
-                "previous_member_run_id": previous_member_run_id,
-                "successor_member_run_id": new_binding,
+                "responsibility_membership_id": responsibility_membership_id,
             }),
         )
     }
@@ -1013,6 +794,14 @@ impl HarnessStore {
         }
         require_member_actor(&context.performed_by_actor, member_run_id)?;
         let current = self.current_work_unlocked(work_id, expected_version)?;
+        if current.active_member_run_id.is_some()
+            || (current.owner_member_id.is_some() && current.assignee_membership_id.is_none())
+        {
+            return Err(StoreError::Conflict(
+                "LEGACY_RUNTIME_WORK_AUTHORITY_RETIRED: historical runtime-owned Work is read/export evidence and cannot be started"
+                    .to_string(),
+            ));
+        }
         let member = self.require_member_run_unlocked(member_run_id, &current.team_run_id)?;
         if current.phase != WorkPhase::Open
             || current.condition != WorkCondition::Normal

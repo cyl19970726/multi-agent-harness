@@ -1015,6 +1015,29 @@ fn execution_binding_fences_runtime_without_owning_responsibility() {
         Some("membership-team-binding-worker-binding")
     );
 
+    let admitted_runtime = store
+        .member_runs()
+        .expect("provider runtime projections")
+        .into_iter()
+        .find(|member_run| member_run.id == "runtime-worker-binding")
+        .expect("exact admitted provider runtime");
+    let mut completed_runtime = admitted_runtime.clone();
+    completed_runtime.status = MemberRunStatus::Completed;
+    completed_runtime.finished_at = Some("t4-completed".into());
+    store
+        .compare_and_append_member_run(&admitted_runtime, &completed_runtime)
+        .expect("complete exact admitted provider runtime");
+    let terminal_runtime_delivery = store
+        .current_work_deliveries(SPACE)
+        .expect("terminal runtime leaves an honest delivery projection")
+        .into_iter()
+        .find(|delivery| delivery.work_id == "work-binding-1")
+        .expect("canonical delivery remains visible");
+    assert_eq!(
+        terminal_runtime_delivery.recipient_member_run_id, None,
+        "Completed provider runtime is evidence, not current execution authority"
+    );
+
     // Release fences runtime authority off; the assignee still retains
     // responsibility.
     store

@@ -345,6 +345,20 @@ impl HarnessStore {
                 Some(work.version),
             ));
         };
+        let admission = self.work_execution_runtime_binding(execution_space_id, &binding.id)?;
+        if admission.target_member_run_id.as_deref() != Some(run.id.as_str())
+            || admission.target_member_run_generation != Some(run.runtime_generation)
+            || admission.target_session_id.as_deref() != Some(session.id.as_str())
+            || admission.target_runtime_generation != Some(session.runtime_generation)
+        {
+            return Err(trust_error(
+                TrustErrorCode::MemberRunGenerationFenced,
+                "WorkExecutionBinding does not carry the exact current MemberRun and AgentSession generations",
+                "work",
+                &work.id,
+                Some(work.version),
+            ));
+        }
         if work
             .active_member_run_id
             .as_deref()

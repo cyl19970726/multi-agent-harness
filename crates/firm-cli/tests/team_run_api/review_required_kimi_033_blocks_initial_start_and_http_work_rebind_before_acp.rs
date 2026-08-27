@@ -40,9 +40,10 @@ fn review_required_kimi_033_blocks_initial_start_and_http_work_rebind_before_acp
         .expect("replacement id");
     let work = &created["result"]["works"][0];
     let work_id = work["id"].as_str().expect("work id");
-    let original_member_id = work["active_member_run_id"]
+    let original_member_id = work["owner_member_id"]
         .as_str()
-        .expect("original member");
+        .expect("original stable AgentMember");
+    assert!(work["active_member_run_id"].is_null());
     let original_version = work["version"].as_u64().expect("work version");
 
     let (status, blocked) = serve.post_json(
@@ -91,9 +92,10 @@ fn review_required_kimi_033_blocks_initial_start_and_http_work_rebind_before_acp
         .expect("Work");
     assert_eq!(latest_work.version, original_version);
     assert_eq!(
-        latest_work.active_member_run_id.as_deref(),
+        latest_work.owner_member_id.as_deref(),
         Some(original_member_id)
     );
+    assert!(latest_work.active_member_run_id.is_none());
     assert!(
         store
             .current_work_deliveries_for_team_run(run_id)

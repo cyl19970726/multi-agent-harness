@@ -613,6 +613,14 @@ impl HarnessStore {
         }
         require_member_actor(&context.performed_by_actor, member_run_id)?;
         let current = self.current_work_unlocked(work_id, expected_version)?;
+        if current.active_member_run_id.is_some()
+            || (current.owner_member_id.is_some() && current.assignee_membership_id.is_none())
+        {
+            return Err(StoreError::Conflict(
+                "LEGACY_RUNTIME_WORK_AUTHORITY_RETIRED: historical runtime-owned Work is read/export evidence and cannot be mutated"
+                    .to_string(),
+            ));
+        }
         // A Closed or Retired ProviderRuntimeProjection no longer mutates its owned Work:
         // unfinished Work moves only via Host reassign/cancel or after an
         // explicit Reopen (docs/product/agent-team-works.md). This aligns
@@ -721,6 +729,14 @@ impl HarnessStore {
             return Ok(existing.work);
         }
         let current = self.current_work_unlocked(work_id, expected_version)?;
+        if current.active_member_run_id.is_some()
+            || (current.owner_member_id.is_some() && current.assignee_membership_id.is_none())
+        {
+            return Err(StoreError::Conflict(
+                "LEGACY_RUNTIME_WORK_AUTHORITY_RETIRED: historical runtime-owned Work is read/export evidence and cannot be released"
+                    .to_string(),
+            ));
+        }
         if current.phase != WorkPhase::Open || current.condition != WorkCondition::Normal {
             return Err(StoreError::Conflict(format!(
                 "work {work_id} must be open to release"

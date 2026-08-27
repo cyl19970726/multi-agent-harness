@@ -736,14 +736,11 @@ impl HarnessStore {
         // only on the dedicated dependency replacement command.
         firm_core::prepare_dependency_change(work, work.prerequisite_work_ids.clone(), &works)
             .map_err(|error| StoreError::Conflict(error.to_string()))?;
-        if let Some(member_run_id) = work.active_member_run_id.as_deref() {
-            let member = self.require_member_run_unlocked(member_run_id, &work.team_run_id)?;
-            self.ensure_member_can_receive_work_unlocked(&member)?;
-            if work.owner_member_id.as_deref() != Some(member_identity(&member).as_str()) {
-                return Err(StoreError::Conflict(
-                    "owner_member_id does not match active ProviderRuntimeProjection stable identity".to_string(),
-                ));
-            }
+        if work.active_member_run_id.is_some() {
+            return Err(StoreError::Conflict(
+                "LEGACY_RUNTIME_WORK_AUTHORITY_RETIRED: active_member_run_id is historical read/export evidence and cannot enter a current Work mutation"
+                    .to_string(),
+            ));
         }
         // DOC-106: responsibility never depends on an active MemberRun or
         // runtime. `assignee_membership_id` (mirrored by `owner_member_id`) is
@@ -752,28 +749,9 @@ impl HarnessStore {
         Ok(())
     }
 
-    pub(super) fn ensure_member_can_receive_work_unlocked(
-        &self,
-        member: &ProviderRuntimeProjection,
-    ) -> StoreResult<()> {
-        if !member.coordination_is_active()
-            || matches!(
-                member.status,
-                firm_core::MemberRunStatus::Stopped | firm_core::MemberRunStatus::Failed
-            )
-        {
-            return Err(StoreError::Conflict(format!(
-                "MEMBER_UNAVAILABLE: ProviderRuntimeProjection {} cannot receive Work while {:?}/{:?}",
-                member.id, member.coordination_status, member.status
-            )));
-        }
-        Ok(())
-    }
-
-    /// Authorize one current MemberRun against stable Work responsibility.
-    /// Canonical Work is owned by TeamMembership/AgentMember; the MemberRun is
-    /// only the current authenticated runtime.  Legacy Work without a
-    /// membership remains fenced by its exact `active_member_run_id`.
+    /// Authorize one current MemberRun against stable Work responsibility and
+    /// the exact active execution binding. Historical runtime-owned Work is
+    /// read/export evidence only and never grants current mutation authority.
     pub(super) fn member_run_holds_work_responsibility_unlocked(
         &self,
         work: &Work,
@@ -782,15 +760,8 @@ impl HarnessStore {
         if work.owner_member_id.as_deref() != Some(member.agent_member_id.as_str()) {
             return Ok(false);
         }
-        if work
-            .active_member_run_id
-            .as_deref()
-            .is_some_and(|runtime_id| runtime_id != member.id)
-        {
-            return Ok(false);
-        }
         let Some(membership_id) = work.assignee_membership_id.as_deref() else {
-            return Ok(work.active_member_run_id.as_deref() == Some(member.id.as_str()));
+            return Ok(false);
         };
         let Some(team_id) = work.accountable_team_id.as_deref() else {
             return Ok(false);
@@ -844,9 +815,14 @@ impl HarnessStore {
         let [session] = sessions.as_slice() else {
             return Ok(false);
         };
+        let admission = self.work_execution_runtime_binding(space_id, &binding.id)?;
         Ok(session.agent_member_id == member.agent_member_id
             && session.runtime_generation == binding.agent_session_generation
             && session.lifecycle != firm_core::agentfirm_api::AgentSessionStatus::Closed
+            && admission.target_member_run_id.as_deref() == Some(member.id.as_str())
+            && admission.target_member_run_generation == Some(member.runtime_generation)
+            && admission.target_session_id.as_deref() == Some(session.id.as_str())
+            && admission.target_runtime_generation == Some(session.runtime_generation)
             && member.coordination_is_active()
             && !matches!(
                 member.status,

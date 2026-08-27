@@ -60,7 +60,9 @@ fn claimed_work_fixture(
         &member_id,
         TeamMembershipRole::Member,
     );
+    admit_fixture_member_run_for_session(store, "team-run-a", &session);
     let work = insert_runtime_work(store, &work_id, "team-a", "team-run-a");
+    let work = assign_runtime_work(store, &work, &membership);
     let binding = WorkExecutionBinding {
         id: binding_id.clone(),
         work_id: work.id.clone(),

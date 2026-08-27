@@ -32,6 +32,7 @@ fn team_host_cannot_stop_shared_session_and_active_bindings_require_explicit_rel
         "shared-agent",
         firm_core::agentfirm_api::TeamMembershipRole::Member,
     );
+    admit_fixture_member_run_for_session(&store, "team-run-a", &shared_session);
     let shared_b = join_runtime_membership(
         &store,
         "membership-shared-b",
@@ -39,6 +40,7 @@ fn team_host_cannot_stop_shared_session_and_active_bindings_require_explicit_rel
         "shared-agent",
         firm_core::agentfirm_api::TeamMembershipRole::Member,
     );
+    admit_fixture_member_run_for_session(&store, "team-run-b", &shared_session);
     assert_eq!(
         store
             .team_host_membership("space-test", "team-a", true)

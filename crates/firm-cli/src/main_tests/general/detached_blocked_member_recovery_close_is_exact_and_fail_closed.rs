@@ -89,10 +89,8 @@ fn detached_blocked_member_recovery_close_is_exact_and_fail_closed() {
             compatibility_team_actor("host", "test"),
             at.into(),
         );
-        draft.owner_member_id = Some(bound.agent_member_id.clone());
-        draft.active_member_run_id = Some(bound.id.clone());
         draft.eligible_member_ids = vec![bound.agent_member_id.clone()];
-        let work = store
+        let created_work = store
             .insert_work(
                 draft.into_work(),
                 WorkCommandContext {
@@ -106,6 +104,32 @@ fn detached_blocked_member_recovery_close_is_exact_and_fail_closed() {
                 },
             )
             .expect("create recovery Work");
+        let membership = store
+            .fabric_team_memberships("unit-test-space")
+            .expect("read TeamMemberships")
+            .into_iter()
+            .find(|membership| {
+                membership.team_id == created.team_run.agent_team_id
+                    && membership.agent_member_id == bound.agent_member_id
+            })
+            .expect("exact responsible TeamMembership");
+        let work = store
+            .assign_work_to_membership(
+                &created_work.id,
+                created_work.version,
+                &membership.id,
+                "unit-test-space",
+                WorkCommandContext {
+                    event_id: format!("{id}-assigned"),
+                    performed_by_actor: compatibility_team_actor("host", "test"),
+                    authority_actor: None,
+                    causation_ref: None,
+                    idempotency_key: format!("{id}-assign"),
+                    created_at: at.into(),
+                    duplicate_ok: false,
+                },
+            )
+            .expect("assign stable TeamMembership responsibility");
         let claimed = claim_canonical_work_for_member(&ledger, &bound)
             .expect("claim recovery Work")
             .expect("one recovery Work claim");

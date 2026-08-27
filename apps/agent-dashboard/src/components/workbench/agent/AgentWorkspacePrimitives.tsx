@@ -86,7 +86,6 @@ const ACTION_DETAIL:Record<string,string>={
   close_member_run:"Close the current runtime",
   reopen_member_run:"Reopen a closed runtime",
   assign_work:"Assign guidance for the next agent turn",
-  rebind_work:"Assign guidance for the next agent turn",
   request_gate_evaluation:"Request a gate review",
 };
 

@@ -1,76 +1,97 @@
 use super::*;
 
 #[test]
-fn rebind_advances_same_member_run_to_a_higher_runtime_generation() {
-    let (root, store, run, member, _) = work_test_fixture("same-id-generation-rebind");
-    let mut assigned = unassigned_test_work(&run.id, "work-same-id-rebind");
-    assigned.claim_mode = WorkClaimMode::HostAssign;
-    assigned.owner_member_id = Some(member.agent_member_id.clone());
-    assigned.active_member_run_id = Some(member.id.clone());
-    let created = store
+fn legacy_runtime_work_writers_are_typed_zero_delta_rejections() {
+    let (root, store, run, member, _) = work_test_fixture("legacy-runtime-work-writers");
+    let before = store.work_operations().expect("operations before").len();
+
+    let mut legacy = unassigned_test_work(&run.id, "legacy-runtime-create");
+    legacy.owner_member_id = Some(member.agent_member_id.clone());
+    legacy.active_member_run_id = Some(member.id.clone());
+    let create_error = store
         .insert_work(
-            assigned,
-            member_work_context(
-                &member.id,
-                "event-create-same-id-rebind",
-                "command-create-same-id-rebind",
-                "unix-ms:3",
-            ),
+            legacy,
+            host_work_context("legacy-create-event", "legacy-create", "unix-ms:2"),
         )
-        .expect("create assigned Work");
-
-    let mut failed = member.clone();
-    failed.status = MemberRunStatus::Failed;
-    failed.finished_at = Some("unix-ms:4".into());
-    store
-        .compare_and_append_member_run(&member, &failed)
-        .expect("record failed generation");
-    let mut replacement = member.clone();
-    replacement.runtime_generation += 1;
-    replacement.status = MemberRunStatus::Idle;
-    replacement.started_at = "unix-ms:5".into();
-    replacement.finished_at = None;
-    store
-        .compare_and_advance_member_run_generation(&failed, &replacement)
-        .expect("append same-id replacement generation");
-
-    let rebound = store
-        .rebind_work(
-            &created.id,
-            created.version,
-            &replacement.id,
-            host_work_context(
-                "event-rebind-same-id-generation",
-                "command-rebind-same-id-generation",
-                "unix-ms:6",
-            ),
-        )
-        .expect("higher same-id generation must fence and redeliver Work");
-    assert_eq!(rebound.active_member_run_id, created.active_member_run_id);
-    assert_eq!(rebound.accountable_team_id, created.accountable_team_id);
-    assert_eq!(rebound.created_by_member_id, created.created_by_member_id);
-    let operation = store
-        .work_operations()
-        .unwrap()
-        .into_iter()
-        .find(|operation| operation.event.kind == WorkEventKind::Rebound)
-        .expect("Rebound operation");
-    assert_eq!(operation.event.payload["previous_runtime_generation"], 1);
-    assert_eq!(operation.event.payload["replacement_runtime_generation"], 2);
-    assert!(store
-        .rebind_work(
-            &rebound.id,
-            rebound.version,
-            &replacement.id,
-            host_work_context(
-                "event-repeat-same-id-generation",
-                "command-repeat-same-id-generation",
-                "unix-ms:7",
-            ),
-        )
-        .expect_err("same runtime generation cannot rebound twice")
+        .expect_err("legacy runtime-owned Work creation is retired");
+    assert!(create_error
         .to_string()
-        .contains("WORK_ALREADY_BOUND"));
+        .contains("LEGACY_RUNTIME_WORK_AUTHORITY_RETIRED"));
+    assert_eq!(store.work_operations().unwrap().len(), before);
+
+    let canonical = store
+        .insert_work(
+            unassigned_test_work(&run.id, "legacy-runtime-row"),
+            host_work_context("canonical-create-event", "canonical-create", "unix-ms:3"),
+        )
+        .expect("create canonical Work before simulating historical storage");
+    let ledger = root.join("work_operations.jsonl");
+    let rewritten = std::fs::read_to_string(&ledger)
+        .expect("read Work ledger")
+        .lines()
+        .map(|line| {
+            let mut row: serde_json::Value = serde_json::from_str(line).expect("Work row");
+            if row["work"]["id"] == canonical.id {
+                row["work"]["owner_member_id"] =
+                    serde_json::Value::String(member.agent_member_id.clone());
+                row["work"]["active_member_run_id"] = serde_json::Value::String(member.id.clone());
+                row["work"]["assignee_membership_id"] = serde_json::Value::Null;
+            }
+            serde_json::to_string(&row).expect("serialize historical Work row")
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    std::fs::write(&ledger, format!("{rewritten}\n")).expect("write historical Work row");
+    let legacy_before = store.work_operations().unwrap().len();
+    for error in [
+        store
+            .start_work(
+                &canonical.id,
+                canonical.version,
+                &member.id,
+                member_work_context(&member.id, "legacy-start", "legacy-start", "unix-ms:4"),
+            )
+            .expect_err("historical runtime owner cannot Start"),
+        store
+            .submit_work(
+                &canonical.id,
+                canonical.version,
+                &member.id,
+                "legacy submit",
+                vec!["artifact:legacy".into()],
+                vec![],
+                member_work_context(&member.id, "legacy-submit", "legacy-submit", "unix-ms:5"),
+            )
+            .expect_err("historical runtime owner cannot Submit"),
+        store
+            .release_work(
+                &canonical.id,
+                canonical.version,
+                &member.id,
+                member_work_context(&member.id, "legacy-release", "legacy-release", "unix-ms:6"),
+            )
+            .expect_err("historical runtime owner cannot Release"),
+        store
+            .retarget_work_execution(
+                &canonical.id,
+                canonical.version,
+                "successor-run-does-not-matter",
+                host_work_context("legacy-retarget", "legacy-retarget", "unix-ms:7"),
+            )
+            .expect_err("historical runtime owner cannot retarget"),
+    ] {
+        assert!(
+            error
+                .to_string()
+                .contains("LEGACY_RUNTIME_WORK_AUTHORITY_RETIRED")
+                || error
+                    .to_string()
+                    .contains("does not hold active Work responsibility")
+                || error.to_string().contains("does not hold responsibility"),
+            "unexpected legacy rejection: {error}"
+        );
+        assert_eq!(store.work_operations().unwrap().len(), legacy_before);
+    }
 
     std::fs::remove_dir_all(root).expect("remove temp store");
 }

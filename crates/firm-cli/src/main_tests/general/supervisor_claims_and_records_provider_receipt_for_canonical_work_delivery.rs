@@ -197,11 +197,9 @@ fn supervisor_skips_not_ready_delivery_and_claims_ready_predecessor() {
             compatibility_team_actor("host", "test"),
             created_at.into(),
         );
-        draft.owner_member_id = Some(member.agent_member_id.clone());
-        draft.active_member_run_id = Some(member.id.clone());
         draft.eligible_member_ids = vec![member.agent_member_id.clone()];
         draft.prerequisite_work_ids = prerequisites;
-        store
+        let created_work = store
             .insert_work(
                 draft.into_work(),
                 WorkCommandContext {
@@ -214,7 +212,33 @@ fn supervisor_skips_not_ready_delivery_and_claims_ready_predecessor() {
                     duplicate_ok: false,
                 },
             )
-            .expect("create assigned Work")
+            .expect("create unassigned Work");
+        let membership = store
+            .fabric_team_memberships("unit-test-space")
+            .expect("read TeamMemberships")
+            .into_iter()
+            .find(|membership| {
+                membership.team_id == created.team_run.agent_team_id
+                    && membership.agent_member_id == member.agent_member_id
+            })
+            .expect("exact responsible TeamMembership");
+        store
+            .assign_work_to_membership(
+                &created_work.id,
+                created_work.version,
+                &membership.id,
+                "unit-test-space",
+                WorkCommandContext {
+                    event_id: format!("{id}-assigned"),
+                    performed_by_actor: compatibility_team_actor("host", "test"),
+                    authority_actor: None,
+                    causation_ref: None,
+                    idempotency_key: format!("{id}-assign"),
+                    created_at: created_at.into(),
+                    duplicate_ok: false,
+                },
+            )
+            .expect("assign stable TeamMembership responsibility")
     };
     let predecessor = make_work("z-ready-predecessor", "unix-ms:3", Vec::new());
     let dependent = make_work(

@@ -2,7 +2,9 @@ use super::*;
 use firm_application::{
     CurrentWorkDeliveryAuthority, CurrentWorkDeliveryIntegrityAnnotation, CurrentWorkDeliveryView,
 };
-use firm_core::agentfirm_api::{TeamMembershipStatus, WorkExecutionBindingStatus};
+use firm_core::agentfirm_api::{
+    MemberCoordinationStatus, MemberRuntimeStatus, TeamMembershipStatus, WorkExecutionBindingStatus,
+};
 
 fn insert_work_revision(
     revisions: &mut std::collections::BTreeMap<(String, u64), Work>,
@@ -173,6 +175,8 @@ impl HarnessStore {
                     delivery.id, binding.id, binding.team_membership_id
                 ))
             })?;
+            let runtime_binding =
+                self.work_execution_runtime_binding(execution_space_id, &binding.id)?;
             let team_run = team_runs.get(&work.team_run_id).ok_or_else(|| {
                 StoreError::Conflict(format!(
                     "CURRENT_WORK_DELIVERY_TEAM_RUN_MISSING: delivery {} references missing TeamRun {}",
@@ -223,16 +227,36 @@ impl HarnessStore {
                 .filter(|member_run| {
                     member_run.team_run_id == work.team_run_id
                         && member_run.agent_member_id == delivery.recipient_agent_member_id
+                        && member_run.coordination_status == MemberCoordinationStatus::Active
+                        && !matches!(
+                            member_run.runtime_status,
+                            MemberRuntimeStatus::Completed
+                                | MemberRuntimeStatus::Failed
+                                | MemberRuntimeStatus::Stopped
+                        )
+                        && match (
+                            member_run.native_session.as_ref(),
+                            session.native_session_ref.as_ref(),
+                        ) {
+                            (Some(member_native), Some(session_native)) => {
+                                firm_core::agentfirm_api::native_session_identity_matches(
+                                    member_native,
+                                    session_native,
+                                )
+                            }
+                            (None, None) => true,
+                            _ => false,
+                        }
+                        && runtime_binding.target_member_run_id.as_deref()
+                            == Some(member_run.id.as_str())
+                        && runtime_binding.target_member_run_generation
+                            == Some(member_run.runtime_generation)
+                        && runtime_binding.target_session_id.as_deref() == Some(session.id.as_str())
+                        && runtime_binding.target_runtime_generation
+                            == Some(session.runtime_generation)
                 })
                 .collect::<Vec<_>>();
-            let exact_active_member_run = work.active_member_run_id.as_deref().and_then(|id| {
-                matching_member_runs
-                    .iter()
-                    .find(|member_run| member_run.id == id)
-            });
-            let recipient_member_run_id = if let Some(member_run) = exact_active_member_run {
-                Some(member_run.id.clone())
-            } else if let [member_run] = matching_member_runs.as_slice() {
+            let recipient_member_run_id = if let [member_run] = matching_member_runs.as_slice() {
                 Some(member_run.id.clone())
             } else {
                 integrity_annotations

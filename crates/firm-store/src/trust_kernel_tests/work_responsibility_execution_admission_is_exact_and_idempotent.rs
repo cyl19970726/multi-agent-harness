@@ -426,6 +426,41 @@ fn membership_work_binding_authorizes_message_and_result_without_accepting_work(
     assert_eq!(active.phase, firm_core::WorkPhase::Active);
     assert_eq!(binding.work_revision + 1, active.version);
 
+    let mut terminal_projection = active.clone();
+    terminal_projection.phase = firm_core::WorkPhase::Closed;
+    terminal_projection.resolution = Some(firm_core::WorkResolution::Cancelled);
+    terminal_projection.version += 1;
+    terminal_projection.active_member_run_id = Some("forged-reopened-runtime".into());
+    let terminal_event = firm_core::agentfirm_api::CanonicalMutationEvent {
+        id: "terminal-member-event".into(),
+        aggregate_kind: "work".into(),
+        aggregate_id: terminal_projection.id.clone(),
+        sequence: terminal_projection.version,
+        store_sequence: 999,
+        transition: "cancelled".into(),
+        expected_version: terminal_projection.version - 1,
+        resulting_version: terminal_projection.version,
+        performed_by_actor: ActorRef {
+            kind: ActorKind::AgentMember,
+            id: "worker-admission".into(),
+        },
+        authority_actor: None,
+        causation_ref: None,
+        idempotency_key: "terminal-member-event".into(),
+        canonical_request_fingerprint: "sha256:test".into(),
+        payload: serde_json::json!({}),
+        created_at: "t-terminal".into(),
+    };
+    let terminal_attention = store
+        .canonical_terminal_work_outbox_unlocked(&terminal_projection, &terminal_event)
+        .expect("terminal provenance resolves from exact admission evidence");
+    assert_eq!(terminal_attention.len(), 1);
+    assert_eq!(
+        terminal_attention[0].member_run_id.as_deref(),
+        Some("member-run-admission"),
+        "legacy runtime identity and a later same-member generation cannot replace immutable admission provenance"
+    );
+
     create_direct_subscription(&store, "worker-admission", &reviewer_membership);
     let work_before_message = store
         .latest_works()

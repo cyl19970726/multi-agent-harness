@@ -35,15 +35,6 @@
       "returns": "resource_projection"
     },
     {
-      "ui_action": "rebind_work",
-      "http_endpoint": "POST /v1/agentfirm/team-runs/{team_run_id}/works/{work_id}/rebind",
-      "application_command": "work.rebind",
-      "actor_policy": "exact_team_host",
-      "expected_version_source": "Work.version",
-      "resulting_event": "rebound",
-      "returns": "resource_projection"
-    },
-    {
       "ui_action": "release_work",
       "http_endpoint": "POST /v1/agentfirm/team-runs/{team_run_id}/works/{work_id}/release",
       "application_command": "work.release",

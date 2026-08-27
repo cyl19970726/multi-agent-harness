@@ -45,16 +45,6 @@ fn hold_store_lock(store: &HarnessStore) -> File {
     file
 }
 
-fn team_test_root(name: &str) -> PathBuf {
-    std::env::temp_dir().join(format!(
-        "firm-store-team-test-{name}-{}",
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("system clock")
-            .as_millis()
-    ))
-}
-
 fn canonical_member_admission_for_test(
     execution_space_id: &str,
     runtime: &ProviderRuntimeProjection,
@@ -959,6 +949,30 @@ fn work_test_fixture(
     (root, store, run, member_a, member_b)
 }
 
+fn assign_test_work_to_member(
+    store: &HarnessStore,
+    run: &AgentTeamRun,
+    work: &Work,
+    member: &ProviderRuntimeProjection,
+    event_id: &str,
+    key: &str,
+    at: &str,
+) -> Work {
+    let membership_id = format!(
+        "membership:{}:{}",
+        run.agent_team_id, member.agent_member_id
+    );
+    store
+        .assign_work_to_membership(
+            &work.id,
+            work.version,
+            &membership_id,
+            "unit-test-space",
+            host_work_context(event_id, key, at),
+        )
+        .expect("assign stable Work responsibility")
+}
+
 fn host_work_context(id: &str, key: &str, at: &str) -> WorkCommandContext {
     WorkCommandContext {
         event_id: id.into(),
@@ -991,25 +1005,6 @@ fn member_work_context(member_run_id: &str, id: &str, key: &str, at: &str) -> Wo
         created_at: at.into(),
         duplicate_ok: false,
     }
-}
-
-fn admit_replacement_for_test(store: &HarnessStore, member: &ProviderRuntimeProjection) {
-    let current = store
-        .team_runs()
-        .expect("TeamRun history")
-        .into_iter()
-        .rev()
-        .find(|run| run.id == member.team_run_id)
-        .expect("replacement TeamRun");
-    let mut next = current.clone();
-    next.member_run_ids.push(member.id.clone());
-    next.updated_at = member.started_at.clone();
-    store
-        .append_jsonl("team_runs.jsonl", &next)
-        .expect("append replacement TeamRun fixture row");
-    store
-        .append_jsonl("member_runs.jsonl", member)
-        .expect("append replacement runtime fixture row");
 }
 
 fn unassigned_test_work(run_id: &str, id: &str) -> Work {
@@ -1284,7 +1279,10 @@ fn assigned_delegation_work(
     let mut work = unassigned_test_work(&run.id, id);
     work.claim_mode = WorkClaimMode::HostAssign;
     work.owner_member_id = Some(member.agent_member_id.clone());
-    work.active_member_run_id = Some(member.id.clone());
+    work.assignee_membership_id = Some(format!(
+        "membership-{}-{}",
+        run.agent_team_id, member.agent_member_id
+    ));
     work
 }
 

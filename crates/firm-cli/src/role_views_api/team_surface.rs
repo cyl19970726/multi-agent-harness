@@ -310,7 +310,6 @@ pub(crate) fn team_view(
             actions.push(action("assign_work", "work", id, version, disabled));
         }
         if matches!(phase, "open" | "active") && assigned {
-            actions.push(action("rebind_work", "work", id, version, disabled));
             actions.push(action("release_work", "work", id, version, disabled));
         }
         if phase == "review" && condition == "normal" {

@@ -23,6 +23,75 @@ pub struct StoreWorkGraph {
 }
 
 impl HarnessStore {
+    fn terminal_work_member_run_provenance_unlocked(&self, work: &Work) -> StoreResult<String> {
+        let submitted_revision = work.version.saturating_sub(1);
+        let submitted_provenance = self
+            .latest_host_attentions_unlocked()?
+            .into_values()
+            .filter(|attention| {
+                attention.work_id == work.id
+                    && attention.work_version == submitted_revision
+                    && attention.kind == HostAttentionKind::WorkReviewRequested
+            })
+            .filter_map(|attention| attention.member_run_id)
+            .collect::<Vec<_>>();
+        if let [member_run_id] = submitted_provenance.as_slice() {
+            return Ok(member_run_id.clone());
+        }
+        if !submitted_provenance.is_empty() {
+            return Err(StoreError::Conflict(format!(
+                "MEMBER_RUN_GENERATION_FENCED: terminal member Work {} has ambiguous submitted execution provenance",
+                work.id
+            )));
+        }
+
+        let run = self.require_team_run_unlocked(&work.team_run_id)?;
+        let execution_space_id = self.current_team_run_execution_space_unlocked(&run)?;
+        let bindings = self
+            .fabric_work_execution_bindings(&execution_space_id)?
+            .into_iter()
+            .filter(|binding| {
+                binding.work_id == work.id && binding.status == WorkExecutionBindingStatus::Active
+            })
+            .collect::<Vec<_>>();
+        let [binding] = bindings.as_slice() else {
+            return Err(StoreError::Conflict(format!(
+                "WORK_EXECUTION_BINDING_ACTIVE: terminal member Work {} requires exactly one active execution binding",
+                work.id
+            )));
+        };
+        if binding.work_revision > work.version
+            || self.work_responsibility_changed_after_revision_unlocked(
+                &work.id,
+                binding.work_revision,
+            )?
+            || work.assignee_membership_id.as_deref() != Some(binding.team_membership_id.as_str())
+            || work.owner_member_id.as_deref() != Some(binding.agent_member_id.as_str())
+        {
+            return Err(StoreError::Conflict(format!(
+                "WORK_EXECUTION_BINDING_RESPONSIBILITY_CONFLICT: terminal member Work {} does not match its exact admitted responsibility",
+                work.id
+            )));
+        }
+        let admission = self.work_execution_runtime_binding(&execution_space_id, &binding.id)?;
+        let Some(member_run_id) = admission.target_member_run_id else {
+            return Err(StoreError::Conflict(format!(
+                "MEMBER_RUN_GENERATION_FENCED: terminal member Work {} has no exact admitted MemberRun provenance",
+                work.id
+            )));
+        };
+        if admission.target_member_run_generation.is_none()
+            || admission.target_session_id.as_deref() != Some(binding.agent_session_id.as_str())
+            || admission.target_runtime_generation != Some(binding.agent_session_generation)
+        {
+            return Err(StoreError::Conflict(format!(
+                "MEMBER_RUN_GENERATION_FENCED: terminal member Work {} has incomplete exact runtime admission evidence",
+                work.id
+            )));
+        }
+        Ok(member_run_id)
+    }
+
     pub(crate) fn canonical_work_command_context_unlocked(
         &self,
         work: &Work,
@@ -94,6 +163,7 @@ impl HarnessStore {
             }
         };
         if let Some(kind) = primary_kind {
+            let member_run_id = self.terminal_work_member_run_provenance_unlocked(work)?;
             attentions.push(HostAttention {
                 id: format!("host-attention-{}", event.id),
                 team_run_id: work.team_run_id.clone(),
@@ -101,7 +171,7 @@ impl HarnessStore {
                 work_id: work.id.clone(),
                 work_version: work.version,
                 source_event_ref: event.id.clone(),
-                member_run_id: work.active_member_run_id.clone(),
+                member_run_id: Some(member_run_id),
                 status: HostAttentionStatus::Actionable,
                 attempt: 0,
                 claim_id: None,

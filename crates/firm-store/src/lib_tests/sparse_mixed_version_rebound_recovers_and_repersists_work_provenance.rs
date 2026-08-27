@@ -1,16 +1,12 @@
 use super::*;
 
 #[test]
-fn sparse_mixed_version_rebound_recovers_and_repersists_work_provenance() {
+fn sparse_mixed_version_update_recovers_and_repersists_work_provenance() {
     let (root, store, run, member, _) = work_test_fixture("sparse-rebound-provenance");
 
-    let mut assigned = unassigned_test_work(&run.id, "work-sparse-rebound");
-    assigned.claim_mode = WorkClaimMode::HostAssign;
-    assigned.owner_member_id = Some(member.agent_member_id.clone());
-    assigned.active_member_run_id = Some(member.id.clone());
     let created = store
         .insert_work(
-            assigned,
+            unassigned_test_work(&run.id, "work-sparse-rebound"),
             member_work_context(
                 &member.id,
                 "event-create-sparse-rebound",
@@ -28,25 +24,12 @@ fn sparse_mixed_version_rebound_recovers_and_repersists_work_provenance() {
         Some(member.agent_member_id.clone())
     );
 
-    let mut replacement = member.clone();
-    replacement.id = "member-sparse-rebound-generation-2".into();
-    replacement.runtime_generation += 1;
-    replacement.started_at = "unix-ms:4".into();
-    let mut failed_previous = member.clone();
-    failed_previous.status = MemberRunStatus::Failed;
-    failed_previous.finished_at = Some("unix-ms:4".into());
-    store
-        .compare_and_append_member_run(&member, &failed_previous)
-        .expect("close previous runtime before replacement");
-    admit_replacement_for_test(&store, &replacement);
-
     let rebound_context = host_work_context(
         "event-sparse-mixed-writer-rebound",
         "command-sparse-mixed-writer-rebound",
         "unix-ms:5",
     );
     let mut sparse_work = created.clone();
-    sparse_work.active_member_run_id = Some(replacement.id.clone());
     // Keep the accountable Team so the row passes the DOC-106 required-field
     // validation; the provenance regression under test is the dropped
     // creator provenance below.
@@ -59,17 +42,14 @@ fn sparse_mixed_version_rebound_recovers_and_repersists_work_provenance() {
             team_run_id: sparse_work.team_run_id.clone(),
             work_id: sparse_work.id.clone(),
             sequence: 2,
-            kind: WorkEventKind::Rebound,
+            kind: WorkEventKind::Updated,
             expected_version: created.version,
             resulting_version: sparse_work.version,
             performed_by_actor: rebound_context.performed_by_actor,
             authority_actor: rebound_context.authority_actor,
             causation_ref: rebound_context.causation_ref,
             idempotency_key: rebound_context.idempotency_key,
-            payload: serde_json::json!({
-                "previous_member_run_id": member.id.clone(),
-                "replacement_member_run_id": replacement.id.clone(),
-            }),
+            payload: serde_json::json!({"source":"stale_mixed_version_writer"}),
             created_at: rebound_context.created_at,
         },
         work: sparse_work,
@@ -127,10 +107,7 @@ fn sparse_mixed_version_rebound_recovers_and_repersists_work_provenance() {
         )
         .expect("explicit reconciliation re-persists recovered provenance");
     assert_eq!(repaired.phase, WorkPhase::Open);
-    assert_eq!(
-        repaired.active_member_run_id.as_deref(),
-        Some(replacement.id.as_str())
-    );
+    assert!(repaired.active_member_run_id.is_none());
     assert_eq!(repaired.accountable_team_id, created.accountable_team_id);
     assert_eq!(repaired.created_by_member_id, created.created_by_member_id);
     assert_eq!(

@@ -1,13 +1,4 @@
-//! Integration coverage for the Agent Team v0 surface (team-run task):
-//!   - `harness team-run create|list|status|inbox|ack|send|events` CLI smoke against an
-//!     isolated HOME (temp store, real binary),
-//!   - `POST /v1/team-runs` creates the run + member runs + optional initial
-//!     Works + folded events, and the response snapshot carries the native
-//!     ledger projections,
-//!   - `POST /v1/team-runs/{id}/messages` routes a message (400 on unknown
-//!     run), `POST /v1/team-runs/{id}/start` accepts asynchronous execution,
-//!   - `GET /team-console` serves the console page as text/html,
-//!   - SSE `/v1/events` streams `team_run_event` frames for appended rows.
+//! Agent Team CLI, HTTP, Dashboard snapshot, and SSE integration coverage.
 
 use std::time::Duration;
 
@@ -852,12 +843,22 @@ fn persistent_codex_supervisor_survives_handoffs_transport_loss_and_team_complet
         .iter()
         .filter(|work| work["team_run_id"].as_str() == Some(run_id.as_str()))
         .map(|work| {
+            let owner_member_id = work["owner_member_id"]
+                .as_str()
+                .expect("stable Work owner AgentMember");
+            let member_run_id = before_review["member_runs"]
+                .as_array()
+                .expect("MemberRuns in snapshot")
+                .iter()
+                .find(|member| {
+                    member["team_run_id"].as_str() == Some(run_id.as_str())
+                        && member["agent_member_id"].as_str() == Some(owner_member_id)
+                })
+                .and_then(|member| member["id"].as_str())
+                .expect("exact current MemberRun for stable Work responsibility");
             (
                 work["id"].as_str().expect("Work id").to_string(),
-                work["active_member_run_id"]
-                    .as_str()
-                    .expect("owned Work member")
-                    .to_string(),
+                member_run_id.to_string(),
                 work["version"].as_u64().expect("Work version"),
                 work["phase"].as_str().expect("Work phase").to_string(),
             )

@@ -166,7 +166,7 @@ fn continuation_test_work(
         "condition": condition,
         "resolution": resolution,
         "owner_member_id": "agent-member-test",
-        "active_member_run_id": "member-run-test",
+        "active_member_run_id": null,
         "claim_mode": "host_assign",
         "eligible_member_ids": [],
         "prerequisite_work_ids": [],

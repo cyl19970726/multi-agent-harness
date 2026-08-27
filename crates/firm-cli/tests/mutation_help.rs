@@ -198,7 +198,7 @@ fn mutating_help_is_effect_free_and_normal_dispatch_is_unchanged() {
     ] {
         let rejected = run_firm(&home, home.base(), &args);
         assert!(!rejected.status.success());
-        assert!(String::from_utf8_lossy(&rejected.stderr).contains("retired"));
+        assert!(String::from_utf8_lossy(&rejected.stderr).contains("unknown work option"));
         assert_eq!(
             file_snapshot(&store_root),
             before_help,

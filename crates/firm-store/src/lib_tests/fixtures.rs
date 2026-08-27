@@ -1,5 +1,15 @@
 use super::*;
 
+pub(super) fn team_test_root(name: &str) -> PathBuf {
+    std::env::temp_dir().join(format!(
+        "firm-store-team-test-{name}-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock")
+            .as_millis()
+    ))
+}
+
 pub(super) fn run_host_work_context(
     run: &AgentTeamRun,
     id: &str,

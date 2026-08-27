@@ -9,14 +9,15 @@ fn blocked_work_can_be_resumed_by_owner_or_host_with_a_recorded_resolution() {
             host_work_context("we-resume-1", "create-resume-1", "unix-ms:2"),
         )
         .expect("create assigned Work");
-    let assigned = store
-        .assign_work(
-            &created.id,
-            created.version,
-            &member.id,
-            host_work_context("we-resume-assign", "assign-resume-1", "unix-ms:2"),
-        )
-        .expect("assign Work responsibility");
+    let assigned = assign_test_work_to_member(
+        &store,
+        &run,
+        &created,
+        &member,
+        "we-resume-assign",
+        "assign-resume-1",
+        "unix-ms:2",
+    );
     let started = start_claimed_work_for_test(
         &store,
         &assigned,
@@ -104,6 +105,6 @@ fn blocked_work_can_be_resumed_by_owner_or_host_with_a_recorded_resolution() {
         )
         .expect("Host resumes Work");
     assert_eq!(resumed_by_host.phase, WorkPhase::Active);
-    assert_eq!(resumed_by_host.active_member_run_id, Some(member.id));
+    assert_eq!(resumed_by_host.active_member_run_id, None);
     std::fs::remove_dir_all(root).expect("remove temp store");
 }

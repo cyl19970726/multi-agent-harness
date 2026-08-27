@@ -422,7 +422,7 @@ fn seed_team_work(store: &HarnessStore, label: &str, work_id: &str) -> String {
 fn seed_active_team_work(store: &HarnessStore, label: &str, work_id: &str) -> String {
     let run = seed_team(store, label, &["worker"]);
     let runtime_id = "runtime-worker";
-    create_member_and_run(store, &human("host"), &run.id, "worker", runtime_id, false);
+    create_member_and_run(store, &human("host"), &run.id, "worker", runtime_id, true);
     append_legacy_projection(
         store,
         "member_runs.jsonl",
@@ -442,7 +442,13 @@ fn seed_active_team_work(store: &HarnessStore, label: &str, work_id: &str) -> St
             coordination_status: Default::default(),
             runtime_generation: 1,
             status: MemberRunStatus::Idle,
-            native_session: None,
+            native_session: Some(
+                serde_json::from_value(
+                    serde_json::to_value(native_session("session-runtime-worker"))
+                        .expect("serialize fixture native session"),
+                )
+                .expect("map fixture native session"),
+            ),
             provider_cwd_hint: None,
             provider_environment_observation: None,
             owned_paths: Vec::new(),
@@ -458,10 +464,11 @@ fn seed_active_team_work(store: &HarnessStore, label: &str, work_id: &str) -> St
         .exact_team_run_host_actor(&run.id)
         .expect("resolve exact fixture Host");
     store
-        .assign_work(
+        .assign_work_to_membership(
             work_id,
             1,
-            runtime_id,
+            &format!("membership-team-{label}-worker"),
+            SPACE,
             WorkCommandContext {
                 event_id: format!("assign-{work_id}"),
                 performed_by_actor: host,
@@ -507,7 +514,7 @@ fn seed_active_team_work(store: &HarnessStore, label: &str, work_id: &str) -> St
             capability_fingerprint: Some("capability:test".into()),
             ..Default::default()
         },
-        native_session_ref: None,
+        native_session_ref: Some(native_session("session-runtime-worker")),
         current_turn_id: None,
         queued_input_count: 0,
         version: 1,
@@ -536,6 +543,7 @@ fn seed_active_team_work(store: &HarnessStore, label: &str, work_id: &str) -> St
         target_runtime_generation: Some(1),
         target_driver_generation: Some(1),
         target_driver: session.control_state.driver_ref.clone(),
+        native_session_ref: session.native_session_ref.clone(),
         composition_fingerprint: session.control_state.composition_fingerprint.clone(),
         capability_fingerprint: session.control_state.capability_fingerprint.clone(),
         permission_envelope_ref: Some(session.permission_envelope_ref.clone()),

@@ -9,14 +9,15 @@ fn closed_member_cannot_mutate_owned_work_until_reopen() {
             host_work_context("we-closed-1", "create-owned", "unix-ms:2"),
         )
         .expect("create Work");
-    let assigned = store
-        .assign_work(
-            &created.id,
-            created.version,
-            &member.id,
-            host_work_context("we-closed-2", "assign-owned", "unix-ms:3"),
-        )
-        .expect("assign Work");
+    let assigned = assign_test_work_to_member(
+        &store,
+        &run,
+        &created,
+        &member,
+        "we-closed-2",
+        "assign-owned",
+        "unix-ms:3",
+    );
     let started = start_claimed_work_for_test(
         &store,
         &assigned,
@@ -77,8 +78,8 @@ fn closed_member_cannot_mutate_owned_work_until_reopen() {
     assert_eq!(current.phase, WorkPhase::Active);
     assert_eq!(current.version, started.version);
 
-    // Reopen (coordination Active, next runtime generation) restores the
-    // member-side transition path for the same durable Work.
+    // Reopen restores stable participation but never revives the old execution
+    // binding. A successor scheduler admission must bind the new generation.
     let mut reopened_member = closed_member.clone();
     reopened_member.coordination_status = firm_core::MemberCoordinationStatus::Active;
     reopened_member.status = MemberRunStatus::Idle;
@@ -96,7 +97,10 @@ fn closed_member_cannot_mutate_owned_work_until_reopen() {
             Vec::new(),
             member_work_context(&member.id, "we-closed-6", "submit-reopened", "unix-ms:7"),
         )
-        .expect("reopened member submits owned Work");
-    assert_eq!(submitted.phase, WorkPhase::Review);
+        .expect_err("Reopen alone cannot revive stale Work execution authority");
+    assert!(submitted
+        .to_string()
+        .contains("does not hold active Work responsibility"));
+
     std::fs::remove_dir_all(root).expect("remove temp store");
 }

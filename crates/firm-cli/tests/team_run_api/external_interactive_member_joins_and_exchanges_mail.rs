@@ -117,9 +117,13 @@ fn external_interactive_member_joins_and_exchanges_mail() {
         Some("external_interactive")
     );
     assert_eq!(
-        added["work"]["active_member_run_id"].as_str(),
-        Some(helper_id.as_str()),
-        "initial Work: {added}"
+        (
+            added["work"]["owner_member_id"].as_str(),
+            added["work"]["active_member_run_id"].is_null(),
+            added["work"]["assignee_membership_id"].as_str().is_some(),
+        ),
+        (Some("ext-helper"), true, true),
+        "initial Work must carry stable responsibility without runtime identity: {added}"
     );
 
     // The Supervisor starts the run without spawning an adapter for external

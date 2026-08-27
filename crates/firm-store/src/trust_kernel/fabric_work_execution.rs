@@ -2,6 +2,37 @@ use super::fabric_foundation::RuntimeBindingAdmission;
 use super::*;
 
 impl HarnessStore {
+    /// Return the immutable exact runtime authority captured when one
+    /// WorkExecutionBinding was created. Later binding lifecycle projections
+    /// cannot replace or infer this MemberRun/session generation evidence.
+    pub fn work_execution_runtime_binding(
+        &self,
+        execution_space_id: &str,
+        binding_id: &str,
+    ) -> StoreResult<firm_core::agentfirm_api::RuntimeCommandBinding> {
+        let matches = self
+            .trust_operation_envelopes_unlocked()?
+            .into_iter()
+            .filter(|envelope| {
+                envelope.execution_space_id == execution_space_id
+                    && envelope.operation.event.aggregate_kind == "work_execution_binding"
+                    && envelope.operation.event.aggregate_id == binding_id
+                    && envelope.operation.event.transition == "bound"
+            })
+            .collect::<Vec<_>>();
+        let [envelope] = matches.as_slice() else {
+            return Err(StoreError::Conflict(format!(
+                "WORK_EXECUTION_RUNTIME_BINDING_NOT_PROVABLE: WorkExecutionBinding {binding_id} must have exactly one canonical bound source fact"
+            )));
+        };
+        serde_json::from_value(envelope.operation.event.payload["runtime_binding"].clone())
+            .map_err(|error| {
+                StoreError::Conflict(format!(
+                    "WORK_EXECUTION_RUNTIME_BINDING_INVALID: WorkExecutionBinding {binding_id}: {error}"
+                ))
+            })
+    }
+
     pub fn fabric_work_execution_bindings(
         &self,
         execution_space_id: &str,
@@ -362,9 +393,39 @@ impl HarnessStore {
         context: &MutationContext,
         binding: WorkExecutionBinding,
     ) -> StoreResult<CanonicalMutationResult<WorkExecutionBinding>> {
-        self.init()?;
-        let _lock = self.acquire_write_lock()?;
-        self.bind_work_execution_unlocked(context, binding.clone(), serde_json::to_value(&binding)?)
+        let session = self
+            .fabric_agent_sessions(&context.execution_space_id)?
+            .into_iter()
+            .find(|session| session.id == binding.agent_session_id)
+            .ok_or_else(|| {
+                StoreError::Conflict(format!(
+                    "test fixture AgentSession {} not found",
+                    binding.agent_session_id
+                ))
+            })?;
+        let work = self
+            .latest_works()?
+            .into_iter()
+            .find(|work| work.id == binding.work_id)
+            .ok_or_else(|| StoreError::Conflict("test fixture Work not found".into()))?;
+        let current_runs = self
+            .trust_member_runs(&context.execution_space_id)?
+            .into_iter()
+            .filter(|run| {
+                run.agent_member_id == binding.agent_member_id
+                    && run.team_run_id == work.team_run_id
+                    && run.coordination_status == MemberCoordinationStatus::Active
+            })
+            .collect::<Vec<_>>();
+        let [current_run] = current_runs.as_slice() else {
+            return Err(StoreError::Conflict(
+                "test fixture binding requires exactly one active MemberRun".into(),
+            ));
+        };
+        let mut runtime_binding = runtime_binding_for_session(&session);
+        runtime_binding.target_member_run_id = Some(current_run.id.clone());
+        runtime_binding.target_member_run_generation = Some(current_run.runtime_generation);
+        self.bind_responsible_work_execution(context, &runtime_binding, binding)
     }
 
     /// Resolve stable Work responsibility into one exact current runtime

@@ -31,6 +31,7 @@ fn work_execution_binding_rechecks_authoritative_dependency_readiness() {
         "builder",
         TeamMembershipRole::Member,
     );
+    admit_fixture_member_run_for_session(&store, "team-run-a", &session);
     let prerequisite = insert_runtime_work(&store, "work-prerequisite", "team-a", "team-run-a");
     let dependent = insert_runtime_work(&store, "work-dependent", "team-a", "team-run-a");
     let dependent = store
