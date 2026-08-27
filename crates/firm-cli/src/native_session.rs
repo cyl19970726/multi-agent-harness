@@ -349,11 +349,14 @@ where
                             "Codex rollout payload precedes its row type",
                         ));
                     }
+                    // Codex may add envelope metadata (for example the
+                    // current `ordinal`) without changing the session_meta
+                    // identity contract. Ignore additive fields within the
+                    // existing bounded row budget; `payload` before `type`
+                    // remains an explicit error above, and the exact
+                    // session_meta payload id is still mandatory.
                     _ => {
-                        return Err(de::Error::unknown_field(
-                            &key,
-                            &["timestamp", "type", "payload"],
-                        ))
+                        map.next_value::<IgnoredAny>()?;
                     }
                 }
             }
@@ -724,6 +727,28 @@ mod tests {
         assert_eq!(
             discover_codex_rollout(&home, session_id).expect("discovery"),
             Some(fs::canonicalize(rollout).expect("canonical rollout"))
+        );
+        fs::remove_dir_all(home).expect("cleanup");
+    }
+
+    #[test]
+    fn codex_discovery_accepts_additive_bounded_envelope_fields() {
+        let home = codex_home("additive-envelope-fields");
+        let session_id = "019f-additive-envelope-fields";
+        let rollout = home
+            .join("sessions/2026/08/09")
+            .join(format!("rollout-2026-08-09T00-00-00-{session_id}.jsonl"));
+        fs::write(
+            &rollout,
+            format!(
+                "{{\"timestamp\":\"2026-08-09T00:00:00Z\",\"ordinal\":0,\"future\":{{\"nested\":true}},\"type\":\"session_meta\",\"payload\":{{\"id\":\"{session_id}\"}},\"trailing_addition\":\"accepted\"}}\n"
+            ),
+        )
+        .expect("rollout");
+
+        assert_eq!(
+            discover_codex_rollout(&home, session_id).expect("bounded discovery"),
+            Some(fs::canonicalize(&rollout).expect("canonical rollout"))
         );
         fs::remove_dir_all(home).expect("cleanup");
     }
