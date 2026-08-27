@@ -308,6 +308,27 @@ pub(super) fn agentfirm_native_session_identity_matches(
     }
 }
 
+/// Build the exact native-session identity expected at runtime-fabric
+/// admission. TeamRun creation records the caller-supplied native locator
+/// before provider preflight, so its version can still be unknown. Start
+/// preflight refreshes the version-specific ProviderProfile first; use that
+/// admitted observation without rewriting the durable native locator.
+pub(super) fn expected_agentfirm_native_session_ref(
+    member: &ProviderRuntimeProjection,
+) -> Option<harness_core::agentfirm_api::NativeSessionRef> {
+    let mut expected = member
+        .native_session
+        .as_ref()
+        .map(agentfirm_native_session_ref)?;
+    if expected.provider_version.is_none() {
+        expected.provider_version = member
+            .provider_profile
+            .as_ref()
+            .and_then(|profile| profile.provider_version.clone());
+    }
+    Some(expected)
+}
+
 pub(super) fn canonical_member_run_admission(
     execution_space_id: &str,
     runtime: &ProviderRuntimeProjection,

@@ -155,10 +155,7 @@ pub(crate) fn ensure_team_runtime_fabric(
                     session.id
                 )));
             }
-            let expected_native_session = member
-                .native_session
-                .as_ref()
-                .map(agentfirm_native_session_ref);
+            let expected_native_session = expected_agentfirm_native_session_ref(member);
             if !agentfirm_native_session_identity_matches(
                 session.native_session_ref.as_ref(),
                 expected_native_session.as_ref(),
