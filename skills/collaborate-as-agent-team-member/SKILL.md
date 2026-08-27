@@ -151,14 +151,18 @@ first action of a run:
 The gate-checked command shapes both roles share:
 
 ```bash
-# Host creates an assigned Work (host_assign requires an explicit owner):
+# Host creates a Work that only explicit membership assignment may claim:
 firm team-run work create \
   --team-run-id <team-run-id> \
   --title "<one bounded responsibility>" \
   --context "<why it exists; mental model; boundary paths>" \
   --completion-criteria "<observable criteria a reviewer can check>" \
   --claim-mode host_assign \
-  --owner-member-run-id <member-run-id> \
+  --idempotency-key <stable-command-key>
+firm team-run work assign \
+  --work-id <work-id> \
+  --expected-version <created-version> \
+  --membership-id <team-membership-id> \
   --idempotency-key <stable-command-key>
 
 # Either role creates an open Work for eligible claim:
@@ -207,7 +211,7 @@ exporter's `verify`.
  ─────────────────────────────────────    ─────────────────────────────────────
  1. work create                           (idle; NodeDaemon holds session)
     --claim-mode host_assign
-    --owner-member-run-id kiwi-run
+    work assign --membership-id kiwi-membership
     --completion-criteria "verify exits
     nonzero on a manifest that lists a
     contracted ledger as uncontracted;

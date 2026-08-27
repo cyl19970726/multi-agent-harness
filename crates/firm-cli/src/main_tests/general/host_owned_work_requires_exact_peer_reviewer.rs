@@ -3,10 +3,11 @@ use super::*;
 fn create_assigned_review_work(
     store: &HarnessStore,
     created: &CreatedTeamRun,
+    lease: &TeamSupervisorLease,
     owner: &ProviderRuntimeProjection,
     work_id: &str,
 ) -> Work {
-    harness_application::WorkApplication::new(store)
+    let work = harness_application::WorkApplication::new(store)
         .create(harness_application::CreateWorkCommand {
             work_id: work_id.into(),
             team_run_id: created.team_run.id.clone(),
@@ -18,7 +19,6 @@ fn create_assigned_review_work(
             eligible_member_ids: Vec::new(),
             prerequisite_work_ids: Vec::new(),
             priority: WorkPriority::Normal,
-            initial_member_run_id: Some(owner.id.clone()),
             artifact_refs: Vec::new(),
             check_refs: Vec::new(),
             github_links: Vec::new(),
@@ -37,78 +37,8 @@ fn create_assigned_review_work(
                 duplicate_ok: false,
             },
         })
-        .expect("create assigned review Work")
-}
-
-fn bind_assigned_review_work(
-    store: &HarnessStore,
-    lease: &TeamSupervisorLease,
-    owner: &ProviderRuntimeProjection,
-    work: &Work,
-) {
-    let session = store
-        .fabric_agent_sessions(&lease.execution_space_id)
-        .expect("read exact owner AgentSession")
-        .into_iter()
-        .find(|session| session.agent_member_id == owner.agent_member_id)
-        .expect("exact owner AgentSession");
-    let membership_id = work
-        .assignee_membership_id
-        .clone()
-        .expect("assigned Work has canonical TeamMembership responsibility");
-    let binding_id = format!("binding-{}", work.id);
-    store
-        .bind_responsible_work_execution(
-            &harness_core::agentfirm_api::MutationContext {
-                execution_space_id: lease.execution_space_id.clone(),
-                authenticated_actor: harness_core::agentfirm_api::ActorRef {
-                    kind: harness_core::agentfirm_api::ActorKind::Service,
-                    id: lease.node_daemon_id.clone(),
-                },
-                authority_actor: None,
-                command_name: "work.bind".into(),
-                idempotency_key: binding_id.clone(),
-                expected_version: 0,
-                request_fingerprint: None,
-            },
-            &harness_core::agentfirm_api::RuntimeCommandBinding {
-                target_member_run_id: Some(owner.id.clone()),
-                target_member_run_generation: Some(owner.runtime_generation),
-                target_session_id: Some(session.id.clone()),
-                target_runtime_generation: Some(session.runtime_generation),
-                target_driver_generation: Some(session.control_state.driver_generation),
-                target_driver: session.control_state.driver_ref.clone(),
-                native_session_ref: session.native_session_ref.clone(),
-                composition_fingerprint: session.control_state.composition_fingerprint.clone(),
-                capability_fingerprint: session.control_state.capability_fingerprint.clone(),
-                permission_envelope_ref: Some(session.permission_envelope_ref.clone()),
-                ..Default::default()
-            },
-            harness_core::agentfirm_api::WorkExecutionBinding {
-                id: binding_id,
-                work_id: work.id.clone(),
-                work_revision: work.version,
-                team_id: work
-                    .accountable_team_id
-                    .clone()
-                    .expect("Team-scoped review Work"),
-                team_membership_id: membership_id,
-                agent_member_id: owner.agent_member_id.clone(),
-                agent_session_id: session.id,
-                agent_session_generation: session.runtime_generation,
-                delivery_id: format!("work-delivery:{}:1", work.id),
-                binding_generation: 1,
-                status: harness_core::agentfirm_api::WorkExecutionBindingStatus::Active,
-                version: 1,
-                created_by: harness_core::agentfirm_api::ActorRef {
-                    kind: harness_core::agentfirm_api::ActorKind::Service,
-                    id: lease.node_daemon_id.clone(),
-                },
-                bound_at: now_string(),
-                ended_at: None,
-            },
-        )
-        .expect("bind exact review Work execution authority");
+        .expect("create review Work");
+    assign_test_work_to_member(store, &lease.execution_space_id, created, owner, &work)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -263,8 +193,8 @@ fn host_owned_work_requires_exact_active_peer_while_member_work_remains_host_rev
     let supervisor_valid = AtomicBool::new(true);
     let authority_gate = Mutex::new(());
 
-    let host_work = create_assigned_review_work(&store, &created, &host, "host-owned-work");
-    bind_assigned_review_work(&store, &lease, &host, &host_work);
+    let host_work = create_assigned_review_work(&store, &created, &lease, &host, "host-owned-work");
+    bind_test_responsible_work_execution(&store, &lease, &host, &host_work);
     let host_review = advance_to_review(
         &store,
         &created,
@@ -401,8 +331,9 @@ fn host_owned_work_requires_exact_active_peer_while_member_work_remains_host_rev
         Some(WorkResolution::Accepted)
     );
 
-    let member_work = create_assigned_review_work(&store, &created, &worker, "member-owned-work");
-    bind_assigned_review_work(&store, &lease, &worker, &member_work);
+    let member_work =
+        create_assigned_review_work(&store, &created, &lease, &worker, "member-owned-work");
+    bind_test_responsible_work_execution(&store, &lease, &worker, &member_work);
     let member_review = advance_to_review(
         &store,
         &created,

@@ -476,6 +476,26 @@ pub(super) fn close_detached_blocked_member_for_recovery_with_hooks(
     // the closed generation so Reopen cannot re-inject the same Work.  A new
     // Host Message or a later Work revision remains the explicit wake event.
     let works = store.latest_works()?;
+    let active_bindings = store
+        .fabric_work_execution_bindings(&execution_space_id)?
+        .into_iter()
+        .filter(|binding| {
+            binding.agent_member_id == member.agent_member_id
+                && binding.agent_session_id == session.id
+                && binding.agent_session_generation == session.runtime_generation
+                && binding.status == harness_core::agentfirm_api::WorkExecutionBindingStatus::Active
+        })
+        .collect::<Vec<_>>();
+    let mut bound_work_ids = BTreeSet::new();
+    if active_bindings
+        .iter()
+        .any(|binding| !bound_work_ids.insert(binding.work_id.as_str()))
+    {
+        return Err(CliError::RuntimeRecoveryRequired(format!(
+            "DETACHED_MEMBER_RECOVERY_FENCED: member {} has multiple active execution bindings for one Work",
+            member.id
+        )));
+    }
     let received_deliveries = store
         .fabric_work_deliveries(&execution_space_id)?
         .into_iter()
@@ -490,11 +510,14 @@ pub(super) fn close_detached_blocked_member_for_recovery_with_hooks(
                 .iter()
                 .find(|work| {
                     work.id == delivery.work_id
-                        && work.version == delivery.work_revision
-                        && work.active_member_run_id.as_deref() == Some(member.id.as_str())
+                        && work.owner_member_id.as_deref() == Some(member.agent_member_id.as_str())
                         && !work.is_terminal()
+                        && active_bindings.iter().any(|binding| {
+                            binding.work_id == delivery.work_id
+                                && binding.work_revision == delivery.work_revision
+                        })
                 })
-                .map(|work| (work.id.clone(), work.version))
+                .map(|work| (work.id.clone(), delivery.work_revision))
         })
         .collect::<BTreeSet<_>>();
     if received_deliveries.len() > 1 {

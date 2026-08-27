@@ -119,5 +119,23 @@ fn initial_member_admission_rejects_foreign_only_identity_without_any_durable_wr
     .expect("zero-write rejection must leave the roster retryable");
     assert_eq!(retried.member_runs.len(), 3);
     assert_eq!(retried.works.len(), 2);
+    assert!(retried.works.iter().all(|work| {
+        work.active_member_run_id.is_none()
+            && work.assignee_membership_id.is_some()
+            && work.owner_member_id.is_some()
+            && work.version == 2
+    }));
+    assert_eq!(
+        retried
+            .works
+            .iter()
+            .filter_map(|work| work.owner_member_id.clone())
+            .collect::<BTreeSet<_>>(),
+        BTreeSet::from([
+            members[1].agent_member_id.clone(),
+            members[2].agent_member_id.clone()
+        ]),
+        "initial Work must bind stable AgentMember responsibility only"
+    );
     std::fs::remove_dir_all(root).expect("cleanup");
 }

@@ -143,6 +143,13 @@ pub(super) fn assert_action_matrix_and_final_projections(context: ActionMatrixCo
         .into_iter()
         .find(|run| run.id == member_run_id)
         .expect("canonical MemberRun for final projection checks");
+    let worker_membership_id = store
+        .fabric_team_memberships(space_id)
+        .expect("matrix TeamMemberships")
+        .into_iter()
+        .find(|membership| membership.team_id == team.id && membership.agent_member_id == worker_id)
+        .expect("matrix worker TeamMembership")
+        .id;
 
     // Every mutable Work action exposed by the closed RoleAction matrix must
     // replay the original commit before consulting the now-advanced Work
@@ -179,7 +186,6 @@ pub(super) fn assert_action_matrix_and_final_projections(context: ActionMatrixCo
     successor_provider_run.status = MemberRunStatus::Idle;
     successor_provider_run.started_at = "unix-ms:matrix-successor".into();
     successor_provider_run.finished_at = None;
-    let successor_run_id = successor_provider_run.id.clone();
     store
         .compare_and_advance_member_run_generation(&failed_provider_run, &successor_provider_run)
         .expect("append higher-generation replacement runtime");
@@ -260,7 +266,7 @@ pub(super) fn assert_action_matrix_and_final_projections(context: ActionMatrixCo
             "assign_work",
             "1",
             "matrix-host-assign",
-            serde_json::json!({"action":"assign_work","member_run_id":member_run_id}),
+            serde_json::json!({"action":"assign_work","membership_id":worker_membership_id.clone()}),
             None,
         ),
         (
@@ -276,21 +282,13 @@ pub(super) fn assert_action_matrix_and_final_projections(context: ActionMatrixCo
             "assign_work",
             "3",
             "matrix-host-reassign",
-            serde_json::json!({"action":"assign_work","member_run_id":member_run_id}),
-            None,
-        ),
-        (
-            "rebind",
-            "rebind_work",
-            "4",
-            "matrix-host-rebind",
-            serde_json::json!({"action":"rebind_work","member_run_id":successor_run_id}),
+            serde_json::json!({"action":"assign_work","membership_id":worker_membership_id}),
             None,
         ),
         (
             "cancel",
             "cancel_work",
-            "5",
+            "4",
             "matrix-host-cancel",
             serde_json::json!({"action":"cancel_work","reason":"matrix complete"}),
             Some("cancel"),

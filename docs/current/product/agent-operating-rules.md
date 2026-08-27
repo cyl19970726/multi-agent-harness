@@ -35,7 +35,9 @@ exact question and repair the other projection. Neither file universally wins.
   target/debug/firm team-run create --agent-team-id <team> --objective <objective>
   target/debug/firm team-run work create --team-run-id <team-run> \
     --title <title> --context <markdown> \
-    --completion-criteria <criteria> --owner-member-run-id <member-run>
+    --completion-criteria <criteria> --claim-mode host_assign
+firm team-run work assign --work-id <work-id> --expected-version <version> \
+    --membership-id <team-membership-id>
   target/debug/firm team-run work list --team-run-id <team-run>
   target/debug/firm dashboard snapshot
   target/debug/firm serve --addr 127.0.0.1:8787

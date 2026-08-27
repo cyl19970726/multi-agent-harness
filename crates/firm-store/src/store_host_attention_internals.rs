@@ -423,7 +423,12 @@ impl HarnessStore {
             work_id: operation.event.work_id.clone(),
             work_version: operation.event.resulting_version,
             source_event_ref: operation.event.id.clone(),
-            member_run_id: operation.work.active_member_run_id.clone(),
+            // The WorkEvent actor is immutable execution evidence written
+            // after the exact binding fence succeeds. Attention keeps that
+            // submitting runtime for evidence only; it never authorizes Work.
+            member_run_id: (operation.event.performed_by_actor.kind
+                == TeamActorKind::ProviderRuntimeProjection)
+                .then(|| operation.event.performed_by_actor.id.clone()),
             status: HostAttentionStatus::Actionable,
             attempt: 0,
             claim_id: None,

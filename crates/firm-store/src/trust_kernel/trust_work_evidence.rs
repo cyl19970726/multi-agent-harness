@@ -24,7 +24,7 @@ impl HarnessStore {
         };
         let current_work =
             self.trust_team_work_unlocked(team_id, &report.work_id, source_work_revision)?;
-        self.require_exact_work_member_unlocked(
+        let authoring_member_run = self.require_exact_work_member_unlocked(
             &context.execution_space_id,
             &current_work,
             &context.authenticated_actor,
@@ -232,7 +232,7 @@ impl HarnessStore {
                 work_id: submitted_work.id.clone(),
                 work_version: submitted_work.version,
                 source_event_ref: report.id.clone(),
-                member_run_id: submitted_work.active_member_run_id.clone(),
+                member_run_id: Some(authoring_member_run.id.clone()),
                 status: HostAttentionStatus::Actionable,
                 attempt: 0,
                 claim_id: None,

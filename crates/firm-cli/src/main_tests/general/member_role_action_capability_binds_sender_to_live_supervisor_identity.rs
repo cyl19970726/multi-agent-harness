@@ -113,14 +113,16 @@ fn member_role_action_capability_binds_sender_to_live_supervisor_identity() {
             eligible_member_ids: Vec::new(),
             prerequisite_work_ids: Vec::new(),
             priority: WorkPriority::Normal,
-            initial_member_run_id: Some(first.id.clone()),
             artifact_refs: Vec::new(),
             check_refs: Vec::new(),
             github_links: Vec::new(),
             expected_version: 0,
             context,
         })
-        .expect("create assigned Work");
+        .expect("create Work");
+    let work =
+        assign_test_work_to_member(&store, &lease.execution_space_id, &created, &first, &work);
+    bind_test_responsible_work_execution(&store, &lease, &first, &work);
     let route = format!(
         "/v1/agentfirm/team-runs/{}/works/{}/start",
         created.team_run.id, work.id
@@ -177,10 +179,7 @@ fn member_role_action_capability_binds_sender_to_live_supervisor_identity() {
         .find(|candidate| candidate.id == work.id)
         .expect("started Work");
     assert_eq!(started.phase, WorkPhase::Active);
-    assert_eq!(
-        started.active_member_run_id.as_deref(),
-        Some(first.id.as_str())
-    );
+    assert_eq!(started.active_member_run_id, None);
     let registered_control = LIVE_MEMBER_CONTROLS
         .get()
         .expect("live registry")

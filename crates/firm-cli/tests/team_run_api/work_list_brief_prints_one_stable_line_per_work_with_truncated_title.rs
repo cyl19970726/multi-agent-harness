@@ -42,7 +42,7 @@ fn work_list_brief_prints_one_stable_line_per_work_with_truncated_title() {
         line.split("  ").map(str::to_string).collect()
     };
 
-    // <work-id>  <status>  <owner-member-run-id|unassigned>  v<version>  <title>
+    // <work-id>  <status>  <owner-agent-member-id|unassigned>  v<version>  <title>
     let open_fields = field_of(&fixture.work_open_id);
     assert_eq!(open_fields[0], fixture.work_open_id);
     assert_eq!(open_fields[1], "open");
@@ -57,24 +57,24 @@ fn work_list_brief_prints_one_stable_line_per_work_with_truncated_title() {
 
     let in_progress_fields = field_of(&fixture.work_in_progress_id);
     assert_eq!(in_progress_fields[1], "active");
-    assert_eq!(in_progress_fields[2], fixture.alice_id);
-    assert_eq!(in_progress_fields[3], "v2");
+    assert_eq!(in_progress_fields[2], fixture.alice_agent_member_id);
+    assert_eq!(in_progress_fields[3], "v3");
     assert_eq!(in_progress_fields[4], "In-progress Work");
 
     let review_fields = field_of(&fixture.work_review_id);
     assert_eq!(review_fields[1], "review");
-    assert_eq!(review_fields[2], fixture.bob_id);
-    assert_eq!(review_fields[3], "v3");
+    assert_eq!(review_fields[2], fixture.bob_agent_member_id);
+    assert_eq!(review_fields[3], "v4");
 
     let blocked_fields = field_of(&fixture.work_blocked_id);
     assert_eq!(blocked_fields[1], "blocked");
-    assert_eq!(blocked_fields[2], fixture.alice_id);
-    assert_eq!(blocked_fields[3], "v3");
+    assert_eq!(blocked_fields[2], fixture.alice_agent_member_id);
+    assert_eq!(blocked_fields[3], "v4");
 
     let done_fields = field_of(&fixture.work_done_id);
     assert_eq!(done_fields[1], "accepted");
-    assert_eq!(done_fields[2], fixture.bob_id);
-    assert_eq!(done_fields[3], "v4");
+    assert_eq!(done_fields[2], fixture.bob_agent_member_id);
+    assert_eq!(done_fields[3], "v5");
 
     let cancelled_fields = field_of(&fixture.work_cancelled_id);
     assert_eq!(cancelled_fields[1], "cancelled");

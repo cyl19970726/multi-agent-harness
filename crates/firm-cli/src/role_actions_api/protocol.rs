@@ -25,17 +25,8 @@ pub(super) enum RoleActionIntent {
         reason: String,
     },
     AssignWork {
-        /// Canonical DOC-106 assignee: one TeamMembership of the Work's
-        /// accountable Team. Takes precedence over the legacy MemberRun target.
-        #[serde(default)]
-        membership_id: Option<String>,
-        /// Legacy runtime-bound assignment target. Deprecated by
-        /// `membership_id`; retained for the pre-cutover MemberRun plane.
-        #[serde(default)]
-        member_run_id: Option<String>,
-    },
-    RebindWork {
-        member_run_id: String,
+        /// Canonical assignee: one TeamMembership of the accountable Team.
+        membership_id: String,
     },
     ReleaseWork,
     CancelWork {
@@ -407,15 +398,7 @@ pub(super) fn parse_route(path: &str) -> Option<Route<'_>> {
         ["v1", "agentfirm", "team-runs", run_id, "works", work_id, operation]
             if matches!(
                 *operation,
-                "assign"
-                    | "rebind"
-                    | "release"
-                    | "cancel"
-                    | "claim"
-                    | "start"
-                    | "block"
-                    | "resume"
-                    | "submit"
+                "assign" | "release" | "cancel" | "claim" | "start" | "block" | "resume" | "submit"
             ) =>
         {
             Some(Route {

@@ -230,7 +230,6 @@ team message claim  --team <id> --delivery-id <id> --membership-id <id>
 "#;
 
 pub(super) const CHEATSHEET_WORK: &str = r#"work create --team-run-id <id> --title <text> --completion-criteria <text>
-  [--owner-member-run-id <id> --claim-mode host_assign]
   [--claim-mode team_claim --eligible-member-id <id>]
   [--priority low|normal|high|urgent] [--context <md>]
   [--prerequisite-work-id <id>] [--idempotency-key <key>]
@@ -241,7 +240,7 @@ work list --team-run-id <id> [--brief] [--since <cursor>]
   [--status <status>] [--member-run-id <id>]
 work show --work-id <id>
 work assign --work-id <id> --expected-version <n> --membership-id <id> [--idempotency-key <key>]
-  (canonical TeamMembership responsibility; --member-run-id <id> remains the legacy runtime binding)
+  (canonical TeamMembership responsibility; runtime ids are not Work authority)
 work migrate-responsibility  (append-only DOC-106 cutover of legacy TeamRun-scoped Work)
 work accept --work-id <id> --expected-version <n> [--idempotency-key <key>]
 work request-changes --work-id <id> --expected-version <n> --reason <text> [--idempotency-key <key>]
@@ -265,7 +264,6 @@ team-run board-summary --id <id>
 team-run recover --id <id> [--json]
 
 work create --team-run-id <id> --title <text> --completion-criteria <text>
-  [--owner-member-run-id <id> --claim-mode host_assign]
   [--claim-mode team_claim --eligible-member-id <id>]
   [--github-issue owner/repo#N]
 work replace-dependencies --team-id <id> --work-id <id> --expected-version <n>
@@ -273,7 +271,7 @@ work replace-dependencies --team-id <id> --work-id <id> --expected-version <n>
 work list --team-run-id <id> [--brief] [--since <cursor>]
 work show --work-id <id>
 work assign --work-id <id> --expected-version <n> --membership-id <id>
-  (canonical TeamMembership responsibility; --member-run-id <id> remains the legacy runtime binding)
+  (canonical TeamMembership responsibility; runtime ids are not Work authority)
 work submit --team-run-id <id> --member-run-id <id> --work-id <id>
   --expected-version <n> --result <text> [--github-pr owner/repo#N]
 work accept --work-id <id> --expected-version <n>

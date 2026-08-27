@@ -37,9 +37,9 @@ Write each Work so a Member can execute it without asking what "done" means:
 - **Boundary** — paths to touch and paths never to touch.
 - **Gates/Evidence** — what the reviewer will check, verbatim.
 
-Choose the claim mode deliberately: `host_assign` (with
-`--owner-member-run-id`) when one member must own it; `team_claim` when any
-eligible member may atomically claim. Prefer several bounded Works over one
+Choose the claim mode deliberately: `host_assign` followed by canonical
+`work assign --membership-id` when one stable TeamMembership must own it;
+`team_claim` when any eligible member may atomically claim. Prefer several bounded Works over one
 epic — TeamRun completion atomically rejects non-terminal Works, so unbounded
 Works block teardown.
 

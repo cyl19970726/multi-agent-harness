@@ -94,6 +94,18 @@ pub(super) fn team_run_work_command(
                 .map(|raw| parse_work_resolution(&raw))
                 .transpose()?;
             let member_run_id = value(args, "--member-run-id");
+            let member_agent_id = member_run_id
+                .as_deref()
+                .map(|member_run_id| {
+                    latest_member_runs_in_append_order(store)?
+                        .into_iter()
+                        .find(|member| member.id == member_run_id)
+                        .map(|member| member.agent_member_id)
+                        .ok_or_else(|| {
+                            CliError::Usage(format!("member run not found: {member_run_id}"))
+                        })
+                })
+                .transpose()?;
             // `--since <cursor>`: delta read against the WorkOperation append
             // order (see `work_operation_cursors` for why that order, and not
             // Work::version or updated_at, is the cursor). Independent of the
@@ -142,8 +154,8 @@ pub(super) fn team_run_work_command(
                     resolution.is_none_or(|resolution| work.resolution == Some(resolution))
                 })
                 .filter(|work| {
-                    member_run_id.as_deref().is_none_or(|member| {
-                        work.active_member_run_id.as_deref() == Some(member)
+                    member_agent_id.as_deref().is_none_or(|member| {
+                        work.owner_member_id.as_deref() == Some(member)
                     })
                 })
                 .filter(|work| {
@@ -378,10 +390,15 @@ pub(super) fn team_run_work_command(
             }
         }
         "create" => {
+            if value(args, "--owner-member-run-id").is_some() {
+                return Err(CliError::Usage(
+                    "create-time MemberRun ownership is retired; create Work, then assign one canonical TeamMembership"
+                        .into(),
+                ));
+            }
             let team_run_id = required(args, "--team-run-id")?;
             let run = latest_team_run(store, &team_run_id)?;
             let acting_member_run_id = value(args, "--as-member-run-id");
-            let owner_member_run_id = value(args, "--owner-member-run-id");
             let context = if let Some(member_run_id) = acting_member_run_id.as_deref() {
                 member_work_context(args, &team_run_id, member_run_id)?
             } else {
@@ -390,11 +407,7 @@ pub(super) fn team_run_work_command(
             let claim_mode = value(args, "--claim-mode")
                 .map(|raw| parse_work_claim_mode(&raw))
                 .transpose()?
-                .unwrap_or(if owner_member_run_id.is_some() {
-                    WorkClaimMode::HostAssign
-                } else {
-                    WorkClaimMode::TeamClaim
-                });
+                .unwrap_or(WorkClaimMode::TeamClaim);
             // `--github-issue owner/repo#N` links the Work to a GitHub issue;
             // `--github-pr owner/repo#N` links it to a pull request (issue
             // #369). Both auto-populate artifact_refs (object URL) and PR
@@ -440,7 +453,6 @@ pub(super) fn team_run_work_command(
                     .map(|raw| parse_work_priority(&raw))
                     .transpose()?
                     .unwrap_or(WorkPriority::Normal),
-                initial_member_run_id: owner_member_run_id,
                 artifact_refs,
                 check_refs,
                 github_links,
@@ -467,67 +479,41 @@ pub(super) fn team_run_work_command(
             print_json(&work)
         }
         "assign" => {
-            let membership_id = value(args, "--membership-id");
-            let member_run_id = value(args, "--member-run-id");
-            if membership_id.is_some() == member_run_id.is_some() {
+            if value(args, "--member-run-id").is_some() {
                 return Err(CliError::Usage(
-                    "team-run work assign requires exactly one of --membership-id (canonical TeamMembership responsibility, DOC-106) or --member-run-id (legacy runtime-bound assignment)"
-                        .to_string(),
+                    "runtime-bound Work assignment is retired; use --membership-id".into(),
                 ));
             }
-            if let Some(membership_id) = membership_id {
-                let space_id = resolved
-                    .execution_space_context
-                    .as_ref()
-                    .map(|space| space.id.clone())
-                    .ok_or_else(|| {
-                        CliError::Usage(
-                            "membership assignment requires an explicitly selected --space"
-                                .to_string(),
-                        )
-                    })?;
-                let work_id = required(args, "--work-id")?;
-                let work = execute_work_action(
-                    store,
-                    harness_application::WorkAction::AssignMembership {
-                        expected_version: required_work_version(args)?,
-                        context: host_work_context_for_work(store, &work_id, args)?,
-                        work_id,
-                        membership_id: membership_id.clone(),
-                        execution_space_id: space_id,
-                    },
-                )?;
-                append_work_event(
-                    store,
-                    &work,
-                    TeamRunEventSourceKind::Host,
-                    None,
-                    "assigned",
-                    &format!("Work assigned to TeamMembership {membership_id}"),
-                )?;
-                print_json(&work)
-            } else {
-                let member_run_id = member_run_id.unwrap_or_default();
-                let work_id = required(args, "--work-id")?;
-                let work = execute_work_action(
-                    store,
-                    harness_application::WorkAction::AssignRuntime {
-                        expected_version: required_work_version(args)?,
-                        context: host_work_context_for_work(store, &work_id, args)?,
-                        work_id,
-                        member_run_id: member_run_id.clone(),
-                    },
-                )?;
-                append_work_event(
-                    store,
-                    &work,
-                    TeamRunEventSourceKind::Host,
-                    Some(member_run_id.clone()),
-                    "assigned",
-                    &format!("Work assigned to {member_run_id}"),
-                )?;
-                print_json(&work)
-            }
+            let membership_id = required(args, "--membership-id")?;
+            let space_id = resolved
+                .execution_space_context
+                .as_ref()
+                .map(|space| space.id.clone())
+                .ok_or_else(|| {
+                    CliError::Usage(
+                        "membership assignment requires an explicitly selected --space".to_string(),
+                    )
+                })?;
+            let work_id = required(args, "--work-id")?;
+            let work = execute_work_action(
+                store,
+                harness_application::WorkAction::AssignMembership {
+                    expected_version: required_work_version(args)?,
+                    context: host_work_context_for_work(store, &work_id, args)?,
+                    work_id,
+                    membership_id: membership_id.clone(),
+                    execution_space_id: space_id,
+                },
+            )?;
+            append_work_event(
+                store,
+                &work,
+                TeamRunEventSourceKind::Host,
+                None,
+                "assigned",
+                &format!("Work assigned to TeamMembership {membership_id}"),
+            )?;
+            print_json(&work)
         }
         "migrate-responsibility" => {
             let space_id = resolved

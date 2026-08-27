@@ -1134,12 +1134,11 @@ pub(super) fn member_run_detail_json(
         .into_iter()
         .filter(|work| work.team_run_id == member.team_run_id)
         .filter(|work| {
-            work.active_member_run_id.as_deref() == Some(member_run_id)
-                || work.owner_member_id.as_deref() == Some(member.agent_member_id.as_str())
+            work.owner_member_id.as_deref() == Some(member.agent_member_id.as_str())
                 || work
                     .eligible_member_ids
                     .iter()
-                    .any(|id| id == member_run_id || id == &member.agent_member_id)
+                    .any(|id| id == &member.agent_member_id)
         })
         .collect::<Vec<_>>();
     let latest_handoff = outbox

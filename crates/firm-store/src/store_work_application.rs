@@ -35,16 +35,6 @@ impl WorkPersistence for HarnessStore {
         )
     }
 
-    fn assign_work(
-        &self,
-        work_id: &str,
-        expected_version: u64,
-        member_run_id: &str,
-        context: WorkCommandContext,
-    ) -> StoreResult<Work> {
-        HarnessStore::assign_work(self, work_id, expected_version, member_run_id, context)
-    }
-
     fn assign_work_to_membership(
         &self,
         work_id: &str,
@@ -61,16 +51,6 @@ impl WorkPersistence for HarnessStore {
             execution_space_id,
             context,
         )
-    }
-
-    fn rebind_work(
-        &self,
-        work_id: &str,
-        expected_version: u64,
-        member_run_id: &str,
-        context: WorkCommandContext,
-    ) -> StoreResult<Work> {
-        HarnessStore::rebind_work(self, work_id, expected_version, member_run_id, context)
     }
 
     fn release_work_as_host(

@@ -1341,8 +1341,7 @@ pub(super) fn compatibility_recovery_status(
     }
     let has_assigned_work = store.latest_works()?.into_iter().any(|work| {
         !work.is_terminal()
-            && (work.active_member_run_id.as_deref() == Some(member.id.as_str())
-                || work.owner_member_id.as_deref() == Some(member.agent_member_id.as_str()))
+            && work.owner_member_id.as_deref() == Some(member.agent_member_id.as_str())
     });
     Ok(
         if member.provider_environment_observation.is_some() || has_assigned_work {

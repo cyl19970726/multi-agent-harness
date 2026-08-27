@@ -284,8 +284,6 @@ fi
             "Offline GitHub-linked Work",
             "--completion-criteria",
             "structured PR link survives canonical submission",
-            "--owner-member-run-id",
-            &member_id,
             "--github-issue",
             "example/project#7",
         ],
@@ -294,6 +292,14 @@ fi
     assert!(created.status.success(), "create failed: {created:?}");
     let created: serde_json::Value =
         serde_json::from_slice(&created.stdout).expect("created Work JSON");
+    let assigned = firm_env::assign_work_for_member_run(
+        &home,
+        &project_id,
+        created["id"].as_str().expect("work id"),
+        &member_id,
+        true,
+    );
+    let created = serde_json::to_value(assigned).expect("assigned Work JSON");
     let work_id = created["id"].as_str().expect("work id");
     assert_eq!(created["github_links"][0]["kind"].as_str(), Some("issue"));
     member_firm_json(
@@ -310,7 +316,7 @@ fi
             "--work-id",
             work_id,
             "--expected-version",
-            "1",
+            "2",
             "--member-run-id",
             &member_id,
         ],
@@ -330,7 +336,7 @@ fi
             "--work-id",
             work_id,
             "--expected-version",
-            "2",
+            "3",
             "--member-run-id",
             &member_id,
             "--result",
@@ -405,12 +411,18 @@ fn github_issue_and_pr_linkage_roundtrip() {
             "GitHub-linked Work",
             "--completion-criteria",
             "link stored and shown",
-            "--owner-member-run-id",
-            &member_id,
             "--github-issue",
             &github_issue,
         ],
     );
+    let assigned = firm_env::assign_work_for_member_run(
+        &home,
+        &project_id,
+        created["id"].as_str().expect("work id"),
+        &member_id,
+        true,
+    );
+    let created = serde_json::to_value(assigned).expect("assigned Work JSON");
     assert_eq!(created["phase"].as_str(), Some("open"));
     let issue_url = format!("https://github.com/{GH_REPO}/issues/{GH_ISSUE_NUMBER}");
     assert_eq!(
@@ -448,7 +460,7 @@ fn github_issue_and_pr_linkage_roundtrip() {
             "--work-id",
             &work_id,
             "--expected-version",
-            "1",
+            "2",
             "--member-run-id",
             &member_id,
         ],
@@ -468,7 +480,7 @@ fn github_issue_and_pr_linkage_roundtrip() {
             "--work-id",
             &work_id,
             "--expected-version",
-            "2",
+            "3",
             "--member-run-id",
             &member_id,
             "--result",
@@ -578,12 +590,18 @@ fn github_pr_merge_auto_submits_in_progress_work() {
             "Auto-submit on merge",
             "--completion-criteria",
             "daemon submits when the linked PR merges",
-            "--owner-member-run-id",
-            &member_id,
             "--github-pr",
             &pr_ref,
         ],
     );
+    let assigned = firm_env::assign_work_for_member_run(
+        &home,
+        &project_id,
+        created["id"].as_str().expect("work id"),
+        &member_id,
+        true,
+    );
+    let created = serde_json::to_value(assigned).expect("assigned Work JSON");
     assert_eq!(created["phase"].as_str(), Some("open"));
     assert_eq!(
         created["github_links"][0]["kind"].as_str(),
@@ -610,7 +628,7 @@ fn github_pr_merge_auto_submits_in_progress_work() {
             "--work-id",
             &work_id,
             "--expected-version",
-            "1",
+            "2",
             "--member-run-id",
             &member_id,
         ],
@@ -675,12 +693,18 @@ fn github_pr_merge_on_red_ci_is_held_for_host() {
             "Hold on red CI",
             "--completion-criteria",
             "red-CI merges stay open for Host judgment",
-            "--owner-member-run-id",
-            &member_id,
             "--github-pr",
             &pr_ref,
         ],
     );
+    let assigned = firm_env::assign_work_for_member_run(
+        &home,
+        &project_id,
+        created["id"].as_str().expect("work id"),
+        &member_id,
+        true,
+    );
+    let created = serde_json::to_value(assigned).expect("assigned Work JSON");
     let work_id = created["id"].as_str().expect("work id").to_string();
     assert_eq!(
         created["github_links"][0]["ci_status"].as_str(),
@@ -701,7 +725,7 @@ fn github_pr_merge_on_red_ci_is_held_for_host() {
             "--work-id",
             &work_id,
             "--expected-version",
-            "1",
+            "2",
             "--member-run-id",
             &member_id,
         ],

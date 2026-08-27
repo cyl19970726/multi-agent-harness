@@ -39,23 +39,23 @@ function checkWorkCreateExamples() {
     errors.push(`${skillPath}: must contain executable team-run work create examples`);
     return;
   }
+  if (!markdown.includes("work assign") || !markdown.includes("--membership-id")) {
+    errors.push(`${skillPath}: Host assignment must use canonical work assign --membership-id`);
+  }
   for (const command of commands) {
     for (const flag of ["--team-run-id", "--title", "--completion-criteria"]) {
       if (!command.includes(flag)) {
         errors.push(`${skillPath}: work create example is missing required ${flag}: ${command}`);
       }
     }
-    if (command.includes("--claim-mode host_assign") && !command.includes("--owner-member-run-id")) {
-      errors.push(`${skillPath}: host_assign example needs --owner-member-run-id: ${command}`);
-    }
-    if (command.includes("--owner-member-run-id") && !command.includes("--claim-mode host_assign")) {
-      errors.push(`${skillPath}: assigned example must state --claim-mode host_assign: ${command}`);
+    if (command.includes("--owner-member-run-id")) {
+      errors.push(`${skillPath}: create-time runtime ownership is retired; use work assign --membership-id: ${command}`);
     }
     if (command.includes("code-review:") && !command.includes("reviewer=")) {
       errors.push(`${skillPath}: code-review example must name its reviewer: ${command}`);
     }
     if (command.includes("--worktree")) {
-      for (const flag of ["--context", "--owner-member-run-id", "--claim-mode host_assign"] ) {
+      for (const flag of ["--context", "--claim-mode host_assign"] ) {
         if (!command.includes(flag)) {
           errors.push(`${skillPath}: code worktree example is missing ${flag}: ${command}`);
         }

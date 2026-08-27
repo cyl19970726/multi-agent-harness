@@ -866,6 +866,120 @@ fn ensure_test_runtime_fabric(
     .expect("materialize canonical test AgentSessions and TeamMemberships");
 }
 
+fn assign_test_work_to_member(
+    store: &HarnessStore,
+    execution_space_id: &str,
+    created: &CreatedTeamRun,
+    owner: &ProviderRuntimeProjection,
+    work: &Work,
+) -> Work {
+    let memberships = store
+        .fabric_team_memberships(execution_space_id)
+        .expect("read test TeamMemberships")
+        .into_iter()
+        .filter(|membership| {
+            membership.team_id == created.team_run.agent_team_id
+                && membership.agent_member_id == owner.agent_member_id
+                && membership.state == harness_core::agentfirm_api::TeamMembershipStatus::Active
+        })
+        .collect::<Vec<_>>();
+    let [membership] = memberships.as_slice() else {
+        panic!("test Work responsibility must resolve one active TeamMembership");
+    };
+    store
+        .assign_work_to_membership(
+            &work.id,
+            work.version,
+            &membership.id,
+            execution_space_id,
+            WorkCommandContext {
+                event_id: format!("assign-{}", work.id),
+                performed_by_actor: created
+                    .team_run
+                    .host_actor
+                    .clone()
+                    .expect("exact Team Host"),
+                authority_actor: None,
+                causation_ref: None,
+                idempotency_key: format!("assign-{}", work.id),
+                created_at: now_string(),
+                duplicate_ok: false,
+            },
+        )
+        .expect("assign stable test Work responsibility")
+}
+
+fn bind_test_responsible_work_execution(
+    store: &HarnessStore,
+    lease: &TeamSupervisorLease,
+    owner: &ProviderRuntimeProjection,
+    work: &Work,
+) {
+    let session = store
+        .fabric_agent_sessions(&lease.execution_space_id)
+        .expect("read exact owner AgentSession")
+        .into_iter()
+        .find(|session| session.agent_member_id == owner.agent_member_id)
+        .expect("exact owner AgentSession");
+    let membership_id = work
+        .assignee_membership_id
+        .clone()
+        .expect("assigned Work has canonical TeamMembership responsibility");
+    let binding_id = format!("binding-{}", work.id);
+    store
+        .bind_responsible_work_execution(
+            &harness_core::agentfirm_api::MutationContext {
+                execution_space_id: lease.execution_space_id.clone(),
+                authenticated_actor: harness_core::agentfirm_api::ActorRef {
+                    kind: harness_core::agentfirm_api::ActorKind::Service,
+                    id: lease.node_daemon_id.clone(),
+                },
+                authority_actor: None,
+                command_name: "test.work.bind".into(),
+                idempotency_key: binding_id.clone(),
+                expected_version: 0,
+                request_fingerprint: None,
+            },
+            &harness_core::agentfirm_api::RuntimeCommandBinding {
+                target_member_run_id: Some(owner.id.clone()),
+                target_member_run_generation: Some(owner.runtime_generation),
+                target_session_id: Some(session.id.clone()),
+                target_runtime_generation: Some(session.runtime_generation),
+                target_driver_generation: Some(session.control_state.driver_generation),
+                target_driver: session.control_state.driver_ref.clone(),
+                native_session_ref: session.native_session_ref.clone(),
+                composition_fingerprint: session.control_state.composition_fingerprint.clone(),
+                capability_fingerprint: session.control_state.capability_fingerprint.clone(),
+                permission_envelope_ref: Some(session.permission_envelope_ref.clone()),
+                ..Default::default()
+            },
+            harness_core::agentfirm_api::WorkExecutionBinding {
+                id: binding_id,
+                work_id: work.id.clone(),
+                work_revision: work.version,
+                team_id: work
+                    .accountable_team_id
+                    .clone()
+                    .expect("Team-scoped test Work"),
+                team_membership_id: membership_id,
+                agent_member_id: owner.agent_member_id.clone(),
+                agent_session_id: session.id,
+                agent_session_generation: session.runtime_generation,
+                delivery_id: format!("work-delivery:{}:1", work.id),
+                binding_generation: 1,
+                status: harness_core::agentfirm_api::WorkExecutionBindingStatus::Active,
+                version: 1,
+                created_by: harness_core::agentfirm_api::ActorRef {
+                    kind: harness_core::agentfirm_api::ActorKind::Service,
+                    id: lease.node_daemon_id.clone(),
+                },
+                bound_at: now_string(),
+                ended_at: None,
+            },
+        )
+        .expect("bind exact test Work execution authority");
+}
+
 fn test_collaboration_capability(
     store: &HarnessStore,
     lease: &TeamSupervisorLease,

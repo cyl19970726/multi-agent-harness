@@ -1149,8 +1149,8 @@ impl TeamRunLedger {
     /// so the member sees the transition as mail rather than as a new
     /// work assignment.
     ///
-    /// Only works where `is_terminal()` is true AND `active_member_run_id`
-    /// matches the member are eligible — this is a notification, not a
+    /// Only terminal Work belonging to the stable AgentMember responsibility
+    /// is eligible — this is a notification, not a
     /// handoff. No slot-occupancy fence is applied because a terminal-work
     /// notification never blocks an active execution assignment.
     pub(super) fn claim_terminal_work_notifications_for(

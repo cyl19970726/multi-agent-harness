@@ -17,7 +17,6 @@ fn team_work_cli_replaces_dependencies_through_application() {
                 eligible_member_ids: Vec::new(),
                 prerequisite_work_ids: Vec::new(),
                 priority: WorkPriority::Normal,
-                initial_member_run_id: None,
                 artifact_refs: Vec::new(),
                 check_refs: Vec::new(),
                 github_links: Vec::new(),

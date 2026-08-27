@@ -233,10 +233,7 @@ pub(super) fn team_run_recover(
         for member in &members {
             let member_works: Vec<&Work> = works
                 .iter()
-                .filter(|w| {
-                    w.active_member_run_id.as_deref() == Some(&member.id)
-                        || w.owner_member_id.as_deref() == Some(member.agent_member_id.as_str())
-                })
+                .filter(|w| w.owner_member_id.as_deref() == Some(member.agent_member_id.as_str()))
                 .collect();
             let path = classify_member_recovery_path(member, supervisor_current);
             println!(
@@ -312,7 +309,7 @@ pub(super) fn team_run_recover(
 
     // ── Phase 3: reopen compatible sessions ──────────────────────────
     let mut reopened = 0u64;
-    let mut rebound = 0u64;
+    let rebound = 0u64;
     let mut skipped = 0u64;
     let ledger = TeamRunLedger::without_supervisor(store, team_run_id);
     for (member, path) in &recovery_plan {
@@ -361,91 +358,49 @@ pub(super) fn team_run_recover(
                 reopened += 1;
             }
             MemberRecoveryPath::RebindIncompatible { reason } => {
-                // Rebind member's Works to a new generation.
-                let member_works: Vec<Work> = works
-                    .iter()
-                    .filter(|w| {
-                        w.active_member_run_id.as_deref() == Some(&member.id) && !w.is_terminal()
-                    })
-                    .cloned()
-                    .collect();
-                if member_works.is_empty() {
-                    if !json {
-                        println!(
-                            "  {} ({}): no non-terminal Works to rebind ({})",
-                            member.name, member.provider, reason
-                        );
-                    }
-                    skipped += 1;
-                    continue;
-                }
-                // Create a new runtime generation row first.
-                let mut rebound_member = (*member).clone();
-                rebound_member.runtime_generation =
-                    rebound_member.runtime_generation.saturating_add(1);
-                rebound_member.started_at = now_str.clone();
-                rebound_member.coordination_status = MemberCoordinationStatus::Active;
-                rebound_member.status = MemberRunStatus::Queued;
-                rebound_member.finished_at = None;
-                rebound_member.last_event_at = Some(now_str.clone());
+                // Runtime recovery advances only the MemberRun generation.
+                // Work responsibility remains the stable AgentMember /
+                // TeamMembership; the scheduler later admits the new exact
+                // runtime through WorkExecutionBinding.
+                let mut recovered_member = (*member).clone();
+                recovered_member.runtime_generation =
+                    recovered_member.runtime_generation.saturating_add(1);
+                recovered_member.started_at = now_str.clone();
+                recovered_member.coordination_status = MemberCoordinationStatus::Active;
+                recovered_member.status = MemberRunStatus::Queued;
+                recovered_member.finished_at = None;
+                recovered_member.last_event_at = Some(now_str.clone());
                 store_conflict_as_usage(
-                    store.compare_and_advance_member_run_generation(member, &rebound_member),
+                    store.compare_and_advance_member_run_generation(member, &recovered_member),
                 )?;
                 ledger.append_action(
                     &member.id,
                     "recovered",
                     MemberActionStatus::Succeeded,
-                    "member recovered with Work rebinds",
+                    "member recovered with stable Work responsibility",
                     &format!(
-                        "host: recovered after supervisor death; {} Works rebound to generation {}",
-                        member_works.len(),
-                        rebound_member.runtime_generation
+                        "host: recovered after supervisor death; runtime generation {} ({reason})",
+                        recovered_member.runtime_generation
                     ),
                 )?;
-                // Rebind each Work.
-                for work in &member_works {
-                    let host_actor = store.exact_team_run_host_actor(&work.team_run_id)?;
-                    let ctx = WorkCommandContext {
-                        event_id: generated_id("work-event"),
-                        performed_by_actor: TeamActorRef {
-                            display_name: Some("Host recovery".to_string()),
-                            authn_source: Some("team_run_recover".to_string()),
-                            ..host_actor.clone()
-                        },
-                        authority_actor: Some(host_actor),
-                        causation_ref: None,
-                        idempotency_key: generated_id("work-command"),
-                        created_at: now_str.clone(),
-                        duplicate_ok: false,
-                    };
-                    store.rebind_work(&work.id, work.version, &rebound_member.id, ctx)?;
-                    ledger.fold_event(
-                        TeamRunEventSourceKind::Host,
-                        Some(member.id.clone()),
-                        "work",
-                        &work.id,
-                        "rebound",
-                        &format!(
-                            "Work {} rebound from {} gen {} to {} gen {} ({})",
-                            work.title,
-                            member.id,
-                            member.runtime_generation,
-                            rebound_member.id,
-                            rebound_member.runtime_generation,
-                            reason
-                        ),
-                    )?;
-                }
+                ledger.fold_event(
+                    TeamRunEventSourceKind::Host,
+                    Some(member.id.clone()),
+                    "member_run",
+                    &member.id,
+                    "recovered",
+                    &format!(
+                        "member {} recovered at runtime generation {} with stable Work responsibility",
+                        member.name, recovered_member.runtime_generation
+                    ),
+                )?;
                 if !json {
                     println!(
-                        "  {} ({}): rebound {} Works ({})",
-                        member.name,
-                        member.provider,
-                        member_works.len(),
-                        reason
+                        "  {} ({}): recovered generation without mutating Work responsibility ({})",
+                        member.name, member.provider, reason
                     );
                 }
-                rebound += member_works.len() as u64;
+                reopened += 1;
             }
             MemberRecoveryPath::Terminal { .. } => {
                 // Already checked above.
@@ -813,13 +768,13 @@ pub(super) fn roll_up_target_work_delegations(
 // authoritative store reads; the full JSON array remains the default.
 // ---------------------------------------------------------------------------
 
-/// One `--brief` line: `<work-id>  <status>  <owner-member-run-id|unassigned>
+/// One `--brief` line: `<work-id>  <status>  <owner-agent-member-id|unassigned>
 /// v<version>  <title>`, title hard-truncated to 60 chars (by `char`, not
 /// byte, so multibyte titles never split mid-character). Plain text, no JSON
 /// wrapper -- this is the compact projection `work list --brief` prints one
 /// of per Work.
 pub(super) fn format_work_brief_line(work: &Work) -> String {
-    let owner = work.active_member_run_id.as_deref().unwrap_or("unassigned");
+    let owner = work.owner_member_id.as_deref().unwrap_or("unassigned");
     let title: String = work.title.chars().take(60).collect();
     format!(
         "{}  {}  {}  v{}  {}",
@@ -939,7 +894,7 @@ pub(super) fn team_run_board_summary_text(
         blocked += u64::from(work.condition == WorkCondition::Blocked);
         accepted += u64::from(work.resolution == Some(WorkResolution::Accepted));
         cancelled += u64::from(work.resolution == Some(WorkResolution::Cancelled));
-        if work.active_member_run_id.is_some() {
+        if work.owner_member_id.is_some() {
             assigned += 1;
         } else {
             unassigned += 1;
@@ -962,9 +917,9 @@ pub(super) fn team_run_board_summary_text(
         format!("assigned={assigned} unassigned={unassigned} ready={ready}"),
     ];
     for member in &members {
-        let owned = works
-            .iter()
-            .filter(|work| work.active_member_run_id.as_deref() == Some(member.id.as_str()));
+        let owned = works.iter().filter(|work| {
+            work.owner_member_id.as_deref() == Some(member.agent_member_id.as_str())
+        });
         lines.push(format!(
             "{}: {}",
             member.name,

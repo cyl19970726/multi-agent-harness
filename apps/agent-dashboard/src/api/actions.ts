@@ -477,7 +477,6 @@ export function createTeamWork(
     title: string;
     contextMarkdown?: string;
     completionCriteriaMarkdown: string;
-    activeMemberRunId?: string;
     claimMode?: "host_assign" | "team_claim";
     eligibleMemberIds?: string[];
     priority?: "low" | "normal" | "high" | "urgent";
@@ -491,8 +490,7 @@ export function createTeamWork(
       title: params.title,
       context_markdown: params.contextMarkdown ?? "",
       completion_criteria_markdown: params.completionCriteriaMarkdown,
-      owner_member_run_id: params.activeMemberRunId,
-      claim_mode: params.claimMode ?? (params.activeMemberRunId ? "host_assign" : "team_claim"),
+      claim_mode: params.claimMode ?? "team_claim",
       eligible_member_ids: params.eligibleMemberIds ?? [],
       priority: params.priority ?? "normal",
       caused_by_message_id: params.causedByMessageId,
@@ -503,13 +501,13 @@ export function createTeamWork(
 export function assignTeamWork(
   teamRunId: string,
   workId: string,
-  memberRunId: string,
+  membershipId: string,
   expectedVersion: number,
 ): ActionDescriptor {
   return {
     method: "POST",
     path: `/v1/team-runs/${encodeId(teamRunId)}/works/${encodeId(workId)}/assign`,
-    body: { member_run_id: memberRunId, expected_version: expectedVersion },
+    body: { membership_id: membershipId, expected_version: expectedVersion },
   };
 }
 

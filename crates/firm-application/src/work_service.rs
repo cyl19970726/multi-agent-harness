@@ -26,26 +26,12 @@ pub trait WorkPersistence {
         prerequisite_work_ids: Vec<String>,
         context: WorkCommandContext,
     ) -> Result<Work, Self::Error>;
-    fn assign_work(
-        &self,
-        work_id: &str,
-        expected_version: u64,
-        member_run_id: &str,
-        context: WorkCommandContext,
-    ) -> Result<Work, Self::Error>;
     fn assign_work_to_membership(
         &self,
         work_id: &str,
         expected_version: u64,
         membership_id: &str,
         execution_space_id: &str,
-        context: WorkCommandContext,
-    ) -> Result<Work, Self::Error>;
-    fn rebind_work(
-        &self,
-        work_id: &str,
-        expected_version: u64,
-        member_run_id: &str,
         context: WorkCommandContext,
     ) -> Result<Work, Self::Error>;
     fn release_work_as_host(
@@ -134,7 +120,6 @@ pub struct CreateWorkCommand {
     pub eligible_member_ids: Vec<String>,
     pub prerequisite_work_ids: Vec<String>,
     pub priority: WorkPriority,
-    pub initial_member_run_id: Option<String>,
     pub artifact_refs: Vec<String>,
     pub check_refs: Vec<String>,
     pub github_links: Vec<GitHubLink>,
@@ -159,8 +144,6 @@ pub enum WorkActionKind {
     Create,
     ReplaceDependencies,
     AssignMembership,
-    AssignRuntime,
-    Rebind,
     ReleaseHost,
     ReleaseMember,
     Claim,
@@ -183,18 +166,6 @@ pub enum WorkAction {
         expected_version: u64,
         membership_id: String,
         execution_space_id: String,
-        context: WorkCommandContext,
-    },
-    AssignRuntime {
-        work_id: String,
-        expected_version: u64,
-        member_run_id: String,
-        context: WorkCommandContext,
-    },
-    Rebind {
-        work_id: String,
-        expected_version: u64,
-        member_run_id: String,
         context: WorkCommandContext,
     },
     ReleaseHost {
@@ -267,8 +238,6 @@ impl WorkAction {
             Self::Create(_) => WorkActionKind::Create,
             Self::ReplaceDependencies(_) => WorkActionKind::ReplaceDependencies,
             Self::AssignMembership { .. } => WorkActionKind::AssignMembership,
-            Self::AssignRuntime { .. } => WorkActionKind::AssignRuntime,
-            Self::Rebind { .. } => WorkActionKind::Rebind,
             Self::ReleaseHost { .. } => WorkActionKind::ReleaseHost,
             Self::ReleaseMember { .. } => WorkActionKind::ReleaseMember,
             Self::Claim { .. } => WorkActionKind::Claim,
@@ -289,8 +258,6 @@ impl WorkAction {
             Self::ReplaceDependencies(command) => &command.context,
             Self::Submit(command) => &command.context,
             Self::AssignMembership { context, .. }
-            | Self::AssignRuntime { context, .. }
-            | Self::Rebind { context, .. }
             | Self::ReleaseHost { context, .. }
             | Self::ReleaseMember { context, .. }
             | Self::Claim { context, .. }
@@ -340,18 +307,6 @@ impl<'a, P: WorkPersistence + ?Sized> WorkApplication<'a, P> {
                 &execution_space_id,
                 context,
             )?,
-            WorkAction::AssignRuntime {
-                work_id,
-                expected_version,
-                member_run_id,
-                context,
-            } => self.assign_runtime(&work_id, expected_version, &member_run_id, context)?,
-            WorkAction::Rebind {
-                work_id,
-                expected_version,
-                member_run_id,
-                context,
-            } => self.rebind(&work_id, expected_version, &member_run_id, context)?,
             WorkAction::ReleaseHost {
                 work_id,
                 expected_version,
@@ -444,7 +399,6 @@ impl<'a, P: WorkPersistence + ?Sized> WorkApplication<'a, P> {
             command.context.performed_by_actor.clone(),
             command.context.created_at.clone(),
         );
-        draft.active_member_run_id = command.initial_member_run_id;
         draft.eligible_member_ids = command.eligible_member_ids;
         draft.prerequisite_work_ids = command.prerequisite_work_ids;
         draft.artifact_refs = command.artifact_refs;
@@ -475,17 +429,6 @@ impl<'a, P: WorkPersistence + ?Sized> WorkApplication<'a, P> {
         )
     }
 
-    pub fn assign_runtime(
-        &self,
-        work_id: &str,
-        expected_version: u64,
-        member_run_id: &str,
-        context: WorkCommandContext,
-    ) -> Result<Work, P::Error> {
-        self.port
-            .assign_work(work_id, expected_version, member_run_id, context)
-    }
-
     pub fn assign_membership(
         &self,
         work_id: &str,
@@ -501,17 +444,6 @@ impl<'a, P: WorkPersistence + ?Sized> WorkApplication<'a, P> {
             execution_space_id,
             context,
         )
-    }
-
-    pub fn rebind(
-        &self,
-        work_id: &str,
-        expected_version: u64,
-        member_run_id: &str,
-        context: WorkCommandContext,
-    ) -> Result<Work, P::Error> {
-        self.port
-            .rebind_work(work_id, expected_version, member_run_id, context)
     }
 
     pub fn release_as_host(
@@ -690,7 +622,6 @@ mod tests {
             eligible_member_ids: Vec::new(),
             prerequisite_work_ids: Vec::new(),
             priority: WorkPriority::Normal,
-            initial_member_run_id: None,
             artifact_refs: Vec::new(),
             check_refs: Vec::new(),
             github_links: Vec::new(),
@@ -723,18 +654,6 @@ mod tests {
                 expected_version: 1,
                 membership_id: "membership-1".into(),
                 execution_space_id: "space-1".into(),
-                context: context(),
-            },
-            WorkAction::AssignRuntime {
-                work_id: "work-1".into(),
-                expected_version: 1,
-                member_run_id: "member-run-1".into(),
-                context: context(),
-            },
-            WorkAction::Rebind {
-                work_id: "work-1".into(),
-                expected_version: 1,
-                member_run_id: "member-run-1".into(),
                 context: context(),
             },
             WorkAction::ReleaseHost {
@@ -807,8 +726,6 @@ mod tests {
                 WorkActionKind::Create,
                 WorkActionKind::ReplaceDependencies,
                 WorkActionKind::AssignMembership,
-                WorkActionKind::AssignRuntime,
-                WorkActionKind::Rebind,
                 WorkActionKind::ReleaseHost,
                 WorkActionKind::ReleaseMember,
                 WorkActionKind::Claim,
