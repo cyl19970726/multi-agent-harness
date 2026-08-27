@@ -93,8 +93,8 @@ fn canonical_acceptance_rolls_up_delegation_in_the_same_operation() {
                 phase: WorkPhase::Open,
                 condition: WorkCondition::Normal,
                 resolution: None,
-                owner_member_id: Some("target-worker".into()),
-                active_member_run_id: Some(target_runtime_id.into()),
+                owner_member_id: None,
+                active_member_run_id: None,
                 claim_mode: WorkClaimMode::HostAssign,
                 eligible_member_ids: Vec::new(),
                 prerequisite_work_ids: Vec::new(),
@@ -120,6 +120,167 @@ fn canonical_acceptance_rolls_up_delegation_in_the_same_operation() {
             },
         )
         .expect("atomically create Delegation and target Work");
+    let target_host = harness
+        .store
+        .exact_team_run_host_actor(&target_run.id)
+        .expect("resolve exact target TeamRun Host");
+    let target = harness
+        .store
+        .assign_work_to_membership(
+            &target.id,
+            target.version,
+            "membership-team-delegation-target-target-worker",
+            SPACE,
+            WorkCommandContext {
+                event_id: "delegation-target-assign".into(),
+                performed_by_actor: target_host,
+                authority_actor: None,
+                causation_ref: None,
+                idempotency_key: "delegation-target-assign".into(),
+                created_at: "t2.1".into(),
+                duplicate_ok: false,
+            },
+        )
+        .expect("assign delegated target through stable TeamMembership responsibility");
+    let target_session = AgentSession {
+        id: "session-runtime-target-worker".into(),
+        agent_member_id: "target-worker".into(),
+        node_id: NODE.into(),
+        execution_space_id: SPACE.into(),
+        node_daemon_id: "daemon-test".into(),
+        node_daemon_generation: 1,
+        provider_kind: "codex".into(),
+        provider_profile_ref: "codex-default".into(),
+        permission_envelope_ref: "permission-default".into(),
+        effective_permission_ceiling: PermissionCeiling::WorkspaceWrite,
+        workspace_cwd: None,
+        lifecycle: AgentSessionStatus::Idle,
+        runtime_generation: 1,
+        control_state: AgentSessionControlState {
+            execution_driver: MemberExecutionDriver::HostDriven,
+            driver_generation: 1,
+            driver_ref: RuntimeDriverRef::NodeDaemon {
+                node_daemon_id: "daemon-test".into(),
+                node_daemon_generation: 1,
+            },
+            composition_fingerprint: Some("composition:test".into()),
+            capability_fingerprint: Some("capability:test".into()),
+            ..Default::default()
+        },
+        native_session_ref: None,
+        current_turn_id: None,
+        queued_input_count: 0,
+        version: 1,
+        opened_at: "t2".into(),
+        last_active_at: "t2".into(),
+        closed_at: None,
+    };
+    harness
+        .store
+        .create_agent_session(
+            &context(
+                ActorRef {
+                    kind: ActorKind::Service,
+                    id: "daemon-test".into(),
+                },
+                "session.create",
+                &target_session.id,
+                0,
+            ),
+            target_session.clone(),
+        )
+        .expect("create delegated target AgentSession");
+    harness
+        .store
+        .bind_responsible_work_execution(
+            &context(
+                ActorRef {
+                    kind: ActorKind::Service,
+                    id: "daemon-test".into(),
+                },
+                "work.bind",
+                "binding-target-rollup",
+                0,
+            ),
+            &RuntimeCommandBinding {
+                target_member_run_id: Some(target_runtime_id.into()),
+                target_member_run_generation: Some(1),
+                target_session_id: Some(target_session.id.clone()),
+                target_runtime_generation: Some(1),
+                target_driver_generation: Some(1),
+                target_driver: target_session.control_state.driver_ref.clone(),
+                composition_fingerprint: target_session
+                    .control_state
+                    .composition_fingerprint
+                    .clone(),
+                capability_fingerprint: target_session.control_state.capability_fingerprint.clone(),
+                permission_envelope_ref: Some(target_session.permission_envelope_ref.clone()),
+                ..Default::default()
+            },
+            WorkExecutionBinding {
+                id: "binding-target-rollup".into(),
+                work_id: target.id.clone(),
+                work_revision: target.version,
+                team_id: target_run.agent_team_id.clone(),
+                team_membership_id: "membership-team-delegation-target-target-worker".into(),
+                agent_member_id: "target-worker".into(),
+                agent_session_id: target_session.id,
+                agent_session_generation: 1,
+                delivery_id: "work-delivery:target-rollup:1".into(),
+                binding_generation: 1,
+                status: WorkExecutionBindingStatus::Active,
+                version: 1,
+                created_by: ActorRef {
+                    kind: ActorKind::Service,
+                    id: "daemon-test".into(),
+                },
+                bound_at: "t2".into(),
+                ended_at: None,
+            },
+        )
+        .expect("bind delegated target execution authority");
+    harness
+        .store
+        .claim_work_for_provider(
+            &context(
+                ActorRef {
+                    kind: ActorKind::Service,
+                    id: "daemon-test".into(),
+                },
+                "work.claim",
+                "claim-target-rollup",
+                0,
+            ),
+            "work-delivery:target-rollup:1",
+            NODE,
+            "daemon-test",
+            1,
+            "claim-target-rollup",
+            RuntimeDispatchMode::QueueOnly,
+            "t2.5",
+        )
+        .expect("claim delegated target delivery");
+    harness
+        .store
+        .record_work_provider_receipt(
+            &context(
+                ActorRef {
+                    kind: ActorKind::Service,
+                    id: "daemon-test".into(),
+                },
+                "work.receipt",
+                "receipt-target-rollup",
+                0,
+            ),
+            "work-delivery:target-rollup:1",
+            NODE,
+            "daemon-test",
+            1,
+            "claim-target-rollup",
+            "provider-receipt-target-rollup",
+            "t2.75",
+        )
+        .expect("record delegated target provider receipt");
     let started = harness
         .store
         .start_work(

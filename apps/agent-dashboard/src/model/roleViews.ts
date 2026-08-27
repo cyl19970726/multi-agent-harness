@@ -34,7 +34,7 @@ export type RoleActionExecutor = (
 ) => Promise<RoleActionExecutionResult>;
 
 const TEAM_WORK_ACTIONS = {
-  assign_work:"assign", rebind_work:"rebind", release_work:"release",
+  assign_work:"assign", release_work:"release",
   cancel_work:"cancel", claim_work:"claim",
   start_work:"start", block_work:"block", unblock_work:"resume",
   submit_work:"submit",
@@ -104,8 +104,7 @@ export function prepareRoleAction(
       case "accept_work": body={action:"accept_work"};break;
       case "reconcile_message_delivery": body={action:"reconcile_message_delivery",outcome:fields.outcome||"retry_safe_failure",evidence_ref:required("evidence_ref")};break;
       case "resolve_runtime_recovery": body={action:"resolve_runtime_recovery",resolution:fields.resolution||"keep_recovery_required",evidence_ref:required("evidence_ref")};break;
-      case "assign_work": body={action:"assign_work",member_run_id:required("member_run_id")};break;
-      case "rebind_work": body={action:"rebind_work",member_run_id:required("member_run_id")};break;
+      case "assign_work": body={action:"assign_work",membership_id:required("membership_id")};break;
       case "cancel_work": body={action:"cancel_work",reason:required("reason")};break;
       case "block_work": body={action:"block_work",reason:required("reason")};break;
       case "unblock_work": body={action:"unblock_work",resolution:required("resolution")};break;

@@ -25,7 +25,7 @@ impl HarnessStore {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub(super) fn require_current_node_daemon_unlocked(
+    pub(crate) fn require_current_node_daemon_unlocked(
         &self,
         execution_space_id: &str,
         node_id: &str,
@@ -118,8 +118,7 @@ impl HarnessStore {
                     [member]
                         if member.agent_member_id == session.agent_member_id
                             && member.runtime_generation == member_run_generation
-                            && member.coordination_status
-                                == firm_core::agentfirm_api::MemberCoordinationStatus::Active =>
+                            && member.has_live_runtime_authority() =>
                     {
                         if let RuntimeDriverRef::TeamSupervisor { team_run_id, .. } =
                             &session.control_state.driver_ref

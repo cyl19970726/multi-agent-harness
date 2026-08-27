@@ -36,14 +36,14 @@ fn work_list_since_returns_only_works_changed_after_cursor() {
             "--work-id",
             &fixture.work_blocked_id,
             "--expected-version",
-            "3",
+            "4",
             "--resolution",
             "dependency resolved",
         ],
     );
     assert_eq!(resumed["phase"].as_str(), Some("active"));
     assert_eq!(resumed["condition"].as_str(), Some("normal"));
-    assert_eq!(resumed["version"].as_u64(), Some(4));
+    assert_eq!(resumed["version"].as_u64(), Some(5));
 
     let delta = team_run_json(
         &fixture.home,
@@ -69,7 +69,7 @@ fn work_list_since_returns_only_works_changed_after_cursor() {
     );
     assert_eq!(delta_works[0]["phase"].as_str(), Some("active"));
     assert_eq!(delta_works[0]["condition"].as_str(), Some("normal"));
-    assert_eq!(delta_works[0]["version"].as_u64(), Some(4));
+    assert_eq!(delta_works[0]["version"].as_u64(), Some(5));
     let next_since = delta["next_since"].as_u64().expect("next_since");
     assert_eq!(
         next_since,

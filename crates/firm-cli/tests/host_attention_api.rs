@@ -9,8 +9,8 @@ use std::time::{Duration, Instant};
 mod fake_provider;
 mod firm_env;
 use firm_env::{
-    create_canonical_agent_member, current_project_id, run_firm, run_firm_with_env, ServeHandle,
-    TempHome,
+    create_canonical_agent_member, current_project_id, member_run_for_work_owner, run_firm,
+    run_firm_with_env, ServeHandle, TempHome,
 };
 
 fn init_project(home: &TempHome, name: &str) -> (String, String, String) {
@@ -105,7 +105,7 @@ fn create_mission_and_run(
     project_id: &str,
     node_id: &str,
     host_id: &str,
-) -> (String, String, String) {
+) -> (String, String, String, u64) {
     // DOC-108 retired the Mission HTTP writer this fixture used; legacy
     // Mission provenance is seeded directly as pre-cutover history.
     firm_env::seed_historical_mission(
@@ -157,15 +157,18 @@ fn create_mission_and_run(
         .as_str()
         .expect("run id")
         .to_string();
-    let member_id = body["result"]["member_runs"][0]["id"]
+    let member_id = member_run_for_work_owner(&body["result"], 0)["id"]
         .as_str()
-        .expect("member id")
+        .expect("Work owner MemberRun")
         .to_string();
     let work_id = body["result"]["works"][0]["id"]
         .as_str()
         .expect("Work id")
         .to_string();
-    (run_id, member_id, work_id)
+    let work_version = body["result"]["works"][0]["version"]
+        .as_u64()
+        .expect("Work version");
+    (run_id, member_id, work_id, work_version)
 }
 
 #[cfg(any())]
@@ -235,7 +238,7 @@ fn host_attentions_read_and_console_ack_lifecycle() {
     let home = TempHome::new("host-attention-console");
     let (project_id, node_id, host_id) = init_project(&home, "alpha");
     let serve = spawn_fake_kimi_serve(&home);
-    let (run_id, member_id, work_id) =
+    let (run_id, member_id, work_id, work_version) =
         create_mission_and_run(&home, &serve, &project_id, &node_id, &host_id);
 
     let (status, body) = serve.post_json(
@@ -243,6 +246,24 @@ fn host_attentions_read_and_console_ack_lifecycle() {
         &serde_json::json!({"max_concurrency": 1, "idle_timeout_s": 10}),
     );
     assert_eq!(status, 202, "body: {body}");
+    wait_for_member_runtime_ready(&serve, &project_id, &member_id, Duration::from_secs(15));
+    let bound = firm_env::work_execution::assign_work_for_member_run(
+        &home,
+        &project_id,
+        &work_id,
+        &member_id,
+        true,
+    );
+    assert_eq!(bound.version, work_version);
+    firm_env::provider_received_work::record_provider_received_work(
+        &home,
+        &project_id,
+        &work_id,
+        "host-attention",
+    );
+    // The live Supervisor may own the provider turn that produced the
+    // canonical receipt. Wait for that turn to settle before this fixture
+    // exercises the separate Member-authored Start/Result path.
     wait_for_member_runtime_ready(&serve, &project_id, &member_id, Duration::from_secs(15));
 
     // Submitting the initial Work derives a WorkReviewRequested HostAttention.
@@ -260,7 +281,7 @@ fn host_attentions_read_and_console_ack_lifecycle() {
             "--work-id",
             &work_id,
             "--expected-version",
-            "1",
+            &work_version.to_string(),
             "--member-run-id",
             &member_id,
             "--json",
@@ -356,7 +377,7 @@ fn member_resume_route_rejects_active_and_resumes_closed_member() {
     let home = TempHome::new("member-resume-console");
     let (project_id, node_id, host_id) = init_project(&home, "alpha");
     let serve = spawn_fake_kimi_serve(&home);
-    let (run_id, member_id, _work_id) =
+    let (run_id, member_id, _work_id, _work_version) =
         create_mission_and_run(&home, &serve, &project_id, &node_id, &host_id);
 
     let (status, body) = serve.post_json(

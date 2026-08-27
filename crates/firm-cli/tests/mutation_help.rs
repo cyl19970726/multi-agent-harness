@@ -176,6 +176,45 @@ fn mutating_help_is_effect_free_and_normal_dispatch_is_unchanged() {
     assert!(String::from_utf8_lossy(&missing_id.stderr).contains("--id is required"));
     assert_eq!(file_snapshot(&store_root), before_help);
 
+    for args in [
+        vec![
+            "--store",
+            store_arg,
+            "team-run",
+            "work",
+            "create",
+            "--owner-member-run-id",
+            "legacy-runtime",
+        ],
+        vec![
+            "--store",
+            store_arg,
+            "team-run",
+            "work",
+            "assign",
+            "--member-run-id",
+            "legacy-runtime",
+        ],
+        vec![
+            "--store",
+            store_arg,
+            "team-run",
+            "work",
+            "retarget",
+            "--successor-member-run-id",
+            "legacy-runtime",
+        ],
+    ] {
+        let rejected = run_firm(&home, home.base(), &args);
+        assert!(!rejected.status.success());
+        assert!(String::from_utf8_lossy(&rejected.stderr).contains("unknown work option"));
+        assert_eq!(
+            file_snapshot(&store_root),
+            before_help,
+            "retired runtime ownership option changed durable Store bytes"
+        );
+    }
+
     let completed = run_firm(
         &home,
         home.base(),

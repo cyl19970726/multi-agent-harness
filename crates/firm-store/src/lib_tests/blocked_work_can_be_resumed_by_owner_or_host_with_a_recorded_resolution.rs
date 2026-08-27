@@ -3,23 +3,29 @@ use super::*;
 #[test]
 fn blocked_work_can_be_resumed_by_owner_or_host_with_a_recorded_resolution() {
     let (root, store, run, member, _) = work_test_fixture("work-resume");
-    let mut assigned = unassigned_test_work(&run.id, "work-resume-owner");
-    assigned.active_member_run_id = Some(member.id.clone());
-    assigned.claim_mode = WorkClaimMode::HostAssign;
-    let assigned = store
+    let created = store
         .insert_work(
-            assigned,
+            unassigned_test_work(&run.id, "work-resume-owner"),
             host_work_context("we-resume-1", "create-resume-1", "unix-ms:2"),
         )
         .expect("create assigned Work");
-    let started = store
-        .start_work(
-            &assigned.id,
-            assigned.version,
-            &member.id,
-            member_work_context(&member.id, "we-resume-2", "start-resume-1", "unix-ms:3"),
-        )
-        .expect("start Work");
+    let assigned = assign_test_work_to_member(
+        &store,
+        &run,
+        &created,
+        &member,
+        "we-resume-assign",
+        "assign-resume-1",
+        "unix-ms:2",
+    );
+    let started = start_claimed_work_for_test(
+        &store,
+        &assigned,
+        &member,
+        "we-resume-2",
+        "start-resume-1",
+        "unix-ms:3",
+    );
     let blocked = store
         .block_work(
             &started.id,
@@ -99,6 +105,6 @@ fn blocked_work_can_be_resumed_by_owner_or_host_with_a_recorded_resolution() {
         )
         .expect("Host resumes Work");
     assert_eq!(resumed_by_host.phase, WorkPhase::Active);
-    assert_eq!(resumed_by_host.active_member_run_id, Some(member.id));
+    assert_eq!(resumed_by_host.active_member_run_id, None);
     std::fs::remove_dir_all(root).expect("remove temp store");
 }

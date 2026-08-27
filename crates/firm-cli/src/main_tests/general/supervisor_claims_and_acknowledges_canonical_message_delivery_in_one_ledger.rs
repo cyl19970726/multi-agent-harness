@@ -235,49 +235,36 @@ fn supervisor_claims_and_acknowledges_canonical_message_delivery_in_one_ledger()
         Some("provider-native-host-request-receipt")
     );
 
-    let host_actor = created.team_run.host_actor.clone().expect("Host actor");
-    let work = store
-        .insert_work(
-            Work {
-                id: "managed-host-attention-work".into(),
-                team_run_id: created.team_run.id.clone(),
-                accountable_team_id: Some(created.team_run.agent_team_id.clone()),
-                assignee_membership_id: None,
-                created_by_member_id: None,
-                legacy_containment_ref: None,
-                title: "Prove managed Host status delivery".into(),
-                context_markdown: String::new(),
-                completion_criteria_markdown: "Host receives exact fenced status".into(),
-                phase: WorkPhase::Open,
-                condition: WorkCondition::Normal,
-                resolution: None,
-                owner_member_id: Some(member.agent_member_id.clone()),
-                active_member_run_id: Some(member.id.clone()),
-                claim_mode: WorkClaimMode::HostAssign,
-                eligible_member_ids: Vec::new(),
-                prerequisite_work_ids: Vec::new(),
-                priority: WorkPriority::Normal,
-                created_by_actor: host_actor.clone(),
-                result_summary: None,
-                blocker_reason: None,
-                artifact_refs: Vec::new(),
-                check_refs: Vec::new(),
-                github_links: Vec::new(),
-                version: 0,
-                created_at: String::new(),
-                updated_at: String::new(),
-            },
-            WorkCommandContext {
+    let work = harness_application::WorkApplication::new(&store)
+        .create(harness_application::CreateWorkCommand {
+            work_id: "managed-host-attention-work".into(),
+            team_run_id: created.team_run.id.clone(),
+            accountable_team_id: created.team_run.agent_team_id.clone(),
+            title: "Prove managed Host status delivery".into(),
+            context_markdown: String::new(),
+            completion_criteria_markdown: "Host receives exact fenced status".into(),
+            claim_mode: WorkClaimMode::HostAssign,
+            eligible_member_ids: Vec::new(),
+            prerequisite_work_ids: Vec::new(),
+            priority: WorkPriority::Normal,
+            artifact_refs: Vec::new(),
+            check_refs: Vec::new(),
+            github_links: Vec::new(),
+            expected_version: 0,
+            context: WorkCommandContext {
                 event_id: "managed-host-attention-created".into(),
-                performed_by_actor: host_actor,
+                performed_by_actor: created.team_run.host_actor.clone().expect("Host actor"),
                 authority_actor: None,
                 causation_ref: None,
                 idempotency_key: "managed-host-attention-created".into(),
                 created_at: now_string(),
                 duplicate_ok: false,
             },
-        )
-        .expect("create Host-assigned Work");
+        })
+        .expect("create Work");
+    let work =
+        assign_test_work_to_member(&store, &lease.execution_space_id, &created, &member, &work);
+    bind_test_responsible_work_execution(&store, &lease, &member, &work);
     let member_context = |event: &str| WorkCommandContext {
         event_id: event.into(),
         performed_by_actor: TeamActorRef {

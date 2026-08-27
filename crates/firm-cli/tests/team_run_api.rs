@@ -1,13 +1,4 @@
-//! Integration coverage for the Agent Team v0 surface (team-run task):
-//!   - `harness team-run create|list|status|inbox|ack|send|events` CLI smoke against an
-//!     isolated HOME (temp store, real binary),
-//!   - `POST /v1/team-runs` creates the run + member runs + optional initial
-//!     Works + folded events, and the response snapshot carries the native
-//!     ledger projections,
-//!   - `POST /v1/team-runs/{id}/messages` routes a message (400 on unknown
-//!     run), `POST /v1/team-runs/{id}/start` accepts asynchronous execution,
-//!   - `GET /team-console` serves the console page as text/html,
-//!   - SSE `/v1/events` streams `team_run_event` frames for appended rows.
+//! Agent Team CLI, HTTP, Dashboard snapshot, and SSE integration coverage.
 
 use std::time::Duration;
 
@@ -18,7 +9,7 @@ mod fake_provider;
 mod firm_env;
 use firm_env::{
     collect_sse_data, create_canonical_agent_member, current_project_id, current_space_id,
-    run_firm, run_firm_with_env, ServeHandle, TempHome,
+    member_run_for_work_owner, run_firm, run_firm_with_env, ServeHandle, TempHome,
 };
 
 const NATIVE_SELECTOR_CLEAN_ENV: &[(&str, &str)] = &[
@@ -745,19 +736,28 @@ fn persistent_codex_supervisor_survives_handoffs_transport_loss_and_team_complet
         .as_str()
         .unwrap()
         .to_string();
-    let builder_id = created["result"]["member_runs"][0]["id"]
+    let builder = member_run_for_work_owner(&created["result"], 0);
+    let reviewer = member_run_for_work_owner(&created["result"], 1);
+    let builder_id = builder["id"].as_str().unwrap().to_string();
+    let reviewer_id = reviewer["id"].as_str().unwrap().to_string();
+    let builder_agent_member_id = builder["agent_member_id"]
         .as_str()
-        .unwrap()
-        .to_string();
-    let reviewer_id = created["result"]["member_runs"][1]["id"]
-        .as_str()
-        .unwrap()
-        .to_string();
+        .expect("Builder AgentMember");
     let builder_work_id = created["result"]["works"]
         .as_array()
         .expect("Works")
         .iter()
-        .find(|work| work["active_member_run_id"].as_str() == Some(builder_id.as_str()))
+        .find(|work| work["owner_member_id"].as_str() == Some(builder_agent_member_id))
+        .inspect(|work| {
+            assert_eq!(
+                (
+                    work["active_member_run_id"].is_null(),
+                    work["assignee_membership_id"].as_str().is_some()
+                ),
+                (true, true),
+                "initial Work must bind stable responsibility without runtime identity: {work}"
+            );
+        })
         .and_then(|work| work["id"].as_str())
         .expect("Builder Work")
         .to_string();
@@ -843,12 +843,22 @@ fn persistent_codex_supervisor_survives_handoffs_transport_loss_and_team_complet
         .iter()
         .filter(|work| work["team_run_id"].as_str() == Some(run_id.as_str()))
         .map(|work| {
+            let owner_member_id = work["owner_member_id"]
+                .as_str()
+                .expect("stable Work owner AgentMember");
+            let member_run_id = before_review["member_runs"]
+                .as_array()
+                .expect("MemberRuns in snapshot")
+                .iter()
+                .find(|member| {
+                    member["team_run_id"].as_str() == Some(run_id.as_str())
+                        && member["agent_member_id"].as_str() == Some(owner_member_id)
+                })
+                .and_then(|member| member["id"].as_str())
+                .expect("exact current MemberRun for stable Work responsibility");
             (
                 work["id"].as_str().expect("Work id").to_string(),
-                work["active_member_run_id"]
-                    .as_str()
-                    .expect("owned Work member")
-                    .to_string(),
+                member_run_id.to_string(),
                 work["version"].as_u64().expect("Work version"),
                 work["phase"].as_str().expect("Work phase").to_string(),
             )
@@ -1082,8 +1092,8 @@ struct BoardReadFixture {
     home: TempHome,
     project_id: String,
     run_id: String,
-    alice_id: String,
-    bob_id: String,
+    alice_agent_member_id: String,
+    bob_agent_member_id: String,
     #[allow(dead_code)] // read by the board-summary test only
     charlie_id: String,
     work_open_id: String,
@@ -1103,7 +1113,7 @@ fn create_fixture_work(
     title: &str,
     owner: Option<&str>,
 ) -> String {
-    let mut args = vec![
+    let args = vec![
         "work",
         "create",
         "--team-run-id",
@@ -1113,12 +1123,20 @@ fn create_fixture_work(
         "--completion-criteria",
         "Done when the fixture says so",
     ];
-    if let Some(owner) = owner {
-        args.push("--owner-member-run-id");
-        args.push(owner);
-    }
     let created = team_run_json(home, project_id, &args);
-    created["id"].as_str().expect("Work id").to_string()
+    let work_id = created["id"].as_str().expect("Work id");
+    if let Some(owner) = owner {
+        firm_env::work_execution::assign_work_for_member_run(
+            home, project_id, work_id, owner, true,
+        );
+        firm_env::provider_received_work::record_provider_received_work(
+            home,
+            project_id,
+            work_id,
+            &format!("board-fixture-{work_id}"),
+        );
+    }
+    work_id.to_string()
 }
 
 fn seed_board_read_fixture(tag: &str) -> BoardReadFixture {
@@ -1154,18 +1172,22 @@ fn seed_board_read_fixture(tag: &str) -> BoardReadFixture {
 
     let status = team_run_json(&home, &project_id, &["status", "--id", &run_id, "--json"]);
     let members = status["members"].as_array().expect("members").clone();
-    let member_id = |name: &str| -> String {
-        members
+    let member_identity = |name: &str| -> (String, String) {
+        let member = &members
             .iter()
             .find(|entry| entry["member_run"]["name"].as_str() == Some(name))
-            .unwrap_or_else(|| panic!("member {name} not found: {members:?}"))["member_run"]["id"]
-            .as_str()
-            .unwrap_or_else(|| panic!("member {name} id"))
-            .to_string()
+            .unwrap_or_else(|| panic!("member {name} not found: {members:?}"))["member_run"];
+        (
+            member["id"].as_str().expect("MemberRun id").to_string(),
+            member["agent_member_id"]
+                .as_str()
+                .expect("AgentMember id")
+                .to_string(),
+        )
     };
-    let alice_id = member_id("alice");
-    let bob_id = member_id("bob");
-    let charlie_id = member_id("charlie");
+    let (alice_id, alice_agent_member_id) = member_identity("alice");
+    let (bob_id, bob_agent_member_id) = member_identity("bob");
+    let (charlie_id, _) = member_identity("charlie");
 
     // Work A: created unassigned, never claimed -- stays `open`. Title is
     // deliberately >60 chars to exercise --brief's title truncation.
@@ -1192,7 +1214,7 @@ fn seed_board_read_fixture(tag: &str) -> BoardReadFixture {
             "--work-id",
             &work_blocked_id,
             "--expected-version",
-            "1",
+            "2",
             "--member-run-id",
             &alice_id,
         ],
@@ -1208,7 +1230,7 @@ fn seed_board_read_fixture(tag: &str) -> BoardReadFixture {
             "--work-id",
             &work_blocked_id,
             "--expected-version",
-            "2",
+            "3",
             "--reason",
             "Waiting on an external dependency",
         ],
@@ -1235,7 +1257,7 @@ fn seed_board_read_fixture(tag: &str) -> BoardReadFixture {
             "--work-id",
             &work_in_progress_id,
             "--expected-version",
-            "1",
+            "2",
             "--member-run-id",
             &alice_id,
         ],
@@ -1258,7 +1280,7 @@ fn seed_board_read_fixture(tag: &str) -> BoardReadFixture {
             "--work-id",
             &work_review_id,
             "--expected-version",
-            "1",
+            "2",
             "--member-run-id",
             &bob_id,
         ],
@@ -1276,7 +1298,7 @@ fn seed_board_read_fixture(tag: &str) -> BoardReadFixture {
             "--work-id",
             &work_review_id,
             "--expected-version",
-            "2",
+            "3",
             "--member-run-id",
             &bob_id,
             "--result",
@@ -1299,7 +1321,7 @@ fn seed_board_read_fixture(tag: &str) -> BoardReadFixture {
             "--work-id",
             &work_done_id,
             "--expected-version",
-            "1",
+            "2",
             "--member-run-id",
             &bob_id,
         ],
@@ -1317,7 +1339,7 @@ fn seed_board_read_fixture(tag: &str) -> BoardReadFixture {
             "--work-id",
             &work_done_id,
             "--expected-version",
-            "2",
+            "3",
             "--member-run-id",
             &bob_id,
             "--result",
@@ -1335,7 +1357,7 @@ fn seed_board_read_fixture(tag: &str) -> BoardReadFixture {
             "--work-id",
             &work_done_id,
             "--expected-version",
-            "3",
+            "4",
         ],
     );
 
@@ -1363,8 +1385,8 @@ fn seed_board_read_fixture(tag: &str) -> BoardReadFixture {
         home,
         project_id,
         run_id,
-        alice_id,
-        bob_id,
+        alice_agent_member_id,
+        bob_agent_member_id,
         charlie_id,
         work_open_id,
         work_in_progress_id,

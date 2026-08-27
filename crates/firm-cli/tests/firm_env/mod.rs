@@ -8,12 +8,18 @@
 
 #![allow(dead_code)]
 
+pub mod provider_received_work;
+pub mod work_execution;
+mod work_owner;
+#[allow(unused_imports)]
+pub use work_owner::member_run_for_work_owner;
+
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 static COUNTER: AtomicU64 = AtomicU64::new(0);
 
-fn current_unix_ms_for_fixture() -> u64 {
+pub fn unix_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .expect("fixture clock")
@@ -564,7 +570,7 @@ impl ServeHandle {
         let request = serde_json::json!({
             "target_node_id": run.execution_node_id,
             "command": "author_message",
-            "expires_unix_ms": current_unix_ms_for_fixture() + 30_000,
+            "expires_unix_ms": unix_ms() + 30_000,
             "payload": {"draft": {
                 "address_kind": if recipients.len() == 1 { "direct_agent" } else { "authorized_broadcast" },
                 "target_ref": target_ref,
@@ -719,7 +725,7 @@ impl ServeHandle {
                 .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '-' })
                 .collect::<String>();
             let id = format!("agent-it-{fixture_generation}-{index}-{safe_name}");
-            let now = format!("unix-ms:{}", current_unix_ms_for_fixture());
+            let now = format!("unix-ms:{}", unix_ms());
             store
                 .create_trust_agent_member(
                     &MutationContext {
@@ -1252,4 +1258,39 @@ pub fn current_project_id(home: &TempHome) -> String {
         .as_str()
         .expect("current_project_id")
         .to_string()
+}
+
+pub fn membership_id_for_member_run(
+    home: &TempHome,
+    execution_space_id: &str,
+    member_run_id: &str,
+) -> String {
+    let store = harness_store::HarnessStore::new(home.spaces_dir().join(execution_space_id));
+    let member_run = store
+        .trust_member_runs(execution_space_id)
+        .expect("read fixture MemberRuns")
+        .into_iter()
+        .find(|run| run.id == member_run_id)
+        .expect("fixture MemberRun");
+    let team_run = store
+        .team_runs()
+        .expect("read fixture TeamRuns")
+        .into_iter()
+        .rev()
+        .find(|run| run.id == member_run.team_run_id)
+        .expect("fixture TeamRun");
+    let matches = store
+        .fabric_team_memberships(execution_space_id)
+        .expect("read fixture TeamMemberships")
+        .into_iter()
+        .filter(|membership| {
+            membership.team_id == team_run.agent_team_id
+                && membership.agent_member_id == member_run.agent_member_id
+                && membership.state == harness_core::agentfirm_api::TeamMembershipStatus::Active
+        })
+        .collect::<Vec<_>>();
+    let [membership] = matches.as_slice() else {
+        panic!("fixture MemberRun must resolve one active TeamMembership");
+    };
+    membership.id.clone()
 }

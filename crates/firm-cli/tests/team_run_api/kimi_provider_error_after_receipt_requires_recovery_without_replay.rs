@@ -36,10 +36,12 @@ fn kimi_provider_error_after_receipt_requires_recovery_without_replay() {
         .as_str()
         .unwrap()
         .to_string();
-    let member_id = created["result"]["member_runs"][0]["id"]
+    let host_agent_member_id = created["result"]["team_run"]["host_actor"]["id"]
         .as_str()
-        .unwrap()
+        .expect("exact TeamRun Host AgentMember")
         .to_string();
+    let accountable_member = member_run_for_work_owner(&created["result"], 0);
+    let member_id = accountable_member["id"].as_str().unwrap().to_string();
     let (status, started) = serve.post_json(
         &format!("/v1/team-runs/{run_id}/start"),
         &serde_json::json!({}),
@@ -142,15 +144,6 @@ fn kimi_provider_error_after_receipt_requires_recovery_without_replay() {
     let initial_runtime_generation = blocked_member["runtime_generation"]
         .as_u64()
         .expect("runtime generation");
-    let work_id = before_recovery["works"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .find(|work| work["active_member_run_id"].as_str() == Some(member_id.as_str()))
-        .and_then(|work| work["id"].as_str())
-        .expect("member Work")
-        .to_string();
-
     // Reproduce the exact probation edge: generic idle wake would Continue
     // active Work from a nonzero streak unless recovery atomically consumes
     // that continuation authority together with the provider receipt fence.
@@ -356,9 +349,10 @@ fn kimi_provider_error_after_receipt_requires_recovery_without_replay() {
         &format!("/v1/team-runs/{run_id}/messages"),
         &serde_json::json!({
             "sender_runtime_id": "host",
+            "sender_kind": "host",
+            "sender_id": host_agent_member_id,
             "recipient_runtime_ids": [member_id],
             "kind": "message",
-            "work_id": work_id,
             "body": "new explicit recovery-cycle input"
         }),
     );

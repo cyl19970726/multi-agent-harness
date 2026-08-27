@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn reviewed_recovery_rebinds_same_stable_member_without_premature_delivery_or_duplicate_identity() {
+fn reviewed_recovery_advances_runtime_without_mutating_stable_work_responsibility() {
     let home = TempHome::new("team-run-reviewed-stable-id-recovery");
     let project_id = init_project(&home, "alpha");
     let fake_bin = fake_provider::install_kimi_acp_shim(home.base());
@@ -44,7 +44,7 @@ fn reviewed_recovery_rebinds_same_stable_member_without_premature_delivery_or_du
         .find(|run| run.id == run_id)
         .expect("TeamRun");
     assert!(!linked_run.agent_team_id.is_empty());
-    let work = member_team_run_json(
+    let _created_work = member_team_run_json(
         &home,
         &project_id,
         &run_id,
@@ -56,14 +56,12 @@ fn reviewed_recovery_rebinds_same_stable_member_without_premature_delivery_or_du
             &run_id,
             "--as-member-run-id",
             &member_id,
-            "--owner-member-run-id",
-            &member_id,
             "--work-id",
             "work-stable-recovery",
             "--title",
             "Preserve stable recovery provenance",
             "--completion-criteria",
-            "One rebound revision; delivery waits for an exact AgentSession binding",
+            "Stable responsibility survives recovery; delivery waits for exact runtime admission",
             "--event-id",
             "work-event-stable-recovery-create",
             "--idempotency-key",
@@ -71,6 +69,14 @@ fn reviewed_recovery_rebinds_same_stable_member_without_premature_delivery_or_du
             "--json",
         ],
     );
+    let work = serde_json::to_value(firm_env::work_execution::assign_work_for_member_run(
+        &home,
+        &project_id,
+        "work-stable-recovery",
+        &member_id,
+        false,
+    ))
+    .expect("assigned recovery Work");
     let original_version = work["version"].as_u64().expect("Work version");
     let original_team_id = work["accountable_team_id"]
         .as_str()
@@ -127,30 +133,31 @@ fn reviewed_recovery_rebinds_same_stable_member_without_premature_delivery_or_du
     };
 
     let first_report = recover(false);
-    assert_eq!(first_report["rebound_works"].as_u64(), Some(1));
-    assert_eq!(first_report["reopened"].as_u64(), Some(0));
+    assert_eq!(first_report["rebound_works"].as_u64(), Some(0));
+    assert_eq!(first_report["reopened"].as_u64(), Some(1));
     assert!(
         !acp_marker.exists(),
         "recovery redelivery must not start the provider"
     );
 
-    let rebound_work = store
+    let recovered_work = store
         .latest_works()
         .expect("latest Works")
         .into_iter()
         .find(|work| work.id == "work-stable-recovery")
-        .expect("rebound Work");
-    assert_eq!(rebound_work.version, original_version + 1);
+        .expect("Work after runtime recovery");
+    assert_eq!(recovered_work.version, original_version);
     assert_eq!(
-        rebound_work.active_member_run_id.as_deref(),
-        Some(member_id.as_str())
+        recovered_work.active_member_run_id.as_deref(),
+        None,
+        "runtime recovery must not write MemberRun identity into Work"
     );
     assert_eq!(
-        rebound_work.accountable_team_id.as_deref(),
+        recovered_work.accountable_team_id.as_deref(),
         Some(original_team_id.as_str())
     );
     assert_eq!(
-        rebound_work.created_by_member_id.as_deref(),
+        recovered_work.created_by_member_id.as_deref(),
         Some(original_creator.as_str())
     );
     assert_eq!(
@@ -194,14 +201,9 @@ fn reviewed_recovery_rebinds_same_stable_member_without_premature_delivery_or_du
                 && event.kind == harness_core::WorkEventKind::Rebound
         })
         .collect::<Vec<_>>();
-    assert_eq!(rebound_events.len(), 1);
-    assert_eq!(
-        rebound_events[0].payload["previous_runtime_generation"],
-        original_generation
-    );
-    assert_eq!(
-        rebound_events[0].payload["replacement_runtime_generation"],
-        original_generation + 1
+    assert!(
+        rebound_events.is_empty(),
+        "runtime recovery must not synthesize Work rebound events"
     );
     let fresh_deliveries = store
         .current_work_deliveries_for_team_run(&run_id)
@@ -209,12 +211,12 @@ fn reviewed_recovery_rebinds_same_stable_member_without_premature_delivery_or_du
         .into_iter()
         .filter(|delivery| {
             delivery.work_id == "work-stable-recovery"
-                && delivery.work_revision == rebound_work.version
+                && delivery.work_revision == recovered_work.version
         })
         .collect::<Vec<_>>();
     assert!(
         fresh_deliveries.is_empty(),
-        "recovery may rebind accountable Work, but canonical delivery requires an exact AgentSession and must not be fabricated before provider start"
+        "runtime recovery preserves responsibility, but delivery still requires exact scheduler admission"
     );
 
     let retry_report = recover(true);
@@ -225,7 +227,7 @@ fn reviewed_recovery_rebinds_same_stable_member_without_premature_delivery_or_du
         .into_iter()
         .find(|work| work.id == "work-stable-recovery")
         .expect("Work after retry");
-    assert_eq!(after_retry.version, rebound_work.version);
+    assert_eq!(after_retry.version, recovered_work.version);
     assert_eq!(
         store
             .work_events()
@@ -236,7 +238,7 @@ fn reviewed_recovery_rebinds_same_stable_member_without_premature_delivery_or_du
                     && event.kind == harness_core::WorkEventKind::Rebound
             })
             .count(),
-        1,
-        "idempotent recovery must not duplicate the rebound revision"
+        0,
+        "idempotent recovery must not create Work rebound revisions"
     );
 }

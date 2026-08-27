@@ -5,7 +5,7 @@ fn exact_result_report_submits_and_accepts_work_in_canonical_operations() {
     let harness = TestStore::new("accept-work");
     let team_id = seed_active_team_work(&harness.store, "accept-work", "work-1");
     let worker = member_actor("worker");
-    let host = human("host");
+    let reviewer = human("reviewer");
     let candidate = CandidateRef {
         kind: CandidateKind::GitCommit,
         value: "abcdef0123456789".into(),
@@ -31,7 +31,7 @@ fn exact_result_report_submits_and_accepts_work_in_canonical_operations() {
             harness
                 .store
                 .accept_trust_work(
-                    &context(host.clone(), "work.accept", "accept-stale", 4),
+                    &context(reviewer.clone(), "work.accept", "accept-stale", 4),
                     &team_id,
                     "work-1",
                     "report-accept",
@@ -47,7 +47,18 @@ fn exact_result_report_submits_and_accepts_work_in_canonical_operations() {
         before_rejected,
         "rejected acceptance has zero side effects"
     );
-    let command = context(host, "work.accept", "accept-exact", 4);
+    let released_binding = harness
+        .store
+        .fabric_work_execution_bindings(SPACE)
+        .unwrap()
+        .into_iter()
+        .find(|binding| binding.id == "binding-work-1")
+        .expect("submitted execution binding remains durable evidence");
+    assert_eq!(
+        released_binding.status,
+        WorkExecutionBindingStatus::Released
+    );
+    let command = context(reviewer, "work.accept", "accept-exact", 4);
     let accepted = harness
         .store
         .accept_trust_work(
@@ -61,6 +72,20 @@ fn exact_result_report_submits_and_accepts_work_in_canonical_operations() {
         .expect("exact Candidate acceptance");
     assert_eq!(accepted.projection.phase, WorkPhase::Closed);
     assert_eq!(accepted.projection.version, 5);
+    let accepted_attention = harness
+        .store
+        .host_attentions()
+        .expect("read durable HostAttention")
+        .into_iter()
+        .find(|attention| {
+            attention.work_id == "work-1"
+                && attention.kind == firm_core::HostAttentionKind::WorkAccepted
+        })
+        .expect("independent acceptance creates one Host-facing terminal attention");
+    assert_eq!(
+        accepted_attention.member_run_id.as_deref(),
+        Some("runtime-worker")
+    );
     let replay = harness
         .store
         .accept_trust_work(

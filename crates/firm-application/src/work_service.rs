@@ -26,26 +26,12 @@ pub trait WorkPersistence {
         prerequisite_work_ids: Vec<String>,
         context: WorkCommandContext,
     ) -> Result<Work, Self::Error>;
-    fn assign_work(
-        &self,
-        work_id: &str,
-        expected_version: u64,
-        member_run_id: &str,
-        context: WorkCommandContext,
-    ) -> Result<Work, Self::Error>;
     fn assign_work_to_membership(
         &self,
         work_id: &str,
         expected_version: u64,
         membership_id: &str,
         execution_space_id: &str,
-        context: WorkCommandContext,
-    ) -> Result<Work, Self::Error>;
-    fn rebind_work(
-        &self,
-        work_id: &str,
-        expected_version: u64,
-        member_run_id: &str,
         context: WorkCommandContext,
     ) -> Result<Work, Self::Error>;
     fn release_work_as_host(
@@ -105,7 +91,6 @@ pub trait WorkPersistence {
         resolution: &str,
         context: WorkCommandContext,
     ) -> Result<Work, Self::Error>;
-    fn submit_work(&self, command: SubmitWorkCommand) -> Result<Work, Self::Error>;
     fn request_work_changes(
         &self,
         work_id: &str,
@@ -134,7 +119,6 @@ pub struct CreateWorkCommand {
     pub eligible_member_ids: Vec<String>,
     pub prerequisite_work_ids: Vec<String>,
     pub priority: WorkPriority,
-    pub initial_member_run_id: Option<String>,
     pub artifact_refs: Vec<String>,
     pub check_refs: Vec<String>,
     pub github_links: Vec<GitHubLink>,
@@ -159,8 +143,6 @@ pub enum WorkActionKind {
     Create,
     ReplaceDependencies,
     AssignMembership,
-    AssignRuntime,
-    Rebind,
     ReleaseHost,
     ReleaseMember,
     Claim,
@@ -169,7 +151,6 @@ pub enum WorkActionKind {
     BlockMember,
     ResumeHost,
     ResumeMember,
-    Submit,
     RequestChanges,
     Cancel,
 }
@@ -183,18 +164,6 @@ pub enum WorkAction {
         expected_version: u64,
         membership_id: String,
         execution_space_id: String,
-        context: WorkCommandContext,
-    },
-    AssignRuntime {
-        work_id: String,
-        expected_version: u64,
-        member_run_id: String,
-        context: WorkCommandContext,
-    },
-    Rebind {
-        work_id: String,
-        expected_version: u64,
-        member_run_id: String,
         context: WorkCommandContext,
     },
     ReleaseHost {
@@ -246,7 +215,6 @@ pub enum WorkAction {
         resolution: String,
         context: WorkCommandContext,
     },
-    Submit(SubmitWorkCommand),
     RequestChanges {
         work_id: String,
         expected_version: u64,
@@ -267,8 +235,6 @@ impl WorkAction {
             Self::Create(_) => WorkActionKind::Create,
             Self::ReplaceDependencies(_) => WorkActionKind::ReplaceDependencies,
             Self::AssignMembership { .. } => WorkActionKind::AssignMembership,
-            Self::AssignRuntime { .. } => WorkActionKind::AssignRuntime,
-            Self::Rebind { .. } => WorkActionKind::Rebind,
             Self::ReleaseHost { .. } => WorkActionKind::ReleaseHost,
             Self::ReleaseMember { .. } => WorkActionKind::ReleaseMember,
             Self::Claim { .. } => WorkActionKind::Claim,
@@ -277,7 +243,6 @@ impl WorkAction {
             Self::BlockMember { .. } => WorkActionKind::BlockMember,
             Self::ResumeHost { .. } => WorkActionKind::ResumeHost,
             Self::ResumeMember { .. } => WorkActionKind::ResumeMember,
-            Self::Submit(_) => WorkActionKind::Submit,
             Self::RequestChanges { .. } => WorkActionKind::RequestChanges,
             Self::Cancel { .. } => WorkActionKind::Cancel,
         }
@@ -287,10 +252,7 @@ impl WorkAction {
         match self {
             Self::Create(command) => &command.context,
             Self::ReplaceDependencies(command) => &command.context,
-            Self::Submit(command) => &command.context,
             Self::AssignMembership { context, .. }
-            | Self::AssignRuntime { context, .. }
-            | Self::Rebind { context, .. }
             | Self::ReleaseHost { context, .. }
             | Self::ReleaseMember { context, .. }
             | Self::Claim { context, .. }
@@ -340,18 +302,6 @@ impl<'a, P: WorkPersistence + ?Sized> WorkApplication<'a, P> {
                 &execution_space_id,
                 context,
             )?,
-            WorkAction::AssignRuntime {
-                work_id,
-                expected_version,
-                member_run_id,
-                context,
-            } => self.assign_runtime(&work_id, expected_version, &member_run_id, context)?,
-            WorkAction::Rebind {
-                work_id,
-                expected_version,
-                member_run_id,
-                context,
-            } => self.rebind(&work_id, expected_version, &member_run_id, context)?,
             WorkAction::ReleaseHost {
                 work_id,
                 expected_version,
@@ -409,7 +359,6 @@ impl<'a, P: WorkPersistence + ?Sized> WorkApplication<'a, P> {
                 &resolution,
                 context,
             )?,
-            WorkAction::Submit(command) => self.submit(command)?,
             WorkAction::RequestChanges {
                 work_id,
                 expected_version,
@@ -444,7 +393,6 @@ impl<'a, P: WorkPersistence + ?Sized> WorkApplication<'a, P> {
             command.context.performed_by_actor.clone(),
             command.context.created_at.clone(),
         );
-        draft.active_member_run_id = command.initial_member_run_id;
         draft.eligible_member_ids = command.eligible_member_ids;
         draft.prerequisite_work_ids = command.prerequisite_work_ids;
         draft.artifact_refs = command.artifact_refs;
@@ -475,17 +423,6 @@ impl<'a, P: WorkPersistence + ?Sized> WorkApplication<'a, P> {
         )
     }
 
-    pub fn assign_runtime(
-        &self,
-        work_id: &str,
-        expected_version: u64,
-        member_run_id: &str,
-        context: WorkCommandContext,
-    ) -> Result<Work, P::Error> {
-        self.port
-            .assign_work(work_id, expected_version, member_run_id, context)
-    }
-
     pub fn assign_membership(
         &self,
         work_id: &str,
@@ -501,17 +438,6 @@ impl<'a, P: WorkPersistence + ?Sized> WorkApplication<'a, P> {
             execution_space_id,
             context,
         )
-    }
-
-    pub fn rebind(
-        &self,
-        work_id: &str,
-        expected_version: u64,
-        member_run_id: &str,
-        context: WorkCommandContext,
-    ) -> Result<Work, P::Error> {
-        self.port
-            .rebind_work(work_id, expected_version, member_run_id, context)
     }
 
     pub fn release_as_host(
@@ -608,10 +534,6 @@ impl<'a, P: WorkPersistence + ?Sized> WorkApplication<'a, P> {
         )
     }
 
-    pub fn submit(&self, command: SubmitWorkCommand) -> Result<Work, P::Error> {
-        self.port.submit_work(command)
-    }
-
     pub fn request_changes(
         &self,
         work_id: &str,
@@ -633,20 +555,6 @@ impl<'a, P: WorkPersistence + ?Sized> WorkApplication<'a, P> {
         self.port
             .cancel_work(work_id, expected_version, reason, context)
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SubmitWorkCommand {
-    pub work_id: String,
-    pub expected_version: u64,
-    pub member_run_id: String,
-    pub result_summary: String,
-    pub artifact_refs: Vec<String>,
-    pub check_refs: Vec<String>,
-    pub github_links: Vec<GitHubLink>,
-    pub base_revision: Option<String>,
-    pub candidate_revision: Option<String>,
-    pub context: WorkCommandContext,
 }
 
 /// A stable Host actor constructor for non-HTTP adapters. Authentication is
@@ -690,23 +598,10 @@ mod tests {
             eligible_member_ids: Vec::new(),
             prerequisite_work_ids: Vec::new(),
             priority: WorkPriority::Normal,
-            initial_member_run_id: None,
             artifact_refs: Vec::new(),
             check_refs: Vec::new(),
             github_links: Vec::new(),
             expected_version: 0,
-            context: context(),
-        };
-        let submit = || SubmitWorkCommand {
-            work_id: "work-1".into(),
-            expected_version: 1,
-            member_run_id: "member-run-1".into(),
-            result_summary: "done".into(),
-            artifact_refs: Vec::new(),
-            check_refs: Vec::new(),
-            github_links: Vec::new(),
-            base_revision: None,
-            candidate_revision: None,
             context: context(),
         };
         let actions = vec![
@@ -723,18 +618,6 @@ mod tests {
                 expected_version: 1,
                 membership_id: "membership-1".into(),
                 execution_space_id: "space-1".into(),
-                context: context(),
-            },
-            WorkAction::AssignRuntime {
-                work_id: "work-1".into(),
-                expected_version: 1,
-                member_run_id: "member-run-1".into(),
-                context: context(),
-            },
-            WorkAction::Rebind {
-                work_id: "work-1".into(),
-                expected_version: 1,
-                member_run_id: "member-run-1".into(),
                 context: context(),
             },
             WorkAction::ReleaseHost {
@@ -786,7 +669,6 @@ mod tests {
                 resolution: "fixed".into(),
                 context: context(),
             },
-            WorkAction::Submit(submit()),
             WorkAction::RequestChanges {
                 work_id: "work-1".into(),
                 expected_version: 1,
@@ -807,8 +689,6 @@ mod tests {
                 WorkActionKind::Create,
                 WorkActionKind::ReplaceDependencies,
                 WorkActionKind::AssignMembership,
-                WorkActionKind::AssignRuntime,
-                WorkActionKind::Rebind,
                 WorkActionKind::ReleaseHost,
                 WorkActionKind::ReleaseMember,
                 WorkActionKind::Claim,
@@ -817,7 +697,6 @@ mod tests {
                 WorkActionKind::BlockMember,
                 WorkActionKind::ResumeHost,
                 WorkActionKind::ResumeMember,
-                WorkActionKind::Submit,
                 WorkActionKind::RequestChanges,
                 WorkActionKind::Cancel,
             ]

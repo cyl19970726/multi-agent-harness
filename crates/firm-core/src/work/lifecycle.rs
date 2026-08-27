@@ -44,7 +44,7 @@ pub fn validate_work_transition(
         }
         WorkEventKind::ChangesRequested => {
             before == (WorkPhase::Review, WorkCondition::Normal, None)
-                && after == (WorkPhase::Active, WorkCondition::Normal, None)
+                && after == (WorkPhase::Open, WorkCondition::Normal, None)
         }
         WorkEventKind::Accepted => {
             before == (WorkPhase::Review, WorkCondition::Normal, None)
@@ -156,6 +156,13 @@ mod tests {
         review.phase = WorkPhase::Review;
         assert_eq!(
             validate_work_transition(&active, &review, WorkEventKind::Submitted),
+            Ok(())
+        );
+
+        let mut changes_requested = review.clone();
+        changes_requested.phase = WorkPhase::Open;
+        assert_eq!(
+            validate_work_transition(&review, &changes_requested, WorkEventKind::ChangesRequested,),
             Ok(())
         );
 

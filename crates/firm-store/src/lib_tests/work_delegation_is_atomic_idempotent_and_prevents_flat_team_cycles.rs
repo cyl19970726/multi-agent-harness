@@ -4,14 +4,17 @@ use super::*;
 fn work_delegation_is_atomic_idempotent_and_prevents_flat_team_cycles() {
     let (root, store, run_a, member_a, run_b, member_b) =
         delegation_test_fixture("delegation-atomic-cycle");
-    let source = store
-        .insert_work(
-            assigned_delegation_work(&run_a, &member_a, "source-a"),
-            run_host_work_context(&run_a, "work-source-a", "create-source-a", "unix-ms:2"),
-        )
-        .expect("create source Work");
+    let source = insert_assigned_delegation_work(
+        &store,
+        &run_a,
+        &member_a,
+        "source-a",
+        "work-source-a",
+        "create-source-a",
+        "unix-ms:2",
+    );
     let request = delegation_request("delegation-a-b", &source, &run_b.agent_team_id);
-    let target_request = assigned_delegation_work(&run_b, &member_b, "target-b");
+    let target_request = delegation_work(&run_b, "target-b");
     let create_context = run_host_work_context(
         &run_a,
         "delegation-create-a-b",
@@ -23,6 +26,35 @@ fn work_delegation_is_atomic_idempotent_and_prevents_flat_team_cycles() {
         .read_jsonl::<WorkDelegationOperation>("work_delegation_operations.jsonl")
         .unwrap()
         .len();
+    let mut preassigned_target = delegation_work(&run_b, "target-preassigned");
+    preassigned_target.owner_member_id = Some(member_b.agent_member_id.clone());
+    preassigned_target.assignee_membership_id = Some(format!(
+        "membership:{}:{}",
+        run_b.agent_team_id, member_b.agent_member_id
+    ));
+    let error = store
+        .create_work_delegation_with_target_work(
+            request.clone(),
+            preassigned_target,
+            run_host_work_context(
+                &run_a,
+                "delegation-preassigned-target",
+                "delegation-preassigned-target",
+                "unix-ms:2.5",
+            ),
+        )
+        .expect_err("delegated target creation must also be unassigned");
+    assert!(error
+        .to_string()
+        .contains("WORK_CREATE_UNASSIGNED_REQUIRED"));
+    assert_eq!(store.latest_works().unwrap().len(), works_before_refusals);
+    assert_eq!(
+        store
+            .read_jsonl::<WorkDelegationOperation>("work_delegation_operations.jsonl")
+            .unwrap()
+            .len(),
+        operations_before_refusals
+    );
     for (kind, id, suffix) in [
         (TeamActorKind::Host, "forged-host", "host"),
         (TeamActorKind::Operator, "operator", "operator"),
@@ -130,14 +162,26 @@ fn work_delegation_is_atomic_idempotent_and_prevents_flat_team_cycles() {
     let conflict = store
         .create_work_delegation_with_target_work(
             conflicting,
-            assigned_delegation_work(&run_b, &member_b, "unused-target"),
+            delegation_work(&run_b, "unused-target"),
             run_host_work_context(&run_a, "ignored", "delegate-source-a-to-b", "unix-ms:4"),
         )
         .expect_err("one idempotency key cannot change intent");
     assert!(conflict.to_string().contains("IDEMPOTENCY_CONFLICT"));
 
+    let target = store
+        .assign_work_to_membership(
+            &target.id,
+            target.version,
+            &format!(
+                "membership:{}:{}",
+                run_b.agent_team_id, member_b.agent_member_id
+            ),
+            "delegation-test-space",
+            run_host_work_context(&run_b, "assign-target-b", "assign-target-b", "unix-ms:4"),
+        )
+        .expect("assign target before using it as a delegation source");
     let reverse = delegation_request("delegation-b-a", &target, &run_a.agent_team_id);
-    let reverse_target = assigned_delegation_work(&run_a, &member_a, "target-a-reverse");
+    let reverse_target = delegation_work(&run_a, "target-a-reverse");
     let cycle = store
         .create_work_delegation_with_target_work(
             reverse,

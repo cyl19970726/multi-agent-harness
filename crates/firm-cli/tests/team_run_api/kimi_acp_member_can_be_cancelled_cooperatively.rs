@@ -31,7 +31,7 @@ fn kimi_acp_member_can_be_cancelled_cooperatively() {
         .as_str()
         .unwrap()
         .to_string();
-    let member_id = created["result"]["member_runs"][0]["id"]
+    let member_id = member_run_for_work_owner(&created["result"], 0)["id"]
         .as_str()
         .unwrap()
         .to_string();

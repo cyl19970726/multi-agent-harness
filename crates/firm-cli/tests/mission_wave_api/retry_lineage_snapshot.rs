@@ -252,7 +252,7 @@ fn mission_team_run_retry_lineage_wave_retirement_and_snapshot_contract() {
     assert_eq!(body["result"]["team_run"]["agent_team_id"], "team-alpha");
     assert!(body["result"]["team_run"]["wave_id"].is_null());
     assert!(body["result"]["team_run"].get("task_ids").is_none());
-    let member_id = body["result"]["member_runs"][0]["id"]
+    let member_id = member_run_for_work_owner(&body["result"], 0)["id"]
         .as_str()
         .expect("member id")
         .to_string();

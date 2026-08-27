@@ -58,172 +58,88 @@ impl HarnessStore {
         self.release_work_with_authority(work_id, expected_version, None, context)
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub fn submit_work(
-        &self,
-        work_id: &str,
-        expected_version: u64,
-        member_run_id: &str,
-        result_summary: &str,
-        artifact_refs: Vec<String>,
-        check_refs: Vec<String>,
-        context: WorkCommandContext,
-    ) -> StoreResult<Work> {
-        self.submit_work_with_links(
-            work_id,
-            expected_version,
-            member_run_id,
-            result_summary,
-            artifact_refs,
-            check_refs,
-            Vec::new(),
-            context,
-        )
-    }
-
-    /// [`submit_work`] plus an explicit GitHub issue/PR linkage snapshot
-    /// (issue #369). The base method keeps its historical signature; links are
-    /// merged into any links already attached at create time.
-    #[allow(clippy::too_many_arguments)]
-    pub fn submit_work_with_links(
-        &self,
-        work_id: &str,
-        expected_version: u64,
-        member_run_id: &str,
-        result_summary: &str,
-        artifact_refs: Vec<String>,
-        check_refs: Vec<String>,
-        github_links: Vec<GitHubLink>,
-        context: WorkCommandContext,
-    ) -> StoreResult<Work> {
-        self.submit_work_with_revision_and_links(
-            work_id,
-            expected_version,
-            member_run_id,
-            result_summary,
-            artifact_refs,
-            check_refs,
-            github_links,
-            None,
-            None,
-            context,
-        )
-    }
-
-    /// Submit one immutable candidate. `candidate_revision` is the preferred
-    /// source revision for code delivery; when omitted the Store derives a
-    /// deterministic digest from the complete submitted payload.
-    #[allow(clippy::too_many_arguments)]
-    pub fn submit_work_with_revision_and_links(
-        &self,
-        work_id: &str,
-        expected_version: u64,
-        member_run_id: &str,
-        result_summary: &str,
-        artifact_refs: Vec<String>,
-        check_refs: Vec<String>,
-        github_links: Vec<GitHubLink>,
-        base_revision: Option<String>,
-        candidate_revision: Option<String>,
-        context: WorkCommandContext,
-    ) -> StoreResult<Work> {
-        if result_summary.trim().is_empty() {
-            return Err(StoreError::Conflict("RESULT_REQUIRED".to_string()));
-        }
-        let candidate_revision = candidate_revision
-            .filter(|revision| !revision.trim().is_empty())
-            .unwrap_or_else(|| {
-                canonical_work_candidate_revision(
-                    result_summary,
-                    &artifact_refs,
-                    &check_refs,
-                    &github_links,
-                )
-            });
-        if base_revision
-            .as_deref()
-            .is_some_and(|revision| revision.trim().is_empty())
-        {
-            return Err(StoreError::Conflict(
-                "base revision must not be empty".to_string(),
-            ));
-        }
-        let report_id = format!("work-report-{}", context.event_id);
-        let evidence_id = format!("work-evidence-{}", context.event_id);
-        let report = WorkReport {
-            id: report_id,
-            work_id: work_id.to_string(),
-            work_version: expected_version.saturating_add(1),
-            report_revision: 1,
-            submitted_by_actor: context.performed_by_actor.clone(),
-            base_revision,
-            candidate_revision,
-            result_summary: result_summary.to_string(),
-            artifact_refs: artifact_refs.clone(),
-            check_refs: check_refs.clone(),
-            evidence_refs: vec![evidence_id],
-            known_risks: Vec::new(),
-            created_at: context.created_at.clone(),
-        };
-        self.transition_owned_work_with_payload(
-            work_id,
-            expected_version,
-            member_run_id,
-            context,
-            WorkEventKind::Submitted,
-            (WorkPhase::Active, WorkCondition::Normal),
-            (WorkPhase::Review, WorkCondition::Normal),
-            serde_json::Value::Null,
-            Vec::new(),
-            vec![report],
-            |work| {
-                work.result_summary = Some(result_summary.to_string());
-                work.artifact_refs = artifact_refs;
-                work.check_refs = check_refs;
-                // Issue links describe durable provenance. Pull-request links
-                // describe this submission candidate and are replaced, so a
-                // prior merged PR cannot satisfy a resubmitted candidate.
-                let mut candidate_links = work
-                    .github_links
-                    .iter()
-                    .filter(|link| link.kind == firm_core::GitHubLinkKind::Issue)
-                    .cloned()
-                    .collect::<Vec<_>>();
-                for link in github_links {
-                    if !candidate_links.contains(&link) {
-                        candidate_links.push(link);
-                    }
-                }
-                work.github_links = candidate_links;
-                work.blocker_reason = None;
-            },
-        )
-    }
-
-    /// Refresh the GitHub linkage snapshot on a Work without touching its
-    /// lifecycle (issue #369 Phase 2, daemon CI poll). Host/Service actor
-    /// only. When the links are unchanged the current Work is returned without
-    /// appending a `Updated` operation, so a steady-state poll never churns
-    /// versions.
+    /// Refresh external GitHub/CI evidence without impersonating a Member
+    /// Result or touching execution authority. The authenticated NodeDaemon,
+    /// with the exact TeamRun Host as its authority source, may update only the
+    /// Work's external evidence snapshot and append its `Updated` revision;
+    /// lifecycle, responsibility, reports, attention, bindings and deliveries
+    /// remain independent.
     pub fn update_work_github_links(
         &self,
         work_id: &str,
         expected_version: u64,
         github_links: Vec<GitHubLink>,
+        execution_space_id: &str,
+        daemon: &NodeDaemonLease,
         context: WorkCommandContext,
     ) -> StoreResult<Work> {
         self.init()?;
         let _lock = self.acquire_write_lock()?;
+        let latest = self
+            .latest_works_unlocked()?
+            .remove(work_id)
+            .ok_or_else(|| StoreError::Conflict(format!("work not found: {work_id}")))?;
+        if context.performed_by_actor.kind != firm_core::TeamActorKind::Service {
+            return Err(StoreError::Conflict(
+                "WORK_GITHUB_EVIDENCE_SERVICE_REQUIRED: authenticated NodeDaemon Service required"
+                    .into(),
+            ));
+        }
+        self.require_current_node_daemon_unlocked(
+            execution_space_id,
+            &daemon.node_id,
+            &daemon.daemon_id,
+            daemon.generation,
+            &firm_core::agentfirm_api::ActorRef {
+                kind: firm_core::agentfirm_api::ActorKind::Service,
+                id: context.performed_by_actor.id.clone(),
+            },
+            "work_github_evidence",
+            work_id,
+        )?;
+        let run = self.require_team_run_unlocked(&latest.team_run_id)?;
+        if run.execution_node_id != daemon.node_id {
+            return Err(StoreError::Conflict(format!(
+                "WORK_GITHUB_EVIDENCE_NODE_FENCED: Work {work_id} TeamRun is placed on {}, not {}",
+                run.execution_node_id, daemon.node_id
+            )));
+        }
+        let authority = context.authority_actor.as_ref().ok_or_else(|| {
+            StoreError::Conflict(
+                "WORK_GITHUB_EVIDENCE_HOST_SOURCE_REQUIRED: exact TeamRun Host source required"
+                    .into(),
+            )
+        })?;
+        self.require_exact_team_run_host_actor(authority, &latest.team_run_id)?;
+        let request_fingerprint = canonical_json_fingerprint(&serde_json::json!({
+            "work_id": work_id,
+            "expected_version": expected_version,
+            "github_links": github_links,
+            "execution_space_id": execution_space_id,
+            "node_id": daemon.node_id,
+            "daemon_id": daemon.daemon_id,
+            "daemon_generation": daemon.generation,
+        }));
         if let Some(existing) = self.idempotent_work_operation_unlocked(
             &context.idempotency_key,
             work_id,
             WorkEventKind::Updated,
         )? {
+            if existing
+                .event
+                .payload
+                .get("request_fingerprint")
+                .and_then(serde_json::Value::as_str)
+                != Some(request_fingerprint.as_str())
+            {
+                return Err(StoreError::Conflict(format!(
+                    "IDEMPOTENCY_CONFLICT: key {} was reused for different GitHub evidence",
+                    context.idempotency_key
+                )));
+            }
             return Ok(existing.work);
         }
-        require_host_actor(&context.performed_by_actor)?;
         let current = self.current_work_unlocked(work_id, expected_version)?;
-        self.require_exact_team_run_host_actor(&context.performed_by_actor, &current.team_run_id)?;
         if current.github_links == github_links {
             return Ok(current);
         }
@@ -231,123 +147,18 @@ impl HarnessStore {
         next.github_links = github_links;
         next.version += 1;
         next.updated_at = context.created_at.clone();
-        let reports = if current.phase == WorkPhase::Review {
-            let previous = self
-                .work_operations_unlocked()?
-                .into_iter()
-                .flat_map(|operation| operation.reports)
-                .filter(|report| {
-                    report.work_id == current.id && report.work_version == current.version
-                })
-                .max_by_key(|report| report.report_revision)
-                .ok_or_else(|| {
-                    StoreError::Conflict(format!(
-                        "CURRENT_WORK_REPORT_REQUIRED: Work {work_id} version {} cannot refresh review evidence",
-                        current.version
-                    ))
-                })?;
-            vec![WorkReport {
-                id: format!("work-report-{}", context.event_id),
-                work_id: previous.work_id,
-                work_version: next.version,
-                report_revision: previous.report_revision.saturating_add(1),
-                submitted_by_actor: previous.submitted_by_actor,
-                base_revision: previous.base_revision,
-                candidate_revision: previous.candidate_revision,
-                result_summary: previous.result_summary,
-                artifact_refs: previous.artifact_refs,
-                check_refs: previous.check_refs,
-                evidence_refs: vec![format!("work-evidence-{}", context.event_id)],
-                known_risks: previous.known_risks,
-                created_at: context.created_at.clone(),
-            }]
-        } else {
-            Vec::new()
-        };
         self.append_work_transition_with_records_unlocked(
             current,
             next,
             WorkEventKind::Updated,
             context,
-            serde_json::json!({ "reason": "github_ci_poll" }),
+            serde_json::json!({
+                "reason": "github_evidence_refresh",
+                "request_fingerprint": request_fingerprint,
+            }),
             Vec::new(),
-            reports,
             Vec::new(),
-        )
-    }
-
-    /// Host-side auto-submit when the daemon observes a linked pull request
-    /// reach `MERGED` (issue #369 Phase 2). The Work must be `in_progress` and
-    /// carry a `pull_request` link with `status == "MERGED"`; the fresh link
-    /// snapshot is stored with the transition. Host acceptance still moves the
-    /// Work from `review` to `done`; this only automates the submission step.
-    pub fn submit_work_on_pr_merge(
-        &self,
-        work_id: &str,
-        expected_version: u64,
-        result_summary: &str,
-        github_links: Vec<GitHubLink>,
-        context: WorkCommandContext,
-    ) -> StoreResult<Work> {
-        if result_summary.trim().is_empty() {
-            return Err(StoreError::Conflict("RESULT_REQUIRED".to_string()));
-        }
-        if !github_links.iter().any(|link| {
-            link.kind == firm_core::GitHubLinkKind::PullRequest
-                && link.status.as_deref() == Some("MERGED")
-        }) {
-            return Err(StoreError::Conflict(
-                "PR_MERGE_REQUIRED: auto-submit requires a pull_request link with status MERGED"
-                    .to_string(),
-            ));
-        }
-        let report_id = format!("work-report-{}", context.event_id);
-        let evidence_id = format!("work-evidence-{}", context.event_id);
-        let candidate_revision =
-            canonical_work_candidate_revision(result_summary, &[], &[], &github_links);
-        let report = WorkReport {
-            id: report_id,
-            work_id: work_id.to_string(),
-            work_version: expected_version.saturating_add(1),
-            report_revision: 1,
-            submitted_by_actor: context.performed_by_actor.clone(),
-            base_revision: None,
-            candidate_revision,
-            result_summary: result_summary.to_string(),
-            artifact_refs: Vec::new(),
-            check_refs: Vec::new(),
-            evidence_refs: vec![evidence_id],
-            known_risks: Vec::new(),
-            created_at: context.created_at.clone(),
-        };
-        self.transition_work_as_host(
-            work_id,
-            expected_version,
-            context,
-            WorkEventKind::Submitted,
-            (WorkPhase::Active, WorkCondition::Normal),
-            (WorkPhase::Review, WorkCondition::Normal),
-            serde_json::json!({ "reason": "github_pr_merge_observed" }),
             Vec::new(),
-            vec![report],
-            |work| {
-                work.result_summary = Some(result_summary.to_string());
-                // The fresh observed PR snapshot replaces the prior candidate;
-                // durable issue provenance is carried forward.
-                let mut merged = work
-                    .github_links
-                    .iter()
-                    .filter(|link| link.kind == firm_core::GitHubLinkKind::Issue)
-                    .cloned()
-                    .collect::<Vec<_>>();
-                for link in github_links {
-                    if !merged.contains(&link) {
-                        merged.push(link);
-                    }
-                }
-                work.github_links = merged;
-                work.blocker_reason = None;
-            },
         )
     }
 
@@ -405,7 +216,10 @@ impl HarnessStore {
             )));
         }
         let mut next = current.clone();
-        next.phase = WorkPhase::Active;
+        // A submitted execution has already settled its exact binding. Host
+        // changes therefore return the stable responsibility to the scheduler
+        // queue; a new execution admission must Start the next attempt.
+        next.phase = WorkPhase::Open;
         next.condition = WorkCondition::Normal;
         next.resolution = None;
         next.blocker_reason = Some(reason.to_string());
@@ -613,12 +427,13 @@ impl HarnessStore {
         }
         require_member_actor(&context.performed_by_actor, member_run_id)?;
         let current = self.current_work_unlocked(work_id, expected_version)?;
-        if (current.phase, current.condition) != required_lifecycle
-            || current.active_member_run_id.as_deref() != Some(member_run_id)
+        if current.active_member_run_id.is_some()
+            || (current.owner_member_id.is_some() && current.assignee_membership_id.is_none())
         {
-            return Err(StoreError::Conflict(format!(
-                "ProviderRuntimeProjection {member_run_id} does not own active work {work_id} in required state"
-            )));
+            return Err(StoreError::Conflict(
+                "LEGACY_RUNTIME_WORK_AUTHORITY_RETIRED: historical runtime-owned Work is read/export evidence and cannot be mutated"
+                    .to_string(),
+            ));
         }
         // A Closed or Retired ProviderRuntimeProjection no longer mutates its owned Work:
         // unfinished Work moves only via Host reassign/cancel or after an
@@ -626,6 +441,13 @@ impl HarnessStore {
         // member-side transitions with insert/claim/start/receive, which
         // already require active coordination.
         let member = self.require_member_run_unlocked(member_run_id, &current.team_run_id)?;
+        if (current.phase, current.condition) != required_lifecycle
+            || !self.member_run_holds_work_responsibility_unlocked(&current, &member)?
+        {
+            return Err(StoreError::Conflict(format!(
+                "ProviderRuntimeProjection {member_run_id} does not hold active Work responsibility for {work_id} in required state"
+            )));
+        }
         if !member.coordination_is_active() {
             return Err(StoreError::Conflict(format!(
                 "MEMBER_UNAVAILABLE: ProviderRuntimeProjection {member_run_id} coordination is {:?}; Reopen before mutating owned Work",
@@ -680,7 +502,7 @@ impl HarnessStore {
                 "work {work_id} is not in required state"
             )));
         }
-        if current.active_member_run_id.is_none() || current.owner_member_id.is_none() {
+        if current.owner_member_id.is_none() {
             return Err(StoreError::Conflict(format!(
                 "work {work_id} has no owner to retain"
             )));
@@ -721,6 +543,14 @@ impl HarnessStore {
             return Ok(existing.work);
         }
         let current = self.current_work_unlocked(work_id, expected_version)?;
+        if current.active_member_run_id.is_some()
+            || (current.owner_member_id.is_some() && current.assignee_membership_id.is_none())
+        {
+            return Err(StoreError::Conflict(
+                "LEGACY_RUNTIME_WORK_AUTHORITY_RETIRED: historical runtime-owned Work is read/export evidence and cannot be released"
+                    .to_string(),
+            ));
+        }
         if current.phase != WorkPhase::Open || current.condition != WorkCondition::Normal {
             return Err(StoreError::Conflict(format!(
                 "work {work_id} must be open to release"
@@ -737,9 +567,11 @@ impl HarnessStore {
         match member_run_id {
             Some(member_run_id) => {
                 require_member_actor(&context.performed_by_actor, member_run_id)?;
-                if current.active_member_run_id.as_deref() != Some(member_run_id) {
+                let member =
+                    self.require_member_run_unlocked(member_run_id, &current.team_run_id)?;
+                if !self.member_run_holds_work_responsibility_unlocked(&current, &member)? {
                     return Err(StoreError::Conflict(format!(
-                        "ProviderRuntimeProjection {member_run_id} does not own open work {work_id}"
+                        "ProviderRuntimeProjection {member_run_id} does not hold responsibility for open Work {work_id}"
                     )));
                 }
             }

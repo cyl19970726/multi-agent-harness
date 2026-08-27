@@ -54,7 +54,7 @@ const messages=[
 ];
 const actions=[
   {kind:"send_message",target_ref:{kind:"team_run",id:team.latest_run.id},required_version:5,disabled_reason:null},
-  {kind:"rebind_work",target_ref:{kind:"work",id:baseWork.work_id},required_version:4,disabled_reason:null},
+  {kind:"assign_work",target_ref:{kind:"work",id:baseWork.work_id},required_version:4,disabled_reason:null},
   {kind:"request_gate_evaluation",target_ref:{kind:"work",id:works[1].work_id},required_version:2,disabled_reason:null},
   {kind:"close_member_run",target_ref:{kind:"member_run",id:"member-run-mira"},required_version:3,disabled_reason:null},
 ];

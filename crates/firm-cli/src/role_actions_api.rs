@@ -279,7 +279,6 @@ pub fn execute(
                     eligible_member_ids,
                     prerequisite_work_ids,
                     priority,
-                    initial_member_run_id: None,
                     artifact_refs: Vec::new(),
                     check_refs: Vec::new(),
                     github_links: Vec::new(),
@@ -292,7 +291,7 @@ pub fn execute(
             require_confirmed(operation, confirmed_action, work_id)?;
             if !matches!(
                 operation,
-                "assign" | "rebind" | "release" | "cancel" | "claim" | "start" | "block" | "resume"
+                "assign" | "release" | "cancel" | "claim" | "start" | "block" | "resume"
             ) {
                 return Err(encoded_error(
                     "INVALID_STATE_TRANSITION",
@@ -302,63 +301,23 @@ pub fn execute(
                     None,
                 ));
             }
-            if matches!(operation, "assign" | "rebind" | "cancel") {
+            if matches!(operation, "assign" | "cancel") {
                 require_host(&auth, &team.host_agent_id, "work", work_id)?;
             } else if operation != "release" || !is_host(&auth, &team.host_agent_id) {
                 let _ = resolve_member_run(store, &auth, route.team_run_id)?;
             }
             let current = current_work(store, route.team_run_id, work_id)?;
             match (operation, intent) {
-                (
-                    "assign",
-                    RoleActionIntent::AssignWork {
-                        membership_id,
-                        member_run_id,
-                    },
-                ) => {
-                    let host_id = require_host(&auth, &team.host_agent_id, "work", work_id)?;
-                    match (membership_id, member_run_id) {
-                        (Some(membership_id), _) => execute_work_action(
-                            store,
-                            &auth,
-                            WorkAction::AssignMembership {
-                                work_id: work_id.to_string(),
-                                expected_version: auth.expected_version,
-                                membership_id,
-                                execution_space_id: auth.execution_space_id.clone(),
-                                context: host_context(&auth, host_id, false),
-                            },
-                        )?,
-                        (None, Some(member_run_id)) => execute_work_action(
-                            store,
-                            &auth,
-                            WorkAction::AssignRuntime {
-                                work_id: work_id.to_string(),
-                                expected_version: auth.expected_version,
-                                member_run_id,
-                                context: host_context(&auth, host_id, false),
-                            },
-                        )?,
-                        (None, None) => {
-                            return Err(encoded_error(
-                                "INVALID_STATE_TRANSITION",
-                                "assign_work requires membership_id (canonical TeamMembership responsibility) or the legacy member_run_id target",
-                                "work",
-                                work_id,
-                                None,
-                            ))
-                        }
-                    }
-                }
-                ("rebind", RoleActionIntent::RebindWork { member_run_id }) => {
+                ("assign", RoleActionIntent::AssignWork { membership_id }) => {
                     let host_id = require_host(&auth, &team.host_agent_id, "work", work_id)?;
                     execute_work_action(
                         store,
                         &auth,
-                        WorkAction::Rebind {
+                        WorkAction::AssignMembership {
                             work_id: work_id.to_string(),
                             expected_version: auth.expected_version,
-                            member_run_id,
+                            membership_id,
+                            execution_space_id: auth.execution_space_id.clone(),
                             context: host_context(&auth, host_id, false),
                         },
                     )?

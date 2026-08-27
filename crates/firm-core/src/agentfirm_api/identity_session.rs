@@ -445,6 +445,24 @@ pub struct NativeSessionRef {
     pub parent_native_session_id: Option<String>,
 }
 
+impl NativeSessionRef {
+    /// Compare immutable provider-native identity only. Availability,
+    /// resumability and verification timestamps are mutable observations and
+    /// must never split one native conversation into two identities.
+    pub fn same_identity_as(&self, other: &Self) -> bool {
+        self.provider == other.provider
+            && self.execution_mode == other.execution_mode
+            && self.native_session_id == other.native_session_id
+            && self.native_locator_kind == other.native_locator_kind
+            && self.provider_version == other.provider_version
+            && self.adapter_contract_version == other.adapter_contract_version
+    }
+}
+
+pub fn native_session_identity_matches(left: &NativeSessionRef, right: &NativeSessionRef) -> bool {
+    left.same_identity_as(right)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MemberCoordinationStatus {
@@ -467,6 +485,12 @@ pub enum MemberRuntimeStatus {
     Completed,
     Failed,
     Stopped,
+}
+
+impl MemberRuntimeStatus {
+    pub fn has_live_runtime_authority(self) -> bool {
+        !matches!(self, Self::Completed | Self::Failed | Self::Stopped)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -495,4 +519,11 @@ pub struct MemberRun {
     pub last_event_at: Option<String>,
     #[serde(default)]
     pub finished_at: Option<String>,
+}
+
+impl MemberRun {
+    pub fn has_live_runtime_authority(&self) -> bool {
+        self.coordination_status == MemberCoordinationStatus::Active
+            && self.runtime_status.has_live_runtime_authority()
+    }
 }

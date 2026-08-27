@@ -750,6 +750,7 @@ mod fabric_message_delivery;
 mod fabric_runtime_commands;
 mod fabric_teams;
 mod fabric_work_execution;
+pub use fabric_work_execution::WorkExecutionBindingReconciliation;
 mod trust_deliveries;
 mod trust_foundation;
 mod trust_members;

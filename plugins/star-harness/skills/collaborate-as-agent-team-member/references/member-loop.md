@@ -122,15 +122,15 @@ Refresh the Work after any `VERSION_CONFLICT`. Never retry with a guessed
 version. `CLAIM_LOST` means another Member owns the latest Work; do not perform
 its side effects.
 
-A successful self-claim is already responsibility possession inside this
-bound MemberRun/native turn. It records the `claimed` WorkEvent and returns the
-new Work version; it does not send a WorkDelivery back to yourself. After a
-runtime restart, continue the same `in_progress` Work only through the same
-stable AgentMember, active TeamMembership, exact WorkExecutionBinding, and
-current AgentSession generation. Inspect native history and the Workspace first,
-and never invent a provider receipt. Host assignment,
-resume, request-changes, and rebind are external changes and still arrive as
-WorkDelivery.
+A successful self-claim freezes responsibility to your stable AgentMember and
+active TeamMembership while the Work remains Open. It records the `claimed`
+WorkEvent; the scheduler must still create the exact WorkExecutionBinding and
+WorkDelivery before Start. After a runtime restart, continue only through a
+freshly validated binding to the current MemberRun and AgentSession generation.
+Inspect native history and the Workspace first, and never invent a provider
+receipt. Host request-changes returns Review → Open and requires the next
+monotonic binding/delivery generation. Compatible Workspace and native-session
+continuity may resume, but neither is Work ownership.
 
 V1 permits one active `in_progress` Work per Member unless a concrete capacity
 profile says otherwise. You may own several open Works but must not start two
@@ -168,7 +168,8 @@ preserve the server-returned correlation id and use the exact source Message id
 as causation. Acknowledge only the exact current recipient delivery/cursor.
 
 A Message may explain scope, a blocker, a result, or a review decision, but it never changes Work owner/status — see shared hard invariants §4. If conversation creates durable follow-up,
-create a self-owned or eligible unassigned Work explicitly.
+create an eligible unassigned Work explicitly, then claim it through the
+canonical membership responsibility operation.
 
 Ordinary mail queues until a safe boundary. Member-to-Host mail is durable in
 the Lead Inbox immediately but does not interrupt the Host's current reasoning.
@@ -197,12 +198,15 @@ AgentSession scope. Never supply or override a sender or Member identity.
 Then send one concise linked Message with options and recommendation when Human,
 Host, or peer input is useful. Do not repeatedly resend or create duplicate
 Work. When the Host resolves the blocker or requests changes, refresh the Work
-and continue in the same MemberRun, Workspace, and native session.
+and wait for the exact next execution admission. Stable responsibility remains;
+compatible Workspace/native-session continuity may resume after its runtime
+generation fences pass.
 
 ## Create Peer Follow-Up Work Without Assigning Peers
 
-You may create self-owned or eligible unassigned peer Work inside your current
-Work's scope and acceptance boundary. Do not create a Team-level goal, assign a
+You may create eligible unassigned peer Work inside your current Work's scope
+and acceptance boundary, then claim it through canonical membership
+responsibility. Do not create a Team-level goal, assign a
 same-level peer, cross a Team boundary, expand permission, or alter another
 Work's acceptance criteria.
 

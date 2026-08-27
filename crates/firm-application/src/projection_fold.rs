@@ -179,6 +179,14 @@ fn valid_work_delivery_transition(
                 && next.provider_receipt_id.is_none()
                 && next.failure_code.is_none()
         }
+        (WorkDeliveryStatus::Queued, WorkDeliveryStatus::Failed) => {
+            current.claim_id.is_none()
+                && next.claim_id.is_none()
+                && next.claimed_node_daemon_generation.is_none()
+                && next.provider_receipt_id.is_none()
+                && next.failure_code.as_deref()
+                    == Some("WORK_EXECUTION_BINDING_RELEASED_BEFORE_CLAIM")
+        }
         (WorkDeliveryStatus::Claimed, WorkDeliveryStatus::ProviderReceived) => {
             same_work_delivery_claim(current, next)
                 && next
@@ -336,6 +344,17 @@ mod tests {
         claimed.updated_at = "t2".into();
         assert_eq!(
             fold_canonical_work_delivery(Some(&queued), &claimed),
+            Ok(ProjectionFoldDecision::Advance)
+        );
+
+        let mut released_before_claim = queued.clone();
+        released_before_claim.status = WorkDeliveryStatus::Failed;
+        released_before_claim.failure_code =
+            Some("WORK_EXECUTION_BINDING_RELEASED_BEFORE_CLAIM".into());
+        released_before_claim.version = 2;
+        released_before_claim.updated_at = "t-release".into();
+        assert_eq!(
+            fold_canonical_work_delivery(Some(&queued), &released_before_claim),
             Ok(ProjectionFoldDecision::Advance)
         );
 

@@ -9,6 +9,28 @@ impl HarnessStore {
     ) -> StoreResult<CanonicalMutationResult<WorkReport>> {
         self.init()?;
         let _trust_lock = self.acquire_write_lock()?;
+        if report.authored_by != context.authenticated_actor {
+            return Err(trust_error(
+                TrustErrorCode::UnauthorizedActor,
+                "WorkReport.authored_by must equal the authenticated actor",
+                "work_report",
+                &report.id,
+                None,
+            ));
+        }
+        let request_payload = serde_json::to_value(&report)?;
+        let request_fingerprint = context
+            .request_fingerprint
+            .clone()
+            .unwrap_or_else(|| canonical_json_fingerprint(&request_payload));
+        if let Some(replay) = self.replay_trust_projection_unlocked(
+            context,
+            "work_report",
+            &report.id,
+            &request_fingerprint,
+        )? {
+            return Ok(replay);
+        }
         let source_work_revision = if report.kind == WorkReportKind::Result {
             report.work_revision.checked_sub(1).ok_or_else(|| {
                 trust_error(
@@ -24,20 +46,13 @@ impl HarnessStore {
         };
         let current_work =
             self.trust_team_work_unlocked(team_id, &report.work_id, source_work_revision)?;
-        self.require_exact_work_member_unlocked(
-            &context.execution_space_id,
-            &current_work,
-            &context.authenticated_actor,
-        )?;
-        if report.authored_by != context.authenticated_actor {
-            return Err(trust_error(
-                TrustErrorCode::UnauthorizedActor,
-                "WorkReport.authored_by must equal the authenticated actor",
-                "work_report",
-                &report.id,
+        let (authoring_member_run, execution_binding) = self
+            .require_exact_work_member_binding_unlocked(
+                &context.execution_space_id,
+                &current_work,
+                &context.authenticated_actor,
                 None,
-            ));
-        }
+            )?;
         if report.kind == WorkReportKind::Result
             && (report.candidate.is_none()
                 || report
@@ -116,6 +131,12 @@ impl HarnessStore {
                     None,
                 ));
             }
+        }
+        if report.kind == WorkReportKind::Failure {
+            self.require_provider_received_work_delivery_unlocked(
+                &context.execution_space_id,
+                &execution_binding,
+            )?;
         }
         let mut resolved_requirements = Vec::new();
         if report.kind == WorkReportKind::Result {
@@ -204,6 +225,12 @@ impl HarnessStore {
             .collect::<Result<Vec<_>, _>>()?;
         let mut initial_outbox_records = Vec::new();
         if report.kind == WorkReportKind::Result {
+            let released_binding = self.result_submission_released_binding_unlocked(
+                &context.execution_space_id,
+                &current_work,
+                &execution_binding,
+                &report.created_at,
+            )?;
             let mut submitted_work = current_work;
             submitted_work.phase = firm_core::WorkPhase::Review;
             submitted_work.condition = firm_core::WorkCondition::Normal;
@@ -231,7 +258,7 @@ impl HarnessStore {
                 work_id: submitted_work.id.clone(),
                 work_version: submitted_work.version,
                 source_event_ref: report.id.clone(),
-                member_run_id: submitted_work.active_member_run_id.clone(),
+                member_run_id: Some(authoring_member_run.id.clone()),
                 status: HostAttentionStatus::Actionable,
                 attempt: 0,
                 claim_id: None,
@@ -251,13 +278,14 @@ impl HarnessStore {
                 updated_at: report.created_at.clone(),
             })?);
             side_records.push(serde_json::to_value(submitted_work)?);
+            side_records.push(serde_json::to_value(released_binding)?);
         }
         self.commit_trust_projection_unlocked(
             context,
             "work_report",
             &report.id,
             "created",
-            serde_json::to_value(&report)?,
+            request_payload,
             &report,
             side_records,
             initial_outbox_records,
@@ -305,6 +333,7 @@ impl HarnessStore {
             &context.execution_space_id,
             &work,
             &context.authenticated_actor,
+            None,
         )?;
         if finding.reported_by != context.authenticated_actor {
             return Err(trust_error(
@@ -341,6 +370,7 @@ impl HarnessStore {
             &context.execution_space_id,
             &work,
             &context.authenticated_actor,
+            None,
         )?;
         if analysis.reported_by != context.authenticated_actor
             || analysis.member_run_id.as_deref() != Some(run.id.as_str())
@@ -943,9 +973,43 @@ impl HarnessStore {
                 )
             })
             .and_then(|envelope| event_projection::<WorkReport>(&envelope))?;
+        let report_revision_is_current = if report.work_revision == current.version {
+            true
+        } else if report.work_revision < current.version {
+            let mut evidence_updates = self
+                .work_operations_unlocked()?
+                .into_iter()
+                .filter(|operation| {
+                    operation.work.id == current.id
+                        && operation.event.resulting_version > report.work_revision
+                        && operation.event.resulting_version <= current.version
+                })
+                .collect::<Vec<_>>();
+            evidence_updates.sort_by_key(|operation| operation.event.resulting_version);
+            evidence_updates.len() as u64 == current.version - report.work_revision
+                && evidence_updates
+                    .iter()
+                    .enumerate()
+                    .all(|(offset, operation)| {
+                        operation.event.expected_version == report.work_revision + offset as u64
+                            && operation.event.resulting_version
+                                == report.work_revision + offset as u64 + 1
+                            && operation.event.kind == firm_core::WorkEventKind::Updated
+                            && operation
+                                .event
+                                .payload
+                                .get("reason")
+                                .and_then(Value::as_str)
+                                == Some("github_evidence_refresh")
+                            && operation.work.phase == firm_core::WorkPhase::Review
+                            && operation.work.condition == firm_core::WorkCondition::Normal
+                    })
+        } else {
+            false
+        };
         if report.kind != WorkReportKind::Result
             || report.work_id != current.id
-            || report.work_revision != current.version
+            || !report_revision_is_current
             || report.candidate.is_none()
             || report.candidate_fingerprint.as_deref() != Some(candidate_fingerprint)
             || report.evidence_refs.is_empty()
@@ -961,7 +1025,7 @@ impl HarnessStore {
         self.trust_gate_satisfied(
             &context.execution_space_id,
             work_id,
-            current.version,
+            report.work_revision,
             report_id,
             candidate_fingerprint,
         )?;
@@ -970,7 +1034,7 @@ impl HarnessStore {
             .into_values()
             .filter(|requirement| {
                 requirement.work_id == work_id
-                    && requirement.work_revision == current.version
+                    && requirement.work_revision == report.work_revision
                     && requirement.work_report_id == report_id
                     && requirement.candidate_fingerprint == candidate_fingerprint
             })

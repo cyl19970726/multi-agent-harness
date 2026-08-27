@@ -2,9 +2,8 @@ use super::*;
 
 #[test]
 fn work_event_id_reuse_is_rejected_without_creating_legacy_delivery_identity() {
-    let (root, store, run, member, _) = work_test_fixture("event-id-uniqueness");
+    let (root, store, run, _member, _) = work_test_fixture("event-id-uniqueness");
     let mut first = unassigned_test_work(&run.id, "work-event-id-first");
-    first.active_member_run_id = Some(member.id.clone());
     first.claim_mode = WorkClaimMode::HostAssign;
     store
         .insert_work(
@@ -13,7 +12,6 @@ fn work_event_id_reuse_is_rejected_without_creating_legacy_delivery_identity() {
         )
         .expect("first event");
     let mut second = unassigned_test_work(&run.id, "work-event-id-second");
-    second.active_member_run_id = Some(member.id.clone());
     second.claim_mode = WorkClaimMode::HostAssign;
     let error = store
         .insert_work(

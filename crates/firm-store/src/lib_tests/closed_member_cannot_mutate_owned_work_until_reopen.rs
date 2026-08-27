@@ -9,22 +9,23 @@ fn closed_member_cannot_mutate_owned_work_until_reopen() {
             host_work_context("we-closed-1", "create-owned", "unix-ms:2"),
         )
         .expect("create Work");
-    let assigned = store
-        .assign_work(
-            &created.id,
-            created.version,
-            &member.id,
-            host_work_context("we-closed-2", "assign-owned", "unix-ms:3"),
-        )
-        .expect("assign Work");
-    let started = store
-        .start_work(
-            &assigned.id,
-            assigned.version,
-            &member.id,
-            member_work_context(&member.id, "we-closed-3", "start-owned", "unix-ms:4"),
-        )
-        .expect("start Work");
+    let assigned = assign_test_work_to_member(
+        &store,
+        &run,
+        &created,
+        &member,
+        "we-closed-2",
+        "assign-owned",
+        "unix-ms:3",
+    );
+    let started = start_claimed_work_for_test(
+        &store,
+        &assigned,
+        &member,
+        "we-closed-3",
+        "start-owned",
+        "unix-ms:4",
+    );
 
     // Close lands mid-execution: coordination flips Closed while the Work
     // stays owned and InProgress.
@@ -45,22 +46,39 @@ fn closed_member_cannot_mutate_owned_work_until_reopen() {
         )
         .expect_err("closed member cannot block owned Work");
     assert!(
-        blocked.to_string().contains("MEMBER_UNAVAILABLE"),
+        blocked
+            .to_string()
+            .contains("does not hold active Work responsibility"),
         "unexpected error: {blocked}"
     );
+    let closed_report = result_report_for_test(
+        &started,
+        &member,
+        "we-closed-5",
+        "result from a closed runtime",
+        Vec::new(),
+        Vec::new(),
+        "unix-ms:6",
+    );
     let submitted = store
-        .submit_work(
-            &started.id,
-            started.version,
-            &member.id,
-            "result from a closed runtime",
-            Vec::new(),
-            Vec::new(),
-            member_work_context(&member.id, "we-closed-5", "submit-owned", "unix-ms:6"),
+        .create_trust_work_report(
+            &firm_core::agentfirm_api::MutationContext {
+                execution_space_id: "unit-test-space".into(),
+                authenticated_actor: closed_report.authored_by.clone(),
+                authority_actor: None,
+                command_name: "test.work_report.create".into(),
+                idempotency_key: closed_report.id.clone(),
+                expected_version: 0,
+                request_fingerprint: None,
+            },
+            started.accountable_team_id.as_deref().expect("team id"),
+            closed_report,
         )
         .expect_err("closed member cannot submit owned Work");
     assert!(
-        submitted.to_string().contains("MEMBER_UNAVAILABLE"),
+        submitted
+            .to_string()
+            .contains("MEMBER_RUN_GENERATION_FENCED"),
         "unexpected error: {submitted}"
     );
     // The Work projection is untouched by both rejections.
@@ -73,8 +91,8 @@ fn closed_member_cannot_mutate_owned_work_until_reopen() {
     assert_eq!(current.phase, WorkPhase::Active);
     assert_eq!(current.version, started.version);
 
-    // Reopen (coordination Active, next runtime generation) restores the
-    // member-side transition path for the same durable Work.
+    // Reopen restores stable participation but never revives the old execution
+    // binding. A successor scheduler admission must bind the new generation.
     let mut reopened_member = closed_member.clone();
     reopened_member.coordination_status = firm_core::MemberCoordinationStatus::Active;
     reopened_member.status = MemberRunStatus::Idle;
@@ -82,17 +100,33 @@ fn closed_member_cannot_mutate_owned_work_until_reopen() {
     store
         .compare_and_advance_member_run_generation(&closed_member, &reopened_member)
         .expect("record reopened member");
+    let reopened_report = result_report_for_test(
+        &started,
+        &reopened_member,
+        "we-closed-6",
+        "result after reopen",
+        Vec::new(),
+        Vec::new(),
+        "unix-ms:7",
+    );
     let submitted = store
-        .submit_work(
-            &started.id,
-            started.version,
-            &member.id,
-            "result after reopen",
-            Vec::new(),
-            Vec::new(),
-            member_work_context(&member.id, "we-closed-6", "submit-reopened", "unix-ms:7"),
+        .create_trust_work_report(
+            &firm_core::agentfirm_api::MutationContext {
+                execution_space_id: "unit-test-space".into(),
+                authenticated_actor: reopened_report.authored_by.clone(),
+                authority_actor: None,
+                command_name: "test.work_report.create".into(),
+                idempotency_key: reopened_report.id.clone(),
+                expected_version: 0,
+                request_fingerprint: None,
+            },
+            started.accountable_team_id.as_deref().expect("team id"),
+            reopened_report,
         )
-        .expect("reopened member submits owned Work");
-    assert_eq!(submitted.phase, WorkPhase::Review);
+        .expect_err("Reopen alone cannot revive stale Work execution authority");
+    assert!(submitted
+        .to_string()
+        .contains("MEMBER_RUN_GENERATION_FENCED"));
+
     std::fs::remove_dir_all(root).expect("remove temp store");
 }

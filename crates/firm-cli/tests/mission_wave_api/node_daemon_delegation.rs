@@ -80,11 +80,9 @@ fn http_console_delegates_native_team_run_to_node_daemon() {
         .as_str()
         .expect("run id")
         .to_string();
-    let member_id = body["result"]["member_runs"][0]["id"]
-        .as_str()
-        .expect("member id")
-        .to_string();
-    let agent_member_id = body["result"]["member_runs"][0]["agent_member_id"]
+    let member = member_run_for_work_owner(&body["result"], 0);
+    let member_id = member["id"].as_str().expect("member id").to_string();
+    let agent_member_id = member["agent_member_id"]
         .as_str()
         .expect("canonical AgentMember id")
         .to_string();
@@ -92,6 +90,9 @@ fn http_console_delegates_native_team_run_to_node_daemon() {
         .as_str()
         .expect("Work id")
         .to_string();
+    let work_version = body["result"]["works"][0]["version"]
+        .as_u64()
+        .expect("Work version");
 
     let daemon = run_firm_with_env(
         &home,
@@ -170,7 +171,7 @@ fn http_console_delegates_native_team_run_to_node_daemon() {
             "--work-id",
             &work_id,
             "--expected-version",
-            "1",
+            &work_version.to_string(),
             "--member-run-id",
             &member_id,
             "--json",

@@ -919,7 +919,7 @@ pub(super) fn build_member_wake_view(
     let all_works = ledger.store.latest_works()?;
     let active_work = all_works.iter().find(|work| {
         work.team_run_id == ledger.run_id
-            && is_active_work_continuation_candidate(work, &member_row.id, &all_works)
+            && is_active_work_continuation_candidate(work, &member_row.agent_member_id, &all_works)
     });
 
     let delivery_count = ledger.queued_works_for(&member_row.id)?.len() as u32;

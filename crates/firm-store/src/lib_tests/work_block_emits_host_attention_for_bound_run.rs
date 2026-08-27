@@ -17,6 +17,14 @@ fn work_block_emits_host_attention_for_bound_run() {
             member_work_context(&member.id, "we-block-2", "claim-block-ha", "unix-ms:3"),
         )
         .expect("claim Work");
+    let claimed = start_claimed_work_for_test(
+        &store,
+        &claimed,
+        &member,
+        "we-block-start",
+        "start-block-ha",
+        "unix-ms:3.5",
+    );
     let _blocked = store
         .block_work(
             &claimed.id,

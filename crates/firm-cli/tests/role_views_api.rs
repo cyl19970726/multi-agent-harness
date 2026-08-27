@@ -1,8 +1,3 @@
-//! HTTP boundary coverage for the Wave 4B local RoleViews.
-
-mod fake_provider;
-mod firm_env;
-
 #[path = "role_views_api/action_matrix_and_projection.rs"]
 mod action_matrix_and_projection;
 #[path = "role_views_api/authorization_and_store_purity.rs"]
@@ -15,6 +10,10 @@ mod daemon_admission;
 mod delivery_projection;
 #[path = "role_views_api/exact_self_session.rs"]
 mod exact_self_session;
+mod fake_provider;
+mod firm_env;
+#[path = "role_views_api/provider_received_work_attempt.rs"]
+mod provider_received_work_attempt;
 #[path = "role_views_api/remote_fabric_health.rs"]
 mod remote_fabric_health;
 #[path = "role_views_api/standalone_codex_session.rs"]
@@ -25,19 +24,23 @@ use action_matrix_and_projection::{
 };
 use firm_env::{
     collect_named_sse_data, create_canonical_agent_member, current_project_id, current_space_id,
-    run_firm, run_firm_with_env, ServeHandle, TempHome,
+    run_firm, run_firm_with_env, unix_ms, ServeHandle, TempHome,
 };
 use harness_core::agentfirm_api::{
     ActorKind, ActorRef, AgentSession, AgentSessionControlState, AgentSessionStatus,
     MutationContext, NativeSessionAvailability, NativeSessionRef, PermissionCeiling,
     RuntimeActivity, RuntimeCommandBinding, RuntimeDispatchMode, RuntimeDriverRef,
-    RuntimeResidency,
+    RuntimeResidency, WorkDeliveryStatus, WorkExecutionBinding, WorkExecutionBindingStatus,
 };
 use harness_core::{
     ExecutionNode, ExecutionNodeStatus, MemberCoordinationStatus, MemberRunStatus,
     NodeProjectRegistration, NodeProjectRegistrationStatus, ProviderCompatibilityStatus,
 };
 use harness_store::{CurrentTeamMemberLifecycleTransition, HarnessStore};
+use provider_received_work_attempt::{
+    admit_provider_received_work_attempt, assert_released_provider_received_attempt,
+    ProviderReceivedWorkAttemptInput,
+};
 
 const TOKEN: &str = "role-view-local-capability";
 const MEMBER_TOKEN: &str = "role-view-member-capability";
@@ -53,11 +56,6 @@ fn ledger_digest(root: &std::path::Path) -> Vec<(String, Vec<u8>)> {
         .flatten()
         .filter_map(|entry| {
             let name = entry.file_name().into_string().ok()?;
-            // Lease ledgers are autonomous control bookkeeping: the NodeDaemon
-            // and Team Supervisor renew and compact them on their own timers,
-            // independent of any HTTP action under test. Whole-ledger purity
-            // here must cover product state only, or a legitimate background
-            // renewal racing the before/after snapshots fails the comparison.
             let autonomous_bookkeeping = matches!(
                 name.as_str(),
                 "node_daemon_leases.jsonl" | "team_supervisor_leases.jsonl"
@@ -102,13 +100,6 @@ fn action_headers<'a>(token: &'a str, key: &'a str, version: &'a str) -> [(&'a s
         ("Idempotency-Key", key),
         ("If-Match", version),
     ]
-}
-
-fn unix_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .expect("system clock")
-        .as_millis() as u64
 }
 
 fn assert_exact_role_action_replay(
@@ -355,6 +346,19 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
     let run_id = created_run["result"]["team_run"]["id"]
         .as_str()
         .expect("run id");
+    let member_runs = created_run["result"]["member_runs"]
+        .as_array()
+        .expect("member runs");
+    let member_run_id = member_runs
+        .iter()
+        .find(|run| run["agent_member_id"] == worker_id)
+        .and_then(|run| run["id"].as_str())
+        .expect("member run id");
+    let sibling_member_run_id = member_runs
+        .iter()
+        .find(|run| run["agent_member_id"] == sibling_worker_id)
+        .and_then(|run| run["id"].as_str())
+        .expect("sibling member run id");
     let daemon = store
         .latest_node_daemon_lease(node_id)
         .expect("NodeDaemon lease")
@@ -463,6 +467,50 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
     assert_eq!(replay["event_id"], created["event_id"]);
     assert_eq!(replay["replayed"], true);
 
+    let worker_membership = store
+        .fabric_team_memberships(&space_id)
+        .expect("TeamMemberships for Work assignment")
+        .into_iter()
+        .find(|membership| membership.team_id == team.id && membership.agent_member_id == worker_id)
+        .expect("exact worker TeamMembership");
+    let assign_route = format!(
+        "/v1/agentfirm/team-runs/{run_id}/works/work-store-live-1/assign?project={project_id}"
+    );
+    let (status, assigned) = serve.post_json_with_headers(
+        &assign_route,
+        &serde_json::json!({
+            "action":"assign_work",
+            "membership_id":worker_membership.id
+        }),
+        &action_headers(TOKEN, "assign-store-live-1", "1"),
+    );
+    assert_eq!(status, 200, "canonical membership assignment: {assigned}");
+    assert_eq!(assigned["projection"]["version"], 2);
+    let assigned_work = store
+        .latest_works()
+        .expect("Works after assignment")
+        .into_iter()
+        .find(|work| work.id == "work-store-live-1")
+        .expect("assigned Work");
+    let worker_session = store
+        .fabric_agent_sessions(&space_id)
+        .expect("AgentSessions for Work admission")
+        .into_iter()
+        .find(|session| session.id == "agent-session:role-view-owner:1")
+        .expect("exact worker AgentSession");
+    let first_attempt = admit_provider_received_work_attempt(ProviderReceivedWorkAttemptInput {
+        store: &store,
+        space_id: &space_id,
+        node_id,
+        daemon: &daemon,
+        member_run_id,
+        work: &assigned_work,
+        team: &team,
+        membership: &worker_membership,
+        worker_id,
+        session: &worker_session,
+        binding_generation: 1,
+    });
     let view_route = format!("/v1/views/host-console/{}?project={project_id}", team.id);
     let (status, refreshed) =
         serve.get_json_with_headers(&view_route, &[("X-AgentFirm-Token", TOKEN)]);
@@ -482,16 +530,44 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
         .is_some_and(|items| items
             .iter()
             .any(|work| work["work_id"] == "work-store-live-1")));
-    assert!(refreshed["data"]["work_queues"]["unassigned"]
+    let projected_work = refreshed["data"]["all_works"]
+        .as_array()
+        .and_then(|items| {
+            items
+                .iter()
+                .find(|work| work["work_id"] == "work-store-live-1")
+        })
+        .expect("canonical Work projection");
+    assert_eq!(
+        projected_work["current_member_run_ref"], member_run_id,
+        "canonical runtime projection: {projected_work}"
+    );
+    assert_eq!(
+        projected_work["runtime_summary"]["work_execution_binding_id"],
+        "work-binding:work-store-live-1:1"
+    );
+    assert_eq!(
+        projected_work["runtime_summary"]["agent_session_id"],
+        worker_session.id
+    );
+    assert!(refreshed["data"]["work_queues"]["ready"]
         .as_array()
         .is_some_and(|items| items
             .iter()
             .any(|work| work["work_id"] == "work-store-live-1")));
+    assert!(refreshed["data"]["work_queues"]["unassigned"]
+        .as_array()
+        .is_some_and(|items| items
+            .iter()
+            .all(|work| work["work_id"] != "work-store-live-1")));
     assert!(refreshed["allowed_actions"]
         .as_array()
         .is_some_and(|actions| actions
             .iter()
             .all(|action| action["required_version"].is_u64())));
+    assert!(refreshed["allowed_actions"]
+        .as_array()
+        .is_some_and(|actions| actions.iter().all(|action| action["kind"] != "rebind_work")));
     let run_identity_route = format!("/v1/views/host-console/{run_id}?project={project_id}");
     let (status, run_identity_view) =
         serve.get_json_with_headers(&run_identity_route, &[("X-AgentFirm-Token", TOKEN)]);
@@ -552,19 +628,6 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
         "canonical Team Message did not change durable state"
     );
 
-    let member_runs = created_run["result"]["member_runs"]
-        .as_array()
-        .expect("member runs");
-    let member_run_id = member_runs
-        .iter()
-        .find(|run| run["agent_member_id"] == worker_id)
-        .and_then(|run| run["id"].as_str())
-        .expect("member run id");
-    let sibling_member_run_id = member_runs
-        .iter()
-        .find(|run| run["agent_member_id"] == sibling_worker_id)
-        .and_then(|run| run["id"].as_str())
-        .expect("sibling member run id");
     let (status, retired_native_activity) = serve.get_json_with_headers(
         &format!("/v1/member-runs/{member_run_id}/native-activity?project={project_id}"),
         &[("X-AgentFirm-Token", MEMBER_TOKEN)],
@@ -874,7 +937,7 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
     assert_eq!(status, 200, "Member RoleView: {member_view}");
     assert!(member_view["allowed_actions"]
         .as_array()
-        .is_some_and(|actions| actions.iter().any(|action| action["kind"] == "claim_work")));
+        .is_some_and(|actions| actions.iter().any(|action| action["kind"] == "start_work")));
     let decision_route =
         format!("/v1/agentfirm/team-runs/{run_id}/messages/request-decision?project={project_id}");
     let decision_headers = action_headers(MEMBER_TOKEN, "request-host-decision", &team_revision);
@@ -903,17 +966,22 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
         before_decision,
         "canonical request-decision did not change durable state"
     );
-    let claim_route = format!(
-        "/v1/agentfirm/team-runs/{run_id}/works/work-store-live-1/claim?project={project_id}"
+    let start_route = format!(
+        "/v1/agentfirm/team-runs/{run_id}/works/work-store-live-1/start?project={project_id}"
     );
-    let claim_headers = action_headers(MEMBER_TOKEN, "claim-store-live-1", "1");
-    let (status, claimed) = serve.post_json_with_headers(
-        &claim_route,
-        &serde_json::json!({"action":"claim_work"}),
-        &claim_headers,
+    let start_headers = action_headers(MEMBER_TOKEN, "start-store-live-1", "2");
+    let (status, started) = serve.post_json_with_headers(
+        &start_route,
+        &serde_json::json!({"action":"start_work"}),
+        &start_headers,
     );
-    assert_eq!(status, 200, "member claim: {claimed}");
-    assert_eq!(claimed["projection"]["active_member_run_id"], member_run_id);
+    assert_eq!(status, 200, "member start: {started}");
+    assert_eq!(started["projection"]["phase"], "active");
+    assert_eq!(
+        started["projection"]["active_member_run_id"],
+        serde_json::Value::Null,
+        "canonical stable responsibility must not copy runtime identity into Work"
+    );
     let before_sibling_attempts = ledger_digest(serve.fixture_store_root());
     let sibling_record_attempts = [
         (
@@ -945,7 +1013,7 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
         let (status, rejected) = serve.post_json_with_headers(
             &route,
             &intent,
-            &action_headers(SIBLING_MEMBER_TOKEN, key, "2"),
+            &action_headers(SIBLING_MEMBER_TOKEN, key, "3"),
         );
         assert_eq!(status, 409, "sibling {operation} spoof: {rejected}");
     }
@@ -955,7 +1023,7 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
     let (status, sibling_submit) = serve.post_json_with_headers(
         &sibling_submit_route,
         &serde_json::json!({"action":"submit_work","result_summary":"spoofed result","candidate_revision":"abcdef0123456789","check_refs":["check:spoof"]}),
-        &action_headers(SIBLING_MEMBER_TOKEN, "sibling-submit-spoof", "2"),
+        &action_headers(SIBLING_MEMBER_TOKEN, "sibling-submit-spoof", "3"),
     );
     assert_eq!(status, 409, "sibling submit spoof: {sibling_submit}");
     assert_eq!(
@@ -964,7 +1032,16 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
         "foreign Work mutations must have zero durable side effects"
     );
     let works_before_linked_messages = store.latest_works().expect("Works before linked Messages");
-    let linked_message_headers = action_headers(
+    let messages_before_sibling_link = store
+        .fabric_messages(&project_id)
+        .expect("Messages before sibling Work link");
+    let message_deliveries_before_sibling_link = store
+        .fabric_message_deliveries(&project_id)
+        .expect("Message deliveries before sibling Work link");
+    let work_deliveries_before_sibling_link = store
+        .fabric_work_deliveries(&project_id)
+        .expect("Work deliveries before sibling Work link");
+    let sibling_linked_message_headers = action_headers(
         SIBLING_MEMBER_TOKEN,
         "sibling-linked-message",
         &team_revision,
@@ -976,39 +1053,44 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
         &serde_json::json!({
             "action":"send_message",
             "recipient_ids":[host_id],
-            "body":"Review finding linked to another member's Work",
+            "body":"A sibling cannot link another member's Work",
             "work_id":"work-store-live-1",
             "response_required":false
         }),
-        &linked_message_headers,
+        &sibling_linked_message_headers,
     );
     assert_eq!(
-        status, 200,
+        status, 409,
         "sibling linked Message: {sibling_linked_message}"
     );
-    let sibling_message_id = sibling_linked_message["projection"]["id"]
-        .as_str()
-        .expect("linked Message id");
-    let sibling_correlation_id = sibling_linked_message["projection"]["correlation_id"]
-        .as_str()
-        .expect("linked Message correlation");
-    let (status, sibling_linked_reply) = serve.post_json_with_headers(
-        &format!("/v1/agentfirm/team-runs/{run_id}/messages/reply?project={project_id}"),
-        &serde_json::json!({
-            "action":"reply_message",
-            "recipient_ids":[host_id],
-            "body":"Correlated clarification for the same reviewed Work",
-            "correlation_id":sibling_correlation_id,
-            "causation_id":sibling_message_id,
-            "work_id":"work-store-live-1"
-        }),
-        &action_headers(
-            SIBLING_MEMBER_TOKEN,
-            "sibling-linked-message-reply",
-            &team_revision,
-        ),
+    assert_eq!(
+        store
+            .fabric_messages(&project_id)
+            .expect("Messages after rejected sibling Work link"),
+        messages_before_sibling_link,
+        "foreign Work-linked Message must not author a Message"
     );
-    assert_eq!(status, 200, "sibling linked reply: {sibling_linked_reply}");
+    assert_eq!(
+        store
+            .fabric_message_deliveries(&project_id)
+            .expect("Message deliveries after rejected sibling Work link"),
+        message_deliveries_before_sibling_link,
+        "foreign Work-linked Message must not create a Message delivery"
+    );
+    assert_eq!(
+        store
+            .fabric_work_deliveries(&project_id)
+            .expect("Work deliveries after rejected sibling Work link"),
+        work_deliveries_before_sibling_link,
+        "foreign Work-linked Message must not mutate Work delivery authority"
+    );
+    assert_eq!(
+        store
+            .latest_works()
+            .expect("Works after rejected sibling Work link"),
+        works_before_linked_messages,
+        "foreign Work-linked Message must not mutate Work"
+    );
     assert_eq!(
         store.latest_works().expect("Works after linked Messages"),
         works_before_linked_messages,
@@ -1037,67 +1119,67 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
         "unknown Work linkage must have zero durable side effects"
     );
     assert_ne!(member_run_id, sibling_member_run_id);
-    let (status, claim_replay) = serve.post_json_with_headers(
-        &claim_route,
-        &serde_json::json!({"action":"claim_work"}),
-        &claim_headers,
+    let (status, start_replay) = serve.post_json_with_headers(
+        &start_route,
+        &serde_json::json!({"action":"start_work"}),
+        &start_headers,
     );
-    assert_eq!(status, 200, "member claim replay: {claim_replay}");
-    assert_eq!(claim_replay["event_id"], claimed["event_id"]);
-    assert_eq!(claim_replay["replayed"], true);
+    assert_eq!(status, 200, "member start replay: {start_replay}");
+    assert_eq!(start_replay["event_id"], started["event_id"]);
+    assert_eq!(start_replay["replayed"], true);
     let operations_before_cli_replay = store
         .work_operations()
         .expect("Work operations before CLI replay");
-    let claim_operation = operations_before_cli_replay
+    let start_operation = operations_before_cli_replay
         .iter()
-        .find(|operation| operation.event.idempotency_key == "claim-store-live-1")
-        .expect("HTTP claim Work operation");
-    assert_eq!(claim_operation.event.id, claimed["event_id"]);
-    assert_eq!(claim_operation.event.expected_version, 1);
-    assert_eq!(claim_operation.event.resulting_version, 2);
+        .find(|operation| operation.event.idempotency_key == "start-store-live-1")
+        .expect("HTTP start Work operation");
+    assert_eq!(start_operation.event.id, started["event_id"]);
+    assert_eq!(start_operation.event.expected_version, 2);
+    assert_eq!(start_operation.event.resulting_version, 3);
     assert_eq!(
-        serde_json::to_value(&claim_operation.work).expect("claim Work projection"),
-        claimed["projection"]
+        serde_json::to_value(&start_operation.work).expect("start Work projection"),
+        started["projection"]
     );
-    let cli_claim_args = [
+    let cli_start_args = [
         "--space",
         space_id.as_str(),
         "--project",
         project_id.as_str(),
         "team-run",
         "work",
-        "claim",
+        "start",
         "--team-run-id",
         run_id,
         "--work-id",
         "work-store-live-1",
         "--expected-version",
-        "1",
+        "2",
         "--member-run-id",
         member_run_id,
         "--idempotency-key",
-        "claim-store-live-1",
+        "start-store-live-1",
         "--event-id",
-        "role-action:claim-store-live-1",
+        "role-action:start-store-live-1",
     ];
     for attempt in 1..=2 {
-        let cli_claim = run_firm_with_env(
+        let cli_start = run_firm_with_env(
             &home,
             &root,
-            &cli_claim_args,
+            &cli_start_args,
             &[
                 ("FIRM_TEAM_RUN_ID", run_id),
                 ("FIRM_MEMBER_RUN_ID", member_run_id),
             ],
         );
         assert!(
-            cli_claim.status.success(),
-            "CLI claim parity attempt {attempt}: {cli_claim:?}"
+            cli_start.status.success(),
+            "CLI start parity attempt {attempt}: {cli_start:?}"
         );
         let cli_projection: serde_json::Value =
-            serde_json::from_slice(&cli_claim.stdout).expect("CLI claim Work projection");
+            serde_json::from_slice(&cli_start.stdout).expect("CLI start Work projection");
         assert_eq!(
-            cli_projection, claimed["projection"],
+            cli_projection, started["projection"],
             "CLI and HTTP must return the same committed Work projection"
         );
         let operations_after_cli = store
@@ -1110,38 +1192,38 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
         );
         let replayed_operation = operations_after_cli
             .iter()
-            .find(|operation| operation.event.idempotency_key == "claim-store-live-1")
-            .expect("stable cross-surface claim operation");
-        assert_eq!(replayed_operation.event.id, claim_operation.event.id);
+            .find(|operation| operation.event.idempotency_key == "start-store-live-1")
+            .expect("stable cross-surface start operation");
+        assert_eq!(replayed_operation.event.id, start_operation.event.id);
         assert_eq!(
             replayed_operation.event.resulting_version,
-            claim_operation.event.resulting_version
+            start_operation.event.resulting_version
         );
     }
-    let changed_claim_cas = action_headers(MEMBER_TOKEN, "claim-store-live-1", "2");
-    let (status, changed_claim_cas_result) = serve.post_json_with_headers(
-        &claim_route,
-        &serde_json::json!({"action":"claim_work"}),
-        &changed_claim_cas,
+    let changed_start_cas = action_headers(MEMBER_TOKEN, "start-store-live-1", "3");
+    let (status, changed_start_cas_result) = serve.post_json_with_headers(
+        &start_route,
+        &serde_json::json!({"action":"start_work"}),
+        &changed_start_cas,
     );
     assert_eq!(
         status, 409,
-        "same lifecycle key with changed If-Match must fail: {changed_claim_cas_result}"
+        "same lifecycle key with changed If-Match must fail: {changed_start_cas_result}"
     );
-    let (status, reused_claim_key) = serve.post_json_with_headers(
+    let (status, reused_start_key) = serve.post_json_with_headers(
         &format!(
-            "/v1/agentfirm/team-runs/{run_id}/works/work-store-live-1/start?project={project_id}"
+            "/v1/agentfirm/team-runs/{run_id}/works/work-store-live-1/claim?project={project_id}"
         ),
-        &serde_json::json!({"action":"start_work"}),
-        &claim_headers,
+        &serde_json::json!({"action":"claim_work"}),
+        &start_headers,
     );
-    assert_eq!(status, 409, "same key changed command: {reused_claim_key}");
+    assert_eq!(status, 409, "same key changed command: {reused_start_key}");
 
     let progress_route = format!(
         "/v1/agentfirm/teams/{}/works/work-store-live-1/reports?project={project_id}",
         team.id
     );
-    let progress_headers = action_headers(MEMBER_TOKEN, "progress-store-live-1", "2");
+    let progress_headers = action_headers(MEMBER_TOKEN, "progress-store-live-1", "3");
     let progress_intent = serde_json::json!({
         "action":"write_report",
         "summary":"implementation progressing",
@@ -1156,7 +1238,7 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
     assert_eq!(status, 200, "progress replay: {progress_replay}");
     assert_eq!(progress_replay["event_id"], progress["event_id"]);
     assert_eq!(progress_replay["replayed"], true);
-    let changed_progress_cas = action_headers(MEMBER_TOKEN, "progress-store-live-1", "1");
+    let changed_progress_cas = action_headers(MEMBER_TOKEN, "progress-store-live-1", "2");
     let (status, changed_progress) =
         serve.post_json_with_headers(&progress_route, &progress_intent, &changed_progress_cas);
     assert_eq!(
@@ -1167,7 +1249,7 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
     let submit_route = format!(
         "/v1/agentfirm/team-runs/{run_id}/works/work-store-live-1/submit?project={project_id}"
     );
-    let submit_headers = action_headers(MEMBER_TOKEN, "submit-store-live-1", "2");
+    let submit_headers = action_headers(MEMBER_TOKEN, "submit-store-live-1", "3");
     let (status, submitted) = serve.post_json_with_headers(
         &submit_route,
         &serde_json::json!({
@@ -1180,7 +1262,8 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
     );
     assert_eq!(status, 200, "member submit: {submitted}");
     assert_eq!(submitted["projection"]["kind"], "result");
-    assert_eq!(submitted["projection"]["work_revision"], 3);
+    assert_eq!(submitted["projection"]["work_revision"], 4);
+    assert_released_provider_received_attempt(&store, &space_id, &first_attempt);
     let (status, submit_replay) = serve.post_json_with_headers(
         &submit_route,
         &serde_json::json!({
@@ -1194,7 +1277,7 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
     assert_eq!(status, 200, "submit replay: {submit_replay}");
     assert_eq!(submit_replay["event_id"], submitted["event_id"]);
     assert_eq!(submit_replay["replayed"], true);
-    let changed_submit_cas = action_headers(MEMBER_TOKEN, "submit-store-live-1", "1");
+    let changed_submit_cas = action_headers(MEMBER_TOKEN, "submit-store-live-1", "2");
     let (status, changed_submit_cas_result) = serve.post_json_with_headers(
         &submit_route,
         &serde_json::json!({
@@ -1228,8 +1311,8 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
             .work_operations()
             .expect("submission is canonical-only")
             .len(),
-        before + 2,
-        "result submission must not create a second legacy Work transition"
+        before + 3,
+        "result submission advances Work through its canonical WorkReport without a second Work operation"
     );
     let (status, review_view) =
         serve.get_json_with_headers(&view_route, &[("X-AgentFirm-Token", TOKEN)]);
@@ -1238,12 +1321,12 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
         .as_array()
         .is_some_and(|actions| actions
             .iter()
-            .any(|action| action["kind"] == "accept_work" && action["required_version"] == 3)));
+            .any(|action| action["kind"] == "accept_work" && action["required_version"] == 4)));
     let request_changes_route = format!(
         "/v1/agentfirm/teams/{}/works/work-store-live-1/request-changes?project={project_id}",
         team.id
     );
-    let request_changes_headers = action_headers(TOKEN, "request-changes-store-live-1", "3");
+    let request_changes_headers = action_headers(TOKEN, "request-changes-store-live-1", "4");
     let request_changes_intent =
         serde_json::json!({"action":"request_changes","reason":"tighten exact replay evidence"});
     let (status, changes_requested) = serve.post_json_with_headers(
@@ -1252,7 +1335,11 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
         &request_changes_headers,
     );
     assert_eq!(status, 200, "request changes: {changes_requested}");
-    assert_eq!(changes_requested["projection"]["version"], 4);
+    assert_eq!(changes_requested["projection"]["version"], 5);
+    assert_eq!(
+        changes_requested["projection"]["phase"], "open",
+        "Host changes return stable responsibility to canonical scheduling"
+    );
     let (status, changes_replay) = serve.post_json_with_headers(
         &request_changes_route,
         &request_changes_intent,
@@ -1261,16 +1348,49 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
     assert_eq!(status, 200, "request changes replay: {changes_replay}");
     assert_eq!(changes_replay["event_id"], changes_requested["event_id"]);
     assert_eq!(changes_replay["replayed"], true);
+    let changes_requested_work = store
+        .latest_works()
+        .expect("Works after request changes")
+        .into_iter()
+        .find(|work| work.id == "work-store-live-1")
+        .expect("Work awaiting revised Result");
+    assert_eq!(changes_requested_work.version, 5);
+    let revised_attempt = admit_provider_received_work_attempt(ProviderReceivedWorkAttemptInput {
+        store: &store,
+        space_id: &space_id,
+        node_id,
+        daemon: &daemon,
+        member_run_id,
+        work: &changes_requested_work,
+        team: &team,
+        membership: &worker_membership,
+        worker_id,
+        session: &worker_session,
+        binding_generation: 2,
+    });
+    let revised_start_headers = action_headers(MEMBER_TOKEN, "start-store-live-1-revision", "5");
+    let (status, revised_started) = serve.post_json_with_headers(
+        &start_route,
+        &serde_json::json!({"action":"start_work"}),
+        &revised_start_headers,
+    );
+    assert_eq!(
+        status, 200,
+        "member starts revised attempt: {revised_started}"
+    );
+    assert_eq!(revised_started["projection"]["version"], 6);
+    assert_eq!(revised_started["projection"]["phase"], "active");
     let revise_route = format!(
         "/v1/agentfirm/teams/{}/works/work-store-live-1/revise?project={project_id}",
         team.id
     );
-    let revise_headers = action_headers(MEMBER_TOKEN, "revise-store-live-1", "4");
+    let revise_headers = action_headers(MEMBER_TOKEN, "revise-store-live-1", "6");
     let revise_intent = serde_json::json!({"action":"revise_work","result_summary":"Revised Store-live loop","candidate_revision":"1123456789abcdef0123456789abcdef01234567","check_refs":["check:role-action-revise"]});
     let (status, revised) =
         serve.post_json_with_headers(&revise_route, &revise_intent, &revise_headers);
     assert_eq!(status, 200, "member revise: {revised}");
-    assert_eq!(revised["projection"]["work_revision"], 5);
+    assert_eq!(revised["projection"]["work_revision"], 7);
+    assert_released_provider_received_attempt(&store, &space_id, &revised_attempt);
     let (status, revise_replay) =
         serve.post_json_with_headers(&revise_route, &revise_intent, &revise_headers);
     assert_eq!(status, 200, "member revise replay: {revise_replay}");
@@ -1284,7 +1404,7 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
         .canonical_operations_for_space(&space_id)
         .expect("before accept")
         .len();
-    let no_confirm_headers = action_headers(TOKEN, "accept-no-confirm", "5");
+    let no_confirm_headers = action_headers(TOKEN, "accept-no-confirm", "7");
     let (status, no_confirm) = serve.post_json_with_headers(
         &accept_route,
         &serde_json::json!({"action":"accept_work"}),
@@ -1294,7 +1414,7 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
     let member_accept_headers = [
         ("X-AgentFirm-Token", MEMBER_TOKEN),
         ("Idempotency-Key", "accept-member-spoof"),
-        ("If-Match", "5"),
+        ("If-Match", "7"),
         ("X-AgentFirm-Confirm", "accept"),
     ];
     let (status, member_accept) = serve.post_json_with_headers(
@@ -1306,7 +1426,7 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
     let stale_accept_headers = [
         ("X-AgentFirm-Token", TOKEN),
         ("Idempotency-Key", "accept-stale"),
-        ("If-Match", "4"),
+        ("If-Match", "6"),
         ("X-AgentFirm-Confirm", "accept"),
     ];
     let (status, stale_accept) = serve.post_json_with_headers(
@@ -1326,7 +1446,7 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
     let accept_headers = [
         ("X-AgentFirm-Token", TOKEN),
         ("Idempotency-Key", "accept-store-live-1"),
-        ("If-Match", "5"),
+        ("If-Match", "7"),
         ("X-AgentFirm-Confirm", "accept"),
     ];
     let (status, accepted) = serve.post_json_with_headers(
@@ -1347,8 +1467,8 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
     assert_eq!(accept_replay["replayed"], true);
     assert_eq!(
         store.work_operations().expect("accept roll-up").len(),
-        before + 3,
-        "canonical accept must not fabricate a second legacy Work transition beyond request-changes"
+        before + 5,
+        "canonical accept must not fabricate a legacy Work transition beyond membership assignment, the two exact starts, and request-changes"
     );
     assert!(store
         .canonical_operations_for_space(&space_id)

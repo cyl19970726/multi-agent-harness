@@ -100,9 +100,12 @@ fn post_team_run_creates_entities_and_get_snapshot_projects_them() {
         works
             .iter()
             .all(|work| work["phase"].as_str() == Some("open")
-                && work["claim_mode"].as_str() == Some("host_assign")
-                && work["active_member_run_id"].as_str().is_some()),
-        "host-assigned initial Works: {works:?}"
+                && work["claim_mode"].as_str() == Some("team_claim")
+                && work["owner_member_id"].as_str().is_some()
+                && work["assignee_membership_id"].as_str().is_some()
+                && work["active_member_run_id"].is_null()
+                && work["version"].as_u64() == Some(2)),
+        "stable-membership initial Works: {works:?}"
     );
 
     // Folded events: 1 run + 3 member runs (including Host) + 2 Works.

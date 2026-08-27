@@ -38,11 +38,11 @@ fn two_peer_ack_only_mail_converges_without_extra_rounds_and_batches_on_next_tri
         .as_str()
         .unwrap()
         .to_string();
-    let member_a = created["result"]["member_runs"][0]["id"]
+    let member_a = member_run_for_work_owner(&created["result"], 0)["id"]
         .as_str()
         .unwrap()
         .to_string();
-    let member_b = created["result"]["member_runs"][1]["id"]
+    let member_b = member_run_for_work_owner(&created["result"], 1)["id"]
         .as_str()
         .unwrap()
         .to_string();

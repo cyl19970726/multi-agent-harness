@@ -5,7 +5,7 @@ fn continuation_is_emitted_only_for_in_progress_work() {
     let in_progress = continuation_test_work(WorkPhase::Active, WorkCondition::Normal, None);
     assert!(is_active_work_continuation_candidate(
         &in_progress,
-        "member-run-test",
+        "agent-member-test",
         std::slice::from_ref(&in_progress),
     ));
 
@@ -31,7 +31,7 @@ fn continuation_is_emitted_only_for_in_progress_work() {
         assert!(
             !is_active_work_continuation_candidate(
                 &work,
-                "member-run-test",
+                "agent-member-test",
                 std::slice::from_ref(&work),
             ),
             "{label} Work must not receive active continuation",

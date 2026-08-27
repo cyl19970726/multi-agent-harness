@@ -1054,20 +1054,19 @@ pub(super) fn create_team_run(
             let actor = team_run.host_actor.clone().ok_or_else(|| {
                 CliError::Usage("TeamRun has no exact Host AgentMember actor".to_string())
             })?;
-            let mut draft = CurrentWorkDraft::new(
+            let draft = CurrentWorkDraft::new(
                 generated_id("work"),
                 run_id.clone(),
                 team_run.agent_team_id.clone(),
                 format!("{}: {}", member_run.name, member_run.role),
                 format!("Team objective:\n\n{objective}"),
                 brief.to_string(),
-                WorkClaimMode::HostAssign,
+                WorkClaimMode::TeamClaim,
                 WorkPriority::Normal,
                 actor.clone(),
                 now.clone(),
             );
-            draft.active_member_run_id = Some(member_run.id.clone());
-            let work = store.insert_work(
+            let created_work = store.insert_work(
                 draft.into_work(),
                 WorkCommandContext {
                     event_id: generated_id("work-event"),
@@ -1076,6 +1075,40 @@ pub(super) fn create_team_run(
                     causation_ref: None,
                     idempotency_key: generated_id("work-command"),
                     created_at: now,
+                    duplicate_ok: false,
+                },
+            )?;
+            let membership = store
+                .fabric_team_memberships(execution_space_id)?
+                .into_iter()
+                .filter(|membership| {
+                    membership.team_id == team_run.agent_team_id
+                        && membership.agent_member_id == member_run.agent_member_id
+                        && membership.state
+                            == harness_core::agentfirm_api::TeamMembershipStatus::Active
+                })
+                .collect::<Vec<_>>();
+            let [membership] = membership.as_slice() else {
+                return Err(CliError::Usage(format!(
+                    "initial Work responsibility for {} requires exactly one active TeamMembership",
+                    member_run.agent_member_id
+                )));
+            };
+            let work = store.assign_work_to_membership(
+                &created_work.id,
+                created_work.version,
+                &membership.id,
+                execution_space_id,
+                WorkCommandContext {
+                    event_id: generated_id("work-event"),
+                    performed_by_actor: team_run
+                        .host_actor
+                        .clone()
+                        .expect("validated exact Team Host"),
+                    authority_actor: None,
+                    causation_ref: None,
+                    idempotency_key: generated_id("work-command"),
+                    created_at: now_string(),
                     duplicate_ok: false,
                 },
             )?;
@@ -1173,20 +1206,19 @@ pub(super) fn add_team_run_member(
             let actor = next.host_actor.clone().ok_or_else(|| {
                 CliError::Usage("TeamRun has no exact Host AgentMember actor".to_string())
             })?;
-            let mut draft = CurrentWorkDraft::new(
+            let draft = CurrentWorkDraft::new(
                 generated_id("work"),
                 team_run_id.to_string(),
                 current.agent_team_id.clone(),
                 format!("{}: {}", member_run.name, member_run.role),
                 String::new(),
                 brief.trim().to_string(),
-                WorkClaimMode::HostAssign,
+                WorkClaimMode::TeamClaim,
                 WorkPriority::Normal,
                 actor.clone(),
                 now.clone(),
             );
-            draft.active_member_run_id = Some(member_run.id.clone());
-            store_conflict_as_usage(store.insert_work(
+            let created_work = store_conflict_as_usage(store.insert_work(
                 draft.into_work(),
                 WorkCommandContext {
                     event_id: generated_id("work-event"),
@@ -1195,6 +1227,37 @@ pub(super) fn add_team_run_member(
                     causation_ref: None,
                     idempotency_key: generated_id("work-command"),
                     created_at: now,
+                    duplicate_ok: false,
+                },
+            ))?;
+            let memberships = store
+                .fabric_team_memberships(&execution_space_id)?
+                .into_iter()
+                .filter(|membership| {
+                    membership.team_id == current.agent_team_id
+                        && membership.agent_member_id == member_run.agent_member_id
+                        && membership.state
+                            == harness_core::agentfirm_api::TeamMembershipStatus::Active
+                })
+                .collect::<Vec<_>>();
+            let [membership] = memberships.as_slice() else {
+                return Err(CliError::Usage(format!(
+                    "initial Work responsibility for {} requires exactly one active TeamMembership",
+                    member_run.agent_member_id
+                )));
+            };
+            store_conflict_as_usage(store.assign_work_to_membership(
+                &created_work.id,
+                created_work.version,
+                &membership.id,
+                &execution_space_id,
+                WorkCommandContext {
+                    event_id: generated_id("work-event"),
+                    performed_by_actor: next.host_actor.clone().expect("validated exact Team Host"),
+                    authority_actor: None,
+                    causation_ref: None,
+                    idempotency_key: generated_id("work-command"),
+                    created_at: now_string(),
                     duplicate_ok: false,
                 },
             ))

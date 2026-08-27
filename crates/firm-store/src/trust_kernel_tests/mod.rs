@@ -452,6 +452,31 @@ fn insert_runtime_work(
         .unwrap()
 }
 
+fn assign_runtime_work(
+    store: &HarnessStore,
+    work: &firm_core::Work,
+    membership: &TeamMembership,
+) -> firm_core::Work {
+    let exact_host = store.exact_team_run_host_actor(&work.team_run_id).unwrap();
+    store
+        .assign_work_to_membership(
+            &work.id,
+            work.version,
+            &membership.id,
+            "space-test",
+            firm_core::WorkCommandContext {
+                event_id: format!("event-assign-{}", work.id),
+                performed_by_actor: exact_host.clone(),
+                authority_actor: Some(exact_host),
+                causation_ref: None,
+                idempotency_key: format!("assign-{}", work.id),
+                created_at: "t-assign".into(),
+                duplicate_ok: false,
+            },
+        )
+        .unwrap()
+}
+
 fn seed_membership_scope(store: &HarnessStore) {
     append_runtime_team(store, "team-membership-test", "team-run-membership-test");
     store
@@ -640,6 +665,7 @@ mod control_state_binding_is_quiescent_generation_fenced_and_exactly_replayable;
 mod host_cancel_preserves_provider_received_work_evidence;
 mod interrupt_is_the_only_successor_admitted_while_start_cycle_is_in_flight;
 mod legacy_session_json_is_readable_but_cannot_admit_an_unbound_new_effect;
+mod member_run_fixture;
 mod node_daemon_authors_and_claims_identity_first_message;
 mod peer_team_authority_keeps_source_and_target_fences_distinct_then_claims_one_membership;
 mod peer_team_claim_replays_exactly_and_resolved_delivery_rejects_new_claims;
@@ -669,3 +695,6 @@ mod team_membership_is_single_active_generation_and_rejoin_is_exact_successor;
 mod team_trash_restore_preserves_work_message_membership_and_native_session_records;
 mod terminal_session_rejects_every_provider_runtime_effect_with_zero_delta;
 mod work_execution_binding_rechecks_authoritative_dependency_readiness;
+mod work_responsibility_execution_admission_is_exact_and_idempotent;
+
+use member_run_fixture::admit_fixture_member_run_for_session;

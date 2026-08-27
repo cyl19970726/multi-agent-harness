@@ -22,8 +22,8 @@ mod fake_provider;
 mod firm_env;
 
 use firm_env::{
-    create_canonical_agent_member, current_project_id, run_firm, run_firm_with_env, ServeHandle,
-    TempHome,
+    create_canonical_agent_member, current_project_id, member_run_for_work_owner, run_firm,
+    run_firm_with_env, ServeHandle, TempHome,
 };
 
 fn run_with_fake_pi(
@@ -329,7 +329,7 @@ fn pi_rpc_member_two_round_journey_via_canonical_message() {
         .as_str()
         .unwrap()
         .to_string();
-    let member_id = created["result"]["member_runs"][0]["id"]
+    let member_id = member_run_for_work_owner(&created["result"], 0)["id"]
         .as_str()
         .unwrap()
         .to_string();
@@ -567,7 +567,7 @@ fn pi_member_busy_queue_and_explicit_steer_conformance() {
         .as_str()
         .unwrap()
         .to_string();
-    let member_id = created["result"]["member_runs"][0]["id"]
+    let member_id = member_run_for_work_owner(&created["result"], 0)["id"]
         .as_str()
         .unwrap()
         .to_string();
@@ -854,7 +854,7 @@ fn pi_full_access_busy_close_fails_closed_without_overclaiming_quiesce() {
         .as_str()
         .expect("run id")
         .to_string();
-    let member_id = created["result"]["member_runs"][0]["id"]
+    let member_id = member_run_for_work_owner(&created["result"], 0)["id"]
         .as_str()
         .expect("member id")
         .to_string();
@@ -963,7 +963,7 @@ fn pi_full_access_background_writer_denies_quiesce_before_effect() {
         .as_str()
         .expect("run id")
         .to_string();
-    let member_id = created["result"]["member_runs"][0]["id"]
+    let member_id = member_run_for_work_owner(&created["result"], 0)["id"]
         .as_str()
         .expect("member id")
         .to_string();
@@ -1065,7 +1065,7 @@ fn pi_busy_interrupt_waits_for_abort_receipt_and_agent_settled() {
         .as_str()
         .expect("run id")
         .to_string();
-    let member_id = created["result"]["member_runs"][0]["id"]
+    let member_id = member_run_for_work_owner(&created["result"], 0)["id"]
         .as_str()
         .expect("member id")
         .to_string();

@@ -53,8 +53,8 @@ Never reconstruct a session from Harness messages.
 
 TeamMessage is authored conversation only. A message may explain scope, a
 blocker, a result, or a review decision, but it never changes Work owner or
-status. If conversation creates durable follow-up, create self-owned or
-unassigned Work explicitly.
+status. If conversation creates durable follow-up, create eligible unassigned
+Work explicitly, then use canonical membership assignment or claim.
 
 ## 5. Independent Acceptance Separates Submission From Done
 
@@ -93,12 +93,15 @@ acceptance.
 
 ## 9. Work Ownership Survives
 
-Work identity persists across WorkEvent history, re-plans, crashes, and
-runtime restarts. Active Work keeps the same Work id, MemberRun, Workspace, and
-native session. Never clear ownership, duplicate side effects, or reconstruct a
-session from Harness messages after a crash. Host assignment, resume,
-request-changes, and rebind are external changes that still arrive as
-WorkDelivery.
+Work identity and stable AgentMember/TeamMembership responsibility persist
+across WorkEvent history, re-plans, crashes, and runtime restarts. MemberRun
+and AgentSession generations are exact execution authority, not Work ownership.
+Never clear responsibility, duplicate side effects, or reconstruct a session
+from Harness messages after a crash. Each execution attempt requires its own
+monotonic WorkExecutionBinding and WorkDelivery. Host request-changes returns
+Review → Open; the scheduler then admits the next exact binding/delivery
+generation. A compatible Workspace and provider-native session may continue,
+but continuity never substitutes for exact runtime admission.
 
 ## 10. Cross-Node Routing Has One Truth
 

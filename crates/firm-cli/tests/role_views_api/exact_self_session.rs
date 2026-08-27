@@ -193,11 +193,16 @@ fn exact_self_session_projection_follows_fresh_start_settle_sync() {
             "Exercise provider live SSE",
             "--completion-criteria",
             "Provider emits display-safe live activity and terminal clear",
-            "--owner-member-run-id",
-            &member_run_id,
         ],
     );
     assert!(live_work.status.success(), "live Work: {live_work:?}");
+    firm_env::work_execution::assign_work_for_member_run(
+        &home,
+        &space_id,
+        "work-live-provider-sse",
+        &member_run_id,
+        false,
+    );
     let mut member_sse = serve.open_sse_with_token(
         &format!(
             "?space={space_id}&project={project_id}&team_id={}&agent_id={worker_id}",

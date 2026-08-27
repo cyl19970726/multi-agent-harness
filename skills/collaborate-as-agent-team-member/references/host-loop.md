@@ -37,9 +37,9 @@ Write each Work so a Member can execute it without asking what "done" means:
 - **Boundary** — paths to touch and paths never to touch.
 - **Gates/Evidence** — what the reviewer will check, verbatim.
 
-Choose the claim mode deliberately: `host_assign` (with
-`--owner-member-run-id`) when one member must own it; `team_claim` when any
-eligible member may atomically claim. Prefer several bounded Works over one
+Choose the claim mode deliberately: `host_assign` followed by canonical
+`work assign --membership-id` when one stable TeamMembership must own it;
+`team_claim` when any eligible member may atomically claim. Prefer several bounded Works over one
 epic — TeamRun completion atomically rejects non-terminal Works, so unbounded
 Works block teardown.
 
@@ -94,10 +94,11 @@ result. Review means: open the artifact refs (the PR diff, the file), rerun
 or read the named check refs, and walk the completion criteria line by line.
 
 - **Accept** → Work closes with resolution `Accepted`.
-- **Request changes** → Work returns to `Active` with your reasons recorded
-  in the WorkEvent history; the member continues in the same MemberRun,
-  workspace, and native session. Do not spawn a replacement agent for a
-  revision — the existing member holds all the context.
+- **Request changes** → Work returns to `Open` with your reasons recorded in
+  WorkEvent history. Stable AgentMember/TeamMembership responsibility remains;
+  the scheduler must create the next exact WorkExecutionBinding and delivery
+  generation before Start. Reuse a compatible Workspace/native session when
+  its runtime fences pass; do not treat MemberRun continuity as ownership.
 - Never accept on a provider completion status, a delivery receipt, or a
   green fixture alone.
 

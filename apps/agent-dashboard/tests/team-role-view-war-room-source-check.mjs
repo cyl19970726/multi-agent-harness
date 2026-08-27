@@ -29,6 +29,10 @@ for (const retired of ["TeamWarRoom", "teamSelectors", "/v1/snapshot", "api/acti
 }
 assert.equal(/catch\s*\([^)]*\)\s*=>\s*\(\s*\{\s*ok\s*:\s*true/.test(active), false, "RoleView surface contains catch-all fake success");
 assert.equal(/sender(_actor_ref|_runtime_id)?\s*:/.test(sources["src/model/roleViews.ts"].split("prepareRoleAction")[1].split("export function roleActionRoute")[0]), false, "browser action payload authors sender identity");
+assert.match(sources["src/model/roleViews.ts"],/case "assign_work": body=\{action:"assign_work",membership_id:required\("membership_id"\)\}/,"assign_work must submit stable TeamMembership identity");
+assert.doesNotMatch(sources["src/model/roleViews.ts"],/rebind_work/,"retired runtime rebind action remains in Dashboard adapter");
+assert.match(sources["src/surfaces/RoleActionPanel.tsx"],/name:\s*"membership_id"/,"assign form must request TeamMembership identity");
+assert.doesNotMatch(sources["src/surfaces/RoleActionPanel.tsx"],/rebind_work/,"retired runtime rebind form remains published");
 assert.match(sources["src/surfaces/TeamWorkspace.tsx"], /"works" \| "activity" \| "members"/, "semantic Team tabs are missing");
 assert.match(sources["src/components/workbench/team/TeamWorksBoard.tsx"], /data-testid="role-view-work-sheet"/, "responsive selected Work sheet is missing");
 assert.match(sources["src/components/workbench/team/TeamWorksBoard.tsx"], /event\.key !== "Tab"/, "Work sheet focus trap is missing");
@@ -46,16 +50,17 @@ assert.match(sources["src/surfaces/TeamWorkspace.tsx"],/<HostActivityComposer /,
 assert.doesNotMatch(sources["src/components/workbench/team/TeamWorksBoard.tsx"],/id: "assigned"/,"Assigned is incorrectly modeled as a canonical lifecycle lane");
 assert.match(sources["src/components/workbench/team/TeamWorksBoard.tsx"],/label: "Active"/,"active Work phase is not explicit");
 assert.match(sources["src/components/workbench/team/TeamWorksBoard.tsx"],/label: "Closed"/,"closed Work phase is not explicit");
-assert.match(sources["src/surfaces/AgentConversationWorkspace.tsx"],/fetchNativeMemberActivity/,"Agent conversation does not read provider-native activity on demand");
-assert.match(sources["src/surfaces/AgentConversationWorkspace.tsx"],/Host execution is not fabricated as a MemberRun/,"Host conversation fabricates MemberRun execution truth");
-assert.match(sources["src/surfaces/AgentConversationWorkspace.tsx"],/Ordinary messages|Messages, runtime controls and Work transitions remain separate/,"conversation UI collapses Message and control authority");
+assert.match(sources["src/surfaces/AgentConversationWorkspace.tsx"],/useTeamSessionLiveActivity/,"Agent conversation does not read provider-native activity on demand");
+assert.match(sources["src/surfaces/AgentConversationWorkspace.tsx"],/memberRunId:agent\.is_host \? undefined/,"Host conversation fabricates MemberRun execution truth");
+assert.match(sources["src/surfaces/AgentConversationWorkspace.tsx"],/AgentMessageCommandComposer/,"conversation UI omits the identity-first Message plane");
+assert.match(sources["src/surfaces/AgentConversationWorkspace.tsx"],/RoleActionPanel/,"conversation UI omits the separate control and Work action plane");
 assert.match(sources["src/surfaces/AgentConversationWorkspace.tsx"],/role="dialog" aria-modal="true"/,"responsive Agent/context sheets are missing");
-assert.match(sources["src/surfaces/AgentConversationWorkspace.tsx"],/selection\.teamConversation === "host"/,"an explicit Host Member is mistaken for the Host conversation target");
-assert.match(sources["src/surfaces/AgentConversationWorkspace.tsx"],/filter\(\(work\) => work\.current_member_run_ref === selectedMemberRunId\)/,"conversation does not partition all exact MemberRun-bound Works");
+assert.match(sources["src/surfaces/AgentConversationWorkspace.tsx"],/selection\.teamConversation\s*!==\s*"host"/,"an explicit Host Member is mistaken for the Host conversation target");
+assert.match(sources["src/surfaces/AgentConversationWorkspace.tsx"],/work\.current_member_run_ref===data\.selected_agent\.current_member_run_ref/,"conversation does not resolve exact MemberRun-bound Work");
 assert.doesNotMatch(sources["src/surfaces/AgentConversationWorkspace.tsx"],/Current execution Work/,"conversation guesses one current Work without a server projection");
 assert.match(sources["src/surfaces/RoleActionPanel.tsx"],/aria-describedby=\{reason \? reasonId/,"disabled Role Actions do not expose visible accessible reasons");
 assert.match(sources["src/components/workbench/team/TeamMembersCapacity.tsx"],/<Avatar /,"mature member portraits are not reused");
-assert.match(sources["src/components/workbench/team/TeamMembersCapacity.tsx"],/org \{member\.organization_status\}/,"AgentMember organization status is not exposed separately");
+assert.match(sources["src/components/workbench/team/TeamMembersCapacity.tsx"],/lifecycle \{member\.organization_status\}/,"AgentMember organization status is not exposed separately");
 assert.doesNotMatch(sources["src/components/workbench/team/TeamMembersCapacity.tsx"],/Workspace \/ capacity/,"Members roster claims unprojected Workspace truth");
 assert.match(sources["src/components/workbench/team/TeamMessageComposer.tsx"], /prepareRoleAction/, "compact composer bypasses closed Role Actions");
 assert.match(sources["src/surfaces/TeamWorkspace.tsx"], /Last authoritative view|last authoritative view|last-good truth|Showing the last authoritative view/, "last-good refresh state is missing");

@@ -348,10 +348,6 @@ fn external_work_write_invalidates_and_current_snapshot_converges() {
         .as_str()
         .expect("team run id")
         .to_string();
-    let member_run_id = created_run["member_runs"][1]["id"]
-        .as_str()
-        .expect("member run id")
-        .to_string();
 
     let serve = ServeHandle::spawn(&home, home.base(), &[]);
     let query = format!("?space=space-alpha&project={project_id}");
@@ -373,8 +369,6 @@ fn external_work_write_invalidates_and_current_snapshot_converges() {
                 "create",
                 "--team-run-id",
                 &team_run_id,
-                "--owner-member-run-id",
-                &member_run_id,
                 "--title",
                 "work-after-stream-open",
                 "--completion-criteria",

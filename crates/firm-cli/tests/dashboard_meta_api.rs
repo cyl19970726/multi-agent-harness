@@ -218,7 +218,8 @@ fn latest_op_seq_advances_as_work_operations_are_appended() {
     let (_status, before) = serve.get_json("/v1/meta");
     assert_eq!(before["latest_op_seq"].as_u64(), Some(0));
 
-    // One member with `initial_work` appends exactly one WorkOperation.
+    // One member with `initial_work` appends the responsibility-neutral Create
+    // followed by the canonical stable-membership assignment.
     let (status, created) = serve.post_json(
         "/v1/team-runs",
         &serde_json::json!({
@@ -235,7 +236,7 @@ fn latest_op_seq_advances_as_work_operations_are_appended() {
     let (_status, after_one) = serve.get_json("/v1/meta");
     assert_eq!(
         after_one["latest_op_seq"].as_u64(),
-        Some(1),
+        Some(2),
         "body: {after_one}"
     );
 
@@ -261,13 +262,13 @@ fn latest_op_seq_advances_as_work_operations_are_appended() {
     let (_status, after_two) = serve.get_json("/v1/meta");
     assert_eq!(
         after_two["latest_op_seq"].as_u64(),
-        Some(2),
+        Some(3),
         "body: {after_two}"
     );
 
     // A read-only GET must never itself advance the cursor.
     let (_status, unchanged) = serve.get_json("/v1/meta");
-    assert_eq!(unchanged["latest_op_seq"].as_u64(), Some(2));
+    assert_eq!(unchanged["latest_op_seq"].as_u64(), Some(3));
 }
 
 #[test]
@@ -323,7 +324,7 @@ fn meta_reads_the_space_selected_store_not_a_sibling_space() {
     let (_status, alpha_meta) = serve.get_json("/v1/meta?space=space-alpha");
     assert_eq!(
         alpha_meta["latest_op_seq"].as_u64(),
-        Some(1),
+        Some(2),
         "body: {alpha_meta}"
     );
 

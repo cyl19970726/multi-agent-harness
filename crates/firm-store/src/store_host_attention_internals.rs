@@ -398,6 +398,18 @@ impl HarnessStore {
         if operation.event.performed_by_actor.kind == TeamActorKind::Host {
             return None;
         }
+        // A NodeDaemon GitHub poll records external evidence only. It must not
+        // manufacture a coordination request or impersonate a Member/Host.
+        if operation.event.kind == WorkEventKind::Updated
+            && operation
+                .event
+                .payload
+                .get("reason")
+                .and_then(serde_json::Value::as_str)
+                == Some("github_evidence_refresh")
+        {
+            return None;
+        }
         let kind = match operation.event.kind {
             WorkEventKind::Submitted => HostAttentionKind::WorkReviewRequested,
             WorkEventKind::Blocked => HostAttentionKind::WorkBlocked,
@@ -423,7 +435,12 @@ impl HarnessStore {
             work_id: operation.event.work_id.clone(),
             work_version: operation.event.resulting_version,
             source_event_ref: operation.event.id.clone(),
-            member_run_id: operation.work.active_member_run_id.clone(),
+            // The WorkEvent actor is immutable execution evidence written
+            // after the exact binding fence succeeds. Attention keeps that
+            // submitting runtime for evidence only; it never authorizes Work.
+            member_run_id: (operation.event.performed_by_actor.kind
+                == TeamActorKind::ProviderRuntimeProjection)
+                .then(|| operation.event.performed_by_actor.id.clone()),
             status: HostAttentionStatus::Actionable,
             attempt: 0,
             claim_id: None,
@@ -731,14 +748,11 @@ impl HarnessStore {
         // only on the dedicated dependency replacement command.
         firm_core::prepare_dependency_change(work, work.prerequisite_work_ids.clone(), &works)
             .map_err(|error| StoreError::Conflict(error.to_string()))?;
-        if let Some(member_run_id) = work.active_member_run_id.as_deref() {
-            let member = self.require_member_run_unlocked(member_run_id, &work.team_run_id)?;
-            self.ensure_member_can_receive_work_unlocked(&member)?;
-            if work.owner_member_id.as_deref() != Some(member_identity(&member).as_str()) {
-                return Err(StoreError::Conflict(
-                    "owner_member_id does not match active ProviderRuntimeProjection stable identity".to_string(),
-                ));
-            }
+        if work.active_member_run_id.is_some() {
+            return Err(StoreError::Conflict(
+                "LEGACY_RUNTIME_WORK_AUTHORITY_RETIRED: active_member_run_id is historical read/export evidence and cannot enter a current Work mutation"
+                    .to_string(),
+            ));
         }
         // DOC-106: responsibility never depends on an active MemberRun or
         // runtime. `assignee_membership_id` (mirrored by `owner_member_id`) is
@@ -747,22 +761,87 @@ impl HarnessStore {
         Ok(())
     }
 
-    pub(super) fn ensure_member_can_receive_work_unlocked(
+    /// Authorize one current MemberRun against stable Work responsibility and
+    /// the exact active execution binding. Historical runtime-owned Work is
+    /// read/export evidence only and never grants current mutation authority.
+    pub(super) fn member_run_holds_work_responsibility_unlocked(
         &self,
+        work: &Work,
         member: &ProviderRuntimeProjection,
-    ) -> StoreResult<()> {
-        if !member.coordination_is_active()
-            || matches!(
-                member.status,
-                firm_core::MemberRunStatus::Stopped | firm_core::MemberRunStatus::Failed
-            )
-        {
-            return Err(StoreError::Conflict(format!(
-                "MEMBER_UNAVAILABLE: ProviderRuntimeProjection {} cannot receive Work while {:?}/{:?}",
-                member.id, member.coordination_status, member.status
-            )));
+    ) -> StoreResult<bool> {
+        if work.owner_member_id.as_deref() != Some(member.agent_member_id.as_str()) {
+            return Ok(false);
         }
-        Ok(())
+        let Some(membership_id) = work.assignee_membership_id.as_deref() else {
+            return Ok(false);
+        };
+        let Some(team_id) = work.accountable_team_id.as_deref() else {
+            return Ok(false);
+        };
+        let mut matches = Vec::new();
+        for space_id in self.canonical_execution_space_ids()? {
+            matches.extend(
+                self.fabric_team_memberships(&space_id)?
+                    .into_iter()
+                    .filter(|membership| membership.id == membership_id)
+                    .map(|membership| (space_id.clone(), membership)),
+            );
+        }
+        let [(space_id, membership)] = matches.as_slice() else {
+            return Ok(false);
+        };
+        if membership.team_id != team_id
+            || membership.agent_member_id != member.agent_member_id
+            || membership.state != firm_core::agentfirm_api::TeamMembershipStatus::Active
+        {
+            return Ok(false);
+        }
+        let active_bindings = self
+            .fabric_work_execution_bindings(space_id)?
+            .into_iter()
+            .filter(|binding| {
+                binding.work_id == work.id
+                    && binding.status
+                        == firm_core::agentfirm_api::WorkExecutionBindingStatus::Active
+            })
+            .collect::<Vec<_>>();
+        let [binding] = active_bindings.as_slice() else {
+            return Ok(false);
+        };
+        if binding.work_revision > work.version
+            || self.work_responsibility_changed_after_revision_unlocked(
+                &work.id,
+                binding.work_revision,
+            )?
+            || binding.team_id != team_id
+            || binding.team_membership_id != membership.id
+            || binding.agent_member_id != member.agent_member_id
+        {
+            return Ok(false);
+        }
+        let sessions = self
+            .fabric_agent_sessions(space_id)?
+            .into_iter()
+            .filter(|session| session.id == binding.agent_session_id)
+            .collect::<Vec<_>>();
+        let [session] = sessions.as_slice() else {
+            return Ok(false);
+        };
+        let admission = self.work_execution_runtime_binding(space_id, &binding.id)?;
+        Ok(session.agent_member_id == member.agent_member_id
+            && session.runtime_generation == binding.agent_session_generation
+            && session.lifecycle != firm_core::agentfirm_api::AgentSessionStatus::Closed
+            && admission.target_member_run_id.as_deref() == Some(member.id.as_str())
+            && admission.target_member_run_generation == Some(member.runtime_generation)
+            && admission.target_session_id.as_deref() == Some(session.id.as_str())
+            && admission.target_runtime_generation == Some(session.runtime_generation)
+            && member.coordination_is_active()
+            && !matches!(
+                member.status,
+                firm_core::MemberRunStatus::Completed
+                    | firm_core::MemberRunStatus::Failed
+                    | firm_core::MemberRunStatus::Stopped
+            ))
     }
 
     /// Resolve the assignee TeamMembership for one (accountable Team,

@@ -184,6 +184,7 @@ pub(crate) struct Facts {
     team_memberships: Vec<Value>,
     message_subscriptions: Vec<Value>,
     work_execution_bindings: Vec<Value>,
+    work_execution_runtime_bindings: Vec<Value>,
     canonical_messages: Vec<Value>,
     canonical_message_deliveries: Vec<Value>,
     runtime_commands: Vec<Value>,
@@ -355,6 +356,20 @@ impl Facts {
             .map(|value| serde_json::to_value(value).unwrap_or(Value::Null))
             .collect::<Vec<_>>();
         ensure_active_membership_cardinality(&team_memberships)?;
+        let work_execution_bindings = store
+            .fabric_work_execution_bindings(space_id)
+            .map_err(|error| error.to_string())?;
+        let work_execution_runtime_bindings = work_execution_bindings
+            .iter()
+            .map(|binding| {
+                store
+                    .work_execution_runtime_binding(space_id, &binding.id)
+                    .map(|runtime_binding| {
+                        json!({"binding_id": binding.id, "runtime_binding": runtime_binding})
+                    })
+                    .map_err(|error| error.to_string())
+            })
+            .collect::<Result<Vec<_>, _>>()?;
         Ok(Self {
             space_id: space_id.to_string(),
             store_identity,
@@ -420,12 +435,11 @@ impl Facts {
                 .into_iter()
                 .map(|value| serde_json::to_value(value).unwrap_or(Value::Null))
                 .collect(),
-            work_execution_bindings: store
-                .fabric_work_execution_bindings(space_id)
-                .map_err(|error| error.to_string())?
+            work_execution_bindings: work_execution_bindings
                 .into_iter()
                 .map(|value| serde_json::to_value(value).unwrap_or(Value::Null))
                 .collect(),
+            work_execution_runtime_bindings,
             canonical_messages: store
                 .fabric_messages(space_id)
                 .map_err(|error| error.to_string())?
@@ -1019,10 +1033,7 @@ fn work_summary(facts: &Facts, team: &AgentTeam, work: &Work) -> Value {
                 "created_at":event["created_at"],
             })
         });
-    let current_run = work
-        .active_member_run_id
-        .as_deref()
-        .and_then(|id| facts.member_runs.iter().find(|run| run["id"] == id));
+    let current_runtime = current_work_runtime(facts, work);
     let module_refs = records(facts, |value| {
         value.get("work_id").and_then(Value::as_str) == Some(&work.id)
             && value.get("module_id").is_some()
@@ -1095,10 +1106,6 @@ fn work_summary(facts: &Facts, team: &AgentTeam, work: &Work) -> Value {
         .filter(|d| d["work_id"] == work.id)
         .collect::<Vec<_>>();
     let count_status = |status: &str| deliveries.iter().filter(|d| d["status"] == status).count();
-    let workspace = work
-        .active_member_run_id
-        .as_deref()
-        .and_then(|id| current_workspace(facts, id));
     let incoming = facts
         .side
         .iter()
@@ -1146,7 +1153,7 @@ fn work_summary(facts: &Facts, team: &AgentTeam, work: &Work) -> Value {
         "check_refs":work.check_refs,
         "latest_event":latest_event,
         "owner_actor_ref": work.owner_member_id.as_ref().map(|id| json!({"kind":"agent_member","id":id})),
-        "current_member_run_ref": work.active_member_run_id,
+        "current_member_run_ref": current_runtime.and_then(|runtime| runtime.member_run["id"].as_str()),
         "phase": enum_string(&work.phase), "condition": enum_string(&work.condition),
         "resolution": work.resolution.as_ref().map(enum_string), "priority": enum_string(&work.priority),
         "module_refs": module_refs,
@@ -1155,8 +1162,8 @@ fn work_summary(facts: &Facts, team: &AgentTeam, work: &Work) -> Value {
         "latest_finding_refs": latest_record_ref(facts, &work.id, "finding").into_iter().collect::<Vec<_>>(),
         "latest_failure_ref": latest_record_ref(facts, &work.id, "failure"),
         "delivery_summary": {"queued":count_status("queued"),"claimed":count_status("claimed"),"provider_received":count_status("provider_received"),"failed":count_status("failed"),"expired":count_status("expired"),"invalidated":count_status("invalidated"),"recovery_class":if deliveries.iter().any(|d| d["status"] == "failed") {"required"} else {"none"}},
-        "runtime_summary": {"state":current_run.and_then(|r|r["runtime_status"].as_str()).unwrap_or("unknown"),"generation":current_run.and_then(|r|r["runtime_generation"].as_u64()),"freshness":if current_run.is_some(){"current"}else{"unknown"}},
-        "workspace_summary": {"binding_id":workspace.and_then(|v|v["id"].as_str()),"lifecycle":workspace.and_then(|v|v["lifecycle"].as_str()).unwrap_or("unavailable"),"safety":workspace.map(|v| if v["lifecycle"]=="ready"{"safe"}else{"attention"}).unwrap_or("unknown")},
+        "runtime_summary": {"state":current_runtime.and_then(|runtime|runtime.member_run["runtime_status"].as_str()).unwrap_or("unknown"),"generation":current_runtime.and_then(|runtime|runtime.member_run["runtime_generation"].as_u64()),"freshness":if current_runtime.is_some(){"current"}else{"conflict_or_unavailable"},"work_execution_binding_id":current_runtime.and_then(|runtime|runtime.binding["id"].as_str()),"agent_session_id":current_runtime.and_then(|runtime|runtime.session["id"].as_str()),"agent_session_generation":current_runtime.and_then(|runtime|runtime.session["runtime_generation"].as_u64()),"provider":current_runtime.and_then(|runtime|runtime.session["provider_kind"].as_str()),"native_session_id":current_runtime.and_then(|runtime|runtime.session["native_session_ref"]["native_session_id"].as_str())},
+        "workspace_summary": {"binding_id":current_runtime.and_then(|runtime|runtime.workspace).and_then(|v|v["id"].as_str()),"cwd":current_runtime.and_then(|runtime|runtime.session["workspace_cwd"].as_str()),"lifecycle":current_runtime.and_then(|runtime|runtime.workspace).and_then(|v|v["lifecycle"].as_str()).unwrap_or("unavailable"),"safety":current_runtime.and_then(|runtime|runtime.workspace).map(|v| if v["lifecycle"]=="ready"{"safe"}else{"attention"}).unwrap_or("unknown")},
         "delegation_summary":{"incoming":incoming,"outgoing":outgoing,"attention":false},
         "updated_at":work.updated_at,
     })
@@ -1377,12 +1384,14 @@ mod member_surface;
 mod router;
 mod team_surface;
 mod viewer_surface;
+mod work_runtime;
 mod workspace_surface;
 
 pub(crate) use member_surface::*;
 pub(crate) use router::*;
 pub(crate) use team_surface::*;
 pub(crate) use viewer_surface::*;
+use work_runtime::current_work_runtime;
 pub(crate) use workspace_surface::*;
 
 #[cfg(test)]

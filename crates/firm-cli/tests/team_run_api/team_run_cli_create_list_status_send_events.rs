@@ -141,9 +141,16 @@ fn team_run_cli_create_list_status_send_events() {
     );
     let store = HarnessStore::new(home.spaces_dir().join(&project_id));
     let works = store.latest_works().expect("latest Works");
+    let worker_run = store
+        .member_runs()
+        .expect("member runs")
+        .into_iter()
+        .rev()
+        .find(|run| run.id == member_ids[1])
+        .expect("worker MemberRun");
     let worker_work = works
         .iter()
-        .find(|work| work.active_member_run_id.as_deref() == Some(member_ids[1]))
+        .find(|work| work.owner_member_id.as_deref() == Some(worker_run.agent_member_id.as_str()))
         .expect("worker Work");
 
     // send --json: a blocker from the worker to the lead.
@@ -431,5 +438,7 @@ fn team_run_cli_create_list_status_send_events() {
     let works = created["works"].as_array().expect("Works");
     assert_eq!(works.len(), 1);
     assert_eq!(works[0]["phase"].as_str(), Some("open"));
-    assert!(works[0]["active_member_run_id"].as_str().is_some());
+    assert!(works[0]["active_member_run_id"].is_null());
+    assert!(works[0]["owner_member_id"].as_str().is_some());
+    assert!(works[0]["assignee_membership_id"].as_str().is_some());
 }

@@ -6,8 +6,7 @@
 
 use harness_application::{WorkAction, WorkActionKind, WorkApplication};
 use harness_core::agentfirm_api::{
-    ActorKind, CandidateKind, CandidateRef, Confidence, MemberCoordinationStatus, WorkReport,
-    WorkReportKind,
+    CandidateKind, CandidateRef, Confidence, WorkReport, WorkReportKind,
 };
 use harness_core::Work;
 use harness_store::{canonical_json_fingerprint, HarnessStore, StoreError};
@@ -351,22 +350,6 @@ fn submit_result(
         return Err(conflict(
             "VERSION_CONFLICT",
             "submission requires the exact current Work revision",
-        ));
-    }
-    if auth.actor.kind != ActorKind::AgentMember
-        || current.owner_member_id.as_deref() != Some(auth.actor.id.as_str())
-        || !store
-            .trust_member_runs(&auth.execution_space_id)?
-            .into_iter()
-            .any(|run| {
-                run.agent_member_id == auth.actor.id
-                    && run.coordination_status == MemberCoordinationStatus::Active
-                    && current.active_member_run_id.as_deref() == Some(run.id.as_str())
-            })
-    {
-        return Err(conflict(
-            "UNAUTHORIZED_ACTOR",
-            "submission requires the exact accountable AgentMember and active Work execution binding",
         ));
     }
     let candidate_revision = submission

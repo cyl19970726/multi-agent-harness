@@ -233,10 +233,7 @@ pub(super) fn team_run_recover(
         for member in &members {
             let member_works: Vec<&Work> = works
                 .iter()
-                .filter(|w| {
-                    w.active_member_run_id.as_deref() == Some(&member.id)
-                        || w.owner_member_id.as_deref() == Some(member.agent_member_id.as_str())
-                })
+                .filter(|w| w.owner_member_id.as_deref() == Some(member.agent_member_id.as_str()))
                 .collect();
             let path = classify_member_recovery_path(member, supervisor_current);
             println!(
@@ -312,7 +309,7 @@ pub(super) fn team_run_recover(
 
     // ── Phase 3: reopen compatible sessions ──────────────────────────
     let mut reopened = 0u64;
-    let mut rebound = 0u64;
+    let rebound = 0u64;
     let mut skipped = 0u64;
     let ledger = TeamRunLedger::without_supervisor(store, team_run_id);
     for (member, path) in &recovery_plan {
@@ -361,91 +358,49 @@ pub(super) fn team_run_recover(
                 reopened += 1;
             }
             MemberRecoveryPath::RebindIncompatible { reason } => {
-                // Rebind member's Works to a new generation.
-                let member_works: Vec<Work> = works
-                    .iter()
-                    .filter(|w| {
-                        w.active_member_run_id.as_deref() == Some(&member.id) && !w.is_terminal()
-                    })
-                    .cloned()
-                    .collect();
-                if member_works.is_empty() {
-                    if !json {
-                        println!(
-                            "  {} ({}): no non-terminal Works to rebind ({})",
-                            member.name, member.provider, reason
-                        );
-                    }
-                    skipped += 1;
-                    continue;
-                }
-                // Create a new runtime generation row first.
-                let mut rebound_member = (*member).clone();
-                rebound_member.runtime_generation =
-                    rebound_member.runtime_generation.saturating_add(1);
-                rebound_member.started_at = now_str.clone();
-                rebound_member.coordination_status = MemberCoordinationStatus::Active;
-                rebound_member.status = MemberRunStatus::Queued;
-                rebound_member.finished_at = None;
-                rebound_member.last_event_at = Some(now_str.clone());
+                // Runtime recovery advances only the MemberRun generation.
+                // Work responsibility remains the stable AgentMember /
+                // TeamMembership; the scheduler later admits the new exact
+                // runtime through WorkExecutionBinding.
+                let mut recovered_member = (*member).clone();
+                recovered_member.runtime_generation =
+                    recovered_member.runtime_generation.saturating_add(1);
+                recovered_member.started_at = now_str.clone();
+                recovered_member.coordination_status = MemberCoordinationStatus::Active;
+                recovered_member.status = MemberRunStatus::Queued;
+                recovered_member.finished_at = None;
+                recovered_member.last_event_at = Some(now_str.clone());
                 store_conflict_as_usage(
-                    store.compare_and_advance_member_run_generation(member, &rebound_member),
+                    store.compare_and_advance_member_run_generation(member, &recovered_member),
                 )?;
                 ledger.append_action(
                     &member.id,
                     "recovered",
                     MemberActionStatus::Succeeded,
-                    "member recovered with Work rebinds",
+                    "member recovered with stable Work responsibility",
                     &format!(
-                        "host: recovered after supervisor death; {} Works rebound to generation {}",
-                        member_works.len(),
-                        rebound_member.runtime_generation
+                        "host: recovered after supervisor death; runtime generation {} ({reason})",
+                        recovered_member.runtime_generation
                     ),
                 )?;
-                // Rebind each Work.
-                for work in &member_works {
-                    let host_actor = store.exact_team_run_host_actor(&work.team_run_id)?;
-                    let ctx = WorkCommandContext {
-                        event_id: generated_id("work-event"),
-                        performed_by_actor: TeamActorRef {
-                            display_name: Some("Host recovery".to_string()),
-                            authn_source: Some("team_run_recover".to_string()),
-                            ..host_actor.clone()
-                        },
-                        authority_actor: Some(host_actor),
-                        causation_ref: None,
-                        idempotency_key: generated_id("work-command"),
-                        created_at: now_str.clone(),
-                        duplicate_ok: false,
-                    };
-                    store.rebind_work(&work.id, work.version, &rebound_member.id, ctx)?;
-                    ledger.fold_event(
-                        TeamRunEventSourceKind::Host,
-                        Some(member.id.clone()),
-                        "work",
-                        &work.id,
-                        "rebound",
-                        &format!(
-                            "Work {} rebound from {} gen {} to {} gen {} ({})",
-                            work.title,
-                            member.id,
-                            member.runtime_generation,
-                            rebound_member.id,
-                            rebound_member.runtime_generation,
-                            reason
-                        ),
-                    )?;
-                }
+                ledger.fold_event(
+                    TeamRunEventSourceKind::Host,
+                    Some(member.id.clone()),
+                    "member_run",
+                    &member.id,
+                    "recovered",
+                    &format!(
+                        "member {} recovered at runtime generation {} with stable Work responsibility",
+                        member.name, recovered_member.runtime_generation
+                    ),
+                )?;
                 if !json {
                     println!(
-                        "  {} ({}): rebound {} Works ({})",
-                        member.name,
-                        member.provider,
-                        member_works.len(),
-                        reason
+                        "  {} ({}): recovered generation without mutating Work responsibility ({})",
+                        member.name, member.provider, reason
                     );
                 }
-                rebound += member_works.len() as u64;
+                reopened += 1;
             }
             MemberRecoveryPath::Terminal { .. } => {
                 // Already checked above.
@@ -813,13 +768,13 @@ pub(super) fn roll_up_target_work_delegations(
 // authoritative store reads; the full JSON array remains the default.
 // ---------------------------------------------------------------------------
 
-/// One `--brief` line: `<work-id>  <status>  <owner-member-run-id|unassigned>
+/// One `--brief` line: `<work-id>  <status>  <owner-agent-member-id|unassigned>
 /// v<version>  <title>`, title hard-truncated to 60 chars (by `char`, not
 /// byte, so multibyte titles never split mid-character). Plain text, no JSON
 /// wrapper -- this is the compact projection `work list --brief` prints one
 /// of per Work.
 pub(super) fn format_work_brief_line(work: &Work) -> String {
-    let owner = work.active_member_run_id.as_deref().unwrap_or("unassigned");
+    let owner = work.owner_member_id.as_deref().unwrap_or("unassigned");
     let title: String = work.title.chars().take(60).collect();
     format!(
         "{}  {}  {}  v{}  {}",
@@ -939,7 +894,7 @@ pub(super) fn team_run_board_summary_text(
         blocked += u64::from(work.condition == WorkCondition::Blocked);
         accepted += u64::from(work.resolution == Some(WorkResolution::Accepted));
         cancelled += u64::from(work.resolution == Some(WorkResolution::Cancelled));
-        if work.active_member_run_id.is_some() {
+        if work.owner_member_id.is_some() {
             assigned += 1;
         } else {
             unassigned += 1;
@@ -962,9 +917,9 @@ pub(super) fn team_run_board_summary_text(
         format!("assigned={assigned} unassigned={unassigned} ready={ready}"),
     ];
     for member in &members {
-        let owned = works
-            .iter()
-            .filter(|work| work.active_member_run_id.as_deref() == Some(member.id.as_str()));
+        let owned = works.iter().filter(|work| {
+            work.owner_member_id.as_deref() == Some(member.agent_member_id.as_str())
+        });
         lines.push(format!(
             "{}: {}",
             member.name,
@@ -1201,9 +1156,8 @@ pub(super) const GITHUB_CI_POLL_INTERVAL: Duration = Duration::from_secs(60);
 pub(crate) struct GithubPollSummary {
     pub works_checked: usize,
     pub links_refreshed: usize,
-    pub auto_submitted: Vec<String>,
-    /// Work(s) whose linked PR merged but whose CI was `failure`; left for the
-    /// Host to decide instead of auto-submitting a red submission.
+    /// Work(s) whose linked PR merged but whose CI was `failure`; surfaced as
+    /// evidence for the Host without changing Work lifecycle.
     pub blocked_on_failure: Vec<String>,
     /// Work(s) whose declared gates all pass after this poll (meaning they are
     /// ready for `work accept`).
@@ -1214,7 +1168,6 @@ pub(crate) struct GithubPollSummary {
 impl GithubPollSummary {
     pub fn is_noop(&self) -> bool {
         self.links_refreshed == 0
-            && self.auto_submitted.is_empty()
             && self.blocked_on_failure.is_empty()
             && self.gate_ready.is_empty()
     }
@@ -1225,11 +1178,13 @@ impl GithubPollSummary {
 /// `GITHUB_CI_POLL_INTERVAL`, and `team-run work poll-github-ci` triggers it
 /// on demand.
 ///
-/// - CI status/`ci_url` are re-fetched from `gh pr checks` and persisted only
-///   when they changed, so a steady-state poll never churns Work versions.
-/// - When a linked PR is observed `MERGED` and the Work is `in_progress` (and
-///   not on red CI), the Work is auto-submitted to `review`; Host acceptance
-///   still moves it to `done`.
+/// - CI status/`ci_url` are re-fetched from `gh pr checks`; the authenticated
+///   NodeDaemon, with the exact Host as authority source, may rewrite only the
+///   Work's external GitHub evidence snapshot and append an `Updated` revision.
+///   It never rewrites lifecycle phase, Result, delivery, acceptance, binding,
+///   or HostAttention facts.
+/// - A merged PR and CI status remain external evidence only. They never
+///   impersonate the Member's canonical Result or the Host's acceptance.
 /// - `gh` missing/unauthenticated is a soft skip: stored snapshots are kept.
 pub(crate) fn poll_team_run_github_linkages(
     store: &HarnessStore,
@@ -1272,40 +1227,13 @@ pub(crate) fn poll_team_run_github_linkages(
                 if *stored != fresh {
                     *stored = fresh.clone();
                     changed = true;
-                    summary.links_refreshed += 1;
                 }
             } else {
                 refreshed_links.push(fresh.clone());
                 changed = true;
-                summary.links_refreshed += 1;
             }
-            // A merge observation may auto-submit even when the link fields
-            // themselves changed, so evaluate against the fresh link.
-            let merged_and_green = fresh.status.as_deref() == Some("MERGED")
-                && fresh.ci_status.as_deref() != Some("failure");
-            if merged_and_green && work.phase == WorkPhase::Active {
-                let context = github_poll_host_context(store, run_id, &work.id)?;
-                let result = format!(
-                    "auto-submitted by GitHub merge observation: PR {}/{}#{} merged; CI: {}",
-                    fresh.owner,
-                    fresh.repo,
-                    fresh.number,
-                    fresh.ci_status.as_deref().unwrap_or("unknown")
-                );
-                store
-                    .submit_work_on_pr_merge(
-                        &work.id,
-                        work.version,
-                        &result,
-                        refreshed_links.clone(),
-                        context,
-                    )
-                    .map_err(|error| {
-                        CliError::Usage(format!("github poll auto-submit failed: {error}"))
-                    })?;
-                summary.auto_submitted.push(work.id.clone());
-                changed = false; // transition already persisted the snapshot
-                break;
+            if *link != fresh {
+                summary.links_refreshed += 1;
             }
             if fresh.status.as_deref() == Some("MERGED")
                 && fresh.ci_status.as_deref() == Some("failure")
@@ -1317,10 +1245,31 @@ pub(crate) fn poll_team_run_github_linkages(
         }
         if changed {
             let context = github_poll_host_context(store, run_id, &work.id)?;
+            let run = store
+                .team_runs()?
+                .into_iter()
+                .rev()
+                .find(|run| run.id == run_id)
+                .ok_or_else(|| CliError::Usage(format!("TeamRun not found: {run_id}")))?;
+            let daemon = store
+                .latest_node_daemon_lease(&run.execution_node_id)?
+                .ok_or_else(|| {
+                    CliError::Usage(format!(
+                        "NODE_DAEMON_LEASE_REQUIRED: GitHub evidence refresh for {run_id} requires the current NodeDaemon"
+                    ))
+                })?;
+            let execution_space_id = store.current_team_run_execution_space(&run)?;
             store
-                .update_work_github_links(&work.id, work.version, refreshed_links, context)
+                .update_work_github_links(
+                    &work.id,
+                    work.version,
+                    refreshed_links,
+                    &execution_space_id,
+                    &daemon,
+                    context,
+                )
                 .map_err(|error| {
-                    CliError::Usage(format!("github poll link update failed: {error}"))
+                    CliError::Usage(format!("github poll evidence refresh failed: {error}"))
                 })?;
         }
     }
@@ -1336,20 +1285,32 @@ pub(super) fn gh_available() -> bool {
         .unwrap_or(false)
 }
 
-/// Exact Host-authority context for daemon/poll store mutations (issue #369
-/// Phase 2). Each operation gets its own generated idempotency key.
 pub(super) fn github_poll_host_context(
     store: &HarnessStore,
     run_id: &str,
     work_id: &str,
 ) -> CliResult<WorkCommandContext> {
+    let run = store
+        .team_runs()?
+        .into_iter()
+        .rev()
+        .find(|run| run.id == run_id)
+        .ok_or_else(|| CliError::Usage(format!("TeamRun not found: {run_id}")))?;
+    let daemon = store
+        .latest_node_daemon_lease(&run.execution_node_id)?
+        .ok_or_else(|| {
+            CliError::Usage(format!(
+                "NODE_DAEMON_LEASE_REQUIRED: GitHub evidence refresh for {run_id} requires the current NodeDaemon"
+            ))
+        })?;
     let host_actor = store.exact_team_run_host_actor(run_id)?;
     Ok(WorkCommandContext {
         event_id: generated_id("github-poll-event"),
         performed_by_actor: TeamActorRef {
-            display_name: Some(format!("GitHub CI poll for {run_id}")),
+            kind: TeamActorKind::Service,
+            id: daemon.daemon_id,
+            display_name: Some(format!("NodeDaemon GitHub evidence poll for {run_id}")),
             authn_source: Some("supervisor_daemon".to_string()),
-            ..host_actor.clone()
         },
         authority_actor: Some(host_actor),
         causation_ref: None,

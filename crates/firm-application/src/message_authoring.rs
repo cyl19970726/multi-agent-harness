@@ -421,7 +421,7 @@ mod tests {
         }
     }
 
-    fn linked_work(owner: &str, run_id: &str) -> Work {
+    fn linked_work(owner: &str, _run_id: &str) -> Work {
         Work {
             id: "work-a".into(),
             team_run_id: "run-a".into(),
@@ -435,7 +435,7 @@ mod tests {
             condition: WorkCondition::Normal,
             resolution: None,
             owner_member_id: Some(owner.into()),
-            active_member_run_id: Some(run_id.into()),
+            active_member_run_id: None,
             claim_mode: WorkClaimMode::HostAssign,
             eligible_member_ids: Vec::new(),
             prerequisite_work_ids: Vec::new(),
@@ -642,10 +642,7 @@ mod tests {
             foreign_owned_work.owner_member_id.as_deref(),
             Some("other-member")
         );
-        assert_eq!(
-            foreign_owned_work.active_member_run_id.as_deref(),
-            Some("other-run")
-        );
+        assert!(foreign_owned_work.active_member_run_id.is_none());
 
         let mut outside_run = command(MessageAuthoringOperation::Send, intent.clone());
         let mut outside_work = linked_work("other-member", "other-run");

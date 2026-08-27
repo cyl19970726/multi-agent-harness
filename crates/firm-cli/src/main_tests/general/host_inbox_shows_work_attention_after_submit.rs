@@ -1,5 +1,4 @@
 use super::*;
-use harness_core::CurrentWorkDraft;
 
 #[test]
 fn host_inbox_shows_work_attention_after_submit() {
@@ -14,6 +13,17 @@ fn host_inbox_shows_work_attention_after_submit() {
     store
         .compare_and_append_team_run(&current, &bound)
         .expect("bind native Host");
+    let lease = store
+        .acquire_test_supervisor_lease(
+            &created.team_run.id,
+            "supervisor-host-attention-inbox",
+            std::process::id(),
+            "test://host-attention-inbox",
+            current_unix_ms_u64(),
+            60_000,
+        )
+        .expect("acquire Supervisor lease");
+    ensure_test_runtime_fabric(&store, &created, &lease);
 
     // Create a Work assigned to member_a
     let work_ctx = WorkCommandContext {
@@ -25,27 +35,41 @@ fn host_inbox_shows_work_attention_after_submit() {
         created_at: "unix-ms:10".into(),
         duplicate_ok: false,
     };
-    let work = store
-        .insert_work(
-            {
-                let mut draft = CurrentWorkDraft::new(
-                    generated_id("work-attn"),
-                    bound.id.clone(),
-                    bound.agent_team_id.clone(),
-                    "Test attention flow".into(),
-                    "Context for attention test".into(),
-                    "Attention appears in host-inbox".into(),
-                    WorkClaimMode::HostAssign,
-                    WorkPriority::Normal,
-                    compatibility_team_actor("host", "test"),
-                    work_ctx.created_at.clone(),
-                );
-                draft.active_member_run_id = Some(member.id.clone());
-                draft.into_work()
-            },
-            work_ctx,
-        )
-        .expect("insert work");
+    let work = harness_application::WorkApplication::new(&store)
+        .create(harness_application::CreateWorkCommand {
+            work_id: generated_id("work-attn"),
+            team_run_id: bound.id.clone(),
+            accountable_team_id: bound.agent_team_id.clone(),
+            title: "Test attention flow".into(),
+            context_markdown: "Context for attention test".into(),
+            completion_criteria_markdown: "Attention appears in host-inbox".into(),
+            claim_mode: WorkClaimMode::HostAssign,
+            eligible_member_ids: Vec::new(),
+            prerequisite_work_ids: Vec::new(),
+            priority: WorkPriority::Normal,
+            artifact_refs: Vec::new(),
+            check_refs: Vec::new(),
+            github_links: Vec::new(),
+            expected_version: 0,
+            context: work_ctx,
+        })
+        .expect("insert Work");
+    let work =
+        assign_test_work_to_member(&store, &lease.execution_space_id, &created, member, &work);
+    bind_test_responsible_work_execution(&store, &lease, member, &work);
+    let ledger = TeamRunLedger::new(
+        &store,
+        &created.team_run.id,
+        &lease.supervisor_id,
+        lease.generation,
+        Arc::new(AtomicBool::new(true)),
+    );
+    let claimed = claim_canonical_work_for_member(&ledger, member)
+        .expect("claim canonical Work")
+        .expect("one canonical Work claim");
+    ledger
+        .complete_work_delivery(&claimed, "provider-receipt-host-attention")
+        .expect("record provider receipt before semantic Result");
 
     // Start the work as the assigned member
     let start_ctx = WorkCommandContext {
@@ -63,35 +87,60 @@ fn host_inbox_shows_work_attention_after_submit() {
         duplicate_ok: false,
     };
     let work = store
-        .start_work(&work.id, 1, &member.id, start_ctx)
+        .start_work(&work.id, work.version, &member.id, start_ctx)
         .expect("start work");
 
-    // Submit the work — this generates a HostAttention (WorkReviewRequested)
-    let submit_ctx = WorkCommandContext {
-        event_id: generated_id("work-event-submit"),
-        performed_by_actor: TeamActorRef {
-            kind: TeamActorKind::ProviderRuntimeProjection,
-            id: member.id.clone(),
-            display_name: None,
-            authn_source: Some("bound-runtime:test".into()),
-        },
-        authority_actor: None,
-        causation_ref: None,
-        idempotency_key: generated_id("work-command-submit"),
-        created_at: "unix-ms:30".into(),
-        duplicate_ok: false,
+    // Submit the exact Member Result. GitHub/provider evidence alone never
+    // creates this semantic transition.
+    let candidate = harness_core::agentfirm_api::CandidateRef {
+        kind: harness_core::agentfirm_api::CandidateKind::GitCommit,
+        value: "host-attention-candidate".into(),
     };
+    let report = harness_core::agentfirm_api::WorkReport {
+        id: generated_id("work-report-submit"),
+        work_id: work.id.clone(),
+        work_revision: work.version + 1,
+        report_revision: 1,
+        kind: harness_core::agentfirm_api::WorkReportKind::Result,
+        authored_by: harness_core::agentfirm_api::ActorRef {
+            kind: harness_core::agentfirm_api::ActorKind::AgentMember,
+            id: member.agent_member_id.clone(),
+        },
+        summary: "All tasks complete".into(),
+        base_revision: None,
+        candidate_fingerprint: Some(harness_store::canonical_json_fingerprint(
+            &serde_json::to_value(&candidate).expect("candidate JSON"),
+        )),
+        candidate: Some(candidate),
+        finding_refs: Vec::new(),
+        failure_analysis_ref: None,
+        artifact_refs: vec!["https://example.com/artifact".into()],
+        check_refs: vec!["https://example.com/check".into()],
+        github_links: Vec::new(),
+        evidence_refs: vec!["evidence:host-attention".into()],
+        known_risks: Vec::new(),
+        confidence: None,
+        recommended_next_action: None,
+        created_at: "unix-ms:30".into(),
+    };
+    let submit_ctx = harness_core::agentfirm_api::MutationContext {
+        execution_space_id: lease.execution_space_id.clone(),
+        authenticated_actor: report.authored_by.clone(),
+        authority_actor: None,
+        command_name: "work_report.create".into(),
+        idempotency_key: report.id.clone(),
+        expected_version: 0,
+        request_fingerprint: None,
+    };
+    store
+        .create_trust_work_report(&submit_ctx, &created.team_run.agent_team_id, report)
+        .expect("submit canonical Work Result");
     let work = store
-        .submit_work(
-            &work.id,
-            2,
-            &member.id,
-            "All tasks complete",
-            vec!["https://example.com/artifact".into()],
-            vec!["https://example.com/check".into()],
-            submit_ctx,
-        )
-        .expect("submit work");
+        .latest_works()
+        .expect("latest Works")
+        .into_iter()
+        .find(|candidate| candidate.id == work.id)
+        .expect("submitted Work");
 
     // Verify attention appears in the bound host-inbox
     let exact = host_inbox_for_native_thread(&store, "codex-app", "codex-thread-a", false)
@@ -119,6 +168,19 @@ fn host_inbox_shows_work_attention_after_submit() {
             .as_str()
             .is_some_and(|v| !v.is_empty()),
         "attention must reference the submitting member"
+    );
+
+    let after_release = host_inbox_for_native_thread(&store, "codex-app", "codex-thread-a", false)
+        .expect("Host inbox after binding release");
+    let persisted = after_release[0]["attentions"]
+        .as_array()
+        .expect("persisted attentions")
+        .iter()
+        .find(|attention| attention["id"] == attn["id"])
+        .expect("submitted attention persists after binding release");
+    assert_eq!(
+        persisted["member_run_id"], attn["member_run_id"],
+        "immutable submitter evidence must not depend on a live binding"
     );
 
     // A different native thread must not see anything

@@ -16,8 +16,8 @@ use std::time::{Duration, Instant};
 mod fake_provider;
 mod firm_env;
 use firm_env::{
-    create_canonical_agent_member, current_project_id, run_firm, run_firm_with_env, ServeHandle,
-    TempHome,
+    create_canonical_agent_member, current_project_id, member_run_for_work_owner, run_firm,
+    run_firm_with_env, ServeHandle, TempHome,
 };
 
 const COMPANY_OS_TEST_TOKEN: &str = "mission-wave-company-os-test-capability";

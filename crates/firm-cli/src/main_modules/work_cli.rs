@@ -3,6 +3,31 @@ use harness_core::CurrentWorkDraft;
 
 struct CliWorkActionOutcome(crate::work_action_service::CanonicalWorkActionOutcome);
 
+fn reject_unknown_work_options(
+    args: &[String],
+    value_options: &[&str],
+    flags: &[&str],
+) -> CliResult<()> {
+    let mut index = 1;
+    while index < args.len() {
+        let option = args[index].as_str();
+        if value_options.contains(&option) {
+            if index + 1 >= args.len() || args[index + 1].starts_with("--") {
+                return Err(CliError::Usage(format!("{option} requires a value")));
+            }
+            index += 2;
+        } else if flags.contains(&option) {
+            index += 1;
+        } else {
+            return Err(CliError::Usage(format!(
+                "unknown work option for {}: {option}",
+                args.first().map(String::as_str).unwrap_or("command")
+            )));
+        }
+    }
+    Ok(())
+}
+
 impl std::ops::Deref for CliWorkActionOutcome {
     type Target = Work;
 
@@ -94,6 +119,18 @@ pub(super) fn team_run_work_command(
                 .map(|raw| parse_work_resolution(&raw))
                 .transpose()?;
             let member_run_id = value(args, "--member-run-id");
+            let member_agent_id = member_run_id
+                .as_deref()
+                .map(|member_run_id| {
+                    latest_member_runs_in_append_order(store)?
+                        .into_iter()
+                        .find(|member| member.id == member_run_id)
+                        .map(|member| member.agent_member_id)
+                        .ok_or_else(|| {
+                            CliError::Usage(format!("member run not found: {member_run_id}"))
+                        })
+                })
+                .transpose()?;
             // `--since <cursor>`: delta read against the WorkOperation append
             // order (see `work_operation_cursors` for why that order, and not
             // Work::version or updated_at, is the cursor). Independent of the
@@ -142,8 +179,8 @@ pub(super) fn team_run_work_command(
                     resolution.is_none_or(|resolution| work.resolution == Some(resolution))
                 })
                 .filter(|work| {
-                    member_run_id.as_deref().is_none_or(|member| {
-                        work.active_member_run_id.as_deref() == Some(member)
+                    member_agent_id.as_deref().is_none_or(|member| {
+                        work.owner_member_id.as_deref() == Some(member)
                     })
                 })
                 .filter(|work| {
@@ -378,10 +415,30 @@ pub(super) fn team_run_work_command(
             }
         }
         "create" => {
+            reject_unknown_work_options(
+                args,
+                &[
+                    "--team-run-id",
+                    "--as-member-run-id",
+                    "--claim-mode",
+                    "--github-issue",
+                    "--github-pr",
+                    "--context",
+                    "--work-id",
+                    "--title",
+                    "--completion-criteria",
+                    "--eligible-member-id",
+                    "--prerequisite-work-id",
+                    "--priority",
+                    "--event-id",
+                    "--idempotency-key",
+                    "--caused-by-message-id",
+                ],
+                &["--duplicate-ok", "--json"],
+            )?;
             let team_run_id = required(args, "--team-run-id")?;
             let run = latest_team_run(store, &team_run_id)?;
             let acting_member_run_id = value(args, "--as-member-run-id");
-            let owner_member_run_id = value(args, "--owner-member-run-id");
             let context = if let Some(member_run_id) = acting_member_run_id.as_deref() {
                 member_work_context(args, &team_run_id, member_run_id)?
             } else {
@@ -390,17 +447,14 @@ pub(super) fn team_run_work_command(
             let claim_mode = value(args, "--claim-mode")
                 .map(|raw| parse_work_claim_mode(&raw))
                 .transpose()?
-                .unwrap_or(if owner_member_run_id.is_some() {
-                    WorkClaimMode::HostAssign
-                } else {
-                    WorkClaimMode::TeamClaim
-                });
+                .unwrap_or(WorkClaimMode::TeamClaim);
             // `--github-issue owner/repo#N` links the Work to a GitHub issue;
             // `--github-pr owner/repo#N` links it to a pull request (issue
             // #369). Both auto-populate artifact_refs (object URL) and PR
             // links also populate check_refs (CI checks URL). A create-time
             // PR link is what lets the daemon poll CI on the open/in-progress
-            // Work and auto-submit when the PR merges (Phase 2).
+            // Work while the daemon refreshes GitHub evidence. A merge never
+            // substitutes for a canonical Member Result.
             let mut github_links = Vec::new();
             let mut artifact_refs = Vec::new();
             let mut check_refs = Vec::new();
@@ -440,7 +494,6 @@ pub(super) fn team_run_work_command(
                     .map(|raw| parse_work_priority(&raw))
                     .transpose()?
                     .unwrap_or(WorkPriority::Normal),
-                initial_member_run_id: owner_member_run_id,
                 artifact_refs,
                 check_refs,
                 github_links,
@@ -467,67 +520,48 @@ pub(super) fn team_run_work_command(
             print_json(&work)
         }
         "assign" => {
-            let membership_id = value(args, "--membership-id");
-            let member_run_id = value(args, "--member-run-id");
-            if membership_id.is_some() == member_run_id.is_some() {
-                return Err(CliError::Usage(
-                    "team-run work assign requires exactly one of --membership-id (canonical TeamMembership responsibility, DOC-106) or --member-run-id (legacy runtime-bound assignment)"
-                        .to_string(),
-                ));
-            }
-            if let Some(membership_id) = membership_id {
-                let space_id = resolved
-                    .execution_space_context
-                    .as_ref()
-                    .map(|space| space.id.clone())
-                    .ok_or_else(|| {
-                        CliError::Usage(
-                            "membership assignment requires an explicitly selected --space"
-                                .to_string(),
-                        )
-                    })?;
-                let work_id = required(args, "--work-id")?;
-                let work = execute_work_action(
-                    store,
-                    harness_application::WorkAction::AssignMembership {
-                        expected_version: required_work_version(args)?,
-                        context: host_work_context_for_work(store, &work_id, args)?,
-                        work_id,
-                        membership_id: membership_id.clone(),
-                        execution_space_id: space_id,
-                    },
-                )?;
-                append_work_event(
-                    store,
-                    &work,
-                    TeamRunEventSourceKind::Host,
-                    None,
-                    "assigned",
-                    &format!("Work assigned to TeamMembership {membership_id}"),
-                )?;
-                print_json(&work)
-            } else {
-                let member_run_id = member_run_id.unwrap_or_default();
-                let work_id = required(args, "--work-id")?;
-                let work = execute_work_action(
-                    store,
-                    harness_application::WorkAction::AssignRuntime {
-                        expected_version: required_work_version(args)?,
-                        context: host_work_context_for_work(store, &work_id, args)?,
-                        work_id,
-                        member_run_id: member_run_id.clone(),
-                    },
-                )?;
-                append_work_event(
-                    store,
-                    &work,
-                    TeamRunEventSourceKind::Host,
-                    Some(member_run_id.clone()),
-                    "assigned",
-                    &format!("Work assigned to {member_run_id}"),
-                )?;
-                print_json(&work)
-            }
+            reject_unknown_work_options(
+                args,
+                &[
+                    "--work-id",
+                    "--membership-id",
+                    "--expected-version",
+                    "--event-id",
+                    "--idempotency-key",
+                    "--caused-by-message-id",
+                ],
+                &["--duplicate-ok", "--json"],
+            )?;
+            let membership_id = required(args, "--membership-id")?;
+            let space_id = resolved
+                .execution_space_context
+                .as_ref()
+                .map(|space| space.id.clone())
+                .ok_or_else(|| {
+                    CliError::Usage(
+                        "membership assignment requires an explicitly selected --space".to_string(),
+                    )
+                })?;
+            let work_id = required(args, "--work-id")?;
+            let work = execute_work_action(
+                store,
+                harness_application::WorkAction::AssignMembership {
+                    expected_version: required_work_version(args)?,
+                    context: host_work_context_for_work(store, &work_id, args)?,
+                    work_id,
+                    membership_id: membership_id.clone(),
+                    execution_space_id: space_id,
+                },
+            )?;
+            append_work_event(
+                store,
+                &work,
+                TeamRunEventSourceKind::Host,
+                None,
+                "assigned",
+                &format!("Work assigned to TeamMembership {membership_id}"),
+            )?;
+            print_json(&work)
         }
         "migrate-responsibility" => {
             let space_id = resolved
@@ -820,7 +854,6 @@ pub(super) fn team_run_work_command(
                 "team_run_id": team_run_id,
                 "works_checked": summary.works_checked,
                 "links_refreshed": summary.links_refreshed,
-                "auto_submitted": summary.auto_submitted,
                 "blocked_on_failure": summary.blocked_on_failure,
                 "gate_ready": summary.gate_ready,
                 "gh_unavailable": summary.gh_unavailable,
@@ -930,12 +963,23 @@ pub(super) fn team_run_work_command(
             print_json(&work)
         }
         "retarget" => {
+            reject_unknown_work_options(
+                args,
+                &[
+                    "--work-id",
+                    "--successor-team-run-id",
+                    "--expected-version",
+                    "--event-id",
+                    "--idempotency-key",
+                    "--caused-by-message-id",
+                ],
+                &["--duplicate-ok", "--json"],
+            )?;
             let work_id = required(args, "--work-id")?;
             print_json(&store.retarget_work_execution(
                 &work_id,
                 required_work_version(args)?,
                 &required(args, "--successor-team-run-id")?,
-                value(args, "--successor-member-run-id").as_deref(),
                 host_work_context_for_work(store, &work_id, args)?,
             )?)
         }

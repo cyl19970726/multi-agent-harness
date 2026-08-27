@@ -157,6 +157,24 @@ pub(super) fn claim_canonical_work_for_member(
         )));
     }
     let (execution_space_id, session, membership) = placements.pop().unwrap();
+    let scoped_member_runs = ledger.store.trust_member_runs(&execution_space_id)?;
+    let current_member_runs = scoped_member_runs
+        .iter()
+        .filter(|current| {
+            current.id == member.id
+                && current.team_run_id == ledger.run_id
+                && current.agent_member_id == member.agent_member_id
+                && current.runtime_generation == member.runtime_generation
+                && current.coordination_status
+                    == harness_core::agentfirm_api::MemberCoordinationStatus::Active
+        })
+        .collect::<Vec<_>>();
+    let [current_member_run] = current_member_runs.as_slice() else {
+        return Err(CliError::Usage(format!(
+            "MEMBER_RUN_GENERATION_FENCED: {} does not resolve to one exact current canonical MemberRun",
+            member.id
+        )));
+    };
     let daemon = ledger
         .store
         .latest_node_daemon_lease(&session.node_id)?
@@ -173,13 +191,50 @@ pub(super) fn claim_canonical_work_for_member(
         .filter(|work| {
             work.team_run_id == ledger.run_id
                 && work.owner_member_id.as_deref() == Some(member.agent_member_id.as_str())
-                && work.active_member_run_id.as_deref() == Some(member.id.as_str())
+                && work.assignee_membership_id.as_deref() == Some(membership.id.as_str())
                 && !work.is_terminal()
         })
         .cloned()
         .map(|work| (work.id.clone(), work))
         .collect::<BTreeMap<_, _>>();
     let mut bindings = ledger
+        .store
+        .fabric_work_execution_bindings(&execution_space_id)?;
+    for binding in bindings.iter().filter(|binding| {
+        binding.team_id == run.agent_team_id
+            && binding.status == harness_core::agentfirm_api::WorkExecutionBindingStatus::Active
+    }) {
+        let reconciliation = ledger.store.release_work_execution_binding_if_stale(
+            &canonical_delivery_context(
+                &execution_space_id,
+                &daemon.daemon_id,
+                "node_daemon.work_execution_binding.release_if_stale",
+                format!(
+                    "daemon:{}:{}:{}:reconcile-stale",
+                    daemon.generation, binding.id, binding.version
+                ),
+                binding.version,
+            ),
+            &binding.id,
+            &daemon.node_id,
+            &daemon.daemon_id,
+            daemon.generation,
+            &now_string(),
+        );
+        if let Err(error) = reconciliation {
+            if error.trust_error().is_some_and(|error| {
+                error.code == harness_core::agentfirm_api::TrustErrorCode::DeliveryRecoveryUncertain
+            }) {
+                // This is a Work-attempt recovery fence, not a provider
+                // transport failure.  Keep the persistent runtime/live
+                // control registered so it can still answer Close/Retire,
+                // while preventing this Work from being released or replayed.
+                continue;
+            }
+            return Err(error.into());
+        }
+    }
+    bindings = ledger
         .store
         .fabric_work_execution_bindings(&execution_space_id)?;
     for work in works
@@ -190,8 +245,20 @@ pub(super) fn claim_canonical_work_for_member(
             binding.work_id == work.id
                 && binding.status == harness_core::agentfirm_api::WorkExecutionBindingStatus::Active
         }) {
-            let binding_id = format!("work-binding:{}:{}", work.id, session.runtime_generation);
-            ledger.store.bind_work_execution(
+            let binding_generation = bindings
+                .iter()
+                .filter(|binding| binding.work_id == work.id)
+                .map(|binding| binding.binding_generation)
+                .max()
+                .unwrap_or(0)
+                .saturating_add(1);
+            let binding_id = format!(
+                "work-binding:{}:{}:{}:{}",
+                work.id, work.version, session.runtime_generation, binding_generation
+            );
+            let runtime_binding =
+                runtime_command_binding_for_member_session(current_member_run, &session);
+            ledger.store.bind_responsible_work_execution(
                 &canonical_delivery_context(
                     &execution_space_id,
                     &daemon.daemon_id,
@@ -199,6 +266,7 @@ pub(super) fn claim_canonical_work_for_member(
                     binding_id.clone(),
                     0,
                 ),
+                &runtime_binding,
                 harness_core::agentfirm_api::WorkExecutionBinding {
                     id: binding_id.clone(),
                     work_id: work.id.clone(),
@@ -208,8 +276,8 @@ pub(super) fn claim_canonical_work_for_member(
                     agent_member_id: member.agent_member_id.clone(),
                     agent_session_id: session.id.clone(),
                     agent_session_generation: session.runtime_generation,
-                    delivery_id: format!("work-delivery:{}:1", work.id),
-                    binding_generation: 1,
+                    delivery_id: format!("work-delivery:{}:{binding_generation}", work.id),
+                    binding_generation,
                     status: harness_core::agentfirm_api::WorkExecutionBindingStatus::Active,
                     version: 1,
                     created_by: harness_core::agentfirm_api::ActorRef {
@@ -260,7 +328,8 @@ pub(super) fn claim_canonical_work_for_member(
             continue;
         };
         if work.version != delivery.work_revision
-            || work.active_member_run_id.as_deref() != Some(member.id.as_str())
+            || work.owner_member_id.as_deref() != Some(member.agent_member_id.as_str())
+            || work.assignee_membership_id.as_deref() != Some(membership.id.as_str())
             || work.is_terminal()
             || !harness_core::work_readiness(work, &all_works).ready
         {
@@ -308,10 +377,10 @@ pub(super) fn claim_canonical_work_for_member(
 
 pub(super) fn is_active_work_continuation_candidate(
     work: &Work,
-    member_id: &str,
+    agent_member_id: &str,
     all_works: &[Work],
 ) -> bool {
-    work.active_member_run_id.as_deref() == Some(member_id)
+    work.owner_member_id.as_deref() == Some(agent_member_id)
         && work.phase == WorkPhase::Active
         && work.condition == WorkCondition::Normal
         && work.prerequisites_satisfied(all_works.iter())
@@ -740,6 +809,9 @@ impl TeamRunLedger {
         &self,
         member_id: &str,
     ) -> CliResult<Vec<(Work, harness_application::CurrentWorkDeliveryView)>> {
+        let member = self
+            .latest_member_run(member_id)?
+            .ok_or_else(|| CliError::Usage(format!("member run not found: {member_id}")))?;
         let all_works = self.store.latest_works()?;
         let works = all_works
             .iter()
@@ -753,13 +825,14 @@ impl TeamRunLedger {
             .into_iter()
             .filter(|delivery| {
                 delivery.team_run_id == self.run_id
-                    && delivery.recipient_member_run_id.as_deref() == Some(member_id)
+                    && delivery.recipient_agent_member_id.as_deref()
+                        == Some(member.agent_member_id.as_str())
                     && delivery.status == harness_core::agentfirm_api::WorkDeliveryStatus::Queued
             })
             .filter_map(|delivery| {
                 let work = works.get(&delivery.work_id)?;
                 (work.version == delivery.work_revision
-                    && work.active_member_run_id.as_deref() == Some(member_id)
+                    && work.owner_member_id.as_deref() == Some(member.agent_member_id.as_str())
                     && !work.is_terminal()
                     && harness_core::work_readiness(work, &all_works).ready)
                     .then(|| (work.clone(), delivery))
@@ -790,12 +863,19 @@ impl TeamRunLedger {
     /// delivery row: self-claim is discovered from the shared board and the
     /// Member must perform the explicit atomic claim itself.
     pub(super) fn active_work_continuation_for(&self, member_id: &str) -> CliResult<Option<Work>> {
+        let member = self
+            .latest_member_run(member_id)?
+            .ok_or_else(|| CliError::Usage(format!("member run not found: {member_id}")))?;
         let all_works = self.store.latest_works()?;
         let mut active = all_works
             .iter()
             .filter(|work| {
                 work.team_run_id == self.run_id
-                    && is_active_work_continuation_candidate(work, member_id, &all_works)
+                    && is_active_work_continuation_candidate(
+                        work,
+                        &member.agent_member_id,
+                        &all_works,
+                    )
             })
             .cloned()
             .collect::<Vec<_>>();
@@ -814,13 +894,6 @@ impl TeamRunLedger {
             return Ok(Some(work));
         }
 
-        let member = self
-            .store
-            .member_runs()?
-            .into_iter()
-            .rev()
-            .find(|member| member.id == member_id)
-            .ok_or_else(|| CliError::Usage(format!("member run not found: {member_id}")))?;
         let stable_member_id = member.agent_member_id.as_str();
         let mut claimable = all_works
             .iter()
@@ -1119,8 +1192,8 @@ impl TeamRunLedger {
     /// so the member sees the transition as mail rather than as a new
     /// work assignment.
     ///
-    /// Only works where `is_terminal()` is true AND `active_member_run_id`
-    /// matches the member are eligible — this is a notification, not a
+    /// Only terminal Work belonging to the stable AgentMember responsibility
+    /// is eligible — this is a notification, not a
     /// handoff. No slot-occupancy fence is applied because a terminal-work
     /// notification never blocks an active execution assignment.
     pub(super) fn claim_terminal_work_notifications_for(

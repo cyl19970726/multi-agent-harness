@@ -1,48 +1,54 @@
 use super::*;
 
 #[test]
-#[ignore = "legacy Work acceptance route is retired; canonical exact-candidate acceptance is covered by member_execution_trust"]
 fn duplicate_title_guard_allows_when_existing_is_done() {
-    let (root, store, run, member_a, _member_b) = work_test_fixture("dup-title-done");
-    let ctx1 = host_work_context("dup-ctx-done-1", "create-first", "unix-ms:3");
-    let mut work = work_with_title(&run.id, "work-audit-1", "Audit Company Docs");
-    work.claim_mode = WorkClaimMode::HostAssign;
-    work.active_member_run_id = Some(member_a.id.clone());
-    work.owner_member_id = Some(member_a.agent_member_id.clone());
-    let first = store.insert_work(work, ctx1).expect("create first Work");
+    let (root, store, run, member, _) = work_test_fixture("dup-title-done");
+    let created = store
+        .insert_work(
+            work_with_title(&run.id, "work-audit-done-1", "Audit Company Docs"),
+            host_work_context("dup-done-create", "dup-done-create", "unix-ms:2"),
+        )
+        .expect("create first Work");
+    let assigned = assign_test_work_to_member(
+        &store,
+        &run,
+        &created,
+        &member,
+        "dup-done-assign",
+        "dup-done-assign",
+        "unix-ms:3",
+    );
+    let active = start_claimed_work_for_test(
+        &store,
+        &assigned,
+        &member,
+        "dup-done-start",
+        "dup-done-start",
+        "unix-ms:4",
+    );
+    let submitted = submit_started_work_for_test(
+        &store,
+        &active,
+        &member,
+        "dup-done-result",
+        "All tests pass.",
+        (Vec::new(), Vec::new()),
+        "unix-ms:5",
+    );
+    let accepted = accept_result_for_test(
+        &store,
+        &submitted,
+        "dup-done-result",
+        "dup-done-accept",
+        "unix-ms:6",
+    );
+    assert_eq!(accepted.phase, WorkPhase::Closed);
 
-    // Start → Submit → Accept to make the work Done.
-    let first = store
-        .start_work(
-            &first.id,
-            first.version,
-            &member_a.id,
-            member_work_context(&member_a.id, "start", "start-key", "unix-ms:4"),
-        )
-        .expect("start");
-    let first = store
-        .submit_work(
-            &first.id,
-            first.version,
-            &member_a.id,
-            "All tests pass.",
-            Vec::new(),
-            Vec::new(),
-            member_work_context(&member_a.id, "submit", "submit-key", "unix-ms:5"),
-        )
-        .expect("submit");
     store
-        .accept_work(
-            &first.id,
-            first.version,
-            host_work_context("accept", "accept-key", "unix-ms:6"),
+        .insert_work(
+            work_with_title(&run.id, "work-audit-done-2", "Audit Company Docs"),
+            host_work_context("dup-after-done", "dup-after-done", "unix-ms:7"),
         )
-        .expect("accept first Work");
-
-    let ctx2 = host_work_context("dup-ctx-done-2", "create-after-done", "unix-ms:7");
-    let dup = work_with_title(&run.id, "work-audit-2", "Audit Company Docs");
-    store
-        .insert_work(dup, ctx2)
-        .expect("terminal existing Work must not block new same-title");
+        .expect("terminal existing Work must not block a new same-title Work");
     std::fs::remove_dir_all(root).expect("remove temp store");
 }

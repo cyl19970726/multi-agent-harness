@@ -32,6 +32,7 @@ fn team_host_cannot_stop_shared_session_and_active_bindings_require_explicit_rel
         "shared-agent",
         firm_core::agentfirm_api::TeamMembershipRole::Member,
     );
+    admit_fixture_member_run_for_session(&store, "team-run-a", &shared_session);
     let shared_b = join_runtime_membership(
         &store,
         "membership-shared-b",
@@ -39,6 +40,7 @@ fn team_host_cannot_stop_shared_session_and_active_bindings_require_explicit_rel
         "shared-agent",
         firm_core::agentfirm_api::TeamMembershipRole::Member,
     );
+    admit_fixture_member_run_for_session(&store, "team-run-b", &shared_session);
     assert_eq!(
         store
             .team_host_membership("space-test", "team-a", true)
@@ -54,13 +56,15 @@ fn team_host_cannot_stop_shared_session_and_active_bindings_require_explicit_rel
         "host-b"
     );
     let work_a = insert_runtime_work(&store, "work-a", "team-a", "team-run-a");
+    let work_a = assign_runtime_work(&store, &work_a, &shared_a);
     let work_b = insert_runtime_work(&store, "work-b", "team-b", "team-run-b");
+    let work_b = assign_runtime_work(&store, &work_b, &shared_b);
     for (id, work, membership) in [
         ("binding-a", &work_a, &shared_a),
         ("binding-b", &work_b, &shared_b),
     ] {
         store
-            .bind_work_execution(
+            .bind_work_execution_fixture(
                 &context("fixture-host", "work.bind", id, 0),
                 WorkExecutionBinding {
                     id: id.into(),
@@ -71,7 +75,7 @@ fn team_host_cannot_stop_shared_session_and_active_bindings_require_explicit_rel
                     agent_member_id: "shared-agent".into(),
                     agent_session_id: shared_session.id.clone(),
                     agent_session_generation: shared_session.runtime_generation,
-                    delivery_id: format!("delivery-{id}"),
+                    delivery_id: format!("work-delivery:{}:1", work.id),
                     binding_generation: 1,
                     status: WorkExecutionBindingStatus::Active,
                     version: 1,
@@ -157,7 +161,10 @@ fn team_host_cannot_stop_shared_session_and_active_bindings_require_explicit_rel
         "binding-fenced StopSession must have zero side effects"
     );
 
-    for binding_id in ["binding-a", "binding-b"] {
+    for (binding_id, member_run_id) in [
+        ("binding-a", "runtime-shared-agent-team-run-a"),
+        ("binding-b", "runtime-shared-agent-team-run-b"),
+    ] {
         let mut release_context = context(
             "shared-agent",
             "work_binding.release",
@@ -166,7 +173,13 @@ fn team_host_cannot_stop_shared_session_and_active_bindings_require_explicit_rel
         );
         release_context.authenticated_actor.kind = ActorKind::AgentMember;
         store
-            .release_work_execution_binding(&release_context, binding_id, "t-release")
+            .release_work_execution_binding(
+                &release_context,
+                binding_id,
+                member_run_id,
+                1,
+                "t-release",
+            )
             .unwrap();
     }
     let accepted = store

@@ -50,7 +50,7 @@ run owns the provider transports, everyone else routes controls to the owner.
 Three orthogonal axes, not one long chain:
 
 ```
-phase:      Open ──assign/claim──▶ Active ──submit──▶ Review ──Host decides──▶ Closed
+phase:      Open ──start──▶ Active ──submit──▶ Review ──Host decides──▶ Closed
 condition:  Normal ⇄ Blocked ⇄ OnHold          (overlay; does not change phase)
 resolution: Accepted | Cancelled | Failed       (exists only at Closed)
 ```
@@ -58,6 +58,8 @@ resolution: Accepted | Cancelled | Failed       (exists only at Closed)
 - Every change is an ordered, append-only `WorkOperation`/`WorkEvent` — that
   history is the responsibility record, not chat.
 - One accountable Team per Work; zero or one assignee TeamMembership.
+- Assign/claim freezes stable responsibility while Work remains Open; only an
+  exact scheduler admission followed by Start moves it to Active.
 - Claim/assign/start/submit are **atomic CAS operations with expected
   versions**. `VERSION_CONFLICT` means refresh and re-read; never retry with a
   guessed version. `CLAIM_LOST` means someone else owns it; do not perform its
@@ -151,14 +153,18 @@ first action of a run:
 The gate-checked command shapes both roles share:
 
 ```bash
-# Host creates an assigned Work (host_assign requires an explicit owner):
+# Host creates a Work that only explicit membership assignment may claim:
 firm team-run work create \
   --team-run-id <team-run-id> \
   --title "<one bounded responsibility>" \
   --context "<why it exists; mental model; boundary paths>" \
   --completion-criteria "<observable criteria a reviewer can check>" \
   --claim-mode host_assign \
-  --owner-member-run-id <member-run-id> \
+  --idempotency-key <stable-command-key>
+firm team-run work assign \
+  --work-id <work-id> \
+  --expected-version <created-version> \
+  --membership-id <team-membership-id> \
   --idempotency-key <stable-command-key>
 
 # Either role creates an open Work for eligible claim:
@@ -207,7 +213,7 @@ exporter's `verify`.
  ─────────────────────────────────────    ─────────────────────────────────────
  1. work create                           (idle; NodeDaemon holds session)
     --claim-mode host_assign
-    --owner-member-run-id kiwi-run
+    work assign --membership-id kiwi-membership
     --completion-criteria "verify exits
     nonzero on a manifest that lists a
     contracted ledger as uncontracted;
@@ -251,10 +257,13 @@ exporter's `verify`.
 10a. accept → phase Closed,
      resolution Accepted.            OR
 10b. request-changes with reasons →
-     phase back to Active; kiwi
-     continues in the SAME MemberRun,
-     workspace, and native session —
-     no new identity, no lost state.
+     phase back to Open; stable kiwi
+     responsibility remains. Scheduler
+     creates the next exact binding and
+     delivery generation before Start.
+     Compatible workspace/native-session
+     continuity may resume; it is not
+     runtime ownership.
 11. Run teardown: TeamRun completion
     atomically REJECTS any non-terminal
     Work — W-42 must be closed,
@@ -266,8 +275,8 @@ Work operation (never prose); every mutation carried an expected version; the
 plan cost one correlated round-trip instead of a wrong implementation; the
 side-discovery became an unassigned Work instead of scope creep or a peer
 order; the submission carried verifiable evidence so review was a check, not
-an argument; and request-changes reused the same session instead of spawning
-a fresh agent that would re-learn everything.
+an argument; and request-changes preserved stable responsibility while a new
+exact execution admission safely reused compatible native context.
 
 ## Anti-patterns (each observed in a real run)
 

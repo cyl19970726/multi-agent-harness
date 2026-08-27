@@ -1,5 +1,5 @@
 use super::*;
-use firm_application::{SubmitWorkCommand, WorkPersistence};
+use firm_application::WorkPersistence;
 
 impl WorkPersistence for HarnessStore {
     type Error = StoreError;
@@ -35,16 +35,6 @@ impl WorkPersistence for HarnessStore {
         )
     }
 
-    fn assign_work(
-        &self,
-        work_id: &str,
-        expected_version: u64,
-        member_run_id: &str,
-        context: WorkCommandContext,
-    ) -> StoreResult<Work> {
-        HarnessStore::assign_work(self, work_id, expected_version, member_run_id, context)
-    }
-
     fn assign_work_to_membership(
         &self,
         work_id: &str,
@@ -61,16 +51,6 @@ impl WorkPersistence for HarnessStore {
             execution_space_id,
             context,
         )
-    }
-
-    fn rebind_work(
-        &self,
-        work_id: &str,
-        expected_version: u64,
-        member_run_id: &str,
-        context: WorkCommandContext,
-    ) -> StoreResult<Work> {
-        HarnessStore::rebind_work(self, work_id, expected_version, member_run_id, context)
     }
 
     fn release_work_as_host(
@@ -165,22 +145,6 @@ impl WorkPersistence for HarnessStore {
             member_run_id,
             resolution,
             context,
-        )
-    }
-
-    fn submit_work(&self, command: SubmitWorkCommand) -> StoreResult<Work> {
-        HarnessStore::submit_work_with_revision_and_links(
-            self,
-            &command.work_id,
-            command.expected_version,
-            &command.member_run_id,
-            &command.result_summary,
-            command.artifact_refs,
-            command.check_refs,
-            command.github_links,
-            command.base_revision,
-            command.candidate_revision,
-            command.context,
         )
     }
 
