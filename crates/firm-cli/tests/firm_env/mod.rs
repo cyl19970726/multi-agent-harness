@@ -8,9 +8,8 @@
 
 #![allow(dead_code)]
 
-mod provider_received_work;
+pub mod provider_received_work;
 mod work_owner;
-pub use provider_received_work::record_provider_received_work;
 #[allow(unused_imports)]
 pub use work_owner::member_run_for_work_owner;
 

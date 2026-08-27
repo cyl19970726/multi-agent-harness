@@ -1127,7 +1127,7 @@ fn create_fixture_work(
     let work_id = created["id"].as_str().expect("Work id");
     if let Some(owner) = owner {
         firm_env::assign_work_for_member_run(home, project_id, work_id, owner, true);
-        firm_env::record_provider_received_work(
+        firm_env::provider_received_work::record_provider_received_work(
             home,
             project_id,
             work_id,
