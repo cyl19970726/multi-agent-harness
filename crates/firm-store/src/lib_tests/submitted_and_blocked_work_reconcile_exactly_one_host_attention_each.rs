@@ -20,8 +20,7 @@ fn submitted_and_blocked_work_reconcile_exactly_one_host_attention_each() {
         &review_member,
         "work-event-review-submitted",
         "ready for exact Host review",
-        Vec::new(),
-        vec!["cargo:test".into()],
+        (Vec::new(), vec!["cargo:test".into()]),
         "unix-ms:4",
     );
 

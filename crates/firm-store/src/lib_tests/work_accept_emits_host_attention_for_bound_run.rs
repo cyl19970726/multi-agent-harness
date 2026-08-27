@@ -32,8 +32,7 @@ fn canonical_work_accept_emits_attention_for_the_exact_bound_run() {
         &member,
         "accept-result",
         "done",
-        vec!["artifact://z".into()],
-        Vec::new(),
+        (vec!["artifact://z".into()], Vec::new()),
         "unix-ms:5",
     );
     accept_result_for_test(

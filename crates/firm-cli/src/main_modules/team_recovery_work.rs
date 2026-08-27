@@ -1262,9 +1262,7 @@ pub(crate) fn poll_team_run_github_linkages(
                     work.version,
                     refreshed_links,
                     &execution_space_id,
-                    &run.execution_node_id,
-                    &daemon.daemon_id,
-                    daemon.generation,
+                    &daemon,
                     context,
                 )
                 .map_err(|error| {

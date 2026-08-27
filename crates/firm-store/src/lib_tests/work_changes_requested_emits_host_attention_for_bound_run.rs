@@ -31,8 +31,7 @@ fn host_authored_changes_requested_does_not_wake_the_same_host() {
         &member,
         "we-cr-3",
         "done",
-        vec!["artifact://x".into()],
-        Vec::new(),
+        (vec!["artifact://x".into()], Vec::new()),
         "unix-ms:4",
     );
     let _changes = store

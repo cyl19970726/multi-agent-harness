@@ -66,8 +66,10 @@ fn review_link_refresh_preserves_the_exact_result_and_host_acceptance() {
         &member,
         "refresh-result",
         "candidate",
-        vec!["artifact://candidate".into()],
-        vec!["check://candidate".into()],
+        (
+            vec!["artifact://candidate".into()],
+            vec!["check://candidate".into()],
+        ),
         "unix-ms:5",
     );
     let report_count = store
@@ -86,9 +88,7 @@ fn review_link_refresh_preserves_the_exact_result_and_host_acceptance() {
             submitted.version,
             vec![merged_link()],
             "unit-test-space",
-            &run.execution_node_id,
-            &daemon.daemon_id,
-            daemon.generation,
+            &daemon,
             service_refresh_context(&run, &daemon, "refresh-github"),
         )
         .expect("refresh GitHub evidence");
@@ -147,8 +147,7 @@ fn non_evidence_review_revision_drift_cannot_reuse_an_older_result() {
         &member,
         "drift-result",
         "candidate",
-        Vec::new(),
-        Vec::new(),
+        (Vec::new(), Vec::new()),
         "unix-ms:5",
     );
     let drifted = {

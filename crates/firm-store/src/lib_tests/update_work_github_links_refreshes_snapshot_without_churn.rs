@@ -57,9 +57,7 @@ fn update_work_github_links_refreshes_only_evidence_without_churn() {
             created.version,
             created.github_links.clone(),
             "unit-test-space",
-            &run.execution_node_id,
-            &daemon.daemon_id,
-            daemon.generation,
+            &daemon,
             evidence_context("github-noop", "github-noop", "unix-ms:3"),
         )
         .expect("unchanged refresh");
@@ -72,9 +70,7 @@ fn update_work_github_links_refreshes_only_evidence_without_churn() {
             created.version,
             vec![pull_request("MERGED")],
             "unit-test-space",
-            &run.execution_node_id,
-            &daemon.daemon_id,
-            daemon.generation,
+            &daemon,
             evidence_context("github-refresh", "github-refresh", "unix-ms:4"),
         )
         .expect("refresh external evidence");
@@ -90,15 +86,15 @@ fn update_work_github_links_refreshes_only_evidence_without_churn() {
     assert!(operations.last().unwrap().reports.is_empty());
     assert!(store.host_attentions().unwrap().is_empty());
 
+    let mut stale_daemon = daemon.clone();
+    stale_daemon.generation += 1;
     let stale_replay = store
         .update_work_github_links(
             &created.id,
             created.version,
             vec![pull_request("MERGED")],
             "unit-test-space",
-            &run.execution_node_id,
-            &daemon.daemon_id,
-            daemon.generation + 1,
+            &stale_daemon,
             evidence_context("github-refresh-retry", "github-refresh", "unix-ms:5"),
         )
         .expect_err("replay must still prove the exact current daemon generation");
@@ -113,9 +109,7 @@ fn update_work_github_links_refreshes_only_evidence_without_churn() {
             created.version,
             vec![pull_request("MERGED")],
             "unit-test-space",
-            &run.execution_node_id,
-            &daemon.daemon_id,
-            daemon.generation,
+            &daemon,
             evidence_context("github-refresh-retry", "github-refresh", "unix-ms:5"),
         )
         .expect("same authenticated request replays before the old-version CAS");
@@ -128,9 +122,7 @@ fn update_work_github_links_refreshes_only_evidence_without_churn() {
             created.version,
             vec![pull_request("CLOSED")],
             "unit-test-space",
-            &run.execution_node_id,
-            &daemon.daemon_id,
-            daemon.generation,
+            &daemon,
             evidence_context("github-refresh-drift", "github-refresh", "unix-ms:6"),
         )
         .expect_err("one idempotency key cannot replace its GitHub evidence payload");

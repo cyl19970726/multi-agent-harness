@@ -68,9 +68,7 @@ impl HarnessStore {
         expected_version: u64,
         github_links: Vec<GitHubLink>,
         execution_space_id: &str,
-        node_id: &str,
-        daemon_id: &str,
-        daemon_generation: u64,
+        daemon: &NodeDaemonLease,
         context: WorkCommandContext,
     ) -> StoreResult<Work> {
         self.init()?;
@@ -87,9 +85,9 @@ impl HarnessStore {
         }
         self.require_current_node_daemon_unlocked(
             execution_space_id,
-            node_id,
-            daemon_id,
-            daemon_generation,
+            &daemon.node_id,
+            &daemon.daemon_id,
+            daemon.generation,
             &firm_core::agentfirm_api::ActorRef {
                 kind: firm_core::agentfirm_api::ActorKind::Service,
                 id: context.performed_by_actor.id.clone(),
@@ -98,10 +96,10 @@ impl HarnessStore {
             work_id,
         )?;
         let run = self.require_team_run_unlocked(&latest.team_run_id)?;
-        if run.execution_node_id != node_id {
+        if run.execution_node_id != daemon.node_id {
             return Err(StoreError::Conflict(format!(
-                "WORK_GITHUB_EVIDENCE_NODE_FENCED: Work {work_id} TeamRun is placed on {}, not {node_id}",
-                run.execution_node_id
+                "WORK_GITHUB_EVIDENCE_NODE_FENCED: Work {work_id} TeamRun is placed on {}, not {}",
+                run.execution_node_id, daemon.node_id
             )));
         }
         let authority = context.authority_actor.as_ref().ok_or_else(|| {
@@ -116,9 +114,9 @@ impl HarnessStore {
             "expected_version": expected_version,
             "github_links": github_links,
             "execution_space_id": execution_space_id,
-            "node_id": node_id,
-            "daemon_id": daemon_id,
-            "daemon_generation": daemon_generation,
+            "node_id": daemon.node_id,
+            "daemon_id": daemon.daemon_id,
+            "daemon_generation": daemon.generation,
         }));
         if let Some(existing) = self.idempotent_work_operation_unlocked(
             &context.idempotency_key,

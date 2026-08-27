@@ -209,8 +209,7 @@ pub(super) fn submit_started_work_for_test(
     member: &ProviderRuntimeProjection,
     event_id: &str,
     result_summary: &str,
-    artifact_refs: Vec<String>,
-    check_refs: Vec<String>,
+    evidence_refs: (Vec<String>, Vec<String>),
     at: &str,
 ) -> Work {
     let run = store
@@ -227,8 +226,8 @@ pub(super) fn submit_started_work_for_test(
         member,
         event_id,
         result_summary,
-        artifact_refs,
-        check_refs,
+        evidence_refs.0,
+        evidence_refs.1,
         at,
     );
     let team_id = active

@@ -31,8 +31,7 @@ fn host_attention_dedup_ignores_duplicate_event() {
         &member,
         "we-dedup-3",
         "done",
-        vec!["artifact://x".into()],
-        Vec::new(),
+        (vec!["artifact://x".into()], Vec::new()),
         "unix-ms:4",
     );
     let report = result_report_for_test(

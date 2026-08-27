@@ -121,9 +121,12 @@ fn concurrent_work_claim_has_exactly_one_winner_and_idempotent_retry() {
             unbound_report,
         )
         .expect_err("claim alone must not authorize Submit");
-    assert!(submit_error
-        .to_string()
-        .contains("does not hold active Work responsibility"));
+    assert!(
+        submit_error
+            .to_string()
+            .contains("WORK_EXECUTION_BINDING_ACTIVE"),
+        "unexpected Submit rejection: {submit_error}"
+    );
     assert_eq!(
         store.work_operations().expect("Work operations"),
         before_unbound_execution
@@ -146,8 +149,7 @@ fn concurrent_work_claim_has_exactly_one_winner_and_idempotent_retry() {
         winner_member,
         "we-race-bound-submit",
         "bound submit",
-        Vec::new(),
-        Vec::new(),
+        (Vec::new(), Vec::new()),
         "unix-ms:7",
     );
     assert_eq!(submitted.phase, WorkPhase::Review);

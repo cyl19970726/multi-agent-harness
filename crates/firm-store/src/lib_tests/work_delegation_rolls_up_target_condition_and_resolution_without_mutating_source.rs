@@ -102,8 +102,10 @@ fn work_delegation_rolls_up_target_condition_and_resolution_without_mutating_sou
         &member_b,
         "target-result",
         "target result ready",
-        vec!["artifact://target".into()],
-        vec!["check://target".into()],
+        (
+            vec!["artifact://target".into()],
+            vec!["check://target".into()],
+        ),
         "unix-ms:9",
     );
     let accepted = accept_result_for_test(

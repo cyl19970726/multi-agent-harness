@@ -31,8 +31,7 @@ fn work_submit_emits_host_attention_for_bound_run() {
         &member,
         "we-submit-3",
         "done",
-        vec!["artifact://x".into()],
-        vec!["check://y".into()],
+        (vec!["artifact://x".into()], vec!["check://y".into()]),
         "unix-ms:4",
     );
     let attentions = store.host_attentions().expect("host attentions");

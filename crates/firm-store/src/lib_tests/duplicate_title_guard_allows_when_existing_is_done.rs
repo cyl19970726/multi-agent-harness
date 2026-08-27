@@ -32,8 +32,7 @@ fn duplicate_title_guard_allows_when_existing_is_done() {
         &member,
         "dup-done-result",
         "All tests pass.",
-        Vec::new(),
-        Vec::new(),
+        (Vec::new(), Vec::new()),
         "unix-ms:5",
     );
     let accepted = accept_result_for_test(
