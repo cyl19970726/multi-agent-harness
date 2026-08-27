@@ -643,8 +643,16 @@ impl TeamRunLedger {
         next: &ProviderRuntimeProjection,
     ) -> CliResult<()> {
         let _guard = self.write_lock();
-        self.store.compare_and_append_member_run(expected, next)?;
-        self.sync_trust_native_session_binding(expected, next)?;
+        if let Err(error) = self.store.compare_and_append_member_run(expected, next) {
+            let already_committed = self
+                .latest_member_run(&next.id)?
+                .as_ref()
+                .is_some_and(|current| current == next);
+            if !already_committed {
+                return Err(CliError::Store(error));
+            }
+        }
+        self.sync_trust_native_session_binding(next)?;
         Ok(())
     }
 
@@ -659,15 +667,9 @@ impl TeamRunLedger {
     /// rebinds a newer trust row.
     pub(super) fn sync_trust_native_session_binding(
         &self,
-        expected: &ProviderRuntimeProjection,
         next: &ProviderRuntimeProjection,
     ) -> CliResult<()> {
-        let binding_changed = match (&expected.native_session, &next.native_session) {
-            (None, Some(_)) => true,
-            (Some(before), Some(after)) => before != after,
-            _ => false,
-        };
-        let Some(native) = next.native_session.as_ref().filter(|_| binding_changed) else {
+        let Some(native) = next.native_session.as_ref() else {
             return Ok(());
         };
         let Some(space_id) = self.store.trust_member_run_scope(&next.id)? else {
@@ -686,10 +688,16 @@ impl TeamRunLedger {
                 .into_iter()
                 .find(|run| run.id == next.id)
             else {
-                break;
+                return Err(CliError::RuntimeRecoveryRequired(format!(
+                    "NATIVE_SESSION_BINDING_INCOMPLETE: canonical MemberRun {} is missing",
+                    next.id
+                )));
             };
             if trust_run.runtime_generation != next.runtime_generation {
-                break;
+                return Err(CliError::RuntimeRecoveryRequired(format!(
+                    "NATIVE_SESSION_BINDING_GENERATION_FENCED: canonical MemberRun {} is generation {}, settlement is generation {}",
+                    next.id, trust_run.runtime_generation, next.runtime_generation
+                )));
             }
             if trust_run.native_session.as_ref() == Some(&native_ref) {
                 break;
@@ -740,7 +748,11 @@ impl TeamRunLedger {
                 })
                 .collect::<Vec<_>>();
             let [session] = sessions.as_slice() else {
-                break;
+                return Err(CliError::RuntimeRecoveryRequired(format!(
+                    "NATIVE_SESSION_BINDING_INCOMPLETE: MemberRun {} requires one current AgentSession, found {}",
+                    next.id,
+                    sessions.len()
+                )));
             };
             if session.native_session_ref.as_ref() == Some(&native_ref) {
                 break;

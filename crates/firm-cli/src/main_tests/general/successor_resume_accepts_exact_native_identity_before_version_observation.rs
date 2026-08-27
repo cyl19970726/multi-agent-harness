@@ -319,6 +319,9 @@ fn resumed_session_materialization_and_readmission_share_preflight_identity() {
     ledger
         .save_member_run(&versionless, &settled)
         .expect("same-id provider settlement propagates the observed version");
+    ledger
+        .save_member_run(&versionless, &settled)
+        .expect("an exact retry converges after the MemberRun revision already committed");
     body.members[0] = settled;
     let enriched = store
         .fabric_agent_sessions("unit-test-space")
