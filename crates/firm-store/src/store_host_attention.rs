@@ -226,8 +226,8 @@ impl HarnessStore {
 
     /// Idempotently append one durable Host-attention fact.
     ///
-    /// Runtime integration must derive `attention.id` from the causal event
-    /// (for example `host-attention-<work-event-id>`). Replaying the same event
+    /// Runtime integration must derive `attention.id` from the causal fact
+    /// (for example `host-attention-<work-event-or-report-id>`). Replaying the same fact
     /// returns the latest delivery/intake projection instead of resetting it
     /// to `actionable` or fabricating a TeamMessageProjection.
     pub fn ensure_host_attention(&self, attention: &HostAttention) -> StoreResult<HostAttention> {
@@ -236,10 +236,11 @@ impl HarnessStore {
         self.ensure_host_attention_unlocked(attention)
     }
 
-    /// Repair the only intentional two-ledger crash boundary: a WorkOperation
-    /// may be fsynced immediately before its derived HostAttention row. The
-    /// deterministic attention id makes this replay safe and lets Host reads or
-    /// an explicit startup reconciliation materialize exactly the missing row.
+    /// Repair the intentional crash boundary where a canonical WorkOperation
+    /// may be fsynced immediately before its derived HostAttention lifecycle
+    /// row. Canonical outbox source facts such as WorkReport review requests
+    /// remain directly projectable without duplicating that source into the
+    /// lifecycle ledger. Deterministic ids make both paths replay safe.
     pub fn reconcile_work_host_attentions(&self) -> StoreResult<Vec<HostAttention>> {
         self.init()?;
         let _lock = self.acquire_write_lock()?;

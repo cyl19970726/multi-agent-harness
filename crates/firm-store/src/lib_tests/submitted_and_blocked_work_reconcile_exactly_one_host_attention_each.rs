@@ -64,7 +64,11 @@ fn submitted_and_blocked_work_reconcile_exactly_one_host_attention_each() {
         .expect("review attention");
     assert_eq!(
         review_attention.id,
-        "host-attention-work-event-review-submitted"
+        "host-attention-report-work-event-review-submitted"
+    );
+    assert_eq!(
+        review_attention.source_event_ref,
+        "report-work-event-review-submitted"
     );
     assert_eq!(
         review_attention.kind,
@@ -88,13 +92,22 @@ fn submitted_and_blocked_work_reconcile_exactly_one_host_attention_each() {
         "Work-state attention must not fabricate conversation"
     );
 
-    // Simulate the process dying after work_operations.jsonl was fsynced
-    // but before host_attentions.jsonl reached disk.
+    // Simulate the process dying after canonical Work operations/reports were
+    // fsynced but before host_attentions.jsonl reached disk.
     std::fs::remove_file(root.join("host_attentions.jsonl"))
         .expect("remove derived ledger to simulate crash gap");
+    let canonical_outbox = store
+        .canonical_host_attention_outbox_unlocked()
+        .expect("read canonical Host-attention outbox");
+    assert!(
+        canonical_outbox
+            .iter()
+            .any(|attention| attention.id == review_attention.id),
+        "canonical WorkReport must retain its replayable HostAttention"
+    );
     let reconciled = store
         .reconcile_work_host_attentions()
-        .expect("repair crash gap from WorkEvent truth");
+        .expect("repair crash gap from canonical Work truth");
     assert_eq!(reconciled.len(), 4);
     let repaired_bytes =
         std::fs::read(root.join("host_attentions.jsonl")).expect("repaired Host-attention ledger");
@@ -103,8 +116,14 @@ fn submitted_and_blocked_work_reconcile_exactly_one_host_attention_each() {
             .split(|byte| *byte == b'\n')
             .filter(|line| !line.is_empty())
             .count(),
-        4
+        3,
+        "the canonical WorkReport outbox remains source truth and needs no duplicate lifecycle row"
     );
+    let repaired_projection = store.host_attentions().expect("repaired Host attentions");
+    assert_eq!(repaired_projection.len(), 4);
+    assert!(repaired_projection
+        .iter()
+        .any(|attention| attention.id == review_attention.id));
     store
         .reconcile_work_host_attentions()
         .expect("idempotent second reconciliation");
