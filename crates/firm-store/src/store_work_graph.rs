@@ -23,9 +23,12 @@ pub struct StoreWorkGraph {
 }
 
 impl HarnessStore {
-    fn terminal_work_member_run_provenance_unlocked(&self, work: &Work) -> StoreResult<String> {
+    pub(super) fn terminal_work_member_run_provenance_unlocked(
+        &self,
+        work: &Work,
+    ) -> StoreResult<String> {
         let submitted_revision = work.version.saturating_sub(1);
-        let submitted_provenance = self
+        let submitted_attentions = self
             .latest_host_attentions_unlocked()?
             .into_values()
             .filter(|attention| {
@@ -33,16 +36,20 @@ impl HarnessStore {
                     && attention.work_version == submitted_revision
                     && attention.kind == HostAttentionKind::WorkReviewRequested
             })
-            .filter_map(|attention| attention.member_run_id)
             .collect::<Vec<_>>();
-        if let [member_run_id] = submitted_provenance.as_slice() {
-            return Ok(member_run_id.clone());
-        }
-        if !submitted_provenance.is_empty() {
-            return Err(StoreError::Conflict(format!(
-                "MEMBER_RUN_GENERATION_FENCED: terminal member Work {} has ambiguous submitted execution provenance",
-                work.id
-            )));
+        if !submitted_attentions.is_empty() {
+            let [attention] = submitted_attentions.as_slice() else {
+                return Err(StoreError::Conflict(format!(
+                    "MEMBER_RUN_GENERATION_FENCED: terminal member Work {} has ambiguous submitted execution provenance",
+                    work.id
+                )));
+            };
+            return attention.member_run_id.clone().ok_or_else(|| {
+                StoreError::Conflict(format!(
+                    "MEMBER_RUN_GENERATION_FENCED: terminal member Work {} has submitted execution provenance without an exact MemberRun",
+                    work.id
+                ))
+            });
         }
 
         let run = self.require_team_run_unlocked(&work.team_run_id)?;

@@ -1271,48 +1271,8 @@ fn delegation_test_fixture(
     (root, store, run_a, member_a, run_b, member_b)
 }
 
-fn assigned_delegation_work(
-    run: &AgentTeamRun,
-    member: &ProviderRuntimeProjection,
-    id: &str,
-) -> Work {
-    let mut work = unassigned_test_work(&run.id, id);
-    work.claim_mode = WorkClaimMode::HostAssign;
-    work.owner_member_id = Some(member.agent_member_id.clone());
-    work.assignee_membership_id = Some(format!(
-        "membership-{}-{}",
-        run.agent_team_id, member.agent_member_id
-    ));
-    work
-}
-
-fn delegation_request(id: &str, source: &Work, target_team_id: &str) -> WorkDelegation {
-    WorkDelegation {
-        id: id.to_string(),
-        source_work_ref: WorkRef {
-            team_run_id: source.team_run_id.clone(),
-            work_id: source.id.clone(),
-        },
-        source_work_version: source.version,
-        source_owner_member_id: source
-            .owner_member_id
-            .clone()
-            .expect("delegation source owner"),
-        created_by_member_run_id: None,
-        target_agent_team_id: target_team_id.to_string(),
-        target_work_ref: WorkRef {
-            team_run_id: String::new(),
-            work_id: String::new(),
-        },
-        delegated_by_actor: host_work_context("unused", "unused", "unix-ms:1").performed_by_actor,
-        state: WorkDelegationState::Active,
-        resolution_summary: None,
-        blocker_reason: None,
-        version: 0,
-        created_at: String::new(),
-        updated_at: String::new(),
-    }
-}
+mod delegation_work_fixtures;
+use delegation_work_fixtures::*;
 
 fn completed_team_run(run: &AgentTeamRun, at: &str) -> AgentTeamRun {
     let mut completed = run.clone();

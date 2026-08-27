@@ -1,6 +1,14 @@
 use super::*;
 
 impl HarnessStore {
+    pub fn work_responsibility_changed_after_revision(
+        &self,
+        work_id: &str,
+        revision: u64,
+    ) -> StoreResult<bool> {
+        self.work_responsibility_changed_after_revision_unlocked(work_id, revision)
+    }
+
     pub(super) fn work_responsibility_changed_after_revision_unlocked(
         &self,
         work_id: &str,

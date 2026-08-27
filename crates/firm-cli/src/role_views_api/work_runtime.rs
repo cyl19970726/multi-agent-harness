@@ -1,5 +1,7 @@
 use super::*;
-use harness_core::agentfirm_api::NativeSessionRef as AgentNativeSessionRef;
+use harness_core::agentfirm_api::{
+    MemberRun as AgentMemberRun, NativeSessionRef as AgentNativeSessionRef,
+};
 
 #[derive(Clone, Copy)]
 pub(super) struct CurrentWorkRuntime<'a> {
@@ -83,13 +85,13 @@ pub(super) fn current_work_runtime<'a>(
         .member_runs
         .iter()
         .filter(|member_run| {
+            let Ok(current_run) = serde_json::from_value::<AgentMemberRun>((*member_run).clone())
+            else {
+                return false;
+            };
             member_run["team_run_id"] == work.team_run_id
                 && member_run["agent_member_id"] == agent_member_id
-                && member_run["coordination_status"] == "active"
-                && !matches!(
-                    member_run["runtime_status"].as_str(),
-                    Some("completed" | "failed" | "stopped")
-                )
+                && current_run.has_live_runtime_authority()
                 && native_session_identity_matches(
                     &member_run["native_session"],
                     &session["native_session_ref"],

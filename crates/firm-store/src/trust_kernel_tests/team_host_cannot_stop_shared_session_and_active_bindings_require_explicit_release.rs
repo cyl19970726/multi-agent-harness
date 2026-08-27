@@ -161,7 +161,10 @@ fn team_host_cannot_stop_shared_session_and_active_bindings_require_explicit_rel
         "binding-fenced StopSession must have zero side effects"
     );
 
-    for binding_id in ["binding-a", "binding-b"] {
+    for (binding_id, member_run_id) in [
+        ("binding-a", "runtime-shared-agent-team-run-a"),
+        ("binding-b", "runtime-shared-agent-team-run-b"),
+    ] {
         let mut release_context = context(
             "shared-agent",
             "work_binding.release",
@@ -170,7 +173,13 @@ fn team_host_cannot_stop_shared_session_and_active_bindings_require_explicit_rel
         );
         release_context.authenticated_actor.kind = ActorKind::AgentMember;
         store
-            .release_work_execution_binding(&release_context, binding_id, "t-release")
+            .release_work_execution_binding(
+                &release_context,
+                binding_id,
+                member_run_id,
+                1,
+                "t-release",
+            )
             .unwrap();
     }
     let accepted = store

@@ -1,6 +1,13 @@
 use super::fabric_foundation::RuntimeBindingAdmission;
 use super::*;
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum WorkExecutionBindingReconciliation {
+    Current,
+    Released(CanonicalMutationResult<WorkExecutionBinding>),
+    AlreadySettled(WorkExecutionBinding),
+}
+
 impl HarnessStore {
     /// Return the immutable exact runtime authority captured when one
     /// WorkExecutionBinding was created. Later binding lifecycle projections
@@ -71,6 +78,176 @@ impl HarnessStore {
             .canonical_fabric_work_deliveries_unlocked(execution_space_id)?
             .into_values()
             .collect())
+    }
+
+    fn work_execution_binding_is_current_unlocked(
+        &self,
+        execution_space_id: &str,
+        binding: &WorkExecutionBinding,
+    ) -> StoreResult<bool> {
+        if binding.status != WorkExecutionBindingStatus::Active {
+            return Ok(false);
+        }
+        let work = self
+            .latest_works_unlocked()?
+            .remove(&binding.work_id)
+            .ok_or_else(|| {
+                trust_error(
+                    TrustErrorCode::InvalidStateTransition,
+                    "WorkExecutionBinding references a missing Work source fact",
+                    "work_execution_binding",
+                    &binding.id,
+                    Some(binding.version),
+                )
+            })?;
+        let responsibility_changed = self.work_responsibility_changed_after_revision_unlocked(
+            &binding.work_id,
+            binding.work_revision,
+        )?;
+        let memberships = self
+            .fabric_team_memberships(execution_space_id)?
+            .into_iter()
+            .filter(|membership| membership.id == binding.team_membership_id)
+            .collect::<Vec<_>>();
+        let [membership] = memberships.as_slice() else {
+            return Err(trust_error(
+                TrustErrorCode::MemberRunGenerationFenced,
+                "WorkExecutionBinding must reference exactly one TeamMembership source fact",
+                "work_execution_binding",
+                &binding.id,
+                Some(binding.version),
+            ));
+        };
+        let sessions = self
+            .fabric_agent_sessions(execution_space_id)?
+            .into_iter()
+            .filter(|session| session.id == binding.agent_session_id)
+            .collect::<Vec<_>>();
+        let [session] = sessions.as_slice() else {
+            return Err(trust_error(
+                TrustErrorCode::MemberRunGenerationFenced,
+                "WorkExecutionBinding must reference exactly one AgentSession source fact",
+                "work_execution_binding",
+                &binding.id,
+                Some(binding.version),
+            ));
+        };
+        let runtime_binding =
+            self.work_execution_runtime_binding(execution_space_id, &binding.id)?;
+        let member_run_id = runtime_binding
+            .target_member_run_id
+            .as_deref()
+            .ok_or_else(|| {
+                trust_error(
+                    TrustErrorCode::MemberRunGenerationFenced,
+                    "WorkExecutionBinding source fact is missing the exact MemberRun id",
+                    "work_execution_binding",
+                    &binding.id,
+                    Some(binding.version),
+                )
+            })?;
+        let member_run_generation =
+            runtime_binding
+                .target_member_run_generation
+                .ok_or_else(|| {
+                    trust_error(
+                    TrustErrorCode::MemberRunGenerationFenced,
+                    "WorkExecutionBinding source fact is missing the exact MemberRun generation",
+                    "work_execution_binding",
+                    &binding.id,
+                    Some(binding.version),
+                )
+                })?;
+        let member_runs = self
+            .trust_member_runs(execution_space_id)?
+            .into_iter()
+            .filter(|member| member.id == member_run_id)
+            .collect::<Vec<_>>();
+        let [member_run] = member_runs.as_slice() else {
+            return Err(trust_error(
+                TrustErrorCode::MemberRunGenerationFenced,
+                "WorkExecutionBinding must resolve exactly one immutable MemberRun source fact",
+                "work_execution_binding",
+                &binding.id,
+                Some(binding.version),
+            ));
+        };
+        let deliveries = self.canonical_fabric_work_deliveries_unlocked(execution_space_id)?;
+        let delivery = deliveries.get(&binding.delivery_id).ok_or_else(|| {
+            trust_error(
+                TrustErrorCode::InvalidStateTransition,
+                "WorkExecutionBinding is missing its canonical WorkDelivery source fact",
+                "work_execution_binding",
+                &binding.id,
+                Some(binding.version),
+            )
+        })?;
+        if delivery.work_id != binding.work_id
+            || delivery.work_revision != binding.work_revision
+            || delivery.work_execution_binding_id != binding.id
+            || delivery.recipient_agent_member_id != binding.agent_member_id
+            || delivery.recipient_session_id != binding.agent_session_id
+            || delivery.recipient_session_generation != binding.agent_session_generation
+            || delivery.target_node_id != session.node_id
+        {
+            return Err(trust_error(
+                TrustErrorCode::InvalidStateTransition,
+                "WorkExecutionBinding and canonical WorkDelivery source facts conflict",
+                "work_execution_binding",
+                &binding.id,
+                Some(binding.version),
+            ));
+        }
+        let effect_is_frozen = matches!(
+            delivery.status,
+            WorkDeliveryStatus::Claimed | WorkDeliveryStatus::ProviderReceived
+        );
+        let revision_is_current = binding.work_revision == work.version
+            || (binding.work_revision < work.version && effect_is_frozen);
+        let stable_authority_matches = work.active_member_run_id.is_none()
+            && !work.is_terminal()
+            && !responsibility_changed
+            && revision_is_current
+            && work.accountable_team_id.as_deref() == Some(binding.team_id.as_str())
+            && work.owner_member_id.as_deref() == Some(binding.agent_member_id.as_str())
+            && work.assignee_membership_id.as_deref() == Some(binding.team_membership_id.as_str())
+            && membership.state == TeamMembershipStatus::Active
+            && membership.team_id == binding.team_id
+            && membership.agent_member_id == binding.agent_member_id
+            && session.agent_member_id == binding.agent_member_id
+            && session.runtime_generation == binding.agent_session_generation
+            && session.lifecycle != AgentSessionStatus::Closed
+            && member_run.runtime_generation == member_run_generation
+            && member_run.has_live_runtime_authority();
+        if !stable_authority_matches {
+            return Ok(false);
+        }
+        match self.require_live_runtime_binding_unlocked(
+            &session,
+            &runtime_binding,
+            RuntimeBindingAdmission::RuntimeCommand {
+                allow_native_session_attachment: false,
+            },
+            "work_execution_binding",
+            &binding.id,
+            Some(work.version),
+        ) {
+            Ok(()) => Ok(true),
+            Err(error)
+                if error.trust_error().is_some_and(|error| {
+                    matches!(
+                        error.code,
+                        TrustErrorCode::MemberRunGenerationFenced
+                            | TrustErrorCode::SupervisorGenerationFenced
+                            | TrustErrorCode::NativeSessionMissing
+                            | TrustErrorCode::NativeSessionIncompatible
+                    )
+                }) =>
+            {
+                Ok(false)
+            }
+            Err(error) => Err(error),
+        }
     }
 
     pub(super) fn canonical_fabric_work_deliveries_unlocked(
@@ -191,7 +368,8 @@ impl HarnessStore {
                 Some(delivery.version),
             ));
         }
-        let invocation_binding = runtime_binding_for_session(&session);
+        let invocation_binding =
+            self.work_execution_runtime_binding(&context.execution_space_id, &binding.id)?;
         self.require_live_runtime_binding_unlocked(
             &session,
             &invocation_binding,
@@ -414,7 +592,7 @@ impl HarnessStore {
             .filter(|run| {
                 run.agent_member_id == binding.agent_member_id
                     && run.team_run_id == work.team_run_id
-                    && run.coordination_status == MemberCoordinationStatus::Active
+                    && run.has_live_runtime_authority()
             })
             .collect::<Vec<_>>();
         let [current_run] = current_runs.as_slice() else {
@@ -425,7 +603,12 @@ impl HarnessStore {
         let mut runtime_binding = runtime_binding_for_session(&session);
         runtime_binding.target_member_run_id = Some(current_run.id.clone());
         runtime_binding.target_member_run_generation = Some(current_run.runtime_generation);
-        self.bind_responsible_work_execution(context, &runtime_binding, binding)
+        let mut exact_context = context.clone();
+        exact_context.authenticated_actor = ActorRef {
+            kind: ActorKind::Service,
+            id: session.node_daemon_id,
+        };
+        self.bind_responsible_work_execution(&exact_context, &runtime_binding, binding)
     }
 
     /// Resolve stable Work responsibility into one exact current runtime
@@ -451,15 +634,6 @@ impl HarnessStore {
             .request_fingerprint
             .clone()
             .unwrap_or_else(|| canonical_json_fingerprint(&request_payload));
-        if let Some(replay) = self.replay_trust_projection_unlocked(
-            context,
-            "work_execution_binding",
-            &binding.id,
-            &fingerprint,
-        )? {
-            return Ok(replay);
-        }
-
         let membership = self
             .fabric_team_memberships(&context.execution_space_id)?
             .into_iter()
@@ -486,6 +660,23 @@ impl HarnessStore {
                     None,
                 )
             })?;
+        self.require_current_node_daemon_unlocked(
+            &context.execution_space_id,
+            &session.node_id,
+            &session.node_daemon_id,
+            session.node_daemon_generation,
+            &context.authenticated_actor,
+            "work_execution_binding",
+            &binding.id,
+        )?;
+        if let Some(replay) = self.replay_trust_projection_unlocked(
+            context,
+            "work_execution_binding",
+            &binding.id,
+            &fingerprint,
+        )? {
+            return Ok(replay);
+        }
         let work = self
             .latest_works_unlocked()?
             .remove(&binding.work_id)
@@ -528,7 +719,7 @@ impl HarnessStore {
             .filter(|member| {
                 member.team_run_id == work.team_run_id
                     && member.agent_member_id == binding.agent_member_id
-                    && member.coordination_status == MemberCoordinationStatus::Active
+                    && member.has_live_runtime_authority()
             })
             .collect::<Vec<_>>();
         let [current_member_run] = active_member_runs.as_slice() else {
@@ -540,12 +731,17 @@ impl HarnessStore {
                 Some(work.version),
             ));
         };
+        if work.active_member_run_id.is_some() {
+            return Err(trust_error(
+                TrustErrorCode::MemberRunGenerationFenced,
+                "legacy Work runtime authority is retired and cannot be admitted for current execution",
+                "work_execution_binding",
+                &binding.id,
+                Some(work.version),
+            ));
+        }
         if current_member_run.id != member_run_id
             || current_member_run.runtime_generation != member_run_generation
-            || work
-                .active_member_run_id
-                .as_deref()
-                .is_some_and(|legacy| legacy != member_run_id)
         {
             return Err(trust_error(
                 TrustErrorCode::MemberRunGenerationFenced,
@@ -625,20 +821,37 @@ impl HarnessStore {
             "work-delivery:{}:{}",
             binding.work_id, binding.binding_generation
         );
+        let expected_binding_generation = self
+            .fabric_work_execution_bindings(&context.execution_space_id)?
+            .into_iter()
+            .filter(|existing| existing.work_id == binding.work_id)
+            .map(|existing| existing.binding_generation)
+            .max()
+            .unwrap_or(0)
+            .saturating_add(1);
+        if work.version != binding.work_revision {
+            return Err(trust_error(
+                TrustErrorCode::WorkRevisionStale,
+                "WorkExecutionBinding must freeze the exact current Work revision",
+                "work_execution_binding",
+                &binding.id,
+                Some(work.version),
+            ));
+        }
         if membership.state != TeamMembershipStatus::Active
             || membership.agent_member_id != binding.agent_member_id
             || session.agent_member_id != binding.agent_member_id
             || session.node_id != membership.node_id
             || session.runtime_generation != binding.agent_session_generation
             || session.lifecycle == AgentSessionStatus::Closed
-            || work.version != binding.work_revision
             || work.accountable_team_id.as_deref() != Some(membership.team_id.as_str())
             || binding.team_id != membership.team_id
+            || binding.binding_generation != expected_binding_generation
             || binding.delivery_id != expected_delivery_id
         {
             return Err(trust_error(
                 TrustErrorCode::UnauthorizedActor,
-                "WorkExecutionBinding identity, session generation, Team, or Work revision mismatch",
+                "WorkExecutionBinding identity, session generation, Team, Work revision, or monotonic binding generation mismatch",
                 "work_execution_binding",
                 &binding.id,
                 None,
@@ -699,13 +912,16 @@ impl HarnessStore {
         &self,
         context: &MutationContext,
         binding_id: &str,
+        member_run_id: &str,
+        member_run_generation: u64,
         ended_at: &str,
     ) -> StoreResult<CanonicalMutationResult<WorkExecutionBinding>> {
         self.init()?;
         let _lock = self.acquire_write_lock()?;
         let mut binding = self
-            .latest_trust_envelopes_unlocked(&context.execution_space_id, "work_execution_binding")?
-            .remove(binding_id)
+            .fabric_work_execution_bindings(&context.execution_space_id)?
+            .into_iter()
+            .find(|binding| binding.id == binding_id)
             .ok_or_else(|| {
                 trust_error(
                     TrustErrorCode::InvalidStateTransition,
@@ -714,31 +930,240 @@ impl HarnessStore {
                     binding_id,
                     None,
                 )
-            })
-            .and_then(|envelope| event_projection::<WorkExecutionBinding>(&envelope))?;
+            })?;
+        let exact_member = context.authenticated_actor.kind == ActorKind::AgentMember
+            && context.authenticated_actor.id == binding.agent_member_id;
+        if !exact_member {
+            return Err(trust_error(
+                TrustErrorCode::UnauthorizedActor,
+                "direct WorkExecutionBinding release requires the exact AgentMember",
+                "work_execution_binding",
+                &binding.id,
+                Some(binding.version),
+            ));
+        }
+        let runtime_binding =
+            self.work_execution_runtime_binding(&context.execution_space_id, binding_id)?;
+        if runtime_binding.target_member_run_id.as_deref() != Some(member_run_id)
+            || runtime_binding.target_member_run_generation != Some(member_run_generation)
+        {
+            return Err(trust_error(
+                TrustErrorCode::MemberRunGenerationFenced,
+                "direct WorkExecutionBinding release does not bind the exact admitted MemberRun generation",
+                "work_execution_binding",
+                &binding.id,
+                Some(binding.version),
+            ));
+        }
+        let current_member_runs = self
+            .trust_member_runs(&context.execution_space_id)?
+            .into_iter()
+            .filter(|member| member.id == member_run_id)
+            .collect::<Vec<_>>();
+        let [current_member_run] = current_member_runs.as_slice() else {
+            return Err(trust_error(
+                TrustErrorCode::MemberRunGenerationFenced,
+                "direct WorkExecutionBinding release must resolve exactly one current MemberRun",
+                "work_execution_binding",
+                &binding.id,
+                Some(binding.version),
+            ));
+        };
+        if current_member_run.agent_member_id != binding.agent_member_id
+            || current_member_run.runtime_generation != member_run_generation
+        {
+            return Err(trust_error(
+                TrustErrorCode::MemberRunGenerationFenced,
+                "direct WorkExecutionBinding release is fenced by the current MemberRun generation",
+                "work_execution_binding",
+                &binding.id,
+                Some(binding.version),
+            ));
+        }
+        let request_payload = serde_json::json!({"ended_at": ended_at});
+        let fingerprint = canonical_json_fingerprint(&request_payload);
+        if let Some(replay) = self.replay_trust_projection_unlocked(
+            context,
+            "work_execution_binding",
+            binding_id,
+            &fingerprint,
+        )? {
+            return Ok(replay);
+        }
+        self.release_work_execution_binding_unlocked(context, &mut binding, ended_at, false)
+    }
+
+    pub fn release_work_execution_binding_if_stale(
+        &self,
+        context: &MutationContext,
+        binding_id: &str,
+        node_id: &str,
+        daemon_id: &str,
+        daemon_generation: u64,
+        ended_at: &str,
+    ) -> StoreResult<WorkExecutionBindingReconciliation> {
+        self.init()?;
+        let _lock = self.acquire_write_lock()?;
+        let mut binding = self
+            .fabric_work_execution_bindings(&context.execution_space_id)?
+            .into_iter()
+            .find(|binding| binding.id == binding_id)
+            .ok_or_else(|| {
+                trust_error(
+                    TrustErrorCode::InvalidStateTransition,
+                    "WorkExecutionBinding not found during stale reconciliation",
+                    "work_execution_binding",
+                    binding_id,
+                    None,
+                )
+            })?;
+        self.require_exact_binding_node_daemon_unlocked(
+            context,
+            &binding,
+            node_id,
+            daemon_id,
+            daemon_generation,
+        )?;
+        let request_payload = serde_json::json!({"ended_at": ended_at});
+        let fingerprint = canonical_json_fingerprint(&request_payload);
+        if let Some(replay) = self.replay_trust_projection_unlocked(
+            context,
+            "work_execution_binding",
+            binding_id,
+            &fingerprint,
+        )? {
+            return Ok(WorkExecutionBindingReconciliation::Released(replay));
+        }
+        if binding.status != WorkExecutionBindingStatus::Active {
+            return Ok(WorkExecutionBindingReconciliation::AlreadySettled(binding));
+        }
+        if self.work_execution_binding_is_current_unlocked(&context.execution_space_id, &binding)? {
+            return Ok(WorkExecutionBindingReconciliation::Current);
+        }
+        Ok(WorkExecutionBindingReconciliation::Released(
+            self.release_work_execution_binding_unlocked(context, &mut binding, ended_at, true)?,
+        ))
+    }
+
+    fn require_exact_binding_node_daemon_unlocked(
+        &self,
+        context: &MutationContext,
+        binding: &WorkExecutionBinding,
+        node_id: &str,
+        daemon_id: &str,
+        daemon_generation: u64,
+    ) -> StoreResult<()> {
+        let sessions = self
+            .fabric_agent_sessions(&context.execution_space_id)?
+            .into_iter()
+            .filter(|session| session.id == binding.agent_session_id)
+            .collect::<Vec<_>>();
+        let [session] = sessions.as_slice() else {
+            return Err(trust_error(
+                TrustErrorCode::MemberRunGenerationFenced,
+                "WorkExecutionBinding release must resolve exactly one AgentSession source fact",
+                "work_execution_binding",
+                &binding.id,
+                Some(binding.version),
+            ));
+        };
+        if session.node_id != node_id
+            || session.node_daemon_id != daemon_id
+            || session.node_daemon_generation != daemon_generation
+        {
+            return Err(trust_error(
+                TrustErrorCode::SupervisorGenerationFenced,
+                "WorkExecutionBinding reconciliation caller does not hold the exact bound NodeDaemon generation",
+                "work_execution_binding",
+                &binding.id,
+                Some(binding.version),
+            ));
+        }
+        self.require_current_node_daemon_unlocked(
+            &context.execution_space_id,
+            node_id,
+            daemon_id,
+            daemon_generation,
+            &context.authenticated_actor,
+            "work_execution_binding",
+            &binding.id,
+        )
+    }
+
+    fn release_work_execution_binding_unlocked(
+        &self,
+        context: &MutationContext,
+        binding: &mut WorkExecutionBinding,
+        ended_at: &str,
+        exact_daemon_already_verified: bool,
+    ) -> StoreResult<CanonicalMutationResult<WorkExecutionBinding>> {
         if binding.status != WorkExecutionBindingStatus::Active {
             return Err(trust_error(
                 TrustErrorCode::InvalidStateTransition,
                 "only an active WorkExecutionBinding can be released",
                 "work_execution_binding",
-                binding_id,
+                &binding.id,
                 Some(binding.version),
             ));
         }
         let exact_member = context.authenticated_actor.kind == ActorKind::AgentMember
             && context.authenticated_actor.id == binding.agent_member_id;
-        let host_or_operator = matches!(
-            context.authenticated_actor.kind,
-            ActorKind::Human | ActorKind::Service
-        );
-        if !exact_member && !host_or_operator {
+        if !exact_member && !exact_daemon_already_verified {
             return Err(trust_error(
                 TrustErrorCode::UnauthorizedActor,
-                "WorkExecutionBinding release requires exact member or control-plane authority",
+                "direct WorkExecutionBinding release requires the exact AgentMember; NodeDaemon reconciliation must use the generation-fenced atomic API",
                 "work_execution_binding",
-                binding_id,
+                &binding.id,
                 Some(binding.version),
             ));
+        }
+        let mut delivery = self
+            .canonical_fabric_work_deliveries_unlocked(&context.execution_space_id)?
+            .remove(&binding.delivery_id)
+            .ok_or_else(|| {
+                trust_error(
+                    TrustErrorCode::InvalidStateTransition,
+                    "WorkExecutionBinding release requires its exact canonical WorkDelivery",
+                    "work_execution_binding",
+                    &binding.id,
+                    Some(binding.version),
+                )
+            })?;
+        if delivery.work_execution_binding_id != binding.id
+            || delivery.work_id != binding.work_id
+            || delivery.work_revision != binding.work_revision
+            || delivery.recipient_agent_member_id != binding.agent_member_id
+            || delivery.recipient_session_id != binding.agent_session_id
+            || delivery.recipient_session_generation != binding.agent_session_generation
+        {
+            return Err(trust_error(
+                TrustErrorCode::InvalidStateTransition,
+                "WorkExecutionBinding release found conflicting canonical delivery evidence",
+                "work_execution_binding",
+                &binding.id,
+                Some(binding.version),
+            ));
+        }
+        if matches!(
+            delivery.status,
+            WorkDeliveryStatus::Claimed | WorkDeliveryStatus::ProviderReceived
+        ) {
+            return Err(trust_error(
+                TrustErrorCode::DeliveryRecoveryUncertain,
+                "claimed or provider-received WorkDelivery must reach an explicit terminal provider outcome before releasing its binding",
+                "work_delivery",
+                &delivery.id,
+                Some(delivery.version),
+            ));
+        }
+        let mut side_records = Vec::new();
+        if delivery.status == WorkDeliveryStatus::Queued {
+            delivery.status = WorkDeliveryStatus::Failed;
+            delivery.failure_code =
+                Some("WORK_EXECUTION_BINDING_RELEASED_BEFORE_CLAIM".to_string());
+            delivery.version += 1;
+            delivery.updated_at = ended_at.to_string();
+            side_records.push(serde_json::to_value(&delivery)?);
         }
         binding.status = WorkExecutionBindingStatus::Released;
         binding.version += 1;
@@ -746,11 +1171,11 @@ impl HarnessStore {
         self.commit_trust_projection_unlocked(
             context,
             "work_execution_binding",
-            binding_id,
+            &binding.id,
             "released",
             serde_json::json!({"ended_at": ended_at}),
             &binding,
-            Vec::new(),
+            side_records,
             Vec::new(),
         )
     }

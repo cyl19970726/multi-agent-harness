@@ -1,6 +1,22 @@
 use super::*;
 
 impl HarnessStore {
+    fn require_unassigned_work_creation(work: &Work) -> StoreResult<()> {
+        if work.active_member_run_id.is_some() {
+            return Err(StoreError::Conflict(
+                "LEGACY_RUNTIME_WORK_AUTHORITY_RETIRED: Work creation cannot carry active_member_run_id; assign one canonical TeamMembership, then admit execution through WorkExecutionBinding"
+                    .to_string(),
+            ));
+        }
+        if work.owner_member_id.is_some() || work.assignee_membership_id.is_some() {
+            return Err(StoreError::Conflict(
+                "WORK_CREATE_UNASSIGNED_REQUIRED: Work creation cannot carry responsibility; create unassigned, then assign one canonical TeamMembership"
+                    .to_string(),
+            ));
+        }
+        Ok(())
+    }
+
     /// Insert a Work and its authoritative creation event/outbox as one
     /// crash-atomic JSONL row. Work commands intentionally refuse a legacy
     /// Assignment-message store so one Execution Space never has two ownership
@@ -8,12 +24,7 @@ impl HarnessStore {
     pub fn insert_work(&self, mut work: Work, context: WorkCommandContext) -> StoreResult<Work> {
         self.init()?;
         let _lock = self.acquire_write_lock()?;
-        if work.active_member_run_id.is_some() {
-            return Err(StoreError::Conflict(
-                "LEGACY_RUNTIME_WORK_AUTHORITY_RETIRED: Work creation cannot carry active_member_run_id; assign one canonical TeamMembership, then admit execution through WorkExecutionBinding"
-                    .to_string(),
-            ));
-        }
+        Self::require_unassigned_work_creation(&work)?;
         if let Some(existing) = self.idempotent_work_operation_unlocked(
             &context.idempotency_key,
             &work.id,
@@ -88,9 +99,9 @@ impl HarnessStore {
                     &context.performed_by_actor.id,
                     &work.team_run_id,
                 )?;
-                if !member.coordination_is_active() {
+                if !member.has_live_runtime_authority() {
                     return Err(StoreError::Conflict(
-                        "only an active ProviderRuntimeProjection may create Work".to_string(),
+                        "only a live ProviderRuntimeProjection may create Work".to_string(),
                     ));
                 }
                 let own_identity = member_identity(&member);
@@ -105,16 +116,6 @@ impl HarnessStore {
                     ));
                 }
                 work.created_by_member_id = Some(own_identity.clone());
-                if work
-                    .owner_member_id
-                    .as_deref()
-                    .is_some_and(|owner| owner != own_identity)
-                {
-                    return Err(StoreError::Conflict(
-                        "an ordinary Member may create only self-owned or unassigned Work"
-                            .to_string(),
-                    ));
-                }
             }
             _ => {
                 self.require_exact_team_run_host_actor(
@@ -168,6 +169,7 @@ impl HarnessStore {
     ) -> StoreResult<(WorkDelegation, Work)> {
         self.init()?;
         let _lock = self.acquire_write_lock()?;
+        Self::require_unassigned_work_creation(&target_work)?;
 
         let request_fingerprint =
             work_delegation_request_fingerprint(&delegation, &target_work, &context);

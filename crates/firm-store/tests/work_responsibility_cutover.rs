@@ -14,7 +14,7 @@ use firm_core::agentfirm_api::{
     AgentSessionControlState, AgentSessionStatus, MemberCoordinationStatus, MemberExecutionDriver,
     MemberRun, MemberRuntimeStatus, MutationContext, PermissionCeiling, RuntimeCommandBinding,
     RuntimeDispatchMode, RuntimeDriverRef, TeamMembership, TeamMembershipRole,
-    TeamMembershipStatus, WorkExecutionBinding, WorkExecutionBindingStatus,
+    TeamMembershipStatus, TrustErrorCode, WorkExecutionBinding, WorkExecutionBindingStatus,
 };
 use firm_core::{
     AgentTeam, AgentTeamRun, AgentTeamStatus, ExecutionNode, ExecutionNodeStatus, MemberRunStatus,
@@ -834,7 +834,15 @@ fn execution_binding_fences_runtime_without_owning_responsibility() {
     // A stale Work revision cannot bind execution.
     let stale = store
         .bind_responsible_work_execution(
-            &trust_context(human("fixture-operator"), "work.bind", "bind-stale", 0),
+            &trust_context(
+                ActorRef {
+                    kind: ActorKind::Service,
+                    id: "daemon-cutover".into(),
+                },
+                "work.bind",
+                "bind-stale",
+                0,
+            ),
             &runtime_binding,
             WorkExecutionBinding {
                 id: "binding-stale".into(),
@@ -855,12 +863,23 @@ fn execution_binding_fences_runtime_without_owning_responsibility() {
             },
         )
         .expect_err("stale Work revision must not bind execution");
-    assert!(stale.to_string().contains("revision"));
+    assert_eq!(
+        stale.trust_error().map(|error| error.code),
+        Some(TrustErrorCode::WorkRevisionStale)
+    );
 
     // The exact current revision binds. Responsibility is untouched.
     store
         .bind_responsible_work_execution(
-            &trust_context(human("fixture-operator"), "work.bind", "bind-exact", 0),
+            &trust_context(
+                ActorRef {
+                    kind: ActorKind::Service,
+                    id: "daemon-cutover".into(),
+                },
+                "work.bind",
+                "bind-exact",
+                0,
+            ),
             &runtime_binding,
             WorkExecutionBinding {
                 id: "binding-exact".into(),
@@ -1043,12 +1062,17 @@ fn execution_binding_fences_runtime_without_owning_responsibility() {
     store
         .release_work_execution_binding(
             &trust_context(
-                human("fixture-operator"),
+                ActorRef {
+                    kind: ActorKind::AgentMember,
+                    id: "worker-binding".into(),
+                },
                 "work.release",
                 "release-exact",
                 1,
             ),
             "binding-exact",
+            "runtime-worker-binding",
+            1,
             "t5",
         )
         .expect("release binding");

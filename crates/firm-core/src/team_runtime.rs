@@ -930,6 +930,14 @@ impl ProviderRuntimeProjection {
         self.coordination_status == MemberCoordinationStatus::Active
     }
 
+    pub fn has_live_runtime_authority(&self) -> bool {
+        self.coordination_is_active()
+            && !matches!(
+                self.status,
+                MemberRunStatus::Completed | MemberRunStatus::Failed | MemberRunStatus::Stopped
+            )
+    }
+
     pub fn coordination_is_closed(&self) -> bool {
         self.coordination_status == MemberCoordinationStatus::Closed
     }

@@ -487,6 +487,12 @@ pub enum MemberRuntimeStatus {
     Stopped,
 }
 
+impl MemberRuntimeStatus {
+    pub fn has_live_runtime_authority(self) -> bool {
+        !matches!(self, Self::Completed | Self::Failed | Self::Stopped)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MemberRun {
@@ -513,4 +519,11 @@ pub struct MemberRun {
     pub last_event_at: Option<String>,
     #[serde(default)]
     pub finished_at: Option<String>,
+}
+
+impl MemberRun {
+    pub fn has_live_runtime_authority(&self) -> bool {
+        self.coordination_status == MemberCoordinationStatus::Active
+            && self.runtime_status.has_live_runtime_authority()
+    }
 }

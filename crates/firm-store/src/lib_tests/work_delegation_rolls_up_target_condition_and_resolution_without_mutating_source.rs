@@ -5,16 +5,19 @@ use super::*;
 fn work_delegation_rolls_up_target_condition_and_resolution_without_mutating_source() {
     let (root, store, run_a, member_a, run_b, member_b) =
         delegation_test_fixture("delegation-rollup");
-    let source = store
-        .insert_work(
-            assigned_delegation_work(&run_a, &member_a, "source-rollup"),
-            host_work_context("work-source-rollup", "create-source-rollup", "unix-ms:2"),
-        )
-        .expect("create source Work");
+    let source = insert_assigned_delegation_work(
+        &store,
+        &run_a,
+        &member_a,
+        "source-rollup",
+        "work-source-rollup",
+        "create-source-rollup",
+        "unix-ms:2",
+    );
     let (delegation, target) = store
         .create_work_delegation_with_target_work(
             delegation_request("delegation-rollup", &source, &run_b.agent_team_id),
-            assigned_delegation_work(&run_b, &member_b, "target-rollup"),
+            delegation_work(&run_b, "target-rollup"),
             host_work_context(
                 "delegation-create-rollup",
                 "delegate-source-rollup",

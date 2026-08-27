@@ -963,6 +963,18 @@ pub(super) fn team_run_work_command(
             print_json(&work)
         }
         "retarget" => {
+            reject_unknown_work_options(
+                args,
+                &[
+                    "--work-id",
+                    "--successor-team-run-id",
+                    "--expected-version",
+                    "--event-id",
+                    "--idempotency-key",
+                    "--caused-by-message-id",
+                ],
+                &["--duplicate-ok"],
+            )?;
             let work_id = required(args, "--work-id")?;
             print_json(&store.retarget_work_execution(
                 &work_id,

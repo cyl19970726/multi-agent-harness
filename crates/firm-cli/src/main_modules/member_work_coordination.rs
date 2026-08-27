@@ -157,10 +157,9 @@ pub(super) fn claim_canonical_work_for_member(
         )));
     }
     let (execution_space_id, session, membership) = placements.pop().unwrap();
-    let current_member_runs = ledger
-        .store
-        .trust_member_runs(&execution_space_id)?
-        .into_iter()
+    let scoped_member_runs = ledger.store.trust_member_runs(&execution_space_id)?;
+    let current_member_runs = scoped_member_runs
+        .iter()
         .filter(|current| {
             current.id == member.id
                 && current.team_run_id == ledger.run_id
@@ -201,6 +200,31 @@ pub(super) fn claim_canonical_work_for_member(
     let mut bindings = ledger
         .store
         .fabric_work_execution_bindings(&execution_space_id)?;
+    for binding in bindings.iter().filter(|binding| {
+        binding.team_id == run.agent_team_id
+            && binding.status == harness_core::agentfirm_api::WorkExecutionBindingStatus::Active
+    }) {
+        ledger.store.release_work_execution_binding_if_stale(
+            &canonical_delivery_context(
+                &execution_space_id,
+                &daemon.daemon_id,
+                "node_daemon.work_execution_binding.release_if_stale",
+                format!(
+                    "daemon:{}:{}:{}:reconcile-stale",
+                    daemon.generation, binding.id, binding.version
+                ),
+                binding.version,
+            ),
+            &binding.id,
+            &daemon.node_id,
+            &daemon.daemon_id,
+            daemon.generation,
+            &now_string(),
+        )?;
+    }
+    bindings = ledger
+        .store
+        .fabric_work_execution_bindings(&execution_space_id)?;
     for work in works
         .values()
         .filter(|work| harness_core::work_readiness(work, &all_works).ready)
@@ -209,9 +233,16 @@ pub(super) fn claim_canonical_work_for_member(
             binding.work_id == work.id
                 && binding.status == harness_core::agentfirm_api::WorkExecutionBindingStatus::Active
         }) {
+            let binding_generation = bindings
+                .iter()
+                .filter(|binding| binding.work_id == work.id)
+                .map(|binding| binding.binding_generation)
+                .max()
+                .unwrap_or(0)
+                .saturating_add(1);
             let binding_id = format!(
-                "work-binding:{}:{}:{}",
-                work.id, work.version, session.runtime_generation
+                "work-binding:{}:{}:{}:{}",
+                work.id, work.version, session.runtime_generation, binding_generation
             );
             let runtime_binding =
                 runtime_command_binding_for_member_session(current_member_run, &session);
@@ -233,8 +264,8 @@ pub(super) fn claim_canonical_work_for_member(
                     agent_member_id: member.agent_member_id.clone(),
                     agent_session_id: session.id.clone(),
                     agent_session_generation: session.runtime_generation,
-                    delivery_id: format!("work-delivery:{}:1", work.id),
-                    binding_generation: 1,
+                    delivery_id: format!("work-delivery:{}:{binding_generation}", work.id),
+                    binding_generation,
                     status: harness_core::agentfirm_api::WorkExecutionBindingStatus::Active,
                     version: 1,
                     created_by: harness_core::agentfirm_api::ActorRef {

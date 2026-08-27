@@ -148,6 +148,8 @@ fn host_inbox_shows_work_attention_after_submit() {
                 request_fingerprint: None,
             },
             &binding_id,
+            &member.id,
+            member.runtime_generation,
             "unix-ms:after-submit",
         )
         .expect("release submitted Work binding");

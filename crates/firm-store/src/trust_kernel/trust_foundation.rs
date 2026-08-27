@@ -238,6 +238,15 @@ impl HarnessStore {
                 Some(work.version),
             ));
         }
+        if work.active_member_run_id.is_some() {
+            return Err(trust_error(
+                TrustErrorCode::MemberRunGenerationFenced,
+                "legacy Work runtime authority is retired and cannot authorize current member mutations",
+                "work",
+                &work.id,
+                Some(work.version),
+            ));
+        }
         let active_bindings = self
             .fabric_work_execution_bindings(execution_space_id)?
             .into_iter()
@@ -327,13 +336,7 @@ impl HarnessStore {
             .filter(|run| {
                 run.agent_member_id == actor.id
                     && run.team_run_id == work.team_run_id
-                    && run.coordination_status == MemberCoordinationStatus::Active
-                    && !matches!(
-                        run.runtime_status,
-                        MemberRuntimeStatus::Completed
-                            | MemberRuntimeStatus::Failed
-                            | MemberRuntimeStatus::Stopped
-                    )
+                    && run.has_live_runtime_authority()
             })
             .collect::<Vec<_>>();
         let [run] = active_runs.as_slice() else {
@@ -354,19 +357,6 @@ impl HarnessStore {
             return Err(trust_error(
                 TrustErrorCode::MemberRunGenerationFenced,
                 "WorkExecutionBinding does not carry the exact current MemberRun and AgentSession generations",
-                "work",
-                &work.id,
-                Some(work.version),
-            ));
-        }
-        if work
-            .active_member_run_id
-            .as_deref()
-            .is_some_and(|legacy| legacy != run.id)
-        {
-            return Err(trust_error(
-                TrustErrorCode::MemberRunGenerationFenced,
-                "legacy Work runtime evidence conflicts with the current active MemberRun",
                 "work",
                 &work.id,
                 Some(work.version),

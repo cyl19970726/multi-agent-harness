@@ -2,23 +2,21 @@ use super::*;
 
 #[test]
 fn work_delegation_cancel_is_cas_fenced_and_idempotent() {
-    let (root, store, run_a, member_a, run_b, member_b) =
+    let (root, store, run_a, member_a, run_b, _member_b) =
         delegation_test_fixture("delegation-cancel");
-    let source = store
-        .insert_work(
-            assigned_delegation_work(&run_a, &member_a, "source-cancel"),
-            run_host_work_context(
-                &run_a,
-                "work-source-cancel",
-                "create-source-cancel",
-                "unix-ms:2",
-            ),
-        )
-        .expect("create source Work");
+    let source = insert_assigned_delegation_work(
+        &store,
+        &run_a,
+        &member_a,
+        "source-cancel",
+        "work-source-cancel",
+        "create-source-cancel",
+        "unix-ms:2",
+    );
     let (delegation, _) = store
         .create_work_delegation_with_target_work(
             delegation_request("delegation-cancel", &source, &run_b.agent_team_id),
-            assigned_delegation_work(&run_b, &member_b, "target-cancel"),
+            delegation_work(&run_b, "target-cancel"),
             run_host_work_context(
                 &run_a,
                 "delegation-create-cancel",

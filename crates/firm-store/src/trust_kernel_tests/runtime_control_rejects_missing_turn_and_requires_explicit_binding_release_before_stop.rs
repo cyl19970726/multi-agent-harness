@@ -62,16 +62,39 @@ fn runtime_control_rejects_missing_turn_and_requires_explicit_binding_release_be
         operations_before_cancel
     );
 
+    append_runtime_team(&store, "team-runtime-control", "team-run-runtime-control");
+    let membership = join_runtime_membership(
+        &store,
+        "membership-runtime-control",
+        "team-runtime-control",
+        "runtime-control",
+        TeamMembershipRole::Member,
+    );
+    let exact_session = store
+        .fabric_agent_sessions("space-test")
+        .unwrap()
+        .into_iter()
+        .find(|session| session.id == "session-runtime-control")
+        .unwrap();
+    let member_run_id =
+        admit_fixture_member_run_for_session(&store, "team-run-runtime-control", &exact_session);
+    let work = insert_runtime_work(
+        &store,
+        "work-runtime-control",
+        "team-runtime-control",
+        "team-run-runtime-control",
+    );
+    let work = assign_runtime_work(&store, &work, &membership);
     let binding = WorkExecutionBinding {
         id: "binding-runtime-control".into(),
-        work_id: "work-runtime-control".into(),
-        work_revision: 1,
+        work_id: work.id.clone(),
+        work_revision: work.version,
         team_id: "team-runtime-control".into(),
         team_membership_id: "membership-runtime-control".into(),
         agent_member_id: "runtime-control".into(),
         agent_session_id: "session-runtime-control".into(),
         agent_session_generation: 1,
-        delivery_id: "work-delivery-runtime-control".into(),
+        delivery_id: "work-delivery:work-runtime-control:1".into(),
         binding_generation: 1,
         status: WorkExecutionBindingStatus::Active,
         version: 1,
@@ -79,21 +102,12 @@ fn runtime_control_rejects_missing_turn_and_requires_explicit_binding_release_be
         bound_at: "t2".into(),
         ended_at: None,
     };
-    {
-        let _lock = store.acquire_write_lock().unwrap();
-        store
-            .commit_trust_projection_unlocked(
-                &context("host", "binding.test_fixture", "binding-runtime-control", 0),
-                "work_execution_binding",
-                &binding.id,
-                "bound",
-                serde_json::to_value(&binding).unwrap(),
-                &binding,
-                Vec::new(),
-                Vec::new(),
-            )
-            .unwrap();
-    }
+    store
+        .bind_work_execution_fixture(
+            &context("host", "binding.test_fixture", "binding-runtime-control", 0),
+            binding.clone(),
+        )
+        .unwrap();
     let stop_payload = serde_json::json!({
         "session_id": "session-runtime-control",
         "session_generation": 1,
@@ -140,15 +154,19 @@ fn runtime_control_rejects_missing_turn_and_requires_explicit_binding_release_be
     assert_eq!(active.len(), 1);
     assert_eq!(active[0].status, WorkExecutionBindingStatus::Active);
 
+    let mut release_context = context(
+        "runtime-control",
+        "work_binding.release",
+        "binding-runtime-control-release",
+        1,
+    );
+    release_context.authenticated_actor.kind = ActorKind::AgentMember;
     store
         .release_work_execution_binding(
-            &context(
-                "runtime-control",
-                "work_binding.release",
-                "binding-runtime-control-release",
-                1,
-            ),
+            &release_context,
             &binding.id,
+            &member_run_id,
+            1,
             "t-release",
         )
         .expect("exact owner explicitly releases the binding");

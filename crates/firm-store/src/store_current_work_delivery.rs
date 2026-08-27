@@ -2,9 +2,7 @@ use super::*;
 use firm_application::{
     CurrentWorkDeliveryAuthority, CurrentWorkDeliveryIntegrityAnnotation, CurrentWorkDeliveryView,
 };
-use firm_core::agentfirm_api::{
-    MemberCoordinationStatus, MemberRuntimeStatus, TeamMembershipStatus, WorkExecutionBindingStatus,
-};
+use firm_core::agentfirm_api::{TeamMembershipStatus, WorkExecutionBindingStatus};
 
 fn insert_work_revision(
     revisions: &mut std::collections::BTreeMap<(String, u64), Work>,
@@ -194,46 +192,58 @@ impl HarnessStore {
                 || binding.agent_member_id != delivery.recipient_agent_member_id
                 || binding.agent_session_id != delivery.recipient_session_id
                 || binding.agent_session_generation != delivery.recipient_session_generation
+                || runtime_binding.target_session_id.as_deref()
+                    != Some(binding.agent_session_id.as_str())
+                || runtime_binding.target_runtime_generation
+                    != Some(binding.agent_session_generation)
+                || runtime_binding.target_member_run_id.is_none()
+                || runtime_binding.target_member_run_generation.is_none()
                 || work.accountable_team_id.as_deref() != Some(binding.team_id.as_str())
                 || team_run.agent_team_id != binding.team_id;
-            let current_responsibility_conflicts = responsibility_changed
-                || binding.status != WorkExecutionBindingStatus::Active
-                || current_work.team_run_id != work.team_run_id
-                || current_work.accountable_team_id.as_deref() != Some(binding.team_id.as_str())
-                || current_work.assignee_membership_id.as_deref()
-                    != Some(binding.team_membership_id.as_str())
-                || current_work.owner_member_id.as_deref()
-                    != Some(binding.agent_member_id.as_str());
-            let session_conflicts = session.execution_space_id != execution_space_id
-                || session.agent_member_id != delivery.recipient_agent_member_id
-                || session.runtime_generation != delivery.recipient_session_generation
-                || session.node_id != delivery.target_node_id;
-            let membership_conflicts = membership.team_id != binding.team_id
-                || membership.agent_member_id != delivery.recipient_agent_member_id
-                || membership.state != TeamMembershipStatus::Active;
+            let binding_is_active = binding.status == WorkExecutionBindingStatus::Active;
+            let current_responsibility_conflicts = binding_is_active
+                && (responsibility_changed
+                    || current_work.active_member_run_id.is_some()
+                    || current_work.team_run_id != work.team_run_id
+                    || current_work.accountable_team_id.as_deref()
+                        != Some(binding.team_id.as_str())
+                    || current_work.assignee_membership_id.as_deref()
+                        != Some(binding.team_membership_id.as_str())
+                    || current_work.owner_member_id.as_deref()
+                        != Some(binding.agent_member_id.as_str()));
+            let session_conflicts = binding_is_active
+                && (session.execution_space_id != execution_space_id
+                    || session.agent_member_id != delivery.recipient_agent_member_id
+                    || session.runtime_generation != delivery.recipient_session_generation
+                    || session.node_id != delivery.target_node_id);
+            let membership_conflicts = binding_is_active
+                && (membership.team_id != binding.team_id
+                    || membership.agent_member_id != delivery.recipient_agent_member_id
+                    || membership.state != TeamMembershipStatus::Active);
             if binding_conflicts
                 || current_responsibility_conflicts
                 || session_conflicts
                 || membership_conflicts
             {
                 return Err(StoreError::Conflict(format!(
-                    "CURRENT_WORK_DELIVERY_CANONICAL_JOIN_CONFLICT: delivery {} does not match its exact Work, binding, session, membership, or TeamRun",
-                    delivery.id
+                    "CURRENT_WORK_DELIVERY_CANONICAL_JOIN_CONFLICT: delivery {} does not match its exact Work, binding, session, membership, or TeamRun (binding={binding_conflicts}, responsibility={current_responsibility_conflicts}[changed={responsibility_changed}, status={:?}, legacy={}, run={}, team={}, assignment={}, owner={}], session={session_conflicts}, membership={membership_conflicts})",
+                    delivery.id,
+                    binding.status,
+                    current_work.active_member_run_id.is_some(),
+                    current_work.team_run_id != work.team_run_id,
+                    current_work.accountable_team_id.as_deref() != Some(binding.team_id.as_str()),
+                    current_work.assignee_membership_id.as_deref() != Some(binding.team_membership_id.as_str()),
+                    current_work.owner_member_id.as_deref() != Some(binding.agent_member_id.as_str()),
                 )));
             }
 
             let matching_member_runs = member_runs
                 .iter()
                 .filter(|member_run| {
-                    member_run.team_run_id == work.team_run_id
+                    binding_is_active
+                        && member_run.team_run_id == work.team_run_id
                         && member_run.agent_member_id == delivery.recipient_agent_member_id
-                        && member_run.coordination_status == MemberCoordinationStatus::Active
-                        && !matches!(
-                            member_run.runtime_status,
-                            MemberRuntimeStatus::Completed
-                                | MemberRuntimeStatus::Failed
-                                | MemberRuntimeStatus::Stopped
-                        )
+                        && member_run.has_live_runtime_authority()
                         && match (
                             member_run.native_session.as_ref(),
                             session.native_session_ref.as_ref(),

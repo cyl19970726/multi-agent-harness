@@ -1,5 +1,28 @@
 use super::*;
 
+fn rewrite_work_active_member_run(
+    root: &std::path::Path,
+    work_id: &str,
+    member_run_id: Option<&str>,
+) {
+    let path = root.join("work_operations.jsonl");
+    let rewritten = std::fs::read_to_string(&path)
+        .unwrap()
+        .lines()
+        .map(|line| {
+            let mut row: serde_json::Value = serde_json::from_str(line).unwrap();
+            if row["work"]["id"] == work_id {
+                row["work"]["active_member_run_id"] = member_run_id
+                    .map(|id| serde_json::Value::String(id.into()))
+                    .unwrap_or(serde_json::Value::Null);
+            }
+            serde_json::to_string(&row).unwrap()
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    std::fs::write(path, format!("{rewritten}\n")).unwrap();
+}
+
 fn wait_for_write_ticket(store: &HarnessStore, expected_next_ticket: u64) {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
     loop {
@@ -246,7 +269,7 @@ fn create_direct_subscription(store: &HarnessStore, sender_id: &str, recipient: 
 
 #[test]
 fn responsibility_resolves_one_current_member_run_and_repeated_admission_replays() {
-    let (store, _root) = fabric_store();
+    let (store, root) = fabric_store();
     append_runtime_team(&store, "team-admission", "run-admission");
     store
         .migrate_legacy_agent_identity_same_id(
@@ -304,13 +327,61 @@ fn responsibility_resolves_one_current_member_run_and_repeated_admission_replays
         .contains("WORK_EXECUTION_ADMISSION_REQUIRED"));
     assert_eq!(store.canonical_operations().unwrap(), before_legacy_writer);
 
+    rewrite_work_active_member_run(&root, &work.id, Some("member-run-admission"));
+    let before_equal_legacy = store.canonical_operations().unwrap();
+    let error = store
+        .bind_responsible_work_execution(&admission, &runtime_binding, binding.clone())
+        .expect_err("even equal legacy runtime identity cannot authorize a new binding");
+    assert!(
+        error.to_string().contains("MEMBER_RUN_GENERATION_FENCED"),
+        "unexpected equal-legacy binding rejection: {error}"
+    );
+    assert_eq!(store.canonical_operations().unwrap(), before_equal_legacy);
+    assert!(store
+        .fabric_work_execution_bindings("space-test")
+        .unwrap()
+        .is_empty());
+    assert!(store
+        .fabric_work_deliveries("space-test")
+        .unwrap()
+        .is_empty());
+    rewrite_work_active_member_run(&root, &work.id, None);
+
+    for mut foreign in [
+        context("foreign-human", "work.bind", "foreign-human-bind", 0),
+        service_context("work.bind", "foreign-service-bind", 0),
+    ] {
+        if foreign.authenticated_actor.kind == ActorKind::Service {
+            foreign.authenticated_actor.id = "foreign-daemon".into();
+        }
+        let before_operations = store.canonical_operations().unwrap();
+        let before_bindings = store.fabric_work_execution_bindings("space-test").unwrap();
+        let before_deliveries = store.fabric_work_deliveries("space-test").unwrap();
+        let error = store
+            .bind_responsible_work_execution(&foreign, &runtime_binding, binding.clone())
+            .expect_err("only the exact current NodeDaemon may bind Work execution");
+        assert!(error.to_string().contains("UNAUTHORIZED_ACTOR"));
+        assert_eq!(store.canonical_operations().unwrap(), before_operations);
+        assert_eq!(
+            store.fabric_work_execution_bindings("space-test").unwrap(),
+            before_bindings
+        );
+        assert_eq!(
+            store.fabric_work_deliveries("space-test").unwrap(),
+            before_deliveries
+        );
+    }
+
     let mut stale = runtime_binding.clone();
     stale.target_member_run_generation = Some(2);
     let before_stale = store.canonical_operations().unwrap();
     let error = store
         .bind_responsible_work_execution(&admission, &stale, binding.clone())
         .expect_err("stale MemberRun generation must not bind Work");
-    assert!(error.to_string().contains("MEMBER_RUN_GENERATION_FENCED"));
+    assert!(
+        error.to_string().contains("MEMBER_RUN_GENERATION_FENCED"),
+        "unexpected legacy WorkReport rejection: {error}"
+    );
     assert_eq!(store.canonical_operations().unwrap(), before_stale);
 
     let accepted = store
@@ -332,8 +403,402 @@ fn responsibility_resolves_one_current_member_run_and_repeated_admission_replays
 }
 
 #[test]
-fn membership_work_binding_authorizes_message_and_result_without_accepting_work() {
+fn terminal_member_runtime_cannot_bind_or_claim_provider_work() {
     let (store, _root) = fabric_store();
+    append_runtime_team(&store, "team-admission", "run-admission");
+    store
+        .migrate_legacy_agent_identity_same_id(
+            &context(
+                "operator",
+                "identity.create",
+                "identity-worker-admission",
+                0,
+            ),
+            identity("worker-admission"),
+        )
+        .unwrap();
+    let membership = join_runtime_membership(
+        &store,
+        "membership-worker-admission",
+        "team-admission",
+        "worker-admission",
+        TeamMembershipRole::Member,
+    );
+    let target = session("session-worker-admission", "worker-admission");
+    store
+        .create_agent_session(
+            &service_context("session.create", "session-worker-admission", 0),
+            target.clone(),
+        )
+        .unwrap();
+    let live_run =
+        canonical_member_run("member-run-admission", "worker-admission", "run-admission");
+    store
+        .legacy_import_create_trust_member_run_projection(
+            &context("host", "member_run.create", "member-run-admission", 0),
+            live_run.clone(),
+        )
+        .unwrap();
+    let mut runtime_binding = runtime_command_fixture(
+        "runtime-terminal",
+        RuntimeCommandKind::StartCycle,
+        &target,
+        "start_cycle",
+    )
+    .0
+    .binding;
+    runtime_binding.target_member_run_id = Some(live_run.id.clone());
+    runtime_binding.target_member_run_generation = Some(live_run.runtime_generation);
+    let first_work = assign_responsibility(&store, "work-before-failure", &membership.id);
+    let first_binding =
+        execution_binding(&first_work, &membership, &target, "binding-before-failure");
+    store
+        .bind_responsible_work_execution(
+            &service_context("work.bind", "binding-before-failure", 0),
+            &runtime_binding,
+            first_binding.clone(),
+        )
+        .expect("live runtime admits the exact binding");
+    let side_released_work = assign_responsibility(&store, "work-side-released", &membership.id);
+    let side_released_binding = execution_binding(
+        &side_released_work,
+        &membership,
+        &target,
+        "binding-side-released",
+    );
+    store
+        .bind_responsible_work_execution(
+            &service_context("work.bind", "binding-side-released", 0),
+            &runtime_binding,
+            side_released_binding.clone(),
+        )
+        .expect("a second live binding is admitted for side-record release coverage");
+    let uncertain_work = assign_responsibility(&store, "work-uncertain-claim", &membership.id);
+    let uncertain_binding = execution_binding(
+        &uncertain_work,
+        &membership,
+        &target,
+        "binding-uncertain-claim",
+    );
+    store
+        .bind_responsible_work_execution(
+            &service_context("work.bind", "binding-uncertain-claim", 0),
+            &runtime_binding,
+            uncertain_binding.clone(),
+        )
+        .unwrap();
+    store
+        .claim_work_for_provider(
+            &service_context("work.claim", "claim-uncertain", 0),
+            &uncertain_binding.delivery_id,
+            &target.node_id,
+            &target.node_daemon_id,
+            target.node_daemon_generation,
+            "claim-uncertain",
+            firm_core::agentfirm_api::RuntimeDispatchMode::QueueOnly,
+            "t-claim-uncertain",
+        )
+        .expect("claim is admitted before the runtime becomes terminal");
+    let reconcile_context = service_context("work.reconcile", "binding-current", 1);
+    let operations_before_current = store.canonical_operations().unwrap();
+    assert!(matches!(
+        store
+            .release_work_execution_binding_if_stale(
+                &reconcile_context,
+                &first_binding.id,
+                &target.node_id,
+                &target.node_daemon_id,
+                target.node_daemon_generation,
+                "t-current",
+            )
+            .unwrap(),
+        WorkExecutionBindingReconciliation::Current
+    ));
+    assert_eq!(
+        store.canonical_operations().unwrap(),
+        operations_before_current
+    );
+    let stale_generation_error = store
+        .release_work_execution_binding_if_stale(
+            &service_context("work.reconcile", "binding-stale-daemon", 1),
+            &first_binding.id,
+            &target.node_id,
+            &target.node_daemon_id,
+            target.node_daemon_generation + 1,
+            "t-stale",
+        )
+        .expect_err("a stale caller generation cannot reconcile the current binding");
+    assert!(stale_generation_error
+        .to_string()
+        .contains("SUPERVISOR_GENERATION_FENCED"));
+    assert_eq!(
+        store.canonical_operations().unwrap(),
+        operations_before_current
+    );
+
+    let corrupt_work = assign_responsibility(&store, "work-missing-delivery", &membership.id);
+    let corrupt_binding = execution_binding(
+        &corrupt_work,
+        &membership,
+        &target,
+        "binding-missing-delivery",
+    );
+    {
+        let _lock = store.acquire_write_lock().unwrap();
+        store
+            .commit_trust_projection_unlocked(
+                &service_context("work.bind.corrupt", "binding-missing-delivery", 0),
+                "work_execution_binding",
+                &corrupt_binding.id,
+                "bound",
+                serde_json::json!({"runtime_binding": runtime_binding}),
+                &corrupt_binding,
+                Vec::new(),
+                Vec::new(),
+            )
+            .unwrap();
+    }
+    let before_missing_delivery = store.canonical_operations().unwrap();
+    let missing_delivery_error = store
+        .release_work_execution_binding_if_stale(
+            &service_context("work.reconcile", "binding-missing-delivery", 1),
+            &corrupt_binding.id,
+            &target.node_id,
+            &target.node_daemon_id,
+            target.node_daemon_generation,
+            "t-missing-delivery",
+        )
+        .expect_err("missing canonical delivery evidence must fail closed");
+    assert!(missing_delivery_error
+        .to_string()
+        .contains("missing its canonical WorkDelivery source fact"));
+    assert_eq!(
+        store.canonical_operations().unwrap(),
+        before_missing_delivery
+    );
+
+    let mut failed_run = live_run;
+    failed_run.runtime_status = MemberRuntimeStatus::Failed;
+    failed_run.version += 1;
+    failed_run.finished_at = Some("t-failed".into());
+    {
+        let _lock = store.acquire_write_lock().unwrap();
+        store
+            .commit_trust_projection_unlocked(
+                &context("host", "member_run.fail", "member-run-admission-failed", 1),
+                "member_run",
+                &failed_run.id,
+                "runtime_failed",
+                serde_json::json!({"runtime_status": "failed"}),
+                &failed_run,
+                Vec::new(),
+                Vec::new(),
+            )
+            .unwrap();
+    }
+
+    let terminal_work = assign_responsibility(&store, "work-after-failure", &membership.id);
+    let before_terminal_bindings = store.fabric_work_execution_bindings("space-test").unwrap();
+    let before_terminal_deliveries = store.fabric_work_deliveries("space-test").unwrap();
+    let before_terminal_operations = store.canonical_operations().unwrap();
+    let error = store
+        .bind_responsible_work_execution(
+            &service_context("work.bind", "binding-after-failure", 0),
+            &runtime_binding,
+            execution_binding(
+                &terminal_work,
+                &membership,
+                &target,
+                "binding-after-failure",
+            ),
+        )
+        .expect_err("failed runtime cannot create execution authority");
+    assert!(error.to_string().contains("MEMBER_RUN_GENERATION_FENCED"));
+    assert_eq!(
+        store.canonical_operations().unwrap(),
+        before_terminal_operations
+    );
+    assert_eq!(
+        store.fabric_work_execution_bindings("space-test").unwrap(),
+        before_terminal_bindings
+    );
+    assert_eq!(
+        store.fabric_work_deliveries("space-test").unwrap(),
+        before_terminal_deliveries
+    );
+
+    let before_claim_operations = store.canonical_operations().unwrap();
+    let before_claim_commands = store.runtime_commands("space-test").unwrap();
+    let before_claim_delivery = store
+        .fabric_work_deliveries("space-test")
+        .unwrap()
+        .into_iter()
+        .find(|delivery| delivery.id == first_binding.delivery_id)
+        .unwrap();
+    let error = store
+        .claim_work_for_provider(
+            &service_context("work.claim", "claim-after-failure", 0),
+            &first_binding.delivery_id,
+            &target.node_id,
+            &target.node_daemon_id,
+            target.node_daemon_generation,
+            "claim-after-failure",
+            firm_core::agentfirm_api::RuntimeDispatchMode::QueueOnly,
+            "t-claim",
+        )
+        .expect_err("runtime failure after bind must fence provider claim");
+    assert!(error.to_string().contains("MEMBER_RUN_GENERATION_FENCED"));
+    assert_eq!(
+        store.canonical_operations().unwrap(),
+        before_claim_operations
+    );
+    assert_eq!(
+        store.runtime_commands("space-test").unwrap(),
+        before_claim_commands
+    );
+    let after_claim_delivery = store
+        .fabric_work_deliveries("space-test")
+        .unwrap()
+        .into_iter()
+        .find(|delivery| delivery.id == first_binding.delivery_id)
+        .unwrap();
+    assert_eq!(after_claim_delivery, before_claim_delivery);
+    assert_eq!(after_claim_delivery.status, WorkDeliveryStatus::Queued);
+    assert_eq!(after_claim_delivery.claim_id, None);
+
+    let before_uncertain_release = store.canonical_operations().unwrap();
+    let uncertain_delivery_before = store
+        .fabric_work_deliveries("space-test")
+        .unwrap()
+        .into_iter()
+        .find(|delivery| delivery.id == uncertain_binding.delivery_id)
+        .unwrap();
+    let uncertain_error = store
+        .release_work_execution_binding_if_stale(
+            &service_context("work.reconcile", "binding-uncertain-release", 1),
+            &uncertain_binding.id,
+            &target.node_id,
+            &target.node_daemon_id,
+            target.node_daemon_generation,
+            "t-uncertain-release",
+        )
+        .expect_err("a claimed delivery without receipt requires reconciliation");
+    assert!(uncertain_error
+        .to_string()
+        .contains("DELIVERY_RECOVERY_UNCERTAIN"));
+    assert_eq!(
+        store.canonical_operations().unwrap(),
+        before_uncertain_release
+    );
+    assert_eq!(
+        store
+            .fabric_work_deliveries("space-test")
+            .unwrap()
+            .into_iter()
+            .find(|delivery| delivery.id == uncertain_binding.delivery_id)
+            .unwrap(),
+        uncertain_delivery_before
+    );
+
+    let release_context = service_context("work.reconcile", "binding-terminal-release", 1);
+    let released = store
+        .release_work_execution_binding_if_stale(
+            &release_context,
+            &first_binding.id,
+            &target.node_id,
+            &target.node_daemon_id,
+            target.node_daemon_generation,
+            "t-release",
+        )
+        .expect("the exact daemon atomically rechecks and releases the stale binding");
+    assert!(matches!(
+        released,
+        WorkExecutionBindingReconciliation::Released(CanonicalMutationResult {
+            replayed: false,
+            ..
+        })
+    ));
+    let operation_count_after_release = store.canonical_operations().unwrap().len();
+    let stale_replay_error = store
+        .release_work_execution_binding_if_stale(
+            &release_context,
+            &first_binding.id,
+            &target.node_id,
+            &target.node_daemon_id,
+            target.node_daemon_generation + 1,
+            "t-release",
+        )
+        .expect_err("a stale daemon generation cannot replay a successful release");
+    assert!(stale_replay_error
+        .to_string()
+        .contains("SUPERVISOR_GENERATION_FENCED"));
+    let replay = store
+        .release_work_execution_binding_if_stale(
+            &release_context,
+            &first_binding.id,
+            &target.node_id,
+            &target.node_daemon_id,
+            target.node_daemon_generation,
+            "t-release",
+        )
+        .expect("the same exact release context replays idempotently");
+    assert!(matches!(
+        replay,
+        WorkExecutionBindingReconciliation::Released(CanonicalMutationResult {
+            replayed: true,
+            ..
+        })
+    ));
+    assert_eq!(
+        store.canonical_operations().unwrap().len(),
+        operation_count_after_release
+    );
+
+    let mut stopped_side_projection = side_released_binding.clone();
+    stopped_side_projection.status = WorkExecutionBindingStatus::Released;
+    stopped_side_projection.version += 1;
+    stopped_side_projection.ended_at = Some("t-session-stop".into());
+    {
+        let _lock = store.acquire_write_lock().unwrap();
+        store
+            .commit_trust_projection_unlocked(
+                &service_context("runtime.stop", "runtime-stop-side-release", 0),
+                "runtime_command",
+                "runtime-stop-side-release",
+                "applied",
+                serde_json::json!({"session_id": target.id}),
+                &serde_json::json!({"id": "runtime-stop-side-release", "version": 1}),
+                vec![serde_json::to_value(&stopped_side_projection).unwrap()],
+                Vec::new(),
+            )
+            .unwrap();
+    }
+    let before_settled_reconcile = store.canonical_operations().unwrap();
+    let settled = store
+        .release_work_execution_binding_if_stale(
+            &service_context("work.reconcile", "binding-side-already-settled", 2),
+            &side_released_binding.id,
+            &target.node_id,
+            &target.node_daemon_id,
+            target.node_daemon_generation,
+            "t-late-reconcile",
+        )
+        .expect("side-record release is observed as already settled");
+    assert!(matches!(
+        settled,
+        WorkExecutionBindingReconciliation::AlreadySettled(ref binding)
+            if binding.status == WorkExecutionBindingStatus::Released
+                && binding.version == stopped_side_projection.version
+    ));
+    assert_eq!(
+        store.canonical_operations().unwrap(),
+        before_settled_reconcile
+    );
+}
+
+#[test]
+fn membership_work_binding_authorizes_message_and_result_without_accepting_work() {
+    let (store, root) = fabric_store();
     append_runtime_team(&store, "team-admission", "run-admission");
     for member_id in ["worker-admission", "reviewer-admission"] {
         store
@@ -462,6 +927,62 @@ fn membership_work_binding_authorizes_message_and_result_without_accepting_work(
     );
 
     create_direct_subscription(&store, "worker-admission", &reviewer_membership);
+    rewrite_work_active_member_run(&root, &active.id, Some("member-run-admission"));
+    let before_equal_legacy = store.canonical_operations().unwrap();
+    let legacy_progress = WorkReport {
+        id: "report-equal-legacy".into(),
+        work_id: active.id.clone(),
+        work_revision: active.version,
+        report_revision: 1,
+        kind: WorkReportKind::Progress,
+        authored_by: ActorRef {
+            kind: ActorKind::AgentMember,
+            id: "worker-admission".into(),
+        },
+        summary: "must reject legacy runtime authority".into(),
+        base_revision: None,
+        candidate: None,
+        candidate_fingerprint: None,
+        finding_refs: Vec::new(),
+        failure_analysis_ref: None,
+        artifact_refs: Vec::new(),
+        check_refs: Vec::new(),
+        github_links: Vec::new(),
+        evidence_refs: Vec::new(),
+        known_risks: Vec::new(),
+        confidence: None,
+        recommended_next_action: None,
+        created_at: "t-equal-legacy".into(),
+    };
+    let error = store
+        .create_trust_work_report(
+            &member_context("worker-admission", "report.create", &legacy_progress.id, 0),
+            "team-admission",
+            legacy_progress,
+        )
+        .expect_err("equal legacy runtime identity cannot authorize Work evidence");
+    assert!(error.to_string().contains("MEMBER_RUN_GENERATION_FENCED"));
+    let error = store
+        .author_message(
+            &service_context("message.author", "message-equal-legacy", 0),
+            work_message(
+                "message-equal-legacy",
+                &active,
+                "worker-admission",
+                &worker_session.id,
+                "reviewer-admission",
+            ),
+        )
+        .expect_err("equal legacy runtime identity cannot authorize a Work-linked Message");
+    assert!(error.to_string().contains("MEMBER_RUN_GENERATION_FENCED"));
+    assert_eq!(store.canonical_operations().unwrap(), before_equal_legacy);
+    let error = store
+        .current_work_deliveries("space-test")
+        .expect_err("mixed legacy Work cannot project a current delivery");
+    assert!(error
+        .to_string()
+        .contains("CURRENT_WORK_DELIVERY_CANONICAL_JOIN_CONFLICT"));
+    rewrite_work_active_member_run(&root, &active.id, None);
     let work_before_message = store
         .latest_works()
         .unwrap()
@@ -562,13 +1083,62 @@ fn membership_work_binding_authorizes_message_and_result_without_accepting_work(
             && delivery.work_execution_binding_id.as_deref() == Some(binding.id.as_str())
     }));
 
+    let release_context = member_context(
+        "worker-admission",
+        "work_binding.release",
+        "release-report-message",
+        1,
+    );
     store
         .release_work_execution_binding(
-            &service_context("work_binding.release", "release-report-message", 1),
+            &release_context,
             &binding.id,
+            "member-run-admission",
+            1,
             "t-release",
         )
         .unwrap();
+    let operation_count_after_release = store.canonical_operations().unwrap().len();
+    let mut foreign_replay_context = release_context.clone();
+    foreign_replay_context.authenticated_actor.id = "reviewer-admission".into();
+    let foreign_replay_error = store
+        .release_work_execution_binding(
+            &foreign_replay_context,
+            &binding.id,
+            "member-run-admission",
+            1,
+            "t-release",
+        )
+        .expect_err("a foreign member cannot replay another member's release");
+    assert!(foreign_replay_error
+        .to_string()
+        .contains("UNAUTHORIZED_ACTOR"));
+    let stale_generation_replay_error = store
+        .release_work_execution_binding(
+            &release_context,
+            &binding.id,
+            "member-run-admission",
+            2,
+            "t-release",
+        )
+        .expect_err("a stale MemberRun generation cannot replay a release");
+    assert!(stale_generation_replay_error
+        .to_string()
+        .contains("MEMBER_RUN_GENERATION_FENCED"));
+    let exact_replay = store
+        .release_work_execution_binding(
+            &release_context,
+            &binding.id,
+            "member-run-admission",
+            1,
+            "t-release",
+        )
+        .expect("the exact original member replays idempotently");
+    assert!(exact_replay.replayed);
+    assert_eq!(
+        store.canonical_operations().unwrap().len(),
+        operation_count_after_release
+    );
     let before_released = store.canonical_operations().unwrap();
     let progress = WorkReport {
         id: "report-after-release".into(),
@@ -607,371 +1177,87 @@ fn membership_work_binding_authorizes_message_and_result_without_accepting_work(
 }
 
 #[test]
-fn responsibility_aba_and_stale_session_generation_do_not_revive_old_binding() {
+fn submitted_attention_provenance_missing_or_duplicated_fails_closed() {
     let (store, _root) = fabric_store();
-    append_runtime_team(&store, "team-admission", "run-admission");
-    for member_id in ["worker-admission", "alternate-admission"] {
-        store
-            .migrate_legacy_agent_identity_same_id(
-                &context(
-                    "operator",
-                    "identity.create",
-                    &format!("identity-{member_id}"),
-                    0,
-                ),
-                identity(member_id),
-            )
-            .unwrap();
-    }
-    let worker = join_runtime_membership(
+    append_runtime_team(&store, "team-provenance", "run-provenance");
+    let work = insert_runtime_work(
         &store,
-        "membership-worker-admission",
-        "team-admission",
-        "worker-admission",
+        "work-provenance",
+        "team-provenance",
+        "run-provenance",
+    );
+    store
+        .migrate_legacy_agent_identity_same_id(
+            &context(
+                "operator",
+                "identity.create",
+                "identity-worker-provenance",
+                0,
+            ),
+            identity("worker-provenance"),
+        )
+        .unwrap();
+    join_runtime_membership(
+        &store,
+        "membership-worker-provenance",
+        "team-provenance",
+        "worker-provenance",
         TeamMembershipRole::Member,
     );
-    let alternate = join_runtime_membership(
+    admit_member_run(
         &store,
-        "membership-alternate-admission",
-        "team-admission",
-        "alternate-admission",
-        TeamMembershipRole::Member,
+        canonical_member_run(
+            "member-run-provenance",
+            "worker-provenance",
+            "run-provenance",
+        ),
     );
-    let worker_session = session("session-worker-admission", "worker-admission");
-    store
-        .create_agent_session(
-            &service_context("session.create", &worker_session.id, 0),
-            worker_session.clone(),
-        )
-        .unwrap();
-    store
-        .legacy_import_create_trust_member_run_projection(
-            &context("host", "member_run.create", "member-run-admission", 0),
-            canonical_member_run("member-run-admission", "worker-admission", "run-admission"),
-        )
-        .unwrap();
-    let assigned = assign_responsibility(&store, "work-aba", &worker.id);
-    let mut runtime_binding = runtime_command_fixture(
-        "runtime-aba",
-        RuntimeCommandKind::StartCycle,
-        &worker_session,
-        "start_cycle",
-    )
-    .0
-    .binding;
-    runtime_binding.target_member_run_id = Some("member-run-admission".into());
-    runtime_binding.target_member_run_generation = Some(1);
-    let old_binding = execution_binding(&assigned, &worker, &worker_session, "binding-aba");
-    store
-        .bind_responsible_work_execution(
-            &service_context("work.bind", "binding-aba", 0),
-            &runtime_binding,
-            old_binding,
-        )
-        .unwrap();
-    let assigned_to_b = store
-        .assign_work_to_membership(
-            &assigned.id,
-            assigned.version,
-            &alternate.id,
-            "space-test",
-            firm_core::WorkCommandContext {
-                event_id: "event-assign-b".into(),
-                performed_by_actor: store.exact_team_run_host_actor("run-admission").unwrap(),
-                authority_actor: None,
-                causation_ref: None,
-                idempotency_key: "command-assign-b".into(),
-                created_at: "t-b".into(),
-                duplicate_ok: false,
-            },
-        )
-        .unwrap();
-    let assigned_back_to_a = store
-        .assign_work_to_membership(
-            &assigned.id,
-            assigned_to_b.version,
-            &worker.id,
-            "space-test",
-            firm_core::WorkCommandContext {
-                event_id: "event-assign-a-again".into(),
-                performed_by_actor: store.exact_team_run_host_actor("run-admission").unwrap(),
-                authority_actor: None,
-                causation_ref: None,
-                idempotency_key: "command-assign-a-again".into(),
-                created_at: "t-a-again".into(),
-                duplicate_ok: false,
-            },
-        )
-        .unwrap();
-    let projection_error = store
-        .current_work_deliveries("space-test")
-        .expect_err("A to B to A cannot revive the old delivery projection");
-    assert!(projection_error
-        .to_string()
-        .contains("CURRENT_WORK_DELIVERY_CANONICAL_JOIN_CONFLICT"));
-    let before_aba = store.canonical_operations().unwrap();
-    let progress = WorkReport {
-        id: "report-aba".into(),
-        work_id: assigned.id.clone(),
-        work_revision: assigned_back_to_a.version,
-        report_revision: 1,
-        kind: WorkReportKind::Progress,
-        authored_by: ActorRef {
-            kind: ActorKind::AgentMember,
-            id: "worker-admission".into(),
-        },
-        summary: "old binding must not revive".into(),
-        base_revision: None,
-        candidate: None,
-        candidate_fingerprint: None,
-        finding_refs: Vec::new(),
-        failure_analysis_ref: None,
-        artifact_refs: Vec::new(),
-        check_refs: Vec::new(),
-        github_links: Vec::new(),
-        evidence_refs: Vec::new(),
-        known_risks: Vec::new(),
-        confidence: None,
-        recommended_next_action: None,
-        created_at: "t-aba-report".into(),
+    let mut terminal = work.clone();
+    terminal.phase = firm_core::WorkPhase::Closed;
+    terminal.resolution = Some(firm_core::WorkResolution::Accepted);
+    terminal.version = work.version + 1;
+    let attention = |id: &str, member_run_id: Option<&str>| HostAttention {
+        id: id.into(),
+        team_run_id: work.team_run_id.clone(),
+        kind: HostAttentionKind::WorkReviewRequested,
+        work_id: work.id.clone(),
+        work_version: work.version,
+        source_event_ref: format!("source-{id}"),
+        member_run_id: member_run_id.map(str::to_string),
+        status: HostAttentionStatus::Actionable,
+        attempt: 0,
+        claim_id: None,
+        claimed_host_surface: None,
+        claimed_host_thread_id: None,
+        claimed_host_lease_id: None,
+        claimed_host_lease_generation: None,
+        claimed_host_lease_owner_id: None,
+        claimed_recipient_member_run_id: None,
+        claimed_recipient_session_id: None,
+        claimed_recipient_session_generation: None,
+        claimed_node_daemon_id: None,
+        claimed_node_daemon_generation: None,
+        provider_receipt_id: None,
+        last_failure_reason: None,
+        created_at: "t-attention".into(),
+        updated_at: "t-attention".into(),
     };
-    let error = store
-        .create_trust_work_report(
-            &member_context("worker-admission", "report.create", &progress.id, 0),
-            "team-admission",
-            progress,
-        )
-        .expect_err("A to B to A responsibility must not revive the old binding");
-    assert!(error.to_string().contains("UNAUTHORIZED_ACTOR"));
-    assert_eq!(store.canonical_operations().unwrap(), before_aba);
-
-    let stale_generation_work = assign_responsibility(&store, "work-stale-session", &worker.id);
-    let stale_generation_binding = execution_binding(
-        &stale_generation_work,
-        &worker,
-        &worker_session,
-        "binding-stale-session",
-    );
     store
-        .bind_responsible_work_execution(
-            &service_context("work.bind", "binding-stale-session", 0),
-            &runtime_binding,
-            stale_generation_binding,
-        )
+        .ensure_host_attention(&attention("attention-missing", None))
         .unwrap();
-
-    let mut advanced_session = worker_session.clone();
-    advanced_session.runtime_generation = 2;
-    advanced_session.version += 1;
-    {
-        let _lock = store.acquire_write_lock().unwrap();
-        store
-            .commit_trust_projection_unlocked(
-                &service_context("session.advance", "session-worker-generation-2", 1),
-                "agent_session",
-                &advanced_session.id,
-                "runtime_generation_advanced",
-                serde_json::json!({"runtime_generation": 2}),
-                &advanced_session,
-                Vec::new(),
-                Vec::new(),
-            )
-            .unwrap();
-    }
-    let before_stale_session = store.canonical_operations().unwrap();
     let error = store
-        .author_message(
-            &service_context("message.author", "message-stale-session", 0),
-            work_message(
-                "message-stale-session",
-                &stale_generation_work,
-                "worker-admission",
-                &advanced_session.id,
-                "alternate-admission",
-            ),
-        )
-        .expect_err("stale binding generation cannot authorize a Work-linked Message");
-    assert!(error.to_string().contains("NATIVE_SESSION_INCOMPATIBLE"));
-    assert_eq!(store.canonical_operations().unwrap(), before_stale_session);
+        .terminal_work_member_run_provenance_unlocked(&terminal)
+        .expect_err("submitted attention without provenance must not fall back to a binding");
+    assert!(error.to_string().contains("MEMBER_RUN_GENERATION_FENCED"));
+
+    store
+        .ensure_host_attention(&attention("attention-valid", Some("member-run-provenance")))
+        .unwrap();
+    let error = store
+        .terminal_work_member_run_provenance_unlocked(&terminal)
+        .expect_err("mixed valid and missing submitted attentions are ambiguous");
+    assert!(error.to_string().contains("MEMBER_RUN_GENERATION_FENCED"));
 }
 
-#[test]
-fn missing_or_ambiguous_current_member_run_fails_before_delivery() {
-    let (store, _root) = fabric_store();
-    append_runtime_team(&store, "team-admission", "run-admission");
-    store
-        .migrate_legacy_agent_identity_same_id(
-            &context(
-                "operator",
-                "identity.create",
-                "identity-worker-admission",
-                0,
-            ),
-            identity("worker-admission"),
-        )
-        .unwrap();
-    let membership = join_runtime_membership(
-        &store,
-        "membership-worker-admission",
-        "team-admission",
-        "worker-admission",
-        TeamMembershipRole::Member,
-    );
-    let target = session("session-worker-admission", "worker-admission");
-    store
-        .create_agent_session(
-            &service_context("session.create", "session-worker-admission", 0),
-            target.clone(),
-        )
-        .unwrap();
-    let missing_work = assign_responsibility(&store, "work-missing-run", &membership.id);
-    let mut runtime_binding = runtime_command_fixture(
-        "runtime-missing",
-        RuntimeCommandKind::StartCycle,
-        &target,
-        "start_cycle",
-    )
-    .0
-    .binding;
-    runtime_binding.target_member_run_id = Some("member-run-admission".into());
-    runtime_binding.target_member_run_generation = Some(1);
-    let before_missing = store.canonical_operations().unwrap();
-    let error = store
-        .bind_responsible_work_execution(
-            &service_context("work.bind", "binding-missing", 0),
-            &runtime_binding,
-            execution_binding(&missing_work, &membership, &target, "binding-missing"),
-        )
-        .expect_err("missing current MemberRun must fail closed");
-    assert!(error.to_string().contains("MEMBER_RUN_GENERATION_FENCED"));
-    assert_eq!(store.canonical_operations().unwrap(), before_missing);
-
-    for id in ["member-run-admission", "member-run-duplicate"] {
-        store
-            .legacy_import_create_trust_member_run_projection(
-                &context("host", "member_run.create", id, 0),
-                canonical_member_run(id, "worker-admission", "run-admission"),
-            )
-            .unwrap();
-    }
-    let ambiguous_work = assign_responsibility(&store, "work-ambiguous-run", &membership.id);
-    let before_ambiguous = store.canonical_operations().unwrap();
-    let error = store
-        .bind_responsible_work_execution(
-            &service_context("work.bind", "binding-ambiguous", 0),
-            &runtime_binding,
-            execution_binding(&ambiguous_work, &membership, &target, "binding-ambiguous"),
-        )
-        .expect_err("ambiguous current MemberRun must fail closed");
-    assert!(error.to_string().contains("MEMBER_RUN_GENERATION_FENCED"));
-    assert_eq!(store.canonical_operations().unwrap(), before_ambiguous);
-    assert!(store
-        .fabric_work_execution_bindings("space-test")
-        .unwrap()
-        .is_empty());
-    assert!(store
-        .fabric_work_deliveries("space-test")
-        .unwrap()
-        .is_empty());
-}
-
-#[test]
-fn member_run_cutover_linearizes_before_stale_execution_admission() {
-    let (store, _root) = fabric_store();
-    append_runtime_team(&store, "team-admission", "run-admission");
-    store
-        .migrate_legacy_agent_identity_same_id(
-            &context(
-                "operator",
-                "identity.create",
-                "identity-worker-admission",
-                0,
-            ),
-            identity("worker-admission"),
-        )
-        .unwrap();
-    let membership = join_runtime_membership(
-        &store,
-        "membership-worker-admission",
-        "team-admission",
-        "worker-admission",
-        TeamMembershipRole::Member,
-    );
-    let target = session("session-worker-admission", "worker-admission");
-    store
-        .create_agent_session(
-            &service_context("session.create", "session-worker-admission", 0),
-            target.clone(),
-        )
-        .unwrap();
-    let generation_one =
-        canonical_member_run("member-run-admission", "worker-admission", "run-admission");
-    store
-        .legacy_import_create_trust_member_run_projection(
-            &context("host", "member_run.create", "member-run-admission", 0),
-            generation_one.clone(),
-        )
-        .unwrap();
-    let work = assign_responsibility(&store, "work-cutover", &membership.id);
-    let mut stale_runtime_binding = runtime_command_fixture(
-        "runtime-cutover",
-        RuntimeCommandKind::StartCycle,
-        &target,
-        "start_cycle",
-    )
-    .0
-    .binding;
-    stale_runtime_binding.target_member_run_id = Some(generation_one.id.clone());
-    stale_runtime_binding.target_member_run_generation = Some(1);
-    let stale_binding = execution_binding(&work, &membership, &target, "binding-cutover");
-
-    let store = std::sync::Arc::new(store);
-    let first = store.acquire_write_lock().expect("hold Store writer");
-    let cutover_store = std::sync::Arc::clone(&store);
-    let mut generation_two = generation_one;
-    generation_two.runtime_generation = 2;
-    generation_two.version = 2;
-    let cutover = std::thread::spawn(move || {
-        let _lock = cutover_store.acquire_write_lock()?;
-        cutover_store.commit_trust_projection_unlocked(
-            &context("host", "member_run.cutover", "member-run-admission", 1),
-            "member_run",
-            "member-run-admission",
-            "runtime_generation_advanced",
-            serde_json::to_value(&generation_two)?,
-            &generation_two,
-            Vec::new(),
-            Vec::new(),
-        )
-    });
-    wait_for_write_ticket(&store, 2);
-
-    let admission_store = std::sync::Arc::clone(&store);
-    let admission = std::thread::spawn(move || {
-        admission_store.bind_responsible_work_execution(
-            &service_context("work.bind", "binding-cutover", 0),
-            &stale_runtime_binding,
-            stale_binding,
-        )
-    });
-    wait_for_write_ticket(&store, 3);
-    drop(first);
-
-    cutover
-        .join()
-        .expect("cutover writer joins")
-        .expect("generation cutover commits first");
-    let error = admission
-        .join()
-        .expect("admission writer joins")
-        .expect_err("old generation cannot bind after cutover");
-    assert!(error.to_string().contains("MEMBER_RUN_GENERATION_FENCED"));
-    assert!(store
-        .fabric_work_execution_bindings("space-test")
-        .unwrap()
-        .is_empty());
-    assert!(store
-        .fabric_work_deliveries("space-test")
-        .unwrap()
-        .is_empty());
-}
+#[path = "work_responsibility_execution_admission_edge_tests.rs"]
+mod edge_tests;

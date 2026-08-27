@@ -195,6 +195,15 @@ fn mutating_help_is_effect_free_and_normal_dispatch_is_unchanged() {
             "--member-run-id",
             "legacy-runtime",
         ],
+        vec![
+            "--store",
+            store_arg,
+            "team-run",
+            "work",
+            "retarget",
+            "--successor-member-run-id",
+            "legacy-runtime",
+        ],
     ] {
         let rejected = run_firm(&home, home.base(), &args);
         assert!(!rejected.status.success());

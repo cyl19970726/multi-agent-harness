@@ -57,6 +57,8 @@ fn exact_result_report_submits_and_accepts_work_in_canonical_operations() {
                 1,
             ),
             "binding-work-1",
+            "runtime-worker",
+            1,
             "t4-release",
         )
         .expect("submitted execution binding may release before independent acceptance");
