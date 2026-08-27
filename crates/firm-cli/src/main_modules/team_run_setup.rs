@@ -326,6 +326,24 @@ pub(super) fn agentfirm_native_session_identity_can_enrich_provider_version(
     }
 }
 
+pub(super) fn agentfirm_native_session_identity_preserves_observed_provider_version(
+    current: Option<&harness_core::agentfirm_api::NativeSessionRef>,
+    expected: Option<&harness_core::agentfirm_api::NativeSessionRef>,
+) -> bool {
+    match (current, expected) {
+        (Some(current), Some(expected)) => {
+            current.provider == expected.provider
+                && current.execution_mode == expected.execution_mode
+                && current.native_session_id == expected.native_session_id
+                && current.native_locator_kind == expected.native_locator_kind
+                && current.provider_version.is_some()
+                && expected.provider_version.is_none()
+                && current.adapter_contract_version == expected.adapter_contract_version
+        }
+        _ => false,
+    }
+}
+
 /// Build the exact native-session identity expected at runtime-fabric
 /// admission. TeamRun creation records the caller-supplied native locator
 /// before provider preflight, so its version can still be unknown. Start

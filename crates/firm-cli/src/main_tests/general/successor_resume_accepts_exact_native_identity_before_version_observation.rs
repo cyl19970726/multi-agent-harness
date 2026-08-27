@@ -265,6 +265,40 @@ fn resumed_session_materialization_and_readmission_share_preflight_identity() {
     )
     .expect("readmission before provider settlement preserves enriched identity");
 
+    ensure_team_runtime_fabric(
+        &store,
+        &body,
+        "unit-test-space",
+        &lease.node_daemon_id,
+        lease.node_daemon_generation,
+        false,
+    )
+    .expect("message admission preserves the canonical observed version without downgrading it");
+
+    let mut message_conflict = PreparedTeamRunBody {
+        run_id: body.run_id.clone(),
+        objective: body.objective.clone(),
+        run: body.run.clone(),
+        members: body.members.clone(),
+    };
+    message_conflict.members[0]
+        .native_session
+        .as_mut()
+        .expect("durable resume locator")
+        .provider_version = Some("0.149.0".into());
+    let error = ensure_team_runtime_fabric(
+        &store,
+        &message_conflict,
+        "unit-test-space",
+        &lease.node_daemon_id,
+        lease.node_daemon_generation,
+        false,
+    )
+    .expect_err("message admission rejects a concrete durable version conflict");
+    assert!(error
+        .to_string()
+        .contains("AGENT_SESSION_RECOVERY_REQUIRED"));
+
     let mut conflicting = body;
     conflicting.members[0]
         .provider_profile

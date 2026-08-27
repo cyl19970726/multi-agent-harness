@@ -169,7 +169,15 @@ pub(crate) fn ensure_team_runtime_fabric(
                     session.native_session_ref.as_ref(),
                     expected_native_session.as_ref(),
                 );
-            if !native_session_matches && !enrich_provider_version {
+            let preserve_observed_provider_version = !provider_version_observed_at_boundary
+                && agentfirm_native_session_identity_preserves_observed_provider_version(
+                    session.native_session_ref.as_ref(),
+                    expected_native_session.as_ref(),
+                );
+            if !native_session_matches
+                && !enrich_provider_version
+                && !preserve_observed_provider_version
+            {
                 return Err(CliError::Usage(format!(
                     "AGENT_SESSION_RECOVERY_REQUIRED: {} does not match MemberRun {} native-session truth",
                     session.id, member.id
