@@ -105,7 +105,7 @@ fn create_mission_and_run(
     project_id: &str,
     node_id: &str,
     host_id: &str,
-) -> (String, String, String) {
+) -> (String, String, String, u64) {
     // DOC-108 retired the Mission HTTP writer this fixture used; legacy
     // Mission provenance is seeded directly as pre-cutover history.
     firm_env::seed_historical_mission(
@@ -157,15 +157,25 @@ fn create_mission_and_run(
         .as_str()
         .expect("run id")
         .to_string();
-    let member_id = body["result"]["member_runs"][0]["id"]
+    let owner_member_id = body["result"]["works"][0]["owner_member_id"]
         .as_str()
-        .expect("member id")
+        .expect("Work owner AgentMember");
+    let member_id = body["result"]["member_runs"]
+        .as_array()
+        .expect("member runs")
+        .iter()
+        .find(|member| member["agent_member_id"].as_str() == Some(owner_member_id))
+        .and_then(|member| member["id"].as_str())
+        .expect("Work owner MemberRun")
         .to_string();
     let work_id = body["result"]["works"][0]["id"]
         .as_str()
         .expect("Work id")
         .to_string();
-    (run_id, member_id, work_id)
+    let work_version = body["result"]["works"][0]["version"]
+        .as_u64()
+        .expect("Work version");
+    (run_id, member_id, work_id, work_version)
 }
 
 #[cfg(any())]
@@ -235,7 +245,7 @@ fn host_attentions_read_and_console_ack_lifecycle() {
     let home = TempHome::new("host-attention-console");
     let (project_id, node_id, host_id) = init_project(&home, "alpha");
     let serve = spawn_fake_kimi_serve(&home);
-    let (run_id, member_id, work_id) =
+    let (run_id, member_id, work_id, work_version) =
         create_mission_and_run(&home, &serve, &project_id, &node_id, &host_id);
 
     let (status, body) = serve.post_json(
@@ -260,7 +270,7 @@ fn host_attentions_read_and_console_ack_lifecycle() {
             "--work-id",
             &work_id,
             "--expected-version",
-            "1",
+            &work_version.to_string(),
             "--member-run-id",
             &member_id,
             "--json",
@@ -356,7 +366,7 @@ fn member_resume_route_rejects_active_and_resumes_closed_member() {
     let home = TempHome::new("member-resume-console");
     let (project_id, node_id, host_id) = init_project(&home, "alpha");
     let serve = spawn_fake_kimi_serve(&home);
-    let (run_id, member_id, _work_id) =
+    let (run_id, member_id, _work_id, _work_version) =
         create_mission_and_run(&home, &serve, &project_id, &node_id, &host_id);
 
     let (status, body) = serve.post_json(
