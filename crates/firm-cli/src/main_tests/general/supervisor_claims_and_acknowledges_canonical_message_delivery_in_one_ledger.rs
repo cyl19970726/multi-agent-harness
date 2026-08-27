@@ -265,6 +265,12 @@ fn supervisor_claims_and_acknowledges_canonical_message_delivery_in_one_ledger()
     let work =
         assign_test_work_to_member(&store, &lease.execution_space_id, &created, &member, &work);
     bind_test_responsible_work_execution(&store, &lease, &member, &work);
+    let claimed_work = claim_canonical_work_for_member(&ledger, &member)
+        .expect("claim exact managed Host attention Work")
+        .expect("one canonical managed Host attention Work claim");
+    ledger
+        .complete_work_delivery(&claimed_work, "provider-receipt-managed-host-attention")
+        .expect("record provider receipt before the Member Work action");
     let member_context = |event: &str| WorkCommandContext {
         event_id: event.into(),
         performed_by_actor: TeamActorRef {

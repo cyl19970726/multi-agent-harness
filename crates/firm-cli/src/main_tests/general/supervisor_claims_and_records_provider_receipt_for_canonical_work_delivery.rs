@@ -639,6 +639,24 @@ fn responsibility_cutover_releases_only_stale_binding_and_rebinds_monotonically(
             "unix-ms:5.25",
         )
         .expect("freeze unrelated A provider effect before lifecycle revision");
+    store
+        .record_work_provider_receipt(
+            &canonical_delivery_context(
+                "unit-test-space",
+                &session_a.node_daemon_id,
+                "node_daemon.work_delivery.provider_received",
+                "unrelated-a-provider-received".into(),
+                0,
+            ),
+            &unrelated_delivery.id,
+            &session_a.node_id,
+            &session_a.node_daemon_id,
+            session_a.node_daemon_generation,
+            "unrelated-a-claim",
+            "provider-receipt-unrelated-a",
+            "unix-ms:5.4",
+        )
+        .expect("record unrelated A provider receipt before lifecycle revision");
     let unrelated_started = store
         .start_work(
             &unrelated.id,
