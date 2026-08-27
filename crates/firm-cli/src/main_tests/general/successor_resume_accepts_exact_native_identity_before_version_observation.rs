@@ -117,11 +117,12 @@ fn successor_resume_accepts_exact_native_identity_before_version_observation() {
         .as_mut()
         .expect("provider profile")
         .provider_version = Some("0.148.0-alpha.9".into());
-    let expected_admission = expected_agentfirm_native_session_ref(successor_resume, true)
-        .expect("preflight supplies the exact admission identity");
+    let expected_admission = expected_agentfirm_native_session_ref(successor_resume)
+        .expect("durable resume locator supplies the admission identity");
     assert_eq!(
         expected_admission.provider_version.as_deref(),
-        Some("0.148.0-alpha.9")
+        None,
+        "executable preflight cannot claim the version that opened the native session"
     );
     let body = PreparedTeamRunBody {
         run_id: successor.team_run.id.clone(),
@@ -135,7 +136,6 @@ fn successor_resume_accepts_exact_native_identity_before_version_observation() {
         "unit-test-space",
         &lease.node_daemon_id,
         lease.node_daemon_generation,
-        true,
     )
     .expect("exact native identity resumes before provider-version observation is refreshed");
 
@@ -145,7 +145,7 @@ fn successor_resume_accepts_exact_native_identity_before_version_observation() {
             .as_ref()
             .expect("settled native session"),
     );
-    assert!(agentfirm_native_session_identity_matches(
+    assert!(agentfirm_native_session_identity_matches_for_admission(
         Some(&observed),
         Some(&expected_admission)
     ));
@@ -209,7 +209,6 @@ fn resumed_session_materialization_and_readmission_share_preflight_identity() {
         "unit-test-space",
         &lease.node_daemon_id,
         lease.node_daemon_generation,
-        false,
     )
     .expect("message path does not promote a cached profile version into native-session truth");
     let precreated = store
@@ -238,15 +237,66 @@ fn resumed_session_materialization_and_readmission_share_preflight_identity() {
         "unit-test-space",
         &lease.node_daemon_id,
         lease.node_daemon_generation,
-        true,
     )
-    .expect("start preflight enriches the exact precreated AgentSession");
-    let enriched = store
+    .expect("start preflight admits but does not rewrite the precreated AgentSession");
+    let admitted = store
         .fabric_agent_sessions("unit-test-space")
-        .expect("read enriched AgentSessions")
+        .expect("read admitted AgentSessions")
         .into_iter()
         .find(|session| session.agent_member_id == body.members[0].agent_member_id)
-        .expect("enriched resumed AgentSession");
+        .expect("admitted resumed AgentSession");
+    assert_eq!(
+        admitted
+            .native_session_ref
+            .as_ref()
+            .and_then(|session| session.provider_version.as_deref()),
+        None,
+        "a successful provider settlement, not preflight, owns native version truth"
+    );
+
+    ensure_team_runtime_fabric(
+        &store,
+        &body,
+        "unit-test-space",
+        &lease.node_daemon_id,
+        lease.node_daemon_generation,
+    )
+    .expect("readmission before provider settlement preserves versionless identity");
+
+    ensure_team_runtime_fabric(
+        &store,
+        &body,
+        "unit-test-space",
+        &lease.node_daemon_id,
+        lease.node_daemon_generation,
+    )
+    .expect("message admission preserves the versionless canonical identity");
+
+    let ledger = TeamRunLedger::new(
+        &store,
+        &created.team_run.id,
+        &lease.supervisor_id,
+        lease.generation,
+        Arc::new(AtomicBool::new(true)),
+    );
+    let expected = ledger
+        .latest_member_run(&body.members[0].id)
+        .expect("latest member")
+        .expect("member exists");
+    let mut settled = expected.clone();
+    settled.native_session = Some(exact_codex_native_session(Some("0.148.0-alpha.9")));
+    settled.status = MemberRunStatus::Idle;
+    settled.last_event_at = Some(now_string());
+    ledger
+        .save_member_run(&expected, &settled)
+        .expect("successful provider settlement owns native version truth");
+    body.members[0] = settled;
+    let enriched = store
+        .fabric_agent_sessions("unit-test-space")
+        .expect("read settled AgentSessions")
+        .into_iter()
+        .find(|session| session.agent_member_id == body.members[0].agent_member_id)
+        .expect("settled resumed AgentSession");
     assert_eq!(
         enriched
             .native_session_ref
@@ -261,19 +311,8 @@ fn resumed_session_materialization_and_readmission_share_preflight_identity() {
         "unit-test-space",
         &lease.node_daemon_id,
         lease.node_daemon_generation,
-        true,
     )
-    .expect("readmission before provider settlement preserves enriched identity");
-
-    ensure_team_runtime_fabric(
-        &store,
-        &body,
-        "unit-test-space",
-        &lease.node_daemon_id,
-        lease.node_daemon_generation,
-        false,
-    )
-    .expect("message admission preserves the canonical observed version without downgrading it");
+    .expect("message/start admission preserves provider-settled native truth");
 
     let mut message_conflict = PreparedTeamRunBody {
         run_id: body.run_id.clone(),
@@ -292,28 +331,8 @@ fn resumed_session_materialization_and_readmission_share_preflight_identity() {
         "unit-test-space",
         &lease.node_daemon_id,
         lease.node_daemon_generation,
-        false,
     )
     .expect_err("message admission rejects a concrete durable version conflict");
-    assert!(error
-        .to_string()
-        .contains("AGENT_SESSION_RECOVERY_REQUIRED"));
-
-    let mut conflicting = body;
-    conflicting.members[0]
-        .provider_profile
-        .as_mut()
-        .expect("provider profile")
-        .provider_version = Some("0.149.0".into());
-    let error = ensure_team_runtime_fabric(
-        &store,
-        &conflicting,
-        "unit-test-space",
-        &lease.node_daemon_id,
-        lease.node_daemon_generation,
-        true,
-    )
-    .expect_err("an observed provider-version conflict remains fail-closed");
     assert!(error
         .to_string()
         .contains("AGENT_SESSION_RECOVERY_REQUIRED"));

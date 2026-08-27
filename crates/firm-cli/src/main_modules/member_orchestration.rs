@@ -77,7 +77,6 @@ pub(crate) fn ensure_team_runtime_fabric(
     execution_space_id: &str,
     daemon_id: &str,
     daemon_generation: u64,
-    provider_version_observed_at_boundary: bool,
 ) -> CliResult<()> {
     use harness_core::agentfirm_api::{
         ActorKind, ActorRef, AgentSession, AgentSessionStatus, MutationContext,
@@ -156,97 +155,48 @@ pub(crate) fn ensure_team_runtime_fabric(
                     session.id
                 )));
             }
-            let expected_native_session = expected_agentfirm_native_session_ref(
-                member,
-                provider_version_observed_at_boundary,
-            );
+            let expected_native_session = expected_agentfirm_native_session_ref(member);
             let native_session_matches = agentfirm_native_session_identity_matches(
                 session.native_session_ref.as_ref(),
                 expected_native_session.as_ref(),
             );
-            let enrich_provider_version =
-                agentfirm_native_session_identity_can_enrich_provider_version(
+            let admission_native_session_matches =
+                agentfirm_native_session_identity_matches_for_admission(
                     session.native_session_ref.as_ref(),
                     expected_native_session.as_ref(),
                 );
-            let preserve_observed_provider_version = !provider_version_observed_at_boundary
-                && agentfirm_native_session_identity_preserves_observed_provider_version(
-                    session.native_session_ref.as_ref(),
-                    expected_native_session.as_ref(),
-                );
-            if !native_session_matches
-                && !enrich_provider_version
-                && !preserve_observed_provider_version
-            {
+            if !native_session_matches && !admission_native_session_matches {
                 return Err(CliError::Usage(format!(
                     "AGENT_SESSION_RECOVERY_REQUIRED: {} does not match MemberRun {} native-session truth",
                     session.id, member.id
                 )));
             }
-            let mut admitted_session = session.clone();
             if session.node_daemon_id != daemon_id
                 || session.node_daemon_generation != daemon_generation
             {
-                admitted_session = store
-                    .reattach_agent_session_to_node_daemon(
-                        &MutationContext {
-                            execution_space_id: execution_space_id.to_string(),
-                            authenticated_actor: daemon_actor.clone(),
-                            authority_actor: None,
-                            command_name: "runtime_fabric.session.reattach_node_daemon".into(),
-                            idempotency_key: format!(
-                                "session-daemon-reattach:{}:{}:{}",
-                                session.id, session.node_daemon_generation, daemon_generation
-                            ),
-                            expected_version: session.version,
-                            request_fingerprint: None,
-                        },
-                        &session.id,
-                        session.runtime_generation,
-                        session.node_daemon_generation,
-                        daemon_id,
-                        daemon_generation,
-                        &timestamp,
-                    )?
-                    .projection;
-            }
-            if enrich_provider_version {
-                let expected_native_session = expected_native_session
-                    .clone()
-                    .expect("provider-version enrichment requires a native-session identity");
-                admitted_session = store
-                    .bind_agent_session_native_session(
-                        &MutationContext {
-                            execution_space_id: execution_space_id.to_string(),
-                            authenticated_actor: daemon_actor.clone(),
-                            authority_actor: None,
-                            command_name: "runtime_fabric.session_native_version.observe".into(),
-                            idempotency_key: format!(
-                                "session-native-version-observe:{}:{}",
-                                admitted_session.id,
-                                expected_native_session
-                                    .provider_version
-                                    .as_deref()
-                                    .expect("observed provider version")
-                            ),
-                            expected_version: admitted_session.version,
-                            request_fingerprint: None,
-                        },
-                        &admitted_session.id,
-                        member.runtime_generation,
-                        expected_native_session.clone(),
-                    )?
-                    .projection;
-                debug_assert!(agentfirm_native_session_identity_matches(
-                    admitted_session.native_session_ref.as_ref(),
-                    Some(&expected_native_session),
-                ));
+                store.reattach_agent_session_to_node_daemon(
+                    &MutationContext {
+                        execution_space_id: execution_space_id.to_string(),
+                        authenticated_actor: daemon_actor.clone(),
+                        authority_actor: None,
+                        command_name: "runtime_fabric.session.reattach_node_daemon".into(),
+                        idempotency_key: format!(
+                            "session-daemon-reattach:{}:{}:{}",
+                            session.id, session.node_daemon_generation, daemon_generation
+                        ),
+                        expected_version: session.version,
+                        request_fingerprint: None,
+                    },
+                    &session.id,
+                    session.runtime_generation,
+                    session.node_daemon_generation,
+                    daemon_id,
+                    daemon_generation,
+                    &timestamp,
+                )?;
             }
         } else {
-            let native_session_ref = expected_agentfirm_native_session_ref(
-                member,
-                provider_version_observed_at_boundary,
-            );
+            let native_session_ref = expected_agentfirm_native_session_ref(member);
             store.create_agent_session(
                 &MutationContext {
                     execution_space_id: execution_space_id.to_string(),
@@ -438,7 +388,6 @@ pub(crate) fn ensure_team_message_fabric(
         execution_space_id,
         daemon_id,
         daemon_generation,
-        false,
     )
 }
 

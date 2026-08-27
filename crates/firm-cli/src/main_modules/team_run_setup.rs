@@ -308,7 +308,7 @@ pub(super) fn agentfirm_native_session_identity_matches(
     }
 }
 
-pub(super) fn agentfirm_native_session_identity_can_enrich_provider_version(
+pub(super) fn agentfirm_native_session_identity_matches_for_admission(
     current: Option<&harness_core::agentfirm_api::NativeSessionRef>,
     expected: Option<&harness_core::agentfirm_api::NativeSessionRef>,
 ) -> bool {
@@ -318,52 +318,23 @@ pub(super) fn agentfirm_native_session_identity_can_enrich_provider_version(
                 && current.execution_mode == expected.execution_mode
                 && current.native_session_id == expected.native_session_id
                 && current.native_locator_kind == expected.native_locator_kind
-                && current.provider_version.is_none()
-                && expected.provider_version.is_some()
+                && (current.provider_version.is_none() || expected.provider_version.is_none())
                 && current.adapter_contract_version == expected.adapter_contract_version
         }
         _ => false,
     }
 }
 
-pub(super) fn agentfirm_native_session_identity_preserves_observed_provider_version(
-    current: Option<&harness_core::agentfirm_api::NativeSessionRef>,
-    expected: Option<&harness_core::agentfirm_api::NativeSessionRef>,
-) -> bool {
-    match (current, expected) {
-        (Some(current), Some(expected)) => {
-            current.provider == expected.provider
-                && current.execution_mode == expected.execution_mode
-                && current.native_session_id == expected.native_session_id
-                && current.native_locator_kind == expected.native_locator_kind
-                && current.provider_version.is_some()
-                && expected.provider_version.is_none()
-                && current.adapter_contract_version == expected.adapter_contract_version
-        }
-        _ => false,
-    }
-}
-
-/// Build the exact native-session identity expected at runtime-fabric
-/// admission. TeamRun creation records the caller-supplied native locator
-/// before provider preflight, so its version can still be unknown. Start
-/// preflight refreshes the version-specific ProviderProfile first; use that
-/// admitted observation without rewriting the durable native locator.
+/// Build the native-session identity asserted by durable MemberRun truth.
+/// ProviderProfile is only an executable compatibility observation; it cannot
+/// claim which provider version successfully opened this native session.
 pub(super) fn expected_agentfirm_native_session_ref(
     member: &ProviderRuntimeProjection,
-    provider_version_observed_at_boundary: bool,
 ) -> Option<harness_core::agentfirm_api::NativeSessionRef> {
-    let mut expected = member
+    member
         .native_session
         .as_ref()
-        .map(agentfirm_native_session_ref)?;
-    if provider_version_observed_at_boundary && expected.provider_version.is_none() {
-        expected.provider_version = member
-            .provider_profile
-            .as_ref()
-            .and_then(|profile| profile.provider_version.clone());
-    }
-    Some(expected)
+        .map(agentfirm_native_session_ref)
 }
 
 pub(super) fn canonical_member_run_admission(

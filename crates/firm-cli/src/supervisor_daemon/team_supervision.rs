@@ -189,14 +189,7 @@ impl MultiTeamDaemon {
                 CliError::Usage("NODE_DAEMON_GENERATION_FENCED: current lease is missing".into())
             })?
             .generation;
-        ensure_team_runtime_fabric(
-            &store,
-            &body,
-            &space.id,
-            &self.daemon_id,
-            daemon_generation,
-            true,
-        )?;
+        ensure_team_runtime_fabric(&store, &body, &space.id, &self.daemon_id, daemon_generation)?;
         let registration = TeamSupervisorRegistration::start(&store, &run_id, Some(&space.id))?;
         let supervisor_id = registration.supervisor_id.clone();
         let supervisor_generation = registration.generation;

@@ -752,11 +752,7 @@ impl TeamRunLedger {
             let [session] = sessions.as_slice() else {
                 break;
             };
-            if session
-                .native_session_ref
-                .as_ref()
-                .is_some_and(|current| current.native_session_id == native.native_session_id)
-            {
+            if session.native_session_ref.as_ref() == Some(&native_ref) {
                 break;
             }
             let context = harness_core::agentfirm_api::MutationContext {
