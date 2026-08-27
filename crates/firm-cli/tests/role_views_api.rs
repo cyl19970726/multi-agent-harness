@@ -1,6 +1,3 @@
-mod fake_provider;
-mod firm_env;
-
 #[path = "role_views_api/action_matrix_and_projection.rs"]
 mod action_matrix_and_projection;
 #[path = "role_views_api/authorization_and_store_purity.rs"]
@@ -13,6 +10,8 @@ mod daemon_admission;
 mod delivery_projection;
 #[path = "role_views_api/exact_self_session.rs"]
 mod exact_self_session;
+mod fake_provider;
+mod firm_env;
 #[path = "role_views_api/remote_fabric_health.rs"]
 mod remote_fabric_health;
 #[path = "role_views_api/standalone_codex_session.rs"]
