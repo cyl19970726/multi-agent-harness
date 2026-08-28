@@ -813,7 +813,7 @@ fn pi_workspace_write_managed_member_is_rejected_before_spawn() {
 }
 
 #[test]
-fn pi_full_access_busy_close_fails_closed_without_overclaiming_quiesce() {
+fn pi_full_access_busy_close_reopens_same_session_without_overclaiming_quiesce() {
     let home = TempHome::new("pi-busy-close");
     let project_id = init_pi_project(&home, "pi-busy-close");
     create_pi_identity_with_ceiling(&home, &project_id, "agent-pi-close-full", "full_access");
@@ -876,13 +876,17 @@ fn pi_full_access_busy_close_fails_closed_without_overclaiming_quiesce() {
             "requested_by": "host"
         }),
     );
-    assert_eq!(status, 400, "unsafe FullAccess close must fail: {closed}");
-    assert!(
-        closed.to_string().contains("PendingDependency")
-            && closed
-                .to_string()
-                .contains("writable-child drain is unprovable"),
-        "refusal must name the exact unproven FullAccess boundary: {closed}"
+    assert_eq!(
+        status, 200,
+        "narrow FullAccess Close must succeed: {closed}"
+    );
+    assert_eq!(closed["result"]["status"].as_str(), Some("closed"));
+    assert_eq!(
+        closed["result"]["provider_terminal_evidence"]["member_runtime_close"]
+            ["managed_runtime_released"]
+            .as_str(),
+        Some("satisfied"),
+        "Close must prove only the owned Pi runtime was released: {closed}"
     );
     assert!(
         session_file.is_file(),
@@ -893,13 +897,15 @@ fn pi_full_access_busy_close_fails_closed_without_overclaiming_quiesce() {
     let space_id = firm_env::current_space_id(&home);
     let commands = store
         .runtime_commands(&space_id)
-        .expect("Pi refused Close runtime command evidence");
+        .expect("Pi Close runtime command evidence");
     assert!(
-        commands.iter().all(|command| {
-            command.command != harness_core::agentfirm_api::RuntimeCommandKind::CloseMember
-                || command.status != harness_core::agentfirm_api::RuntimeCommandStatus::Applied
+        commands.iter().any(|command| {
+            command.command == harness_core::agentfirm_api::RuntimeCommandKind::CloseMember
+                && command.status == harness_core::agentfirm_api::RuntimeCommandStatus::Applied
+                && command.postcondition_status
+                    == harness_core::agentfirm_api::RuntimePostconditionStatus::Satisfied
         }),
-        "unproven Close must never settle Applied: {commands:?}"
+        "narrow Close must settle its exact provider effect: {commands:?}"
     );
     assert!(
         commands.iter().all(|command| {
@@ -917,10 +923,28 @@ fn pi_full_access_busy_close_fails_closed_without_overclaiming_quiesce() {
         }),
         "Pi Close must not fall back to the legacy overloaded cancel command: {commands:?}"
     );
+
+    let (status, reopened) = serve.post_json(
+        &format!("/v1/team-runs/{run_id}/members/{member_id}/reopen"),
+        &serde_json::json!({
+            "reason": "prove Pi native-session continuity",
+            "reopened_by": "host"
+        }),
+    );
+    assert_eq!(status, 202, "Pi Reopen must be accepted: {reopened}");
+    assert_eq!(
+        reopened["result"]["reopen"]["member_run"]["runtime_generation"].as_u64(),
+        Some(2)
+    );
+    assert_eq!(
+        reopened["result"]["reopen"]["member_run"]["native_session"]["native_session_id"].as_str(),
+        Some(session_file.to_string_lossy().as_ref()),
+        "Reopen must retain the exact Pi native session: {reopened}"
+    );
 }
 
 #[test]
-fn pi_full_access_background_writer_denies_quiesce_before_effect() {
+fn pi_full_access_close_reaps_owned_group_without_claiming_strong_quiesce() {
     let home = TempHome::new("pi-full-access-quiesce");
     let project_id = init_pi_project(&home, "pi-full-access-quiesce");
     create_pi_identity_with_ceiling(&home, &project_id, "agent-pi-quiesce-full", "full_access");
@@ -989,18 +1013,11 @@ fn pi_full_access_background_writer_denies_quiesce_before_effect() {
     let (status, close) = serve.post_json(
         &format!("/v1/team-runs/{run_id}/members/{member_id}/close"),
         &serde_json::json!({
-            "reason": "prove FullAccess cannot overclaim quiescence",
+            "reason": "close only the owned Pi runtime",
             "requested_by": "host"
         }),
     );
-    assert_ne!(
-        status, 200,
-        "unproven quiescence must not report Close: {close}"
-    );
-    assert!(
-        close.to_string().contains("PendingDependency"),
-        "FullAccess must expose the missing child-inventory dependency: {close}"
-    );
+    assert_eq!(status, 200, "narrow FullAccess Close must succeed: {close}");
 
     let store = harness_store::HarnessStore::new(home.spaces_dir().join(&project_id));
     let space_id = firm_env::current_space_id(&home);
@@ -1009,11 +1026,11 @@ fn pi_full_access_background_writer_denies_quiesce_before_effect() {
         .expect("Pi quiesce RuntimeCommand evidence");
     assert!(commands.iter().any(|command| {
         command.command == harness_core::agentfirm_api::RuntimeCommandKind::CloseMember
-            && command.status == harness_core::agentfirm_api::RuntimeCommandStatus::Failed
+            && command.status == harness_core::agentfirm_api::RuntimeCommandStatus::Applied
             && command.effect_certainty
-                == harness_core::agentfirm_api::RuntimeEffectCertainty::NotApplied
+                == harness_core::agentfirm_api::RuntimeEffectCertainty::Applied
             && command.postcondition_status
-                == harness_core::agentfirm_api::RuntimePostconditionStatus::Unsatisfied
+                == harness_core::agentfirm_api::RuntimePostconditionStatus::Satisfied
     }));
     assert!(commands.iter().all(|command| {
         !matches!(
@@ -1022,6 +1039,18 @@ fn pi_full_access_background_writer_denies_quiesce_before_effect() {
                 | harness_core::agentfirm_api::RuntimeCommandKind::ReleaseRuntime
         )
     }));
+
+    let size_after_close = std::fs::metadata(&writer_marker)
+        .expect("background writer marker after Close")
+        .len();
+    std::thread::sleep(Duration::from_millis(250));
+    assert_eq!(
+        std::fs::metadata(&writer_marker)
+            .expect("background writer marker remains readable")
+            .len(),
+        size_after_close,
+        "the child in Pi's owned process group must stop with the managed runtime"
+    );
 }
 
 #[test]
