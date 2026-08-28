@@ -1010,6 +1010,19 @@ pub(super) fn build_member_wake_view(
         work.team_run_id == ledger.run_id
             && is_active_work_continuation_candidate(work, &member_row.agent_member_id, &all_works)
     });
+    let current_deliveries = active_work
+        .is_some()
+        .then(|| {
+            ledger
+                .store
+                .current_work_deliveries_for_team_run(&ledger.run_id)
+        })
+        .transpose()?;
+    let active_work = active_work.filter(|work| {
+        current_deliveries.as_deref().is_some_and(|deliveries| {
+            current_work_delivery_authorizes_continuation(work, member_row, deliveries)
+        })
+    });
 
     let delivery_count = ledger.queued_works_for(&member_row.id)?.len() as u32;
 

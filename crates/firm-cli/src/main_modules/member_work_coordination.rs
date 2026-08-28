@@ -397,6 +397,20 @@ pub(super) fn is_active_work_continuation_candidate(
         && work.prerequisites_satisfied(all_works.iter())
 }
 
+pub(super) fn current_work_delivery_authorizes_continuation(
+    work: &Work,
+    member: &ProviderRuntimeProjection,
+    deliveries: &[harness_application::CurrentWorkDeliveryView],
+) -> bool {
+    deliveries.iter().any(|delivery| {
+        delivery.work_id == work.id
+            && delivery.status == harness_core::agentfirm_api::WorkDeliveryStatus::ProviderReceived
+            && delivery.recipient_agent_member_id.as_deref()
+                == Some(member.agent_member_id.as_str())
+            && delivery.recipient_member_run_id.as_deref() == Some(member.id.as_str())
+    })
+}
+
 impl TeamRunLedger {
     pub(super) fn new(
         store: &HarnessStore,
@@ -905,7 +919,13 @@ impl TeamRunLedger {
             )));
         }
         if let Some(work) = active.pop() {
-            return Ok(Some(work));
+            let deliveries = self
+                .store
+                .current_work_deliveries_for_team_run(&self.run_id)?;
+            return Ok(
+                current_work_delivery_authorizes_continuation(&work, &member, &deliveries)
+                    .then_some(work),
+            );
         }
 
         let stable_member_id = member.agent_member_id.as_str();
