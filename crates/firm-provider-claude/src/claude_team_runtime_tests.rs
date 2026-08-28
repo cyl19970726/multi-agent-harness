@@ -213,6 +213,7 @@ for await (const line of input) {
     break;
   }
 }
+
 "#,
     )
     .unwrap();
@@ -279,6 +280,76 @@ for await (const line of input) {
     assert_eq!(closed["reason"], "harness_team_close");
     assert!(matches!(transport.state, TransportState::Closed));
     assert_eq!(transport.native_session_id, "native-session-1");
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn verified_session_binding_survives_a_later_cycle_idle_timeout() {
+    let root = unique_temp_dir("claude-binding-before-timeout");
+    let bin = root.join("bin");
+    let cwd = root.join("workspace");
+    fs::create_dir_all(&bin).unwrap();
+    fs::create_dir_all(&cwd).unwrap();
+    fs::write(
+        root.join("package.json"),
+        r#"{"dependencies":{"@anthropic-ai/claude-agent-sdk":"0.3.220"}}"#,
+    )
+    .unwrap();
+    let runner = bin.join("runner.mjs");
+    fs::write(
+        &runner,
+        r#"
+import readline from "node:readline";
+const input = readline.createInterface({input: process.stdin, crlfDelay: Infinity});
+const emit = (event, data) => process.stdout.write(JSON.stringify({event, data}) + "\n");
+for await (const line of input) {
+  const frame = JSON.parse(line);
+  if (frame.command === "start") {
+    emit("member_started", {memberRunId: frame.payload.memberRunId, cwd: frame.payload.cwd, permissionMode: frame.payload.permissionMode, ownedPathCount: 0, resumed: false});
+  } else if (frame.command === "deliver") {
+    emit("delivered", {id: frame.payload.id, kind: frame.payload.kind});
+    emit("consumed", {id: frame.payload.id, kind: frame.payload.kind, sessionId: "native-before-timeout"});
+    emit("session_bound", {sessionId: "native-before-timeout", tag: "team-run-test:member-run-test", title: "Claude test · developer", providerVersion: "2.1.220", model: null, effort: null});
+  }
+}
+"#,
+    )
+    .unwrap();
+    let config = ClaudeTeamRuntimeConfig {
+        runner_path: runner,
+        cwd,
+        team_run_id: "team-run-test".into(),
+        member_run_id: "member-run-test".into(),
+        member_name: "Claude test".into(),
+        role_label: "developer".into(),
+        owned_paths: Vec::new(),
+        model: None,
+        effort: None,
+        permission_mode: "bypassPermissions".into(),
+        allowed_tools: None,
+        disallowed_tools: None,
+        setting_sources: vec!["project".into()],
+        resume_session_id: None,
+        environment: harness_runtime_contract::CollaborationCapabilityEnvironment::empty(),
+    };
+    let mut transport = ClaudeRunnerTransport::spawn(&config).unwrap();
+    let mut saw_verified_binding_event = false;
+    let error = transport
+        .run_cycle(
+            "bind then remain idle",
+            Duration::from_millis(80),
+            &mut |_receipt| Ok(()),
+            &mut |_pending, _result| Ok(()),
+            &mut |event| {
+                saw_verified_binding_event |=
+                    event.get("event").and_then(Value::as_str) == Some("session_bound");
+            },
+            &mut CycleControl::default,
+        )
+        .unwrap_err();
+    assert!(error.to_string().contains("idle timeout"));
+    assert!(saw_verified_binding_event);
+    assert_eq!(transport.native_session_id, "native-before-timeout");
     fs::remove_dir_all(root).unwrap();
 }
 

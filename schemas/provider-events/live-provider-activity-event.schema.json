@@ -6,12 +6,12 @@
   "additionalProperties": false,
   "required": ["schema_version", "reason", "scope", "activity"],
   "properties": {
-    "schema_version": {"const": "agentfirm.live_provider_activity_event.v1"},
+    "schema_version": {"const": "agentfirm.live_provider_activity_event.v2"},
     "reason": {"enum": ["updated", "terminal"]},
     "scope": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["execution_space_id", "project_id", "team_run_id", "member_run_id", "member_run_generation", "agent_session_id", "agent_session_generation"],
+      "required": ["execution_space_id", "project_id", "team_run_id", "member_run_id", "member_run_generation", "agent_session_id", "agent_session_generation", "agent_member_id", "node_daemon_id", "node_daemon_generation"],
       "properties": {
         "execution_space_id": {"type": "string", "minLength": 1},
         "project_id": {"type": "string", "minLength": 1},
@@ -19,7 +19,10 @@
         "member_run_id": {"type": "string", "minLength": 1},
         "member_run_generation": {"type": "integer", "minimum": 1},
         "agent_session_id": {"type": "string", "minLength": 1},
-        "agent_session_generation": {"type": "integer", "minimum": 1}
+        "agent_session_generation": {"type": "integer", "minimum": 1},
+        "agent_member_id": {"type": "string", "minLength": 1},
+        "node_daemon_id": {"type": "string", "minLength": 1},
+        "node_daemon_generation": {"type": "integer", "minimum": 1}
       }
     },
     "activity": {

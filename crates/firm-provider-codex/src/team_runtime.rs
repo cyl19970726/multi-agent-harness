@@ -1023,39 +1023,6 @@ impl<'a, B: CodexAppServerBridge> TeamRuntimeAdapter for CodexTeamRuntime<'a, B>
         }
     }
 
-    fn project_live(
-        event: &Value,
-    ) -> Option<(harness_runtime_contract::LiveProviderActivityKind, String)> {
-        use harness_runtime_contract::LiveProviderActivityKind;
-        let method = event.get("method").and_then(Value::as_str)?;
-        let params = event.get("params").unwrap_or(event);
-        match method {
-            "item/agentMessage/delta" => Some((
-                LiveProviderActivityKind::ResponseStreaming,
-                "assistant response streaming".to_string(),
-            )),
-            "item/reasoning/summaryTextDelta" => params
-                .get("delta")
-                .and_then(Value::as_str)
-                .filter(|text| !text.trim().is_empty())
-                .map(|text| {
-                    (
-                        LiveProviderActivityKind::Thinking,
-                        text.chars().take(240).collect(),
-                    )
-                }),
-            "item/started" => Some((
-                LiveProviderActivityKind::ToolStarted,
-                "Codex tool started".to_string(),
-            )),
-            "item/completed" => Some((
-                LiveProviderActivityKind::ToolCompleted,
-                "Codex tool completed".to_string(),
-            )),
-            _ => None,
-        }
-    }
-
     fn native_control<'b>(
         close: &'b mut bool,
         interrupt: &'b mut bool,

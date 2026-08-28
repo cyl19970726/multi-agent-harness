@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentfirm.local/schemas/provider-events/provider-native-event-record.schema.json",
+  "title": "ProviderNativeEventRecord",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version","record_id","provider","adapter_version","native_source_ref","agent_member_id","agent_session_id","agent_session_generation","node_daemon_id","node_daemon_generation","ordering_position","observed_at","native_event","source_content_fingerprint","fragments"],
+  "properties": {
+    "schema_version": {"const":"agentfirm.provider_native_event_record.v2"},
+    "record_id": {"type":"string","minLength":1},
+    "provider": {"enum":["codex","claude","kimi","pi","deepseek_harness"]},
+    "adapter_version": {"const":"agentfirm.provider_event_adapter.v2"},
+    "native_source_ref": {"type":"string","pattern":"^provider-source:"},
+    "agent_member_id": {"type":"string","minLength":1},
+    "agent_session_id": {"type":"string","minLength":1},
+    "agent_session_generation": {"type":"integer","minimum":1},
+    "node_daemon_id": {"type":"string","minLength":1},
+    "node_daemon_generation": {"type":"integer","minimum":1},
+    "provider_thread_id": {"type":["string","null"]},
+    "provider_turn_id": {"type":["string","null"]},
+    "provider_event_id": {"type":["string","null"]},
+    "ordering_position": {"type":"integer","minimum":1},
+    "causal_parent_id": {"type":["string","null"]},
+    "correlation_id": {"type":["string","null"]},
+    "runtime_command_id": {"type":["string","null"]},
+    "occurred_at": {"type":["string","null"]},
+    "observed_at": {"type":"string","minLength":1},
+    "native_event": {"description":"Exact response-local provider-native record. Never persisted in a Harness durable store."},
+    "source_content_fingerprint": {"type":"string","pattern":"^sha256:[0-9a-f]{64}$"},
+    "fragments": {"type":"array","minItems":1,"items":{"$ref":"#/$defs/fragment"}}
+  },
+  "$defs": {
+    "fragment": {
+      "type":"object","additionalProperties":false,
+      "required":["fragment_id","fragment_index","semantic_kind","lifecycle_phase","completeness","effect_certainty","visibility","payload"],
+      "properties": {
+        "fragment_id":{"type":"string","minLength":1},
+        "fragment_index":{"type":"integer","minimum":0},
+        "semantic_kind":{"enum":["session_metadata","user_input","reasoning","assistant_response","tool_call_requested","tool_call_started","tool_call_completed","tool_call_failed","command_event","file_event","artifact_created","usage_reported","interaction_required","interaction_resolved","runtime_started","runtime_ready","runtime_stopped","transport_interrupted","turn_completed","turn_failed","turn_cancelled","command_recovery_required","malformed_or_incomplete","unclassified_native"]},
+        "lifecycle_phase":{"enum":["requested","started","progress","terminal","recovery"]},
+        "completeness":{"enum":["partial","complete","incomplete","recovery_required"]},
+        "effect_certainty":{"enum":["none","not_applied","applied","unknown"]},
+        "visibility":{"enum":["team_session","team_public","operator_only"]},
+        "payload":{"type":"object","required":["type"],"properties":{"type":{"enum":["session_metadata","user_input","assistant_response","reasoning","tool","command","file","artifact","usage","interaction","runtime","transport","turn","recovery","malformed","native"]}}}
+      }
+    }
+  }
+}

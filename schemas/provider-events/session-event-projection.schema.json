@@ -6,7 +6,7 @@
   "additionalProperties": false,
   "required": ["schema_version", "agent_session_id", "agent_session_generation", "source_snapshot_fingerprint", "episodes", "truncated", "availability", "unavailable_reason_code", "disabled_reason"],
   "properties": {
-    "schema_version": {"const": "agentfirm.provider_observation.v1"},
+    "schema_version": {"const": "agentfirm.provider_native_event_record.v2"},
     "agent_session_id": {"type": ["string", "null"], "minLength": 1},
     "agent_session_generation": {"type": ["integer", "null"], "minimum": 1},
     "source_snapshot_fingerprint": {"type": ["string", "null"], "pattern": "^sha256:[0-9a-f]{64}$", "description": "Response-local source snapshot fingerprint; not a cursor, replay token, history id, or evidence reference."},
@@ -16,11 +16,11 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["episode_id", "provider_turn_id", "observations", "terminal", "incomplete"],
+        "required": ["episode_id", "provider_turn_id", "records", "terminal", "incomplete"],
         "properties": {
           "episode_id": {"type": "string", "minLength": 1},
           "provider_turn_id": {"type": ["string", "null"], "minLength": 1},
-          "observations": {"type": "array", "minItems": 1, "items": {"$ref": "provider-observation.schema.json"}},
+          "records": {"type": "array", "minItems": 1, "items": {"$ref": "provider-native-event-record.schema.json"}},
           "terminal": {"type": "boolean"},
           "incomplete": {"type": "boolean"}
         }

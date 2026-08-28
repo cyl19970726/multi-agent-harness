@@ -284,16 +284,3 @@ fn rejects_a_native_session_that_would_replay_thinking() {
     assert!(error.to_string().contains("persisted provider thinking"));
     std::fs::remove_dir_all(dir).expect("remove temp dir");
 }
-
-#[test]
-fn live_tool_projection_omits_unknown_names_arguments_and_paths() {
-    let event = serde_json::json!({
-        "type":"tool_execution_start",
-        "toolName":"secret-plugin-name",
-        "args":{"command":"print-secret", "path":"/private/member/file"}
-    });
-    let (_, summary) = PiRpcClient::project_live(&event).expect("tool activity");
-    assert_eq!(summary, "Tool running");
-    assert!(!summary.contains("secret"));
-    assert!(!summary.contains("/private"));
-}

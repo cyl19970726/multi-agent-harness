@@ -159,7 +159,7 @@ fn scan_page_reader(
 
 fn outcome_position(outcome: &DecodeOutcome) -> Option<u64> {
     match outcome {
-        DecodeOutcome::Observation(observation) => Some(observation.ordering_position),
+        DecodeOutcome::Record(record) => Some(record.ordering_position),
     }
 }
 

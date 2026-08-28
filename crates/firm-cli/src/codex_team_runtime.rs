@@ -95,10 +95,6 @@ impl<B: CodexAppServerBridge> rt::TeamRuntimeAdapter for CodexTeamRuntime<'_, B>
         )?)
     }
 
-    fn project_live(event: &serde_json::Value) -> Option<(rt::LiveProviderActivityKind, String)> {
-        harness_provider_codex::CodexTeamRuntime::<B>::project_live(event)
-    }
-
     fn native_control<'b>(
         close: &'b mut bool,
         interrupt: &'b mut bool,

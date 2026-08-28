@@ -1,12 +1,12 @@
 # Canonical Provider Event Projection
 
-Status: current contract through DEV-88.
+Status: current contract through DEV-122.
 
 ## Authority boundary
 
 Provider transcripts remain provider-owned. AgentFirm performs a paged read
-of a server-selected source and converts every complete native row into a
-`ProviderObservation` during an on-demand request. The observation is a
+of a server-selected source and converts every complete native row into one
+`ProviderNativeEventRecord` during an on-demand request. The record is a
 disposable read-model value; it is never Message, Work,
 CanonicalMessageDelivery, Evidence,
 review, or Decision truth.
@@ -14,7 +14,8 @@ review, or Decision truth.
 ```text
 provider source
   -> page scan in provider order (no content filtering or event truncation)
-  -> ProviderObservation + exact response-local native_event
+  -> ProviderNativeEventRecord + exact response-local native_event
+       -> ordered semantic fragments (one native row may yield several)
   -> disposable generation-fenced in-memory fold
        -> local-Operator SessionEventProjection
        -> allowlisted TeamRuntimeActivity
@@ -31,19 +32,19 @@ unconsumed; the on-demand latest projection omits it and reports truncation.
 
 ## Identity and source authority
 
-Every observation binds the exact AgentMember (recorded under its same-ID deprecated AgentIdentity compatibility naming), AgentSession id/generation, and
+Every record binds the exact AgentMember, AgentSession id/generation, and
 NodeDaemon id/generation from server context. Provider JSON cannot select those
 fields, visibility, collaboration/Evidence references, or RuntimeCommand
-authority. The V1 observation schema carries no collaboration-reference field.
+authority. The V2 record schema carries no collaboration-reference field.
 
 Duplicate native rows within one on-demand read are idempotent. Any changed
-envelope under the same observation identity conflicts, even when the native
+envelope under the same record identity conflicts, even when the native
 content fingerprint is unchanged. Late rows are folded by provider ordering
 position. The response exposes a `source_snapshot_fingerprint` only to describe
 that response; it is not a cursor, replay token, stable history ID, or evidence
 reference.
 
-AgentFirm writes no transcript mirror, fold, observation history, or transcript
+AgentFirm writes no transcript mirror, fold, record history, or transcript
 position. A process restart discards every in-memory fold and reads the
 provider-owned source again. The provider-native Session remains the sole
 history and correctness authority.
@@ -74,15 +75,18 @@ provider event plus typed navigation metadata into the serve process; its regist
 holds at most 24 items per exact Execution Space + Project Binding +
 AgentSession + MemberRun generation for 10 seconds. The SSE event name is
 `live_provider_activity`, and the envelope is
-`agentfirm.live_provider_activity_event.v1`. Delivery uses the same local-
+`agentfirm.live_provider_activity_event.v2`. Every live item carries the same
+`ProviderNativeEventRecord` used by a reopened historical read. Delivery uses the same local-
 Operator read policy as history. The browser subscribes to one
 selected Team and AgentMember; SSE fanout remains scoped to that exact
 Execution Space, Project Binding, and AgentMember. Terminal turn state clears the overlay
 immediately; disconnect, TTL expiry, or process restart loses it.
 
 Provider transports are not required to be SSE themselves. Codex app-server,
-Claude SDK, Kimi ACP, Pi RPC, and DeepSeek Cordis events are normalized by
-their runtime adapters; Dashboard delivery uses Harness SSE. NodeDaemon and
+Claude SDK, Kimi ACP, Pi RPC, and DeepSeek Cordis events are decoded by the
+single `firm-provider-events` adapter boundary for both live and reopened
+history; provider runtimes do not own a second live-only classifier. Dashboard
+delivery uses Harness SSE. NodeDaemon and
 `firm serve` are separate processes. When the local Operator opens a stream,
 serve registers a machine-local callback for the selected AgentMember. The
 Unix control socket, exact current NodeDaemon instance, loopback callback
@@ -111,8 +115,10 @@ call/result, command/file event, and raw provider error are not semantically
 filtered or summarized. This content remains response-local/volatile and is
 never written into a Harness Store. Page size, lazy loading, and UI
 virtualization bound resource use without changing or truncating the original
-event. Live SSE and reopened provider history use the same raw-event display
-model.
+event. One native record is retained exactly once while ordered fragments make
+its user input, reasoning, response, tools, commands, files, usage, runtime,
+turn, and error facets independently renderable. Live SSE and reopened provider
+history use the same record and fragment display model.
 
 Canonical
 Message, CanonicalMessageDelivery, Work, report, finding, failure, gate, review, and
@@ -141,8 +147,8 @@ journey.
 
 `terminal` clear is provider-neutral and emitted for every bounded cycle.
 Native event families remain provider-specific and are displayed honestly;
-typed navigation hints are emitted only when the reviewed transport exposes
-them:
+semantic fragments are emitted only when the central reviewed decoder can
+prove them:
 
 | Provider | thinking | response streaming | tool started | tool completed/failed | interaction waiting |
 | --- | --- | --- | --- | --- | --- |
@@ -171,7 +177,8 @@ treated as successful product facts.
 - `crates/firm-provider-events/`: decoders, disposable fold, access policy, and
   paged on-demand reader. It has no persistent store.
 - Agent Workspace consumers bind directly to the versioned JSON Schemas. The
-  browser displays typed navigation metadata and the exact `native_event`; its
+  browser displays ordered semantic fragments and one expandable exact
+  `native_event`; its
   TypeScript ownership remains in the frontend Task.
 - `schemas/provider-events/session-event-projection.schema.json` is the
   historical response contract. `live-provider-activity.schema.json` and

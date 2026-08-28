@@ -41,7 +41,6 @@ const runtimeContractModules = new Map([
     "enum SteerProviderResult",
     "struct SteerRequest",
     "struct CycleControl",
-    "enum LiveProviderActivityKind",
     "trait TeamRuntimeAdapter",
   ]],
   ["control", [
@@ -96,6 +95,11 @@ const runtimeContractModules = new Map([
     "enum RuntimeContractError",
   ]],
 ]);
+rejectText(
+  `${runtimeContractRoot}/cycle.rs`,
+  /LiveProviderActivityKind|project_live\s*\(/,
+  "provider-specific live classifiers are retired; live and reopened events use firm-provider-events",
+);
 const runtimeContractSources = execFileSync(
   "git",
   ["ls-files", "-co", "--exclude-standard", runtimeContractRoot],

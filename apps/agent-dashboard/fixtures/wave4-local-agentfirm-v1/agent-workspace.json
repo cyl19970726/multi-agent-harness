@@ -88,7 +88,7 @@
       "native_session_open_target":null
     },
     "session_event_projection":{
-      "schema_version":"agentfirm.provider_observation.v1",
+      "schema_version":"agentfirm.provider_native_event_record.v2",
       "agent_session_id":null,
       "agent_session_generation":null,
       "source_snapshot_fingerprint":null,

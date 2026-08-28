@@ -81,10 +81,6 @@ impl rt::TeamRuntimeAdapter for PiTeamRuntime {
         )?)
     }
 
-    fn project_live(event: &serde_json::Value) -> Option<(rt::LiveProviderActivityKind, String)> {
-        harness_provider_pi::PiTeamRuntime::project_live(event)
-    }
-
     fn native_control<'a>(
         close: &'a mut bool,
         interrupt: &'a mut bool,

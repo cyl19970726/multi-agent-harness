@@ -1,8 +1,7 @@
 {
-  "schema_version": "agentfirm.provider_observation.v1",
-  "observation_id": "kimi:session-1:event-9",
+  "schema_version": "agentfirm.provider_native_event_record.v2",
   "provider": "kimi",
-  "adapter_version": "agentfirm.provider_event_adapter.v1",
+  "adapter_version": "agentfirm.provider_event_adapter.v2",
   "native_source_ref": "provider-source:provider_session:kimi:9",
   "agent_member_id": "agent-1",
   "agent_session_id": "session-1",
@@ -18,14 +17,25 @@
   "runtime_command_id": "runtime-command-1",
   "occurred_at": "2026-08-13T08:00:09Z",
   "observed_at": "2026-08-13T08:00:10Z",
-  "semantic_kind": "command_recovery_required",
-  "lifecycle_phase": "recovery",
-  "completeness": "recovery_required",
-  "effect_certainty": "unknown",
-  "visibility": "team_public",
-  "redacted": false,
-  "truncated": false,
-  "native_event": {"type":"command_recovery_required","reason_code":"native_effect_unknown"},
+  "native_event": {
+    "type": "command_recovery_required",
+    "reason_code": "native_effect_unknown"
+  },
   "source_content_fingerprint": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-  "payload": {"type": "recovery", "reason_code": "native_effect_unknown"}
+  "record_id": "kimi:session-1:event-9",
+  "fragments": [
+    {
+      "fragment_id": "kimi:session-1:event-9:fragment-0",
+      "fragment_index": 0,
+      "semantic_kind": "command_recovery_required",
+      "lifecycle_phase": "recovery",
+      "completeness": "recovery_required",
+      "effect_certainty": "unknown",
+      "visibility": "team_public",
+      "payload": {
+        "type": "recovery",
+        "reason_code": "native_effect_unknown"
+      }
+    }
+  ]
 }

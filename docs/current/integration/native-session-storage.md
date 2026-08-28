@@ -1,7 +1,7 @@
 # Provider-native session adapter contract
 
 ```text
-status: implemented_v1_and_extension_contract
+status: implemented_v2_and_extension_contract
 owner_role: provider-integration
 canonical_for: native session binding, reading, resume, availability, and Dashboard projection
 decision: ADR 0032
@@ -22,9 +22,9 @@ This contract defines the adapter seam between:
 - provider-native execution truth (chat, tools, commands, file events, turns,
   native children, and resume data).
 
-## Implemented V1 surface and extension seam
+## Implemented V2 surface and extension seam
 
-V1 implements mode-aware binding, availability probing, local-Operator paged
+V2 implements mode-aware binding, availability probing, local-Operator paged
 on-demand reads, and explicit provider-native resume through provider-specific
 Rust functions. History is exposed only in the loopback AgentWorkspace
 projection; the old run-addressed HTTP readers are retired. It does not expose
@@ -58,20 +58,23 @@ NativeActivityPage
   availability
   source_snapshot_fingerprint   # response-local; not a cursor
   records[]
-    kind = user_message | assistant_message | tool | command | file |
-           approval_request | provider_child | turn_status | error
-    native_id
-    native_parent_id?
-    status
-    exact provider-native event + navigation metadata
-    occurred_at?
-    artifact_ref?
+    exact provider-native event             # present once, unchanged
+    ordered semantic fragments[]            # zero-copy navigation/display model
+      kind = user_input | reasoning | assistant_response | tool_call_* |
+             command_event | file_event | usage_reported | turn_* | provider error
+    native id, parent/correlation, ordering, provider/session/daemon fences
 ```
 
 The same-machine local Operator receives the complete provider-native
 event, including user, reasoning, response, tool, command/file, and raw error
 fields. Provider-specific fields stay inside `native_event`; Harness does not
 reinterpret them as coordination truth.
+
+The same central decoder builds both the volatile live SSE record and the
+reopened historical record. Provider runtimes do not maintain parallel live
+summary classifiers. One native event may yield several ordered fragments—for
+example Claude reasoning, assistant text, and tool use—without duplicating the
+raw provider event.
 
 ## Binding contract
 
@@ -151,6 +154,11 @@ rendered list; it never changes or truncates an original event.
 Typed `availability` and `unavailable_reason_code` distinguish an available
 empty Session from a missing, unsupported, or failed reader; prose remains
 display detail, not state.
+
+Claude persists the verified `system(init).session_id` binding as soon as the
+provider emits it, before the bounded cycle reaches a terminal result. A later
+idle timeout therefore cannot erase an already verified provider-native Session
+from the canonical MemberRun projection.
 
 ## Execution-root boundary
 

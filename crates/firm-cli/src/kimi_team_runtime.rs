@@ -90,10 +90,6 @@ impl rt::TeamRuntimeAdapter for KimiTeamRuntime<'_> {
         )?)
     }
 
-    fn project_live(event: &serde_json::Value) -> Option<(rt::LiveProviderActivityKind, String)> {
-        harness_provider_kimi::KimiTeamRuntime::project_live(event)
-    }
-
     fn native_control<'b>(
         close: &'b mut bool,
         interrupt: &'b mut bool,

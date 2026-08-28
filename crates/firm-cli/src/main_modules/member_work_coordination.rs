@@ -9,7 +9,6 @@ pub(crate) enum LiveProviderActivityUpdate {
         member_run_id: String,
         member_run_generation: u64,
         provider: String,
-        kind: provider_event_api::LiveProviderActivityKind,
         native_event: serde_json::Value,
     },
     Terminal {
@@ -40,7 +39,6 @@ pub(super) fn emit_live_provider_activity(
     sink: &LiveMemberActivitySink,
     ledger: &TeamRunLedger,
     member: &ProviderRuntimeProjection,
-    kind: provider_event_api::LiveProviderActivityKind,
     native_event: serde_json::Value,
 ) {
     sink(LiveProviderActivityUpdate::Updated {
@@ -49,7 +47,6 @@ pub(super) fn emit_live_provider_activity(
         member_run_id: member.id.clone(),
         member_run_generation: member.runtime_generation,
         provider: member.provider.clone(),
-        kind,
         native_event,
     });
 }

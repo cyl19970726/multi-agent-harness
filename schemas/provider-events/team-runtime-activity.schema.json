@@ -4,9 +4,10 @@
   "title": "TeamRuntimeActivity",
   "type": "object",
   "additionalProperties": false,
-  "required": ["observation_id", "agent_member_id", "semantic_kind", "lifecycle_phase", "completeness", "effect_certainty", "occurred_at", "payload"],
+  "required": ["record_id", "fragment_id", "agent_member_id", "semantic_kind", "lifecycle_phase", "completeness", "effect_certainty", "occurred_at", "payload"],
   "properties": {
-    "observation_id": {"type": "string", "minLength": 1},
+    "record_id": {"type": "string", "minLength": 1},
+    "fragment_id": {"type": "string", "minLength": 1},
     "agent_member_id": {"type": "string", "minLength": 1},
     "semantic_kind": {"enum": ["interaction_required", "interaction_resolved", "runtime_started", "runtime_ready", "runtime_stopped", "transport_interrupted", "command_recovery_required"]},
     "lifecycle_phase": {"enum": ["requested", "started", "progress", "terminal", "recovery"]},

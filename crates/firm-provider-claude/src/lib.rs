@@ -545,9 +545,16 @@ impl ClaudeRunnerTransport {
                 }
                 continue;
             };
+            // `session_bound` is the provider's exact native-session proof.
+            // Verify and freeze it before exposing the raw event to the
+            // application callback so a later timeout cannot erase a valid
+            // binding or make the callback persist unverified provider data.
+            if event.name == "session_bound" {
+                self.accept_session_binding(&event)?;
+            }
             on_event(&event.raw);
             match event.name.as_str() {
-                "session_bound" => self.accept_session_binding(&event)?,
+                "session_bound" => {}
                 "assistant_message" => {
                     saw_assistant_message = true;
                     let (text, tools) = assistant_projection(&event.data);
@@ -1016,32 +1023,6 @@ impl TeamRuntimeAdapter for ClaudeTeamRuntime {
             on_event,
             poll_control,
         )
-    }
-
-    fn project_live(
-        event: &Value,
-    ) -> Option<(harness_runtime_contract::LiveProviderActivityKind, String)> {
-        if event.get("event").and_then(Value::as_str) != Some("assistant_message") {
-            return None;
-        }
-        let data = event.get("data")?;
-        let (text, tools) = assistant_projection(data);
-        if tools > 0 {
-            Some((
-                harness_runtime_contract::LiveProviderActivityKind::ToolStarted,
-                "tool started".into(),
-            ))
-        } else if !text.is_empty() {
-            Some((
-                harness_runtime_contract::LiveProviderActivityKind::ResponseStreaming,
-                format!(
-                    "assistant response streaming · {} chars",
-                    text.chars().count()
-                ),
-            ))
-        } else {
-            None
-        }
     }
 
     fn native_control<'a>(

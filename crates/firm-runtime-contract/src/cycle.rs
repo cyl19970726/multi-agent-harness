@@ -82,18 +82,6 @@ pub struct CycleControl {
     pub fatal_error: Option<String>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum LiveProviderActivityKind {
-    NativeEvent,
-    Thinking,
-    ResponseStreaming,
-    ToolStarted,
-    ToolCompleted,
-    ToolFailed,
-    InteractionWaiting,
-}
-
 /// Provider-neutral executable binding for one persistent Agent Team member.
 /// The application supervisor owns queueing, authority, and durable effects;
 /// implementations own only native runtime behavior.
@@ -126,9 +114,6 @@ pub trait TeamRuntimeAdapter: RuntimeAdapter {
         on_event: &mut dyn FnMut(&serde_json::Value),
         poll_control: &mut dyn FnMut() -> CycleControl,
     ) -> Result<ExecutionCycleOutcome, Self::Error>;
-    fn project_live(event: &serde_json::Value) -> Option<(LiveProviderActivityKind, String)>
-    where
-        Self: Sized;
     fn native_control<'a>(
         close: &'a mut bool,
         interrupt: &'a mut bool,

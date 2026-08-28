@@ -473,60 +473,6 @@ impl harness_runtime_contract::TeamRuntimeAdapter for KimiTeamRuntime<'_> {
         })
     }
 
-    fn project_live(
-        event: &Value,
-    ) -> Option<(harness_runtime_contract::LiveProviderActivityKind, String)> {
-        use harness_runtime_contract::LiveProviderActivityKind;
-        if event.get("method").and_then(Value::as_str) == Some("session/request_permission") {
-            return Some((
-                LiveProviderActivityKind::InteractionWaiting,
-                "Kimi is waiting for interaction".to_string(),
-            ));
-        }
-        let kind = event.get("sessionUpdate").and_then(Value::as_str)?;
-        match kind {
-            "agent_thought_chunk" => Some((
-                LiveProviderActivityKind::Thinking,
-                "Kimi is thinking".to_string(),
-            )),
-            "agent_message_chunk" => Some((
-                LiveProviderActivityKind::ResponseStreaming,
-                format!(
-                    "assistant response streaming · {} chars",
-                    event
-                        .pointer("/content/text")
-                        .and_then(Value::as_str)
-                        .map(str::len)
-                        .unwrap_or(0)
-                ),
-            )),
-            "tool_call" => Some((
-                LiveProviderActivityKind::ToolStarted,
-                "tool started".to_string(),
-            )),
-            "tool_call_update" => {
-                let status = event.get("status").and_then(Value::as_str).unwrap_or("");
-                let failed = matches!(status, "failed" | "error" | "cancelled" | "canceled");
-                let terminal = failed || matches!(status, "completed" | "success" | "succeeded");
-                terminal.then(|| {
-                    (
-                        if failed {
-                            LiveProviderActivityKind::ToolFailed
-                        } else {
-                            LiveProviderActivityKind::ToolCompleted
-                        },
-                        if failed {
-                            "tool failed".to_string()
-                        } else {
-                            "tool completed".to_string()
-                        },
-                    )
-                })
-            }
-            _ => None,
-        }
-    }
-
     fn native_control<'b>(
         close: &'b mut bool,
         interrupt: &'b mut bool,
@@ -1129,41 +1075,6 @@ mod tests {
             status("inject_current_cycle"),
             harness_runtime_contract::CapabilityStatus::Unsupported
         );
-    }
-
-    #[test]
-    fn live_projection_never_copies_thought_or_tool_payload_content() {
-        let thought = serde_json::json!({
-            "sessionUpdate": "agent_thought_chunk",
-            "content": {"text": "secret chain of thought"}
-        });
-        let (_, preview) = KimiTeamRuntime::project_live(&thought).expect("thought phase");
-        assert_eq!(preview, "Kimi is thinking");
-        assert!(!preview.contains("secret"));
-
-        let tool = serde_json::json!({
-            "sessionUpdate": "tool_call",
-            "title": "cat /private/secret",
-            "rawInput": {"token": "credential"}
-        });
-        let (_, preview) = KimiTeamRuntime::project_live(&tool).expect("tool phase");
-        assert_eq!(preview, "tool started");
-        assert!(!preview.contains("private"));
-        assert!(!preview.contains("credential"));
-
-        let interaction = serde_json::json!({
-            "jsonrpc":"2.0",
-            "id":7,
-            "method":"session/request_permission",
-            "params":{"sessionId":"scripted-session"}
-        });
-        let (kind, preview) =
-            KimiTeamRuntime::project_live(&interaction).expect("reverse request waiting phase");
-        assert_eq!(
-            kind,
-            harness_runtime_contract::LiveProviderActivityKind::InteractionWaiting
-        );
-        assert_eq!(preview, "Kimi is waiting for interaction");
     }
 
     #[cfg(unix)]
