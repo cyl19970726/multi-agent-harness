@@ -513,6 +513,13 @@ fn github_issue_and_pr_linkage_roundtrip() {
         "issue state must be snapshotted: {issue_link}"
     );
     let work_id = created["id"].as_str().expect("work id").to_string();
+    record_provider_received_work(
+        &home,
+        &project_id,
+        &run_id,
+        &work_id,
+        "github-roundtrip-provider-received",
+    );
 
     // Member starts and submits with a PR: the PR link + CI snapshot attach
     // while the issue link from create is preserved (merge, not replace).
@@ -895,6 +902,13 @@ fn github_pr_merge_on_red_ci_is_held_for_host() {
     );
     let created = serde_json::to_value(assigned).expect("assigned Work JSON");
     let work_id = created["id"].as_str().expect("work id").to_string();
+    record_provider_received_work(
+        &home,
+        &project_id,
+        &run_id,
+        &work_id,
+        "github-red-ci-provider-received",
+    );
     assert_eq!(
         created["github_links"][0]["ci_status"].as_str(),
         Some("failure"),
