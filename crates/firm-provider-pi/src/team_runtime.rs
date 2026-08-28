@@ -548,17 +548,6 @@ impl harness_runtime_contract::RuntimeAdapter for PiTeamRuntime {
             fence,
             harness_runtime_contract::SemanticCapability::CloseRuntime,
         )?;
-        let (writable_children, writable_children_evidence) =
-            self.client.writable_children_drain_proof();
-        if writable_children != RuntimePostconditionStatus::Satisfied {
-            return Err(
-                harness_runtime_contract::RuntimeContractError::CapabilityAdmissionDenied {
-                    capability: harness_runtime_contract::SemanticCapability::CloseRuntime,
-                    admission: harness_core::ProviderBindingAdmission::PendingDependency,
-                    reasons: vec![writable_children_evidence],
-                },
-            );
-        }
         let session_file = self.client.session_file().to_string();
         let boundary = self
             .client
@@ -598,7 +587,8 @@ impl harness_runtime_contract::RuntimeAdapter for PiTeamRuntime {
                     "pi.owned_process_group_released:transport_alive={};process_alive={}",
                     observation.transport_alive, observation.process_alive
                 ),
-                writable_children_evidence,
+                "pi.team_close_scope:writable-child drain and durable flush are not claimed"
+                    .to_string(),
                 format!("pi.native_session_retained:{session_file}"),
             ],
         };

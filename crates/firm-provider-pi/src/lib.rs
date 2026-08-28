@@ -667,9 +667,9 @@ impl PiRpcClient {
         );
         observation.transport_alive = false;
         observation.process_alive = false;
-        // A successful quiesce is the prerequisite for a successful Close;
-        // release itself only proves process death and does not invent queue
-        // drain evidence.
+        // Reaping the owned Pi process proves the narrow Team Close boundary.
+        // It does not invent the stronger writable-child drain or durable-flush
+        // evidence required by Quiesce/Release.
         self.last_observation = Some(observation.clone());
         Ok(observation)
     }
