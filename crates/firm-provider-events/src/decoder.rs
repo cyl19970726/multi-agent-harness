@@ -42,6 +42,7 @@ pub fn adapter_manifest(provider: ProviderKind) -> AdapterManifest {
             &["event_msg", "response_item", "turn_notification"][..],
             true,
             &[
+                SemanticKind::Reasoning,
                 SemanticKind::AssistantResponse,
                 SemanticKind::ToolCallRequested,
                 SemanticKind::ToolCallStarted,
@@ -54,9 +55,11 @@ pub fn adapter_manifest(provider: ProviderKind) -> AdapterManifest {
             ][..],
         ),
         ProviderKind::Claude => (
-            &["message", "stream_event", "result"][..],
+            &["session_bound", "message", "stream_event", "result"][..],
             false,
             &[
+                SemanticKind::SessionMetadata,
+                SemanticKind::Reasoning,
                 SemanticKind::AssistantResponse,
                 SemanticKind::ToolCallRequested,
                 SemanticKind::ToolCallCompleted,
@@ -70,6 +73,7 @@ pub fn adapter_manifest(provider: ProviderKind) -> AdapterManifest {
             &["turn", "context.append_loop_event", "acp_notification"][..],
             false,
             &[
+                SemanticKind::Reasoning,
                 SemanticKind::AssistantResponse,
                 SemanticKind::ToolCallRequested,
                 SemanticKind::ToolCallCompleted,
@@ -83,6 +87,7 @@ pub fn adapter_manifest(provider: ProviderKind) -> AdapterManifest {
             &["rpc_event", "message"][..],
             false,
             &[
+                SemanticKind::Reasoning,
                 SemanticKind::AssistantResponse,
                 SemanticKind::ToolCallStarted,
                 SemanticKind::ToolCallCompleted,
@@ -104,6 +109,7 @@ pub fn adapter_manifest(provider: ProviderKind) -> AdapterManifest {
             ][..],
             true,
             &[
+                SemanticKind::Reasoning,
                 SemanticKind::AssistantResponse,
                 SemanticKind::ToolCallStarted,
                 SemanticKind::ToolCallCompleted,
@@ -125,6 +131,7 @@ fn manifest(
 ) -> AdapterManifest {
     let has = |kind| supported.contains(&kind);
     let mut supported_semantic_kinds = supported.to_vec();
+    supported_semantic_kinds.push(SemanticKind::MalformedOrIncomplete);
     supported_semantic_kinds.push(SemanticKind::UnclassifiedNative);
     AdapterManifest {
         provider,
@@ -244,16 +251,25 @@ pub fn decode_native_event(
     event: NativeEvent,
 ) -> Result<DecodeOutcome, DecodeError> {
     validate_context(context, &event)?;
-    let decoded = if let Some(common) = decode_common(&event)? {
-        vec![common]
-    } else {
-        match context.provider {
+    let decoded = match decode_common(&event) {
+        Ok(Some(common)) => Ok(vec![common]),
+        Ok(None) => match context.provider {
             ProviderKind::Codex => decode_codex(&event).map(one_or_empty),
             ProviderKind::Claude => decode_claude(&event),
             ProviderKind::Kimi => decode_kimi(&event).map(one_or_empty),
             ProviderKind::Pi => decode_pi(&event).map(one_or_empty),
             ProviderKind::DeepseekHarness => decode_deepseek_harness(&event).map(one_or_empty),
-        }?
+        },
+        Err(error) => Err(error),
+    };
+    // A complete, valid JSON row is always observable even when a provider
+    // version emits an incomplete recognized shape. Semantic classification
+    // failure is an operator diagnostic, never a reason to panic the live
+    // stream or make the reopened native Session unreadable.
+    let decoded = match decoded {
+        Ok(decoded) => decoded,
+        Err(DecodeError::Malformed(reason)) => vec![malformed(reason)],
+        Err(error) => return Err(error),
     };
     let decoded = if decoded.is_empty() {
         vec![native(&event.raw)]
@@ -328,6 +344,16 @@ pub fn decode_native_event(
 
 fn one_or_empty(decoded: Option<Decoded>) -> Vec<Decoded> {
     decoded.into_iter().collect()
+}
+
+fn malformed(reason: &'static str) -> Decoded {
+    private(
+        FragmentPayload::Malformed {
+            reason_code: format!("recognized_native_shape_incomplete:{reason}"),
+        },
+        SemanticKind::MalformedOrIncomplete,
+        LifecyclePhase::Recovery,
+    )
 }
 
 fn decode_common(event: &NativeEvent) -> Result<Option<Decoded>, DecodeError> {

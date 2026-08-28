@@ -298,14 +298,14 @@ function NativeEventRecord({record,fragment,episodeTerminal,actorName,selected,o
 function CurrentExecutionSlot({activity}:{activity:LiveProviderActivity}){
   const latest=activity.items[activity.items.length-1];
   if(!latest)return null;
-  const fragment=latest.record.fragments[latest.record.fragments.length-1];
-  if(!fragment)return null;
-  const status=fragmentStatus(fragment);
-  const presentation=eventPresentation(fragmentPresentationKind(fragment),status);
+  if(latest.record.fragments.length===0)return null;
+  const terminalFragment=latest.record.fragments[latest.record.fragments.length-1]!;
+  const status=fragmentStatus(terminalFragment);
+  const presentation=eventPresentation(fragmentPresentationKind(terminalFragment),status);
   const Icon=presentation.icon;
   return <section className="aw-current-execution" data-family={presentation.family} data-status={status} aria-label="Current provider execution" aria-live="polite">
     <span className="aw-current-execution__pulse" aria-hidden="true"><Icon/></span>
-    <span className="aw-current-execution__copy"><span className="aw-current-execution__eyebrow">Live SSE · shared native event model</span><strong>{humanizeToken(fragment.semantic_kind)}</strong><FragmentBody fragment={fragment}/></span>
+    <div className="aw-current-execution__copy"><span className="aw-current-execution__eyebrow">Live SSE · shared native event model</span>{latest.record.fragments.map(fragment=><div key={fragment.fragment_id}><strong>{humanizeToken(fragment.semantic_kind)}</strong><FragmentBody fragment={fragment}/></div>)}<details className="mt-2"><summary>Original provider-native record</summary><NativeEventBody value={latest.record.native_event}/></details></div>
     <span className="aw-current-execution__source"><b>{humanizeToken(latest.record.provider)}</b><small>{activity.items.length} current</small></span>
   </section>;
 }
@@ -334,7 +334,7 @@ function ExpandableEvent({record,fragment,selected,onSelect}:{record:ProviderNat
 
 function FragmentBody({fragment}:{fragment:ProviderEventFragment}){
   const payload=fragment.payload;
-  if(payload.type==="assistant_response"||payload.type==="reasoning"||payload.type==="user_input")return <div className="aw-authored-body"><Markdown source={payload.text}/></div>;
+  if(payload.type==="assistant_response"||payload.type==="reasoning")return <div className="aw-authored-body"><Markdown source={payload.text}/></div>;
   return <pre className="aw-native-event-body" aria-label="Provider-native event fragment">{JSON.stringify(payload,null,2)}</pre>;
 }
 
@@ -579,7 +579,7 @@ function rosterStateTone(state:string){if(/running|active/.test(state))return "t
 function rosterStateLabel(agent:AgentWorkspaceRosterItem){const state=agent.runtime_state??agent.capacity??"unknown";if(agent.is_host&&agent.host_session_mode==="external_interactive"&&/running|active/.test(state))return{word:"External · unmanaged",tone:"text-status-warn"};return{word:humanizeToken(state),tone:rosterStateTone(state)};}
 function timestampKey(value:string|null|undefined){if(!value)return 0;if(value.startsWith("unix-ms:")){const parsed=Number(value.slice(8));return Number.isFinite(parsed)?parsed:0;}const parsed=Date.parse(value);return Number.isFinite(parsed)?parsed:0}
 function recordTime(record:ProviderNativeEventRecord){return record.occurred_at??record.observed_at}
-function fragmentPresentationKind(fragment:ProviderEventFragment){if(fragment.semantic_kind==="reasoning")return "thinking";if(fragment.semantic_kind.startsWith("tool_call_")||fragment.semantic_kind==="command_event"||fragment.semantic_kind==="file_event")return "tool";if(fragment.semantic_kind==="assistant_response"||fragment.semantic_kind==="user_input")return "message";if(fragment.semantic_kind==="artifact_created")return "artifact";return "runtime"}
+function fragmentPresentationKind(fragment:ProviderEventFragment){if(fragment.semantic_kind==="reasoning")return "thinking";if(fragment.semantic_kind.startsWith("tool_call_"))return "tool";if(fragment.semantic_kind==="assistant_response")return "message";if(fragment.semantic_kind==="artifact_created")return "artifact";return "runtime"}
 function fragmentStatus(fragment:ProviderEventFragment){if(fragment.semantic_kind==="tool_call_failed"||fragment.semantic_kind==="turn_failed")return "failed";if(fragment.lifecycle_phase==="terminal")return "completed";return "running"}
 export function isUnexpiredActivity(activity:LiveProviderActivity,now=Date.now()){return activity.expires_unix_ms>now}
 export function selectAgentWorkspaceLiveActivity({activity,projectionScope,executionSpaceId,projectId,teamRunId,memberRunId,memberRunGeneration,sessionId,sessionGeneration,now=Date.now()}:{activity?:LiveProviderActivity|null;projectionScope:AgentWorkspaceData["projection_scope"];executionSpaceId:string;projectId:string;teamRunId:string|null;memberRunId:string|null;memberRunGeneration:number|null|undefined;sessionId:string|null;sessionGeneration:number|null|undefined;now?:number}){

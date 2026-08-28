@@ -351,20 +351,17 @@ export interface HostConsoleData {
   member_runtime:MemberCapacitySummary[]; runtime_recovery:RoleRecordSummary[]; pressure_summary:TeamPressureSummary; collaboration:CollaborationProjectionSummary; runtime_fabric:RuntimeFabricSummary;
 }
 export type ProviderEventSemanticKind =
-  | "session_metadata" | "user_input" | "reasoning" | "assistant_response"
+  | "session_metadata" | "reasoning" | "assistant_response"
   | "tool_call_requested" | "tool_call_started" | "tool_call_completed" | "tool_call_failed"
-  | "command_event" | "file_event" | "artifact_created" | "usage_reported" | "interaction_required" | "interaction_resolved"
+  | "artifact_created" | "usage_reported" | "interaction_required" | "interaction_resolved"
   | "runtime_started" | "runtime_ready" | "runtime_stopped" | "transport_interrupted"
   | "turn_completed" | "turn_failed" | "turn_cancelled"
   | "command_recovery_required" | "malformed_or_incomplete" | "unclassified_native";
 export type ProviderEventPayload =
   | {type:"session_metadata";native_session_id?:string|null}
-  | {type:"user_input";text:string}
   | {type:"assistant_response";text:string}
   | {type:"reasoning";text:string}
   | {type:"tool";tool_name:string;call_id?:string|null;display_detail?:string|null}
-  | {type:"command";command?:string|null;status?:string|null}
-  | {type:"file";path?:string|null;action?:string|null}
   | {type:"artifact";display_name:string;media_type?:string|null;content_digest?:string|null}
   | {type:"usage";input_tokens?:number|null;output_tokens?:number|null;total_tokens?:number|null}
   | {type:"interaction";reason_code:string;prompt:string}

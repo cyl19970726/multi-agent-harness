@@ -111,13 +111,15 @@ containment remain mandatory.
 
 The local Operator receives the provider event as it exists at the
 native boundary: user input, thinking/reasoning, assistant response, tool
-call/result, command/file event, and raw provider error are not semantically
-filtered or summarized. This content remains response-local/volatile and is
+call/result, command/file fields, and raw provider error are not removed or
+summarized. Exact provider fields without a reviewed semantic decoder remain
+available in expandable `native_event`; the adapter manifest claims only the
+fragments its decoder actually emits. This content remains response-local/volatile and is
 never written into a Harness Store. Page size, lazy loading, and UI
 virtualization bound resource use without changing or truncating the original
 event. One native record is retained exactly once while ordered fragments make
-its user input, reasoning, response, tools, commands, files, usage, runtime,
-turn, and error facets independently renderable. Live SSE and reopened provider
+the currently declared reasoning, response, tool, artifact, usage, runtime,
+turn, and diagnostic facets independently renderable. Live SSE and reopened provider
 history use the same record and fragment display model.
 
 Canonical

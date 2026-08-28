@@ -60,15 +60,17 @@ NativeActivityPage
   records[]
     exact provider-native event             # present once, unchanged
     ordered semantic fragments[]            # zero-copy navigation/display model
-      kind = user_input | reasoning | assistant_response | tool_call_* |
-             command_event | file_event | usage_reported | turn_* | provider error
+      kind = session_metadata | reasoning | assistant_response | tool_call_* |
+             artifact_created | usage_reported | runtime_* | turn_* | diagnostic
     native id, parent/correlation, ordering, provider/session/daemon fences
 ```
 
 The same-machine local Operator receives the complete provider-native
 event, including user, reasoning, response, tool, command/file, and raw error
-fields. Provider-specific fields stay inside `native_event`; Harness does not
-reinterpret them as coordination truth.
+fields. Provider-specific fields stay inside expandable `native_event`; only
+semantic kinds listed by the provider's executable adapter manifest become
+fragments. Harness does not reinterpret the remaining fields as coordination
+truth.
 
 The same central decoder builds both the volatile live SSE record and the
 reopened historical record. Provider runtimes do not maintain parallel live

@@ -74,6 +74,15 @@ for (const required of ["native_event", "LiveProviderTurnGuard"]) {
   if (!runtime.includes(required)) failures.push(`runtime native-event contract missing ${required}`);
 }
 const validRecord = readJson(join(root, "fixtures/valid/codex-authored.json"));
+for (const [label, mutate] of [
+  ["payload fields are required", record => { delete record.fragments[0].payload.text; }],
+  ["semantic kind and payload are paired", record => { record.fragments[0].semantic_kind = "reasoning"; }],
+  ["payload fields are closed", record => { record.fragments[0].payload.unreviewed = true; }],
+]) {
+  const invalid = structuredClone(validRecord);
+  mutate(invalid);
+  if (validateRecord(invalid)) failures.push(`record schema is not closed: ${label}`);
+}
 const sessionEnvelope = {
   schema_version: "agentfirm.provider_native_event_record.v2",
   agent_session_id: "session-1",

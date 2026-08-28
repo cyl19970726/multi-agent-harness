@@ -30,15 +30,12 @@ impl ProviderKind {
 #[serde(rename_all = "snake_case")]
 pub enum SemanticKind {
     SessionMetadata,
-    UserInput,
     Reasoning,
     AssistantResponse,
     ToolCallRequested,
     ToolCallStarted,
     ToolCallCompleted,
     ToolCallFailed,
-    CommandEvent,
-    FileEvent,
     ArtifactCreated,
     UsageReported,
     InteractionRequired,
@@ -102,9 +99,6 @@ pub enum FragmentPayload {
         #[serde(default)]
         native_session_id: Option<String>,
     },
-    UserInput {
-        text: String,
-    },
     AssistantResponse {
         text: String,
     },
@@ -117,18 +111,6 @@ pub enum FragmentPayload {
         call_id: Option<String>,
         #[serde(default)]
         display_detail: Option<String>,
-    },
-    Command {
-        #[serde(default)]
-        command: Option<String>,
-        #[serde(default)]
-        status: Option<String>,
-    },
-    File {
-        #[serde(default)]
-        path: Option<String>,
-        #[serde(default)]
-        action: Option<String>,
     },
     Artifact {
         display_name: String,
@@ -293,12 +275,10 @@ impl ProviderNativeEventRecord {
                 ) | (
                     SemanticKind::SessionMetadata,
                     FragmentPayload::SessionMetadata { .. }
-                ) | (SemanticKind::UserInput, FragmentPayload::UserInput { .. })
-                    | (
-                        SemanticKind::AssistantResponse,
-                        FragmentPayload::AssistantResponse { .. }
-                    )
-                    | (SemanticKind::Reasoning, FragmentPayload::Reasoning { .. })
+                ) | (
+                    SemanticKind::AssistantResponse,
+                    FragmentPayload::AssistantResponse { .. }
+                ) | (SemanticKind::Reasoning, FragmentPayload::Reasoning { .. })
                     | (
                         SemanticKind::ToolCallRequested
                             | SemanticKind::ToolCallStarted
@@ -306,8 +286,6 @@ impl ProviderNativeEventRecord {
                             | SemanticKind::ToolCallFailed,
                         FragmentPayload::Tool { .. }
                     )
-                    | (SemanticKind::CommandEvent, FragmentPayload::Command { .. })
-                    | (SemanticKind::FileEvent, FragmentPayload::File { .. })
                     | (
                         SemanticKind::ArtifactCreated,
                         FragmentPayload::Artifact { .. }

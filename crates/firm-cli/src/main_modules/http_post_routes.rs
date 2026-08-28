@@ -215,7 +215,7 @@ impl HttpExchange<'_> {
                             scope.clone(),
                             &member.provider,
                             native_event,
-                        );
+                        )?;
                         provider_event_api::updated_live_event(&scope, activity)
                     }
                     LiveProviderActivityUpdate::Terminal { .. } => {

@@ -169,8 +169,13 @@ pub(crate) fn read_historical_projection(
     Ok(projection)
 }
 
-pub(crate) fn record_live(scope: LiveProviderScope, provider: &str, native_event: Value) -> Value {
+pub(crate) fn record_live(
+    scope: LiveProviderScope,
+    provider: &str,
+    native_event: Value,
+) -> CliResult<Value> {
     record_live_at(scope, provider, native_event, now_unix_ms())
+        .map_err(|error| CliError::Usage(error.to_string()))
 }
 
 fn record_live_at(
@@ -178,7 +183,7 @@ fn record_live_at(
     provider: &str,
     native_event: Value,
     now: u64,
-) -> Value {
+) -> Result<Value, harness_provider_events::DecodeError> {
     let expires = now.saturating_add(LIVE_TTL_MS);
     let registry = LIVE_REGISTRY.get_or_init(|| Mutex::new(LiveRegistry::default()));
     let mut registry = registry.lock().unwrap_or_else(|error| error.into_inner());
@@ -226,8 +231,7 @@ fn record_live_at(
             occurred_at,
             raw: native_event,
         },
-    )
-    .expect("validated provider live event must decode through the shared adapter");
+    )?;
     let items = registry.items.entry(scope.clone()).or_default();
     items.push_back(LiveProviderItem {
         runtime_event_locator: format!("runtime-event-{locator}"),
@@ -238,7 +242,7 @@ fn record_live_at(
     while items.len() > MAX_LIVE_ITEMS {
         items.pop_front();
     }
-    snapshot_locked(&registry, &scope).expect("recorded live scope must have a snapshot")
+    Ok(snapshot_locked(&registry, &scope).expect("recorded live scope must have a snapshot"))
 }
 
 pub(crate) fn live_snapshot(scope: &LiveProviderScope) -> Option<Value> {
@@ -526,13 +530,31 @@ mod tests {
             "kimi",
             serde_json::json!({"type": "thinking"}),
             100,
-        );
+        )
+        .unwrap();
         assert_eq!(activity["project_id"], "project-a");
         assert_eq!(activity["execution_space_id"], "space-a");
         assert_eq!(activity["agent_session_id"], "agent-session-1");
         assert!(live_snapshot_at(&project_b, 101).is_none());
         assert!(live_snapshot_at(&project_a, 100 + LIVE_TTL_MS - 1).is_some());
         assert!(live_snapshot_at(&project_a, 100 + LIVE_TTL_MS).is_none());
+    }
+
+    #[test]
+    fn live_incomplete_recognized_event_preserves_raw_without_panicking() {
+        let _guard = test_guard();
+        reset_live_for_test();
+        let raw = serde_json::json!({
+            "type":"event_msg",
+            "payload":{"type":"agent_message"}
+        });
+        let activity =
+            record_live_at(scope("space-a", "project-a", 1), "codex", raw.clone(), 100).unwrap();
+        assert_eq!(
+            activity["items"][0]["record"]["fragments"][0]["semantic_kind"],
+            "malformed_or_incomplete"
+        );
+        assert_eq!(activity["items"][0]["record"]["native_event"], raw);
     }
 
     #[test]
@@ -546,13 +568,15 @@ mod tests {
             "codex",
             serde_json::json!({"type": "tool_started"}),
             100,
-        );
+        )
+        .unwrap();
         record_live_at(
             generation_two.clone(),
             "codex",
             serde_json::json!({"type": "response_streaming"}),
             100,
-        );
+        )
+        .unwrap();
         let event = clear_live_terminal(&generation_one);
         assert_eq!(event["reason"], "terminal");
         assert!(event["activity"].is_null());
@@ -571,7 +595,8 @@ mod tests {
             "codex",
             serde_json::json!({"type": "response_streaming"}),
             100,
-        );
+        )
+        .unwrap();
         clear_live_terminal(&old_adapter);
         assert!(live_snapshot_at(&reopened_adapter, 101).is_some());
     }
@@ -589,7 +614,8 @@ mod tests {
                 "claude",
                 serde_json::json!({"type": "thinking"}),
                 100,
-            );
+            )
+            .unwrap();
         }
         clear_live_for_session_ids(
             "space-a",
@@ -615,13 +641,15 @@ mod tests {
             "codex",
             serde_json::json!({"type": "thinking"}),
             100,
-        );
+        )
+        .unwrap();
         let sibling = record_live_at(
             owner_two,
             "kimi",
             serde_json::json!({"type": "thinking"}),
             101,
-        );
+        )
+        .unwrap();
         assert_eq!(first["runtime_snapshot_locator"], "runtime-snapshot-1");
         assert_eq!(sibling["runtime_snapshot_locator"], "runtime-snapshot-1");
         assert_eq!(
@@ -639,7 +667,8 @@ mod tests {
             "codex",
             serde_json::json!({"type": "tool_started"}),
             102,
-        );
+        )
+        .unwrap();
         assert_eq!(
             after_disconnect["runtime_snapshot_locator"], "runtime-snapshot-1",
             "disconnect/terminal cleanup must discard locator history"

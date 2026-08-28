@@ -104,6 +104,43 @@ fn claude_live_and_reopened_rows_share_one_lossless_multifragment_record() {
 }
 
 #[test]
+fn incomplete_recognized_json_is_preserved_in_direct_and_reopened_reads() {
+    let raw = json!({"type":"event_msg","payload":{"type":"agent_message"}});
+    let direct = observation(decode(ProviderKind::Codex, 1, raw.clone()));
+    assert_eq!(
+        direct.fragments[0].semantic_kind,
+        SemanticKind::MalformedOrIncomplete
+    );
+    assert_eq!(direct.native_event, raw);
+
+    let root = unique_temp_path("incomplete-recognized-row");
+    fs::create_dir_all(&root).unwrap();
+    let path = root.join("session.jsonl");
+    fs::write(
+        &path,
+        "{\"type\":\"event_msg\",\"payload\":{\"type\":\"agent_message\"}}\n",
+    )
+    .unwrap();
+    let page = read_transcript_page(
+        &context(ProviderKind::Codex),
+        &TranscriptReadBoundary {
+            allowed_root: root.clone(),
+            transcript_path: path,
+        },
+        None,
+        10,
+    )
+    .expect("incomplete recognized row remains readable");
+    let reopened = observation(page.outcomes.into_iter().next().unwrap());
+    assert_eq!(
+        reopened.fragments[0].semantic_kind,
+        SemanticKind::MalformedOrIncomplete
+    );
+    assert_eq!(reopened.native_event, raw);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn rust_adapter_manifests_match_the_versioned_json_contract() {
     let expected: Vec<firm_provider_events::AdapterManifest> = serde_json::from_str(include_str!(
         "../../../schemas/provider-events/adapters.v1.json"
