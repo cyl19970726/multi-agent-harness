@@ -672,7 +672,7 @@ pub(crate) fn run_team_member_with_adapter<A: TeamRuntimeAdapter<Error = CliErro
             let early_native_binding_error = RefCell::new(None::<String>);
             let native_locator_kind = adapter.native_locator_kind().to_string();
 
-            let round_start = member_row.clone();
+            let mut round_start = member_row.clone();
             let turn_result = {
                 let _turn_lease = context.turn_leases.acquire();
                 let _live_turn_guard = LiveProviderTurnGuard::new(
@@ -822,15 +822,18 @@ pub(crate) fn run_team_member_with_adapter<A: TeamRuntimeAdapter<Error = CliErro
                                 event,
                                 &native_locator_kind,
                             );
-                        if let Err(error) = binding_result {
-                            *early_native_binding_error.borrow_mut() = Some(error.to_string());
+                        match binding_result {
+                            Ok(bound) => round_start = bound,
+                            Err(error) => {
+                                *early_native_binding_error.borrow_mut() = Some(error.to_string());
+                            }
                         }
                     }
                     if let Some(sink) = &live_sink {
                         emit_live_provider_activity(
                             sink,
                             ledger,
-                            member_row,
+                            &round_start,
                             event.clone(),
                         );
                     }

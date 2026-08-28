@@ -13,7 +13,7 @@ pub(super) fn persist_verified_claude_session_binding(
     round_start: &ProviderRuntimeProjection,
     event: &Value,
     native_locator_kind: &str,
-) -> CliResult<()> {
+) -> CliResult<ProviderRuntimeProjection> {
     let native_session_id = event
         .pointer("/data/sessionId")
         .and_then(Value::as_str)
@@ -31,7 +31,7 @@ pub(super) fn persist_verified_claude_session_binding(
                 existing.native_session_id
             )));
         }
-        Some(_) => return Ok(()),
+        Some(_) => return Ok(current),
         None => {}
     }
     let mut bound = current.clone();
@@ -40,5 +40,6 @@ pub(super) fn persist_verified_claude_session_binding(
         native_session_id,
         native_locator_kind,
     ));
-    ledger.save_member_run(&current, &bound)
+    ledger.save_member_run(&current, &bound)?;
+    Ok(bound)
 }

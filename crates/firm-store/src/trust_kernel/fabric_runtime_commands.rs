@@ -1,4 +1,4 @@
-use super::fabric_foundation::RuntimeBindingAdmission;
+use super::fabric_foundation::{RuntimeBindingAdmission, RuntimeCommandPoststate};
 use super::*;
 
 impl HarnessStore {
@@ -293,7 +293,7 @@ impl HarnessStore {
                 &session,
                 command.command,
                 &command.precondition,
-                false,
+                RuntimeCommandPoststate::None,
                 "runtime_command",
                 &command.id,
                 Some(session.version),
@@ -718,10 +718,8 @@ impl HarnessStore {
                         &session,
                         &record.binding,
                         RuntimeBindingAdmission::RuntimeCommand {
-                            allow_native_session_attachment: matches!(
-                                record.command,
-                                RuntimeCommandKind::StartSession | RuntimeCommandKind::OpenRuntime
-                            ),
+                            allow_native_session_attachment:
+                                runtime_command_allows_native_session_attachment(record.command),
                         },
                         "runtime_command",
                         command_id,
@@ -731,7 +729,14 @@ impl HarnessStore {
                         &session,
                         record.command,
                         &record.precondition,
-                        true,
+                        if record.command == RuntimeCommandKind::StartCycle
+                            && record.binding.native_session_ref.is_none()
+                            && session.native_session_ref.is_some()
+                        {
+                            RuntimeCommandPoststate::CommandWithNativeSessionAttachment
+                        } else {
+                            RuntimeCommandPoststate::Command
+                        },
                         "runtime_command",
                         command_id,
                         Some(record.version),
@@ -981,10 +986,8 @@ impl HarnessStore {
                 &session,
                 &record.binding,
                 RuntimeBindingAdmission::RuntimeCommand {
-                    allow_native_session_attachment: matches!(
-                        record.command,
-                        RuntimeCommandKind::StartSession | RuntimeCommandKind::OpenRuntime
-                    ),
+                    allow_native_session_attachment:
+                        runtime_command_allows_native_session_attachment(record.command),
                 },
                 "runtime_command",
                 command_id,
@@ -994,7 +997,14 @@ impl HarnessStore {
                 &session,
                 record.command,
                 &record.precondition,
-                true,
+                if record.command == RuntimeCommandKind::StartCycle
+                    && record.binding.native_session_ref.is_none()
+                    && session.native_session_ref.is_some()
+                {
+                    RuntimeCommandPoststate::CommandWithNativeSessionAttachment
+                } else {
+                    RuntimeCommandPoststate::Command
+                },
                 "runtime_command",
                 command_id,
                 Some(record.version),
