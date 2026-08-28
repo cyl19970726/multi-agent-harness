@@ -133,16 +133,28 @@ fn close_cancels_kimi_provider_request_without_resuming_member() {
         Some("idle"),
         "Team close quiesces only its provider turn"
     );
+    let released_binding = snapshot["work_execution_bindings"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|binding| {
+            binding["agent_member_id"].as_str() == Some(agent_member_id.as_str())
+                && binding["status"].as_str() == Some("released")
+        })
+        .expect("exact applied Close releases the old-generation WorkExecutionBinding");
+    let released_binding_id = released_binding["id"]
+        .as_str()
+        .expect("released binding has canonical identity");
     assert!(
-        snapshot["work_execution_bindings"]
+        snapshot["work_deliveries"]
             .as_array()
             .into_iter()
             .flatten()
-            .any(|binding| {
-                binding["agent_member_id"].as_str() == Some(agent_member_id.as_str())
-                    && binding["status"].as_str() == Some("active")
+            .any(|delivery| {
+                delivery["work_execution_binding_id"].as_str() == Some(released_binding_id)
+                    && delivery["status"].as_str() == Some("provider_received")
             }),
-        "Team close must not silently release a WorkExecutionBinding"
+        "Close preserves the immutable ProviderReceived delivery evidence"
     );
     let close_requests = snapshot["team_member_close_requests"]
         .as_array()
