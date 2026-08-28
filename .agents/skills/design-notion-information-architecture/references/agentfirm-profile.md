@@ -15,8 +15,8 @@ When they diverge, record the gap instead of silently rewriting either side.
 Validate this minimal operating shape:
 
 - `Development Tasks`: one current authority per development outcome;
-- `Development Reviews`: immutable review history, one row per submission;
-- `Development Documents`: typed Specifications and durable supporting records;
+- `Development Documents`: typed Specifications, durable supporting records,
+  and immutable Review rows, one per submission;
 - `Canonical Docs`: product, architecture, governance, and operating knowledge;
 - curated section hubs: navigation, not duplicate authorities.
 

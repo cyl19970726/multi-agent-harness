@@ -12,8 +12,9 @@ execute it:
 2. Search for an existing GitHub Issue and active Task to avoid duplicates.
 3. If the problem is already required by the current Task, keep it in that
    Task and adjust its acceptance or next action when necessary.
-4. If it is independent and actionable, create or reuse one GitHub Issue and
-   create one linked Notion Task with its own goal and acceptance criteria.
+4. If it is out of scope and actionable, create or reuse one GitHub Issue.
+   Decide whether to batch it with other Issues into one later Task, defer it,
+   or preserve it without creating a Task.
 5. If it is informational, non-actionable, or duplicate, preserve it as a
    finding in the current Task or Review without creating another Task.
 6. Route sensitive defects through the repository's private security process.
@@ -22,6 +23,19 @@ GitHub Issue is repository problem tracking; Notion Task is the only current
 execution authority. Do not mirror their full bodies or maintain two status
 machines. A shared Spec is appropriate only when several Issues or Tasks need
 one common architecture or acceptance contract.
+
+Only hot-fix before continuing an acceptance run when the finding prevents the
+run, invalidates its evidence, or breaks safety, integrity, or an authority
+boundary. Ordinary out-of-scope findings are non-blocking Issue Pool input.
+
+## Observe the trajectory
+
+For long work, run a bounded Observer check on cadence. Also trigger it when a
+repair chain exceeds two links, instructions are repeatedly restated, or the
+user expresses dissatisfaction. Observer returns continue / intervene /
+escalate / stop and never edits the artifact, writes Task state, or replaces
+Reviewer. Escalate scope trade-offs, architecture authority, and risk
+acceptance to the Human with evidence and options.
 
 ## Plan and assign
 
@@ -77,6 +91,10 @@ On `REVIEW_RESULT`:
 
 - `Pass`: preserve the Review Document and set Task to `Done` after any required exact-revision completion check.
 - `Changes Required`: preserve the Review Document, set Task to `Changes Required`, route findings to the same Dev, then set it to `Doing` when work resumes.
+
+Set a Task to `Cancelled` only when Brain records that its outcome is obsolete,
+explicitly superseded, or no longer authorized. Cancellation is terminal and
+must not be described as Review Pass.
 
 On `ATTENTION_REQUIRED`, set Task to `Blocked`, record the blocker and decision owner, and notify only the person able to resolve it.
 

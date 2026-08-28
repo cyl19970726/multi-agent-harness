@@ -16,6 +16,18 @@ Brain plans and assigns Task
   -> Changes Required: same Task returns to Dev
 ```
 
+This loop operates inside a four-layer system:
+
+```text
+Intent -> Task -> Acceptance -> Issue Pool -> Brain triage
+```
+
+Notion Specs own accepted intent, one Task owns current execution, exact-version
+Review/CI/Spec dogfood own acceptance evidence, and GitHub Issues are cheap
+feedback intake. Repository code, schemas, and tests own merged shipped truth;
+the Implementation Crosswalk maps intent to that truth without becoming a
+second Task ledger.
+
 ## Choose the role
 
 - Brain / coordinator: read [brain.md](references/brain.md).
@@ -35,8 +47,9 @@ When a defect is discovered, the Brain first decides:
 
 - **Already required by the current Task:** record the finding and resolve it
   in that Task.
-- **Independent and actionable:** create or reuse one GitHub Issue, then create
-  one Notion Task that links it.
+- **Out of scope and actionable:** create or reuse one GitHub Issue. Brain may
+  batch it with other Issues into a later Task, defer it, or only record it; an
+  Issue does not automatically create a Task.
 - **Duplicate, non-actionable, or informational:** preserve the evidence in the
   current Task or Review; do not create another Task.
 - **Sensitive:** use the repository's private security-reporting path instead
@@ -81,7 +94,11 @@ Planned -> Doing -> In Review -> Done
                          -> Changes Required -> Doing
 
 Any active state -> Blocked -> Doing
+Any active state -> Cancelled
 ```
+
+`Cancelled` is terminal and means the outcome became obsolete, was explicitly
+superseded, or is no longer authorized. It is not a successful Review verdict.
 
 ### Development Documents
 
@@ -141,9 +158,23 @@ badge, chat memory, or continuous polling is not a control plane.
 - Code Review binds to one exact SHA. Document Review binds to one named,
   immutable, directly readable version.
 - Reviewer does not modify the work being reviewed.
+- Reviewer blocking findings bind to the submitted revision and the current
+  Task acceptance. Out-of-scope findings are non-blocking feedback for the
+  Issue Pool.
 - `Changes Required` continues the same Task; it does not create a successor Task unless scope genuinely changes.
 - The Brain routes work and updates Task state. It does not continuously poll idle sessions.
 - For code completion or merge, verify the reviewed SHA is still the revision being completed. A mismatch returns the Task to Doing or In Review.
+
+## Observer and escalation
+
+Observer audits the trajectory, not the artifact. On cadence for long work,
+and whenever a repair chain exceeds two links, instructions are repeatedly
+restated, or the user expresses dissatisfaction, it asks whether the goal,
+method, encountered problems, drift, and remaining distance still make sense.
+Its verdict is continue / intervene / escalate / stop. Observer never edits the
+work, updates Task state, or replaces Reviewer. Escalate scope trade-offs,
+architecture authority, and risk acceptance to the Human with evidence and
+options attached.
 
 ## Keep review material readable
 

@@ -49,6 +49,47 @@ executor and native transcript owner, never a Task ledger or Review authority.
 If Task, Session, submission, or Review state disagrees, stop dispatching new
 work and reconcile the Task from those authoritative records first.
 
+## Development System Model
+
+Repository development uses four layers. Each instrument serves its own layer;
+using acceptance or feedback as an unbounded development driver is a process
+failure:
+
+```text
+Intent      Notion PRD / Spec / ADR
+                | Brain slice / triage
+Task        one Development Task owns current execution state
+                | exact revision
+Acceptance  Task Review -> PR CI -> Spec acceptance / integrated dogfood
+                | findings
+Feedback    GitHub Issue Pool -> current Task / batch later / record only
+```
+
+Repository code, schemas, tests, and CI own merged shipped implementation
+truth. They are not a second Task state layer. The Implementation Crosswalk
+maps accepted intent to repository evidence; it is not another task ledger or
+approval gate.
+
+- A finding required by the current Task acceptance or submitted diff stays in
+  that Task. An out-of-scope finding enters the Issue Pool and is non-blocking
+  by default; Brain may batch it into a later Task, defer it, or only record it.
+- Only a finding that prevents the current acceptance run, invalidates its
+  evidence, or breaks safety, integrity, or an authority boundary may be
+  hot-fixed before that run continues.
+- Reviewer blocking findings bind to the submitted revision and current Task
+  acceptance. Spec-level dogfood is an exam after that Spec's Tasks merge, not
+  a development mode; ordinary findings return to the Issue Pool.
+- Observer audits trajectory on cadence for long work and when a repair chain
+  exceeds two links, instructions are repeatedly restated, or the user is
+  dissatisfied. It returns continue / intervene / escalate / stop and never
+  edits the artifact, owns Task status, or replaces Reviewer.
+- Human decides scope trade-offs, architecture authority, and risk acceptance.
+  Protected external-effect approval remains a separate safety decision.
+
+Task has one non-success terminal state, `Cancelled`, for an obsolete,
+explicitly superseded, or no-longer-authorized outcome. It does not mean Pass
+and does not create a second archive object.
+
 Creating, assigning, executing, reviewing, retrying, blocking, or completing a
 repository Development Task triggers the single
 [agentfirm-development-loop](.agents/skills/agentfirm-development-loop/SKILL.md).

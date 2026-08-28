@@ -30,7 +30,8 @@ When implementation exposes another problem:
 
 - fix it in the same Task when it is required by that Task's acceptance;
 - send the Brain a concise finding with reproduction and impact when it is an
-  independent follow-up;
+  out-of-scope follow-up so it can enter the Issue Pool without blocking the
+  current Task by default;
 - do not silently broaden scope or create a replacement Task yourself unless
   the Brain explicitly delegates issue triage.
 

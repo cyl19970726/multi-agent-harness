@@ -27,7 +27,9 @@ need cannot be represented by Task plus immutable Review history.
 | Development Document | typed Specification or durable supporting material | duplicate Task status or a hidden execution lifecycle |
 
 Task statuses are: `Planned`, `Doing`, `In Review`, `Changes Required`,
-`Blocked`, and `Done`.
+`Blocked`, `Done`, and `Cancelled`. `Cancelled` is the non-success terminal
+state for an obsolete, explicitly superseded, or no-longer-authorized outcome;
+ordinary current views exclude both terminal states.
 
 ## Review history
 

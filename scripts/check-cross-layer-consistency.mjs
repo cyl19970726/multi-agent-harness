@@ -209,6 +209,40 @@ if (memberSkill && mainRs) {
 }
 
 // ── Summary ──────────────────────────────────────────────────────────────
+console.log("\nRule 5: four-layer development governance stays aligned");
+const rootAgents = read(join(ROOT, "AGENTS.md"));
+const operations = read(join(ROOT, "docs/current/operations/operations.md"));
+const operatingRules = read(join(ROOT, "docs/current/product/agent-operating-rules.md"));
+const developmentSkill = read(join(ROOT, ".agents/skills/agentfirm-development-loop/SKILL.md"));
+const brainContract = read(join(ROOT, ".agents/skills/agentfirm-development-loop/references/brain.md"));
+const reviewerContract = read(join(ROOT, ".agents/skills/agentfirm-development-loop/references/reviewer.md"));
+const notionContract = read(join(ROOT, ".agents/skills/agentfirm-development-loop/references/notion.md"));
+
+const governanceContracts = [
+  ["AGENTS four layers", rootAgents, /Intent[\s\S]*Task[\s\S]*Acceptance[\s\S]*Feedback/],
+  ["AGENTS Observer boundary", rootAgents, /Observer[\s\S]*never[\s\S]*(edits the artifact|owns Task status|replaces Reviewer)/],
+  ["Skill Issue Pool batching", developmentSkill, /Issue does not automatically create a Task/],
+  ["Brain bounded hot-fix", brainContract, /prevents the[\s\S]*run[\s\S]*invalidates its evidence[\s\S]*authority[\s\S]*boundary/],
+  ["Reviewer scope boundary", reviewerContract, /out-of-scope finding is a non-blocking suggestion/],
+  ["Notion Cancelled state", notionContract, /`Cancelled`[\s\S]*never means Pass/],
+];
+
+for (const [name, content, pattern] of governanceContracts) {
+  if (content && pattern.test(content)) ok(name);
+  else fail(`${name} is missing or drifted`);
+}
+
+for (const [name, content] of [
+  ["operations", operations],
+  ["agent operating rules", operatingRules],
+]) {
+  if (/dogfood remains suspended for repository repair|execution is suspended for repository repair/i.test(content ?? "")) {
+    fail(`${name} still suspends repository progress behind dogfood admission`);
+  } else {
+    ok(`${name} has no global dogfood suspension`);
+  }
+}
+
 console.log();
 if (process.exitCode) {
   console.error("Consistency check FAILED — fix the gaps above.");

@@ -62,22 +62,23 @@ firm team-run work assign --work-id <work-id> --expected-version <version> \
   That Skill owns the two-table workflow, exact readable submission policy,
   Session reconciliation, machine-manifest placement, statuses, and messages;
   this companion does not duplicate them.
-- Harness Member execution is suspended for repository repair until the
-  explicit dogfood admission standard passes. A Primary Codex Session may use
-  bounded temporary Sub-Agents internally, but must not label that as Harness
-  Member or Agent Team execution. Product TeamWork acceptance, Evidence,
-  Finding, Failure, Acceptor, Gate, and Decision contracts remain intact and
-  separate from developer self-review.
-- A native Agent Team run is required when the claim under test is the
-  native runtime itself or when a Spec explicitly selects it. Such a run is
-  product evidence, not a prerequisite that silently replaces the repository
-  development record. A small typo or single-line doc fix may be owner-local,
-  but the final summary must identify the proportional exception.
+- Ordinary repository repair uses a Primary Session. A native Agent Team run
+  is required only when the runtime itself is the claim under test or an
+  accepted Spec selects that scenario. Bounded temporary Sub-Agents may be
+  used internally, but must not be labeled Harness Member or Agent Team
+  execution. Product TeamWork acceptance remains separate from developer
+  self-review. A native run is product evidence, not a prerequisite that
+  silently replaces the repository development record. A small typo or
+  single-line doc fix may be owner-local, but the final summary must identify
+  the proportional exception.
 - Harness dogfood runs follow
   [docs/current/product/agent-team-dogfood-loop.md](agent-team-dogfood-loop.md):
-  classify defects, repair on a clean lane, rerun the original scenario, then
-  expand the pressure matrix. Never weaken a scenario or edit store evidence to
-  make a run appear green.
+  dogfood is Spec-level acceptance, not a development mode. A finding required
+  to keep the run executable and its evidence trustworthy may receive the
+  narrowest hot-fix in the same acceptance Task. Other findings enter the Issue
+  Pool without stopping the run; Brain later batches, defers, or only records
+  them. Never weaken a scenario or edit store evidence to make a run appear
+  green.
 - Scenario execution rosters and research budgets (for example the current
   dogfood roster) are scenario policy, not repository-wide invariants: they
   live in [docs/current/operations/operations.md](../../../docs/current/operations/operations.md) and the owning scenario

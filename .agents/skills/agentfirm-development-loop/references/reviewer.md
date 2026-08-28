@@ -8,7 +8,8 @@ Reviewer independently checks one submitted revision/version. Reviewer does not 
    immutable document version, and evidence.
 2. Confirm the inspected material directly matches that revision/version. Do
    not accept a carrier/payload reconstruction as the ordinary review surface.
-3. Check correctness, acceptance criteria, and relevant risks.
+3. Check correctness, the current Task acceptance criteria, the submitted diff,
+   and risks materially changed by that submission.
 4. Create one immutable Review Document in the existing Development Documents
    table for this submission.
 
@@ -24,4 +25,8 @@ Return `REVIEW_RESULT` with:
 - non-blocking suggestions
 - checks/evidence inspected
 
-Use `Changes Required` when a required condition fails or evidence is insufficient. The Brain returns the same Task to Dev. Use `Pass` only for the exact revision inspected.
+Use `Changes Required` only when a condition required by the current Task or
+submitted revision fails, or evidence for that condition is insufficient. An
+out-of-scope finding is a non-blocking suggestion routed to the Issue Pool; it
+does not expand the Review surface or fail the current submission. The Brain
+returns the same Task to Dev. Use `Pass` only for the exact revision inspected.
