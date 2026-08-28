@@ -108,38 +108,55 @@ impl MultiTeamDaemon {
     pub(super) fn refresh_held_node_authorities(&self) -> CliResult<()> {
         let now_ms = current_unix_ms_u64();
         let ttl_ms = self.node_lease_ttl_ms();
-        for (space, store) in self.registered_spaces()? {
-            let lease = match store.latest_node_daemon_lease(&self.node_id) {
-                Ok(Some(lease)) => lease,
-                Ok(None) => continue,
-                Err(error) => {
-                    eprintln!(
-                        "[node-daemon] cannot refresh Node authority in {}: {error}",
-                        space.id
-                    );
-                    continue;
+        let spaces = self.registered_spaces()?;
+        // A malformed or concurrently incomplete JSONL tail in one historical
+        // Execution Space can consume the Store reader's bounded retry window.
+        // Renew each Space independently so those bounded waits do not add up
+        // and expire an unrelated live AgentSession's machine generation.
+        std::thread::scope(|scope| {
+            let refreshes = spaces
+                .iter()
+                .map(|(space, store)| {
+                    scope.spawn(move || {
+                        let lease = match store.latest_node_daemon_lease(&self.node_id) {
+                            Ok(Some(lease)) => lease,
+                            Ok(None) => return,
+                            Err(error) => {
+                                eprintln!(
+                                    "[node-daemon] cannot refresh Node authority in {}: {error}",
+                                    space.id
+                                );
+                                return;
+                            }
+                        };
+                        if lease.daemon_id != self.daemon_id
+                            || lease.instance_id != self.instance_id
+                            || lease.status != harness_core::NodeDaemonLeaseStatus::Active
+                        {
+                            return;
+                        }
+                        if let Err(error) = store.renew_node_daemon_lease(
+                            &self.node_id,
+                            &lease.daemon_id,
+                            lease.generation,
+                            &lease.instance_id,
+                            now_ms,
+                            ttl_ms,
+                        ) {
+                            eprintln!(
+                                "[node-daemon] cannot refresh Node authority in {}: {error}",
+                                space.id
+                            );
+                        }
+                    })
+                })
+                .collect::<Vec<_>>();
+            for refresh in refreshes {
+                if refresh.join().is_err() {
+                    eprintln!("[node-daemon] Node authority refresh worker panicked");
                 }
-            };
-            if lease.daemon_id != self.daemon_id
-                || lease.instance_id != self.instance_id
-                || lease.status != harness_core::NodeDaemonLeaseStatus::Active
-            {
-                continue;
             }
-            if let Err(error) = store.renew_node_daemon_lease(
-                &self.node_id,
-                &lease.daemon_id,
-                lease.generation,
-                &lease.instance_id,
-                now_ms,
-                ttl_ms,
-            ) {
-                eprintln!(
-                    "[node-daemon] cannot refresh Node authority in {}: {error}",
-                    space.id
-                );
-            }
-        }
+        });
         Ok(())
     }
 
