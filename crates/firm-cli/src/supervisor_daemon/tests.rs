@@ -38,6 +38,109 @@ fn node_authority_heartbeat_is_independent_of_a_long_discovery_scan() {
 }
 
 #[test]
+fn one_slow_space_cannot_expire_another_spaces_node_authority() {
+    const NODE_ID: &str = "11111111-1111-4111-8111-111111111112";
+    let tree = TestTree::new("parallel-authority-refresh");
+    let firm_home = tree.0.join("home");
+    for index in 0..3 {
+        crate::execution_space::register_and_activate(
+            &firm_home,
+            &format!("space-{index}"),
+            &format!("Space {index}"),
+            Some(format!("project-{index}")),
+            None,
+            "unix-ms:1",
+        )
+        .expect("register test Execution Space");
+    }
+    let spaces = crate::execution_space::list_spaces(&firm_home).expect("list test Spaces");
+    let (healthy, slow_spaces) = spaces.split_last().expect("at least one test Space");
+    for space in slow_spaces {
+        std::fs::create_dir_all(&space.store_root).expect("initialize slow Store root");
+        std::fs::write(
+            space.store_root.join("node_daemon_leases.jsonl"),
+            b"{\"generation\":1",
+        )
+        .expect("write bounded incomplete tail");
+    }
+
+    let store = HarnessStore::new(healthy.store_root.clone());
+    store.init().expect("initialize healthy Store");
+    store
+        .insert_execution_node(&harness_core::ExecutionNode {
+            id: NODE_ID.into(),
+            display_name: "Test Node".into(),
+            status: harness_core::ExecutionNodeStatus::Active,
+            created_at: "unix-ms:1".into(),
+            updated_at: "unix-ms:1".into(),
+        })
+        .expect("insert test Node");
+    store
+        .register_node_project(
+            &harness_core::NodeProjectRegistration {
+                node_id: NODE_ID.into(),
+                execution_space_id: healthy.id.clone(),
+                project_binding_id: "project-healthy".into(),
+                status: harness_core::NodeProjectRegistrationStatus::Active,
+                created_at: "unix-ms:1".into(),
+                updated_at: "unix-ms:1".into(),
+            },
+            &healthy.id,
+        )
+        .expect("register healthy test project");
+    let lease = store
+        .acquire_node_daemon_lease(
+            NODE_ID,
+            &format!("node-daemon:{NODE_ID}"),
+            "parallel-refresh-instance",
+            current_unix_ms_u64(),
+            250,
+        )
+        .expect("acquire deliberately short test lease");
+
+    let daemon = MultiTeamDaemon {
+        firm_home,
+        node_id: NODE_ID.into(),
+        daemon_id: format!("node-daemon:{NODE_ID}"),
+        instance_id: "parallel-refresh-instance".into(),
+        contexts: Mutex::new(Vec::new()),
+        supervisor_start_gate: Mutex::new(()),
+        session_runtimes: Mutex::new(HashMap::new()),
+        live_provider_activity_endpoint: Arc::new(Mutex::new(HashMap::new())),
+        max_concurrency: 1,
+        idle_timeout_secs: 1,
+        scan_interval: Duration::from_millis(50),
+        stop_requested: Arc::new(AtomicBool::new(false)),
+        authority_shutdown: Arc::new(AtomicBool::new(false)),
+        control_worker_failed: AtomicBool::new(false),
+        recovery_blocked_runs: Mutex::new(HashSet::new()),
+        lease_ttl_override_ms: Some(3_000),
+    };
+
+    let started = Instant::now();
+    daemon
+        .refresh_held_node_authorities()
+        .expect("refresh isolates slow Spaces");
+    assert!(
+        started.elapsed() >= Duration::from_millis(900),
+        "the fixture must exercise the incomplete-row retry window"
+    );
+    let refreshed = store
+        .latest_node_daemon_lease(NODE_ID)
+        .expect("read refreshed lease")
+        .expect("refreshed lease remains present");
+    assert_eq!(refreshed.generation, lease.generation);
+    assert_eq!(
+        refreshed.instance_id, lease.instance_id,
+        "the same daemon instance retains authority"
+    );
+    assert!(
+        refreshed.expires_unix_ms > current_unix_ms_u64().saturating_add(1_000),
+        "the healthy Space renewed while unrelated readers were still waiting"
+    );
+}
+
+#[test]
 fn machine_local_live_sink_rejects_invalid_and_stale_registration_then_replaces_successor() {
     let tree = TestTree::new("private-live-sink");
     let daemon = MultiTeamDaemon {
