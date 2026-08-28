@@ -22,6 +22,11 @@ Host Gate, or second task ledger in the repository development lifecycle. A
 product Agent Team Work record is a separate runtime contract and does not
 replace the Development Task or Review.
 
+A GitHub Issue records a problem; it is not a mandatory stage before every
+Task. Brain may keep an in-scope finding in the current Task, batch one or more
+out-of-scope Issues into a later Task, defer them, or only record them. An Issue
+never creates a Task automatically.
+
 ## Truth boundaries
 
 | Surface | Owns | Does not own |
@@ -86,6 +91,11 @@ On `Changes Required`, Brain preserves the Review and returns the same Task to
 Dev. On `Pass`, Brain verifies the completed or merged revision still matches
 the reviewed SHA/version, records the repository/merge facts, and marks the
 Task Done. CI green or PR merge alone is not Review acceptance.
+
+Reviewer blocking findings must bind to the current Task acceptance and exact
+submitted revision. Out-of-scope findings are non-blocking Issue Pool input.
+Brain may set a Task to `Cancelled` when its outcome is obsolete, explicitly
+superseded, or no longer authorized; cancellation is terminal but is not Pass.
 
 ## Coordinator state discipline
 

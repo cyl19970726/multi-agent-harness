@@ -9,13 +9,18 @@ Harness ledger.
 ## Repository Delivery Gate
 
 Repository development uses the canonical
-[Notion Spec -> Issue -> Codex -> PR flow](workflow-git-pr.md). One Primary
+[Notion Task -> Codex -> Review -> PR flow](workflow-git-pr.md). A GitHub Issue
+is optional problem provenance and enters execution only after Brain triage. One Primary
 Session owns a development Wave (repository delivery batch, not the retired
 runtime `Wave` structure) end to end in a clean isolated worktree. Ordinary work uses
 final-SHA self-review rather than a mandatory second reviewer; a narrow Host
-Gate is required only when the Development Record says so. Harness Member
-dogfood remains suspended for repository repair, while product TeamWork Gate
-and acceptance semantics remain unchanged.
+Gate is required only when the Development Record says so. A native Agent Team
+run is required only when the runtime itself is the claim under test or an
+accepted Spec selects that scenario. Spec-level integrated dogfood runs after
+that Spec's Tasks merge; it is an exam, not a development mode. Findings enter
+the Issue Pool and do not suspend ordinary repository repair. Hot-fix only a
+finding that prevents the run, invalidates its evidence, or breaks safety,
+integrity, or an authority boundary.
 
 The reproducible final gate starts from a clean committed SHA:
 

@@ -25,7 +25,10 @@ Notion must not mirror a second Issue lifecycle. Do not add `Issue` as a Task
 status. Do not require a `Task Kind` field unless users demonstrate a real
 filtering need.
 
-Use only these statuses: `Planned`, `Doing`, `In Review`, `Changes Required`, `Blocked`, `Done`.
+Use only these statuses: `Planned`, `Doing`, `In Review`, `Changes Required`,
+`Blocked`, `Done`, `Cancelled`. `Cancelled` is terminal for an obsolete,
+explicitly superseded, or no-longer-authorized outcome; it never means Pass.
+Ordinary current views exclude both `Done` and `Cancelled`.
 
 ### Development Documents
 
@@ -75,7 +78,8 @@ After migration, verify:
 4. Development Documents retains every submission and exact revision/version.
 5. No default view or Playbook asks users to maintain Work and Run together.
 6. Advanced legacy records are clearly non-authoritative and hidden from ordinary operation.
-7. An independently actionable repository defect can be traced from one
-   GitHub Issue to one current Notion Task without duplicate status writing.
+7. An actionable repository defect can be traced to one GitHub Issue; when
+   Brain promotes it, one or more Issues may map to one current Notion Task
+   without duplicate status writing.
 8. A Session is visible only as the Task's current executor binding; Task state
    is never inferred from a sidebar badge or mirrored Session ledger.
