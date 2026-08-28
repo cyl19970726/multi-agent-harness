@@ -100,7 +100,7 @@ fn capability_profiles_only_attach_recorded_live_canary_evidence() {
     assert!(codex.supports_resume);
 
     let mut kimi = team_member_provider_profile_for_mode("kimi", Some("kimi_acp"));
-    apply_provider_version(&mut kimi, Some("0.36.1".to_string()));
+    apply_provider_version(&mut kimi, Some("0.39.0".to_string()));
     let live_capabilities = kimi
         .capability_bindings
         .iter()

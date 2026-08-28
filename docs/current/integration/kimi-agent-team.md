@@ -28,7 +28,7 @@ adapter. It uses the provider-neutral `host_driven` path: Harness delivers one
 eligible mailbox envelope at a time and Kimi keeps its native session as
 execution truth. This is not an emulated Goal; no Harness Goal object exists.
 Historical 0.31.0 and 0.31.1 capability snapshots truthfully reported
-`goal_mode=native`. The current 0.36.1 profile reports `goal_mode=emulated`
+`goal_mode=native`. The current 0.39.0 profile reports `goal_mode=emulated`
 because this exact version has no reviewed Goal inspection and control
 contract. In every case the execution driver remains `host_driven`; Harness
 does not delegate cycle ownership based on a provider feature name.
@@ -53,9 +53,9 @@ Harness never silently falls back from ACP to one-shot print mode.
 metadata and must not be used to infer Team capability or restore Dynamic
 Workflow execution.
 
-The installed Kimi Code probe reports `0.36.1`. After the Human-approved
-upgrade, deterministic adapter checks and live ACP canaries reviewed this
-version for prompt delivery, K3/`max` model and reasoning selection, exact
+The installed Kimi Code probe reports `0.39.0`. DEV-125 deterministic adapter
+checks and live ACP canaries reviewed this exact version for prompt delivery,
+K3/`max` model and reasoning selection, exact
 native-session resume, attach-time replay draining, next-round batched mail,
 full-access permission receipt convergence, and cooperative Interrupt.
 `kimi-acp-v1` therefore
@@ -96,7 +96,7 @@ Health is reported separately for process, ACP protocol, native session, and
 mailbox delivery. Provider-native activity stays in the Kimi session; Harness
 retains only the native binding and explicit coordination facts.
 
-## Kimi 0.36 capability adoption
+## Kimi ACP capability adoption
 
 The upstream capability inventory is larger than the currently exposed Team
 surface. Harness adopts it in layers:
@@ -110,12 +110,12 @@ surface. Harness adopts it in layers:
 | `session/list` | supported upstream; useful next for recovery diagnostics, never for guessing which session to resume |
 | ACP MCP forwarding | supported upstream; pass only explicitly approved MCP descriptors and never copy credentials into Harness state |
 | native Goals and custom/background/nested agents | usable inside the Kimi Member; remain provider-native execution details until separately reviewed control/observation contracts exist |
-| `session/cancel` | implemented as an ACP notification; reviewed for cooperative Interrupt in installed 0.36.1 |
-| `session/close` | supported by exact Kimi 0.36.1 ACP; Team Close waits for its correlated ACK, then closes stdin and reaps the owned ACP child while retaining the native session id for Reopen |
+| `session/cancel` | implemented as an ACP notification; reviewed for cooperative Interrupt in installed 0.39.0 |
+| `session/close` | supported by exact Kimi 0.39.0 ACP; Team Close waits for its correlated ACK, then closes stdin and reaps the owned ACP child while retaining the native session id for Reopen |
 | audio prompts, terminal reverse-RPC | unsupported by the reviewed Team adapter; Harness must not advertise them |
 
 `session/close` is the narrow Team **CloseRuntime** primitive, not proof of the
-strong provider-neutral `quiesce` postcondition. Kimi 0.36.1 does not return a
+strong provider-neutral `quiesce` postcondition. Kimi 0.39.0 does not return a
 durable wire-flush receipt or a complete inventory of detached writable child
 processes. The adapter therefore keeps strong `quiesce`/`release` degraded and
 fail-closed instead of promoting an ACP close acknowledgement into evidence it
@@ -150,6 +150,23 @@ Execution Space, Project, NodeDaemon, or privacy checks. The pre-cutover
 Mission `mission-dev26-kimi-0361-v2` (legacy history, DOC-108) records the
 defect, repair judgment, accepted Work revisions, runtime close receipt, and
 closeout.
+
+### DEV-125 exact-version gate evidence
+
+The 0.39.0 gate used the installed Moonshot updater manifest
+(`publishedAt=2026-08-27T11:52:22Z`) and the provider-reported ACP version. A
+real lifecycle canary created native session
+`session_9ba606d3-8377-46f2-bcfc-0e71495e9e38`, completed one K3/`max` prompt,
+closed the attachment, resumed the exact same session, and completed a second
+prompt. A separate live session
+`session_f30d39da-9d96-4ef4-9046-9869a95b0b85` accepted a prompt and terminated
+with `stopReason=cancelled` after the ACP `session/cancel` notification. The
+narrow Close canary on
+`session_996623b5-992c-4cfe-a0fd-eda7948f450c` received the correlated
+`session/close` response, exited with status 0, joined stdout, and reaped the
+owned process. These receipts admit only the existing reviewed slices; they do
+not promote native Goals, strong quiesce/release, or transcript storage into
+Harness authority.
 
 ## Busy-turn delivery boundary
 

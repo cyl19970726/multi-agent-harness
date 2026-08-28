@@ -53,6 +53,27 @@ fn kimi_cancel_capability_is_version_specific() {
     harness_core::Validate::validate(&current_0361)
         .expect("reviewed Kimi 0.36.1 profile validates");
 
+    let mut current_0390 = team_member_provider_profile("kimi");
+    apply_provider_version(&mut current_0390, Some("0.39.0".to_string()));
+    assert!(current_0390.supports_cancel);
+    assert_eq!(current_0390.goal_mode, ProviderFeatureMode::Emulated);
+    assert_eq!(
+        current_0390.compatibility_status,
+        ProviderCompatibilityStatus::Current
+    );
+    assert!(current_0390.capability_bindings.iter().any(|binding| {
+        binding.capability == "interrupt_current_cycle"
+            && binding.status == harness_core::ProviderCapabilityStatus::Verified
+            && binding.admission == harness_core::ProviderBindingAdmission::Active
+            && binding.provider_version.as_deref() == Some("0.39.0")
+            && binding.evidence.iter().any(|evidence| {
+                evidence.kind == harness_core::ProviderCapabilityEvidenceKind::LiveCanary
+                    && evidence.evidence_ref.contains("session_f30d39da")
+            })
+    }));
+    harness_core::Validate::validate(&current_0390)
+        .expect("reviewed Kimi 0.39.0 profile validates");
+
     let mut future = team_member_provider_profile("kimi");
     apply_provider_version(&mut future, Some("0.32.0".to_string()));
     // 0.32.0 is adapter-reviewed for prompt delivery/resume/mail, but

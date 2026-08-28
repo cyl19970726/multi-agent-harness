@@ -1,7 +1,7 @@
 //! kimi ACP (Agent Client Protocol) driver — Agent Team v0.
 //!
 //! One [`KimiAcpClient`] owns one `kimi acp` child process: line-delimited
-//! JSON-RPC over stdio (verified live through kimi 0.36.1). The wire dance is:
+//! JSON-RPC over stdio (verified live through Kimi Code 0.39.0). The wire dance is:
 //!
 //! 1. `initialize` — protocol/capability handshake (10s timeout).
 //! 2. `session/new` opens a session rooted at a cwd. Reattachment prefers
@@ -146,7 +146,7 @@ pub struct KimiAcpRuntimeObservation {
 
 /// Exact receipt for disposal of the Harness-owned ACP process handle.
 ///
-/// Kimi ACP 0.36.1 has `session/close` but no durable-flush RPC, so this receipt
+/// Reviewed Kimi ACP has `session/close` but no durable-flush RPC, so this receipt
 /// is intentionally a *process* receipt. It must not be promoted into proof of
 /// a native queue drain or durable session flush.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -238,7 +238,7 @@ impl KimiAcpClient {
     pub fn scripted_for_close_contract() -> Self {
         // One close request receives a real correlated JSON-RPC response. The
         // fake server then waits for client EOF and exits cleanly, matching
-        // Kimi 0.36.1's session/close + stdio lifecycle without global env
+        // Kimi's reviewed session/close + stdio lifecycle without global env
         // mutation or timing-sensitive PATH shims.
         let mut child = Command::new("sh")
             .args([
@@ -313,7 +313,7 @@ impl KimiAcpClient {
         let mut cmd = Command::new(resolve_kimi_bin());
         cmd.arg("acp")
             .envs(collaboration_env.iter().cloned())
-            // Freeze the reviewed 0.36.1 close contract. A project/user
+            // Freeze the reviewed Kimi close contract. A project/user
             // config must not keep provider background tasks alive after the
             // owning Team runtime is explicitly closed.
             .env("KIMI_CODE_BACKGROUND_KEEP_ALIVE_ON_EXIT", "false")
@@ -479,7 +479,7 @@ impl KimiAcpClient {
     /// `initialize` plus one session attach operation, each with a 10s
     /// response timeout. A known session prefers `session/resume`. Older
     /// reviewed servers may expose only `session/load`; that path is retained
-    /// as an explicit method-not-found fallback. Kimi 0.36.1 proves that
+    /// as an explicit method-not-found fallback. Reviewed Kimi versions prove that
     /// resume itself may replay historical notifications, so both attach
     /// paths are drained before a new Harness prompt begins.
     fn handshake(&mut self, cwd: &Path, resume_session_id: Option<&str>) -> CliResult<()> {
@@ -994,7 +994,7 @@ impl KimiAcpClient {
         )
     }
 
-    /// Close the live ACP session attachment through Kimi 0.36.1's advertised
+    /// Close the live ACP session attachment through reviewed Kimi ACP's advertised
     /// `session/close`, then close client stdio and require a clean child exit.
     /// The returned session id is deliberately retained for Reopen/resume.
     pub fn close_session_and_runtime(&mut self) -> CliResult<KimiAcpCloseReceipt> {

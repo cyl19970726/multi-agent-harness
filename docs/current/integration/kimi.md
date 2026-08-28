@@ -18,11 +18,11 @@ requested/effective controls, busy-turn mailbox behavior, Interrupt, restart,
 and native-session resume are defined in the focused
 [Kimi ACP Agent Team runtime](kimi-agent-team.md) contract.
 
-The installed Kimi Code probe is 0.36.1. Following the Human-approved upgrade,
+The installed Kimi Code probe is 0.39.0. DEV-125 reviewed this exact upgrade;
 `kimi-acp-v1` is reviewed for prompt delivery, K3/`thinking=max` control,
 same-session resume across a Supervisor generation change, next-round batched
 mail, bounded full-access permission receipts, and cooperative Interrupt.
-Kimi 0.36.1 replays historical `session/update` notifications during
+Reviewed Kimi ACP versions may replay historical `session/update` notifications during
 `session/resume`; the adapter drains all attach-time replay before accepting
 the next Harness cycle, so native history never becomes a second Harness
 delivery.
@@ -47,7 +47,7 @@ Binary resolution order is implemented by `resolve_kimi_bin()`:
 3. default install path `~/.kimi-code/bin/kimi`;
 4. bare `kimi` as the final fallback, so spawn failure is explicit.
 
-Source: `crates/firm-cli/src/main.rs:14317-14345`.
+Source: `crates/firm-provider-kimi/src/lib.rs`.
 
 ## Bounded Workflow Delivery (Not Agent Team)
 

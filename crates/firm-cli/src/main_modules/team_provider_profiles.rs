@@ -367,6 +367,21 @@ pub(super) fn finalize_provider_integration_profile(profile: &mut ProviderIntegr
                         ("kimi", "observe", Some("0.36.1")) =>
                             Some("live:DEV-26:kimi_acp@0.36.1:owned-process+transport-liveness"
                                 .to_string()),
+                        ("kimi", "open_or_resume", Some("0.39.0")) =>
+                            Some("live:DEV-125:kimi_acp@0.39.0:session_9ba606d3-8377-46f2-bcfc-0e71495e9e38:new+exact-session-resume"
+                                .to_string()),
+                        ("kimi", "start_cycle", Some("0.39.0")) =>
+                            Some("live:DEV-125:kimi_acp@0.39.0:k3+max+prompt+end_turn:new-receipt-5+resume-receipt-5"
+                                .to_string()),
+                        ("kimi", "interrupt_current_cycle", Some("0.39.0")) =>
+                            Some("live:DEV-125:kimi_acp@0.39.0:session_f30d39da-9d96-4ef4-9046-9869a95b0b85:session-cancel+cancelled"
+                                .to_string()),
+                        ("kimi", "close_runtime", Some("0.39.0")) =>
+                            Some("live:DEV-125:kimi_acp@0.39.0:session-close+clean-reap:session_996623b5-992c-4cfe-a0fd-eda7948f450c"
+                                .to_string()),
+                        ("kimi", "observe", Some("0.39.0")) =>
+                            Some("live:DEV-125:kimi_acp@0.39.0:owned-process+transport-liveness"
+                                .to_string()),
                         ("pi", "open_or_resume", Some("0.84.2")) =>
                             Some("live:DEV-26:pi_rpc@0.84.2:session-2026-08-16T01-23-34-207Z_01a0082a-bebf-72d6-8a0e-2d8f8afac173:new+exact-session-resume"
                                 .to_string()),
@@ -861,14 +876,15 @@ pub(super) fn team_member_provider_profile_for_mode(
                 "0.32.0".to_string(),
                 "0.33.0".to_string(),
                 "0.36.1".to_string(),
+                "0.39.0".to_string(),
             ],
             compatibility_status: ProviderCompatibilityStatus::Unknown,
-            adapter_reviewed_at: Some("2026-08-15".to_string()),
+            adapter_reviewed_at: Some("2026-08-29".to_string()),
             compatibility_note: Some(
-                "Kimi Code 0.36.1 is reviewed for ACP initialize/session creation, \
+                "Kimi Code 0.39.0 is reviewed for ACP initialize/session creation, \
                  K3 + max reasoning-effort selection, prompt delivery, same-session \
                  resume, prompt-scoped receipt ordering, and cooperative Interrupt. \
-                 Version 0.36.1 replays attach history before session/resume returns; \
+                 Reviewed versions may replay attach history before session/resume returns; \
                  the adapter drains that replay before admitting the next Harness \
                  cycle. Ordinary mail remains next-round batched in the Harness queue."
                     .to_string(),
@@ -1035,13 +1051,13 @@ pub(super) fn apply_provider_version(
     profile.provider_version = provider_version;
     // Kimi capability claims are version-specific. ACP defines
     // session/cancel as a JSON-RPC notification, not a request. The reviewed
-    // 0.27.0, 0.31.0, 0.31.1, and 0.36.1 paths support that notification;
+    // 0.27.0, 0.31.0, 0.31.1, 0.36.1, and 0.39.0 paths support that notification;
     // unknown versions fail closed rather than inheriting a stale
     // cancellation claim.
     if profile.provider == "kimi" {
         profile.supports_cancel = matches!(
             profile.provider_version.as_deref(),
-            Some("0.27.0" | "0.31.0" | "0.31.1" | "0.36.1")
+            Some("0.27.0" | "0.31.0" | "0.31.1" | "0.36.1" | "0.39.0")
         );
         // Kimi 0.31 adds a real provider-native Goal lifecycle. Harness does
         // not drive it through ACP yet: execution_driver remains host_driven
@@ -1087,6 +1103,14 @@ pub(super) fn apply_provider_version(
              delivery, K3/max selection, same-session resume with attach replay \
              drained, next-round batched mail, and cooperative Interrupt through \
              the ACP session/cancel notification."
+                .to_string()
+        }
+        ("kimi", Some("0.39.0"), ProviderCompatibilityStatus::Current) => {
+            "Kimi Code 0.39.0 is adapter-reviewed for persistent ACP prompt \
+             delivery, K3/max selection, exact same-session resume with attach \
+             replay drained, next-round batched mail, cooperative Interrupt \
+             through session/cancel, and narrow runtime Close through \
+             session/close plus clean owned-process reap."
                 .to_string()
         }
         ("codex", Some("0.148.0-alpha.9"), ProviderCompatibilityStatus::Current) => {
