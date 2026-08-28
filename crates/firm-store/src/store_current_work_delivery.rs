@@ -43,8 +43,9 @@ impl HarnessStore {
             .find(|run| run.id == team_run_id)
             .ok_or_else(|| StoreError::Conflict(format!("TeamRun not found: {team_run_id}")))?;
         let execution_space_id = self.current_team_run_execution_space(&run)?;
+        let team_ids = std::collections::BTreeSet::from([run.agent_team_id.clone()]);
         Ok(self
-            .current_work_deliveries(&execution_space_id)?
+            .current_work_deliveries_for_teams(&execution_space_id, &team_ids)?
             .into_iter()
             .filter(|delivery| delivery.team_run_id == team_run_id)
             .collect())
@@ -56,6 +57,25 @@ impl HarnessStore {
         &self,
         execution_space_id: &str,
     ) -> StoreResult<Vec<CurrentWorkDeliveryView>> {
+        self.current_work_deliveries_scoped(execution_space_id, None)
+    }
+
+    /// Project the exact requested Team scope before strict canonical joins.
+    /// Foreign rows are not inputs; every row inside the scope still fails
+    /// closed on a broken join.
+    pub fn current_work_deliveries_for_teams(
+        &self,
+        execution_space_id: &str,
+        team_ids: &std::collections::BTreeSet<String>,
+    ) -> StoreResult<Vec<CurrentWorkDeliveryView>> {
+        self.current_work_deliveries_scoped(execution_space_id, Some(team_ids))
+    }
+
+    fn current_work_deliveries_scoped(
+        &self,
+        execution_space_id: &str,
+        team_ids: Option<&std::collections::BTreeSet<String>>,
+    ) -> StoreResult<Vec<CurrentWorkDeliveryView>> {
         // Canonical Work, binding, delivery, Session, membership, and MemberRun
         // facts can span several append-only files. Use the canonical trust
         // sequence as a seqlock: a changed sequence discards the mixed read,
@@ -66,7 +86,7 @@ impl HarnessStore {
         let mut backoff_ms = 1_u64;
         for attempt in 0..16 {
             let before = self.current_work_delivery_store_sequence(execution_space_id)?;
-            let projected = self.current_work_deliveries_once(execution_space_id);
+            let projected = self.current_work_deliveries_once(execution_space_id, team_ids);
             let after = self.current_work_delivery_store_sequence(execution_space_id)?;
             if before == after {
                 return projected;
@@ -82,6 +102,7 @@ impl HarnessStore {
     fn current_work_deliveries_once(
         &self,
         execution_space_id: &str,
+        team_ids: Option<&std::collections::BTreeSet<String>>,
     ) -> StoreResult<Vec<CurrentWorkDeliveryView>> {
         let team_runs = self
             .team_runs()?
@@ -90,6 +111,7 @@ impl HarnessStore {
             .collect::<std::collections::BTreeMap<_, _>>();
         let scoped_team_run_ids = team_runs
             .values()
+            .filter(|run| team_ids.is_none_or(|ids| ids.contains(&run.agent_team_id)))
             .filter_map(|run| {
                 self.current_team_run_execution_space(run)
                     .ok()
@@ -108,17 +130,22 @@ impl HarnessStore {
         }
         for operation in self.canonical_operations_for_space(execution_space_id)? {
             if let Ok(work) = serde_json::from_value::<Work>(operation.resulting_projection) {
-                insert_work_revision(&mut work_revisions, work)?;
+                if scoped_team_run_ids.contains(&work.team_run_id) {
+                    insert_work_revision(&mut work_revisions, work)?;
+                }
             }
             for record in operation.immutable_side_records {
                 if let Ok(work) = serde_json::from_value::<Work>(record) {
-                    insert_work_revision(&mut work_revisions, work)?;
+                    if scoped_team_run_ids.contains(&work.team_run_id) {
+                        insert_work_revision(&mut work_revisions, work)?;
+                    }
                 }
             }
         }
         let bindings = self
             .fabric_work_execution_bindings(execution_space_id)?
             .into_iter()
+            .filter(|binding| team_ids.is_none_or(|ids| ids.contains(&binding.team_id)))
             .map(|binding| (binding.id.clone(), binding))
             .collect::<std::collections::BTreeMap<_, _>>();
         let sessions = self
@@ -134,7 +161,13 @@ impl HarnessStore {
         let member_runs = self.trust_member_runs(execution_space_id)?;
         let mut views = Vec::new();
 
-        for delivery in self.fabric_work_deliveries(execution_space_id)? {
+        for delivery in self
+            .fabric_work_deliveries(execution_space_id)?
+            .into_iter()
+            .filter(|delivery| {
+                team_ids.is_none() || bindings.contains_key(&delivery.work_execution_binding_id)
+            })
+        {
             let work = work_revisions
                 .get(&(delivery.work_id.clone(), delivery.work_revision))
                 .ok_or_else(|| {
