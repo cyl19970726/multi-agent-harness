@@ -104,8 +104,12 @@ pub(crate) fn global_work_view(spaces: &[(String, HarnessStore)], query: &Query)
     let mut pending_migration = Vec::new();
     let mut ordered_spaces = spaces.iter().collect::<Vec<_>>();
     ordered_spaces.sort_by(|left, right| left.0.cmp(&right.0));
+    let team_scope = query
+        .values
+        .get("team_id")
+        .map(|values| values.iter().cloned().collect::<BTreeSet<_>>());
     for (space_id, store) in &ordered_spaces {
-        let facts = Facts::read(space_id, store)
+        let facts = Facts::read_for_teams(space_id, store, team_scope.as_ref())
             .map_err(|e| ("500 Internal Server Error", "ROLE_VIEW_BUILD_FAILED", e))?;
         max_sequence = max_sequence.max(facts.sequence);
         identities.push(facts.store_identity.clone());

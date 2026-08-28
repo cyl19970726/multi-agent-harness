@@ -275,6 +275,14 @@ fn fold_side_record(
 
 impl Facts {
     fn read(space_id: &str, store: &HarnessStore) -> Result<Self, String> {
+        Self::read_for_teams(space_id, store, None)
+    }
+
+    fn read_for_teams(
+        space_id: &str,
+        store: &HarnessStore,
+        team_ids: Option<&BTreeSet<String>>,
+    ) -> Result<Self, String> {
         let work_operations = store.work_operations().map_err(|error| error.to_string())?;
         let operations = store
             .canonical_operations_for_space(space_id)
@@ -322,6 +330,7 @@ impl Facts {
         let run_rows = store.team_runs().map_err(|error| error.to_string())?;
         let team_revisions = team_rows
             .iter()
+            .filter(|team| team_ids.is_none_or(|ids| ids.contains(&team.id)))
             .fold(BTreeMap::new(), |mut revisions, team| {
                 *revisions.entry(team.id.clone()).or_insert(0) += 1;
                 revisions
@@ -332,12 +341,24 @@ impl Facts {
         }
         let mut latest_runs = BTreeMap::new();
         for (id, run) in all_latest_runs {
+            if team_ids.is_some_and(|ids| !ids.contains(&run.agent_team_id)) {
+                continue;
+            }
             let resolved_space = store
                 .current_team_run_execution_space(&run)
                 .map_err(|error| error.to_string())?;
             if resolved_space == space_id {
                 latest_runs.insert(id, run);
             }
+        }
+        let scoped_run_ids = latest_runs.keys().cloned().collect::<BTreeSet<_>>();
+        if let Some(team_ids) = team_ids {
+            works.retain(|_, work| {
+                work.accountable_team_id
+                    .as_ref()
+                    .is_some_and(|id| team_ids.contains(id))
+                    || scoped_run_ids.contains(&work.team_run_id)
+            });
         }
         let run_revisions = run_rows.iter().fold(BTreeMap::new(), |mut revisions, run| {
             if latest_runs.contains_key(&run.id) {
@@ -353,12 +374,17 @@ impl Facts {
             .fabric_team_memberships(space_id)
             .map_err(|error| error.to_string())?
             .into_iter()
+            .filter(|membership| team_ids.is_none_or(|ids| ids.contains(&membership.team_id)))
             .map(|value| serde_json::to_value(value).unwrap_or(Value::Null))
             .collect::<Vec<_>>();
         ensure_active_membership_cardinality(&team_memberships)?;
         let work_execution_bindings = store
             .fabric_work_execution_bindings(space_id)
             .map_err(|error| error.to_string())?;
+        let work_execution_bindings = work_execution_bindings
+            .into_iter()
+            .filter(|binding| team_ids.is_none_or(|ids| ids.contains(&binding.team_id)))
+            .collect::<Vec<_>>();
         let work_execution_runtime_bindings = work_execution_bindings
             .iter()
             .map(|binding| {
@@ -383,6 +409,7 @@ impl Facts {
                 .latest_teams()
                 .map_err(|error| error.to_string())?
                 .into_values()
+                .filter(|team| team_ids.is_none_or(|ids| ids.contains(&team.id)))
                 .collect(),
             runs: latest_runs.into_values().collect(),
             works: works.into_values().collect(),
@@ -458,12 +485,14 @@ impl Facts {
                 .into_iter()
                 .map(|value| serde_json::to_value(value).unwrap_or(Value::Null))
                 .collect(),
-            work_deliveries: store
-                .current_work_deliveries(space_id)
-                .map_err(|error| error.to_string())?
-                .into_iter()
-                .map(|value| serde_json::to_value(value).unwrap_or(Value::Null))
-                .collect(),
+            work_deliveries: match team_ids {
+                Some(team_ids) => store.current_work_deliveries_for_teams(space_id, team_ids),
+                None => store.current_work_deliveries(space_id),
+            }
+            .map_err(|error| error.to_string())?
+            .into_iter()
+            .map(|value| serde_json::to_value(value).unwrap_or(Value::Null))
+            .collect(),
             work_events: work_operations
                 .iter()
                 .map(|operation| serde_json::to_value(&operation.event).unwrap_or(Value::Null))

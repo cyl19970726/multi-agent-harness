@@ -1108,6 +1108,19 @@ fn membership_work_binding_authorizes_message_and_result_without_accepting_work(
     assert!(error
         .to_string()
         .contains("CURRENT_WORK_DELIVERY_CANONICAL_JOIN_CONFLICT"));
+    append_runtime_team(&store, "team-clean-scope", "run-clean-scope");
+    let foreign_scope = std::collections::BTreeSet::from(["team-clean-scope".to_string()]);
+    assert!(store
+        .current_work_deliveries_for_teams("space-test", &foreign_scope)
+        .expect("foreign Team scope excludes malformed canonical joins before projection")
+        .is_empty());
+    let owning_scope = std::collections::BTreeSet::from(["team-admission".to_string()]);
+    let scoped_error = store
+        .current_work_deliveries_for_teams("space-test", &owning_scope)
+        .expect_err("same-Team malformed canonical join must still fail closed");
+    assert!(scoped_error
+        .to_string()
+        .contains("CURRENT_WORK_DELIVERY_CANONICAL_JOIN_CONFLICT"));
     rewrite_work_active_member_run(&root, &active.id, None);
 
     let candidate = firm_core::agentfirm_api::CandidateRef {
