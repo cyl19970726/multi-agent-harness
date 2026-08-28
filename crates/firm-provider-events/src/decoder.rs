@@ -4,9 +4,9 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 use crate::{
-    Completeness, EffectCertainty, LifecyclePhase, ObservationPayload, ObservationVisibility,
-    ProviderKind, ProviderObservation, SemanticKind, PROVIDER_EVENT_ADAPTER_VERSION,
-    PROVIDER_OBSERVATION_SCHEMA_VERSION,
+    Completeness, EffectCertainty, FragmentPayload, FragmentVisibility, LifecyclePhase,
+    ProviderEventFragment, ProviderKind, ProviderNativeEventRecord, SemanticKind,
+    PROVIDER_EVENT_ADAPTER_VERSION, PROVIDER_NATIVE_EVENT_RECORD_SCHEMA_VERSION,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -42,7 +42,8 @@ pub fn adapter_manifest(provider: ProviderKind) -> AdapterManifest {
             &["event_msg", "response_item", "turn_notification"][..],
             true,
             &[
-                SemanticKind::AuthoredResponse,
+                SemanticKind::Reasoning,
+                SemanticKind::AssistantResponse,
                 SemanticKind::ToolCallRequested,
                 SemanticKind::ToolCallStarted,
                 SemanticKind::ToolCallCompleted,
@@ -54,10 +55,12 @@ pub fn adapter_manifest(provider: ProviderKind) -> AdapterManifest {
             ][..],
         ),
         ProviderKind::Claude => (
-            &["message", "stream_event", "result"][..],
+            &["session_bound", "message", "stream_event", "result"][..],
             false,
             &[
-                SemanticKind::AuthoredResponse,
+                SemanticKind::SessionMetadata,
+                SemanticKind::Reasoning,
+                SemanticKind::AssistantResponse,
                 SemanticKind::ToolCallRequested,
                 SemanticKind::ToolCallCompleted,
                 SemanticKind::UsageReported,
@@ -70,7 +73,8 @@ pub fn adapter_manifest(provider: ProviderKind) -> AdapterManifest {
             &["turn", "context.append_loop_event", "acp_notification"][..],
             false,
             &[
-                SemanticKind::AuthoredResponse,
+                SemanticKind::Reasoning,
+                SemanticKind::AssistantResponse,
                 SemanticKind::ToolCallRequested,
                 SemanticKind::ToolCallCompleted,
                 SemanticKind::ArtifactCreated,
@@ -83,7 +87,8 @@ pub fn adapter_manifest(provider: ProviderKind) -> AdapterManifest {
             &["rpc_event", "message"][..],
             false,
             &[
-                SemanticKind::AuthoredResponse,
+                SemanticKind::Reasoning,
+                SemanticKind::AssistantResponse,
                 SemanticKind::ToolCallStarted,
                 SemanticKind::ToolCallCompleted,
                 SemanticKind::ToolCallFailed,
@@ -104,7 +109,8 @@ pub fn adapter_manifest(provider: ProviderKind) -> AdapterManifest {
             ][..],
             true,
             &[
-                SemanticKind::AuthoredResponse,
+                SemanticKind::Reasoning,
+                SemanticKind::AssistantResponse,
                 SemanticKind::ToolCallStarted,
                 SemanticKind::ToolCallCompleted,
                 SemanticKind::UsageReported,
@@ -125,7 +131,8 @@ fn manifest(
 ) -> AdapterManifest {
     let has = |kind| supported.contains(&kind);
     let mut supported_semantic_kinds = supported.to_vec();
-    supported_semantic_kinds.push(SemanticKind::NativeEvent);
+    supported_semantic_kinds.push(SemanticKind::MalformedOrIncomplete);
+    supported_semantic_kinds.push(SemanticKind::UnclassifiedNative);
     AdapterManifest {
         provider,
         adapter_version: PROVIDER_EVENT_ADAPTER_VERSION.into(),
@@ -189,7 +196,7 @@ pub struct NativeEvent {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DecodeOutcome {
-    Observation(Box<ProviderObservation>),
+    Record(Box<ProviderNativeEventRecord>),
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -227,7 +234,7 @@ pub fn decode_native_json_line(
             if ordering_position == 0 {
                 return Err(DecodeError::MissingOrdering);
             }
-            Ok(DecodeOutcome::Observation(Box::new(malformed_observation(
+            Ok(DecodeOutcome::Record(Box::new(malformed_record(
                 context,
                 native_event_id,
                 provider_turn_id,
@@ -244,18 +251,31 @@ pub fn decode_native_event(
     event: NativeEvent,
 ) -> Result<DecodeOutcome, DecodeError> {
     validate_context(context, &event)?;
-    let decoded = if let Some(common) = decode_common(&event)? {
-        Some(common)
-    } else {
-        match context.provider {
-            ProviderKind::Codex => decode_codex(&event),
+    let decoded = match decode_common(&event) {
+        Ok(Some(common)) => Ok(vec![common]),
+        Ok(None) => match context.provider {
+            ProviderKind::Codex => decode_codex(&event).map(one_or_empty),
             ProviderKind::Claude => decode_claude(&event),
-            ProviderKind::Kimi => decode_kimi(&event),
-            ProviderKind::Pi => decode_pi(&event),
-            ProviderKind::DeepseekHarness => decode_deepseek_harness(&event),
-        }?
+            ProviderKind::Kimi => decode_kimi(&event).map(one_or_empty),
+            ProviderKind::Pi => decode_pi(&event).map(one_or_empty),
+            ProviderKind::DeepseekHarness => decode_deepseek_harness(&event).map(one_or_empty),
+        },
+        Err(error) => Err(error),
     };
-    let decoded = decoded.unwrap_or_else(|| native(&event.raw));
+    // A complete, valid JSON row is always observable even when a provider
+    // version emits an incomplete recognized shape. Semantic classification
+    // failure is an operator diagnostic, never a reason to panic the live
+    // stream or make the reopened native Session unreadable.
+    let decoded = match decoded {
+        Ok(decoded) => decoded,
+        Err(DecodeError::Malformed(reason)) => vec![malformed(reason)],
+        Err(error) => return Err(error),
+    };
+    let decoded = if decoded.is_empty() {
+        vec![native(&event.raw)]
+    } else {
+        decoded
+    };
     let source_fingerprint = fingerprint(&event.raw);
     let native_identity = event.native_event_id.clone().unwrap_or_else(|| {
         format!(
@@ -264,15 +284,35 @@ pub fn decode_native_event(
             &source_fingerprint["sha256:".len()..]
         )
     });
-    let observation_id = format!(
+    let record_id = format!(
         "{}:{}:{}",
         context.provider.as_str(),
         context.agent_session_id,
         native_identity
     );
-    let observation = ProviderObservation {
-        schema_version: PROVIDER_OBSERVATION_SCHEMA_VERSION.into(),
-        observation_id,
+    let causal_parent_id = decoded
+        .iter()
+        .find_map(|fragment| fragment.causal_parent_id.clone());
+    let correlation_id = decoded
+        .iter()
+        .find_map(|fragment| fragment.correlation_id.clone());
+    let fragments = decoded
+        .into_iter()
+        .enumerate()
+        .map(|(index, decoded)| ProviderEventFragment {
+            fragment_id: format!("{record_id}:fragment-{index}"),
+            fragment_index: index as u32,
+            semantic_kind: decoded.kind,
+            lifecycle_phase: decoded.phase,
+            completeness: decoded.completeness,
+            effect_certainty: decoded.effect_certainty,
+            visibility: decoded.visibility,
+            payload: decoded.payload,
+        })
+        .collect();
+    let record = ProviderNativeEventRecord {
+        schema_version: PROVIDER_NATIVE_EVENT_RECORD_SCHEMA_VERSION.into(),
+        record_id,
         provider: context.provider,
         adapter_version: PROVIDER_EVENT_ADAPTER_VERSION.into(),
         native_source_ref: context.native_source_ref.clone(),
@@ -287,33 +327,40 @@ pub fn decode_native_event(
             .or_else(|| native_turn_id(&event.raw)),
         provider_event_id: event.native_event_id,
         ordering_position: event.ordering_position,
-        causal_parent_id: decoded.causal_parent_id,
-        correlation_id: decoded.correlation_id,
+        causal_parent_id,
+        correlation_id,
         runtime_command_id: context.runtime_command_id.clone(),
         occurred_at: event.occurred_at,
         observed_at: context.observed_at.clone(),
-        semantic_kind: decoded.kind,
-        lifecycle_phase: decoded.phase,
-        completeness: decoded.completeness,
-        effect_certainty: decoded.effect_certainty,
-        visibility: decoded.visibility,
-        redacted: false,
-        truncated: false,
         native_event: event.raw,
         source_content_fingerprint: source_fingerprint,
-        payload: decoded.payload,
+        fragments,
     };
-    observation
+    record
         .validate()
         .map_err(|_| DecodeError::InvalidSemantic)?;
-    Ok(DecodeOutcome::Observation(Box::new(observation)))
+    Ok(DecodeOutcome::Record(Box::new(record)))
+}
+
+fn one_or_empty(decoded: Option<Decoded>) -> Vec<Decoded> {
+    decoded.into_iter().collect()
+}
+
+fn malformed(reason: &'static str) -> Decoded {
+    private(
+        FragmentPayload::Malformed {
+            reason_code: format!("recognized_native_shape_incomplete:{reason}"),
+        },
+        SemanticKind::MalformedOrIncomplete,
+        LifecyclePhase::Recovery,
+    )
 }
 
 fn decode_common(event: &NativeEvent) -> Result<Option<Decoded>, DecodeError> {
-    let row_type = string(&event.raw, "/type")?;
+    let row_type = event.raw.get("type").and_then(Value::as_str).unwrap_or("");
     Ok(match row_type {
         "runtime_started" => Some(public_runtime(
-            ObservationPayload::Runtime {
+            FragmentPayload::Runtime {
                 state: "started".into(),
             },
             SemanticKind::RuntimeStarted,
@@ -321,7 +368,7 @@ fn decode_common(event: &NativeEvent) -> Result<Option<Decoded>, DecodeError> {
             Completeness::Partial,
         )),
         "runtime_ready" => Some(public_runtime(
-            ObservationPayload::Runtime {
+            FragmentPayload::Runtime {
                 state: "ready".into(),
             },
             SemanticKind::RuntimeReady,
@@ -329,7 +376,7 @@ fn decode_common(event: &NativeEvent) -> Result<Option<Decoded>, DecodeError> {
             Completeness::Complete,
         )),
         "runtime_stopped" => Some(public_runtime(
-            ObservationPayload::Runtime {
+            FragmentPayload::Runtime {
                 state: "stopped".into(),
             },
             SemanticKind::RuntimeStopped,
@@ -338,7 +385,7 @@ fn decode_common(event: &NativeEvent) -> Result<Option<Decoded>, DecodeError> {
         )),
         "interaction_required" => Some(interaction(&event.raw)),
         "interaction_resolved" => Some(public_runtime(
-            ObservationPayload::Interaction {
+            FragmentPayload::Interaction {
                 reason_code: safe_label(
                     event
                         .raw
@@ -357,8 +404,8 @@ fn decode_common(event: &NativeEvent) -> Result<Option<Decoded>, DecodeError> {
             phase: LifecyclePhase::Recovery,
             completeness: Completeness::RecoveryRequired,
             effect_certainty: EffectCertainty::Unknown,
-            visibility: ObservationVisibility::TeamPublic,
-            payload: ObservationPayload::Recovery {
+            visibility: FragmentVisibility::TeamPublic,
+            payload: FragmentPayload::Recovery {
                 reason_code: "native_effect_unknown".into(),
             },
             causal_parent_id: None,
@@ -368,14 +415,14 @@ fn decode_common(event: &NativeEvent) -> Result<Option<Decoded>, DecodeError> {
     })
 }
 
-fn malformed_observation(
+fn malformed_record(
     context: &DecodeContext,
     native_event_id: Option<String>,
     provider_turn_id: Option<String>,
     ordering_position: u64,
     occurred_at: Option<String>,
     line: &str,
-) -> ProviderObservation {
+) -> ProviderNativeEventRecord {
     let source_fingerprint = format!("sha256:{:x}", Sha256::digest(line.as_bytes()));
     let native_identity = native_event_id.clone().unwrap_or_else(|| {
         format!(
@@ -383,9 +430,9 @@ fn malformed_observation(
             &source_fingerprint["sha256:".len()..]
         )
     });
-    ProviderObservation {
-        schema_version: PROVIDER_OBSERVATION_SCHEMA_VERSION.into(),
-        observation_id: format!(
+    ProviderNativeEventRecord {
+        schema_version: PROVIDER_NATIVE_EVENT_RECORD_SCHEMA_VERSION.into(),
+        record_id: format!(
             "{}:{}:{native_identity}",
             context.provider.as_str(),
             context.agent_session_id
@@ -407,18 +454,24 @@ fn malformed_observation(
         runtime_command_id: context.runtime_command_id.clone(),
         occurred_at,
         observed_at: context.observed_at.clone(),
-        semantic_kind: SemanticKind::MalformedOrIncomplete,
-        lifecycle_phase: LifecyclePhase::Recovery,
-        completeness: Completeness::Incomplete,
-        effect_certainty: EffectCertainty::None,
-        visibility: ObservationVisibility::OperatorOnly,
-        redacted: false,
-        truncated: false,
         native_event: Value::String(line.to_owned()),
         source_content_fingerprint: source_fingerprint,
-        payload: ObservationPayload::Malformed {
-            reason_code: "native_json_malformed".into(),
-        },
+        fragments: vec![ProviderEventFragment {
+            fragment_id: format!(
+                "{}:{}:{native_identity}:fragment-0",
+                context.provider.as_str(),
+                context.agent_session_id
+            ),
+            fragment_index: 0,
+            semantic_kind: SemanticKind::MalformedOrIncomplete,
+            lifecycle_phase: LifecyclePhase::Recovery,
+            completeness: Completeness::Incomplete,
+            effect_certainty: EffectCertainty::None,
+            visibility: FragmentVisibility::OperatorOnly,
+            payload: FragmentPayload::Malformed {
+                reason_code: "native_json_malformed".into(),
+            },
+        }],
     }
 }
 
@@ -444,13 +497,13 @@ struct Decoded {
     phase: LifecyclePhase,
     completeness: Completeness,
     effect_certainty: EffectCertainty,
-    visibility: ObservationVisibility,
-    payload: ObservationPayload,
+    visibility: FragmentVisibility,
+    payload: FragmentPayload,
     causal_parent_id: Option<String>,
     correlation_id: Option<String>,
 }
 
-fn private(payload: ObservationPayload, kind: SemanticKind, phase: LifecyclePhase) -> Decoded {
+fn private(payload: FragmentPayload, kind: SemanticKind, phase: LifecyclePhase) -> Decoded {
     Decoded {
         kind,
         phase,
@@ -460,7 +513,7 @@ fn private(payload: ObservationPayload, kind: SemanticKind, phase: LifecyclePhas
             Completeness::Partial
         },
         effect_certainty: EffectCertainty::None,
-        visibility: ObservationVisibility::TeamSession,
+        visibility: FragmentVisibility::TeamSession,
         payload,
         causal_parent_id: None,
         correlation_id: None,
@@ -469,16 +522,16 @@ fn private(payload: ObservationPayload, kind: SemanticKind, phase: LifecyclePhas
 
 fn native(raw: &Value) -> Decoded {
     private(
-        ObservationPayload::Native {
+        FragmentPayload::Native {
             event_type: raw.get("type").and_then(Value::as_str).map(str::to_owned),
         },
-        SemanticKind::NativeEvent,
+        SemanticKind::UnclassifiedNative,
         LifecyclePhase::Progress,
     )
 }
 
 fn public_runtime(
-    payload: ObservationPayload,
+    payload: FragmentPayload,
     kind: SemanticKind,
     phase: LifecyclePhase,
     completeness: Completeness,
@@ -488,7 +541,7 @@ fn public_runtime(
         phase,
         completeness,
         effect_certainty: EffectCertainty::None,
-        visibility: ObservationVisibility::TeamPublic,
+        visibility: FragmentVisibility::TeamPublic,
         payload,
         causal_parent_id: None,
         correlation_id: None,
@@ -496,7 +549,42 @@ fn public_runtime(
 }
 
 fn decode_codex(event: &NativeEvent) -> Result<Option<Decoded>, DecodeError> {
-    let row_type = string(&event.raw, "/type")?;
+    if let Some(method) = event.raw.get("method").and_then(Value::as_str) {
+        let params = event.raw.get("params").unwrap_or(&event.raw);
+        return Ok(match method {
+            "item/agentMessage/delta" => params.get("delta").and_then(Value::as_str).map(authored),
+            "item/reasoning/summaryTextDelta" => {
+                params.get("delta").and_then(Value::as_str).map(reasoning)
+            }
+            "item/started" => Some(tool(
+                SemanticKind::ToolCallStarted,
+                LifecyclePhase::Started,
+                params
+                    .pointer("/item/type")
+                    .or_else(|| params.pointer("/item/name"))
+                    .and_then(Value::as_str),
+                params
+                    .pointer("/item/id")
+                    .or_else(|| params.pointer("/item/callId"))
+                    .and_then(Value::as_str),
+            )),
+            "item/completed" => Some(tool(
+                SemanticKind::ToolCallCompleted,
+                LifecyclePhase::Terminal,
+                params
+                    .pointer("/item/type")
+                    .or_else(|| params.pointer("/item/name"))
+                    .and_then(Value::as_str),
+                params
+                    .pointer("/item/id")
+                    .or_else(|| params.pointer("/item/callId"))
+                    .and_then(Value::as_str),
+            )),
+            "turn/completed" => Some(turn("completed")),
+            _ => None,
+        });
+    }
+    let row_type = event.raw.get("type").and_then(Value::as_str).unwrap_or("");
     let payload_type = event
         .raw
         .pointer("/payload/type")
@@ -567,7 +655,7 @@ fn decode_codex(event: &NativeEvent) -> Result<Option<Decoded>, DecodeError> {
 fn codex_usage(raw: &serde_json::Value) -> Decoded {
     let usage = raw.pointer("/payload/info/total_token_usage");
     private(
-        ObservationPayload::Usage {
+        FragmentPayload::Usage {
             input_tokens: usage
                 .and_then(|value| value.get("input_tokens"))
                 .and_then(|value| value.as_u64()),
@@ -596,8 +684,42 @@ fn native_turn_id(raw: &serde_json::Value) -> Option<String> {
         .map(str::to_owned)
 }
 
-fn decode_claude(event: &NativeEvent) -> Result<Option<Decoded>, DecodeError> {
-    let row_type = string(&event.raw, "/type")?;
+fn decode_claude(event: &NativeEvent) -> Result<Vec<Decoded>, DecodeError> {
+    if let Some(name) = event
+        .raw
+        .get("event")
+        .and_then(Value::as_str)
+        .filter(|_| event.raw.get("type").is_none())
+    {
+        let data = event.raw.get("data").unwrap_or(&Value::Null);
+        return match name {
+            "session_bound" => Ok(vec![private(
+                FragmentPayload::SessionMetadata {
+                    native_session_id: data
+                        .get("sessionId")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned),
+                },
+                SemanticKind::SessionMetadata,
+                LifecyclePhase::Started,
+            )]),
+            "assistant_message" => decode_claude_content(
+                data.pointer("/message/content")
+                    .or_else(|| data.get("content"))
+                    .unwrap_or(data),
+            ),
+            "turn_complete" => Ok(vec![turn(
+                if data.get("isError").and_then(Value::as_bool) == Some(true) {
+                    "failed"
+                } else {
+                    "completed"
+                },
+            )]),
+            "provider_error" => Ok(vec![transport("provider_error")]),
+            _ => Ok(vec![]),
+        };
+    }
+    let row_type = event.raw.get("type").and_then(Value::as_str).unwrap_or("");
     match row_type {
         "assistant" => {
             let content = event
@@ -611,53 +733,116 @@ fn decode_claude(event: &NativeEvent) -> Result<Option<Decoded>, DecodeError> {
                 .raw
                 .pointer("/delta/text")
                 .and_then(|v| v.as_str())
-                .map(authored)),
-            Some("message_stop") => Ok(Some(turn("completed"))),
-            Some("message_start" | "content_block_start" | "content_block_stop") => Ok(None),
-            _ => Ok(None),
+                .map(authored)
+                .into_iter()
+                .collect()),
+            Some("message_stop") => Ok(vec![turn("completed")]),
+            Some("message_start" | "content_block_start" | "content_block_stop") => Ok(vec![]),
+            _ => Ok(vec![]),
         },
-        "result" => Ok(Some(usage(&event.raw))),
-        "transport_interrupted" => Ok(Some(transport("provider_transport_interrupted"))),
-        "cancelled" => Ok(Some(turn("cancelled"))),
-        _ => Ok(None),
+        "result" => Ok(vec![usage(&event.raw)]),
+        "transport_interrupted" => Ok(vec![transport("provider_transport_interrupted")]),
+        "cancelled" => Ok(vec![turn("cancelled")]),
+        _ => Ok(vec![]),
     }
 }
 
-fn decode_claude_content(content: &serde_json::Value) -> Result<Option<Decoded>, DecodeError> {
+fn decode_claude_content(content: &serde_json::Value) -> Result<Vec<Decoded>, DecodeError> {
     if let Some(text) = content.as_str() {
-        return Ok(Some(authored(text)));
+        return Ok(vec![authored(text)]);
     }
     let parts = content
         .as_array()
         .ok_or(DecodeError::Malformed("assistant content array"))?;
+    let mut decoded = Vec::new();
     for part in parts {
         match part.get("type").and_then(|v| v.as_str()) {
-            Some("thinking") => return Ok(Some(reasoning_drop())),
-            Some("text") => return Ok(part.get("text").and_then(|v| v.as_str()).map(authored)),
+            Some("thinking" | "reasoning") => {
+                let text = part
+                    .get("thinking")
+                    .or_else(|| part.get("text"))
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("provider-native reasoning event");
+                decoded.push(reasoning(text));
+            }
+            Some("text") => {
+                if let Some(text) = part.get("text").and_then(|v| v.as_str()) {
+                    decoded.push(authored(text));
+                }
+            }
             Some("tool_use") => {
-                return Ok(Some(tool(
+                decoded.push(tool(
                     SemanticKind::ToolCallRequested,
                     LifecyclePhase::Requested,
                     part.get("name").and_then(|v| v.as_str()),
                     part.get("id").and_then(|v| v.as_str()),
-                )))
+                ));
             }
             Some("tool_result") => {
-                return Ok(Some(tool(
+                decoded.push(tool(
                     SemanticKind::ToolCallCompleted,
                     LifecyclePhase::Terminal,
                     Some("tool"),
                     part.get("tool_use_id").and_then(|v| v.as_str()),
-                )))
+                ));
             }
             _ => {}
         }
     }
-    Ok(None)
+    Ok(decoded)
 }
 
 fn decode_kimi(event: &NativeEvent) -> Result<Option<Decoded>, DecodeError> {
-    let row_type = string(&event.raw, "/type")?;
+    if let Some(kind) = event.raw.get("sessionUpdate").and_then(Value::as_str) {
+        return Ok(match kind {
+            "agent_thought_chunk" => event
+                .raw
+                .pointer("/content/text")
+                .and_then(Value::as_str)
+                .map(reasoning),
+            "agent_message_chunk" => event
+                .raw
+                .pointer("/content/text")
+                .and_then(Value::as_str)
+                .map(authored),
+            "tool_call" => Some(tool(
+                SemanticKind::ToolCallStarted,
+                LifecyclePhase::Started,
+                event
+                    .raw
+                    .get("title")
+                    .or_else(|| event.raw.get("name"))
+                    .and_then(Value::as_str),
+                event
+                    .raw
+                    .get("toolCallId")
+                    .or_else(|| event.raw.get("id"))
+                    .and_then(Value::as_str),
+            )),
+            "tool_call_update" => Some(tool(
+                if matches!(
+                    event.raw.get("status").and_then(Value::as_str),
+                    Some("failed" | "error" | "cancelled" | "canceled")
+                ) {
+                    SemanticKind::ToolCallFailed
+                } else {
+                    SemanticKind::ToolCallCompleted
+                },
+                LifecyclePhase::Terminal,
+                event.raw.get("title").and_then(Value::as_str),
+                event
+                    .raw
+                    .get("toolCallId")
+                    .or_else(|| event.raw.get("id"))
+                    .and_then(Value::as_str),
+            )),
+            _ => None,
+        });
+    }
+    if event.raw.get("method").and_then(Value::as_str) == Some("session/request_permission") {
+        return Ok(Some(interaction(&event.raw)));
+    }
+    let row_type = event.raw.get("type").and_then(Value::as_str).unwrap_or("");
     match row_type {
         "context.append_loop_event" => {
             let event_type = string(&event.raw, "/event/type")?;
@@ -716,7 +901,7 @@ fn decode_kimi(event: &NativeEvent) -> Result<Option<Decoded>, DecodeError> {
 }
 
 fn decode_pi(event: &NativeEvent) -> Result<Option<Decoded>, DecodeError> {
-    let row_type = string(&event.raw, "/type")?;
+    let row_type = event.raw.get("type").and_then(Value::as_str).unwrap_or("");
     match row_type {
         // Pi's provider-native JSONL persists completed messages rather than
         // replaying the transient RPC `message_update` family. This semantic
@@ -784,7 +969,45 @@ fn decode_pi_persisted_message(raw: &Value) -> Result<Option<Decoded>, DecodeErr
 }
 
 fn decode_deepseek_harness(event: &NativeEvent) -> Result<Option<Decoded>, DecodeError> {
-    let row_type = string(&event.raw, "/type")?;
+    if let Some(name) = event.raw.get("event").and_then(Value::as_str) {
+        let data = event.raw.get("data").unwrap_or(&Value::Null);
+        return Ok(match name {
+            "provider_activity" => match data.get("kind").and_then(Value::as_str) {
+                Some("thinking") => data.get("summary").and_then(Value::as_str).map(reasoning),
+                Some("response_streaming") => {
+                    data.get("summary").and_then(Value::as_str).map(authored)
+                }
+                Some("tool_started") => Some(tool(
+                    SemanticKind::ToolCallStarted,
+                    LifecyclePhase::Started,
+                    data.get("toolName").and_then(Value::as_str),
+                    data.get("callId").and_then(Value::as_str),
+                )),
+                Some("tool_completed") => Some(tool(
+                    SemanticKind::ToolCallCompleted,
+                    LifecyclePhase::Terminal,
+                    data.get("toolName").and_then(Value::as_str),
+                    data.get("callId").and_then(Value::as_str),
+                )),
+                Some("tool_failed") => Some(tool(
+                    SemanticKind::ToolCallFailed,
+                    LifecyclePhase::Terminal,
+                    data.get("toolName").and_then(Value::as_str),
+                    data.get("callId").and_then(Value::as_str),
+                )),
+                _ => None,
+            },
+            "assistant_message" => text_from_parts(
+                data.pointer("/message/content")
+                    .or_else(|| data.get("content"))
+                    .unwrap_or(data),
+            )
+            .map(|text| authored(&text)),
+            "turn_complete" => Some(turn("completed")),
+            _ => None,
+        });
+    }
+    let row_type = event.raw.get("type").and_then(Value::as_str).unwrap_or("");
     match row_type {
         "assistant/message" => {
             let content = event
@@ -853,7 +1076,7 @@ fn decode_deepseek_harness(event: &NativeEvent) -> Result<Option<Decoded>, Decod
         {
             let usage = event.raw.pointer("/data/chunk/usage");
             Ok(Some(private(
-                ObservationPayload::Usage {
+                FragmentPayload::Usage {
                     input_tokens: usage
                         .and_then(|value| value.get("inputTokens"))
                         .and_then(Value::as_u64),
@@ -875,20 +1098,24 @@ fn decode_deepseek_harness(event: &NativeEvent) -> Result<Option<Decoded>, Decod
 
 fn authored(text: &str) -> Decoded {
     private(
-        ObservationPayload::AuthoredResponse {
+        FragmentPayload::AssistantResponse {
             text: text.to_owned(),
         },
-        SemanticKind::AuthoredResponse,
+        SemanticKind::AssistantResponse,
         LifecyclePhase::Progress,
     )
 }
 
 fn reasoning_drop() -> Decoded {
+    reasoning("provider-native reasoning event")
+}
+
+fn reasoning(text: &str) -> Decoded {
     private(
-        ObservationPayload::ReasoningSummary {
-            summary: "provider-native reasoning event".into(),
+        FragmentPayload::Reasoning {
+            text: text.to_owned(),
         },
-        SemanticKind::ReasoningSummary,
+        SemanticKind::Reasoning,
         LifecyclePhase::Progress,
     )
 }
@@ -900,7 +1127,7 @@ fn tool(
     call_id: Option<&str>,
 ) -> Decoded {
     private(
-        ObservationPayload::Tool {
+        FragmentPayload::Tool {
             tool_name: safe_label(name.unwrap_or("tool")),
             call_id: call_id.map(safe_label),
             // Raw tool input/output is intentionally never projected.
@@ -921,7 +1148,7 @@ fn artifact(raw: &serde_json::Value, prefix: &str) -> Decoded {
         raw.pointer(&path).and_then(|v| v.as_str())
     };
     private(
-        ObservationPayload::Artifact {
+        FragmentPayload::Artifact {
             display_name: safe_label(pointer("name").unwrap_or("artifact")),
             media_type: pointer("mediaType").map(safe_label),
             content_digest: pointer("digest")
@@ -935,7 +1162,7 @@ fn artifact(raw: &serde_json::Value, prefix: &str) -> Decoded {
 
 fn usage(raw: &serde_json::Value) -> Decoded {
     private(
-        ObservationPayload::Usage {
+        FragmentPayload::Usage {
             input_tokens: raw.pointer("/usage/input_tokens").and_then(|v| v.as_u64()),
             output_tokens: raw.pointer("/usage/output_tokens").and_then(|v| v.as_u64()),
             total_tokens: raw.pointer("/usage/total_tokens").and_then(|v| v.as_u64()),
@@ -951,7 +1178,7 @@ fn interaction(raw: &serde_json::Value) -> Decoded {
         .and_then(|v| v.as_str())
         .unwrap_or("Provider interaction is required");
     public_runtime(
-        ObservationPayload::Interaction {
+        FragmentPayload::Interaction {
             reason_code: safe_label(
                 raw.get("reasonCode")
                     .and_then(|v| v.as_str())
@@ -967,7 +1194,7 @@ fn interaction(raw: &serde_json::Value) -> Decoded {
 
 fn transport(reason: &str) -> Decoded {
     public_runtime(
-        ObservationPayload::Transport {
+        FragmentPayload::Transport {
             reason_code: reason.into(),
         },
         SemanticKind::TransportInterrupted,
@@ -983,7 +1210,7 @@ fn turn(outcome: &str) -> Decoded {
         _ => (SemanticKind::TurnFailed, Completeness::Incomplete),
     };
     private(
-        ObservationPayload::Turn {
+        FragmentPayload::Turn {
             outcome: outcome.into(),
             display_summary: None,
         },

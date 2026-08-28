@@ -184,7 +184,6 @@ impl HttpExchange<'_> {
                 let event = match update {
                     LiveProviderActivityUpdate::Updated {
                         provider,
-                        kind,
                         native_event,
                         ..
                     } => {
@@ -215,9 +214,8 @@ impl HttpExchange<'_> {
                         let activity = provider_event_api::record_live(
                             scope.clone(),
                             &member.provider,
-                            kind,
                             native_event,
-                        );
+                        )?;
                         provider_event_api::updated_live_event(&scope, activity)
                     }
                     LiveProviderActivityUpdate::Terminal { .. } => {

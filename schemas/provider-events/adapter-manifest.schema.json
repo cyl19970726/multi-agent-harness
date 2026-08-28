@@ -11,7 +11,7 @@
   ],
   "properties": {
     "provider": {"enum": ["codex", "claude", "kimi", "pi", "deepseek_harness"]},
-    "adapter_version": {"const": "agentfirm.provider_event_adapter.v1"},
+    "adapter_version": {"const": "agentfirm.provider_event_adapter.v2"},
     "native_families": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
     "fidelity": {"enum": ["structured", "summary", "unsupported"]},
     "stable_native_identity": {"type": "boolean"},
@@ -22,7 +22,7 @@
     "usage_events": {"type": "boolean"},
     "interaction_events": {"type": "boolean"},
     "cancellation_events": {"type": "boolean"},
-    "supported_semantic_kinds": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"enum": ["authored_response", "reasoning_summary", "tool_call_requested", "tool_call_started", "tool_call_completed", "tool_call_failed", "artifact_created", "usage_reported", "interaction_required", "interaction_resolved", "runtime_started", "runtime_ready", "runtime_stopped", "transport_interrupted", "turn_completed", "turn_failed", "turn_cancelled", "command_recovery_required", "malformed_or_incomplete", "native_event"]}},
+    "supported_semantic_kinds": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"enum": ["session_metadata", "reasoning", "assistant_response", "tool_call_requested", "tool_call_started", "tool_call_completed", "tool_call_failed", "artifact_created", "usage_reported", "interaction_required", "interaction_resolved", "runtime_started", "runtime_ready", "runtime_stopped", "transport_interrupted", "turn_completed", "turn_failed", "turn_cancelled", "command_recovery_required", "malformed_or_incomplete", "unclassified_native"]}},
     "redaction_policy": {"const": "preserve_exact_native_event_without_semantic_filtering"}
   }
 }

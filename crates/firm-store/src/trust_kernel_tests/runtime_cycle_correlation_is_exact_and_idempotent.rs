@@ -42,6 +42,26 @@ fn runtime_cycle_correlation_is_exact_and_idempotent() {
     let accepted = store
         .prepare_runtime_command(&admission, &command, current_unix_ms(), "t-accepted")
         .unwrap();
+    let attached = store
+        .bind_agent_session_native_session(
+            &service_context(
+                "session.native.bind",
+                "runtime-cycle-correlation:native-bind",
+                target.version,
+            ),
+            &target.id,
+            target.runtime_generation,
+            settled_native_session("native-cycle-correlation"),
+        )
+        .expect("the provider may attach the first exact native session before input settlement");
+    assert_eq!(
+        attached
+            .projection
+            .native_session_ref
+            .as_ref()
+            .map(|native| native.native_session_id.as_str()),
+        Some("native-cycle-correlation")
+    );
     let settled = store
         .settle_runtime_command_with_postcondition(
             &service_context(
@@ -65,26 +85,6 @@ fn runtime_cycle_correlation_is_exact_and_idempotent() {
             "t-input",
         )
         .unwrap();
-    let attached = store
-        .bind_agent_session_native_session(
-            &service_context(
-                "session.native.bind",
-                "runtime-cycle-correlation:native-bind",
-                target.version,
-            ),
-            &target.id,
-            target.runtime_generation,
-            settled_native_session("native-cycle-correlation"),
-        )
-        .expect("the provider may attach the first exact native session after input acceptance");
-    assert_eq!(
-        attached
-            .projection
-            .native_session_ref
-            .as_ref()
-            .map(|native| native.native_session_id.as_str()),
-        Some("native-cycle-correlation")
-    );
     let correlation = ProviderCycleCorrelation {
         invocation_id: command.id.clone(),
         source_delivery_id: Some("work-delivery:1".into()),

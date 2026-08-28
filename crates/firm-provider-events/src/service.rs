@@ -80,8 +80,8 @@ impl ProviderProjectionService {
         );
         let read_count = outcomes.len();
         for outcome in outcomes {
-            let DecodeOutcome::Observation(observation) = outcome;
-            self.fold.ingest(*observation)?;
+            let DecodeOutcome::Record(record) = outcome;
+            self.fold.ingest(*record)?;
         }
         self.page_has_more = has_more;
         self.next_before_position = next_before_position;

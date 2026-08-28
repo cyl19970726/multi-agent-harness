@@ -678,7 +678,7 @@ pub(crate) fn unavailable_session_event_projection(reason: &str) -> Value {
 
 pub(crate) fn unavailable_session_event_projection_code(code: &str, reason: &str) -> Value {
     json!({
-        "schema_version":"agentfirm.provider_observation.v1",
+        "schema_version":"agentfirm.provider_native_event_record.v2",
         "agent_session_id":null,
         "agent_session_generation":null,
         "source_snapshot_fingerprint":null,

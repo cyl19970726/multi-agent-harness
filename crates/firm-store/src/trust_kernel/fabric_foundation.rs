@@ -7,6 +7,12 @@ pub(super) enum RuntimeBindingAdmission {
     },
 }
 
+pub(super) enum RuntimeCommandPoststate {
+    None,
+    Command,
+    CommandWithNativeSessionAttachment,
+}
+
 impl HarnessStore {
     pub(super) fn latest_fabric_side_records_unlocked<T, F>(
         &self,
@@ -361,7 +367,7 @@ impl HarnessStore {
         session: &AgentSession,
         command: RuntimeCommandKind,
         precondition: &RuntimeCommandPrecondition,
-        allow_command_poststate: bool,
+        poststate: RuntimeCommandPoststate,
         resource_kind: &str,
         resource_id: &str,
         current_version: Option<u64>,
@@ -376,21 +382,29 @@ impl HarnessStore {
             )
         };
 
-        let expected_version_advanced_by_this_command = allow_command_poststate
-            && precondition
-                .expected_session_version
-                .is_some_and(|expected| {
-                    session.version == expected.saturating_add(1)
-                        && matches!(
-                            (command, session.lifecycle),
-                            (RuntimeCommandKind::StopSession, AgentSessionStatus::Closed)
-                                | (RuntimeCommandKind::ResumeSession, AgentSessionStatus::Cold)
-                        )
-                });
+        let expected_version_advanced_by_this_command =
+            !matches!(poststate, RuntimeCommandPoststate::None)
+                && precondition
+                    .expected_session_version
+                    .is_some_and(|expected| {
+                        session.version == expected.saturating_add(1)
+                            && matches!(
+                                (command, session.lifecycle),
+                                (RuntimeCommandKind::StopSession, AgentSessionStatus::Closed)
+                                    | (RuntimeCommandKind::ResumeSession, AgentSessionStatus::Cold)
+                            )
+                    });
+        let expected_version_advanced_by_native_attachment = matches!(
+            poststate,
+            RuntimeCommandPoststate::CommandWithNativeSessionAttachment
+        ) && precondition
+            .expected_session_version
+            .is_some_and(|expected| session.version == expected.saturating_add(1));
         if precondition
             .expected_session_version
             .is_some_and(|expected| expected != session.version)
             && !expected_version_advanced_by_this_command
+            && !expected_version_advanced_by_native_attachment
         {
             return Err(fenced(
                 "RuntimeCommand expected_session_version no longer matches the canonical AgentSession",

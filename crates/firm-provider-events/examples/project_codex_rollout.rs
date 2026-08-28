@@ -39,7 +39,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut fold = ProviderEventFold::new("dogfood-session", 1, "dogfood-daemon", 1);
     for outcome in batch.outcomes {
         match outcome {
-            DecodeOutcome::Observation(observation) => {
+            DecodeOutcome::Record(observation) => {
                 fold.ingest(*observation)?;
             }
         }
@@ -48,7 +48,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let observations = projection
         .episodes
         .iter()
-        .map(|episode| episode.observations.len())
+        .map(|episode| episode.records.len())
         .sum::<usize>();
     println!(
         "provider=codex observations={observations} episodes={} truncated={} incomplete_tail={} source_snapshot_fingerprint={}",

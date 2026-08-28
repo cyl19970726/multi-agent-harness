@@ -51,6 +51,9 @@ assert.doesNotMatch(sources["src/components/workbench/team/TeamWorksBoard.tsx"],
 assert.match(sources["src/components/workbench/team/TeamWorksBoard.tsx"],/label: "Active"/,"active Work phase is not explicit");
 assert.match(sources["src/components/workbench/team/TeamWorksBoard.tsx"],/label: "Closed"/,"closed Work phase is not explicit");
 assert.match(sources["src/surfaces/AgentConversationWorkspace.tsx"],/useTeamSessionLiveActivity/,"Agent conversation does not read provider-native activity on demand");
+assert.match(sources["src/surfaces/AgentConversationWorkspace.tsx"],/latest\.record\.fragments\.map/,"live SSE does not render every fragment in a multi-fragment native record");
+assert.match(sources["src/surfaces/AgentConversationWorkspace.tsx"],/Original provider-native record/,"live/history native records do not expose the exact expandable provider record");
+assert.doesNotMatch(sources["src/surfaces/AgentConversationWorkspace.tsx"],/const fragment=latest\.record\.fragments\[/,"live SSE regressed to last-fragment-only rendering");
 assert.match(sources["src/surfaces/AgentConversationWorkspace.tsx"],/memberRunId:agent\.is_host \? undefined/,"Host conversation fabricates MemberRun execution truth");
 assert.match(sources["src/surfaces/AgentConversationWorkspace.tsx"],/AgentMessageCommandComposer/,"conversation UI omits the identity-first Message plane");
 assert.match(sources["src/surfaces/AgentConversationWorkspace.tsx"],/RoleActionPanel/,"conversation UI omits the separate control and Work action plane");

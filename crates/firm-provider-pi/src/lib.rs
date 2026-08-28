@@ -911,50 +911,6 @@ impl PiRpcClient {
         text
     }
 
-    /// Project a pi tool execution event to a typed, volatile live activity.
-    pub fn project_live(
-        event: &serde_json::Value,
-    ) -> Option<(harness_runtime_contract::LiveProviderActivityKind, String)> {
-        match event.get("type").and_then(|v| v.as_str()) {
-            Some("tool_execution_start") => {
-                let tool = event.get("toolName").and_then(|v| v.as_str())?;
-                let summary = match tool {
-                    "bash" => Some("Bash running".to_string()),
-                    "edit" => Some("Editing file".to_string()),
-                    "write" => Some("Writing file".to_string()),
-                    "read" => Some("Reading file".to_string()),
-                    "grep" => Some("Grep".to_string()),
-                    "find" => Some("Find".to_string()),
-                    "ls" => Some("Ls".to_string()),
-                    _ => Some("Tool running".to_string()),
-                }?;
-                Some((
-                    harness_runtime_contract::LiveProviderActivityKind::ToolStarted,
-                    summary,
-                ))
-            }
-            Some("tool_execution_end") => {
-                let failed = event
-                    .get("isError")
-                    .and_then(|value| value.as_bool())
-                    .unwrap_or(false);
-                Some((
-                    if failed {
-                        harness_runtime_contract::LiveProviderActivityKind::ToolFailed
-                    } else {
-                        harness_runtime_contract::LiveProviderActivityKind::ToolCompleted
-                    },
-                    if failed {
-                        "tool failed".to_string()
-                    } else {
-                        "tool completed".to_string()
-                    },
-                ))
-            }
-            _ => None,
-        }
-    }
-
     pub fn request_blocking(
         &mut self,
         command: &str,

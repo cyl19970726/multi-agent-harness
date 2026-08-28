@@ -1,8 +1,7 @@
 {
-  "schema_version": "agentfirm.provider_observation.v1",
-  "observation_id": "codex:session-1:event-1",
+  "schema_version": "agentfirm.provider_native_event_record.v2",
   "provider": "codex",
-  "adapter_version": "agentfirm.provider_event_adapter.v1",
+  "adapter_version": "agentfirm.provider_event_adapter.v2",
   "native_source_ref": "provider-source:provider_session:codex:1",
   "agent_member_id": "agent-1",
   "agent_session_id": "session-1",
@@ -18,14 +17,28 @@
   "runtime_command_id": null,
   "occurred_at": "2026-08-13T08:00:00Z",
   "observed_at": "2026-08-13T08:00:01Z",
-  "semantic_kind": "authored_response",
-  "lifecycle_phase": "progress",
-  "completeness": "partial",
-  "effect_certainty": "none",
-  "visibility": "team_session",
-  "redacted": false,
-  "truncated": false,
-  "native_event": {"type":"event_msg","payload":{"type":"agent_message","message":"Completed the bounded step."}},
+  "native_event": {
+    "type": "event_msg",
+    "payload": {
+      "type": "agent_message",
+      "message": "Completed the bounded step."
+    }
+  },
   "source_content_fingerprint": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-  "payload": {"type": "authored_response", "text": "Completed the bounded step."}
+  "record_id": "codex:session-1:event-1",
+  "fragments": [
+    {
+      "fragment_id": "codex:session-1:event-1:fragment-0",
+      "fragment_index": 0,
+      "semantic_kind": "assistant_response",
+      "lifecycle_phase": "progress",
+      "completeness": "partial",
+      "effect_certainty": "none",
+      "visibility": "team_session",
+      "payload": {
+        "type": "assistant_response",
+        "text": "Completed the bounded step."
+      }
+    }
+  ]
 }

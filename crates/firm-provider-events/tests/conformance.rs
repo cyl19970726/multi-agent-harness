@@ -1,10 +1,10 @@
 use firm_provider_events::{
     adapter_manifest, decode_native_event, decode_native_json_line, read_transcript_page,
-    Completeness, DecodeContext, DecodeOutcome, EffectCertainty, FoldOutcome, NativeEvent,
-    ObservationPayload, ObservationVisibility, ProjectionAccessError, ProjectionAuthority,
+    Completeness, DecodeContext, DecodeOutcome, EffectCertainty, FoldOutcome, FragmentPayload,
+    FragmentVisibility, NativeEvent, ProjectionAccessError, ProjectionAuthority,
     ProjectionReadScope, ProviderEventFold, ProviderEventFoldError, ProviderKind,
     ProviderProjectionService, SemanticKind, TranscriptReadBoundary, TranscriptReadError,
-    PROVIDER_OBSERVATION_SCHEMA_VERSION,
+    PROVIDER_NATIVE_EVENT_RECORD_SCHEMA_VERSION,
 };
 use serde_json::json;
 use std::{
@@ -42,8 +42,8 @@ fn decode(provider: ProviderKind, position: u64, raw: serde_json::Value) -> Deco
     .expect("decode")
 }
 
-fn observation(outcome: DecodeOutcome) -> firm_provider_events::ProviderObservation {
-    let DecodeOutcome::Observation(value) = outcome;
+fn observation(outcome: DecodeOutcome) -> firm_provider_events::ProviderNativeEventRecord {
+    let DecodeOutcome::Record(value) = outcome;
     *value
 }
 
@@ -65,6 +65,79 @@ fn five_provider_manifests_are_closed_and_truthful() {
         assert!(!manifest.supported_semantic_kinds.is_empty());
         assert!(!manifest.redaction_policy.is_empty());
     }
+}
+
+#[test]
+fn claude_live_and_reopened_rows_share_one_lossless_multifragment_record() {
+    let raw = json!({
+        "event":"assistant_message",
+        "data":{"content":[
+            {"type":"thinking","thinking":"inspect the exact authority"},
+            {"type":"text","text":"I found the mismatch."},
+            {"type":"tool_use","id":"tool-1","name":"Read","input":{"path":"/tmp/private"}}
+        ]}
+    });
+    let live = observation(decode(ProviderKind::Claude, 1, raw.clone()));
+    let reopened = observation(
+        decode_native_json_line(
+            &context(ProviderKind::Claude),
+            Some("native-1".into()),
+            Some("turn-1".into()),
+            1,
+            Some("2026-08-13T08:00:01Z".into()),
+            &serde_json::to_string(&raw).unwrap(),
+        )
+        .expect("reopened decode"),
+    );
+    assert_eq!(live, reopened);
+    assert_eq!(live.fragments.len(), 3);
+    assert_eq!(live.fragments[0].semantic_kind, SemanticKind::Reasoning);
+    assert_eq!(
+        live.fragments[1].semantic_kind,
+        SemanticKind::AssistantResponse
+    );
+    assert_eq!(
+        live.fragments[2].semantic_kind,
+        SemanticKind::ToolCallRequested
+    );
+    assert_eq!(live.native_event, raw);
+}
+
+#[test]
+fn incomplete_recognized_json_is_preserved_in_direct_and_reopened_reads() {
+    let raw = json!({"type":"event_msg","payload":{"type":"agent_message"}});
+    let direct = observation(decode(ProviderKind::Codex, 1, raw.clone()));
+    assert_eq!(
+        direct.fragments[0].semantic_kind,
+        SemanticKind::MalformedOrIncomplete
+    );
+    assert_eq!(direct.native_event, raw);
+
+    let root = unique_temp_path("incomplete-recognized-row");
+    fs::create_dir_all(&root).unwrap();
+    let path = root.join("session.jsonl");
+    fs::write(
+        &path,
+        "{\"type\":\"event_msg\",\"payload\":{\"type\":\"agent_message\"}}\n",
+    )
+    .unwrap();
+    let page = read_transcript_page(
+        &context(ProviderKind::Codex),
+        &TranscriptReadBoundary {
+            allowed_root: root.clone(),
+            transcript_path: path,
+        },
+        None,
+        10,
+    )
+    .expect("incomplete recognized row remains readable");
+    let reopened = observation(page.outcomes.into_iter().next().unwrap());
+    assert_eq!(
+        reopened.fragments[0].semantic_kind,
+        SemanticKind::MalformedOrIncomplete
+    );
+    assert_eq!(reopened.native_event, raw);
+    fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
@@ -92,7 +165,7 @@ fn faithful_text_tool_terminal_paths_preserve_exact_raw_provider_events() {
         (
             ProviderKind::Codex,
             json!({"type":"event_msg","payload":{"type":"agent_message","message":"done"}}),
-            SemanticKind::AuthoredResponse,
+            SemanticKind::AssistantResponse,
         ),
         (
             ProviderKind::Claude,
@@ -117,11 +190,14 @@ fn faithful_text_tool_terminal_paths_preserve_exact_raw_provider_events() {
     ];
     for (provider, raw, expected_kind) in cases {
         let observation = observation(decode(provider, 1, raw));
-        assert_eq!(observation.semantic_kind, expected_kind);
-        assert_eq!(observation.visibility, ObservationVisibility::TeamSession);
+        assert_eq!(observation.fragments[0].semantic_kind, expected_kind);
+        assert_eq!(
+            observation.fragments[0].visibility,
+            FragmentVisibility::TeamSession
+        );
         assert_eq!(
             observation.schema_version,
-            PROVIDER_OBSERVATION_SCHEMA_VERSION
+            PROVIDER_NATIVE_EVENT_RECORD_SCHEMA_VERSION
         );
         let projected = serde_json::to_string(&observation).expect("observation JSON");
         if projected.contains("never-project") {
@@ -155,7 +231,10 @@ fn provider_reasoning_is_preserved_for_local_session_reads() {
     ];
     for (provider, raw) in cases {
         let observation = observation(decode(provider, 1, raw));
-        assert_eq!(observation.semantic_kind, SemanticKind::ReasoningSummary);
+        assert_eq!(
+            observation.fragments[0].semantic_kind,
+            SemanticKind::Reasoning
+        );
         assert!(observation.native_event.to_string().contains("secret"));
     }
 }
@@ -182,7 +261,10 @@ fn server_context_remains_authoritative_while_hostile_native_fields_stay_visible
     );
     assert_eq!(observation.agent_session_id, "session-1");
     assert_eq!(observation.node_daemon_generation, 4);
-    assert_eq!(observation.visibility, ObservationVisibility::TeamSession);
+    assert_eq!(
+        observation.fragments[0].visibility,
+        FragmentVisibility::TeamSession
+    );
     assert_eq!(
         observation.native_event["agent_session_id"],
         "victim-session"
@@ -207,8 +289,8 @@ fn exact_duplicate_conflict_and_late_order_are_deterministic_in_memory() {
     assert_eq!(fold.ingest(late), Ok(FoldOutcome::Inserted));
     let projection = fold.session_projection(300);
     assert_eq!(projection.episodes.len(), 1);
-    assert_eq!(projection.episodes[0].observations[0].ordering_position, 1);
-    assert_eq!(projection.episodes[0].observations[1].ordering_position, 2);
+    assert_eq!(projection.episodes[0].records[0].ordering_position, 1);
+    assert_eq!(projection.episodes[0].records[1].ordering_position, 2);
 
     let mut changed = first;
     changed.observed_at = "2026-08-13T09:00:00Z".into();
@@ -284,8 +366,8 @@ fn truncation_is_explicit_and_retains_the_latest_native_positions() {
     }
     let projection = fold.session_projection(2);
     assert!(projection.truncated);
-    assert_eq!(projection.episodes[0].observations[0].ordering_position, 4);
-    assert_eq!(projection.episodes[0].observations[1].ordering_position, 5);
+    assert_eq!(projection.episodes[0].records[0].ordering_position, 4);
+    assert_eq!(projection.episodes[0].records[1].ordering_position, 5);
 }
 
 #[test]
@@ -326,7 +408,7 @@ fn authored_content_preserves_exact_provider_native_payload_without_filtering() 
         json!({"type":"event_msg","payload":{"type":"agent_message","message":"token=super-secret sk-12345678901234567890 /Users/alice/.ssh/id_ed25519 /tmp/provider.log C:\\Users\\alice\\secret Bearer bearer-secret"}}),
     ));
     let serialized = serde_json::to_string(&observation).unwrap();
-    assert!(!observation.redacted);
+    assert_eq!(observation.native_event["payload"]["type"], "agent_message");
     assert!(serialized.contains("super-secret"));
     assert!(serialized.contains("sk-123"));
     assert!(serialized.contains("/Users/alice"));
@@ -339,7 +421,7 @@ fn authored_content_preserves_exact_provider_native_payload_without_filtering() 
 fn stale_generation_fails_before_projection_change() {
     let mut stale_context = context(ProviderKind::Claude);
     stale_context.agent_session_generation = 6;
-    let DecodeOutcome::Observation(stale) = decode_native_event(
+    let DecodeOutcome::Record(stale) = decode_native_event(
         &stale_context,
         NativeEvent {
             native_event_id: Some("stale".into()),
@@ -392,10 +474,10 @@ fn unknown_effect_is_not_silently_completed() {
         json!({"type":"transport_interrupted"}),
     ));
     observation.runtime_command_id = Some("command-1".into());
-    observation.effect_certainty = EffectCertainty::Unknown;
-    observation.completeness = Completeness::RecoveryRequired;
-    observation.semantic_kind = SemanticKind::CommandRecoveryRequired;
-    observation.payload = ObservationPayload::Recovery {
+    observation.fragments[0].effect_certainty = EffectCertainty::Unknown;
+    observation.fragments[0].completeness = Completeness::RecoveryRequired;
+    observation.fragments[0].semantic_kind = SemanticKind::CommandRecoveryRequired;
+    observation.fragments[0].payload = FragmentPayload::Recovery {
         reason_code: "native_effect_unknown".into(),
     };
     let mut fold = ProviderEventFold::new("session-1", 7, "daemon-1", 4);
@@ -493,7 +575,7 @@ fn impossible_effect_and_public_private_semantics_fail_before_fold_change() {
         1,
         json!({"type":"turn/completed"}),
     ));
-    effect.effect_certainty = EffectCertainty::Applied;
+    effect.fragments[0].effect_certainty = EffectCertainty::Applied;
     let mut fold = ProviderEventFold::new("session-1", 7, "daemon-1", 4);
     let before_fingerprint = fold.snapshot_fingerprint();
     assert!(matches!(
@@ -507,7 +589,7 @@ fn impossible_effect_and_public_private_semantics_fail_before_fold_change() {
         2,
         json!({"type":"event_msg","payload":{"type":"agent_message","message":"secret"}}),
     ));
-    leaked.visibility = ObservationVisibility::TeamPublic;
+    leaked.fragments[0].visibility = FragmentVisibility::TeamPublic;
     assert!(matches!(
         fold.ingest(leaked),
         Err(ProviderEventFoldError::InvalidObservation(_))
@@ -553,12 +635,12 @@ fn five_provider_jsonl_corpora_decode_and_malformed_lines_are_bounded() {
         assert!(serialized.contains("not projected") || serialized.contains("private tool output"));
         assert!(observations
             .iter()
-            .any(|item| item.semantic_kind == SemanticKind::TurnCompleted));
+            .any(|item| item.fragments[0].semantic_kind == SemanticKind::TurnCompleted));
         if provider == ProviderKind::Kimi {
             assert!(observations.iter().any(|item| {
                 matches!(
-                    &item.payload,
-                    ObservationPayload::Tool { call_id, .. }
+                    &item.fragments[0].payload,
+                    FragmentPayload::Tool { call_id, .. }
                         if call_id.as_deref() == Some("kimi-call")
                 )
             }));
@@ -568,8 +650,8 @@ fn five_provider_jsonl_corpora_decode_and_malformed_lines_are_bounded() {
         } else if provider == ProviderKind::DeepseekHarness {
             assert!(observations.iter().any(|item| {
                 matches!(
-                    &item.payload,
-                    ObservationPayload::AuthoredResponse { text }
+                    &item.fragments[0].payload,
+                    FragmentPayload::AssistantResponse { text }
                         if text == "done together"
                 )
             }));
@@ -587,9 +669,18 @@ fn five_provider_jsonl_corpora_decode_and_malformed_lines_are_bounded() {
         )
         .unwrap(),
     );
-    assert_eq!(malformed.semantic_kind, SemanticKind::MalformedOrIncomplete);
-    assert_eq!(malformed.visibility, ObservationVisibility::OperatorOnly);
-    assert!(!malformed.redacted);
+    assert_eq!(
+        malformed.fragments[0].semantic_kind,
+        SemanticKind::MalformedOrIncomplete
+    );
+    assert_eq!(
+        malformed.fragments[0].visibility,
+        FragmentVisibility::OperatorOnly
+    );
+    assert!(matches!(
+        malformed.native_event,
+        serde_json::Value::String(_)
+    ));
     assert!(serde_json::to_string(&malformed)
         .unwrap()
         .contains("private transcript"));
@@ -609,8 +700,8 @@ fn pi_persisted_session_preserves_authored_failure_and_user_native_events() {
         .unwrap(),
     );
     assert!(matches!(
-        authored.payload,
-        ObservationPayload::AuthoredResponse { ref text } if text == "pi persisted answer"
+        authored.fragments[0].payload,
+        FragmentPayload::AssistantResponse { ref text } if text == "pi persisted answer"
     ));
 
     let failed = observation(
@@ -624,7 +715,7 @@ fn pi_persisted_session_preserves_authored_failure_and_user_native_events() {
         )
         .unwrap(),
     );
-    assert_eq!(failed.semantic_kind, SemanticKind::TurnFailed);
+    assert_eq!(failed.fragments[0].semantic_kind, SemanticKind::TurnFailed);
     let serialized = serde_json::to_string(&failed).unwrap();
     assert!(serialized.contains("secret provider detail"));
 
@@ -638,7 +729,7 @@ fn pi_persisted_session_preserves_authored_failure_and_user_native_events() {
             r#"{"type":"message","message":{"role":"user","content":[{"type":"text","text":"private prompt"}]}}"#,
         )
         .unwrap(),
-        DecodeOutcome::Observation(_)
+        DecodeOutcome::Record(_)
     ));
 }
 
@@ -667,20 +758,20 @@ fn codex_adjacent_native_message_envelopes_project_one_authored_response() {
         .outcomes
         .into_iter()
         .map(|outcome| {
-            let DecodeOutcome::Observation(value) = outcome;
+            let DecodeOutcome::Record(value) = outcome;
             *value
         })
         .collect::<Vec<_>>();
     assert_eq!(
         observations
             .iter()
-            .filter(|item| item.semantic_kind == SemanticKind::AuthoredResponse)
+            .filter(|item| item.fragments[0].semantic_kind == SemanticKind::AssistantResponse)
             .count(),
         2
     );
     assert!(observations
         .iter()
-        .any(|item| item.semantic_kind == SemanticKind::TurnCompleted));
+        .any(|item| item.fragments[0].semantic_kind == SemanticKind::TurnCompleted));
     fs::remove_dir_all(root).unwrap();
 }
 
@@ -762,7 +853,7 @@ fn service_projects_team_and_public_views_on_demand_without_persistence() {
             .unwrap()
             .episodes
             .iter()
-            .map(|episode| episode.observations.len())
+            .map(|episode| episode.records.len())
             .sum::<usize>(),
         2
     );
@@ -833,7 +924,7 @@ fn native_session_pages_are_lossless_non_overlapping_and_provider_ordered() {
         .chain(second.outcomes.iter())
         .chain(first.outcomes.iter())
         .map(|outcome| {
-            let DecodeOutcome::Observation(observation) = outcome;
+            let DecodeOutcome::Record(observation) = outcome;
             assert_eq!(
                 observation.native_event["provider_extra"]["index"],
                 observation.ordering_position
@@ -873,7 +964,7 @@ fn paged_native_session_does_not_shorten_a_large_original_event() {
         1,
     )
     .unwrap();
-    let DecodeOutcome::Observation(observation) = &page.outcomes[0];
+    let DecodeOutcome::Record(observation) = &page.outcomes[0];
     assert_eq!(
         observation.native_event["provider_raw_blob"]
             .as_str()

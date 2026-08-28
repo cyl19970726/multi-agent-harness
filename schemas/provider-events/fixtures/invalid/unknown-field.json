@@ -1,25 +1,5 @@
 {
-  "schema_version": "agentfirm.provider_observation.v1",
-  "observation_id": "codex:session-1:event-1",
-  "provider": "codex",
-  "adapter_version": "agentfirm.provider_event_adapter.v1",
-  "native_source_ref": "provider-source:provider_session:codex:1",
-  "agent_member_id": "agent-1",
-  "agent_session_id": "session-1",
-  "agent_session_generation": 7,
-  "node_daemon_id": "daemon-1",
-  "node_daemon_generation": 4,
-  "ordering_position": 1,
-  "observed_at": "2026-08-13T08:00:01Z",
-  "semantic_kind": "authored_response",
-  "lifecycle_phase": "progress",
-  "completeness": "partial",
-  "effect_certainty": "none",
-  "visibility": "team_session",
-  "redacted": false,
-  "truncated": false,
-  "native_event": {"type":"event_msg"},
-  "source_content_fingerprint": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
-  "payload": {"type": "authored_response", "text": "ok"},
-  "raw_transcript": "forbidden"
+  "schema_version": "agentfirm.provider_native_event_record.v2",
+  "record_id": "codex:session-1:event-1",
+  "fragments": []
 }

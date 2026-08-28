@@ -100,10 +100,6 @@ impl rt::TeamRuntimeAdapter for DeepSeekTeamRuntime {
         )?)
     }
 
-    fn project_live(event: &serde_json::Value) -> Option<(rt::LiveProviderActivityKind, String)> {
-        harness_provider_deepseek::DeepSeekTeamRuntime::project_live(event)
-    }
-
     fn native_control<'a>(
         close: &'a mut bool,
         interrupt: &'a mut bool,

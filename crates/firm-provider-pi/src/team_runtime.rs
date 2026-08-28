@@ -294,12 +294,6 @@ impl harness_runtime_contract::TeamRuntimeAdapter for PiTeamRuntime {
         })
     }
 
-    fn project_live(
-        event: &serde_json::Value,
-    ) -> Option<(harness_runtime_contract::LiveProviderActivityKind, String)> {
-        PiRpcClient::project_live(event)
-    }
-
     fn native_control<'a>(
         close: &'a mut bool,
         interrupt: &'a mut bool,

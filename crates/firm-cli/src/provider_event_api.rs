@@ -12,8 +12,9 @@ use std::{
 
 use harness_core::NativeSessionRef;
 use harness_provider_events::{
-    DecodeContext, ProjectionAuthority, ProjectionReadScope, ProviderKind,
-    ProviderProjectionService, TranscriptReadBoundary,
+    decode_native_event, DecodeContext, DecodeOutcome, NativeEvent, ProjectionAuthority,
+    ProjectionReadScope, ProviderKind, ProviderNativeEventRecord, ProviderProjectionService,
+    TranscriptReadBoundary,
 };
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -34,16 +35,17 @@ pub(crate) struct LiveProviderScope {
     pub member_run_generation: u64,
     pub agent_session_id: String,
     pub agent_session_generation: u64,
+    pub agent_member_id: String,
+    pub node_daemon_id: String,
+    pub node_daemon_generation: u64,
+    #[serde(skip_serializing)]
+    pub provider_thread_id: Option<String>,
 }
-
-pub(crate) use harness_runtime_contract::LiveProviderActivityKind;
 
 #[derive(Clone, Debug, Serialize)]
 struct LiveProviderItem {
     runtime_event_locator: String,
-    kind: LiveProviderActivityKind,
-    provider: String,
-    native_event: Value,
+    record: ProviderNativeEventRecord,
     emitted_unix_ms: u64,
     expires_unix_ms: u64,
 }
@@ -170,19 +172,18 @@ pub(crate) fn read_historical_projection(
 pub(crate) fn record_live(
     scope: LiveProviderScope,
     provider: &str,
-    kind: LiveProviderActivityKind,
     native_event: Value,
-) -> Value {
-    record_live_at(scope, provider, kind, native_event, now_unix_ms())
+) -> CliResult<Value> {
+    record_live_at(scope, provider, native_event, now_unix_ms())
+        .map_err(|error| CliError::Usage(error.to_string()))
 }
 
 fn record_live_at(
     scope: LiveProviderScope,
     provider: &str,
-    kind: LiveProviderActivityKind,
     native_event: Value,
     now: u64,
-) -> Value {
+) -> Result<Value, harness_provider_events::DecodeError> {
     let expires = now.saturating_add(LIVE_TTL_MS);
     let registry = LIVE_REGISTRY.get_or_init(|| Mutex::new(LiveRegistry::default()));
     let mut registry = registry.lock().unwrap_or_else(|error| error.into_inner());
@@ -190,19 +191,58 @@ fn record_live_at(
     let locator = registry.next_locators.entry(scope.clone()).or_default();
     *locator = locator.saturating_add(1).max(1);
     let locator = *locator;
+    let provider =
+        provider_kind(provider).expect("validated runtime provider must have an adapter");
+    let native_event_id = native_event
+        .get("id")
+        .or_else(|| native_event.get("event_id"))
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    let occurred_at = native_event
+        .get("timestamp")
+        .or_else(|| native_event.get("occurred_at"))
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    let context = DecodeContext {
+        provider,
+        native_source_ref: format!(
+            "provider-source:{}:{}:{}:{}:{}",
+            provider.as_str(),
+            scope.execution_space_id,
+            scope.project_id,
+            scope.agent_session_id,
+            scope.agent_session_generation
+        ),
+        agent_member_id: scope.agent_member_id.clone(),
+        agent_session_id: scope.agent_session_id.clone(),
+        agent_session_generation: scope.agent_session_generation,
+        node_daemon_id: scope.node_daemon_id.clone(),
+        node_daemon_generation: scope.node_daemon_generation,
+        provider_thread_id: scope.provider_thread_id.clone(),
+        runtime_command_id: None,
+        observed_at: format!("unix-ms:{now}"),
+    };
+    let DecodeOutcome::Record(record) = decode_native_event(
+        &context,
+        NativeEvent {
+            native_event_id,
+            provider_turn_id: None,
+            ordering_position: locator,
+            occurred_at,
+            raw: native_event,
+        },
+    )?;
     let items = registry.items.entry(scope.clone()).or_default();
     items.push_back(LiveProviderItem {
         runtime_event_locator: format!("runtime-event-{locator}"),
-        kind,
-        provider: provider.to_string(),
-        native_event,
+        record: *record,
         emitted_unix_ms: now,
         expires_unix_ms: expires,
     });
     while items.len() > MAX_LIVE_ITEMS {
         items.pop_front();
     }
-    snapshot_locked(&registry, &scope).expect("recorded live scope must have a snapshot")
+    Ok(snapshot_locked(&registry, &scope).expect("recorded live scope must have a snapshot"))
 }
 
 pub(crate) fn live_snapshot(scope: &LiveProviderScope) -> Option<Value> {
@@ -230,7 +270,7 @@ pub(crate) fn updated_live_event(scope: &LiveProviderScope, activity: Value) -> 
 
 fn live_event(reason: &str, scope: &LiveProviderScope, activity: Option<Value>) -> Value {
     json!({
-        "schema_version":"agentfirm.live_provider_activity_event.v1",
+        "schema_version":"agentfirm.live_provider_activity_event.v2",
         "reason":reason,
         "scope":scope,
         "activity":activity,
@@ -381,6 +421,13 @@ pub(crate) fn exact_live_scope(
             member_run_generation: member_run.runtime_generation,
             agent_session_id: session.id.clone(),
             agent_session_generation: session.runtime_generation,
+            agent_member_id: session.agent_member_id.clone(),
+            node_daemon_id: session.node_daemon_id.clone(),
+            node_daemon_generation: session.node_daemon_generation,
+            provider_thread_id: session
+                .native_session_ref
+                .as_ref()
+                .map(|native| native.native_session_id.clone()),
         }),
         [] => Err("no exact current AgentSession binds this Member identity and provider"),
         _ => {
@@ -404,7 +451,7 @@ fn snapshot_locked(registry: &LiveRegistry, scope: &LiveProviderScope) -> Option
     let snapshot_locator = registry.next_locators.get(scope)?;
     let expires_unix_ms = items.iter().map(|item| item.expires_unix_ms).max()?;
     Some(json!({
-        "schema_version":"agentfirm.live_provider_activity.v1",
+        "schema_version":"agentfirm.live_provider_activity.v2",
         "durability":"volatile_process_memory",
         "replayable":false,
         "execution_space_id":scope.execution_space_id,
@@ -449,6 +496,10 @@ mod tests {
             member_run_generation: generation,
             agent_session_id: format!("agent-session-{generation}"),
             agent_session_generation: generation,
+            agent_member_id: "agent-member-1".into(),
+            node_daemon_id: "daemon-1".into(),
+            node_daemon_generation: 1,
+            provider_thread_id: Some(format!("native-session-{generation}")),
         }
     }
 
@@ -461,6 +512,10 @@ mod tests {
             member_run_generation,
             agent_session_id: "agent-session-stable".into(),
             agent_session_generation: 1,
+            agent_member_id: "agent-member-1".into(),
+            node_daemon_id: "daemon-1".into(),
+            node_daemon_generation: 1,
+            provider_thread_id: Some("native-session-stable".into()),
         }
     }
 
@@ -473,16 +528,33 @@ mod tests {
         let activity = record_live_at(
             project_a.clone(),
             "kimi",
-            LiveProviderActivityKind::Thinking,
             serde_json::json!({"type": "thinking"}),
             100,
-        );
+        )
+        .unwrap();
         assert_eq!(activity["project_id"], "project-a");
         assert_eq!(activity["execution_space_id"], "space-a");
         assert_eq!(activity["agent_session_id"], "agent-session-1");
         assert!(live_snapshot_at(&project_b, 101).is_none());
         assert!(live_snapshot_at(&project_a, 100 + LIVE_TTL_MS - 1).is_some());
         assert!(live_snapshot_at(&project_a, 100 + LIVE_TTL_MS).is_none());
+    }
+
+    #[test]
+    fn live_incomplete_recognized_event_preserves_raw_without_panicking() {
+        let _guard = test_guard();
+        reset_live_for_test();
+        let raw = serde_json::json!({
+            "type":"event_msg",
+            "payload":{"type":"agent_message"}
+        });
+        let activity =
+            record_live_at(scope("space-a", "project-a", 1), "codex", raw.clone(), 100).unwrap();
+        assert_eq!(
+            activity["items"][0]["record"]["fragments"][0]["semantic_kind"],
+            "malformed_or_incomplete"
+        );
+        assert_eq!(activity["items"][0]["record"]["native_event"], raw);
     }
 
     #[test]
@@ -494,17 +566,17 @@ mod tests {
         record_live_at(
             generation_one.clone(),
             "codex",
-            LiveProviderActivityKind::ToolStarted,
             serde_json::json!({"type": "tool_started"}),
             100,
-        );
+        )
+        .unwrap();
         record_live_at(
             generation_two.clone(),
             "codex",
-            LiveProviderActivityKind::ResponseStreaming,
             serde_json::json!({"type": "response_streaming"}),
             100,
-        );
+        )
+        .unwrap();
         let event = clear_live_terminal(&generation_one);
         assert_eq!(event["reason"], "terminal");
         assert!(event["activity"].is_null());
@@ -521,10 +593,10 @@ mod tests {
         record_live_at(
             reopened_adapter.clone(),
             "codex",
-            LiveProviderActivityKind::ResponseStreaming,
             serde_json::json!({"type": "response_streaming"}),
             100,
-        );
+        )
+        .unwrap();
         clear_live_terminal(&old_adapter);
         assert!(live_snapshot_at(&reopened_adapter, 101).is_some());
     }
@@ -540,10 +612,10 @@ mod tests {
             record_live_at(
                 candidate.clone(),
                 "claude",
-                LiveProviderActivityKind::Thinking,
                 serde_json::json!({"type": "thinking"}),
                 100,
-            );
+            )
+            .unwrap();
         }
         clear_live_for_session_ids(
             "space-a",
@@ -567,17 +639,17 @@ mod tests {
         let first = record_live_at(
             owner_one.clone(),
             "codex",
-            LiveProviderActivityKind::Thinking,
             serde_json::json!({"type": "thinking"}),
             100,
-        );
+        )
+        .unwrap();
         let sibling = record_live_at(
             owner_two,
             "kimi",
-            LiveProviderActivityKind::Thinking,
             serde_json::json!({"type": "thinking"}),
             101,
-        );
+        )
+        .unwrap();
         assert_eq!(first["runtime_snapshot_locator"], "runtime-snapshot-1");
         assert_eq!(sibling["runtime_snapshot_locator"], "runtime-snapshot-1");
         assert_eq!(
@@ -593,10 +665,10 @@ mod tests {
         let after_disconnect = record_live_at(
             owner_one,
             "codex",
-            LiveProviderActivityKind::ToolStarted,
             serde_json::json!({"type": "tool_started"}),
             102,
-        );
+        )
+        .unwrap();
         assert_eq!(
             after_disconnect["runtime_snapshot_locator"], "runtime-snapshot-1",
             "disconnect/terminal cleanup must discard locator history"

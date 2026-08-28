@@ -245,14 +245,21 @@ fn exact_self_session_projection_follows_fresh_start_settle_sync() {
     );
     let private_live = live_frames
         .iter()
-        .filter(|frame| frame["schema_version"] == "agentfirm.live_provider_activity_event.v1")
+        .filter(|frame| frame["schema_version"] == "agentfirm.live_provider_activity_event.v2")
         .collect::<Vec<_>>();
     assert!(private_live.iter().any(|frame| {
         frame["reason"] == "updated"
             && frame["scope"]["member_run_id"] == member_run_id
             && frame["activity"]["items"].as_array().is_some_and(|items| {
                 items.iter().any(|item| {
-                    matches!(item["kind"].as_str(), Some("tool_started" | "response_streaming"))
+                    item["record"]["fragments"].as_array().is_some_and(|fragments| {
+                        fragments.iter().any(|fragment| {
+                            matches!(
+                                fragment["semantic_kind"].as_str(),
+                                Some("tool_call_started" | "assistant_response")
+                            )
+                        })
+                    })
                 })
             })
     }), "independent NodeDaemon provider activity never reached authenticated serve SSE: {private_live:?}");

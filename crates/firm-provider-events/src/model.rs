@@ -1,7 +1,8 @@
 use serde::{Deserialize, Serialize};
 
-pub const PROVIDER_OBSERVATION_SCHEMA_VERSION: &str = "agentfirm.provider_observation.v1";
-pub const PROVIDER_EVENT_ADAPTER_VERSION: &str = "agentfirm.provider_event_adapter.v1";
+pub const PROVIDER_NATIVE_EVENT_RECORD_SCHEMA_VERSION: &str =
+    "agentfirm.provider_native_event_record.v2";
+pub const PROVIDER_EVENT_ADAPTER_VERSION: &str = "agentfirm.provider_event_adapter.v2";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -28,9 +29,9 @@ impl ProviderKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SemanticKind {
-    NativeEvent,
-    AuthoredResponse,
-    ReasoningSummary,
+    SessionMetadata,
+    Reasoning,
+    AssistantResponse,
     ToolCallRequested,
     ToolCallStarted,
     ToolCallCompleted,
@@ -48,6 +49,7 @@ pub enum SemanticKind {
     TurnCancelled,
     CommandRecoveryRequired,
     MalformedOrIncomplete,
+    UnclassifiedNative,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -80,7 +82,7 @@ pub enum EffectCertainty {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum ObservationVisibility {
+pub enum FragmentVisibility {
     TeamSession,
     TeamPublic,
     OperatorOnly,
@@ -88,16 +90,20 @@ pub enum ObservationVisibility {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
-pub enum ObservationPayload {
+pub enum FragmentPayload {
     Native {
         #[serde(default)]
         event_type: Option<String>,
     },
-    AuthoredResponse {
+    SessionMetadata {
+        #[serde(default)]
+        native_session_id: Option<String>,
+    },
+    AssistantResponse {
         text: String,
     },
-    ReasoningSummary {
-        summary: String,
+    Reasoning {
+        text: String,
     },
     Tool {
         tool_name: String,
@@ -146,9 +152,22 @@ pub enum ObservationPayload {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct ProviderObservation {
+pub struct ProviderEventFragment {
+    pub fragment_id: String,
+    pub fragment_index: u32,
+    pub semantic_kind: SemanticKind,
+    pub lifecycle_phase: LifecyclePhase,
+    pub completeness: Completeness,
+    pub effect_certainty: EffectCertainty,
+    pub visibility: FragmentVisibility,
+    pub payload: FragmentPayload,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProviderNativeEventRecord {
     pub schema_version: String,
-    pub observation_id: String,
+    pub record_id: String,
     pub provider: ProviderKind,
     pub adapter_version: String,
     /// Opaque, scoped provider-source locator. Never a provider filesystem path
@@ -176,27 +195,24 @@ pub struct ProviderObservation {
     #[serde(default)]
     pub occurred_at: Option<String>,
     pub observed_at: String,
-    pub semantic_kind: SemanticKind,
-    pub lifecycle_phase: LifecyclePhase,
-    pub completeness: Completeness,
-    pub effect_certainty: EffectCertainty,
-    pub visibility: ObservationVisibility,
-    pub redacted: bool,
-    pub truncated: bool,
     /// Exact provider-native row, preserved response-locally for the local
     /// Session viewer. Harness never writes this value to a durable Store.
     pub native_event: serde_json::Value,
     /// Fingerprint of the provider-native content used for response-local
     /// dedupe. It is not a Harness Evidence reference.
     pub source_content_fingerprint: String,
-    pub payload: ObservationPayload,
+    /// Ordered semantic projections of this exact native record. One native
+    /// row may contain several independently useful fragments (for example a
+    /// Claude response with reasoning, text and tool use). The raw record is
+    /// retained exactly once above and is never copied into the fragments.
+    pub fragments: Vec<ProviderEventFragment>,
 }
 
-impl ProviderObservation {
-    pub fn is_team_public_allowlisted(&self) -> bool {
-        self.visibility == ObservationVisibility::TeamPublic
+impl ProviderNativeEventRecord {
+    pub fn is_team_public_allowlisted(fragment: &ProviderEventFragment) -> bool {
+        fragment.visibility == FragmentVisibility::TeamPublic
             && matches!(
-                self.semantic_kind,
+                fragment.semantic_kind,
                 SemanticKind::InteractionRequired
                     | SemanticKind::InteractionResolved
                     | SemanticKind::RuntimeStarted
@@ -208,7 +224,7 @@ impl ProviderObservation {
     }
 
     pub fn validate(&self) -> Result<(), ObservationValidationError> {
-        if self.schema_version != PROVIDER_OBSERVATION_SCHEMA_VERSION
+        if self.schema_version != PROVIDER_NATIVE_EVENT_RECORD_SCHEMA_VERSION
             || self.adapter_version != PROVIDER_EVENT_ADAPTER_VERSION
         {
             return Err(ObservationValidationError::UnsupportedVersion);
@@ -224,78 +240,89 @@ impl ProviderObservation {
         {
             return Err(ObservationValidationError::InvalidAuthorityOrSource);
         }
-        if self.visibility == ObservationVisibility::TeamPublic
-            && !self.is_team_public_allowlisted()
+        if self.fragments.is_empty()
+            || self
+                .fragments
+                .iter()
+                .enumerate()
+                .any(|(index, fragment)| fragment.fragment_index as usize != index)
         {
-            return Err(ObservationValidationError::PrivateSemanticKind);
+            return Err(ObservationValidationError::InvalidFragments);
         }
-        if self.runtime_command_id.is_none() && self.effect_certainty != EffectCertainty::None {
-            return Err(ObservationValidationError::UnboundEffect);
-        }
-        if self.semantic_kind == SemanticKind::CommandRecoveryRequired
-            && (self.runtime_command_id.is_none()
-                || self.effect_certainty != EffectCertainty::Unknown
-                || self.completeness != Completeness::RecoveryRequired)
-        {
-            return Err(ObservationValidationError::InvalidRecovery);
-        }
-        let payload_matches = matches!(
-            (self.semantic_kind, &self.payload),
-            (SemanticKind::NativeEvent, ObservationPayload::Native { .. })
-                | (
-                    SemanticKind::AuthoredResponse,
-                    ObservationPayload::AuthoredResponse { .. }
-                )
-                | (
-                    SemanticKind::ReasoningSummary,
-                    ObservationPayload::ReasoningSummary { .. }
-                )
-                | (
-                    SemanticKind::ToolCallRequested
-                        | SemanticKind::ToolCallStarted
-                        | SemanticKind::ToolCallCompleted
-                        | SemanticKind::ToolCallFailed,
-                    ObservationPayload::Tool { .. }
-                )
-                | (
-                    SemanticKind::ArtifactCreated,
-                    ObservationPayload::Artifact { .. }
-                )
-                | (
-                    SemanticKind::UsageReported,
-                    ObservationPayload::Usage { .. }
-                )
-                | (
-                    SemanticKind::InteractionRequired | SemanticKind::InteractionResolved,
-                    ObservationPayload::Interaction { .. }
-                )
-                | (
-                    SemanticKind::RuntimeStarted
-                        | SemanticKind::RuntimeReady
-                        | SemanticKind::RuntimeStopped,
-                    ObservationPayload::Runtime { .. }
-                )
-                | (
-                    SemanticKind::TransportInterrupted,
-                    ObservationPayload::Transport { .. }
-                )
-                | (
-                    SemanticKind::TurnCompleted
-                        | SemanticKind::TurnFailed
-                        | SemanticKind::TurnCancelled,
-                    ObservationPayload::Turn { .. }
-                )
-                | (
-                    SemanticKind::CommandRecoveryRequired,
-                    ObservationPayload::Recovery { .. }
-                )
-                | (
-                    SemanticKind::MalformedOrIncomplete,
-                    ObservationPayload::Malformed { .. }
-                )
-        );
-        if !payload_matches {
-            return Err(ObservationValidationError::PayloadMismatch);
+        for fragment in &self.fragments {
+            if fragment.visibility == FragmentVisibility::TeamPublic
+                && !Self::is_team_public_allowlisted(fragment)
+            {
+                return Err(ObservationValidationError::PrivateSemanticKind);
+            }
+            if self.runtime_command_id.is_none()
+                && fragment.effect_certainty != EffectCertainty::None
+            {
+                return Err(ObservationValidationError::UnboundEffect);
+            }
+            if fragment.semantic_kind == SemanticKind::CommandRecoveryRequired
+                && (self.runtime_command_id.is_none()
+                    || fragment.effect_certainty != EffectCertainty::Unknown
+                    || fragment.completeness != Completeness::RecoveryRequired)
+            {
+                return Err(ObservationValidationError::InvalidRecovery);
+            }
+            let payload_matches = matches!(
+                (fragment.semantic_kind, &fragment.payload),
+                (
+                    SemanticKind::UnclassifiedNative,
+                    FragmentPayload::Native { .. }
+                ) | (
+                    SemanticKind::SessionMetadata,
+                    FragmentPayload::SessionMetadata { .. }
+                ) | (
+                    SemanticKind::AssistantResponse,
+                    FragmentPayload::AssistantResponse { .. }
+                ) | (SemanticKind::Reasoning, FragmentPayload::Reasoning { .. })
+                    | (
+                        SemanticKind::ToolCallRequested
+                            | SemanticKind::ToolCallStarted
+                            | SemanticKind::ToolCallCompleted
+                            | SemanticKind::ToolCallFailed,
+                        FragmentPayload::Tool { .. }
+                    )
+                    | (
+                        SemanticKind::ArtifactCreated,
+                        FragmentPayload::Artifact { .. }
+                    )
+                    | (SemanticKind::UsageReported, FragmentPayload::Usage { .. })
+                    | (
+                        SemanticKind::InteractionRequired | SemanticKind::InteractionResolved,
+                        FragmentPayload::Interaction { .. }
+                    )
+                    | (
+                        SemanticKind::RuntimeStarted
+                            | SemanticKind::RuntimeReady
+                            | SemanticKind::RuntimeStopped,
+                        FragmentPayload::Runtime { .. }
+                    )
+                    | (
+                        SemanticKind::TransportInterrupted,
+                        FragmentPayload::Transport { .. }
+                    )
+                    | (
+                        SemanticKind::TurnCompleted
+                            | SemanticKind::TurnFailed
+                            | SemanticKind::TurnCancelled,
+                        FragmentPayload::Turn { .. }
+                    )
+                    | (
+                        SemanticKind::CommandRecoveryRequired,
+                        FragmentPayload::Recovery { .. }
+                    )
+                    | (
+                        SemanticKind::MalformedOrIncomplete,
+                        FragmentPayload::Malformed { .. }
+                    )
+            );
+            if !payload_matches {
+                return Err(ObservationValidationError::PayloadMismatch);
+            }
         }
         Ok(())
     }
@@ -317,6 +344,8 @@ pub enum ObservationValidationError {
     PayloadMismatch,
     #[error("authority generation or provider-source provenance is invalid")]
     InvalidAuthorityOrSource,
+    #[error("event record must contain ordered semantic fragments")]
+    InvalidFragments,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -349,7 +378,8 @@ pub enum SessionProjectionAvailability {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TeamRuntimeActivity {
-    pub observation_id: String,
+    pub record_id: String,
+    pub fragment_id: String,
     #[serde(alias = "agent_identity_id")]
     pub agent_member_id: String,
     pub semantic_kind: SemanticKind,
@@ -358,5 +388,5 @@ pub struct TeamRuntimeActivity {
     pub effect_certainty: EffectCertainty,
     #[serde(default)]
     pub occurred_at: Option<String>,
-    pub payload: ObservationPayload,
+    pub payload: FragmentPayload,
 }

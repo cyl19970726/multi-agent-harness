@@ -53,6 +53,9 @@ use crate::{
     ProviderRuntimeProjection, TeamMessageProjection, TeamRunEventSourceKind, TeamRunLedger,
 };
 
+#[path = "runtime_adapter/native_session_binding.rs"]
+mod native_session_binding;
+
 /// Deterministic integration hook: pause after the provider terminal boundary
 /// is observed but before the current Supervisor/session authority is
 /// revalidated. This proves that a successor lease fences every semantic
@@ -666,8 +669,10 @@ pub(crate) fn run_team_member_with_adapter<A: TeamRuntimeAdapter<Error = CliErro
             let pending_steers: RefCell<HashMap<u64, PendingSteerSettlement>> =
                 RefCell::new(HashMap::new());
             let next_steer_token = Cell::new(0u64);
+            let early_native_binding_error = RefCell::new(None::<String>);
+            let native_locator_kind = adapter.native_locator_kind().to_string();
 
-            let round_start = member_row.clone();
+            let mut round_start = member_row.clone();
             let turn_result = {
                 let _turn_lease = context.turn_leases.acquire();
                 let _live_turn_guard = LiveProviderTurnGuard::new(
@@ -806,23 +811,39 @@ pub(crate) fn run_team_member_with_adapter<A: TeamRuntimeAdapter<Error = CliErro
                     }
                 },
                 &mut |event| {
-                    if let Some(sink) = &live_sink {
-                        let kind = A::project_live(event)
-                            .map(|(kind, _preview)| kind)
-                            .unwrap_or(
-                                harness_runtime_contract::LiveProviderActivityKind::NativeEvent,
+                    if provider == "claude"
+                        && event.get("event").and_then(serde_json::Value::as_str)
+                            == Some("session_bound")
+                    {
+                        let binding_result =
+                            native_session_binding::persist_verified_claude_session_binding(
+                                ledger,
+                                &round_start,
+                                event,
+                                &native_locator_kind,
                             );
+                        match binding_result {
+                            Ok(bound) => round_start = bound,
+                            Err(error) => {
+                                *early_native_binding_error.borrow_mut() = Some(error.to_string());
+                            }
+                        }
+                    }
+                    if let Some(sink) = &live_sink {
                         emit_live_provider_activity(
                             sink,
                             ledger,
-                            member_row,
-                            kind,
+                            &round_start,
                             event.clone(),
                         );
                     }
                 },
                 &mut || {
                     let mut control = CycleControl::default();
+                    if let Some(error) = early_native_binding_error.borrow().clone() {
+                        control.fatal_error = Some(error);
+                        return control;
+                    }
                     while let Ok(command) = live_control.try_recv() {
                         match command {
                             MemberControlCommand::Close {
