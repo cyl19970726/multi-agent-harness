@@ -186,15 +186,15 @@ fn close_uses_correlated_session_close_then_clean_stdio_exit_and_is_one_shot() {
 /// LiveCanary evidence before that binding is admitted as Active.
 #[cfg(unix)]
 #[test]
-#[ignore = "requires the authenticated local Kimi Code 0.36.1 runtime"]
-fn live_kimi_0361_session_close_cleanly_reaps_and_retains_session_id() {
+#[ignore = "requires the authenticated local Kimi Code 0.39.0 runtime"]
+fn live_kimi_0390_session_close_cleanly_reaps_and_retains_session_id() {
     let workspace = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
         .canonicalize()
         .expect("workspace root");
     let mut client = KimiAcpClient::spawn(&workspace, None, None, None, &[])
         .expect("spawn authenticated Kimi ACP");
-    assert_eq!(client.provider_version(), Some("0.36.1"));
+    assert_eq!(client.provider_version(), Some("0.39.0"));
     let native_session_id = client
         .session_id()
         .expect("session/new returned native session id")
@@ -208,8 +208,134 @@ fn live_kimi_0361_session_close_cleanly_reaps_and_retains_session_id() {
     assert!(receipt.shutdown.stdout_reader_joined);
     assert!(receipt.shutdown.exit_status.contains("status: 0"));
     eprintln!(
-        "KIMI_CLOSE_LIVE_CANARY provider=0.36.1 native_session_id={} response_id={} exit_status={}",
+        "KIMI_CLOSE_LIVE_CANARY provider=0.39.0 native_session_id={} response_id={} exit_status={}",
         native_session_id, receipt.response_id, receipt.shutdown.exit_status
+    );
+}
+
+/// Manual exact-provider lifecycle canary for Kimi Code 0.39.0. It proves
+/// prompt acceptance/terminal response, exact same-session resume, and
+/// cooperative cancellation before the version can be admitted by the
+/// shipped profile. Provider-native transcript content remains in Kimi.
+#[cfg(unix)]
+#[test]
+#[ignore = "requires the authenticated local Kimi Code 0.39.0 runtime"]
+fn live_kimi_0390_prompt_resume_and_cancel() {
+    use std::cell::Cell;
+
+    let workspace = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .canonicalize()
+        .expect("workspace root");
+    let mut first = KimiAcpClient::spawn(&workspace, Some("kimi-code/k3"), Some("max"), None, &[])
+        .expect("spawn authenticated Kimi ACP 0.39.0");
+    assert_eq!(first.provider_version(), Some("0.39.0"));
+    assert_eq!(first.model(), Some("kimi-code/k3"));
+    assert_eq!(first.effort(), Some("max"));
+    let native_session_id = first
+        .session_id()
+        .expect("session/new returned native session id")
+        .to_string();
+    let mut first_receipt = None;
+    let first_outcome = first
+        .prompt(
+            "Reply with exactly DEV125_KIMI_0390_NEW_OK and no other text. Do not use tools.",
+            Duration::from_secs(120),
+            |receipt| {
+                first_receipt = Some(receipt.to_string());
+                Ok(())
+            },
+            |_| {},
+            |_| Ok(serde_json::json!({"outcome": {"outcome": "cancelled"}})),
+            |_| Ok(()),
+            || Ok(PromptControl::Continue),
+        )
+        .expect("new-session prompt completes");
+    assert_eq!(first_outcome.stop_reason, "end_turn");
+    assert!(first_outcome.provider_error.is_none());
+    assert!(first_receipt.is_some());
+    first
+        .close_session_and_runtime()
+        .expect("close first attachment");
+
+    let mut resumed = KimiAcpClient::spawn(
+        &workspace,
+        Some("kimi-code/k3"),
+        Some("max"),
+        Some(&native_session_id),
+        &[],
+    )
+    .expect("resume exact Kimi native session");
+    assert_eq!(resumed.provider_version(), Some("0.39.0"));
+    assert_eq!(resumed.session_id(), Some(native_session_id.as_str()));
+    let mut resumed_receipt = None;
+    let resumed_outcome = resumed
+        .prompt(
+            "Reply with exactly DEV125_KIMI_0390_RESUME_OK and no other text. Do not use tools.",
+            Duration::from_secs(120),
+            |receipt| {
+                resumed_receipt = Some(receipt.to_string());
+                Ok(())
+            },
+            |_| {},
+            |_| Ok(serde_json::json!({"outcome": {"outcome": "cancelled"}})),
+            |_| Ok(()),
+            || Ok(PromptControl::Continue),
+        )
+        .expect("same-session resumed prompt completes");
+    assert_eq!(resumed_outcome.stop_reason, "end_turn");
+    assert!(resumed_outcome.provider_error.is_none());
+    assert!(resumed_receipt.is_some());
+    resumed
+        .close_session_and_runtime()
+        .expect("close resumed attachment");
+
+    let mut cancellable =
+        KimiAcpClient::spawn(&workspace, None, None, None, &[]).expect("spawn cancel canary");
+    let cancel_session_id = cancellable
+        .session_id()
+        .expect("cancel canary session id")
+        .to_string();
+    let accepted = Cell::new(false);
+    let cancel_sent = Cell::new(false);
+    let cancel_outcome = cancellable
+        .prompt(
+            "Write a very detailed 10000-word architecture essay. Do not use tools.",
+            Duration::from_secs(120),
+            |_| {
+                accepted.set(true);
+                Ok(())
+            },
+            |_| {},
+            |_| Ok(serde_json::json!({"outcome": {"outcome": "cancelled"}})),
+            |_| Ok(()),
+            || {
+                if accepted.get() && !cancel_sent.replace(true) {
+                    Ok(PromptControl::Cancel)
+                } else {
+                    Ok(PromptControl::Continue)
+                }
+            },
+        )
+        .expect("cooperative cancellation reaches a terminal response");
+    assert!(accepted.get(), "provider must accept before cancellation");
+    assert!(cancel_sent.get(), "canary must send session/cancel");
+    assert!(matches!(
+        cancel_outcome.stop_reason.as_str(),
+        "cancelled" | "canceled"
+    ));
+    assert!(cancel_outcome.provider_error.is_none());
+    cancellable
+        .close_session_and_runtime()
+        .expect("close cancelled attachment");
+
+    eprintln!(
+        "KIMI_LIFECYCLE_LIVE_CANARY provider=0.39.0 session_id={} cancel_session_id={} new_receipt={} resume_receipt={} cancel_stop_reason={}",
+        native_session_id,
+        cancel_session_id,
+        first_receipt.expect("new receipt"),
+        resumed_receipt.expect("resume receipt"),
+        cancel_outcome.stop_reason
     );
 }
 

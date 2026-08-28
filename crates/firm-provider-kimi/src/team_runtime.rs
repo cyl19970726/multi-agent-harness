@@ -1,4 +1,4 @@
-//! Provider-neutral Team runtime binding for Kimi Code ACP 0.36.1.
+//! Provider-neutral Team runtime binding for reviewed Kimi Code ACP versions.
 //!
 //! The durable AgentSession and NativeSessionRef remain the authority. This
 //! module owns only the process-local ACP handle and compiles neutral runtime
@@ -24,6 +24,13 @@ use serde_json::Value;
 
 use crate::{KimiAcpClient, PromptControl};
 use crate::{KimiError as CliError, KimiResult as CliResult};
+
+const REVIEWED_KIMI_ACP_RUNTIME_VERSIONS: &[&str] = &["0.36.1", "0.39.0"];
+
+fn reviewed_runtime_version_pair(client: Option<&str>, profile: Option<&str>) -> bool {
+    client == profile
+        && client.is_some_and(|version| REVIEWED_KIMI_ACP_RUNTIME_VERSIONS.contains(&version))
+}
 
 fn now_string() -> String {
     let millis = std::time::SystemTime::now()
@@ -55,10 +62,14 @@ impl<'a> KimiTeamRuntime<'a> {
         on_provider_request: impl FnMut(&Value) -> CliResult<Value> + 'a,
         on_provider_request_written: impl FnMut(&Value) -> CliResult<()> + 'a,
     ) -> Self {
+        let binding_id = format!(
+            "kimi-acp-{}",
+            client.provider_version().unwrap_or("unverified")
+        );
         Self {
             client,
             description: harness_runtime_contract::RuntimeDescription {
-                binding_id: "kimi-acp-0.36.1".to_string(),
+                binding_id,
                 native_protocol: "acp-jsonrpc-v1".to_string(),
                 composition_fingerprint: String::new(),
                 capability_fingerprint: String::new(),
@@ -115,7 +126,7 @@ impl<'a> KimiTeamRuntime<'a> {
 
     fn unsupported(operation: &str) -> harness_runtime_contract::RuntimeContractError {
         harness_runtime_contract::RuntimeContractError::InvalidCapabilityBindings(format!(
-            "Kimi ACP 0.36.1 does not expose a reviewed {operation} primitive"
+            "Kimi ACP does not expose a reviewed {operation} primitive"
         ))
     }
 }
@@ -137,7 +148,7 @@ impl harness_runtime_contract::TeamRuntimeAdapter for KimiTeamRuntime<'_> {
             CapabilityBinding {
                 capability: "open_or_resume",
                 status: CapabilityStatus::Supported,
-                evidence: "Kimi ACP 0.36.1 initialize + session/new|resume; attach replay drained before the next prompt"
+                evidence: "Reviewed Kimi ACP initialize + session/new|resume; attach replay drained before the next prompt"
                     .into(),
                 security_enforcement_locus: None,
             },
@@ -151,7 +162,7 @@ impl harness_runtime_contract::TeamRuntimeAdapter for KimiTeamRuntime<'_> {
             CapabilityBinding {
                 capability: "inject_current_cycle",
                 status: CapabilityStatus::Unsupported,
-                evidence: "ACP 0.36.1 exposes no reviewed content-steer method".into(),
+                evidence: "Reviewed Kimi ACP exposes no content-steer method".into(),
                 security_enforcement_locus: None,
             },
             CapabilityBinding {
@@ -171,7 +182,7 @@ impl harness_runtime_contract::TeamRuntimeAdapter for KimiTeamRuntime<'_> {
             CapabilityBinding {
                 capability: "close_runtime",
                 status: CapabilityStatus::Supported,
-                evidence: "Kimi ACP 0.36.1 advertises sessionCapabilities.close; session/close response then client stdin close, clean process exit and child reap retain the native session id"
+                evidence: "Reviewed Kimi ACP advertises sessionCapabilities.close; session/close response then client stdin close, clean process exit and child reap retain the native session id"
                     .into(),
                 security_enforcement_locus: None,
             },
@@ -267,13 +278,12 @@ impl harness_runtime_contract::TeamRuntimeAdapter for KimiTeamRuntime<'_> {
                 session.provider_kind, profile.provider, profile.execution_mode
             )));
         }
-        if self.client.provider_version() != Some("0.36.1")
-            || profile.provider_version.as_deref() != Some("0.36.1")
-        {
+        let client_version = self.client.provider_version();
+        let profile_version = profile.provider_version.as_deref();
+        if !reviewed_runtime_version_pair(client_version, profile_version) {
             return Err(CliError::Usage(format!(
-                "RUNTIME_ADAPTER_VERSION_MISMATCH: Kimi binding requires exact 0.36.1; client={:?} profile={:?}",
-                self.client.provider_version(),
-                profile.provider_version
+                "RUNTIME_ADAPTER_VERSION_MISMATCH: Kimi binding requires an exact client/profile match in reviewed versions {:?}; client={client_version:?} profile={profile_version:?}",
+                REVIEWED_KIMI_ACP_RUNTIME_VERSIONS,
             )));
         }
         if session.effective_permission_ceiling
@@ -512,7 +522,7 @@ fn kimi_contract_bridge_error(
     error: impl std::fmt::Display,
 ) -> harness_runtime_contract::RuntimeContractError {
     harness_runtime_contract::RuntimeContractError::InvalidCapabilityBindings(format!(
-        "Kimi ACP 0.36.1 native bridge operation failed: {error}"
+        "Kimi ACP native bridge operation failed: {error}"
     ))
 }
 
@@ -795,7 +805,7 @@ impl harness_runtime_contract::RuntimeAdapter for KimiTeamRuntime<'_> {
         builder.record(
             QuiesceStep::DrainNativeQueue,
             RuntimePostconditionStatus::Unknown,
-            "Kimi ACP 0.36.1 exposes no complete native pending-input/background queue snapshot",
+            "Reviewed Kimi ACP exposes no complete native pending-input/background queue snapshot",
         )?;
         builder.record(
             QuiesceStep::DrainWritableChildren,
@@ -840,6 +850,27 @@ mod tests {
         SecurityEnforcementLocusKind,
     };
     use harness_runtime_contract::TeamRuntimeAdapter;
+
+    #[test]
+    fn runtime_version_admission_requires_exact_reviewed_pair() {
+        assert!(reviewed_runtime_version_pair(
+            Some("0.36.1"),
+            Some("0.36.1")
+        ));
+        assert!(reviewed_runtime_version_pair(
+            Some("0.39.0"),
+            Some("0.39.0")
+        ));
+        assert!(!reviewed_runtime_version_pair(
+            Some("0.39.0"),
+            Some("0.36.1")
+        ));
+        assert!(!reviewed_runtime_version_pair(
+            Some("0.40.0"),
+            Some("0.40.0")
+        ));
+        assert!(!reviewed_runtime_version_pair(None, None));
+    }
 
     fn reviewed_profile() -> harness_core::ProviderIntegrationProfile {
         harness_core::ProviderIntegrationProfile {
