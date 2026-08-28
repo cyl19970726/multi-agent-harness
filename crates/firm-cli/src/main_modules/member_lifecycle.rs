@@ -420,6 +420,90 @@ pub(super) fn stop_member_for_latched_close(
     stop_member_for_latched_close_with_pending_hook(ledger, member_row, close, &mut |_| Ok(()))
 }
 
+fn release_closed_generation_work_bindings(
+    ledger: &TeamRunLedger,
+    member: &ProviderRuntimeProjection,
+    close: &TeamMemberCloseRequest,
+) -> CliResult<()> {
+    use harness_core::agentfirm_api::{
+        RuntimeCommandKind, RuntimeCommandStatus, RuntimeEffectCertainty,
+        RuntimePostconditionStatus,
+    };
+    let (execution_space_id, session) = provider_session_for_member(ledger, member)?;
+    let daemon = ledger
+        .store
+        .latest_node_daemon_lease(&session.node_id)?
+        .filter(|lease| {
+            lease.daemon_id == session.node_daemon_id
+                && lease.generation == session.node_daemon_generation
+                && lease.status == NodeDaemonLeaseStatus::Active
+                && lease.expires_unix_ms > current_unix_ms_u64()
+        })
+        .ok_or_else(|| CliError::Usage("NODE_DAEMON_GENERATION_FENCED".into()))?;
+    let bindings = ledger
+        .store
+        .fabric_work_execution_bindings(&execution_space_id)?
+        .into_iter()
+        .filter(|binding| {
+            binding.agent_member_id == member.agent_member_id
+                && binding.agent_session_id == session.id
+                && binding.agent_session_generation == session.runtime_generation
+                && binding.status == harness_core::agentfirm_api::WorkExecutionBindingStatus::Active
+        })
+        .collect::<Vec<_>>();
+    if bindings.is_empty() {
+        return Ok(());
+    }
+    let close_runtime_command_id = ledger
+        .store
+        .runtime_commands(&execution_space_id)?
+        .into_iter()
+        .find(|command| {
+            command.command == RuntimeCommandKind::CloseMember
+                && command.binding.target_member_run_id.as_deref() == Some(member.id.as_str())
+                && command.binding.target_member_run_generation == Some(member.runtime_generation)
+                && command.binding.target_session_id.as_deref() == Some(session.id.as_str())
+                && command.binding.target_runtime_generation == Some(session.runtime_generation)
+                && command
+                    .source_record_id
+                    .as_deref()
+                    .is_some_and(|source| source.starts_with(&format!("{}:", close.id)))
+                && command.status == RuntimeCommandStatus::Applied
+                && command.effect_certainty == RuntimeEffectCertainty::Applied
+                && command.postcondition_status == RuntimePostconditionStatus::Satisfied
+        })
+        .map(|command| command.id)
+        .ok_or_else(|| {
+            CliError::RuntimeRecoveryRequired(format!(
+                "Close {} lacks its exact settled CloseMember RuntimeCommand",
+                close.id
+            ))
+        })?;
+    for binding in bindings {
+        ledger
+            .store
+            .release_work_execution_binding_for_member_close(
+                &canonical_delivery_context(
+                    &execution_space_id,
+                    &daemon.daemon_id,
+                    "node_daemon.work_execution_binding.release_for_member_close",
+                    format!("{}:{}:{}", close.id, binding.id, binding.version),
+                    binding.version,
+                ),
+                &binding.id,
+                &close.id,
+                &close_runtime_command_id,
+                &member.id,
+                member.runtime_generation,
+                &daemon.node_id,
+                &daemon.daemon_id,
+                daemon.generation,
+                &now_string(),
+            )?;
+    }
+    Ok(())
+}
+
 pub(super) fn stop_member_for_latched_close_with_pending_hook(
     ledger: &TeamRunLedger,
     member_row: &mut ProviderRuntimeProjection,
@@ -487,6 +571,11 @@ pub(super) fn stop_member_for_latched_close_with_pending_hook(
             close.requested_by, close.reason
         ),
     )?;
+    // The verified Close and exact Pending latch end this generation's Work
+    // authority before its Member projection is stopped. This ordering is
+    // crash-safe: a retry sees the released binding and the still-pending
+    // Close, while no successor can inherit or replay ProviderReceived work.
+    release_closed_generation_work_bindings(ledger, member_row, close)?;
     // Provider callbacks and capacity/profile observations may advance
     // projection-only fields while the live Close handshake is in flight.
     // Rebase only such same-runtime progress, and keep the complete runtime

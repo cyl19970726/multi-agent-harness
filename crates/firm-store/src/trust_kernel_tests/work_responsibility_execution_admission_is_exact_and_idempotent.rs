@@ -43,7 +43,11 @@ fn wait_for_write_ticket(store: &HarnessStore, expected_next_ticket: u64) {
     }
 }
 
-fn canonical_member_run(id: &str, agent_member_id: &str, team_run_id: &str) -> MemberRun {
+pub(super) fn canonical_member_run(
+    id: &str,
+    agent_member_id: &str,
+    team_run_id: &str,
+) -> MemberRun {
     MemberRun {
         id: id.into(),
         agent_member_id: agent_member_id.into(),
@@ -97,7 +101,7 @@ fn legacy_member_run(
     }
 }
 
-fn admit_member_run(store: &HarnessStore, run: MemberRun) {
+pub(super) fn admit_member_run(store: &HarnessStore, run: MemberRun) {
     let current_team_run = store
         .team_runs()
         .unwrap()
@@ -122,7 +126,7 @@ fn admit_member_run(store: &HarnessStore, run: MemberRun) {
         .unwrap();
 }
 
-fn assign_responsibility(
+pub(super) fn assign_responsibility(
     store: &HarnessStore,
     work_id: &str,
     membership_id: &str,
@@ -147,7 +151,7 @@ fn assign_responsibility(
         .unwrap()
 }
 
-fn execution_binding(
+pub(super) fn execution_binding(
     work: &firm_core::Work,
     membership: &TeamMembership,
     session: &AgentSession,
@@ -401,7 +405,6 @@ fn responsibility_resolves_one_current_member_run_and_repeated_admission_replays
     );
     assert_eq!(store.fabric_work_deliveries("space-test").unwrap().len(), 1);
 }
-
 #[test]
 fn terminal_member_runtime_cannot_bind_or_claim_provider_work() {
     let (store, _root) = fabric_store();

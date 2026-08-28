@@ -238,6 +238,20 @@ pub(super) fn claim_canonical_work_for_member(
         .values()
         .filter(|work| harness_core::work_readiness(work, &all_works).ready)
     {
+        // ProviderReceived is immutable evidence that this exact Work
+        // revision already crossed the provider boundary. Reopen may create a
+        // new runtime generation, but it must not replay that provider effect;
+        // only a later explicit Work revision can be admitted again.
+        if ledger
+            .store
+            .provider_received_work_requires_host_reauthorization(
+                &execution_space_id,
+                &work.id,
+                work.version,
+            )?
+        {
+            continue;
+        }
         if !bindings.iter().any(|binding| {
             binding.work_id == work.id
                 && binding.status == harness_core::agentfirm_api::WorkExecutionBindingStatus::Active

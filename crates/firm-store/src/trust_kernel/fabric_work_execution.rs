@@ -1,14 +1,36 @@
 use super::fabric_foundation::RuntimeBindingAdmission;
 use super::*;
-
 #[derive(Debug, Clone, PartialEq)]
 pub enum WorkExecutionBindingReconciliation {
     Current,
     Released(Box<CanonicalMutationResult<WorkExecutionBinding>>),
     AlreadySettled(Box<WorkExecutionBinding>),
 }
-
 impl HarnessStore {
+    fn work_revision_reauthorized_after_provider_receipt_unlocked(
+        &self,
+        work_id: &str,
+        provider_received_revision: u64,
+        candidate_revision: u64,
+    ) -> StoreResult<bool> {
+        Ok(self
+            .work_operations_unlocked()?
+            .into_iter()
+            .any(|operation| {
+                operation.event.work_id == work_id
+                    && operation.event.resulting_version > provider_received_revision
+                    && operation.event.resulting_version <= candidate_revision
+                    && operation.event.performed_by_actor.kind == firm_core::TeamActorKind::Host
+                    && matches!(
+                        operation.event.kind,
+                        firm_core::WorkEventKind::Assigned
+                            | firm_core::WorkEventKind::ChangesRequested
+                            | firm_core::WorkEventKind::Updated
+                            | firm_core::WorkEventKind::Rebound
+                            | firm_core::WorkEventKind::ExecutionRetargeted
+                    )
+            }))
+    }
     /// Return the immutable exact runtime authority captured when one
     /// WorkExecutionBinding was created. Later binding lifecycle projections
     /// cannot replace or infer this MemberRun/session generation evidence.
@@ -282,6 +304,32 @@ impl HarnessStore {
             }
         }
         Ok(deliveries)
+    }
+
+    pub fn provider_received_work_requires_host_reauthorization(
+        &self,
+        execution_space_id: &str,
+        work_id: &str,
+        candidate_revision: u64,
+    ) -> StoreResult<bool> {
+        let latest_provider_received_revision = self
+            .canonical_fabric_work_deliveries_unlocked(execution_space_id)?
+            .values()
+            .filter(|delivery| {
+                delivery.work_id == work_id
+                    && delivery.status == WorkDeliveryStatus::ProviderReceived
+            })
+            .map(|delivery| delivery.work_revision)
+            .max();
+        Ok(match latest_provider_received_revision {
+            Some(received_revision) => !self
+                .work_revision_reauthorized_after_provider_receipt_unlocked(
+                    work_id,
+                    received_revision,
+                    candidate_revision,
+                )?,
+            None => false,
+        })
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -772,6 +820,30 @@ impl HarnessStore {
             &binding.id,
             Some(work.version),
         )?;
+        let latest_provider_received_revision = self
+            .canonical_fabric_work_deliveries_unlocked(&context.execution_space_id)?
+            .values()
+            .filter(|delivery| {
+                delivery.work_id == binding.work_id
+                    && delivery.status == WorkDeliveryStatus::ProviderReceived
+            })
+            .map(|delivery| delivery.work_revision)
+            .max();
+        if let Some(received_revision) = latest_provider_received_revision {
+            if !self.work_revision_reauthorized_after_provider_receipt_unlocked(
+                &binding.work_id,
+                received_revision,
+                binding.work_revision,
+            )? {
+                return Err(trust_error(
+                    TrustErrorCode::DeliveryRecoveryUncertain,
+                    "ProviderReceived Work cannot be rebound or replayed after provider-only lifecycle revisions; Host must create explicit new Work authority",
+                    "work_execution_binding",
+                    &binding.id,
+                    Some(work.version),
+                ));
+            }
+        }
         self.bind_work_execution_unlocked(context, binding, request_payload)
     }
 
@@ -1001,7 +1073,14 @@ impl HarnessStore {
         )? {
             return Ok(replay);
         }
-        self.release_work_execution_binding_unlocked(context, &mut binding, ended_at, false)
+        self.release_work_execution_binding_unlocked(
+            context,
+            &mut binding,
+            ended_at,
+            false,
+            false,
+            request_payload,
+        )
     }
 
     pub fn release_work_execution_binding_if_stale(
@@ -1056,8 +1135,161 @@ impl HarnessStore {
             return Ok(WorkExecutionBindingReconciliation::Current);
         }
         Ok(WorkExecutionBindingReconciliation::Released(Box::new(
-            self.release_work_execution_binding_unlocked(context, &mut binding, ended_at, true)?,
+            self.release_work_execution_binding_unlocked(
+                context,
+                &mut binding,
+                ended_at,
+                true,
+                false,
+                request_payload,
+            )?,
         )))
+    }
+
+    /// End the exact old-generation Work authority after a verified Member
+    /// Close. A ProviderReceived delivery remains immutable evidence of the
+    /// provider effect; Close releases only its binding and never requeues it.
+    #[allow(clippy::too_many_arguments)]
+    pub fn release_work_execution_binding_for_member_close(
+        &self,
+        context: &MutationContext,
+        binding_id: &str,
+        close_request_id: &str,
+        close_runtime_command_id: &str,
+        member_run_id: &str,
+        member_run_generation: u64,
+        node_id: &str,
+        daemon_id: &str,
+        daemon_generation: u64,
+        ended_at: &str,
+    ) -> StoreResult<CanonicalMutationResult<WorkExecutionBinding>> {
+        self.init()?;
+        let _lock = self.acquire_write_lock()?;
+        let mut binding = self
+            .fabric_work_execution_bindings(&context.execution_space_id)?
+            .into_iter()
+            .find(|binding| binding.id == binding_id)
+            .ok_or_else(|| {
+                trust_error(
+                    TrustErrorCode::InvalidStateTransition,
+                    "WorkExecutionBinding not found during Member Close",
+                    "work_execution_binding",
+                    binding_id,
+                    None,
+                )
+            })?;
+        self.require_exact_binding_node_daemon_unlocked(
+            context,
+            &binding,
+            node_id,
+            daemon_id,
+            daemon_generation,
+        )?;
+        let runtime_binding =
+            self.work_execution_runtime_binding(&context.execution_space_id, binding_id)?;
+        if runtime_binding.target_member_run_id.as_deref() != Some(member_run_id)
+            || runtime_binding.target_member_run_generation != Some(member_run_generation)
+        {
+            return Err(trust_error(
+                TrustErrorCode::MemberRunGenerationFenced,
+                "Member Close binding release does not target the exact old MemberRun generation",
+                "work_execution_binding",
+                &binding.id,
+                Some(binding.version),
+            ));
+        }
+        let member = self
+            .trust_member_runs(&context.execution_space_id)?
+            .into_iter()
+            .find(|member| member.id == member_run_id)
+            .ok_or_else(|| {
+                trust_error(
+                    TrustErrorCode::MemberRunGenerationFenced,
+                    "Member Close binding release cannot resolve its exact MemberRun",
+                    "work_execution_binding",
+                    &binding.id,
+                    Some(binding.version),
+                )
+            })?;
+        if member.runtime_generation != member_run_generation
+            || member.agent_member_id != binding.agent_member_id
+            || member.coordination_status != MemberCoordinationStatus::Active
+        {
+            return Err(trust_error(
+                TrustErrorCode::MemberRunGenerationFenced,
+                "Member Close binding release requires the exact active old generation",
+                "work_execution_binding",
+                &binding.id,
+                Some(binding.version),
+            ));
+        }
+        let close = self
+            .latest_team_member_close_request(member_run_id)?
+            .filter(|close| {
+                close.id == close_request_id
+                    && close.team_run_id == member.team_run_id
+                    && close.status == firm_core::TeamMemberCloseStatus::Pending
+            })
+            .ok_or_else(|| {
+                trust_error(
+                    TrustErrorCode::InvalidStateTransition,
+                    "Member Close binding release requires its exact pending Close request",
+                    "work_execution_binding",
+                    &binding.id,
+                    Some(binding.version),
+                )
+            })?;
+        let exact_close_command = self
+            .runtime_commands(&context.execution_space_id)?
+            .into_iter()
+            .find(|command| command.id == close_runtime_command_id)
+            .is_some_and(|command| {
+                command.command == RuntimeCommandKind::CloseMember
+                    && command.binding.target_member_run_id.as_deref() == Some(member_run_id)
+                    && command.binding.target_member_run_generation == Some(member_run_generation)
+                    && command.binding.target_session_id.as_deref()
+                        == Some(binding.agent_session_id.as_str())
+                    && command.binding.target_runtime_generation
+                        == Some(binding.agent_session_generation)
+                    && command
+                        .source_record_id
+                        .as_deref()
+                        .is_some_and(|source| source.starts_with(&format!("{close_request_id}:")))
+                    && command.status == RuntimeCommandStatus::Applied
+                    && command.effect_certainty == RuntimeEffectCertainty::Applied
+                    && command.postcondition_status == RuntimePostconditionStatus::Satisfied
+            });
+        if !exact_close_command {
+            return Err(trust_error(
+                TrustErrorCode::DeliveryRecoveryUncertain,
+                "Member Close binding release requires the exact settled CloseMember provider effect",
+                "work_execution_binding",
+                &binding.id,
+                Some(binding.version),
+            ));
+        }
+        let request_payload = serde_json::json!({
+            "close_request_id": close.id,
+            "close_runtime_command_id": close_runtime_command_id,
+            "ended_at": ended_at,
+        });
+        let fingerprint = canonical_json_fingerprint(&request_payload);
+        if let Some(replay) = self.replay_trust_projection_unlocked(
+            context,
+            "work_execution_binding",
+            binding_id,
+            &fingerprint,
+        )? {
+            return Ok(replay);
+        }
+        self.release_work_execution_binding_unlocked(
+            context,
+            &mut binding,
+            ended_at,
+            true,
+            true,
+            request_payload,
+        )
     }
 
     fn require_exact_binding_node_daemon_unlocked(
@@ -1111,6 +1343,8 @@ impl HarnessStore {
         binding: &mut WorkExecutionBinding,
         ended_at: &str,
         exact_daemon_already_verified: bool,
+        allow_provider_received_for_close: bool,
+        request_payload: serde_json::Value,
     ) -> StoreResult<CanonicalMutationResult<WorkExecutionBinding>> {
         if binding.status != WorkExecutionBindingStatus::Active {
             return Err(trust_error(
@@ -1159,10 +1393,10 @@ impl HarnessStore {
                 Some(binding.version),
             ));
         }
-        if matches!(
-            delivery.status,
-            WorkDeliveryStatus::Claimed | WorkDeliveryStatus::ProviderReceived
-        ) {
+        if delivery.status == WorkDeliveryStatus::Claimed
+            || (delivery.status == WorkDeliveryStatus::ProviderReceived
+                && !allow_provider_received_for_close)
+        {
             return Err(trust_error(
                 TrustErrorCode::DeliveryRecoveryUncertain,
                 "claimed or provider-received WorkDelivery must reach an explicit terminal provider outcome before releasing its binding",
@@ -1188,7 +1422,7 @@ impl HarnessStore {
             "work_execution_binding",
             &binding.id,
             "released",
-            serde_json::json!({"ended_at": ended_at}),
+            request_payload,
             binding,
             side_records,
             Vec::new(),
