@@ -12,7 +12,8 @@ tmp/
 .agents/runtime/
 .agents/skills/company-*/
 .research-cache/
-.claude/
+.claude/*
+!.claude/skills
 .lapian/
 .playwright-mcp/
 .worktrees/
