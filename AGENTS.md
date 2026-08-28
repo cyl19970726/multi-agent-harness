@@ -223,6 +223,11 @@ doc carries the contract behind each rule.
     question-scoped authorities. Retired planning skills must not be installed,
     loaded, or referenced from active repository instructions. The generic
     harness core stays domain-neutral.
+12. **One agent-config source.** All repository skill edits happen under
+    `.agents/skills/` only. `.claude/skills` is a committed symlink to
+    `.agents/skills`, and root `CLAUDE.md` is a thin import of this file —
+    neither may grow independent content. Enforced by
+    `scripts/check-agent-config-sync.mjs` in `pnpm check`.
 
 ## Routing
 
