@@ -349,23 +349,15 @@ fn supervisor_claims_and_acknowledges_canonical_message_delivery_in_one_ledger()
         .expect("read NodeDaemon lease")
         .expect("NodeDaemon lease exists");
     store
-        .release_node_daemon_lease(
+        .drain_node_daemon_lease(
             &node_lease.node_id,
             &node_lease.daemon_id,
             node_lease.generation,
             &node_lease.instance_id,
             current_unix_ms_u64(),
-        )
-        .expect("release old daemon generation");
-    store
-        .acquire_node_daemon_lease(
-            &node_lease.node_id,
-            "successor-daemon",
-            "successor-instance",
-            current_unix_ms_u64(),
             60_000,
         )
-        .expect("acquire successor daemon generation");
+        .expect("drain old daemon authority");
     let error = store
         .complete_host_attention_claim(
             &stale_claim.id,
@@ -373,7 +365,7 @@ fn supervisor_claims_and_acknowledges_canonical_message_delivery_in_one_ledger()
             "forbidden-stale-receipt",
             &now_string(),
         )
-        .expect_err("successor daemon must fence stale Host delivery settlement");
+        .expect_err("draining daemon must fence stale Host delivery settlement");
     assert!(
         error.to_string().contains("HOST_RUNTIME_SUPERVISOR_FENCED"),
         "central HostRuntimeBinding must fence the stale daemon/supervisor pair: {error}"
