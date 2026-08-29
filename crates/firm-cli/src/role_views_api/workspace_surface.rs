@@ -387,6 +387,26 @@ pub(crate) fn agent_workspace_view(
                 .and_then(crate::provider_event_api::live_snapshot)
         })
         .flatten();
+    let persisted_session_projection = current_agent_session
+        .and_then(|session| {
+            read_persisted_session_projection(
+                store,
+                space_id,
+                team,
+                run,
+                selected_agent_id,
+                session,
+                query,
+                identity,
+            )
+        })
+        .unwrap_or_else(|| {
+            json!({
+                "schema_version": "agentfirm.native_session_read.v1",
+                "available": false,
+                "reason_code": "exact_session_unavailable"
+            })
+        });
     let selected_member = facts
         .members
         .iter()
@@ -551,6 +571,7 @@ pub(crate) fn agent_workspace_view(
             "selected_agent":selected,
             "roster":roster,
             "session_event_projection":session_event_projection,
+            "persisted_session_projection":persisted_session_projection,
             "current_session":current_session,
             "live_provider_activity":live_provider_activity,
             "messages":messages,
@@ -572,4 +593,117 @@ pub(crate) fn agent_workspace_view(
         .expect("AgentWorkspace data object")
         .remove("runtime_fabric");
     Ok(response)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn read_persisted_session_projection(
+    store: &HarnessStore,
+    space_id: &str,
+    team: &AgentTeam,
+    run: Option<&AgentTeamRun>,
+    selected_agent_id: &str,
+    session_value: &Value,
+    query: &Query,
+    identity: Option<&ReadIdentity>,
+) -> Option<Value> {
+    let run = run?;
+    let identity = identity?;
+    let session: harness_core::agentfirm_api::AgentSession =
+        serde_json::from_value(session_value.clone()).ok()?;
+    let native = session.native_session_ref.as_ref()?;
+    let lease = store.latest_node_daemon_lease(&team.node_id).ok()??;
+    let mode_and_cursor = if let Some(after) = query
+        .values
+        .get("session_after")
+        .and_then(|values| values.first())
+        .and_then(|value| value.parse::<u64>().ok())
+    {
+        Some((
+            crate::provider_event_api::PersistedSessionReadMode::After,
+            after,
+        ))
+    } else {
+        query
+            .values
+            .get("session_before")
+            .and_then(|values| values.first())
+            .and_then(|value| value.parse::<u64>().ok())
+            .map(|before| {
+                (
+                    crate::provider_event_api::PersistedSessionReadMode::Older,
+                    before,
+                )
+            })
+    };
+    let source_generation = query
+        .values
+        .get("session_source_generation")
+        .and_then(|values| values.first())
+        .cloned();
+    let (mode, cursor) = match mode_and_cursor {
+        Some((mode, value)) => {
+            let source_generation = source_generation?;
+            (
+                mode,
+                Some(crate::provider_event_api::PersistedSessionCursor {
+                    source_generation,
+                    ordering_key: harness_provider_events::PersistedOrderingKey {
+                        kind: harness_provider_events::OrderingKeyKind::CompleteRowEndOffset,
+                        value,
+                    },
+                }),
+            )
+        }
+        None => (
+            crate::provider_event_api::PersistedSessionReadMode::Snapshot,
+            None,
+        ),
+    };
+    let request = crate::provider_event_api::PersistedSessionReadRequest {
+        execution_space_id: space_id.into(),
+        project_binding_id: run.project_binding_id.clone(),
+        team_id: team.id.clone(),
+        team_run_id: run.id.clone(),
+        agent_member_id: selected_agent_id.into(),
+        agent_session_id: session.id.clone(),
+        agent_session_generation: session.runtime_generation,
+        native_session_fingerprint: crate::provider_event_api::native_session_fingerprint(native)
+            .ok()?,
+        node_id: team.node_id.clone(),
+        node_daemon_id: lease.daemon_id,
+        node_daemon_generation: lease.generation,
+        mode,
+        cursor,
+        limit: query
+            .values
+            .get("session_limit")
+            .and_then(|values| values.first())
+            .and_then(|value| value.parse::<usize>().ok())
+            .unwrap_or(crate::provider_event_api::DEFAULT_SESSION_PAGE_SIZE),
+        viewer: crate::provider_event_api::PersistedSessionViewer {
+            actor: identity.actor.clone(),
+            authority_actors: identity.authority_actors.clone(),
+            local_operator: identity.local_operator,
+        },
+    };
+    let firm_home = crate::execution_space::firm_home().ok()?;
+    Some(
+        match crate::supervisor_daemon::native_session_read_via_socket(
+            &firm_home,
+            &team.node_id,
+            &request,
+        ) {
+            Ok(response) => {
+                let mut value = serde_json::to_value(response).ok()?;
+                value["available"] = Value::Bool(true);
+                value
+            }
+            Err(error) => json!({
+                "schema_version": "agentfirm.native_session_read.v1",
+                "available": false,
+                "reason_code": "node_daemon_read_unavailable",
+                "detail": error.to_string(),
+            }),
+        },
+    )
 }

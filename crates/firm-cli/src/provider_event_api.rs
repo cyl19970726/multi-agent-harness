@@ -21,6 +21,10 @@ use serde_json::{json, Value};
 
 use crate::{CliError, CliResult};
 
+#[path = "provider_event_persisted.rs"]
+mod persisted_service;
+pub(crate) use persisted_service::*;
+
 pub(crate) const DEFAULT_SESSION_PAGE_SIZE: usize = 80;
 pub(crate) const MAX_SESSION_PAGE_SIZE: usize = 200;
 const MAX_LIVE_ITEMS: usize = 24;

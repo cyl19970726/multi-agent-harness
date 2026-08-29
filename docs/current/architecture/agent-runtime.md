@@ -474,6 +474,14 @@ target resolves it through the existing NodeDaemon service and derives the
 terminal effect from the canonical RuntimeCommand record. Fabric never becomes
 a second Message, Delivery, RuntimeCommand, Work or provider-session Store.
 
+A routed native-session read carries only the exact viewer, TeamRun,
+AgentSession, NodeDaemon-generation, source-generation, watermark, and page
+request. The target NodeGateway verifies the closed
+`collaboration.native_session_read` application capability and asks the same
+NodeDaemon persisted-read service used by local AF_UNIX clients. The route
+result contains projected provider-owned rows and disposable cursors only; it
+never carries a filesystem locator and never persists a transcript in Fabric.
+
 Source authority is closed to `node | control_plane`; canonical bytes are
 versioned. Exact replay is fingerprint-bound. Unknown effect, stale gateway or
 NodeDaemon generation, wrong Company/Node/Execution Space, and incompatible

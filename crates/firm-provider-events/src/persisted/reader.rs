@@ -103,7 +103,40 @@ pub fn read_persisted_file_page(
         &source_generation,
         BufReader::new(file.take(snapshot_len)),
         snapshot_len,
-        before,
+        PageWindow::Before(before),
+        limit,
+    )
+}
+
+/// Reads the first bounded group of complete rows strictly after a snapshot
+/// watermark. This is the incremental half of the snapshot-first protocol;
+/// the same physical reader and source generation are used for both halves.
+pub fn read_persisted_file_page_after(
+    source: &PersistedReaderSource,
+    boundary: &PersistedFileBoundary,
+    after: PersistedOrderingKey,
+    limit: usize,
+) -> Result<PersistedRowPage, PersistedReaderError> {
+    validate_source(source)?;
+    let allowed_root = boundary.allowed_root.canonicalize()?;
+    let link_metadata = fs::symlink_metadata(&boundary.transcript_path)?;
+    if link_metadata.file_type().is_symlink() || !link_metadata.is_file() {
+        return Err(PersistedReaderError::InvalidSourceType);
+    }
+    let path = boundary.transcript_path.canonicalize()?;
+    if !path.starts_with(&allowed_root) {
+        return Err(PersistedReaderError::SourceEscape);
+    }
+    let file = fs::File::open(&path)?;
+    let metadata = file.metadata()?;
+    let snapshot_len = metadata.len();
+    let source_generation = file_source_generation(source, &path, &metadata)?;
+    scan_jsonl(
+        source,
+        &source_generation,
+        BufReader::new(file.take(snapshot_len)),
+        snapshot_len,
+        PageWindow::After(after),
         limit,
     )
 }
@@ -124,9 +157,33 @@ pub fn read_persisted_jsonl_snapshot(
         &source_generation,
         BufReader::new(std::io::Cursor::new(content.as_bytes())),
         content.len() as u64,
-        before,
+        PageWindow::Before(before),
         limit,
     )
+}
+
+pub fn read_persisted_jsonl_snapshot_after(
+    source: &PersistedReaderSource,
+    content: &str,
+    after: PersistedOrderingKey,
+    limit: usize,
+) -> Result<PersistedRowPage, PersistedReaderError> {
+    validate_source(source)?;
+    let source_generation = snapshot_source_generation(source);
+    scan_jsonl(
+        source,
+        &source_generation,
+        BufReader::new(std::io::Cursor::new(content.as_bytes())),
+        content.len() as u64,
+        PageWindow::After(after),
+        limit,
+    )
+}
+
+#[derive(Clone, Copy)]
+enum PageWindow {
+    Before(Option<PersistedOrderingKey>),
+    After(PersistedOrderingKey),
 }
 
 fn scan_jsonl(
@@ -134,13 +191,24 @@ fn scan_jsonl(
     source_generation: &str,
     mut reader: impl BufRead,
     snapshot_len: u64,
-    before: Option<PersistedOrderingKey>,
+    window: PageWindow,
     limit: usize,
 ) -> Result<PersistedRowPage, PersistedReaderError> {
-    if before.is_some_and(|cursor| cursor.kind != OrderingKeyKind::CompleteRowEndOffset) {
+    let cursor = match window {
+        PageWindow::Before(cursor) => cursor,
+        PageWindow::After(cursor) => Some(cursor),
+    };
+    if cursor.is_some_and(|cursor| cursor.kind != OrderingKeyKind::CompleteRowEndOffset) {
         return Err(PersistedReaderError::InvalidSourceContract);
     }
-    let before_value = before.map(|cursor| cursor.value).unwrap_or(u64::MAX);
+    let before_value = match window {
+        PageWindow::Before(cursor) => cursor.map(|cursor| cursor.value).unwrap_or(u64::MAX),
+        PageWindow::After(_) => u64::MAX,
+    };
+    let after_value = match window {
+        PageWindow::After(cursor) => Some(cursor.value),
+        PageWindow::Before(_) => None,
+    };
     let limit = limit.max(1);
     let mut row_bytes = Vec::new();
     let mut tail = VecDeque::new();
@@ -190,7 +258,10 @@ fn scan_jsonl(
                     content_fingerprint.trim_start_matches("sha256:")
                 )
             });
-        if ordering_key.value < before_value {
+        let selected = after_value
+            .map(|after| ordering_key.value > after)
+            .unwrap_or(ordering_key.value < before_value);
+        if selected {
             tail.push_back(PersistedNativeRow {
                 provider: source.provider,
                 source_generation: source_generation.to_owned(),
@@ -200,10 +271,33 @@ fn scan_jsonl(
                 occurred_at: occurred_at(&native_event),
                 native_event,
             });
-            while tail.len() > limit.saturating_add(1) {
-                if let Some(row) = tail.pop_front() {
-                    projection_seed.observe(&row);
+            match window {
+                PageWindow::Before(_) => {
+                    while tail.len() > limit.saturating_add(1) {
+                        if let Some(row) = tail.pop_front() {
+                            projection_seed.observe(&row);
+                        }
+                    }
                 }
+                PageWindow::After(_) => {}
+            }
+        } else if after_value.is_some_and(|after| ordering_key.value <= after) {
+            let seed_row = PersistedNativeRow {
+                provider: source.provider,
+                source_generation: source_generation.to_owned(),
+                row_locator,
+                ordering_key,
+                content_fingerprint,
+                occurred_at: occurred_at(&native_event),
+                native_event,
+            };
+            projection_seed.observe(&seed_row);
+        }
+        if matches!(window, PageWindow::After(_)) && tail.len() > limit.saturating_add(1) {
+            // Keep scanning only to compute the exact snapshot watermark and
+            // incomplete-tail flag; the response remains bounded.
+            while tail.len() > limit.saturating_add(1) {
+                tail.pop_back();
             }
         }
     }
@@ -211,13 +305,16 @@ fn scan_jsonl(
         return Err(PersistedReaderError::SourceChanged);
     }
     let has_more = tail.len() > limit;
-    if has_more {
+    if has_more && matches!(window, PageWindow::Before(_)) {
         if let Some(row) = tail.pop_front() {
             projection_seed.observe(&row);
         }
+    } else if has_more {
+        tail.pop_back();
     }
     let rows = tail.into_iter().collect::<Vec<_>>();
-    let next_before = has_more.then(|| rows[0].ordering_key);
+    let next_before =
+        (has_more && matches!(window, PageWindow::Before(_))).then(|| rows[0].ordering_key);
     Ok(PersistedRowPage {
         native_source_ref: native_source_ref(source),
         source_generation: source_generation.to_owned(),

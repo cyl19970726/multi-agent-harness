@@ -1,14 +1,16 @@
 # Canonical Provider Event Projection
 
-Status: current transition contract through DEV-133.
+Status: current transition contract through DEV-135.
 
 ## Persisted Session v3 contract
 
-DEV-133 defines the next canonical Session-history record without claiming the
-five provider readers or Dashboard cutover are complete. The closed schema is
+DEV-133 defines the canonical Session-history record; DEV-134 implements the
+five persisted readers and DEV-135 places them behind one NodeDaemon read
+service. Dashboard rendering and v2-overlay removal remain the DEV-136 cutover.
+The closed schema is
 `provider-native-event-record-v3.schema.json`; the existing v2 record remains
-only as an explicitly transitional live/history API value until DEV-134–136
-replace its producers and consumers.
+only as an explicitly transitional API value until DEV-136 replaces its
+remaining consumers.
 
 The v3 record has one meaning: one exact provider-owned **persisted** row. Its
 identity is derived only from `source_generation` + `row_locator`. NodeDaemon
@@ -38,10 +40,36 @@ local/remote reachability, and semantic kind/phase/content availability. DEV-134
 may publish a provider claim only when its real persisted fixture reaches that
 capability. Live callback capability unions cannot satisfy this manifest.
 
-## Transitional v2 implementation
+## NodeDaemon read and SSE contract
 
-The remaining sections describe the shipped v2 reader/live path that stays in
-place until DEV-134–136 replace it. In Rust this value is now named
+The exact machine-scoped NodeDaemon is the only process allowed to resolve and
+open a provider-native Session source. A local caller uses its AF_UNIX control
+socket. A remote caller uses the existing NodeGateway routed application kind
+`native_session_read` and capability `collaboration.native_session_read`; the
+target applies that envelope through the same NodeDaemon service. Browser,
+Dashboard server, Control Plane, and gateway never receive an absolute source
+path and never open the provider file themselves.
+
+Every read revalidates the exact Execution Space, Project Binding, Team,
+TeamRun, AgentSession/runtime generation, native-session fingerprint, and
+current NodeDaemon lease. A local machine Operator is an explicit AF_UNIX
+capability. Remote content is restricted to the exact Session-owning
+AgentMember or the exact active Team Host; a sibling Member cannot widen that
+authority through a RoleView token.
+
+SSE is snapshot-first. The server subscribes before the first persisted read,
+emits recent rows with their source generation and watermark, and then emits
+only complete persisted rows after that watermark. Provider live callbacks may
+wake the poller but cannot contribute display records. Reconnect starts from a
+fresh snapshot. Older pages carry the same source generation. File replacement,
+rotation, or reviewed format-fence change emits a typed source reset followed
+by a fresh snapshot. An incomplete physical tail is never consumed, and no
+cursor, watermark, row, or fold is durable Harness state.
+
+## Frozen transitional v2 implementation
+
+The remaining sections describe the frozen v2 reader/live path that stays in
+place until DEV-136 replaces its Dashboard consumers. In Rust this value is named
 `LegacyProviderNativeEventRecordV2`; it is not the v3 persisted-row contract
 defined above.
 

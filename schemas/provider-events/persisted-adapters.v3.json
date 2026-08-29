@@ -8,7 +8,7 @@
     "stable_row_locator":true,
     "pagination":true,
     "tail_mode":"incremental",
-    "reader_reachability":["local"],
+    "reader_reachability":["local","remote"],
     "semantic_capabilities":[
       {"semantic_kind":"session_metadata","phases":["started"],"content_availability":["available"]},
       {"semantic_kind":"reasoning","phases":["progress"],"content_availability":["available","unavailable"]},
@@ -33,7 +33,7 @@
     "stable_row_locator":true,
     "pagination":true,
     "tail_mode":"incremental",
-    "reader_reachability":["local"],
+    "reader_reachability":["local","remote"],
     "semantic_capabilities":[
       {"semantic_kind":"session_metadata","phases":["started"],"content_availability":["available"]},
       {"semantic_kind":"reasoning","phases":["progress"],"content_availability":["available","unavailable"]},
@@ -57,7 +57,7 @@
     "stable_row_locator":true,
     "pagination":true,
     "tail_mode":"incremental",
-    "reader_reachability":["local"],
+    "reader_reachability":["local","remote"],
     "semantic_capabilities":[
       {"semantic_kind":"reasoning","phases":["progress"],"content_availability":["available","unavailable"]},
       {"semantic_kind":"assistant_response","phases":["progress"],"content_availability":["available","unavailable"]},
@@ -81,7 +81,7 @@
     "stable_row_locator":true,
     "pagination":true,
     "tail_mode":"incremental",
-    "reader_reachability":["local"],
+    "reader_reachability":["local","remote"],
     "semantic_capabilities":[
       {"semantic_kind":"session_metadata","phases":["started"],"content_availability":["available"]},
       {"semantic_kind":"assistant_response","phases":["progress"],"content_availability":["available","unavailable"]},
@@ -105,7 +105,7 @@
     "stable_row_locator":true,
     "pagination":false,
     "tail_mode":"bounded_snapshot_diff",
-    "reader_reachability":["local"],
+    "reader_reachability":["local","remote"],
     "semantic_capabilities":[
       {"semantic_kind":"assistant_response","phases":["progress"],"content_availability":["available","unavailable"]},
       {"semantic_kind":"tool_call_started","phases":["started"],"content_availability":["available"]},

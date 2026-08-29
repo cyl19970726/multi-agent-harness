@@ -220,6 +220,59 @@ impl NodeApplication for Wave4cApplication {
                         operation.id.clone(),
                         "artifact grant cannot be applied before its one-use capability is consumed and source bytes are durably imported",
                     )),
+                    "native_session_read" => {
+                        let request: crate::provider_event_api::PersistedSessionReadRequest =
+                            serde_json::from_value(reference.payload.clone()).map_err(|error| {
+                                FabricError::none(
+                                    FabricErrorCode::InvalidPayload,
+                                    format!("native Session read request is invalid: {error}"),
+                                )
+                            })?;
+                        if request.viewer.local_operator
+                            || request.team_id != reference.target_team_id
+                            || request.viewer.actor.id != reference.business_actor_id
+                            || match request.viewer.actor.kind {
+                                harness_core::agentfirm_api::ActorKind::Human => "human",
+                                harness_core::agentfirm_api::ActorKind::AgentMember => {
+                                    "agent_member"
+                                }
+                                harness_core::agentfirm_api::ActorKind::Service => "service",
+                                harness_core::agentfirm_api::ActorKind::External => "external",
+                            } != reference.business_actor_kind
+                            || operation.target_execution_space_id.as_deref()
+                                != Some(request.execution_space_id.as_str())
+                        {
+                            return Err(FabricError::none(
+                                FabricErrorCode::UnauthorizedActor,
+                                "remote native Session read changed viewer, Team, or Execution Space scope",
+                            ));
+                        }
+                        let response =
+                            crate::provider_event_api::read_persisted_session_for_daemon(
+                                &self.firm_home,
+                                &self.node_id,
+                                &self.daemon_id,
+                                self.daemon_generation,
+                                None,
+                                &request,
+                            )
+                            .map_err(|error| {
+                                FabricError::none(
+                                    FabricErrorCode::UnauthorizedActor,
+                                    error.to_string(),
+                                )
+                            })?;
+                        Ok((
+                            "agentfirm.remote_fabric.native_session_read.v1".into(),
+                            serde_json::to_value(response).map_err(|error| {
+                                FabricError::none(
+                                    FabricErrorCode::InvalidPayload,
+                                    error.to_string(),
+                                )
+                            })?,
+                            harness_fabric::EffectCertainty::None,
+                        ))
+                    }
                     "team_message_deliver" => self.persist_message(operation),
                     _ => Err(FabricError::none(
                         FabricErrorCode::FeatureIncompatible,

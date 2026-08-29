@@ -18,10 +18,11 @@ fn exact_self_session_projection_follows_fresh_start_settle_sync() {
     let settled_native_session_id = "thread_fake_codex_app_server";
     let rollout_dir = home.home().join(".codex/sessions/2026/08/13");
     std::fs::create_dir_all(&rollout_dir).expect("Codex rollout fixture root");
+    let rollout_path = rollout_dir.join(format!(
+        "rollout-2026-08-13T00-00-00-{settled_native_session_id}.jsonl"
+    ));
     std::fs::write(
-        rollout_dir.join(format!(
-            "rollout-2026-08-13T00-00-00-{settled_native_session_id}.jsonl"
-        )),
+        &rollout_path,
         format!(
             "{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"{settled_native_session_id}\"}}}}\n\
              {{\"type\":\"event_msg\",\"payload\":{{\"type\":\"agent_reasoning\",\"turn_id\":\"turn-settle-1\",\"text\":\"raw-provider-reasoning-is-preserved\"}}}}\n\
@@ -388,6 +389,18 @@ fn exact_self_session_projection_follows_fresh_start_settle_sync() {
         serde_json::to_string(owner_projection).expect("projection JSON");
     assert!(serialized_owner_projection.contains("display-safe settled result"));
     assert!(serialized_owner_projection.contains("raw-provider-reasoning-is-preserved"));
+    let persisted_owner = &member_self_workspace["data"]["persisted_session_projection"];
+    assert_eq!(persisted_owner["available"], true, "{persisted_owner}");
+    assert_eq!(
+        persisted_owner["schema_version"],
+        "agentfirm.native_session_read.v1"
+    );
+    assert!(persisted_owner["source_generation"]
+        .as_str()
+        .is_some_and(|generation| generation.starts_with("source-generation:")));
+    assert!(serde_json::to_string(&persisted_owner["records"])
+        .expect("persisted owner records")
+        .contains("raw-provider-reasoning-is-preserved"));
 
     // The exact Host reads the selected Team Member's complete native Session.
     let (status, host_selected_member) = serve.get_json_with_headers(
@@ -407,6 +420,10 @@ fn exact_self_session_projection_follows_fresh_start_settle_sync() {
             .get("session_event_projection")
             .is_some(),
         "Host-selected Member must include the Team Session projection"
+    );
+    assert_eq!(
+        host_selected_member["data"]["persisted_session_projection"]["available"], true,
+        "exact Team Host receives the same NodeDaemon persisted reader"
     );
 
     // Any other exact Member of the same Team may inspect the selected native
@@ -433,6 +450,10 @@ fn exact_self_session_projection_follows_fresh_start_settle_sync() {
         serde_json::json!([]),
         "Team sibling must not borrow the selected Member's actions"
     );
+    assert_eq!(
+        sibling_selected_member["data"]["persisted_session_projection"]["available"], true,
+        "the loopback Dashboard carries explicit local-operator read capability even when an AgentMember token is also present"
+    );
 
     // The same active MemberRun is readable from the loopback Dashboard
     // without borrowing either the Host or Member mutation authority.
@@ -450,6 +471,52 @@ fn exact_self_session_projection_follows_fresh_start_settle_sync() {
         serde_json::json!([]),
         "loopback Operator must not borrow AgentMember actions"
     );
+    assert_eq!(
+        local_operator_member["data"]["persisted_session_projection"]["available"],
+        true
+    );
+
+    let mut persisted_sse = serve.open_sse_with_token(
+        &format!(
+            "?space={space_id}&project={project_id}&team_id={}&agent_id={worker_id}",
+            team.id
+        ),
+        None,
+    );
+    persisted_sse
+        .get_mut()
+        .set_read_timeout(Some(std::time::Duration::from_millis(250)))
+        .expect("persisted SSE timeout");
+    let persisted_snapshots = collect_named_sse_data(
+        &mut persisted_sse,
+        std::time::Duration::from_secs(5),
+        "native_session_snapshot",
+    );
+    assert!(persisted_snapshots.iter().any(|snapshot| {
+        snapshot["schema_version"] == "agentfirm.native_session_read.v1"
+            && snapshot["records"]
+                .as_array()
+                .is_some_and(|records| !records.is_empty())
+    }));
+    use std::io::Write as _;
+    let mut rollout = std::fs::OpenOptions::new()
+        .append(true)
+        .open(&rollout_path)
+        .expect("append provider-owned row");
+    writeln!(
+        rollout,
+        "{{\"type\":\"event_msg\",\"payload\":{{\"type\":\"agent_message\",\"turn_id\":\"turn-settle-2\",\"message\":\"persisted append after SSE watermark\"}}}}"
+    )
+    .expect("append complete provider row");
+    rollout.flush().expect("flush provider append");
+    let persisted_appends = collect_named_sse_data(
+        &mut persisted_sse,
+        std::time::Duration::from_secs(5),
+        "native_session_append",
+    );
+    assert!(serde_json::to_string(&persisted_appends)
+        .expect("persisted append JSON")
+        .contains("persisted append after SSE watermark"));
 
     // A Team sibling that never settled a native Session keeps the honest
     // unavailable shape: no fabricated session id, fingerprint, or episodes.
@@ -540,5 +607,9 @@ fn exact_self_session_projection_follows_fresh_start_settle_sync() {
         stopped_owner_workspace["data"]["session_event_projection"]["episodes"]
             .as_array()
             .is_some_and(|episodes| !episodes.is_empty())
+    );
+    assert_eq!(
+        stopped_owner_workspace["data"]["persisted_session_projection"]["available"], false,
+        "v3 reads require the current owning NodeDaemon; serve never traverses provider files"
     );
 }

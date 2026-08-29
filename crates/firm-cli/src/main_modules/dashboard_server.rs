@@ -436,16 +436,28 @@ pub(super) fn broadcast_live_provider_activity(
     event
 }
 
+pub(super) struct SseSelection<'a> {
+    pub project_binding_id: Option<&'a str>,
+    pub company_scope_id: Option<&'a str>,
+    pub team_id: Option<&'a str>,
+    pub agent_member_id: Option<&'a str>,
+}
+
 pub(super) fn handle_sse_stream(
     store: &HarnessStore,
     execution_space_id: &str,
-    selected_project_binding_id: Option<&str>,
-    company_scope_id: Option<&str>,
-    selected_agent_member_id: Option<&str>,
+    selection: SseSelection<'_>,
     mut stream: TcpStream,
     sse_manager: sse::SseManager,
 ) -> CliResult<()> {
     use std::time::Duration;
+
+    let SseSelection {
+        project_binding_id: selected_project_binding_id,
+        company_scope_id,
+        team_id: selected_team_id,
+        agent_member_id: selected_agent_member_id,
+    } = selection;
 
     // A Team Session live overlay is valid only for one connected stream lifetime.
     // Clear any pre-connection residue before subscribing so reconnect cannot
@@ -472,6 +484,11 @@ pub(super) fn handle_sse_stream(
         selected_project_binding_id,
     );
 
+    let session_scope = selected_project_binding_id
+        .zip(selected_team_id)
+        .zip(selected_agent_member_id);
+    let mut persisted_read = None;
+
     // Send SSE header
     sse::write_sse_header(&mut stream)?;
 
@@ -493,6 +510,17 @@ pub(super) fn handle_sse_stream(
     });
     sse::write_sse_frame(&mut stream, "snapshot", &snapshot_json)?;
 
+    if let Some(((project_binding_id, team_id), agent_member_id)) = session_scope {
+        persisted_read = initialize_persisted_session_read(
+            store,
+            execution_space_id,
+            project_binding_id,
+            team_id,
+            agent_member_id,
+            &mut stream,
+        )?;
+    }
+
     // Deterministic integration-test hook for the marker -> GET crossing. The
     // subscription is intentionally already live while this pause is active.
     if let Some(pause) = sse_post_snapshot_test_pause() {
@@ -504,8 +532,13 @@ pub(super) fn handle_sse_stream(
     loop {
         // Calculate timeout for the next keepalive
         let elapsed = last_keepalive.elapsed();
-        let timeout = if elapsed < Duration::from_secs(15) {
-            Duration::from_secs(15) - elapsed
+        let poll_interval = if session_scope.is_some() {
+            Duration::from_secs(1)
+        } else {
+            Duration::from_secs(15)
+        };
+        let timeout = if elapsed < poll_interval {
+            poll_interval - elapsed
         } else {
             Duration::from_millis(100)
         };
@@ -593,16 +626,51 @@ pub(super) fn handle_sse_stream(
                         {
                             break;
                         }
+                        if persisted_read.is_none() {
+                            if let Some(((project_binding_id, team_id), agent_member_id)) =
+                                session_scope
+                            {
+                                persisted_read = initialize_persisted_session_read(
+                                    store,
+                                    execution_space_id,
+                                    project_binding_id,
+                                    team_id,
+                                    agent_member_id,
+                                    &mut stream,
+                                )?;
+                            }
+                        }
+                        if emit_persisted_session_advance(&mut stream, persisted_read.as_mut())
+                            .is_err()
+                        {
+                            break;
+                        }
                     }
                 }
                 last_keepalive = std::time::Instant::now();
             }
             Err(crossbeam::channel::RecvTimeoutError::Timeout) => {
-                // Send keepalive to keep connection alive
-                if sse::write_sse_keepalive(&mut stream).is_err() {
-                    break; // Client disconnected
+                if persisted_read.is_none() {
+                    if let Some(((project_binding_id, team_id), agent_member_id)) = session_scope {
+                        persisted_read = initialize_persisted_session_read(
+                            store,
+                            execution_space_id,
+                            project_binding_id,
+                            team_id,
+                            agent_member_id,
+                            &mut stream,
+                        )?;
+                    }
                 }
-                last_keepalive = std::time::Instant::now();
+                if emit_persisted_session_advance(&mut stream, persisted_read.as_mut()).is_err() {
+                    break;
+                }
+                if last_keepalive.elapsed() >= Duration::from_secs(15) {
+                    if sse::write_sse_keepalive(&mut stream).is_err() {
+                        break; // Client disconnected
+                    }
+                    last_keepalive = std::time::Instant::now();
+                }
             }
             Err(crossbeam::channel::RecvTimeoutError::Disconnected) => {
                 break; // Channel closed, exit
@@ -623,6 +691,133 @@ pub(super) fn handle_sse_stream(
         );
     }
 
+    Ok(())
+}
+
+fn initialize_persisted_session_read(
+    store: &HarnessStore,
+    execution_space_id: &str,
+    project_binding_id: &str,
+    team_id: &str,
+    agent_member_id: &str,
+    stream: &mut TcpStream,
+) -> CliResult<Option<provider_event_api::PersistedSessionReadRequest>> {
+    let Ok(mut request) = provider_event_api::local_operator_session_read_request(
+        store,
+        execution_space_id,
+        project_binding_id,
+        team_id,
+        agent_member_id,
+        provider_event_api::DEFAULT_SESSION_PAGE_SIZE,
+    ) else {
+        return Ok(None);
+    };
+    let firm_home =
+        crate::execution_space::firm_home().map_err(|error| CliError::Usage(error.to_string()))?;
+    let Ok(response) = crate::supervisor_daemon::native_session_read_via_socket(
+        &firm_home,
+        &request.node_id,
+        &request,
+    ) else {
+        return Ok(None);
+    };
+    sse::write_sse_frame(
+        stream,
+        "native_session_snapshot",
+        &serde_json::to_value(&response)?,
+    )?;
+    if let Some(watermark) = response.snapshot_watermark {
+        request.mode = provider_event_api::PersistedSessionReadMode::After;
+        request.cursor = Some(provider_event_api::PersistedSessionCursor {
+            source_generation: response.source_generation,
+            ordering_key: watermark,
+        });
+    }
+    Ok(Some(request))
+}
+
+fn emit_persisted_session_advance(
+    stream: &mut TcpStream,
+    request: Option<&mut provider_event_api::PersistedSessionReadRequest>,
+) -> CliResult<()> {
+    let Some(request) = request else {
+        return Ok(());
+    };
+    let firm_home =
+        crate::execution_space::firm_home().map_err(|error| CliError::Usage(error.to_string()))?;
+    if request.mode == provider_event_api::PersistedSessionReadMode::Snapshot {
+        let response = crate::supervisor_daemon::native_session_read_via_socket(
+            &firm_home,
+            &request.node_id,
+            request,
+        )
+        .map_err(CliError::Io)?;
+        if !response.records.is_empty() {
+            sse::write_sse_frame(
+                stream,
+                "native_session_snapshot",
+                &serde_json::to_value(&response)?,
+            )?;
+        }
+        if let Some(watermark) = response.snapshot_watermark {
+            request.mode = provider_event_api::PersistedSessionReadMode::After;
+            request.cursor = Some(provider_event_api::PersistedSessionCursor {
+                source_generation: response.source_generation,
+                ordering_key: watermark,
+            });
+        }
+        return Ok(());
+    }
+    if request.cursor.is_none() {
+        return Ok(());
+    }
+    let response = crate::supervisor_daemon::native_session_read_via_socket(
+        &firm_home,
+        &request.node_id,
+        request,
+    )
+    .map_err(CliError::Io)?;
+    if response.source_reset {
+        sse::write_sse_frame(
+            stream,
+            "native_session_source_reset",
+            &serde_json::to_value(&response)?,
+        )?;
+        request.mode = provider_event_api::PersistedSessionReadMode::Snapshot;
+        request.cursor = None;
+        let snapshot = crate::supervisor_daemon::native_session_read_via_socket(
+            &firm_home,
+            &request.node_id,
+            request,
+        )
+        .map_err(CliError::Io)?;
+        sse::write_sse_frame(
+            stream,
+            "native_session_snapshot",
+            &serde_json::to_value(&snapshot)?,
+        )?;
+        if let Some(watermark) = snapshot.snapshot_watermark {
+            request.mode = provider_event_api::PersistedSessionReadMode::After;
+            request.cursor = Some(provider_event_api::PersistedSessionCursor {
+                source_generation: snapshot.source_generation,
+                ordering_key: watermark,
+            });
+        }
+        return Ok(());
+    }
+    if !response.records.is_empty() {
+        sse::write_sse_frame(
+            stream,
+            "native_session_append",
+            &serde_json::to_value(&response)?,
+        )?;
+    }
+    if let Some(watermark) = response.snapshot_watermark {
+        request.cursor = Some(provider_event_api::PersistedSessionCursor {
+            source_generation: response.source_generation,
+            ordering_key: watermark,
+        });
+    }
     Ok(())
 }
 
