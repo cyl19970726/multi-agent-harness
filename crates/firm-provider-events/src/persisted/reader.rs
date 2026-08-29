@@ -449,12 +449,8 @@ fn occurred_at(value: &serde_json::Value) -> Option<String> {
         .get("timestamp")
         .or_else(|| value.get("created_at"))
         .or_else(|| value.get("time"))
-        .and_then(|value| {
-            value
-                .as_str()
-                .map(str::to_owned)
-                .or_else(|| value.as_u64().map(|value| value.to_string()))
-        })
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned)
 }
 
 fn sha256_label(bytes: &[u8]) -> String {
