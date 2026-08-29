@@ -3,27 +3,6 @@ use std::io::Write;
 use std::path::PathBuf;
 
 #[test]
-fn provider_native_session_read_is_local_operator_only() {
-    let mut identity = ReadIdentity {
-        actor: ActorRef {
-            kind: ActorKind::AgentMember,
-            id: "member-a".into(),
-        },
-        authority_actors: vec![ActorRef {
-            kind: ActorKind::AgentMember,
-            id: "host-a".into(),
-        }],
-        local_operator: false,
-    };
-    assert!(
-        !identity.may_read_native_session(),
-        "an AgentMember credential is not a provider-transcript grant"
-    );
-    identity.local_operator = true;
-    assert!(identity.may_read_native_session());
-}
-
-#[test]
 fn role_view_exposes_host_work_accept_only_to_an_exact_active_peer() {
     assert_eq!(
         work_review_disabled(Some("host-a"), "host-a", true, false),
@@ -247,41 +226,6 @@ fn message_delivery_state_distinguishes_every_canonical_outcome() {
         message_delivery_state(&[&row("acknowledged"), &row("failed")]),
         "failed"
     );
-}
-
-#[test]
-fn exact_session_history_survives_a_member_adapter_generation_change() {
-    let sessions = vec![json!({
-        "id":"agent-session-1",
-        "execution_space_id":"space-1",
-        "agent_member_id":"member-1",
-        "lifecycle":"idle",
-        "provider_kind":"codex",
-        "runtime_generation":1,
-        "native_session_ref":{
-            "provider":"codex",
-            "execution_mode":"codex_app_server",
-            "native_session_id":"native-thread-1",
-            "native_locator_kind":"codex_rollout",
-            "adapter_contract_version":"codex-app-server-v1",
-            "availability":"available",
-            "supports_resume":true
-        }
-    })];
-
-    // A MemberRun may now be adapter generation 2 after Reopen while this
-    // machine-owned AgentSession remains generation 1. Exact identity,
-    // provider and native-session binding still authorize owner history.
-    let (session, native) = exact_agent_session_binding(
-        &sessions,
-        "space-1",
-        "member-1",
-        "native-thread-1",
-        Some("codex_app_server"),
-    )
-    .expect("same native AgentSession remains the exact history authority");
-    assert_eq!(session["runtime_generation"], 1);
-    assert_eq!(native.native_session_id, "native-thread-1");
 }
 
 #[test]

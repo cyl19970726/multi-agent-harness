@@ -21,7 +21,7 @@ pub(super) struct MemberRuntimeContext {
     pub(super) project_selector: Option<String>,
     pub(super) cwd: PathBuf,
     pub(super) idle_timeout: Duration,
-    pub(super) live_sink: Option<LiveMemberActivitySink>,
+    pub(super) live_sink: Option<NativeSessionWakeSink>,
     pub(super) turn_leases: Arc<ActiveTurnLeasePool>,
     /// Unpersisted bearer capability that binds member-originated Role
     /// Actions to this exact live Supervisor registration. The provider sees
@@ -781,7 +781,7 @@ pub(crate) fn drive_prepared_team_run(
     project_context: Option<ProjectContext>,
     max_concurrency: usize,
     idle_timeout: Duration,
-    live_sink: Option<LiveMemberActivitySink>,
+    live_sink: Option<NativeSessionWakeSink>,
 ) -> CliResult<()> {
     let PreparedTeamRunStart {
         run_id,

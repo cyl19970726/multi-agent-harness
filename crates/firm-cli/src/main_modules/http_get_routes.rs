@@ -20,7 +20,7 @@ impl HttpExchange<'_> {
         let trust_expected_version = self.trust_expected_version;
         let trust_confirmed_action = &self.trust_confirmed_action;
         let trust_identity_override_header = self.trust_identity_override_header;
-        let live_provider_activity_token = &self.live_provider_activity_token;
+        let native_session_wake_token = &self.native_session_wake_token;
         if method == "GET" {
             let local_operator_read = stream
                 .local_addr()
@@ -482,7 +482,7 @@ impl HttpExchange<'_> {
                     #[cfg(unix)]
                     if let (Some(agent_member_id), Some(callback), Some(firm_home)) = (
                         selected_agent_member_id.as_deref(),
-                        projects.live_provider_activity_callback.as_ref(),
+                        projects.native_session_wake_callback.as_ref(),
                         projects.firm_home.as_deref(),
                     ) {
                         if let Ok(node_id) = read_local_node_id() {
@@ -495,10 +495,10 @@ impl HttpExchange<'_> {
                                         status["instance_id"].as_str().map(ToString::to_string)
                                     });
                             if let Some(daemon_instance_id) = daemon_instance_id {
-                                match supervisor_daemon::register_live_provider_activity_via_socket(
+                                match supervisor_daemon::register_native_session_wake_via_socket(
                                     firm_home,
                                     &node_id,
-                                    supervisor_daemon::LiveProviderActivityRegistration {
+                                    supervisor_daemon::NativeSessionWakeRegistration {
                                         authority: &callback.authority,
                                         token: &callback.token,
                                         agent_member_id,
@@ -556,7 +556,7 @@ impl HttpExchange<'_> {
                         "410 Gone",
                         &serde_json::json!({
                             "error": "legacy_native_activity_route_retired",
-                            "detail": "This unscoped route cannot prove the canonical Team and AgentSession scope. Use AgentWorkspace session_event_projection; provider-native open/resume remains a separate authorized action."
+                            "detail": "This unscoped route cannot prove the canonical Team and AgentSession scope. Use AgentWorkspace persisted_session_projection; provider-native open/resume remains a separate authorized action."
                         }),
                     )?
                 }

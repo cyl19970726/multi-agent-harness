@@ -20,7 +20,7 @@ impl HttpExchange<'_> {
         let trust_expected_version = self.trust_expected_version;
         let trust_confirmed_action = &self.trust_confirmed_action;
         let trust_identity_override_header = self.trust_identity_override_header;
-        let live_provider_activity_token = &self.live_provider_activity_token;
+        let native_session_wake_token = &self.native_session_wake_token;
         let body_json = if body.is_empty() {
             serde_json::json!({})
         } else {
@@ -102,48 +102,48 @@ impl HttpExchange<'_> {
                 &serde_json::json!({
                     "ok": false,
                     "error": "retired_live_member_activity",
-                    "detail": "Use the typed, exact-AgentSession /v1/live/provider-activity bridge."
+                    "detail": "Use the typed, exact-AgentSession /v1/live/native-session-wake bridge."
                 }),
             )?;
             return Ok(true);
         }
 
-        // POST /v1/live/provider-activity — private loopback ingress from the one
+        // POST /v1/live/native-session-wake — private loopback ingress from the one
         // local NodeDaemon. The body cannot select an AgentSession: serve resolves
         // the exact current session from canonical runtime state or fails closed.
         // Registry and SSE output are process-memory-only and never replayed.
-        if path_only == "/v1/live/provider-activity" {
-            let expected_token = LIVE_PROVIDER_ACTIVITY_TOKEN.get();
+        if path_only == "/v1/live/native-session-wake" {
+            let expected_token = NATIVE_SESSION_WAKE_TOKEN.get();
             if expected_token.is_none()
-                || live_provider_activity_token.as_deref() != expected_token.map(String::as_str)
+                || native_session_wake_token.as_deref() != expected_token.map(String::as_str)
             {
                 write_http_json(
                     stream,
                     "401 Unauthorized",
-                    &serde_json::json!({"ok": false, "error": "invalid_live_provider_activity_token"}),
+                    &serde_json::json!({"ok": false, "error": "invalid_native_session_wake_token"}),
                 )?;
                 return Ok(true);
             }
-            let update = match serde_json::from_value::<LiveProviderActivityUpdate>(body_json) {
+            let update = match serde_json::from_value::<NativeSessionWakeUpdate>(body_json) {
                 Ok(update) => update,
                 Err(error) => {
                     write_http_json(
                         stream,
                         "400 Bad Request",
-                        &serde_json::json!({"ok": false, "error": format!("invalid live provider activity: {error}")}),
+                        &serde_json::json!({"ok": false, "error": format!("invalid native Session wake: {error}")}),
                     )?;
                     return Ok(true);
                 }
             };
             let result = (|| -> CliResult<serde_json::Value> {
                 let (team_run_id, member_run_id, source_member_run_generation) = match &update {
-                    LiveProviderActivityUpdate::Updated {
+                    NativeSessionWakeUpdate::MayHaveAdvanced {
                         team_run_id,
                         member_run_id,
                         member_run_generation,
                         ..
                     }
-                    | LiveProviderActivityUpdate::Terminal {
+                    | NativeSessionWakeUpdate::TurnTerminal {
                         team_run_id,
                         member_run_id,
                         member_run_generation,
@@ -173,20 +173,8 @@ impl HttpExchange<'_> {
                     )));
                 }
                 let project_binding_id = run.project_binding_id.clone();
-                let scope = provider_event_api::exact_live_scope(
-                    store_owned,
-                    project_id,
-                    &project_binding_id,
-                    &team_run_id,
-                    &member,
-                )
-                .map_err(|reason| CliError::Usage(reason.to_string()))?;
-                let event = match update {
-                    LiveProviderActivityUpdate::Updated {
-                        provider,
-                        native_event,
-                        ..
-                    } => {
+                match update {
+                    NativeSessionWakeUpdate::MayHaveAdvanced { .. } => {
                         if run.status != TeamRunStatus::Running {
                             return Err(CliError::Usage(format!(
                                 "team run {team_run_id} is {}, not running",
@@ -202,27 +190,20 @@ impl HttpExchange<'_> {
                                 | MemberRunStatus::Blocked
                         ) {
                             return Err(CliError::Usage(format!(
-                                "member run {member_run_id} is terminal and cannot publish live activity"
+                                "member run {member_run_id} is terminal and cannot wake a native Session read"
                             )));
                         }
-                        if provider != member.provider {
-                            return Err(CliError::Usage(
-                                "provider activity does not match the canonical MemberRun provider"
-                                    .to_string(),
-                            ));
-                        }
-                        let activity = provider_event_api::record_live(
-                            scope.clone(),
-                            &member.provider,
-                            native_event,
-                        )?;
-                        provider_event_api::updated_live_event(&scope, activity)
                     }
-                    LiveProviderActivityUpdate::Terminal { .. } => {
-                        provider_event_api::clear_live_terminal(&scope)
-                    }
-                };
-                Ok(broadcast_live_provider_activity(
+                    NativeSessionWakeUpdate::TurnTerminal { .. } => {}
+                }
+                let event = serde_json::json!({
+                    "schema_version":"agentfirm.native_session_wake.v1",
+                    "team_run_id":team_run_id,
+                    "agent_member_id":member.agent_member_id,
+                    "member_run_id":member.id,
+                    "member_run_generation":member.runtime_generation,
+                });
+                Ok(broadcast_native_session_wake(
                     &sse_manager,
                     project_id,
                     &project_binding_id,
@@ -231,10 +212,10 @@ impl HttpExchange<'_> {
                 ))
             })();
             match result {
-                Ok(activity) => write_http_json(
+                Ok(wake) => write_http_json(
                     stream,
                     "202 Accepted",
-                    &serde_json::json!({"ok": true, "result": activity}),
+                    &serde_json::json!({"ok": true, "result": wake}),
                 )?,
                 Err(error) => write_http_json(
                     stream,

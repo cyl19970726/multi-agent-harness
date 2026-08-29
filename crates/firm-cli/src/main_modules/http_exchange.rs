@@ -17,5 +17,5 @@ pub(super) struct HttpExchange<'a> {
     pub(super) trust_expected_version: Option<u64>,
     pub(super) trust_confirmed_action: Option<String>,
     pub(super) trust_identity_override_header: bool,
-    pub(super) live_provider_activity_token: Option<String>,
+    pub(super) native_session_wake_token: Option<String>,
 }

@@ -98,7 +98,7 @@ const runtimeContractModules = new Map([
 rejectText(
   `${runtimeContractRoot}/cycle.rs`,
   /LiveProviderActivityKind|project_live\s*\(/,
-  "provider-specific live classifiers are retired; live and reopened events use firm-provider-events",
+  "provider-specific live classifiers are retired; live and reopened views reread the persisted provider source through firm-provider-events",
 );
 const runtimeContractSources = execFileSync(
   "git",

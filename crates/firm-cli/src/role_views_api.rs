@@ -9,8 +9,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use harness_core::agentfirm_api::{ActorKind, ActorRef};
 use harness_core::{
-    derive_work_successor_ids, work_readiness, AgentTeam, AgentTeamRun, HostControlMode,
-    NativeSessionRef, Work, WorkClaimMode, WorkReadinessReason,
+    derive_work_successor_ids, work_readiness, AgentTeam, AgentTeamRun, HostControlMode, Work,
+    WorkClaimMode, WorkReadinessReason,
 };
 use harness_store::HarnessStore;
 use serde_json::{json, Value};
@@ -49,10 +49,6 @@ impl ReadIdentity {
     fn may_read_team(&self, team: &AgentTeam) -> bool {
         self.local_operator || self.has_team_member(team)
     }
-
-    fn may_read_native_session(&self) -> bool {
-        self.local_operator
-    }
 }
 
 #[derive(Default)]
@@ -62,6 +58,7 @@ pub(crate) struct Query {
     limit: usize,
     cursor: Option<String>,
     company: Option<String>,
+    project: Option<String>,
 }
 
 impl Query {
@@ -145,7 +142,8 @@ impl Query {
                         })
                     }
                     "company" => parsed.company = Some(value.to_string()),
-                    "project" | "space" => {}
+                    "project" => parsed.project = Some(value.to_string()),
+                    "space" => {}
                     _ => parsed
                         .values
                         .entry(key.to_string())

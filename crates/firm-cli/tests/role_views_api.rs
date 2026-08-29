@@ -660,14 +660,17 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
         "Host-selected Team Session read resolves the exact MemberRun binding"
     );
     assert!(host_selected_member["data"]
-        .get("session_event_projection")
+        .get("persisted_session_projection")
         .is_some());
     assert!(host_selected_member["data"]
         .get("current_session")
         .is_some());
     assert!(host_selected_member["data"]
         .get("live_provider_activity")
-        .is_some());
+        .is_none());
+    assert!(host_selected_member["data"]
+        .get("session_event_projection")
+        .is_none());
     assert!(host_selected_member["data"].get("runtime_fabric").is_none());
     assert!(
         host_selected_member["allowed_actions"]
@@ -688,17 +691,14 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
         status, 200,
         "exact-self Member AgentWorkspace: {member_self_workspace}"
     );
+    assert!(member_self_workspace["data"]
+        .get("live_provider_activity")
+        .is_none());
     assert!(
         member_self_workspace["data"]
-            .get("live_provider_activity")
+            .get("persisted_session_projection")
             .is_some(),
-        "exact-self view must carry the nullable volatile live slot"
-    );
-    assert!(
-        member_self_workspace["data"]
-            .get("session_event_projection")
-            .is_some(),
-        "exact-self view must carry an on-demand Session projection or an explicit unavailable result"
+        "exact-self view must carry a persisted Session projection or an explicit unavailable result"
     );
     let current_session = &member_self_workspace["data"]["current_session"];
     assert!(current_session["agent_session_id"]
@@ -709,21 +709,13 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
         member_self_workspace["data"]["configuration"]["effective_permission_ceiling"],
         current_session["effective_permission_ceiling"]
     );
-    let owner_projection = &member_self_workspace["data"]["session_event_projection"];
-    assert_eq!(owner_projection["disabled_reason"], serde_json::Value::Null);
-    assert!(owner_projection["agent_session_id"]
-        .as_str()
-        .is_some_and(|id| id.starts_with("agent-session:")));
-    assert!(owner_projection["source_snapshot_fingerprint"]
-        .as_str()
-        .is_some_and(|fingerprint| fingerprint.starts_with("sha256:")));
-    assert!(owner_projection["episodes"]
+    let owner_projection = &member_self_workspace["data"]["persisted_session_projection"];
+    assert_eq!(owner_projection["available"], true);
+    assert!(owner_projection["records"]
         .as_array()
-        .expect("native episodes")
+        .expect("persisted native records")
         .iter()
-        .any(
-            |episode| episode["provider_turn_id"] == "turn-owner-1" && episode["terminal"] == true
-        ));
+        .any(|record| record["provider_turn_id"] == "turn-owner-1"));
     let serialized_owner_projection =
         serde_json::to_string(owner_projection).expect("projection JSON");
     assert!(serialized_owner_projection.contains("display-safe authored result"));
@@ -744,11 +736,9 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
     let (status, cross_binding_workspace) =
         serve.get_json_with_headers(&cross_binding_route, &[("X-AgentFirm-Token", MEMBER_TOKEN)]);
     assert_eq!(status, 200, "cross-binding owner view");
-    let cross_binding_projection = &cross_binding_workspace["data"]["session_event_projection"];
+    let cross_binding_projection = &cross_binding_workspace["data"]["persisted_session_projection"];
     assert!(
-        cross_binding_projection["disabled_reason"]
-            .as_str()
-            .is_some_and(|reason| reason.contains("another Project Binding")),
+        cross_binding_projection["available"] == false,
         "same Execution Space must not expose a Session through another Project Binding: {cross_binding_workspace}"
     );
     assert_eq!(
@@ -757,9 +747,9 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
         "cross-binding projection must not expose an AgentSession id"
     );
     assert_eq!(
-        cross_binding_workspace["data"]["live_provider_activity"],
-        serde_json::Value::Null,
-        "same Execution Space must not expose a live overlay through another Project Binding"
+        cross_binding_workspace["data"].get("live_provider_activity"),
+        None,
+        "same Execution Space must not expose the retired live overlay"
     );
     for retired_history_field in ["sessions", "selected_session_id", "session_activity"] {
         assert!(
@@ -794,20 +784,9 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
         &[("X-AgentFirm-Token", SIBLING_MEMBER_TOKEN)],
     );
     assert_eq!(status, 200, "unavailable exact-self projection");
-    let unavailable = &sibling_self_unavailable["data"]["session_event_projection"];
-    for field in [
-        "agent_session_id",
-        "agent_session_generation",
-        "source_snapshot_fingerprint",
-    ] {
-        assert!(
-            unavailable[field].is_null(),
-            "unavailable provider projection must not fabricate {field}"
-        );
-    }
-    assert_eq!(unavailable["episodes"], serde_json::json!([]));
-    assert_eq!(unavailable["truncated"], false);
-    assert!(unavailable["disabled_reason"].as_str().is_some());
+    let unavailable = &sibling_self_unavailable["data"]["persisted_session_projection"];
+    assert_eq!(unavailable["available"], false);
+    assert!(unavailable["reason_code"].as_str().is_some());
     let host_agent_workspace_route = format!(
         "/v1/views/agent-workspace/{run_id}?project={project_id}&agent_id={}",
         team.host_agent_id
@@ -824,7 +803,7 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
     );
     assert!(
         exact_host_workspace["data"]
-            .get("session_event_projection")
+            .get("persisted_session_projection")
             .is_some(),
         "exact Host self view carries an explicit owner projection state"
     );

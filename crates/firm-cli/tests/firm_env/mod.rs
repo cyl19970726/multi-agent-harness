@@ -962,7 +962,7 @@ impl ServeHandle {
                         })
                         .expect("authenticated SSE snapshot JSON");
                     assert_eq!(
-                        snapshot["team_session_provider_activity"], true,
+                        snapshot["team_session_persisted_events"], true,
                         "Team-scoped SSE did not bind the selected provider stream"
                     );
                 }

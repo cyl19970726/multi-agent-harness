@@ -354,58 +354,42 @@ export interface HostConsoleData {
 export type ProviderEventSemanticKind =
   | "session_metadata" | "reasoning" | "assistant_response"
   | "tool_call_requested" | "tool_call_started" | "tool_call_completed" | "tool_call_failed"
-  | "artifact_created" | "usage_reported" | "interaction_required" | "interaction_resolved"
-  | "runtime_started" | "runtime_ready" | "runtime_stopped" | "transport_interrupted"
+  | "artifact_created" | "usage_reported"
   | "turn_completed" | "turn_failed" | "turn_cancelled"
-  | "command_recovery_required" | "malformed_or_incomplete" | "unclassified_native";
+  | "malformed_or_incomplete" | "unclassified_native";
 export type ProviderEventPayload =
   | {type:"session_metadata";native_session_id?:string|null}
-  | {type:"assistant_response";text:string}
-  | {type:"reasoning";text:string}
+  | {type:"assistant_response";text?:string|null}
+  | {type:"reasoning";text?:string|null}
   | {type:"tool";tool_name:string;call_id?:string|null;display_detail?:string|null}
   | {type:"artifact";display_name:string;media_type?:string|null;content_digest?:string|null}
   | {type:"usage";input_tokens?:number|null;output_tokens?:number|null;total_tokens?:number|null}
-  | {type:"interaction";reason_code:string;prompt:string}
-  | {type:"runtime";state:string}
-  | {type:"transport";reason_code:string}
   | {type:"turn";outcome:string;display_summary?:string|null}
-  | {type:"recovery";reason_code:string}
   | {type:"malformed";reason_code:string}
   | {type:"native";event_type?:string|null};
 export interface ProviderEventFragment {
   fragment_id:string; fragment_index:number; semantic_kind:ProviderEventSemanticKind;
-  lifecycle_phase:"requested"|"started"|"progress"|"terminal"|"recovery";
-  completeness:"partial"|"complete"|"incomplete"|"recovery_required"; effect_certainty:"none"|"not_applied"|"applied"|"unknown";
-  visibility:"team_session"|"team_public"|"operator_only"; payload:ProviderEventPayload;
+  lifecycle_phase:"requested"|"started"|"progress"|"terminal";
+  completeness:"partial"|"complete"|"incomplete";
+  content_availability:"available"|"unavailable";
+  payload:ProviderEventPayload;
 }
+export interface PersistedOrderingKey {kind:"provider_ordinal"|"complete_row_end_offset";value:number}
 export interface ProviderNativeEventRecord {
-  schema_version:"agentfirm.provider_native_event_record.v2"; record_id:string; provider:"codex"|"claude"|"kimi"|"pi"|"deepseek_harness";
-  adapter_version:"agentfirm.provider_event_adapter.v2"; native_source_ref:string; agent_member_id:string; agent_session_id:string;
-  agent_session_generation:number; node_daemon_id:string; node_daemon_generation:number; provider_thread_id?:string|null;
-  provider_turn_id?:string|null; provider_event_id?:string|null; ordering_position:number; causal_parent_id?:string|null;
-  correlation_id?:string|null; runtime_command_id?:string|null; occurred_at:string|null; observed_at:string;
+  schema_version:"agentfirm.provider_native_event_record.v3"; record_id:string; provider:"codex"|"claude"|"kimi"|"pi"|"deepseek_harness";
+  adapter_version:"agentfirm.persisted_provider_event_adapter.v3"; native_source_ref:string;source_generation:string;row_locator:string;ordering_key:PersistedOrderingKey;
+  agent_member_id:string;agent_session_id:string;agent_session_generation:number;provider_thread_id?:string|null;
+  provider_turn_id?:string|null;provider_event_id?:string|null;occurred_at?:string|null;observed_at:string;
   source_content_fingerprint:string; native_event:unknown; fragments:ProviderEventFragment[];
 }
-export interface SessionEventProjection {
-  schema_version:"agentfirm.provider_native_event_record.v2"; agent_session_id:string|null; agent_session_generation:number|null;
-  source_snapshot_fingerprint:string|null; episodes:Array<{episode_id:string;provider_turn_id:string|null;records:ProviderNativeEventRecord[];terminal:boolean;incomplete:boolean}>;
-  truncated:boolean; availability:"available"|"unavailable"; unavailable_reason_code:string|null; disabled_reason:string|null;
-  page:{limit:number;has_more:boolean;next_before_position:number|null};
-}
-export interface LiveProviderActivityItem {
-  runtime_event_locator:string; record:ProviderNativeEventRecord; emitted_unix_ms:number; expires_unix_ms:number;
-}
-export interface LiveProviderActivity {
-  schema_version:"agentfirm.live_provider_activity.v2"; durability:"volatile_process_memory"; replayable:false;
-  execution_space_id:string; project_id:string; team_run_id:string; member_run_id:string; agent_session_id:string;
-  member_run_generation:number; agent_session_generation:number; agent_member_id:string; node_daemon_id:string; node_daemon_generation:number;
-  runtime_snapshot_locator:string; expires_unix_ms:number; items:LiveProviderActivityItem[];
-}
-export interface LiveProviderActivityEvent {
-  schema_version:"agentfirm.live_provider_activity_event.v2"; reason:"updated"|"terminal";
-  scope:{execution_space_id:string;project_id:string;team_run_id:string;member_run_id:string;member_run_generation:number;agent_session_id:string;agent_session_generation:number;agent_member_id:string;node_daemon_id:string;node_daemon_generation:number};
-  activity:LiveProviderActivity|null;
-}
+export interface PersistedSessionCursor {source_generation:string;ordering_key:PersistedOrderingKey}
+export type PersistedSessionProjection = {
+  schema_version:"agentfirm.native_session_read.v1";available:true;native_source_ref:string;source_generation:string;
+  snapshot_watermark:PersistedOrderingKey|null;records:ProviderNativeEventRecord[];has_more:boolean;
+  next_before:PersistedSessionCursor|null;incomplete_tail:boolean;source_reset:boolean;
+}|{
+  schema_version:"agentfirm.native_session_read.v1";available:false;reason_code:string;detail?:string|null;
+};
 export type HostSessionMode = "harness_managed"|"external_interactive"|"unbound";
 export interface AgentWorkspaceRosterItem extends Partial<MemberCapacitySummary> {
   agent_member_ref:ActorRef; display_name:string; role:string; is_host?:boolean;
@@ -435,8 +419,7 @@ interface AgentWorkspaceDataBase {
 export type AgentWorkspacePrivateData=AgentWorkspaceDataBase&{
   projection_scope:"team_session_read";
   current_session:AgentWorkspaceCurrentSession|null;
-  session_event_projection:SessionEventProjection;
-  live_provider_activity:LiveProviderActivity|null;
+  persisted_session_projection:PersistedSessionProjection;
 };
 export type AgentWorkspaceData=AgentWorkspacePrivateData;
 export interface MemberWorkbenchData {

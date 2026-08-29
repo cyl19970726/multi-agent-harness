@@ -3,12 +3,32 @@ use std::collections::BTreeSet;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::ProviderKind;
-
 pub const PROVIDER_NATIVE_EVENT_RECORD_V3_SCHEMA_VERSION: &str =
     "agentfirm.provider_native_event_record.v3";
 pub const PERSISTED_PROVIDER_EVENT_ADAPTER_VERSION: &str =
     "agentfirm.persisted_provider_event_adapter.v3";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderKind {
+    Codex,
+    Claude,
+    Kimi,
+    Pi,
+    DeepseekHarness,
+}
+
+impl ProviderKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Codex => "codex",
+            Self::Claude => "claude",
+            Self::Kimi => "kimi",
+            Self::Pi => "pi",
+            Self::DeepseekHarness => "deepseek_harness",
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

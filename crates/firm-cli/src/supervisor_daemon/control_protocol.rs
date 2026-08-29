@@ -209,7 +209,7 @@ impl MultiTeamDaemon {
                     "TEST_ACCEPTED_CONTROL_FAILURE: simulated unresolved accepted command".into(),
                 ));
             }
-            "register_live_provider_activity" => {
+            "register_native_session_wake" => {
                 let authority = cmd["authority"].as_str().unwrap_or("").trim();
                 let token = cmd["token"].as_str().unwrap_or("").trim();
                 let agent_member_id = cmd["agent_member_id"].as_str().unwrap_or("").trim();
@@ -218,7 +218,7 @@ impl MultiTeamDaemon {
                     .unwrap_or("")
                     .trim();
                 let serve_instance_id = cmd["serve_instance_id"].as_str().unwrap_or("").trim();
-                if !self.install_live_provider_activity_endpoint(
+                if !self.install_native_session_wake_endpoint(
                     authority,
                     token,
                     agent_member_id,
@@ -1044,8 +1044,8 @@ impl MultiTeamDaemon {
                     "daemon_id": self.daemon_id,
                     "instance_id": self.instance_id,
                     "process_id": std::process::id(),
-                    "live_provider_activity_sink_registered": !self
-                        .live_provider_activity_endpoint
+                    "native_session_wake_sink_registered": !self
+                        .native_session_wake_endpoint
                         .lock()
                         .unwrap_or_else(|error| error.into_inner())
                         .is_empty(),
