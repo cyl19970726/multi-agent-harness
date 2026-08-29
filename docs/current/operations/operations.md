@@ -322,6 +322,16 @@ that TeamRun until such explicit intent. Losing only the client response after
 a command completed is diagnostic response loss and never poisons the daemon
 generation.
 
+NodeDaemon lease expiry is not takeover authority. If the exact predecessor
+process is still alive, let that instance settle commands, drain providers and
+release every registered Execution Space. If it crashed, use the Operator
+RoleView's critical `recover daemon predecessor` action only with an exact
+process/provider-group termination evidence reference. The action is fenced to
+the expired daemon id, instance id and generation, fails closed on any unknown
+RuntimeCommand effect, and must release the complete per-Space authority bundle
+before a new daemon may start. Never delete lease rows or retry Start to bypass
+this settlement boundary.
+
 Teams are created without any Mission (DOC-108); `--mission-id` survives only
 as optional legacy provenance. Omit ad-hoc `--member` overrides when starting
 from a durable AgentTeam definition. That path preserves each registered

@@ -4,6 +4,170 @@ use super::work_responsibility_execution_admission_is_exact_and_idempotent::{
 use super::*;
 
 #[test]
+fn closed_process_admission_settles_claimed_delivery_but_cannot_claim_another() {
+    let (store, _root) = fabric_store();
+    const DAEMON_ID: &str = "daemon-process-admission-work-test";
+    const INSTANCE_ID: &str = "instance-process-admission-work-test";
+    let now = current_unix_ms();
+    store
+        .release_node_daemon_lease(
+            "11111111-1111-4111-8111-111111111111",
+            "daemon-1",
+            1,
+            "instance-1",
+            now,
+        )
+        .unwrap();
+    let daemon_lease = store
+        .acquire_node_daemon_lease(
+            "11111111-1111-4111-8111-111111111111",
+            DAEMON_ID,
+            INSTANCE_ID,
+            now,
+            60_000,
+        )
+        .unwrap();
+    let daemon_context = |command: &str, key: &str, expected_version: u64| MutationContext {
+        execution_space_id: "space-test".into(),
+        authenticated_actor: ActorRef {
+            kind: ActorKind::Service,
+            id: DAEMON_ID.into(),
+        },
+        authority_actor: None,
+        command_name: command.into(),
+        idempotency_key: key.into(),
+        expected_version,
+        request_fingerprint: None,
+    };
+    append_runtime_team(&store, "team-admission", "run-admission");
+    store
+        .migrate_legacy_agent_identity_same_id(
+            &context("operator", "identity.create", "identity-drain-worker", 0),
+            identity("drain-worker"),
+        )
+        .unwrap();
+    let membership = join_runtime_membership(
+        &store,
+        "membership-drain-worker",
+        "team-admission",
+        "drain-worker",
+        TeamMembershipRole::Member,
+    );
+    let mut target = session("session-drain-worker", "drain-worker");
+    target.node_daemon_id = DAEMON_ID.into();
+    target.node_daemon_generation = daemon_lease.generation;
+    target.control_state.driver_ref = firm_core::agentfirm_api::RuntimeDriverRef::NodeDaemon {
+        node_daemon_id: DAEMON_ID.into(),
+        node_daemon_generation: daemon_lease.generation,
+    };
+    store
+        .create_agent_session(
+            &daemon_context("session.create", "session-drain-worker", 0),
+            target.clone(),
+        )
+        .unwrap();
+    admit_member_run(
+        &store,
+        canonical_member_run("member-run-drain-worker", "drain-worker", "run-admission"),
+    );
+    let mut runtime_binding = runtime_command_fixture(
+        "runtime-drain-worker",
+        RuntimeCommandKind::StartCycle,
+        &target,
+        "start_cycle",
+    )
+    .0
+    .binding;
+    runtime_binding.target_member_run_id = Some("member-run-drain-worker".into());
+    runtime_binding.target_member_run_generation = Some(1);
+
+    let claimed_work = assign_responsibility(&store, "work-drain-claimed", &membership.id);
+    let claimed_binding =
+        execution_binding(&claimed_work, &membership, &target, "binding-drain-claimed");
+    store
+        .bind_responsible_work_execution(
+            &daemon_context("work.bind", "binding-drain-claimed", 0),
+            &runtime_binding,
+            claimed_binding.clone(),
+        )
+        .unwrap();
+    let queued_work = assign_responsibility(&store, "work-drain-queued", &membership.id);
+    let queued_binding =
+        execution_binding(&queued_work, &membership, &target, "binding-drain-queued");
+    store
+        .bind_responsible_work_execution(
+            &daemon_context("work.bind", "binding-drain-queued", 0),
+            &runtime_binding,
+            queued_binding.clone(),
+        )
+        .unwrap();
+    store
+        .claim_work_for_provider(
+            &daemon_context("work.claim", "claim-drain-worker", 0),
+            &claimed_binding.delivery_id,
+            &target.node_id,
+            &target.node_daemon_id,
+            target.node_daemon_generation,
+            "claim-drain-worker",
+            firm_core::agentfirm_api::RuntimeDispatchMode::QueueOnly,
+            "t-claim-drain-worker",
+        )
+        .unwrap();
+
+    crate::close_process_node_daemon_admission(DAEMON_ID, INSTANCE_ID);
+    assert_eq!(
+        store
+            .latest_node_daemon_lease(&target.node_id)
+            .unwrap()
+            .unwrap()
+            .status,
+        firm_core::NodeDaemonLeaseStatus::Active,
+        "the process gate must close before durable draining"
+    );
+    let receipt = store
+        .record_work_provider_receipt(
+            &daemon_context("work.receipt", "receipt-drain-worker", 0),
+            &claimed_binding.delivery_id,
+            &target.node_id,
+            &target.node_daemon_id,
+            target.node_daemon_generation,
+            "claim-drain-worker",
+            "provider-receipt-drain-worker",
+            "t-receipt-drain-worker",
+        )
+        .expect("draining predecessor must settle the exact claimed delivery");
+    assert_eq!(
+        receipt.projection.status,
+        firm_core::agentfirm_api::WorkDeliveryStatus::ProviderReceived
+    );
+
+    let operations_before_rejection = store.canonical_operations().unwrap();
+    let claim_error = store
+        .claim_work_for_provider(
+            &daemon_context("work.claim", "claim-after-drain", 0),
+            &queued_binding.delivery_id,
+            &target.node_id,
+            &target.node_daemon_id,
+            target.node_daemon_generation,
+            "claim-after-drain",
+            firm_core::agentfirm_api::RuntimeDispatchMode::QueueOnly,
+            "t-claim-after-drain",
+        )
+        .expect_err("draining predecessor cannot claim another delivery");
+    assert!(
+        claim_error
+            .to_string()
+            .contains("SUPERVISOR_GENERATION_FENCED"),
+        "{claim_error}"
+    );
+    assert_eq!(
+        store.canonical_operations().unwrap(),
+        operations_before_rejection,
+        "rejected provider claim must have zero durable effect"
+    );
+}
+
+#[test]
 fn member_close_releases_old_binding_but_preserves_provider_received_and_fences_replay() {
     let (store, _root) = fabric_store();
     append_runtime_team(&store, "team-admission", "run-admission");

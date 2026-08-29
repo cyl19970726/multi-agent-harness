@@ -257,9 +257,9 @@ impl HarnessStore {
             RuntimeBindingAdmission::RuntimeCommand {
                 // A Work may be bound before the first provider Open returns
                 // the native session id.  Attaching that id to the same exact
-                // AgentSession/runtime/driver generation is durable progress,
-                // not a stale execution authority.
+                // AgentSession/runtime/driver attachment is durable progress, not stale authority.
                 allow_native_session_attachment: true,
+                settlement_only: false,
             },
             "work_execution_binding",
             &binding.id,
@@ -495,7 +495,7 @@ impl HarnessStore {
     ) -> StoreResult<CanonicalMutationResult<CanonicalWorkDelivery>> {
         self.init()?;
         let _lock = self.acquire_write_lock()?;
-        self.require_current_node_daemon_unlocked(
+        self.require_node_daemon_settlement_authority_unlocked(
             &context.execution_space_id,
             node_id,
             daemon_id,
@@ -559,7 +559,7 @@ impl HarnessStore {
     ) -> StoreResult<CanonicalMutationResult<CanonicalWorkDelivery>> {
         self.init()?;
         let _lock = self.acquire_write_lock()?;
-        self.require_current_node_daemon_unlocked(
+        self.require_node_daemon_settlement_authority_unlocked(
             &context.execution_space_id,
             node_id,
             daemon_id,
@@ -815,6 +815,7 @@ impl HarnessStore {
             runtime_binding,
             RuntimeBindingAdmission::RuntimeCommand {
                 allow_native_session_attachment: false,
+                settlement_only: false,
             },
             "work_execution_binding",
             &binding.id,

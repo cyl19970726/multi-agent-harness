@@ -345,6 +345,18 @@
       "confirmation": "daemon-stop"
     },
     {
+      "ui_action": "recover_daemon_predecessor",
+      "http_endpoint": "POST /v1/agentfirm/nodes/{node_id}/daemon-recover-predecessor",
+      "application_command": "node_daemon.predecessor_recover",
+      "actor_policy": "exact_execution_node_service_with_external_process_termination_evidence",
+      "expected_version_source": "ExecutionNode.revision",
+      "authority_generation_source": "expired exact NodeDaemonLease.generation",
+      "recovery_binding_source": "expired exact NodeDaemonLease daemon/instance/generation",
+      "resulting_event": "daemon_predecessor_released",
+      "returns": "operator_role_view",
+      "confirmation": "daemon-recover-predecessor"
+    },
+    {
       "ui_action": "admit_provider",
       "http_endpoint": "POST /v1/agentfirm/nodes/{node_id}/provider-admission",
       "application_command": "provider.admit",

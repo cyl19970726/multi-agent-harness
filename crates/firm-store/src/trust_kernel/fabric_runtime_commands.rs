@@ -92,6 +92,30 @@ impl HarnessStore {
                 None,
             ));
         }
+        let lease = self
+            .latest_node_daemon_lease(&command.target_node_id)?
+            .ok_or_else(|| {
+                trust_error(
+                    TrustErrorCode::SupervisorGenerationFenced,
+                    "RuntimeCommand requires an exact current NodeDaemon lease",
+                    "runtime_command",
+                    &command.id,
+                    None,
+                )
+            })?;
+        if lease.daemon_id != command.target_node_daemon_id
+            || lease.generation != command.target_node_daemon_generation
+            || lease.status != firm_core::NodeDaemonLeaseStatus::Active
+            || lease.expires_unix_ms <= now_unix_ms
+        {
+            return Err(trust_error(
+                TrustErrorCode::SupervisorGenerationFenced,
+                "RuntimeCommand cannot be admitted by an expired, released, or stale NodeDaemon generation",
+                "runtime_command",
+                &command.id,
+                Some(lease.generation),
+            ));
+        }
         self.require_current_node_daemon_unlocked(
             &command.execution_space_id,
             &command.target_node_id,
@@ -283,6 +307,7 @@ impl HarnessStore {
                     &command.binding,
                     RuntimeBindingAdmission::RuntimeCommand {
                         allow_native_session_attachment: false,
+                        settlement_only: false,
                     },
                     "runtime_command",
                     &command.id,
@@ -720,6 +745,7 @@ impl HarnessStore {
                         RuntimeBindingAdmission::RuntimeCommand {
                             allow_native_session_attachment:
                                 runtime_command_allows_native_session_attachment(record.command),
+                            settlement_only: false,
                         },
                         "runtime_command",
                         command_id,
@@ -928,7 +954,7 @@ impl HarnessStore {
                 )
             })
             .and_then(|envelope| event_projection::<RuntimeCommandRecord>(&envelope))?;
-        self.require_current_node_daemon_unlocked(
+        self.require_node_daemon_settlement_authority_unlocked(
             &context.execution_space_id,
             &record.target_node_id,
             &record.target_node_daemon_id,
@@ -988,6 +1014,7 @@ impl HarnessStore {
                 RuntimeBindingAdmission::RuntimeCommand {
                     allow_native_session_attachment:
                         runtime_command_allows_native_session_attachment(record.command),
+                    settlement_only: true,
                 },
                 "runtime_command",
                 command_id,
@@ -1222,7 +1249,7 @@ impl HarnessStore {
                 Some(record.version),
             ));
         }
-        self.require_current_node_daemon_unlocked(
+        self.require_node_daemon_settlement_authority_unlocked(
             &context.execution_space_id,
             &record.target_node_id,
             &record.target_node_daemon_id,
@@ -1275,6 +1302,7 @@ impl HarnessStore {
                 // permits only None -> exact current same-generation session;
                 // it never permits replacement of an existing binding.
                 allow_native_session_attachment: true,
+                settlement_only: true,
             },
             "runtime_command",
             command_id,

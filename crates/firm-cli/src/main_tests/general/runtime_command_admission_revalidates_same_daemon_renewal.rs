@@ -163,7 +163,7 @@ fn runtime_command_admission_revalidates_same_daemon_renewal() {
 }
 
 #[test]
-fn successor_after_durable_command_prepare_requires_exact_reconciliation() {
+fn draining_after_durable_command_prepare_requires_exact_reconciliation() {
     let (store, _root) = temp_store("runtime-command-successor-after-prepare");
     let (ledger, member) = persisted_native_test_member(
         &store,
@@ -204,27 +204,19 @@ fn successor_after_durable_command_prepare_requires_exact_reconciliation() {
         .expect("active daemon lease");
     let now = current_unix_ms_u64();
     store
-        .release_node_daemon_lease(
+        .drain_node_daemon_lease(
             &current.node_id,
             &current.daemon_id,
             current.generation,
             &current.instance_id,
             now,
-        )
-        .expect("release admitted daemon generation");
-    store
-        .acquire_node_daemon_lease(
-            &current.node_id,
-            "successor-daemon",
-            "successor-instance",
-            now,
             60_000,
         )
-        .expect("acquire successor daemon generation");
+        .expect("drain admitted daemon generation");
 
     let error =
         current_node_daemon_lease_after_admission_at(&store, &current, now, &admitted.command_id)
-            .expect_err("successor authority after prepare requires reconciliation");
+            .expect_err("draining authority after prepare requires reconciliation");
     assert!(matches!(error, CliError::RuntimeRecoveryRequired(_)));
     assert!(error.to_string().contains(&admitted.command_id));
 

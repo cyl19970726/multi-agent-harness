@@ -471,8 +471,15 @@ pub(crate) fn operator_view(
     });
     let local_machine_proven =
         crate::read_local_node_id().ok().as_deref() == Some(node_id) && firm_home.is_some();
+    let predecessor_recovery_required = lease.as_ref().is_some_and(|lease| {
+        lease.status != harness_core::NodeDaemonLeaseStatus::Released
+            && lease.expires_unix_ms <= crate::current_unix_ms_u64()
+            && !daemon_live
+    });
     let mut daemon_action = action(
-        if daemon_live {
+        if predecessor_recovery_required {
+            "recover_daemon_predecessor"
+        } else if daemon_live {
             "stop_daemon"
         } else {
             "start_daemon"
@@ -485,6 +492,16 @@ pub(crate) fn operator_view(
     );
     daemon_action["authority_generation"] =
         json!(lease.as_ref().map(|lease| lease.generation).unwrap_or(0));
+    if predecessor_recovery_required {
+        let lease = lease
+            .as_ref()
+            .expect("predecessor recovery requires an exact lease");
+        daemon_action["recovery_binding"] = json!({
+            "daemon_id": lease.daemon_id,
+            "instance_id": lease.instance_id,
+            "daemon_generation": lease.generation,
+        });
+    }
     operator_actions.push(daemon_action);
     for (provider, execution_mode) in crate::role_actions_api::OPERATOR_PROVIDER_ADMISSION_TUPLES {
         let binding = crate::role_actions_api::provider_admission_action_binding(

@@ -201,43 +201,83 @@ fn member_role_action_capability_binds_sender_to_live_supervisor_identity() {
     );
     assert!(!format!("{first_capability:?}").contains(&first_token));
 
-    let active_daemon = store
-        .latest_node_daemon_lease(&created.team_run.execution_node_id)
-        .expect("read NodeDaemon lease")
-        .expect("active NodeDaemon lease");
     store
-        .release_node_daemon_lease(
-            &active_daemon.node_id,
-            &active_daemon.daemon_id,
-            active_daemon.generation,
-            &active_daemon.instance_id,
+        .release_team_supervisor_lease(
+            &created.team_run.id,
+            &lease.supervisor_id,
+            lease.generation,
             current_unix_ms_u64(),
         )
-        .expect("release original NodeDaemon lease");
-    store
-        .acquire_node_daemon_lease(
-            &active_daemon.node_id,
-            "successor-node-daemon",
-            "successor-node-daemon-instance",
+        .expect("release capability-signing Supervisor");
+    let successor = store
+        .acquire_test_supervisor_lease(
+            &created.team_run.id,
+            "successor-supervisor",
+            std::process::id(),
+            "test://successor-role-action",
             current_unix_ms_u64(),
             60_000,
         )
-        .expect("acquire successor NodeDaemon lease");
-    let before_stale_daemon = durable_store_file_bytes(&store);
-    let stale_daemon = dispatch_local_live_member_control(
+        .expect("acquire successor Supervisor");
+    ensure_test_runtime_fabric(&store, &created, &successor);
+    let before_stale_supervisor = durable_store_file_bytes(&store);
+    let stale_supervisor = dispatch_local_live_member_control(
         &store,
-        &lease.supervisor_id,
-        lease.generation,
+        &successor.supervisor_id,
+        successor.generation,
         &supervisor_valid,
         &authority_gate,
         LiveMemberControlRequest::ReadInbox {
             team_run_id: created.team_run.id.clone(),
             member_run_id: first.id.clone(),
-            capability_token: first_token.clone(),
+            capability_token: first_token,
             include_all: true,
         },
     )
-    .expect_err("capability cannot cross a successor NodeDaemon lease");
+    .expect_err("capability cannot cross its frozen Supervisor generation");
+    assert!(stale_supervisor
+        .to_string()
+        .contains("stale runtime binding"));
+    assert_eq!(
+        durable_store_file_bytes(&store),
+        before_stale_supervisor,
+        "stale Supervisor capability must have byte-zero durable side effects"
+    );
+    let successor_token = "c".repeat(64);
+    let successor_capability =
+        test_collaboration_capability(&store, &successor, &first, &successor_token);
+    let (_successor_control, _successor_registration) =
+        register_live_member_control(&first, &successor_capability, 1);
+
+    let active_daemon = store
+        .latest_node_daemon_lease(&created.team_run.execution_node_id)
+        .expect("read NodeDaemon lease")
+        .expect("active NodeDaemon lease");
+    store
+        .drain_node_daemon_lease(
+            &active_daemon.node_id,
+            &active_daemon.daemon_id,
+            active_daemon.generation,
+            &active_daemon.instance_id,
+            current_unix_ms_u64(),
+            60_000,
+        )
+        .expect("drain original NodeDaemon authority");
+    let before_stale_daemon = durable_store_file_bytes(&store);
+    let stale_daemon = dispatch_local_live_member_control(
+        &store,
+        &successor.supervisor_id,
+        successor.generation,
+        &supervisor_valid,
+        &authority_gate,
+        LiveMemberControlRequest::ReadInbox {
+            team_run_id: created.team_run.id.clone(),
+            member_run_id: first.id.clone(),
+            capability_token: successor_token.clone(),
+            include_all: true,
+        },
+    )
+    .expect_err("capability cannot cross a draining NodeDaemon lease");
     assert!(stale_daemon
         .to_string()
         .contains("NODE_DAEMON_GENERATION_FENCED"));
@@ -261,14 +301,14 @@ fn member_role_action_capability_binds_sender_to_live_supervisor_identity() {
     let before_stale_member = durable_store_file_bytes(&store);
     let stale_member = dispatch_local_live_member_control(
         &store,
-        &lease.supervisor_id,
-        lease.generation,
+        &successor.supervisor_id,
+        successor.generation,
         &supervisor_valid,
         &authority_gate,
         LiveMemberControlRequest::ReadInbox {
             team_run_id: created.team_run.id.clone(),
             member_run_id: first.id.clone(),
-            capability_token: first_token.clone(),
+            capability_token: successor_token,
             include_all: true,
         },
     )
@@ -280,47 +320,6 @@ fn member_role_action_capability_binds_sender_to_live_supervisor_identity() {
         durable_store_file_bytes(&store),
         before_stale_member,
         "stale MemberRun capability must have byte-zero durable side effects"
-    );
-    store
-        .release_team_supervisor_lease(
-            &created.team_run.id,
-            &lease.supervisor_id,
-            lease.generation,
-            current_unix_ms_u64(),
-        )
-        .expect("release capability-signing Supervisor");
-    let successor = store
-        .acquire_test_supervisor_lease(
-            &created.team_run.id,
-            "successor-supervisor",
-            std::process::id(),
-            "test://successor-role-action",
-            current_unix_ms_u64(),
-            60_000,
-        )
-        .expect("acquire successor Supervisor");
-    let before_stale_supervisor = durable_store_file_bytes(&store);
-    let stale_supervisor = dispatch_local_live_member_control(
-        &store,
-        &successor.supervisor_id,
-        successor.generation,
-        &supervisor_valid,
-        &authority_gate,
-        LiveMemberControlRequest::ReadInbox {
-            team_run_id: created.team_run.id.clone(),
-            member_run_id: first.id.clone(),
-            capability_token: first_token,
-            include_all: true,
-        },
-    )
-    .expect_err("capability cannot cross its frozen Supervisor generation");
-    assert!(stale_supervisor
-        .to_string()
-        .contains("stale runtime binding"));
-    assert_eq!(
-        durable_store_file_bytes(&store),
-        before_stale_supervisor,
-        "stale Supervisor capability must have byte-zero durable side effects"
     );
     assert!(matches!(
         first_control.try_recv(),

@@ -578,7 +578,7 @@ impl HarnessStore {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub(super) fn commit_trust_projection_unlocked<
+    pub(crate) fn commit_trust_projection_unlocked<
         T: Serialize + for<'de> Deserialize<'de> + Clone,
     >(
         &self,

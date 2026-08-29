@@ -135,6 +135,10 @@ pub(crate) struct MultiTeamDaemon {
     /// Ends the NodeDaemon lease heartbeat only after accepted workers and
     /// managed supervisors have converged.
     authority_shutdown: Arc<AtomicBool>,
+    /// Sticky process-local fence. Once any required Execution Space loses
+    /// this instance's exact lease, no Space may admit another provider
+    /// effect and this process may only drain/settle its predecessor bundle.
+    authority_lost: AtomicBool,
     /// Latches an accepted worker that panicked or returned without proving
     /// command completion. Such a generation may drain but never Release.
     control_worker_failed: AtomicBool,
@@ -271,6 +275,7 @@ impl MultiTeamDaemon {
             scan_interval: Duration::from_secs(scan_interval_secs),
             stop_requested: shutdown_sig,
             authority_shutdown: Arc::new(AtomicBool::new(false)),
+            authority_lost: AtomicBool::new(false),
             control_worker_failed: AtomicBool::new(false),
             recovery_blocked_runs: Mutex::new(HashSet::new()),
             #[cfg(test)]
@@ -369,7 +374,12 @@ impl MultiTeamDaemon {
             // heartbeat stop. This prevents a successor generation from
             // overlapping an accepted mutation that already crossed prepare.
             let supervisor_result = self.graceful_shutdown();
-            let drain_result = if supervisor_result.is_ok() {
+            let settlement_result = if supervisor_result.is_ok() {
+                self.settle_node_authorities_for_shutdown()
+            } else {
+                Ok(())
+            };
+            let drain_result = if supervisor_result.is_ok() && settlement_result.is_ok() {
                 self.drain_node_authorities()
             } else {
                 Ok(())
@@ -384,6 +394,7 @@ impl MultiTeamDaemon {
             };
             let release_result = if control_result.is_ok()
                 && supervisor_result.is_ok()
+                && settlement_result.is_ok()
                 && drain_result.is_ok()
                 && heartbeat_result.is_ok()
             {
@@ -394,6 +405,7 @@ impl MultiTeamDaemon {
             scan_result
                 .and(control_result)
                 .and(supervisor_result)
+                .and(settlement_result)
                 .and(drain_result)
                 .and(heartbeat_result)
                 .and(release_result)

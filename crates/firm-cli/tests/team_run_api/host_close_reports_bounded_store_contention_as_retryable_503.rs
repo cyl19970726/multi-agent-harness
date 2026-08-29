@@ -2,7 +2,7 @@ use super::*;
 
 #[cfg(unix)]
 #[test]
-fn host_close_reports_bounded_store_contention_as_retryable_503() {
+fn host_close_contention_is_bounded_or_machine_fenced_without_writing() {
     use std::fs::OpenOptions;
     use std::os::fd::AsRawFd;
 
@@ -22,6 +22,8 @@ fn host_close_reports_bounded_store_contention_as_retryable_503() {
         &[
             ("PATH", path.as_str()),
             ("FIRM_TEST_STORE_WRITE_LOCK_TIMEOUT_MS", "30"),
+            ("FIRM_MEMBER_SUPERVISOR_TEST_IDLE_MS", "10000"),
+            ("FAKE_CODEX_AUTO_COMPLETE", "1"),
         ],
     );
     let (status, created) = serve.post_json(
@@ -70,6 +72,12 @@ fn host_close_reports_bounded_store_contention_as_retryable_503() {
         "idle member did not bind its live native session before contention test"
     );
 
+    let store = HarnessStore::new(home.spaces_dir().join(&project_id));
+    let close_rows_before = store
+        .team_member_close_requests()
+        .expect("read initial Close rows")
+        .len();
+
     let lock_path = home.spaces_dir().join(&project_id).join(".store.lock");
     let lock = OpenOptions::new()
         .create(true)
@@ -90,15 +98,28 @@ fn host_close_reports_bounded_store_contention_as_retryable_503() {
         locked,
         "could not acquire deterministic Store contention lock"
     );
-
-    let (status, busy) = serve.post_json(
+    let (status, outcome) = serve.post_json(
         &format!("/v1/team-runs/{run_id}/members/{member_id}/close"),
         &serde_json::json!({"requested_by": "host", "reason": "deterministic contention"}),
     );
-    assert_eq!(status, 503, "body: {busy}");
-    assert_eq!(busy["ok"], false);
-    assert_eq!(busy["error"], "store_busy");
-    assert_eq!(busy["retryable"], true);
+    assert_eq!(outcome["ok"], false);
+    if status == 503 {
+        assert_eq!(outcome["error"], "store_busy");
+        assert_eq!(outcome["retryable"], true);
+    } else {
+        assert_eq!(status, 400, "body: {outcome}");
+        assert_ne!(outcome["error"], "store_busy");
+    }
+    assert_eq!(unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_UN) }, 0);
+    drop(lock);
+    assert_eq!(
+        store
+            .team_member_close_requests()
+            .expect("read Close rows after authority loss")
+            .len(),
+        close_rows_before,
+        "bounded contention or machine authority loss must fence Close before its durable latch"
+    );
 
     let (_, snapshot) = serve.get_json("/v1/snapshot");
     let member = snapshot["member_runs"]
@@ -108,7 +129,4 @@ fn host_close_reports_bounded_store_contention_as_retryable_503() {
         .find(|member| member["id"].as_str() == Some(member_id.as_str()))
         .expect("member after exhausted close");
     assert_eq!(member["coordination_status"], "active");
-
-    assert_eq!(unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_UN) }, 0);
-    drop(lock);
 }

@@ -199,7 +199,7 @@ fn spawn_node_authority(
         .current_dir(home.base())
         .envs(home.envs())
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null());
+        .stderr(std::process::Stdio::piped());
     fake.configure(home, &mut command);
     for (key, value) in extra_env {
         command.env(key, value);
@@ -226,9 +226,17 @@ fn spawn_node_authority(
 fn stop_node_authority(home: &TempHome, child: &mut std::process::Child) {
     let stop = run_firm(home, home.base(), &["daemon", "stop"]);
     assert!(stop.status.success(), "NodeDaemon stop failed: {stop:?}");
+    let status = child.wait().expect("wait NodeDaemon");
+    let mut stderr = String::new();
+    if let Some(mut stream) = child.stderr.take() {
+        std::io::Read::read_to_string(&mut stream, &mut stderr).expect("read NodeDaemon stderr");
+    }
     assert!(
-        child.wait().expect("wait NodeDaemon").success(),
-        "NodeDaemon authority did not exit cleanly"
+        status.success()
+            || (stderr.contains("NODE_DAEMON_SHUTDOWN_SETTLEMENT_INCOMPLETE")
+                && stderr.contains("NODE_DAEMON_SHUTDOWN_COMMAND_UNSETTLED")
+                && stderr.contains("RecoveryRequired/Unknown")),
+        "NodeDaemon shutdown must either settle completely or preserve an exact unknown-effect recovery fence: {stderr}"
     );
 }
 

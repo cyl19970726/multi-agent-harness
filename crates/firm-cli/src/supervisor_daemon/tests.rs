@@ -38,7 +38,7 @@ fn node_authority_heartbeat_is_independent_of_a_long_discovery_scan() {
 }
 
 #[test]
-fn one_slow_space_cannot_expire_another_spaces_node_authority() {
+fn unreadable_space_latches_machine_wide_authority_loss() {
     const NODE_ID: &str = "11111111-1111-4111-8111-111111111112";
     let tree = TestTree::new("parallel-authority-refresh");
     let firm_home = tree.0.join("home");
@@ -112,32 +112,236 @@ fn one_slow_space_cannot_expire_another_spaces_node_authority() {
         scan_interval: Duration::from_millis(50),
         stop_requested: Arc::new(AtomicBool::new(false)),
         authority_shutdown: Arc::new(AtomicBool::new(false)),
+        authority_lost: AtomicBool::new(false),
         control_worker_failed: AtomicBool::new(false),
         recovery_blocked_runs: Mutex::new(HashSet::new()),
         lease_ttl_override_ms: Some(3_000),
     };
 
+    let command_actor = harness_core::agentfirm_api::ActorRef {
+        kind: harness_core::agentfirm_api::ActorKind::Service,
+        id: daemon.daemon_id.clone(),
+    };
+    let command_payload = serde_json::json!({"draft": {}});
+    let command = harness_core::agentfirm_api::ControlCommandEnvelope {
+        id: "runtime-command-after-machine-loss".into(),
+        execution_space_id: healthy.id.clone(),
+        target_node_id: NODE_ID.into(),
+        target_node_daemon_id: daemon.daemon_id.clone(),
+        target_node_daemon_generation: lease.generation,
+        authenticated_actor: command_actor.clone(),
+        command: harness_core::agentfirm_api::RuntimeCommandKind::AuthorMessage,
+        required_capability: "message.author".into(),
+        idempotency_key: "runtime-command-after-machine-loss".into(),
+        expected_version: 0,
+        expires_unix_ms: current_unix_ms_u64().saturating_add(30_000),
+        binding: Default::default(),
+        precondition: Default::default(),
+        postcondition: Default::default(),
+        payload_fingerprint: harness_store::canonical_json_fingerprint(&command_payload),
+        payload: command_payload,
+        issued_at: "unix-ms:2".into(),
+    };
+    let command_context = harness_core::agentfirm_api::MutationContext {
+        execution_space_id: healthy.id.clone(),
+        authenticated_actor: command_actor.clone(),
+        authority_actor: Some(command_actor),
+        command_name: "runtime.message.author".into(),
+        idempotency_key: command.idempotency_key.clone(),
+        expected_version: 0,
+        request_fingerprint: Some(
+            harness_store::runtime_command_envelope_fingerprint(&command)
+                .expect("fingerprint test RuntimeCommand"),
+        ),
+    };
+
     let started = Instant::now();
-    daemon
-        .refresh_held_node_authorities()
-        .expect("refresh isolates slow Spaces");
+    let error = std::thread::scope(|scope| {
+        let refresh = scope.spawn(|| daemon.refresh_held_node_authorities());
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while !daemon.authority_lost.load(Ordering::SeqCst) && Instant::now() < deadline {
+            std::thread::yield_now();
+        }
+        assert!(
+            daemon.authority_lost.load(Ordering::SeqCst),
+            "the unreadable Space must latch process authority loss"
+        );
+        let still_active = store
+            .latest_node_daemon_lease(NODE_ID)
+            .expect("read healthy lease while another Space blocks drain")
+            .expect("healthy lease remains present");
+        assert_eq!(
+            still_active.status,
+            harness_core::NodeDaemonLeaseStatus::Active,
+            "the cross-Space regression must observe process admission closed before durable drain reaches the healthy Space"
+        );
+        let operations_before = store
+            .canonical_operations()
+            .expect("read operations before fenced admission");
+        let admission_error = store
+            .prepare_runtime_command(
+                &command_context,
+                &command,
+                current_unix_ms_u64(),
+                "unix-ms:3",
+            )
+            .expect_err("machine authority loss must immediately fence another Space");
+        assert!(
+            admission_error
+                .to_string()
+                .contains("SUPERVISOR_GENERATION_FENCED"),
+            "unexpected admission error: {admission_error}"
+        );
+        assert_eq!(
+            store
+                .canonical_operations()
+                .expect("read operations after fenced admission"),
+            operations_before,
+            "fenced admission must have zero durable effect"
+        );
+        refresh
+            .join()
+            .expect("authority refresh worker must not panic")
+            .expect_err("an unreadable Space must close machine-wide authority")
+    });
     assert!(
         started.elapsed() >= Duration::from_millis(900),
         "the fixture must exercise the incomplete-row retry window"
     );
-    let refreshed = store
-        .latest_node_daemon_lease(NODE_ID)
-        .expect("read refreshed lease")
-        .expect("refreshed lease remains present");
-    assert_eq!(refreshed.generation, lease.generation);
-    assert_eq!(
-        refreshed.instance_id, lease.instance_id,
-        "the same daemon instance retains authority"
-    );
     assert!(
-        refreshed.expires_unix_ms > current_unix_ms_u64().saturating_add(1_000),
-        "the healthy Space renewed while unrelated readers were still waiting"
+        error
+            .to_string()
+            .contains("NODE_DAEMON_MACHINE_AUTHORITY_LOST"),
+        "unexpected authority error: {error}"
     );
+    assert!(daemon.authority_lost.load(Ordering::SeqCst));
+    assert!(daemon.stop_requested.load(Ordering::SeqCst));
+    let not_refreshed = store
+        .latest_node_daemon_lease(NODE_ID)
+        .expect("read fenced lease")
+        .expect("fenced lease remains present");
+    assert_eq!(not_refreshed.generation, lease.generation);
+    assert_eq!(
+        not_refreshed.instance_id, lease.instance_id,
+        "authority loss never fabricates a successor"
+    );
+    assert_eq!(
+        not_refreshed.status,
+        harness_core::NodeDaemonLeaseStatus::Draining,
+        "machine authority loss must durably drain every readable exact lease"
+    );
+}
+
+#[test]
+fn authority_bundle_rolls_back_partial_acquisition_until_every_predecessor_is_released() {
+    const NODE_ID: &str = "11111111-1111-4111-8111-111111111113";
+    let tree = TestTree::new("authority-bundle");
+    let firm_home = tree.0.join("home");
+    for index in 0..2 {
+        crate::execution_space::register_and_activate(
+            &firm_home,
+            &format!("bundle-space-{index}"),
+            &format!("Bundle Space {index}"),
+            Some(format!("bundle-project-{index}")),
+            None,
+            "unix-ms:1",
+        )
+        .expect("register bundle Space");
+    }
+    let spaces = crate::execution_space::list_spaces(&firm_home).expect("list bundle Spaces");
+    for (index, space) in spaces.iter().enumerate() {
+        let store = HarnessStore::new(space.store_root.clone());
+        store.init().expect("initialize bundle Store");
+        store
+            .insert_execution_node(&harness_core::ExecutionNode {
+                id: NODE_ID.into(),
+                display_name: "Bundle Node".into(),
+                status: harness_core::ExecutionNodeStatus::Active,
+                created_at: "unix-ms:1".into(),
+                updated_at: "unix-ms:1".into(),
+            })
+            .expect("insert bundle Node");
+        store
+            .register_node_project(
+                &harness_core::NodeProjectRegistration {
+                    node_id: NODE_ID.into(),
+                    execution_space_id: space.id.clone(),
+                    project_binding_id: format!("bundle-project-{index}"),
+                    status: harness_core::NodeProjectRegistrationStatus::Active,
+                    created_at: "unix-ms:1".into(),
+                    updated_at: "unix-ms:1".into(),
+                },
+                &space.id,
+            )
+            .expect("register bundle project");
+    }
+    let blocked_store = HarnessStore::new(spaces[1].store_root.clone());
+    blocked_store
+        .acquire_node_daemon_lease(NODE_ID, "predecessor", "crashed-instance", 1, 1)
+        .expect("create expired unsettled predecessor");
+
+    let daemon = MultiTeamDaemon {
+        firm_home: firm_home.clone(),
+        node_id: NODE_ID.into(),
+        daemon_id: format!("node-daemon:{NODE_ID}"),
+        instance_id: "candidate-instance".into(),
+        contexts: Mutex::new(Vec::new()),
+        supervisor_start_gate: Mutex::new(()),
+        session_runtimes: Mutex::new(HashMap::new()),
+        live_provider_activity_endpoint: Arc::new(Mutex::new(HashMap::new())),
+        max_concurrency: 1,
+        idle_timeout_secs: 1,
+        scan_interval: Duration::from_secs(1),
+        stop_requested: Arc::new(AtomicBool::new(false)),
+        authority_shutdown: Arc::new(AtomicBool::new(false)),
+        authority_lost: AtomicBool::new(false),
+        control_worker_failed: AtomicBool::new(false),
+        recovery_blocked_runs: Mutex::new(HashSet::new()),
+        lease_ttl_override_ms: Some(60_000),
+    };
+    let error = daemon
+        .ensure_node_authority_bundle()
+        .expect_err("one unsettled predecessor blocks the entire bundle");
+    assert!(error
+        .to_string()
+        .contains("NODE_DAEMON_MACHINE_AUTHORITY_LOST"));
+    for space in &spaces {
+        let lease = HarnessStore::new(space.store_root.clone())
+            .latest_node_daemon_lease(NODE_ID)
+            .expect("read post-rollback lease");
+        assert!(lease.as_ref().is_none_or(|lease| {
+            lease.status == harness_core::NodeDaemonLeaseStatus::Released
+                || lease.instance_id == "crashed-instance"
+        }));
+    }
+
+    blocked_store
+        .release_node_daemon_lease(
+            NODE_ID,
+            "predecessor",
+            1,
+            "crashed-instance",
+            current_unix_ms_u64(),
+        )
+        .expect("simulate explicit Operator predecessor recovery");
+    let successor = MultiTeamDaemon {
+        authority_lost: AtomicBool::new(false),
+        stop_requested: Arc::new(AtomicBool::new(false)),
+        instance_id: "successor-instance".into(),
+        ..daemon
+    };
+    let bundle = successor
+        .ensure_node_authority_bundle()
+        .expect("all Released predecessors permit one complete bundle");
+    assert_eq!(bundle.len(), 2);
+    for space in &spaces {
+        let lease = HarnessStore::new(space.store_root.clone())
+            .latest_node_daemon_lease(NODE_ID)
+            .expect("read successor lease")
+            .expect("successor lease exists");
+        assert_eq!(lease.instance_id, "successor-instance");
+        assert_eq!(lease.status, harness_core::NodeDaemonLeaseStatus::Active);
+    }
 }
 
 #[test]
@@ -157,6 +361,7 @@ fn machine_local_live_sink_rejects_invalid_and_stale_registration_then_replaces_
         scan_interval: Duration::from_secs(1),
         stop_requested: Arc::new(AtomicBool::new(false)),
         authority_shutdown: Arc::new(AtomicBool::new(false)),
+        authority_lost: AtomicBool::new(false),
         control_worker_failed: AtomicBool::new(false),
         recovery_blocked_runs: Mutex::new(HashSet::new()),
         lease_ttl_override_ms: None,
@@ -302,6 +507,7 @@ fn status_remains_responsive_while_execution_space_scan_is_blocked() {
         scan_interval: Duration::from_secs(60),
         stop_requested: Arc::clone(&shutdown),
         authority_shutdown: Arc::clone(&authority_shutdown),
+        authority_lost: AtomicBool::new(false),
         control_worker_failed: AtomicBool::new(false),
         recovery_blocked_runs: Mutex::new(HashSet::new()),
         lease_ttl_override_ms: None,
@@ -422,6 +628,7 @@ fn status_remains_responsive_while_a_control_mutation_is_blocked() {
         scan_interval: Duration::from_secs(60),
         stop_requested: Arc::clone(&shutdown),
         authority_shutdown: Arc::new(AtomicBool::new(false)),
+        authority_lost: AtomicBool::new(false),
         control_worker_failed: AtomicBool::new(false),
         recovery_blocked_runs: Mutex::new(HashSet::new()),
         lease_ttl_override_ms: None,
@@ -554,6 +761,7 @@ fn shutdown_renews_node_authority_until_accepted_worker_finishes() {
         scan_interval: Duration::from_millis(50),
         stop_requested,
         authority_shutdown: Arc::new(AtomicBool::new(false)),
+        authority_lost: AtomicBool::new(false),
         control_worker_failed: AtomicBool::new(false),
         recovery_blocked_runs: Mutex::new(HashSet::new()),
         lease_ttl_override_ms: Some(1_500),
@@ -672,6 +880,7 @@ fn shutdown_renews_node_authority_until_accepted_worker_finishes() {
         scan_interval: Duration::from_millis(50),
         stop_requested: Arc::new(AtomicBool::new(false)),
         authority_shutdown: Arc::new(AtomicBool::new(false)),
+        authority_lost: AtomicBool::new(false),
         control_worker_failed: AtomicBool::new(false),
         recovery_blocked_runs: Mutex::new(HashSet::new()),
         lease_ttl_override_ms: Some(1_500),

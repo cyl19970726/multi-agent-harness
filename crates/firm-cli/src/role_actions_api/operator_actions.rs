@@ -25,6 +25,33 @@ pub(super) struct OperatorActionReceipt {
     pub(super) recovery_detail: Option<String>,
 }
 
+fn predecessor_process_is_absent(instance_id: &str) -> Result<bool, String> {
+    let pid = instance_id
+        .split(':')
+        .next()
+        .ok_or_else(|| "predecessor instance id has no process id".to_string())?
+        .parse::<i32>()
+        .map_err(|_| "predecessor instance id does not begin with a process id".to_string())?;
+    if pid <= 0 {
+        return Err("predecessor process id must be positive".into());
+    }
+    // SAFETY: kill(pid, 0) sends no signal and is the standard process
+    // existence probe. EPERM still proves that a process exists; only ESRCH
+    // is accepted as absence.
+    let result = unsafe { libc::kill(pid, 0) };
+    if result == 0 {
+        return Ok(false);
+    }
+    match std::io::Error::last_os_error().raw_os_error() {
+        Some(libc::ESRCH) => Ok(true),
+        Some(libc::EPERM) => Ok(false),
+        Some(code) => Err(format!(
+            "cannot verify predecessor process {pid}: errno {code}"
+        )),
+        None => Err(format!("cannot verify predecessor process {pid}")),
+    }
+}
+
 pub(super) fn operator_receipt_paths(
     firm_home: &std::path::Path,
     node_id: &str,
@@ -332,6 +359,10 @@ pub(super) fn execute_operator_action(
             | ("daemon-start", OperatorActionIntent::DaemonStart { .. })
             | ("daemon-stop", OperatorActionIntent::DaemonStop { .. })
             | (
+                "daemon-recover-predecessor",
+                OperatorActionIntent::RecoverDaemonPredecessor { .. }
+            )
+            | (
                 "provider-admission",
                 OperatorActionIntent::AdmitProvider { .. }
             )
@@ -345,7 +376,10 @@ pub(super) fn execute_operator_action(
             None,
         ));
     }
-    let daemon_action = matches!(operation, "daemon-start" | "daemon-stop");
+    let daemon_action = matches!(
+        operation,
+        "daemon-start" | "daemon-stop" | "daemon-recover-predecessor"
+    );
     let receipted_action = daemon_action || operation == "provider-admission";
     if daemon_action && confirmed_action != Some(operation) {
         return Err(encoded_error(
@@ -555,6 +589,144 @@ pub(super) fn execute_operator_action(
                     action_protocol_version: "agentfirm.role_actions.v1",
                     projection: json!({"node_id":node_id,"status":response}),
                     event_id: format!("daemon-stop:{}", auth.idempotency_key),
+                    resulting_version: node_revision,
+                    store_sequence: store
+                        .canonical_operations_for_space(&auth.execution_space_id)?
+                        .len() as u64,
+                    replayed: false,
+                })
+            })
+        }
+        (
+            "daemon-recover-predecessor",
+            OperatorActionIntent::RecoverDaemonPredecessor {
+                daemon_id,
+                instance_id,
+                daemon_generation,
+                provider_process_groups_terminated_confirmed,
+                evidence_ref,
+            },
+        ) => {
+            let firm_home = firm_home.expect("daemon recovery resolves firm home before dispatch");
+            if crate::supervisor_daemon::daemon_status_via_socket(&firm_home, node_id).is_some() {
+                return Err(encoded_error(
+                    "NODE_DAEMON_PREDECESSOR_RECOVERY_LIVE",
+                    "a NodeDaemon socket is still live; Stop it before predecessor recovery",
+                    "node_daemon_lease",
+                    node_id,
+                    Some(daemon_generation),
+                ));
+            }
+            if !predecessor_process_is_absent(&instance_id).map_err(|error| {
+                encoded_error(
+                    "NODE_DAEMON_PREDECESSOR_RECOVERY_UNVERIFIED",
+                    error,
+                    "node_daemon_lease",
+                    node_id,
+                    Some(daemon_generation),
+                )
+            })? {
+                return Err(encoded_error(
+                    "NODE_DAEMON_PREDECESSOR_RECOVERY_LIVE",
+                    "the exact predecessor process still exists",
+                    "node_daemon_lease",
+                    node_id,
+                    Some(daemon_generation),
+                ));
+            }
+            let latest = store.latest_node_daemon_lease(node_id)?.ok_or_else(|| {
+                encoded_error(
+                    "SUPERVISOR_GENERATION_FENCED",
+                    "Node has no predecessor lease to recover",
+                    "node_daemon_lease",
+                    node_id,
+                    None,
+                )
+            })?;
+            if latest.daemon_id != daemon_id
+                || latest.instance_id != instance_id
+                || latest.generation != daemon_generation
+            {
+                return Err(encoded_error(
+                    "SUPERVISOR_GENERATION_FENCED",
+                    "recovery intent does not match the exact latest predecessor",
+                    "node_daemon_lease",
+                    node_id,
+                    Some(latest.generation),
+                ));
+            }
+            execute_receipted_operator_action(&firm_home, node_id, &auth, || {
+                let spaces = crate::execution_space::list_spaces(&firm_home).map_err(|error| {
+                    encoded_error(
+                        "NODE_DAEMON_PREDECESSOR_RECOVERY_INCOMPLETE",
+                        error.to_string(),
+                        "node_daemon_lease",
+                        node_id,
+                        Some(daemon_generation),
+                    )
+                })?;
+                let mut recovered_spaces = Vec::new();
+                let mut failures = Vec::new();
+                for space in spaces {
+                    let scoped = HarnessStore::new(space.store_root.clone());
+                    let belongs_to_node = scoped
+                        .latest_execution_nodes()
+                        .map(|nodes| nodes.into_iter().any(|node| node.id == node_id));
+                    match belongs_to_node {
+                        Ok(false) => continue,
+                        Err(error) => {
+                            failures.push(format!("{}: {error}", space.id));
+                            continue;
+                        }
+                        Ok(true) => {}
+                    }
+                    let context = MutationContext {
+                        execution_space_id: space.id.clone(),
+                        authenticated_actor: auth.actor.clone(),
+                        authority_actor: None,
+                        command_name: "node_daemon.predecessor_recover".into(),
+                        idempotency_key: format!("{}:space:{}", auth.idempotency_key, space.id),
+                        expected_version: daemon_generation,
+                        request_fingerprint: auth.request_fingerprint.clone(),
+                    };
+                    match scoped.recover_node_daemon_predecessor(
+                        &context,
+                        node_id,
+                        &daemon_id,
+                        daemon_generation,
+                        &instance_id,
+                        true,
+                        provider_process_groups_terminated_confirmed,
+                        &evidence_ref,
+                        crate::current_unix_ms_u64(),
+                        &format!("unix-ms:{}", crate::current_unix_ms_u64()),
+                    ) {
+                        Ok(_) => recovered_spaces.push(space.id),
+                        Err(error) => failures.push(format!("{}: {error}", space.id)),
+                    }
+                }
+                if !failures.is_empty() {
+                    return Err(encoded_error(
+                        "NODE_DAEMON_PREDECESSOR_RECOVERY_INCOMPLETE",
+                        failures.join("; "),
+                        "node_daemon_lease",
+                        node_id,
+                        Some(daemon_generation),
+                    ));
+                }
+                Ok(RoleActionResult {
+                    ok: true,
+                    action_protocol_version: "agentfirm.role_actions.v1",
+                    projection: json!({
+                        "node_id": node_id,
+                        "daemon_id": daemon_id,
+                        "instance_id": instance_id,
+                        "generation": daemon_generation,
+                        "status": "released",
+                        "recovered_spaces": recovered_spaces,
+                        "evidence_ref": evidence_ref,
+                    }),
+                    event_id: format!("daemon-recover-predecessor:{}", auth.idempotency_key),
                     resulting_version: node_revision,
                     store_sequence: store
                         .canonical_operations_for_space(&auth.execution_space_id)?
