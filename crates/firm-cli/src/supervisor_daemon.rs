@@ -374,7 +374,12 @@ impl MultiTeamDaemon {
             // heartbeat stop. This prevents a successor generation from
             // overlapping an accepted mutation that already crossed prepare.
             let supervisor_result = self.graceful_shutdown();
-            let drain_result = if supervisor_result.is_ok() {
+            let settlement_result = if supervisor_result.is_ok() {
+                self.settle_node_authorities_for_shutdown()
+            } else {
+                Ok(())
+            };
+            let drain_result = if supervisor_result.is_ok() && settlement_result.is_ok() {
                 self.drain_node_authorities()
             } else {
                 Ok(())
@@ -389,6 +394,7 @@ impl MultiTeamDaemon {
             };
             let release_result = if control_result.is_ok()
                 && supervisor_result.is_ok()
+                && settlement_result.is_ok()
                 && drain_result.is_ok()
                 && heartbeat_result.is_ok()
             {
@@ -399,6 +405,7 @@ impl MultiTeamDaemon {
             scan_result
                 .and(control_result)
                 .and(supervisor_result)
+                .and(settlement_result)
                 .and(drain_result)
                 .and(heartbeat_result)
                 .and(release_result)

@@ -406,6 +406,58 @@ impl MultiTeamDaemon {
         }
     }
 
+    pub(super) fn settle_node_authorities_for_shutdown(&self) -> CliResult<()> {
+        let mut failures = Vec::new();
+        let updated_at = format!("unix-ms:{}", current_unix_ms_u64());
+        for (space, store) in self.registered_spaces()? {
+            let lease = match store.latest_node_daemon_lease(&self.node_id) {
+                Ok(Some(lease)) => lease,
+                Ok(None) => continue,
+                Err(error) => {
+                    failures.push(format!("{}: {error}", space.id));
+                    continue;
+                }
+            };
+            if lease.daemon_id != self.daemon_id || lease.instance_id != self.instance_id {
+                continue;
+            }
+            let context = harness_core::agentfirm_api::MutationContext {
+                execution_space_id: space.id.clone(),
+                authenticated_actor: harness_core::agentfirm_api::ActorRef {
+                    kind: harness_core::agentfirm_api::ActorKind::Service,
+                    id: self.daemon_id.clone(),
+                },
+                authority_actor: None,
+                command_name: "node_daemon.shutdown.settle_sessions".into(),
+                idempotency_key: format!(
+                    "node-daemon-shutdown:{}:{}:{}",
+                    self.node_id, self.daemon_id, lease.generation
+                ),
+                expected_version: lease.generation,
+                request_fingerprint: None,
+            };
+            if let Err(error) = store.settle_node_daemon_shutdown_sessions(
+                &context,
+                &self.node_id,
+                &lease.daemon_id,
+                lease.generation,
+                &lease.instance_id,
+                true,
+                &updated_at,
+            ) {
+                failures.push(format!("{}: {error}", space.id));
+            }
+        }
+        if failures.is_empty() {
+            Ok(())
+        } else {
+            Err(CliError::Usage(format!(
+                "NODE_DAEMON_SHUTDOWN_SETTLEMENT_INCOMPLETE: {}",
+                failures.join("; ")
+            )))
+        }
+    }
+
     pub(super) fn drain_node_authorities(&self) -> CliResult<()> {
         const DRAIN_TTL_MS: u64 = 60_000;
         let mut failures = Vec::new();
