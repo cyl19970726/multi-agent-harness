@@ -96,7 +96,7 @@ fn closed_member_cannot_mutate_owned_work_until_reopen() {
     // MemberRun id and AgentSession lineage happen to be unchanged.
     let mut reopened_member = closed_member.clone();
     reopened_member.coordination_status = firm_core::MemberCoordinationStatus::Active;
-    reopened_member.status = MemberRunStatus::Idle;
+    reopened_member.status = MemberRunStatus::Queued;
     reopened_member.runtime_generation += 1;
     store
         .compare_and_advance_member_run_generation(&closed_member, &reopened_member)

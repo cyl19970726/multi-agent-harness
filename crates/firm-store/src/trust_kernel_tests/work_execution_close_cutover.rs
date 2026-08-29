@@ -390,4 +390,100 @@ fn member_close_releases_old_binding_but_preserves_provider_received_and_fences_
         )
         .expect_err("same ProviderReceived Work revision must never replay");
     assert!(error.to_string().contains("DELIVERY_RECOVERY_UNCERTAIN"));
+
+    let predecessor = store
+        .member_runs()
+        .unwrap()
+        .into_iter()
+        .find(|member| member.id == close.member_run_id)
+        .unwrap();
+    let mut closed = predecessor.clone();
+    closed.coordination_status = firm_core::MemberCoordinationStatus::Closed;
+    closed.status = MemberRunStatus::Stopped;
+    closed.finished_at = Some("t-close-terminal".into());
+    store
+        .compare_and_append_member_run(&predecessor, &closed)
+        .unwrap();
+    store
+        .complete_team_member_close(
+            &close.team_run_id,
+            &close.member_run_id,
+            &close.id,
+            "t-close-complete",
+        )
+        .unwrap();
+    let mut recovered = closed.clone();
+    recovered.runtime_generation += 1;
+    recovered.coordination_status = firm_core::MemberCoordinationStatus::Active;
+    recovered.status = MemberRunStatus::Queued;
+    recovered.started_at = "t-recovery".into();
+    recovered.finished_at = None;
+    store
+        .compare_and_advance_member_run_generation(&closed, &recovered)
+        .unwrap();
+
+    let current_work = store
+        .latest_works()
+        .unwrap()
+        .into_iter()
+        .find(|candidate| candidate.id == started.id)
+        .unwrap();
+    let candidate = firm_core::agentfirm_api::CandidateRef {
+        kind: firm_core::agentfirm_api::CandidateKind::GitCommit,
+        value: "abcdef0123456789".into(),
+    };
+    let report = WorkReport {
+        id: "generic-recovery-result".into(),
+        work_id: current_work.id.clone(),
+        work_revision: current_work.version + 1,
+        report_revision: 1,
+        kind: WorkReportKind::Result,
+        authored_by: ActorRef {
+            kind: ActorKind::AgentMember,
+            id: "close-worker".into(),
+        },
+        summary: "generic recovery must not settle old execution".into(),
+        base_revision: None,
+        candidate_fingerprint: Some(canonical_json_fingerprint(
+            &serde_json::to_value(&candidate).unwrap(),
+        )),
+        candidate: Some(candidate),
+        finding_refs: Vec::new(),
+        failure_analysis_ref: None,
+        artifact_refs: Vec::new(),
+        check_refs: Vec::new(),
+        github_links: Vec::new(),
+        evidence_refs: vec!["evidence://generic-recovery-must-fail".into()],
+        known_risks: Vec::new(),
+        confidence: None,
+        recommended_next_action: None,
+        created_at: "t-recovery-result".into(),
+    };
+    let operations_before = store.canonical_operations().unwrap().len();
+    let recovery_error = store
+        .create_trust_work_report(
+            &MutationContext {
+                execution_space_id: "space-test".into(),
+                authenticated_actor: report.authored_by.clone(),
+                authority_actor: None,
+                command_name: "report.create".into(),
+                idempotency_key: report.id.clone(),
+                expected_version: 0,
+                request_fingerprint: None,
+            },
+            "team-admission",
+            report,
+        )
+        .expect_err("generic recovery must not impersonate formal Reopen");
+    assert!(
+        recovery_error
+            .to_string()
+            .contains("WORK_EXECUTION_BINDING_ACTIVE"),
+        "{recovery_error}"
+    );
+    assert_eq!(
+        store.canonical_operations().unwrap().len(),
+        operations_before,
+        "generic recovery Result rejection must be zero-write"
+    );
 }

@@ -844,7 +844,26 @@ impl HarnessStore {
         expected: &ProviderRuntimeProjection,
         next: &ProviderRuntimeProjection,
     ) -> StoreResult<()> {
-        self.compare_and_advance_member_run_generation_with_host_mode(expected, next, None)
+        self.compare_and_advance_member_run_generation_with_host_mode(
+            expected,
+            next,
+            None,
+            "generation_advanced",
+        )
+    }
+
+    /// Advance one exact MemberRun generation as an explicit coordination
+    /// Reopen. Generic Supervisor recovery must use
+    /// `compare_and_advance_member_run_generation` and therefore cannot emit
+    /// the canonical `reopened` evidence consumed by Result settlement.
+    pub fn compare_and_reopen_member_run_generation(
+        &self,
+        expected: &ProviderRuntimeProjection,
+        next: &ProviderRuntimeProjection,
+    ) -> StoreResult<()> {
+        self.compare_and_advance_member_run_generation_with_host_mode(
+            expected, next, None, "reopened",
+        )
     }
 
     /// Reopen the exact Host MemberRun into a different control mode while
@@ -862,6 +881,7 @@ impl HarnessStore {
             expected,
             next,
             Some((expected_run, next_run)),
+            "reopened",
         )
     }
 
@@ -870,6 +890,7 @@ impl HarnessStore {
         expected: &ProviderRuntimeProjection,
         next: &ProviderRuntimeProjection,
         host_mode_transition: Option<(&firm_core::AgentTeamRun, &firm_core::AgentTeamRun)>,
+        transition: &'static str,
     ) -> StoreResult<()> {
         self.init()?;
         let _lock = self.acquire_write_lock()?;
@@ -1053,7 +1074,7 @@ impl HarnessStore {
             &context,
             "member_run",
             &canonical.id,
-            "generation_advanced",
+            transition,
             payload,
             &canonical,
             Vec::new(),

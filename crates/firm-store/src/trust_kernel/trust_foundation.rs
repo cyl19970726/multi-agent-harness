@@ -477,12 +477,19 @@ impl HarnessStore {
         {
             let admission = self.work_execution_runtime_binding(execution_space_id, &binding.id)?;
             let exact_close_reopen_lineage = match admission.target_member_run_generation {
-                Some(generation) => self.member_run_has_exact_close_reopen_lineage_unlocked(
-                    execution_space_id,
-                    &current_run.id,
-                    generation,
-                    current_run.runtime_generation,
-                )?,
+                Some(generation) => {
+                    self.released_binding_has_exact_member_close_evidence_unlocked(
+                        execution_space_id,
+                        binding,
+                        &current_run.id,
+                        generation,
+                    )? && self.member_run_has_exact_close_reopen_lineage_unlocked(
+                        execution_space_id,
+                        &current_run.id,
+                        generation,
+                        current_run.runtime_generation,
+                    )?
+                }
                 None => false,
             };
             if admission.target_member_run_id.as_deref() != Some(current_run.id.as_str())
@@ -504,6 +511,64 @@ impl HarnessStore {
             ));
         };
         Ok(binding.clone())
+    }
+
+    fn released_binding_has_exact_member_close_evidence_unlocked(
+        &self,
+        execution_space_id: &str,
+        binding: &WorkExecutionBinding,
+        member_run_id: &str,
+        member_run_generation: u64,
+    ) -> StoreResult<bool> {
+        let releases = self
+            .trust_operation_envelopes_unlocked()?
+            .into_iter()
+            .filter(|envelope| {
+                envelope.execution_space_id == execution_space_id
+                    && envelope.operation.event.aggregate_kind == "work_execution_binding"
+                    && envelope.operation.event.aggregate_id == binding.id
+                    && envelope.operation.event.transition == "released"
+            })
+            .collect::<Vec<_>>();
+        let [release] = releases.as_slice() else {
+            return Ok(false);
+        };
+        let Some(close_request_id) = release.operation.event.payload["close_request_id"].as_str()
+        else {
+            return Ok(false);
+        };
+        let Some(close_runtime_command_id) =
+            release.operation.event.payload["close_runtime_command_id"].as_str()
+        else {
+            return Ok(false);
+        };
+        let exact_close_request = self
+            .latest_team_member_close_request(member_run_id)?
+            .is_some_and(|request| {
+                request.id == close_request_id
+                    && request.status == firm_core::TeamMemberCloseStatus::Applied
+            });
+        let exact_close_command = self
+            .runtime_commands(execution_space_id)?
+            .into_iter()
+            .find(|command| command.id == close_runtime_command_id)
+            .is_some_and(|command| {
+                command.command == RuntimeCommandKind::CloseMember
+                    && command.binding.target_member_run_id.as_deref() == Some(member_run_id)
+                    && command.binding.target_member_run_generation == Some(member_run_generation)
+                    && command.binding.target_session_id.as_deref()
+                        == Some(binding.agent_session_id.as_str())
+                    && command.binding.target_runtime_generation
+                        == Some(binding.agent_session_generation)
+                    && command
+                        .source_record_id
+                        .as_deref()
+                        .is_some_and(|source| source.starts_with(&format!("{close_request_id}:")))
+                    && command.status == RuntimeCommandStatus::Applied
+                    && command.effect_certainty == RuntimeEffectCertainty::Applied
+                    && command.postcondition_status == RuntimePostconditionStatus::Satisfied
+            });
+        Ok(exact_close_request && exact_close_command)
     }
 
     fn member_run_has_exact_close_reopen_lineage_unlocked(
@@ -532,10 +597,7 @@ impl HarnessStore {
                 closed_event.transition.as_str(),
                 "closed" | "runtime_projection_synchronized"
             );
-            let formal_reopen = matches!(
-                reopened_event.transition.as_str(),
-                "reopened" | "generation_advanced"
-            );
+            let formal_reopen = reopened_event.transition == "reopened";
             if !formal_close || !formal_reopen {
                 continue;
             }

@@ -933,7 +933,7 @@ pub(crate) fn reopen_team_member_value(
         )?;
     } else {
         store_conflict_as_usage(
-            store.compare_and_advance_member_run_generation(&expected, &member),
+            store.compare_and_reopen_member_run_generation(&expected, &member),
         )?;
     }
 
