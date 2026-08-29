@@ -46,13 +46,21 @@ impl HarnessStore {
         };
         let current_work =
             self.trust_team_work_unlocked(team_id, &report.work_id, source_work_revision)?;
-        let (authoring_member_run, execution_binding) = self
-            .require_exact_work_member_binding_unlocked(
+        let (authoring_member_run, execution_binding) = if report.kind == WorkReportKind::Result {
+            self.require_exact_work_result_binding_unlocked(
                 &context.execution_space_id,
                 &current_work,
                 &context.authenticated_actor,
                 None,
-            )?;
+            )?
+        } else {
+            self.require_exact_work_member_binding_unlocked(
+                &context.execution_space_id,
+                &current_work,
+                &context.authenticated_actor,
+                None,
+            )?
+        };
         if report.kind == WorkReportKind::Result
             && (report.candidate.is_none()
                 || report

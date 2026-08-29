@@ -175,6 +175,15 @@ responsibility change after the binding revision invalidates it even if
 ownership later returns to the same member; this closes responsibility ABA
 without a second epoch.
 
+`Result` has one narrow settlement exception for an honest Close → Reopen. If
+the provider effect is already `ProviderReceived`, the same stable
+AgentMember, same MemberRun id, and same exact AgentSession generation may
+submit the Result from a higher current MemberRun runtime generation. The
+operation revalidates the unchanged responsibility and provider-received
+delivery, then atomically releases the old binding. It does not admit or replay
+a provider effect, create a successor delivery, or authorize Progress,
+Finding, FailureAnalysis, or another Work mutation from the stale binding.
+
 A Work-linked Message is different: the Work id is immutable conversation
 context, not Work mutation authority. Any exact current active Member of the
 same TeamRun may send or reply with that Work link, including after Result

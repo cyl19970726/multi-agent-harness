@@ -91,8 +91,10 @@ fn closed_member_cannot_mutate_owned_work_until_reopen() {
     assert_eq!(current.phase, WorkPhase::Active);
     assert_eq!(current.version, started.version);
 
-    // Reopen restores stable participation but never revives the old execution
-    // binding. A successor scheduler admission must bind the new generation.
+    // Reopen restores stable participation without replaying the provider
+    // effect. The exact same MemberRun and AgentSession lineage may settle the
+    // already ProviderReceived Work, but no other Work mutation receives this
+    // narrow settlement authority.
     let mut reopened_member = closed_member.clone();
     reopened_member.coordination_status = firm_core::MemberCoordinationStatus::Active;
     reopened_member.status = MemberRunStatus::Idle;
@@ -123,10 +125,25 @@ fn closed_member_cannot_mutate_owned_work_until_reopen() {
             started.accountable_team_id.as_deref().expect("team id"),
             reopened_report,
         )
-        .expect_err("Reopen alone cannot revive stale Work execution authority");
-    assert!(submitted
-        .to_string()
-        .contains("MEMBER_RUN_GENERATION_FENCED"));
+        .expect("reopened exact session lineage may settle ProviderReceived Work");
+    assert_eq!(submitted.projection.work_revision, started.version + 1);
+    let current = store
+        .latest_works()
+        .expect("latest works")
+        .into_iter()
+        .find(|work| work.id == started.id)
+        .expect("submitted Work");
+    assert_eq!(current.phase, WorkPhase::Review);
+    let binding = store
+        .fabric_work_execution_bindings("unit-test-space")
+        .expect("bindings")
+        .into_iter()
+        .find(|binding| binding.work_id == started.id)
+        .expect("result binding");
+    assert_eq!(
+        binding.status,
+        firm_core::agentfirm_api::WorkExecutionBindingStatus::Released
+    );
 
     std::fs::remove_dir_all(root).expect("remove temp store");
 }

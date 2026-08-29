@@ -243,6 +243,39 @@ impl HarnessStore {
         actor: &ActorRef,
         actor_session_id: Option<&str>,
     ) -> StoreResult<(MemberRun, WorkExecutionBinding)> {
+        self.require_exact_work_member_binding_with_settlement_unlocked(
+            execution_space_id,
+            work,
+            actor,
+            actor_session_id,
+            false,
+        )
+    }
+
+    pub(super) fn require_exact_work_result_binding_unlocked(
+        &self,
+        execution_space_id: &str,
+        work: &Work,
+        actor: &ActorRef,
+        actor_session_id: Option<&str>,
+    ) -> StoreResult<(MemberRun, WorkExecutionBinding)> {
+        self.require_exact_work_member_binding_with_settlement_unlocked(
+            execution_space_id,
+            work,
+            actor,
+            actor_session_id,
+            true,
+        )
+    }
+
+    fn require_exact_work_member_binding_with_settlement_unlocked(
+        &self,
+        execution_space_id: &str,
+        work: &Work,
+        actor: &ActorRef,
+        actor_session_id: Option<&str>,
+        allow_reopened_result_settlement: bool,
+    ) -> StoreResult<(MemberRun, WorkExecutionBinding)> {
         if actor.kind != ActorKind::AgentMember
             || work.owner_member_id.as_deref() != Some(actor.id.as_str())
         {
@@ -365,8 +398,15 @@ impl HarnessStore {
             ));
         };
         let admission = self.work_execution_runtime_binding(execution_space_id, &binding.id)?;
-        if admission.target_member_run_id.as_deref() != Some(run.id.as_str())
-            || admission.target_member_run_generation != Some(run.runtime_generation)
+        let exact_runtime_generation = admission.target_member_run_id.as_deref()
+            == Some(run.id.as_str())
+            && admission.target_member_run_generation == Some(run.runtime_generation);
+        let reopened_result_settlement = allow_reopened_result_settlement
+            && admission.target_member_run_id.as_deref() == Some(run.id.as_str())
+            && admission
+                .target_member_run_generation
+                .is_some_and(|generation| generation < run.runtime_generation);
+        if (!exact_runtime_generation && !reopened_result_settlement)
             || admission.target_session_id.as_deref() != Some(session.id.as_str())
             || admission.target_runtime_generation != Some(session.runtime_generation)
         {
