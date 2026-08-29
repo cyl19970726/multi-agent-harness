@@ -525,9 +525,12 @@ impl HttpExchange<'_> {
                     handle_sse_stream(
                         store_owned,
                         project_id,
-                        selected_project_binding_id.as_deref(),
-                        None,
-                        selected_agent_member_id.as_deref(),
+                        SseSelection {
+                            project_binding_id: selected_project_binding_id.as_deref(),
+                            company_scope_id: None,
+                            team_id: requested_team_id.as_deref(),
+                            agent_member_id: selected_agent_member_id.as_deref(),
+                        },
                         stream.try_clone()?,
                         sse_manager,
                     )?

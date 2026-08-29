@@ -74,6 +74,8 @@ impl Query {
             "member_id",
             "agent_id",
             "session_before",
+            "session_after",
+            "session_source_generation",
             "session_limit",
             "assignee_membership_id",
             "assignee_kind",

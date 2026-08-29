@@ -6,9 +6,9 @@ use std::{
 
 use firm_provider_events::{
     persisted_adapter_manifest, read_persisted_file_page, read_persisted_jsonl_snapshot,
-    ContentAvailability, PersistedFileBoundary, PersistedFragmentPayload,
-    PersistedProjectionContext, PersistedReaderSource, PersistedSessionProjector,
-    PersistedTailMode, ProviderKind, SessionSemanticKind,
+    read_persisted_jsonl_snapshot_after, ContentAvailability, PersistedFileBoundary,
+    PersistedFragmentPayload, PersistedProjectionContext, PersistedReaderSource,
+    PersistedSessionProjector, PersistedTailMode, ProviderKind, SessionSemanticKind,
 };
 
 fn source(provider: ProviderKind) -> PersistedReaderSource {
@@ -421,5 +421,52 @@ fn file_tail_and_reopen_keep_completed_row_identity_and_ignore_active_tail() {
     assert_eq!(reopened.rows.len(), 2);
     assert_eq!(reopened.rows[0], first_identity);
 
+    fs::rename(&transcript, root.join("session.previous.jsonl")).expect("rotate provider file");
+    fs::write(
+        &transcript,
+        "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"new incarnation\"}]}}\n",
+    )
+    .expect("replacement provider file");
+    let reset = read_persisted_file_page(&source(ProviderKind::Claude), &boundary, None, 10)
+        .expect("replacement file read");
+    assert_ne!(reopened.source_generation, reset.source_generation);
+    assert_eq!(reset.rows.len(), 1);
+
     fs::remove_dir_all(root).expect("remove temporary provider root");
+}
+
+#[test]
+fn snapshot_watermark_then_forward_pages_have_no_gap_or_duplicate() {
+    let initial = concat!(
+        "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"one\"}]}}\n",
+        "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"two\"}]}}\n",
+    );
+    let snapshot = read_persisted_jsonl_snapshot(&source(ProviderKind::Claude), initial, None, 10)
+        .expect("initial snapshot");
+    let watermark = snapshot.snapshot_watermark.expect("snapshot watermark");
+    let appended = format!(
+        "{initial}{}{}{}",
+        "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"three\"}]}}\n",
+        "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"four\"}]}}\n",
+        "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"five\"}]}}\n",
+    );
+    let first =
+        read_persisted_jsonl_snapshot_after(&source(ProviderKind::Claude), &appended, watermark, 2)
+            .expect("first forward page");
+    assert_eq!(first.rows.len(), 2);
+    assert!(first.has_more);
+    let next = first.rows.last().expect("last first-page row").ordering_key;
+    let second =
+        read_persisted_jsonl_snapshot_after(&source(ProviderKind::Claude), &appended, next, 2)
+            .expect("second forward page");
+    assert_eq!(second.rows.len(), 1);
+    assert!(!second.has_more);
+    let all = first
+        .rows
+        .iter()
+        .chain(&second.rows)
+        .map(|row| row.ordering_key.value)
+        .collect::<BTreeSet<_>>();
+    assert_eq!(all.len(), 3);
+    assert!(all.iter().all(|position| *position > watermark.value));
 }

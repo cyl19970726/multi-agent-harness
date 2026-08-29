@@ -294,7 +294,12 @@ pub fn persisted_adapter_manifest(provider: ProviderKind) -> PersistedAdapterMan
         stable_row_locator: true,
         pagination,
         tail_mode,
-        reader_reachability: vec![PersistedReaderReachability::Local],
+        // Remote callers traverse the existing NodeGateway to the same
+        // machine-local reader; they never receive a provider path or mount.
+        reader_reachability: vec![
+            PersistedReaderReachability::Local,
+            PersistedReaderReachability::Remote,
+        ],
         semantic_capabilities,
     }
 }

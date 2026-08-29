@@ -699,6 +699,45 @@ pub(crate) fn runtime_command_via_socket(
     serde_json::from_str(line.trim()).map_err(std::io::Error::other)
 }
 
+/// Read one bounded provider-owned Session page through the exact local
+/// NodeDaemon. The response never contains a filesystem path and the daemon
+/// revalidates placement, lease generation, viewer scope and native identity.
+pub(crate) fn native_session_read_via_socket(
+    firm_home: &Path,
+    node_id: &str,
+    request: &crate::provider_event_api::PersistedSessionReadRequest,
+) -> Result<crate::provider_event_api::PersistedSessionReadResponse, std::io::Error> {
+    let socket_path = node_daemon_socket_path(firm_home, node_id);
+    let mut stream = UnixStream::connect(&socket_path)?;
+    stream.set_read_timeout(Some(Duration::from_secs(15)))?;
+    stream.set_write_timeout(Some(Duration::from_secs(10)))?;
+    let command = serde_json::json!({"cmd": "read_native_session", "request": request});
+    writeln!(
+        stream,
+        "{}",
+        serde_json::to_string(&command).map_err(std::io::Error::other)?
+    )?;
+    stream.flush()?;
+    let mut line = String::new();
+    std::io::BufReader::new(&mut stream).read_line(&mut line)?;
+    if line.trim().is_empty() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::UnexpectedEof,
+            "NodeDaemon returned an empty persisted Session response",
+        ));
+    }
+    let envelope: serde_json::Value =
+        serde_json::from_str(line.trim()).map_err(std::io::Error::other)?;
+    if envelope["ok"] != true {
+        return Err(std::io::Error::other(
+            envelope["error"]
+                .as_str()
+                .unwrap_or("NodeDaemon rejected persisted Session read"),
+        ));
+    }
+    serde_json::from_value(envelope["response"].clone()).map_err(std::io::Error::other)
+}
+
 /// Start a NodeDaemon for an exact observed predecessor generation. Unlike the
 /// convenience CLI helper, this never treats an already-running or concurrently
 /// winning daemon as the requested external effect. The child PID in the

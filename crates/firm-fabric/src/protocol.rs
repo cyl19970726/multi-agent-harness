@@ -650,7 +650,7 @@ fn validate_closed_body(
             non_empty(&body.artifact_id) && digest(&body.artifact_digest)
         }
         ClosedOperationBody::CollaborationBusiness(body) => {
-            const KINDS: [(&str, &str); 9] = [
+            const KINDS: [(&str, &str); 10] = [
                 ("delegation_propose", "collaboration.delegation_propose"),
                 ("delegation_decide", "collaboration.delegation_decide"),
                 ("target_work_create", "collaboration.target_work_create"),
@@ -666,6 +666,7 @@ fn validate_closed_body(
                 ("team_message_deliver", "collaboration.team_message_deliver"),
                 ("remote_fact_publish", "collaboration.remote_fact_publish"),
                 ("artifact_grant", "collaboration.artifact_grant"),
+                ("native_session_read", "collaboration.native_session_read"),
             ];
             KINDS.contains(&(
                 body.business_kind.as_str(),

@@ -72,9 +72,10 @@ semantic kinds listed by the provider's executable adapter manifest become
 fragments. Harness does not reinterpret the remaining fields as coordination
 truth.
 
-The same central decoder builds both the volatile live SSE record and the
-reopened historical record. Provider runtimes do not maintain parallel live
-summary classifiers. One native event may yield several ordered fragments—for
+One persisted-event projector builds both the snapshot/reconnect record and
+the appended SSE record from provider-owned storage. Provider callback events
+are wake hints only: they are never independently classified or rendered as a
+second transcript. One native event may yield several ordered fragments—for
 example Claude reasoning, assistant text, and tool use—without duplicating the
 raw provider event.
 
@@ -133,9 +134,16 @@ GET Harness Team/Member projection
   -> TeamRun/MemberRun/AgentSession/Work/WorkDelivery/Messages/RuntimeCommands/outcome
 
 GET AgentWorkspace from the same-machine loopback local Operator
-  -> provider adapter probe
-  -> provider-native paged read (default 80, maximum 200 events per response)
-  -> SessionEventProjection grouped by provider turn/episode
+  -> browser asks the selected Team's exact NodeDaemon service
+  -> NodeDaemon validates viewer + Team/Session/daemon generations
+  -> provider-native snapshot page (default 80, maximum 200 events)
+  -> PersistedSessionProjection with source generation + watermark
+
+SSE subscribe
+  -> subscribe before reading
+  -> emit persisted snapshot + source generation + watermark
+  -> emit only persisted rows after the watermark
+  -> rotation/replacement emits source reset, then a fresh snapshot
 
 UI merge
   -> one chronological presentation
@@ -148,11 +156,15 @@ joined read model, not a transcript database: it is rebuilt from Harness
 coordination rows plus bounded provider-native reads, and is never persisted
 as a second history.
 
-The backend performs native reads so provider locators do not become browser
-authority. `page.next_before_position` is a disposable request boundary, not a
-durable cursor: refresh/reconnect rebuilds the projection directly from
-provider storage. The browser lazily requests earlier pages and virtualizes the
-rendered list; it never changes or truncates an original event.
+Only the NodeDaemon performs native reads, so provider locators do not become
+browser, Dashboard-server, Control-Plane, or remote-gateway authority. Local
+reads use the daemon's AF_UNIX control service. Remote reads use the existing
+NodeGateway routed application envelope and the same daemon service; neither
+response exposes an absolute path. `next_before_position`, source generation,
+and watermark are disposable request boundaries, not durable cursors:
+refresh/reconnect rebuilds the projection directly from provider storage. The
+browser lazily requests earlier pages and virtualizes the rendered list; it
+never changes or truncates an original event.
 Typed `availability` and `unavailable_reason_code` distinguish an available
 empty Session from a missing, unsupported, or failed reader; prose remains
 display detail, not state.
@@ -244,11 +256,17 @@ states. UI must not invent native activity or resume from a Harness replay.
 - `MemberRun.native_session` carries the mode-aware locator and verified
   capability snapshot. New provider activity is not written to
   `member_actions.jsonl` or `team_run_events.jsonl`.
-- Local-loopback `AgentWorkspace.data.session_event_projection` resolves the
-  canonical AgentSession and its recorded NodeDaemon generation server-side, then
-  returns complete provider-native events in response-local pages. The local
-  Operator may select any locally bound Host or Member; a remote RoleView
-  credential receives coordination data but no native Session content.
+- `AgentWorkspace.data.persisted_session_projection` resolves the canonical
+  AgentSession and recorded NodeDaemon generation, then asks that daemon for
+  complete provider-native events in response-local pages. The same-machine
+  local Operator may select any locally bound Host or Member. A remote viewer
+  must be the exact Session-owning AgentMember or the exact active Host and is
+  carried through the current NodeGateway route; ordinary sibling credentials
+  receive coordination data but no native Session content.
+- During the frontend cutover, the older
+  `AgentWorkspace.data.session_event_projection` remains a frozen compatibility
+  field. It does not define the new SSE or remote-read contract and is removed
+  by the subsequent Dashboard Task.
   The legacy
   `GET /v1/member-runs/{id}/native-activity` route returns `410 Gone` because it
   cannot prove the canonical Team and AgentSession scope.
@@ -274,10 +292,11 @@ states. UI must not invent native activity or resume from a Harness replay.
    Codex provider-derived action/event writes.
 3. **Kimi and Claude readers/resume (complete):** verify installed provider storage and
    privacy first; stop NDJSON/stderr mirror writes.
-4. **Dashboard backend projection (complete for V1):** provider source,
-   availability, paged exact activity, lazy loading, and virtualization. The UI
-   binding belongs to the frontend Task; explicit resume selection remains on
-   TeamRun retry/create CLI and HTTP inputs.
+4. **NodeDaemon persisted projection (complete):** local and routed remote read,
+   bounded older pages, snapshot-first SSE, watermark append, and typed source
+   reset. Dashboard consumption and compatibility-overlay deletion belong to
+   the frontend cutover Task; explicit resume selection remains on TeamRun
+   retry/create CLI and HTTP inputs.
 5. **Removal (complete):** delete obsolete provider-event ledgers, transcript/stdout/JSONL
    fields, reducers, and old local mirrored data; no compatibility reader.
 6. **Acceptance (DEV-20 implementation evidence):** deterministic provider
@@ -305,4 +324,5 @@ states. UI must not invent native activity or resume from a Harness replay.
 - Adapter version drift covers native storage and resume format.
 - Provider-native session loss produces an honest unavailable state.
 - Harness ledgers contain no mirrored transcript/tool/command/file activity.
-- Thinking is absent from persistence, caches, export, and evidence.
+- Thinking is absent from Harness persistence, caches, export, and evidence;
+  provider-persisted thinking remains readable from the native Session.

@@ -239,6 +239,39 @@ impl MultiTeamDaemon {
                     &serde_json::json!({"ok": true, "registered": true}),
                 )?;
             }
+            "read_native_session" => {
+                let request: crate::provider_event_api::PersistedSessionReadRequest =
+                    match serde_json::from_value(cmd["request"].clone()) {
+                        Ok(value) => value,
+                        Err(error) => {
+                            Self::write_control_response(
+                                stream,
+                                &serde_json::json!({
+                                    "ok": false,
+                                    "error": format!("INVALID_NATIVE_SESSION_READ: {error}")
+                                }),
+                            )?;
+                            return Ok(());
+                        }
+                    };
+                match crate::provider_event_api::read_persisted_session_for_daemon(
+                    &self.firm_home,
+                    &self.node_id,
+                    &self.daemon_id,
+                    request.node_daemon_generation,
+                    Some(&self.instance_id),
+                    &request,
+                ) {
+                    Ok(response) => Self::write_control_response(
+                        stream,
+                        &serde_json::json!({"ok": true, "response": response}),
+                    )?,
+                    Err(error) => Self::write_control_response(
+                        stream,
+                        &serde_json::json!({"ok": false, "error": error.to_string()}),
+                    )?,
+                }
+            }
             "runtime" => {
                 let envelope: harness_core::agentfirm_api::ControlCommandEnvelope =
                     match serde_json::from_value(cmd["envelope"].clone()) {
