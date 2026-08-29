@@ -77,6 +77,9 @@ const olderMemberView=envelope("agent_workspace",{...memberView.data,persisted_s
 const otherProjectSourceGeneration="source-generation:fixture-b";
 const otherProjectObservation={...observation("native-other-project","assistant_response",{type:"assistant_response",text:"Exact native event from the second Project only."},"2026-08-12T11:00:00Z",20),source_generation:otherProjectSourceGeneration,native_source_ref:"provider-source:fixture-b",record_id:`native-row:sha256:${createHash("sha256").update(`${otherProjectSourceGeneration}\0row-locator:native-other-project\0`).digest("hex")}`};
 const otherProjectMemberView=envelope("agent_workspace",{...memberView.data,persisted_session_projection:{...memberProjection,native_source_ref:"provider-source:fixture-b",source_generation:otherProjectSourceGeneration,records:[otherProjectObservation],has_more:false,next_before:null,snapshot_watermark:{kind:"complete_row_end_offset",value:20}}},actions);
+const resetSourceGeneration="source-generation:fixture-reset";
+const resetObservation={...observation("native-after-reset","assistant_response",{type:"assistant_response",text:"Authoritative native row after provider source reset."},null,30),source_generation:resetSourceGeneration,native_source_ref:"provider-source:fixture-reset",record_id:`native-row:sha256:${createHash("sha256").update(`${resetSourceGeneration}\0row-locator:native-after-reset\0`).digest("hex")}`,observed_at:"2026-08-12T12:00:00Z"};
+const resetProjection={...memberProjection,native_source_ref:"provider-source:fixture-reset",source_generation:resetSourceGeneration,records:[resetObservation],has_more:false,next_before:null,snapshot_watermark:{kind:"complete_row_end_offset",value:30},source_reset:true};
 const otherAgentView=envelope("agent_workspace",{...otherProjectMemberView.data,selected_agent:{...otherProjectMemberView.data.selected_agent,agent_member_ref:analyst.agent_member_ref,display_name:analyst.display_name,role:analyst.role,current_member_run_ref:analyst.current_member_run_ref,provider:analyst.provider}},actions);
 const hostMessages=messages;
 const hostObservations=[observation("host-native-0","assistant_response",{type:"assistant_response",text:"I reviewed the current decision surface and sent the next bounded assignment."},"2026-08-12T08:05:00Z",1),observation("host-native-1","tool_call_completed",{type:"tool",tool_name:"Read Lead inbox",call_id:"host-call-1",display_detail:"Provider-native Host observation from the selected Team Session."},"2026-08-12T08:08:00Z",2)].map(item=>({...item,agent_member_id:"agent-host",agent_session_id:"host-thread-current",agent_session_generation:1,provider_turn_id:"turn-host-1"}));
@@ -103,14 +106,18 @@ try{
   let firstMemberWorkspaceRequestAt=null;
   let delayedOlderPageGate=null;
   let failDelayedOlderPage=false;
+  let delayedSourceResetGate=null;
   const makePage=async token=>{const next=await browser.newPage({viewport:{width:1440,height:1000}});next.on("console",message=>{if(message.type()==="error")consoleErrors.push(message.text());});next.on("pageerror",error=>consoleErrors.push(error.message));next.on("response",response=>{if(response.status()>=400)httpFailures.push(`${response.status()} ${response.url()}`);});await next.addInitScript(({token,fixture})=>{window.__AGENTFIRM_BOOTSTRAP__={capabilityToken:token};class QuietEventSource{timer;started=false;addEventListener(type,listener){if(!fixture||type!=="snapshot"||this.started)return;this.started=true;let revision=0;this.timer=setInterval(()=>{revision+=1;listener({data:JSON.stringify({generated_at:`2026-08-12T08:10:${String(revision).padStart(2,"0")}Z`,execution_space_id:"fixture-space"})});if(revision===80){clearInterval(this.timer);this.timer=undefined;}},15);}close(){if(this.timer)clearInterval(this.timer);}}Object.defineProperty(window,"EventSource",{value:QuietEventSource,configurable:true});},{token,fixture:!liveConfig});if(!liveConfig)await next.route("**/v1/**",async route=>{
     const request=route.request(),url=new URL(request.url());
     const token=request.headers()["x-agentfirm-token"];
     if(request.method()==="POST")return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({ok:true})});
     if(url.pathname==="/v1/events"){
       const selectedAgent=url.searchParams.get("agent_id");
-      const projection=url.searchParams.get("project")==="fixture-project-b"||selectedAgent==="agent-noah"?otherProjectMemberView.data.persisted_session_projection:selectedAgent==="agent-host"||token==="fixture-host-token"?hostView.data.persisted_session_projection:memberView.data.persisted_session_projection;
-      return route.fulfill({status:200,contentType:"text/event-stream",body:`event: native_session_snapshot\ndata: ${JSON.stringify(projection)}\n\n`});
+      const sourceResetGate=delayedSourceResetGate;
+      if(sourceResetGate&&selectedAgent==="agent-mira")await sourceResetGate;
+      const sourceReset=Boolean(sourceResetGate&&selectedAgent==="agent-mira");
+      const projection=sourceReset?resetProjection:url.searchParams.get("project")==="fixture-project-b"||selectedAgent==="agent-noah"?otherProjectMemberView.data.persisted_session_projection:selectedAgent==="agent-host"||token==="fixture-host-token"?hostView.data.persisted_session_projection:memberView.data.persisted_session_projection;
+      return route.fulfill({status:200,contentType:"text/event-stream",body:`event: ${sourceReset?"native_session_source_reset":"native_session_snapshot"}\ndata: ${JSON.stringify(projection)}\n\n`});
     }
     let body;
     if(url.pathname==="/v1/meta")body={schema_version:"agentfirm.role_views.v1",protocol_version:"agentfirm-member-trust/1",action_manifest_version:"agentfirm.role_actions.v1",capability_auth:"x-agentfirm-token",build_sha:"b362bc1ba1ebbeff26eb9a4a08bf3c6982ec764d"};
@@ -334,6 +341,8 @@ try{
 
     const localOperatorPage=await makePage(null);
     await open(localOperatorPage,`${base}/?surface=team&team=${routeState.teamRun}&conversation=${routeState.member}&memberRun=${routeState.memberRun}&space=${routeState.space}&project=${routeState.project}`);
+    await localOperatorPage.getByText("Native records without provider timestamps remain in provider source order; their position relative to Harness Messages is not a recorded chronology.",{exact:true}).waitFor();
+    assert.deepEqual((await localOperatorPage.locator("[data-session-row-kind]").evaluateAll(nodes=>nodes.map(node=>node.getAttribute("data-session-row-kind")))).slice(0,4),["native","native","native","native"],"per-read observed_at fabricated a cross-plane chronology ahead of provider source order");
     await localOperatorPage.getByRole("button",{name:"Load earlier native Session events",exact:true}).click();
     await localOperatorPage.getByText("Earlier exact provider-native event loaded from the same native Session.",{exact:true}).waitFor();
     assert.deepEqual(await localOperatorPage.locator("[data-native-ordering-position]").evaluateAll(nodes=>nodes.map(node=>Number(node.getAttribute("data-native-ordering-position")))),[1,10,11,12,13],"provider-native rows without occurred_at were reordered by per-read observed_at after loading an earlier page");
@@ -364,6 +373,23 @@ try{
     await paginationRacePage.waitForTimeout(200);
     assert.deepEqual(await paginationRacePage.locator("[data-native-ordering-position]").evaluateAll(nodes=>nodes.map(node=>Number(node.getAttribute("data-native-ordering-position")))),[20],"late pagination response crossed the exact request identity fence");
     await paginationRacePage.close();
+
+    let releaseSourceReset;
+    delayedOlderPageGate=new Promise(resolve=>{releaseOlderPage=resolve;});
+    delayedSourceResetGate=new Promise(resolve=>{releaseSourceReset=resolve;});
+    const sourceResetRacePage=await makePage(null);
+    await open(sourceResetRacePage,`${base}/?surface=team&team=${routeState.teamRun}&conversation=${routeState.member}&memberRun=${routeState.memberRun}&space=${routeState.space}&project=fixture-project`);
+    await sourceResetRacePage.getByRole("button",{name:"Load earlier native Session events",exact:true}).click();
+    await sourceResetRacePage.getByRole("button",{name:"Loading provider-native events…",exact:true}).waitFor();
+    releaseSourceReset();
+    await sourceResetRacePage.locator('[data-native-ordering-position="30"]').waitFor();
+    delayedSourceResetGate=null;
+    releaseOlderPage();
+    delayedOlderPageGate=null;
+    await sourceResetRacePage.waitForTimeout(200);
+    assert.deepEqual(await sourceResetRacePage.locator("[data-native-ordering-position]").evaluateAll(nodes=>nodes.map(node=>Number(node.getAttribute("data-native-ordering-position")))),[30],"late older-page response replaced the authoritative reset source generation");
+    assert.match(await sourceResetRacePage.getByTestId("agent-workspace").innerText(),/Authoritative native row after provider source reset\./,"source-reset head did not remain authoritative after stale pagination settled");
+    await sourceResetRacePage.close();
 
     failDelayedOlderPage=true;
     delayedOlderPageGate=new Promise(resolve=>{releaseOlderPage=resolve;});

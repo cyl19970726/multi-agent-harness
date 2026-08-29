@@ -257,6 +257,7 @@ function SessionCanvas({data,projection,connectionState,selectedMessageId,onSele
       return {...row,continuation};
     });
   },[data.messages,projection]);
+  const hasNativeRowsWithoutProviderTime=rows.some(row=>row.kind==="native"&&!row.record.occurred_at);
   const virtualizer=useVirtualizer({count:rows.length,getScrollElement:()=>viewportRef.current,estimateSize:index=>rows[index]?.kind==="native"?240:150,overscan:10,scrollMargin:chronologyRef.current?.offsetTop??0});
   const currentWork=data.works.find(work=>work.work_id===data.context_summary.current_work_id);
   return <ScrollArea.Root className="h-full overflow-hidden"><ScrollArea.Viewport ref={viewportRef} className="size-full min-w-0 [&>div]:!block [&>div]:!min-w-0"><div className="agent-session-stream w-full px-5 pb-8 sm:px-7">
@@ -265,9 +266,10 @@ function SessionCanvas({data,projection,connectionState,selectedMessageId,onSele
       <strong>{currentWork?.title??"Harness Messages and provider-native Session activity"}</strong>
       <span>{currentWork?`${humanizeToken(currentWork.phase)} Work · `:""}{data.messages.length} messages · {projection?.available?projection.records.reduce((count,record)=>count+record.fragments.length,0):0} native fragments{connectionState==="disconnected"?" · persisted stream disconnected":""}{projection?.available&&projection.incomplete_tail?" · provider file has an incomplete tail":""}{projection?.available&&projection.source_reset?" · source generation reset":""}</span>
     </div>
+    {hasNativeRowsWithoutProviderTime&&<p className="mb-3 text-[10px] leading-4 text-muted-foreground">Native records without provider timestamps remain in provider source order; their position relative to Harness Messages is not a recorded chronology.</p>}
     {projection?.available&&projection.has_more&&<div className="flex justify-center py-3"><Button type="button" variant="outline" size="sm" disabled={loadingOlder} onClick={onLoadOlder}>{loadingOlder?"Loading provider-native events…":"Load earlier native Session events"}</Button></div>}
     {rows.length
-      ? <div ref={chronologyRef} className="aw-session-chronology relative" style={{height:virtualizer.getTotalSize()}} aria-label="Harness Messages and provider-native events ordered by recorded time">{virtualizer.getVirtualItems().map(item=>{const row=rows[item.index]!;return <div key={row.kind==="message"?`message:${row.message.message_id}`:`native:${row.fragment.fragment_id}`} data-index={item.index} ref={virtualizer.measureElement} className="absolute left-0 top-0 w-full" style={{transform:`translateY(${item.start-virtualizer.options.scrollMargin}px)`}}>{(()=>{
+      ? <div ref={chronologyRef} className="aw-session-chronology relative" style={{height:virtualizer.getTotalSize()}} aria-label="Harness Messages and persisted provider-native records in their honest partial order">{virtualizer.getVirtualItems().map(item=>{const row=rows[item.index]!;return <div key={row.kind==="message"?`message:${row.message.message_id}`:`native:${row.fragment.fragment_id}`} data-index={item.index} data-session-row-kind={row.kind} ref={virtualizer.measureElement} className="absolute left-0 top-0 w-full" style={{transform:`translateY(${item.start-virtualizer.options.scrollMargin}px)`}}>{(()=>{
         if(row.kind==="message"){
           return <AuthoredTurn data={data} message={row.message} selectedAgentId={data.selected_agent.agent_member_ref.id} selected={selectedMessageId===row.message.message_id} continuation={row.continuation} onSelect={()=>onSelect({kind:"message",message:row.message})}/>;
         }
@@ -522,22 +524,24 @@ type SessionNativeRow={kind:"native";at:string;record:ProviderNativeEventRecord;
 function mergeSessionRows(messages:SessionMessageRow[],nativeEvents:SessionNativeRow[]):Array<SessionMessageRow|SessionNativeRow>{
   const rows:Array<SessionMessageRow|SessionNativeRow>=[];
   let messageIndex=0;
-  let nativeIndex=0;
-  while(messageIndex<messages.length||nativeIndex<nativeEvents.length){
-    const message=messages[messageIndex];
-    const nativeEvent=nativeEvents[nativeIndex];
-    if(!nativeEvent){rows.push(message!);messageIndex+=1;continue;}
-    if(!message){rows.push(nativeEvent);nativeIndex+=1;continue;}
-    if(timestampKey(message.at)<=timestampKey(nativeEvent.at)){rows.push(message);messageIndex+=1;}
-    else{rows.push(nativeEvent);nativeIndex+=1;}
+  for(const nativeEvent of nativeEvents){
+    const providerTime=recordTime(nativeEvent.record);
+    if(providerTime){
+      while(messageIndex<messages.length&&timestampKey(messages[messageIndex]!.at)<=timestampKey(providerTime)){
+        rows.push(messages[messageIndex]!);
+        messageIndex+=1;
+      }
+    }
+    rows.push(nativeEvent);
   }
+  while(messageIndex<messages.length){rows.push(messages[messageIndex]!);messageIndex+=1;}
   return rows;
 }
 function humanizeToken(value:string){return value.split(/[_-]+/).filter(Boolean).map((part,index)=>index===0?`${part.charAt(0).toUpperCase()}${part.slice(1)}`:part).join(" ")}
 function rosterStateTone(state:string){if(/running|active/.test(state))return "text-status-good";if(/wait|pending|review/.test(state))return "text-status-warn";if(/block/.test(state))return "text-status-bad";return "text-muted-foreground";}
 function rosterStateLabel(agent:AgentWorkspaceRosterItem){const state=agent.runtime_state??agent.capacity??"unknown";if(agent.is_host&&agent.host_session_mode==="external_interactive"&&/running|active/.test(state))return{word:"External · unmanaged",tone:"text-status-warn"};return{word:humanizeToken(state),tone:rosterStateTone(state)};}
 function timestampKey(value:string|null|undefined){if(!value)return 0;if(value.startsWith("unix-ms:")){const parsed=Number(value.slice(8));return Number.isFinite(parsed)?parsed:0;}const parsed=Date.parse(value);return Number.isFinite(parsed)?parsed:0}
-function recordTime(record:ProviderNativeEventRecord){return record.occurred_at??record.observed_at}
+function recordTime(record:ProviderNativeEventRecord){return record.occurred_at}
 function compareOrderingKey(left:ProviderNativeEventRecord["ordering_key"],right:ProviderNativeEventRecord["ordering_key"]){return left.kind===right.kind?left.value-right.value:left.kind.localeCompare(right.kind)}
 function fragmentPresentationKind(fragment:ProviderEventFragment){if(fragment.semantic_kind==="reasoning")return "thinking";if(fragment.semantic_kind.startsWith("tool_call_"))return "tool";if(fragment.semantic_kind==="assistant_response")return "message";if(fragment.semantic_kind==="artifact_created")return "artifact";return "runtime"}
 function fragmentStatus(fragment:ProviderEventFragment){if(fragment.semantic_kind==="tool_call_failed"||fragment.semantic_kind==="turn_failed")return "failed";if(fragment.lifecycle_phase==="terminal")return "completed";return "running"}
@@ -551,6 +555,7 @@ function normalizePersistedSessionResponse(value:unknown,sessionId:string,sessio
   return {...response,available:true,records} as AvailablePersistedSessionProjection;
 }
 function mergePersistedSessionProjection(current:PersistedSessionProjection|null,incoming:PersistedSessionProjection,mode:"head"|"older"):PersistedSessionProjection{
+  if(mode==="older"&&current&&(!current.available||!incoming.available||current.source_generation!==incoming.source_generation))return current;
   if(!current||!current.available||!incoming.available||current.source_generation!==incoming.source_generation)return incoming;
   const records=new Map(current.records.map(record=>[record.record_id,record]));
   for(const record of incoming.records)records.set(record.record_id,record);
