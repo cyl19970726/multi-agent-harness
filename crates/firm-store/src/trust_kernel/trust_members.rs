@@ -844,12 +844,7 @@ impl HarnessStore {
         expected: &ProviderRuntimeProjection,
         next: &ProviderRuntimeProjection,
     ) -> StoreResult<()> {
-        self.compare_and_advance_member_run_generation_with_host_mode(
-            expected,
-            next,
-            None,
-            "generation_advanced",
-        )
+        self.compare_and_advance_member_run_generation_with_host_mode(expected, next, None, None)
     }
 
     /// Advance one exact MemberRun generation as an explicit coordination
@@ -858,11 +853,15 @@ impl HarnessStore {
     /// the canonical `reopened` evidence consumed by Result settlement.
     pub fn compare_and_reopen_member_run_generation(
         &self,
+        reopened_by: &firm_core::TeamActorRef,
         expected: &ProviderRuntimeProjection,
         next: &ProviderRuntimeProjection,
     ) -> StoreResult<()> {
         self.compare_and_advance_member_run_generation_with_host_mode(
-            expected, next, None, "reopened",
+            expected,
+            next,
+            None,
+            Some(reopened_by),
         )
     }
 
@@ -872,6 +871,7 @@ impl HarnessStore {
     /// ordinary MemberRuns and live Host generations cannot use it.
     pub fn compare_and_transition_host_mode(
         &self,
+        reopened_by: &firm_core::TeamActorRef,
         expected_run: &firm_core::AgentTeamRun,
         next_run: &firm_core::AgentTeamRun,
         expected: &ProviderRuntimeProjection,
@@ -881,7 +881,7 @@ impl HarnessStore {
             expected,
             next,
             Some((expected_run, next_run)),
-            "reopened",
+            Some(reopened_by),
         )
     }
 
@@ -890,7 +890,7 @@ impl HarnessStore {
         expected: &ProviderRuntimeProjection,
         next: &ProviderRuntimeProjection,
         host_mode_transition: Option<(&firm_core::AgentTeamRun, &firm_core::AgentTeamRun)>,
-        transition: &'static str,
+        formal_reopen_actor: Option<&firm_core::TeamActorRef>,
     ) -> StoreResult<()> {
         self.init()?;
         let _lock = self.acquire_write_lock()?;
@@ -905,6 +905,35 @@ impl HarnessStore {
                 "ProviderRuntimeProjection {} changed concurrently; retry the generation transition",
                 expected.id
             )));
+        }
+        if let Some(reopened_by) = formal_reopen_actor {
+            self.require_exact_team_run_host_actor(reopened_by, &current.team_run_id)?;
+            let expected_closed =
+                current.coordination_is_closed() && current.status == MemberRunStatus::Stopped;
+            let next_reopened = next.coordination_is_active()
+                && if next.is_external_interactive() {
+                    next.status == MemberRunStatus::Idle
+                } else {
+                    next.status == MemberRunStatus::Queued
+                };
+            if !expected_closed || !next_reopened {
+                return Err(trust_error(
+                    TrustErrorCode::InvalidStateTransition,
+                    "formal Reopen requires exact Closed+Stopped predecessor and Active+Queued/Idle successor",
+                    "member_run",
+                    &current.id,
+                    None,
+                ));
+            }
+            if host_mode_transition.is_none() && current.native_session != next.native_session {
+                return Err(trust_error(
+                    TrustErrorCode::NativeSessionIncompatible,
+                    "formal Reopen must preserve the exact verified native Session",
+                    "member_run",
+                    &current.id,
+                    None,
+                ));
+            }
         }
         let next_team_run = if let Some((expected_run, next_run)) = host_mode_transition {
             let current_run = self.require_team_run_unlocked(&current.team_run_id)?;
@@ -1074,7 +1103,11 @@ impl HarnessStore {
             &context,
             "member_run",
             &canonical.id,
-            transition,
+            if formal_reopen_actor.is_some() {
+                "reopened"
+            } else {
+                "generation_advanced"
+            },
             payload,
             &canonical,
             Vec::new(),

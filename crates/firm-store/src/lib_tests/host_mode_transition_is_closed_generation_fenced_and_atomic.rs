@@ -3,6 +3,9 @@ use super::*;
 #[test]
 fn host_mode_transition_is_closed_generation_fenced_and_atomic() {
     let (root, store, managed_run, _, _) = work_test_fixture("host-mode-transition");
+    let host_actor = store
+        .exact_team_run_host_actor(&managed_run.id)
+        .expect("exact Host actor");
     let managed_host = store
         .member_runs()
         .expect("read MemberRuns")
@@ -31,6 +34,7 @@ fn host_mode_transition_is_closed_generation_fenced_and_atomic() {
     external_host.finished_at = None;
     store
         .compare_and_transition_host_mode(
+            &host_actor,
             &managed_run,
             &external_run,
             &closed_managed,
@@ -73,6 +77,7 @@ fn host_mode_transition_is_closed_generation_fenced_and_atomic() {
     managed_again_host.finished_at = None;
     store
         .compare_and_transition_host_mode(
+            &host_actor,
             &external_run,
             &managed_again_run,
             &closed_external,
@@ -91,6 +96,7 @@ fn host_mode_transition_is_closed_generation_fenced_and_atomic() {
     );
     assert!(store
         .compare_and_transition_host_mode(
+            &host_actor,
             &external_run,
             &managed_again_run,
             &closed_external,
