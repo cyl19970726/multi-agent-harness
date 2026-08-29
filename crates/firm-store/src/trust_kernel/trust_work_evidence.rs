@@ -1,6 +1,35 @@
 use super::*;
 
 impl HarnessStore {
+    fn result_submission_released_binding_unlocked(
+        &self,
+        execution_space_id: &str,
+        work: &Work,
+        binding: &WorkExecutionBinding,
+        ended_at: &str,
+    ) -> StoreResult<Option<WorkExecutionBinding>> {
+        let releasable = binding.status == WorkExecutionBindingStatus::Active
+            || binding.status == WorkExecutionBindingStatus::Released;
+        if binding.work_id != work.id || binding.work_revision > work.version || !releasable {
+            return Err(trust_error(
+                TrustErrorCode::WorkExecutionBindingActive,
+                "Result submission requires the exact active or formally released predecessor WorkExecutionBinding",
+                "work_execution_binding",
+                &binding.id,
+                Some(binding.version),
+            ));
+        }
+        self.require_provider_received_work_delivery_unlocked(execution_space_id, binding)?;
+        if binding.status == WorkExecutionBindingStatus::Released {
+            return Ok(None);
+        }
+        let mut released = binding.clone();
+        released.status = WorkExecutionBindingStatus::Released;
+        released.version += 1;
+        released.ended_at = Some(ended_at.to_string());
+        Ok(Some(released))
+    }
+
     pub fn create_trust_work_report(
         &self,
         context: &MutationContext,
@@ -280,7 +309,9 @@ impl HarnessStore {
                 updated_at: report.created_at.clone(),
             })?);
             side_records.push(serde_json::to_value(submitted_work)?);
-            side_records.push(serde_json::to_value(released_binding)?);
+            if let Some(released_binding) = released_binding {
+                side_records.push(serde_json::to_value(released_binding)?);
+            }
         }
         self.commit_trust_projection_unlocked(
             context,

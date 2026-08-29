@@ -1430,33 +1430,6 @@ impl HarnessStore {
         )
     }
 
-    pub(super) fn result_submission_released_binding_unlocked(
-        &self,
-        execution_space_id: &str,
-        work: &Work,
-        binding: &WorkExecutionBinding,
-        ended_at: &str,
-    ) -> StoreResult<WorkExecutionBinding> {
-        if binding.status != WorkExecutionBindingStatus::Active
-            || binding.work_id != work.id
-            || binding.work_revision > work.version
-        {
-            return Err(trust_error(
-                TrustErrorCode::WorkExecutionBindingActive,
-                "Result submission requires the exact active WorkExecutionBinding",
-                "work_execution_binding",
-                &binding.id,
-                Some(binding.version),
-            ));
-        }
-        self.require_provider_received_work_delivery_unlocked(execution_space_id, binding)?;
-        let mut released = binding.clone();
-        released.status = WorkExecutionBindingStatus::Released;
-        released.version += 1;
-        released.ended_at = Some(ended_at.to_string());
-        Ok(released)
-    }
-
     pub(crate) fn require_provider_received_work_delivery_unlocked(
         &self,
         execution_space_id: &str,
