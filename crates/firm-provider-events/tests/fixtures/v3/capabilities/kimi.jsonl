@@ -1,0 +1,5 @@
+{"type":"context.append_loop_event","event":{"type":"tool.call","turnId":"kimi-failed-turn","uuid":"failed-call","toolCallId":"kimi-failed-call","name":"Bash"}}
+{"type":"context.append_loop_event","event":{"type":"tool.result","turnId":"kimi-failed-turn","uuid":"failed-result","toolCallId":"kimi-failed-call","status":"failed"}}
+{"type":"context.append_loop_event","event":{"type":"artifact.created","turnId":"kimi-artifact-turn","uuid":"artifact-1","name":"report.json"}}
+{"type":"context.append_loop_event","event":{"type":"step.end","turnId":"kimi-failed-turn","uuid":"failed-end","finishReason":"failed"}}
+{"type":"context.append_loop_event","event":{"type":"step.end","turnId":"kimi-cancelled-turn","uuid":"cancelled-end","finishReason":"cancelled"}}

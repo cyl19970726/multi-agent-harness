@@ -1,0 +1,4 @@
+{"type":"tool/call","seq":20,"time":20,"data":{"turn":2,"step":1,"callId":"dsh-failed-call","name":"bash"}}
+{"type":"tool/result","seq":21,"time":21,"data":{"turn":2,"message":{"source":{"callId":"dsh-failed-call"}},"status":"failed"}}
+{"type":"turn/end","seq":22,"time":22,"data":{"turn":2,"reason":{"kind":"failed"}}}
+{"type":"turn/end","seq":23,"time":23,"data":{"turn":3,"reason":{"kind":"cancelled"}}}
