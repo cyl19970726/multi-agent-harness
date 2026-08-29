@@ -27,6 +27,11 @@ coordination projections. Text availability is orthogonal to completeness:
 rows, cursors, fragments, and fingerprints remain response-local and are never
 written to a Harness Store.
 
+The checked-in JSON Schemas and Rust validators are one wire contract: shared
+positive and negative fixtures must receive the same verdict from Ajv and
+Rust. Optional provider fields and unavailable authored text may be absent or
+null; non-text semantic fragments always declare content `available`.
+
 The source-scoped persisted manifest schema separately declares source family,
 format fence, source-generation and locator support, pagination, tail mode,
 local/remote reachability, and semantic kind/phase/content availability. DEV-134

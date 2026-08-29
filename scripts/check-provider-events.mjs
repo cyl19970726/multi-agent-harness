@@ -19,6 +19,8 @@ const ajv = new Ajv2020({ allErrors: true, strict: false });
 for (const schema of [recordSchema, persistedRecordSchema, persistedPageSchema, persistedAdapterSchema, adapterSchema, sessionSchema, teamSchema, liveSchema, liveEventSchema]) ajv.addSchema(schema);
 const validateRecord = ajv.getSchema(recordSchema.$id);
 const validatePersistedRecord = ajv.getSchema(persistedRecordSchema.$id);
+const validatePersistedPage = ajv.getSchema(persistedPageSchema.$id);
+const validatePersistedAdapter = ajv.getSchema(persistedAdapterSchema.$id);
 const validateAdapter = ajv.getSchema(adapterSchema.$id);
 const failures = [];
 
@@ -33,14 +35,29 @@ for (const file of readdirSync(join(root, "fixtures/invalid")).sort()) {
   if (validateRecord(data)) failures.push(`${file}: expected invalid`);
 }
 for (const file of readdirSync(join(root, "fixtures/v3/valid")).sort()) {
+  if (!file.endsWith(".json")) continue;
   const data = readJson(join(root, "fixtures/v3/valid", file));
   if (!validatePersistedRecord(data)) {
     failures.push(`${file}: expected valid v3 persisted record: ${ajv.errorsText(validatePersistedRecord.errors)}`);
   }
 }
 for (const file of readdirSync(join(root, "fixtures/v3/invalid")).sort()) {
+  if (!file.endsWith(".json")) continue;
   const data = readJson(join(root, "fixtures/v3/invalid", file));
   if (validatePersistedRecord(data)) failures.push(`${file}: expected invalid v3 persisted record`);
+}
+for (const [kind, validator] of [["page", validatePersistedPage], ["adapter", validatePersistedAdapter]]) {
+  for (const validity of ["valid", "invalid"]) {
+    const directory = join(root, `fixtures/v3/${kind}/${validity}`);
+    for (const file of readdirSync(directory).sort()) {
+      const data = readJson(join(directory, file));
+      const accepted = validator(data);
+      if (validity === "valid" && !accepted) {
+        failures.push(`${kind}/${file}: expected valid: ${ajv.errorsText(validator.errors)}`);
+      }
+      if (validity === "invalid" && accepted) failures.push(`${kind}/${file}: expected invalid`);
+    }
+  }
 }
 for (const adapter of adapters) {
   if (!validateAdapter(adapter)) {

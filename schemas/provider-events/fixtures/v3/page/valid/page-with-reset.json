@@ -1,0 +1,10 @@
+{
+  "reader_authority":{"node_id":"node-1","node_daemon_id":"daemon-1","node_daemon_generation":2,"agent_session_id":"session-1","agent_session_generation":7},
+  "source_generation":"source-generation:codex:rollout:file-2",
+  "records":[],
+  "snapshot_watermark":{"kind":"complete_row_end_offset","value":512},
+  "has_more":true,
+  "next_cursor":{"source_generation":"source-generation:codex:rollout:file-2","before":{"kind":"complete_row_end_offset","value":512}},
+  "incomplete_tail":true,
+  "source_reset":{"previous_source_generation":"source-generation:codex:rollout:file-1","source_generation":"source-generation:codex:rollout:file-2","reason":"rotated"}
+}

@@ -372,6 +372,7 @@ impl PersistedAdapterManifest {
                     .collect::<BTreeSet<_>>()
                     .len()
                     != capability.content_availability.len()
+                || !capability_content_availability_matches(capability)
         }) {
             return Err(PersistedRecordValidationError::InvalidManifest);
         }
@@ -386,7 +387,7 @@ impl PersistedSessionPage {
             || self.reader_authority.node_daemon_generation == 0
             || self.reader_authority.agent_session_id.is_empty()
             || self.reader_authority.agent_session_generation == 0
-            || !self.source_generation.starts_with("source-generation:")
+            || !opaque_locator(&self.source_generation, "source-generation:")
         {
             return Err(PersistedRecordValidationError::InvalidReaderAuthority);
         }
@@ -423,6 +424,11 @@ impl PersistedSessionPage {
             })
             || self.source_reset.as_ref().is_some_and(|reset| {
                 reset.source_generation != self.source_generation
+                    || !opaque_locator(&reset.source_generation, "source-generation:")
+                    || reset
+                        .previous_source_generation
+                        .as_ref()
+                        .is_some_and(|previous| !opaque_locator(previous, "source-generation:"))
                     || reset
                         .previous_source_generation
                         .as_ref()
@@ -453,42 +459,41 @@ fn opaque_locator(value: &str, prefix: &str) -> bool {
 }
 
 fn payload_matches(fragment: &PersistedEventFragment) -> bool {
-    matches!(
-        (fragment.semantic_kind, &fragment.payload),
+    match (fragment.semantic_kind, &fragment.payload) {
         (
             SessionSemanticKind::SessionMetadata,
-            PersistedFragmentPayload::SessionMetadata { .. }
-        ) | (
-            SessionSemanticKind::Reasoning,
-            PersistedFragmentPayload::Reasoning { .. }
-        ) | (
-            SessionSemanticKind::AssistantResponse,
-            PersistedFragmentPayload::AssistantResponse { .. }
-        ) | (
-            SessionSemanticKind::ToolCallRequested
-                | SessionSemanticKind::ToolCallStarted
-                | SessionSemanticKind::ToolCallCompleted
-                | SessionSemanticKind::ToolCallFailed,
-            PersistedFragmentPayload::Tool { .. }
-        ) | (
-            SessionSemanticKind::ArtifactCreated,
-            PersistedFragmentPayload::Artifact { .. }
-        ) | (
-            SessionSemanticKind::UsageReported,
-            PersistedFragmentPayload::Usage { .. }
-        ) | (
-            SessionSemanticKind::TurnCompleted
-                | SessionSemanticKind::TurnFailed
-                | SessionSemanticKind::TurnCancelled,
-            PersistedFragmentPayload::Turn { .. }
-        ) | (
-            SessionSemanticKind::MalformedOrIncomplete,
-            PersistedFragmentPayload::Malformed { .. }
-        ) | (
-            SessionSemanticKind::UnclassifiedNative,
-            PersistedFragmentPayload::Native { .. }
+            PersistedFragmentPayload::SessionMetadata { .. },
         )
-    )
+        | (SessionSemanticKind::Reasoning, PersistedFragmentPayload::Reasoning { .. })
+        | (
+            SessionSemanticKind::AssistantResponse,
+            PersistedFragmentPayload::AssistantResponse { .. },
+        ) => true,
+        (
+            SessionSemanticKind::ToolCallRequested
+            | SessionSemanticKind::ToolCallStarted
+            | SessionSemanticKind::ToolCallCompleted
+            | SessionSemanticKind::ToolCallFailed,
+            PersistedFragmentPayload::Tool { tool_name, .. },
+        ) => !tool_name.is_empty(),
+        (
+            SessionSemanticKind::ArtifactCreated,
+            PersistedFragmentPayload::Artifact { display_name, .. },
+        ) => !display_name.is_empty(),
+        (SessionSemanticKind::UsageReported, PersistedFragmentPayload::Usage { .. }) => true,
+        (
+            SessionSemanticKind::TurnCompleted
+            | SessionSemanticKind::TurnFailed
+            | SessionSemanticKind::TurnCancelled,
+            PersistedFragmentPayload::Turn { outcome, .. },
+        ) => !outcome.is_empty(),
+        (
+            SessionSemanticKind::MalformedOrIncomplete,
+            PersistedFragmentPayload::Malformed { reason_code },
+        ) => !reason_code.is_empty(),
+        (SessionSemanticKind::UnclassifiedNative, PersistedFragmentPayload::Native { .. }) => true,
+        _ => false,
+    }
 }
 
 fn content_availability_matches(fragment: &PersistedEventFragment) -> bool {
@@ -502,6 +507,13 @@ fn content_availability_matches(fragment: &PersistedEventFragment) -> bool {
         (ContentAvailability::Unavailable, Some(None)) => true,
         (ContentAvailability::Available, None) => true,
         _ => false,
+    }
+}
+
+fn capability_content_availability_matches(capability: &PersistedSemanticCapability) -> bool {
+    match capability.semantic_kind {
+        SessionSemanticKind::Reasoning | SessionSemanticKind::AssistantResponse => true,
+        _ => capability.content_availability == [ContentAvailability::Available],
     }
 }
 

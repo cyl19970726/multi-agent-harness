@@ -1,0 +1,12 @@
+{
+  "provider":"codex",
+  "adapter_version":"agentfirm.persisted_provider_event_adapter.v3",
+  "persisted_source_families":["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],
+  "format_version_fences":["rollout_jsonl_v1"],
+  "source_generation":true,
+  "stable_row_locator":true,
+  "pagination":true,
+  "tail_mode":"incremental",
+  "reader_reachability":["local"],
+  "semantic_capabilities":[{"semantic_kind":"reasoning","phases":["progress"],"content_availability":["available"]}]
+}

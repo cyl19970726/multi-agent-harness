@@ -188,13 +188,73 @@ fn v3_cursor_and_source_reset_are_generation_scoped() {
     );
 }
 
+fn v3_fixture_files(relative: &str) -> Vec<PathBuf> {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../schemas/provider-events/fixtures/v3")
+        .join(relative);
+    let mut files = fs::read_dir(root)
+        .expect("v3 fixture directory")
+        .map(|entry| entry.expect("v3 fixture entry").path())
+        .filter(|path| {
+            path.extension()
+                .is_some_and(|extension| extension == "json")
+        })
+        .collect::<Vec<_>>();
+    files.sort();
+    files
+}
+
 #[test]
-fn checked_in_v3_fixture_matches_the_closed_rust_contract() {
-    let record: ProviderNativeEventRecord = serde_json::from_str(include_str!(
-        "../../../schemas/provider-events/fixtures/v3/valid/codex-reasoning-unavailable.json"
-    ))
-    .expect("v3 fixture JSON");
-    record.validate().expect("v3 fixture contract");
+fn checked_in_v3_fixtures_match_the_closed_rust_contract() {
+    for path in v3_fixture_files("valid") {
+        let record: ProviderNativeEventRecord =
+            serde_json::from_slice(&fs::read(&path).expect("read valid record fixture"))
+                .expect("valid record fixture wire");
+        record.validate().expect("valid record fixture contract");
+    }
+    for path in v3_fixture_files("invalid") {
+        if let Ok(record) = serde_json::from_slice::<ProviderNativeEventRecord>(
+            &fs::read(&path).expect("read invalid record fixture"),
+        ) {
+            assert!(
+                record.validate().is_err(),
+                "{} was accepted",
+                path.display()
+            );
+        }
+    }
+    for path in v3_fixture_files("page/valid") {
+        let page: PersistedSessionPage =
+            serde_json::from_slice(&fs::read(&path).expect("read valid page fixture"))
+                .expect("valid page fixture wire");
+        page.validate().expect("valid page fixture contract");
+    }
+    for path in v3_fixture_files("page/invalid") {
+        if let Ok(page) = serde_json::from_slice::<PersistedSessionPage>(
+            &fs::read(&path).expect("read invalid page fixture"),
+        ) {
+            assert!(page.validate().is_err(), "{} was accepted", path.display());
+        }
+    }
+    for path in v3_fixture_files("adapter/valid") {
+        let manifest: PersistedAdapterManifest =
+            serde_json::from_slice(&fs::read(&path).expect("read valid manifest fixture"))
+                .expect("valid manifest fixture wire");
+        manifest
+            .validate()
+            .expect("valid manifest fixture contract");
+    }
+    for path in v3_fixture_files("adapter/invalid") {
+        if let Ok(manifest) = serde_json::from_slice::<PersistedAdapterManifest>(
+            &fs::read(&path).expect("read invalid manifest fixture"),
+        ) {
+            assert!(
+                manifest.validate().is_err(),
+                "{} was accepted",
+                path.display()
+            );
+        }
+    }
 }
 
 #[test]

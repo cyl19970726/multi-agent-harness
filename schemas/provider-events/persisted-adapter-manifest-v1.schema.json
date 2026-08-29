@@ -8,13 +8,29 @@
   "properties":{
     "provider":{"enum":["codex","claude","kimi","pi","deepseek_harness"]},
     "adapter_version":{"const":"agentfirm.persisted_provider_event_adapter.v3"},
-    "persisted_source_families":{"type":"array","minItems":1,"uniqueItems":true,"items":{"type":"string","minLength":1}},
-    "format_version_fences":{"type":"array","minItems":1,"uniqueItems":true,"items":{"type":"string","minLength":1}},
+    "persisted_source_families":{"type":"array","minItems":1,"uniqueItems":true,"items":{"type":"string","minLength":1,"maxLength":256}},
+    "format_version_fences":{"type":"array","minItems":1,"uniqueItems":true,"items":{"type":"string","minLength":1,"maxLength":256}},
     "source_generation":{"const":true},
     "stable_row_locator":{"const":true},
     "pagination":{"type":"boolean"},
     "tail_mode":{"enum":["incremental","bounded_snapshot_diff","unsupported"]},
     "reader_reachability":{"type":"array","minItems":1,"uniqueItems":true,"items":{"enum":["local","remote"]}},
-    "semantic_capabilities":{"type":"array","minItems":1,"uniqueItems":true,"items":{"type":"object","additionalProperties":false,"required":["semantic_kind","phases","content_availability"],"properties":{"semantic_kind":{"enum":["session_metadata","reasoning","assistant_response","tool_call_requested","tool_call_started","tool_call_completed","tool_call_failed","artifact_created","usage_reported","turn_completed","turn_failed","turn_cancelled","malformed_or_incomplete","unclassified_native"]},"phases":{"type":"array","minItems":1,"uniqueItems":true,"items":{"enum":["requested","started","progress","terminal"]}},"content_availability":{"type":"array","minItems":1,"uniqueItems":true,"items":{"enum":["available","unavailable"]}}}}}
-  }
+    "semantic_capabilities":{"type":"array","minItems":1,"uniqueItems":true,"items":{"type":"object","additionalProperties":false,"required":["semantic_kind","phases","content_availability"],"properties":{"semantic_kind":{"enum":["session_metadata","reasoning","assistant_response","tool_call_requested","tool_call_started","tool_call_completed","tool_call_failed","artifact_created","usage_reported","turn_completed","turn_failed","turn_cancelled","malformed_or_incomplete","unclassified_native"]},"phases":{"type":"array","minItems":1,"uniqueItems":true,"items":{"enum":["requested","started","progress","terminal"]}},"content_availability":{"type":"array","minItems":1,"uniqueItems":true,"items":{"enum":["available","unavailable"]}}},"allOf":[{"if":{"properties":{"semantic_kind":{"not":{"enum":["reasoning","assistant_response"]}}},"required":["semantic_kind"]},"then":{"properties":{"content_availability":{"items":{"const":"available"}}}}}]}}
+  },
+  "allOf":[
+    {"properties":{"semantic_capabilities":{"contains":{"properties":{"semantic_kind":{"const":"session_metadata"}},"required":["semantic_kind"]},"minContains":0,"maxContains":1}}},
+    {"properties":{"semantic_capabilities":{"contains":{"properties":{"semantic_kind":{"const":"reasoning"}},"required":["semantic_kind"]},"minContains":0,"maxContains":1}}},
+    {"properties":{"semantic_capabilities":{"contains":{"properties":{"semantic_kind":{"const":"assistant_response"}},"required":["semantic_kind"]},"minContains":0,"maxContains":1}}},
+    {"properties":{"semantic_capabilities":{"contains":{"properties":{"semantic_kind":{"const":"tool_call_requested"}},"required":["semantic_kind"]},"minContains":0,"maxContains":1}}},
+    {"properties":{"semantic_capabilities":{"contains":{"properties":{"semantic_kind":{"const":"tool_call_started"}},"required":["semantic_kind"]},"minContains":0,"maxContains":1}}},
+    {"properties":{"semantic_capabilities":{"contains":{"properties":{"semantic_kind":{"const":"tool_call_completed"}},"required":["semantic_kind"]},"minContains":0,"maxContains":1}}},
+    {"properties":{"semantic_capabilities":{"contains":{"properties":{"semantic_kind":{"const":"tool_call_failed"}},"required":["semantic_kind"]},"minContains":0,"maxContains":1}}},
+    {"properties":{"semantic_capabilities":{"contains":{"properties":{"semantic_kind":{"const":"artifact_created"}},"required":["semantic_kind"]},"minContains":0,"maxContains":1}}},
+    {"properties":{"semantic_capabilities":{"contains":{"properties":{"semantic_kind":{"const":"usage_reported"}},"required":["semantic_kind"]},"minContains":0,"maxContains":1}}},
+    {"properties":{"semantic_capabilities":{"contains":{"properties":{"semantic_kind":{"const":"turn_completed"}},"required":["semantic_kind"]},"minContains":0,"maxContains":1}}},
+    {"properties":{"semantic_capabilities":{"contains":{"properties":{"semantic_kind":{"const":"turn_failed"}},"required":["semantic_kind"]},"minContains":0,"maxContains":1}}},
+    {"properties":{"semantic_capabilities":{"contains":{"properties":{"semantic_kind":{"const":"turn_cancelled"}},"required":["semantic_kind"]},"minContains":0,"maxContains":1}}},
+    {"properties":{"semantic_capabilities":{"contains":{"properties":{"semantic_kind":{"const":"malformed_or_incomplete"}},"required":["semantic_kind"]},"minContains":0,"maxContains":1}}},
+    {"properties":{"semantic_capabilities":{"contains":{"properties":{"semantic_kind":{"const":"unclassified_native"}},"required":["semantic_kind"]},"minContains":0,"maxContains":1}}}
+  ]
 }
