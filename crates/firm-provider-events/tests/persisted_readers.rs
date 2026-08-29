@@ -193,6 +193,15 @@ fn codex_persisted_item_discriminator_and_unavailable_reasoning_are_exact() {
 #[test]
 fn claude_user_tool_result_reaches_the_exact_prior_call_without_user_message_semantics() {
     let records = project(ProviderKind::Claude, corpus(ProviderKind::Claude));
+    let assistant_texts = records
+        .iter()
+        .flat_map(|record| &record.fragments)
+        .filter_map(|fragment| match &fragment.payload {
+            PersistedFragmentPayload::AssistantResponse { text } => text.as_deref(),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(assistant_texts, ["claude answer"]);
     let completed = records
         .iter()
         .flat_map(|record| &record.fragments)
@@ -233,6 +242,15 @@ fn managed_pi_manifest_and_projection_never_claim_reasoning_or_rpc_updates() {
         .iter()
         .any(|capability| capability.semantic_kind == SessionSemanticKind::Reasoning));
     let records = project(ProviderKind::Pi, corpus(ProviderKind::Pi));
+    let assistant_texts = records
+        .iter()
+        .flat_map(|record| &record.fragments)
+        .filter_map(|fragment| match &fragment.payload {
+            PersistedFragmentPayload::AssistantResponse { text } => text.as_deref(),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(assistant_texts, ["pi answer"]);
     assert!(!kinds(&records).contains(&SessionSemanticKind::Reasoning));
     assert!(kinds(&records).contains(&SessionSemanticKind::AssistantResponse));
     assert!(kinds(&records).contains(&SessionSemanticKind::ToolCallCompleted));

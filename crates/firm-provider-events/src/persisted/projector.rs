@@ -237,9 +237,9 @@ fn project_claude(raw: &Value, tools: &mut BTreeMap<String, String>) -> Vec<Frag
             },
         }],
         "assistant" => claude_content(raw.pointer("/message/content"), tools),
-        // Claude protocol role=user carries provider tool results. It is not a
-        // Harness-authored user Message.
-        "user" => claude_content(raw.pointer("/message/content"), tools),
+        // Claude protocol role=user may contain the original user prompt as
+        // well as provider tool results. Only tool_result is provider output.
+        "user" => claude_tool_results(raw.pointer("/message/content"), tools),
         "result" => {
             let mut fragments = Vec::new();
             if raw.get("usage").is_some() {
@@ -262,6 +262,25 @@ fn project_claude(raw: &Value, tools: &mut BTreeMap<String, String>) -> Vec<Frag
         }
         _ => Vec::new(),
     }
+}
+
+fn claude_tool_results(
+    content: Option<&Value>,
+    tools: &BTreeMap<String, String>,
+) -> Vec<FragmentDraft> {
+    content
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|part| string(part, "/type") == Some("tool_result"))
+        .filter_map(|part| {
+            tool_terminal(
+                tools,
+                string(part, "/tool_use_id"),
+                part.get("is_error").and_then(Value::as_bool) == Some(true),
+            )
+        })
+        .collect()
 }
 
 fn claude_content(
@@ -357,7 +376,12 @@ fn project_pi(raw: &Value, tools: &mut BTreeMap<String, String>) -> Vec<Fragment
             }
             fragments
         }
-        "message" => pi_content(raw.pointer("/message/content"), tools),
+        "message" if string(raw, "/message/role") == Some("tool") => {
+            pi_tool_results(raw.pointer("/message/content"), tools)
+        }
+        // User and system rows remain available in native_event but cannot be
+        // relabeled as provider-authored assistant output.
+        "message" => Vec::new(),
         "artifact" | "artifact_created" => first_text(raw, &["/name", "/displayName"])
             .map(|name| artifact(name, raw))
             .into_iter()
@@ -381,12 +405,6 @@ fn pi_content(content: Option<&Value>, tools: &mut BTreeMap<String, String>) -> 
                 first_text(part, &["/name", "/toolName"]),
                 first_text(part, &["/id", "/toolCallId"]),
             )),
-            "toolResult" | "tool_result" | "tool-result" => fragments.extend(tool_terminal(
-                tools,
-                first_text(part, &["/toolCallId", "/tool_use_id", "/id"]),
-                part.get("isError").and_then(Value::as_bool) == Some(true)
-                    || part.get("is_error").and_then(Value::as_bool) == Some(true),
-            )),
             "artifact" => {
                 if let Some(name) = first_text(part, &["/name", "/displayName"]) {
                     fragments.push(artifact(name, part));
@@ -400,6 +418,31 @@ fn pi_content(content: Option<&Value>, tools: &mut BTreeMap<String, String>) -> 
         }
     }
     fragments
+}
+
+fn pi_tool_results(
+    content: Option<&Value>,
+    tools: &BTreeMap<String, String>,
+) -> Vec<FragmentDraft> {
+    content
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|part| {
+            matches!(
+                string(part, "/type"),
+                Some("toolResult" | "tool_result" | "tool-result")
+            )
+        })
+        .filter_map(|part| {
+            tool_terminal(
+                tools,
+                first_text(part, &["/toolCallId", "/tool_use_id", "/id"]),
+                part.get("isError").and_then(Value::as_bool) == Some(true)
+                    || part.get("is_error").and_then(Value::as_bool) == Some(true),
+            )
+        })
+        .collect()
 }
 
 fn project_deepseek_harness(
