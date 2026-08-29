@@ -4,7 +4,10 @@
 //! fake kimi ACP provider, so the lifecycle exercised here is the production
 //! path, not a store-level unit.
 
-use std::time::{Duration, Instant};
+use std::{
+    path::PathBuf,
+    time::{Duration, Instant},
+};
 
 mod fake_provider;
 mod firm_env;
@@ -82,21 +85,61 @@ fn run_member_json(
         .unwrap_or_else(|error| panic!("member harness {args:?} stdout was not JSON ({error})"))
 }
 
-fn spawn_fake_kimi_serve(home: &TempHome) -> ServeHandle {
+fn spawn_fake_kimi_serve(home: &TempHome) -> (ServeHandle, PathBuf, PathBuf, PathBuf, PathBuf) {
     let fake_bin = fake_provider::install_kimi_acp_shim(home.base());
     let fake_kimi = fake_bin.join("kimi").display().to_string();
-    // Leave enough time after observing `idle` for a separate CLI process to
-    // start the Work on slower CI hosts before the test-only idle retirement.
-    ServeHandle::spawn_with_env(
+    let first_prompt_ready = home.base().join("kimi-first-prompt-ready");
+    let first_prompt_release = home.base().join("kimi-first-prompt-release");
+    let first_prompt_accepted = home.base().join("kimi-first-prompt-accepted");
+    let first_prompt_terminal_release = home.base().join("kimi-first-prompt-terminal-release");
+    let first_prompt_ready_env = first_prompt_ready.display().to_string();
+    let first_prompt_release_env = first_prompt_release.display().to_string();
+    let first_prompt_accepted_env = first_prompt_accepted.display().to_string();
+    let first_prompt_terminal_release_env = first_prompt_terminal_release.display().to_string();
+    // Hold the first real provider turn at two observable boundaries so the
+    // fixture can prove ProviderReceived and submit Result while the exact
+    // runtime remains live, independent of scheduler timing.
+    let serve = ServeHandle::spawn_with_env(
         home,
         home.base(),
         &[],
         &[
             ("KIMI_CODE_BIN", fake_kimi.as_str()),
             ("FAKE_KIMI_RESULT", "done"),
+            (
+                "FAKE_KIMI_FIRST_PROMPT_READY",
+                first_prompt_ready_env.as_str(),
+            ),
+            (
+                "FAKE_KIMI_FIRST_PROMPT_RELEASE",
+                first_prompt_release_env.as_str(),
+            ),
+            (
+                "FAKE_KIMI_FIRST_PROMPT_ACCEPTED",
+                first_prompt_accepted_env.as_str(),
+            ),
+            (
+                "FAKE_KIMI_FIRST_PROMPT_TERMINAL_RELEASE",
+                first_prompt_terminal_release_env.as_str(),
+            ),
             ("FIRM_MEMBER_SUPERVISOR_TEST_IDLE_MS", "30000"),
         ],
+    );
+    (
+        serve,
+        first_prompt_ready,
+        first_prompt_release,
+        first_prompt_accepted,
+        first_prompt_terminal_release,
     )
+}
+
+fn wait_for_path(path: &std::path::Path, within: Duration) {
+    let deadline = Instant::now() + within;
+    while !path.exists() {
+        assert!(Instant::now() < deadline, "path never appeared: {path:?}");
+        std::thread::sleep(Duration::from_millis(10));
+    }
 }
 
 fn create_mission_and_run(
@@ -202,6 +245,7 @@ fn wait_for_member_status(
     }
 }
 
+#[cfg(any())]
 fn wait_for_member_runtime_ready(
     serve: &ServeHandle,
     project_id: &str,
@@ -237,7 +281,13 @@ fn wait_for_member_runtime_ready(
 fn host_attentions_read_and_console_ack_lifecycle() {
     let home = TempHome::new("host-attention-console");
     let (project_id, node_id, host_id) = init_project(&home, "alpha");
-    let serve = spawn_fake_kimi_serve(&home);
+    let (
+        serve,
+        first_prompt_ready,
+        first_prompt_release,
+        first_prompt_accepted,
+        first_prompt_terminal_release,
+    ) = spawn_fake_kimi_serve(&home);
     let (run_id, member_id, work_id, work_version) =
         create_mission_and_run(&home, &serve, &project_id, &node_id, &host_id);
 
@@ -246,7 +296,7 @@ fn host_attentions_read_and_console_ack_lifecycle() {
         &serde_json::json!({"max_concurrency": 1, "idle_timeout_s": 10}),
     );
     assert_eq!(status, 202, "body: {body}");
-    wait_for_member_runtime_ready(&serve, &project_id, &member_id, Duration::from_secs(15));
+    wait_for_path(&first_prompt_ready, Duration::from_secs(15));
     let bound = firm_env::work_execution::assign_work_for_member_run(
         &home,
         &project_id,
@@ -255,17 +305,14 @@ fn host_attentions_read_and_console_ack_lifecycle() {
         true,
     );
     assert_eq!(bound.version, work_version);
+    std::fs::write(&first_prompt_release, b"release\n").expect("accept fake provider prompt");
+    wait_for_path(&first_prompt_accepted, Duration::from_secs(15));
     firm_env::provider_received_work::record_provider_received_work(
         &home,
         &project_id,
         &work_id,
         "host-attention",
     );
-    // The live Supervisor may own the provider turn that produced the
-    // canonical receipt. Wait for that turn to settle before this fixture
-    // exercises the separate Member-authored Start/Result path.
-    wait_for_member_runtime_ready(&serve, &project_id, &member_id, Duration::from_secs(15));
-
     // Submitting the initial Work derives a WorkReviewRequested HostAttention.
     let started = run_member_json(
         &home,
@@ -310,6 +357,8 @@ fn host_attentions_read_and_console_ack_lifecycle() {
             "--json",
         ],
     );
+    std::fs::write(&first_prompt_terminal_release, b"release\n")
+        .expect("release fake provider terminal response");
 
     let (status, body) = serve.get_json(&format!(
         "/v1/host-attentions?team_run_id={run_id}&project={project_id}"

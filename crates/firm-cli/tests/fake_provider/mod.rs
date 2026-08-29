@@ -222,6 +222,14 @@ while IFS= read -r line; do
         continue
       fi
       printf '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"%s","update":{"sessionUpdate":"agent_thought_chunk","content":{"type":"text","text":"hidden reasoning"}}}}\n' "$session_id"
+      if [ "$prompt_count" = "1" ] && [ -n "${FAKE_KIMI_FIRST_PROMPT_ACCEPTED:-}" ]; then
+        : > "$FAKE_KIMI_FIRST_PROMPT_ACCEPTED"
+      fi
+      if [ "$prompt_count" = "1" ] && [ -n "${FAKE_KIMI_FIRST_PROMPT_TERMINAL_RELEASE:-}" ]; then
+        while [ ! -e "$FAKE_KIMI_FIRST_PROMPT_TERMINAL_RELEASE" ]; do
+          sleep 0.02
+        done
+      fi
       if [ "${FAKE_KIMI_KEEP_WORK_ACTIVE:-0}" = "1" ] && [ "$prompt_count" = "1" ]; then
         # Mirror a real member's first durable action: after the provider has
         # accepted the prompt, start its assigned Work. An outputless terminal
