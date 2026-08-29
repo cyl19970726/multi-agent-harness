@@ -5,6 +5,9 @@ import { join } from "node:path";
 const root = "schemas/provider-events";
 const readJson = (path) => JSON.parse(readFileSync(path, "utf8"));
 const recordSchema = readJson(join(root, "provider-native-event-record.schema.json"));
+const persistedRecordSchema = readJson(join(root, "provider-native-event-record-v3.schema.json"));
+const persistedPageSchema = readJson(join(root, "persisted-session-page-v1.schema.json"));
+const persistedAdapterSchema = readJson(join(root, "persisted-adapter-manifest-v1.schema.json"));
 const adapterSchema = readJson(join(root, "adapter-manifest.schema.json"));
 const manifest = readJson(join(root, "manifest.v1.json"));
 const adapters = readJson(join(root, "adapters.v1.json"));
@@ -13,8 +16,9 @@ const teamSchema = readJson(join(root, "team-runtime-activity.schema.json"));
 const liveSchema = readJson(join(root, "live-provider-activity.schema.json"));
 const liveEventSchema = readJson(join(root, "live-provider-activity-event.schema.json"));
 const ajv = new Ajv2020({ allErrors: true, strict: false });
-for (const schema of [recordSchema, adapterSchema, sessionSchema, teamSchema, liveSchema, liveEventSchema]) ajv.addSchema(schema);
+for (const schema of [recordSchema, persistedRecordSchema, persistedPageSchema, persistedAdapterSchema, adapterSchema, sessionSchema, teamSchema, liveSchema, liveEventSchema]) ajv.addSchema(schema);
 const validateRecord = ajv.getSchema(recordSchema.$id);
+const validatePersistedRecord = ajv.getSchema(persistedRecordSchema.$id);
 const validateAdapter = ajv.getSchema(adapterSchema.$id);
 const failures = [];
 
@@ -27,6 +31,16 @@ for (const file of readdirSync(join(root, "fixtures/valid")).sort()) {
 for (const file of readdirSync(join(root, "fixtures/invalid")).sort()) {
   const data = readJson(join(root, "fixtures/invalid", file));
   if (validateRecord(data)) failures.push(`${file}: expected invalid`);
+}
+for (const file of readdirSync(join(root, "fixtures/v3/valid")).sort()) {
+  const data = readJson(join(root, "fixtures/v3/valid", file));
+  if (!validatePersistedRecord(data)) {
+    failures.push(`${file}: expected valid v3 persisted record: ${ajv.errorsText(validatePersistedRecord.errors)}`);
+  }
+}
+for (const file of readdirSync(join(root, "fixtures/v3/invalid")).sort()) {
+  const data = readJson(join(root, "fixtures/v3/invalid", file));
+  if (validatePersistedRecord(data)) failures.push(`${file}: expected invalid v3 persisted record`);
 }
 for (const adapter of adapters) {
   if (!validateAdapter(adapter)) {
@@ -45,6 +59,15 @@ exactSet(adapters.map(({ provider }) => provider), manifest.providers, "provider
 exactSet(recordSchema.properties.provider.enum, manifest.providers, "record providers");
 exactSet(adapterSchema.properties.provider.enum, manifest.providers, "adapter providers");
 exactSet(recordSchema.$defs.fragment.properties.semantic_kind.enum, manifest.semantic_kinds, "semantic kinds");
+exactSet(persistedRecordSchema.$defs.fragment.properties.semantic_kind.enum, manifest.persisted_semantic_kinds, "persisted semantic kinds");
+for (const forbidden of ["node_daemon_id", "node_daemon_generation", "runtime_command_id", "effect_certainty", "visibility"]) {
+  if (Object.hasOwn(persistedRecordSchema.properties, forbidden) || Object.hasOwn(persistedRecordSchema.$defs.fragment.properties, forbidden)) {
+    failures.push(`v3 persisted transcript must not carry runtime field ${forbidden}`);
+  }
+}
+for (const runtimeKind of ["interaction_required", "interaction_resolved", "runtime_started", "runtime_ready", "runtime_stopped", "transport_interrupted", "command_recovery_required"]) {
+  if (manifest.persisted_semantic_kinds.includes(runtimeKind)) failures.push(`runtime kind leaked into persisted Session vocabulary: ${runtimeKind}`);
+}
 
 const decoder = readFileSync("crates/firm-provider-events/src/decoder.rs", "utf8");
 for (const provider of manifest.providers) {
@@ -131,4 +154,4 @@ if (failures.length) {
   console.error(failures.join("\n"));
   process.exit(1);
 }
-console.log(`provider event contract PASS: ${adapters.length} adapters, ${manifest.semantic_kinds.length} semantic kinds`);
+console.log(`provider event contract PASS: ${adapters.length} legacy adapters, ${manifest.semantic_kinds.length} legacy kinds, ${manifest.persisted_semantic_kinds.length} persisted v3 kinds`);

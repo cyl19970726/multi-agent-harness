@@ -12,8 +12,8 @@ use std::{
 
 use harness_core::NativeSessionRef;
 use harness_provider_events::{
-    decode_native_event, DecodeContext, DecodeOutcome, NativeEvent, ProjectionAuthority,
-    ProjectionReadScope, ProviderKind, ProviderNativeEventRecord, ProviderProjectionService,
+    decode_native_event, DecodeContext, DecodeOutcome, LegacyProviderNativeEventRecordV2,
+    NativeEvent, ProjectionAuthority, ProjectionReadScope, ProviderKind, ProviderProjectionService,
     TranscriptReadBoundary,
 };
 use serde::Serialize;
@@ -45,7 +45,7 @@ pub(crate) struct LiveProviderScope {
 #[derive(Clone, Debug, Serialize)]
 struct LiveProviderItem {
     runtime_event_locator: String,
-    record: ProviderNativeEventRecord,
+    record: LegacyProviderNativeEventRecordV2,
     emitted_unix_ms: u64,
     expires_unix_ms: u64,
 }

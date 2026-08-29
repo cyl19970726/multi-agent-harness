@@ -1,0 +1,21 @@
+{
+  "schema_version":"agentfirm.provider_native_event_record.v3",
+  "record_id":"native-row:sha256:2851e10cc457c0763e98bcac1ab47838bd75b90d50e75be58648665b1fdd9512",
+  "provider":"codex",
+  "adapter_version":"agentfirm.persisted_provider_event_adapter.v3",
+  "native_source_ref":"provider-source:codex:session-1",
+  "source_generation":"source-generation:codex:rollout:file-1",
+  "row_locator":"row-locator:provider-id:reasoning-1",
+  "ordering_key":{"kind":"provider_ordinal","value":2},
+  "source_content_fingerprint":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "agent_member_id":"agent-1",
+  "agent_session_id":"session-1",
+  "agent_session_generation":7,
+  "provider_thread_id":"thread-1",
+  "provider_turn_id":"turn-1",
+  "provider_event_id":"reasoning-1",
+  "occurred_at":null,
+  "observed_at":"2026-08-29T08:00:01Z",
+  "native_event":{"type":"runtime_ready"},
+  "fragments":[{"fragment_id":"native-row:sha256:2851e10cc457c0763e98bcac1ab47838bd75b90d50e75be58648665b1fdd9512:fragment-0","fragment_index":0,"semantic_kind":"runtime_ready","lifecycle_phase":"progress","completeness":"complete","content_availability":"available","payload":{"type":"runtime","state":"ready"}}]
+}

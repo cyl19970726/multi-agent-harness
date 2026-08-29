@@ -1,12 +1,50 @@
 # Canonical Provider Event Projection
 
-Status: current contract through DEV-122.
+Status: current transition contract through DEV-133.
 
-## Authority boundary
+## Persisted Session v3 contract
+
+DEV-133 defines the next canonical Session-history record without claiming the
+five provider readers or Dashboard cutover are complete. The closed schema is
+`provider-native-event-record-v3.schema.json`; the existing v2 record remains
+only as an explicitly transitional live/history API value until DEV-134–136
+replace its producers and consumers.
+
+The v3 record has one meaning: one exact provider-owned **persisted** row. Its
+identity is derived only from `source_generation` + `row_locator`. NodeDaemon
+id/generation is intentionally absent from the row
+and appears only in the outer `NativeSessionReaderAuthority`, so a daemon
+handoff cannot rename provider history. `ordering_key`, content fingerprint,
+generation-scoped older cursor, snapshot watermark, and typed source reset are
+closed contracts; none is Harness Evidence or durable Harness state.
+
+The v3 semantic vocabulary contains Session metadata, reasoning, assistant
+response, tool, artifact, usage, turn terminal, malformed, and unclassified
+native rows. Runtime, transport, interaction, command recovery, effect
+certainty, and Team-public visibility do not exist in v3. They remain canonical
+coordination projections. Text availability is orthogonal to completeness:
+`unavailable` requires absent/null text and forbids placeholders. Source paths,
+rows, cursors, fragments, and fingerprints remain response-local and are never
+written to a Harness Store.
+
+The source-scoped persisted manifest schema separately declares source family,
+format fence, source-generation and locator support, pagination, tail mode,
+local/remote reachability, and semantic kind/phase/content availability. DEV-134
+may publish a provider claim only when its real persisted fixture reaches that
+capability. Live callback capability unions cannot satisfy this manifest.
+
+## Transitional v2 implementation
+
+The remaining sections describe the shipped v2 reader/live path that stays in
+place until DEV-134–136 replace it. In Rust this value is now named
+`LegacyProviderNativeEventRecordV2`; it is not the v3 persisted-row contract
+defined above.
+
+### Authority boundary
 
 Provider transcripts remain provider-owned. AgentFirm performs a paged read
 of a server-selected source and converts every complete native row into one
-`ProviderNativeEventRecord` during an on-demand request. The record is a
+`LegacyProviderNativeEventRecordV2` during an on-demand request. The record is a
 disposable read-model value; it is never Message, Work,
 CanonicalMessageDelivery, Evidence,
 review, or Decision truth.
@@ -14,7 +52,7 @@ review, or Decision truth.
 ```text
 provider source
   -> page scan in provider order (no content filtering or event truncation)
-  -> ProviderNativeEventRecord + exact response-local native_event
+  -> LegacyProviderNativeEventRecordV2 + exact response-local native_event
        -> ordered semantic fragments (one native row may yield several)
   -> disposable generation-fenced in-memory fold
        -> local-Operator SessionEventProjection
@@ -30,7 +68,7 @@ symlinks, root escape, invalid transient read positions, and invalid UTF-8. One
 event is never shortened to meet a page budget. Incremental process-local reads leave an incomplete last line
 unconsumed; the on-demand latest projection omits it and reports truncation.
 
-## Identity and source authority
+### Identity and source authority
 
 Every record binds the exact AgentMember, AgentSession id/generation, and
 NodeDaemon id/generation from server context. Provider JSON cannot select those
@@ -55,7 +93,7 @@ The historical projection is returned only inside the authenticated
 Team and AgentSession scope. Opening or resuming a provider UI/Session is a separate explicit
 control action and is not implied by reading this projection.
 
-## Trusted local read boundary
+### Trusted local read boundary
 
 `SessionEventProjection` is available to the same-machine loopback Dashboard
 Operator for every locally bound AgentSession. A local read does not require a
@@ -76,7 +114,7 @@ holds at most 24 items per exact Execution Space + Project Binding +
 AgentSession + MemberRun generation for 10 seconds. The SSE event name is
 `live_provider_activity`, and the envelope is
 `agentfirm.live_provider_activity_event.v2`. Every live item carries the same
-`ProviderNativeEventRecord` used by a reopened historical read. Delivery uses the same local-
+`LegacyProviderNativeEventRecordV2` used by a reopened historical read. Delivery uses the same local-
 Operator read policy as history. The browser subscribes to one
 selected Team and AgentMember; SSE fanout remains scoped to that exact
 Execution Space, Project Binding, and AgentMember. Terminal turn state clears the overlay

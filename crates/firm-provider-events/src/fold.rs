@@ -5,7 +5,7 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 use crate::{
-    ProviderNativeEventRecord, SessionEventProjection, TeamRuntimeActivity,
+    LegacyProviderNativeEventRecordV2, SessionEventProjection, TeamRuntimeActivity,
     PROVIDER_NATIVE_EVENT_RECORD_SCHEMA_VERSION,
 };
 
@@ -35,7 +35,7 @@ pub struct SessionEpisode {
     pub episode_id: String,
     #[serde(default)]
     pub provider_turn_id: Option<String>,
-    pub records: Vec<ProviderNativeEventRecord>,
+    pub records: Vec<LegacyProviderNativeEventRecordV2>,
     pub terminal: bool,
     pub incomplete: bool,
 }
@@ -47,7 +47,7 @@ pub struct ProviderEventFold {
     pub agent_session_generation: u64,
     pub node_daemon_id: String,
     pub node_daemon_generation: u64,
-    records: BTreeMap<String, ProviderNativeEventRecord>,
+    records: BTreeMap<String, LegacyProviderNativeEventRecordV2>,
     source_fingerprints: BTreeMap<String, String>,
 }
 
@@ -71,7 +71,7 @@ impl ProviderEventFold {
 
     pub fn ingest(
         &mut self,
-        record: ProviderNativeEventRecord,
+        record: LegacyProviderNativeEventRecordV2,
     ) -> Result<FoldOutcome, ProviderEventFoldError> {
         record.validate()?;
         if record.agent_session_id != self.agent_session_id
@@ -166,7 +166,7 @@ impl ProviderEventFold {
                     .fragments
                     .iter()
                     .filter(|fragment| {
-                        ProviderNativeEventRecord::is_team_public_allowlisted(fragment)
+                        LegacyProviderNativeEventRecordV2::is_team_public_allowlisted(fragment)
                     })
                     .map(|fragment| TeamRuntimeActivity {
                         record_id: record.record_id.clone(),
@@ -194,7 +194,7 @@ impl ProviderEventFold {
         format!("sha256:{:x}", digest.finalize())
     }
 
-    fn sorted_records(&self) -> Vec<&ProviderNativeEventRecord> {
+    fn sorted_records(&self) -> Vec<&LegacyProviderNativeEventRecordV2> {
         let mut values = self.records.values().collect::<Vec<_>>();
         values.sort_by(|left, right| {
             left.ordering_position
