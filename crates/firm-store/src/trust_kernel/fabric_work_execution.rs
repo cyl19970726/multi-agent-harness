@@ -260,6 +260,7 @@ impl HarnessStore {
                 // AgentSession/runtime/driver generation is durable progress,
                 // not a stale execution authority.
                 allow_native_session_attachment: true,
+                settlement_only: false,
             },
             "work_execution_binding",
             &binding.id,
@@ -495,7 +496,7 @@ impl HarnessStore {
     ) -> StoreResult<CanonicalMutationResult<CanonicalWorkDelivery>> {
         self.init()?;
         let _lock = self.acquire_write_lock()?;
-        self.require_current_node_daemon_unlocked(
+        self.require_node_daemon_settlement_authority_unlocked(
             &context.execution_space_id,
             node_id,
             daemon_id,
@@ -559,7 +560,7 @@ impl HarnessStore {
     ) -> StoreResult<CanonicalMutationResult<CanonicalWorkDelivery>> {
         self.init()?;
         let _lock = self.acquire_write_lock()?;
-        self.require_current_node_daemon_unlocked(
+        self.require_node_daemon_settlement_authority_unlocked(
             &context.execution_space_id,
             node_id,
             daemon_id,
@@ -815,6 +816,7 @@ impl HarnessStore {
             runtime_binding,
             RuntimeBindingAdmission::RuntimeCommand {
                 allow_native_session_attachment: false,
+                settlement_only: false,
             },
             "work_execution_binding",
             &binding.id,

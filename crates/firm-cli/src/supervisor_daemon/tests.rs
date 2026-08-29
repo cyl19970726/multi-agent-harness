@@ -118,10 +118,92 @@ fn unreadable_space_latches_machine_wide_authority_loss() {
         lease_ttl_override_ms: Some(3_000),
     };
 
+    let command_actor = harness_core::agentfirm_api::ActorRef {
+        kind: harness_core::agentfirm_api::ActorKind::Service,
+        id: daemon.daemon_id.clone(),
+    };
+    let command_payload = serde_json::json!({"draft": {}});
+    let command = harness_core::agentfirm_api::ControlCommandEnvelope {
+        id: "runtime-command-after-machine-loss".into(),
+        execution_space_id: healthy.id.clone(),
+        target_node_id: NODE_ID.into(),
+        target_node_daemon_id: daemon.daemon_id.clone(),
+        target_node_daemon_generation: lease.generation,
+        authenticated_actor: command_actor.clone(),
+        command: harness_core::agentfirm_api::RuntimeCommandKind::AuthorMessage,
+        required_capability: "message.author".into(),
+        idempotency_key: "runtime-command-after-machine-loss".into(),
+        expected_version: 0,
+        expires_unix_ms: current_unix_ms_u64().saturating_add(30_000),
+        binding: Default::default(),
+        precondition: Default::default(),
+        postcondition: Default::default(),
+        payload_fingerprint: harness_store::canonical_json_fingerprint(&command_payload),
+        payload: command_payload,
+        issued_at: "unix-ms:2".into(),
+    };
+    let command_context = harness_core::agentfirm_api::MutationContext {
+        execution_space_id: healthy.id.clone(),
+        authenticated_actor: command_actor.clone(),
+        authority_actor: Some(command_actor),
+        command_name: "runtime.message.author".into(),
+        idempotency_key: command.idempotency_key.clone(),
+        expected_version: 0,
+        request_fingerprint: Some(
+            harness_store::runtime_command_envelope_fingerprint(&command)
+                .expect("fingerprint test RuntimeCommand"),
+        ),
+    };
+
     let started = Instant::now();
-    let error = daemon
-        .refresh_held_node_authorities()
-        .expect_err("an unreadable Space must close machine-wide authority");
+    let error = std::thread::scope(|scope| {
+        let refresh = scope.spawn(|| daemon.refresh_held_node_authorities());
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while !daemon.authority_lost.load(Ordering::SeqCst) && Instant::now() < deadline {
+            std::thread::yield_now();
+        }
+        assert!(
+            daemon.authority_lost.load(Ordering::SeqCst),
+            "the unreadable Space must latch process authority loss"
+        );
+        let still_active = store
+            .latest_node_daemon_lease(NODE_ID)
+            .expect("read healthy lease while another Space blocks drain")
+            .expect("healthy lease remains present");
+        assert_eq!(
+            still_active.status,
+            harness_core::NodeDaemonLeaseStatus::Active,
+            "the cross-Space regression must observe process admission closed before durable drain reaches the healthy Space"
+        );
+        let operations_before = store
+            .canonical_operations()
+            .expect("read operations before fenced admission");
+        let admission_error = store
+            .prepare_runtime_command(
+                &command_context,
+                &command,
+                current_unix_ms_u64(),
+                "unix-ms:3",
+            )
+            .expect_err("machine authority loss must immediately fence another Space");
+        assert!(
+            admission_error
+                .to_string()
+                .contains("SUPERVISOR_GENERATION_FENCED"),
+            "unexpected admission error: {admission_error}"
+        );
+        assert_eq!(
+            store
+                .canonical_operations()
+                .expect("read operations after fenced admission"),
+            operations_before,
+            "fenced admission must have zero durable effect"
+        );
+        refresh
+            .join()
+            .expect("authority refresh worker must not panic")
+            .expect_err("an unreadable Space must close machine-wide authority")
+    });
     assert!(
         started.elapsed() >= Duration::from_millis(900),
         "the fixture must exercise the incomplete-row retry window"
@@ -145,8 +227,8 @@ fn unreadable_space_latches_machine_wide_authority_loss() {
     );
     assert_eq!(
         not_refreshed.status,
-        harness_core::NodeDaemonLeaseStatus::Active,
-        "durable per-Space lease may renew, but the process-local bundle remains fenced"
+        harness_core::NodeDaemonLeaseStatus::Draining,
+        "machine authority loss must durably drain every readable exact lease"
     );
 }
 

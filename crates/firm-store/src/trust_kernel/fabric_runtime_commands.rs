@@ -307,6 +307,7 @@ impl HarnessStore {
                     &command.binding,
                     RuntimeBindingAdmission::RuntimeCommand {
                         allow_native_session_attachment: false,
+                        settlement_only: false,
                     },
                     "runtime_command",
                     &command.id,
@@ -744,6 +745,7 @@ impl HarnessStore {
                         RuntimeBindingAdmission::RuntimeCommand {
                             allow_native_session_attachment:
                                 runtime_command_allows_native_session_attachment(record.command),
+                            settlement_only: false,
                         },
                         "runtime_command",
                         command_id,
@@ -952,7 +954,7 @@ impl HarnessStore {
                 )
             })
             .and_then(|envelope| event_projection::<RuntimeCommandRecord>(&envelope))?;
-        self.require_current_node_daemon_unlocked(
+        self.require_node_daemon_settlement_authority_unlocked(
             &context.execution_space_id,
             &record.target_node_id,
             &record.target_node_daemon_id,
@@ -1012,6 +1014,7 @@ impl HarnessStore {
                 RuntimeBindingAdmission::RuntimeCommand {
                     allow_native_session_attachment:
                         runtime_command_allows_native_session_attachment(record.command),
+                    settlement_only: true,
                 },
                 "runtime_command",
                 command_id,
@@ -1246,7 +1249,7 @@ impl HarnessStore {
                 Some(record.version),
             ));
         }
-        self.require_current_node_daemon_unlocked(
+        self.require_node_daemon_settlement_authority_unlocked(
             &context.execution_space_id,
             &record.target_node_id,
             &record.target_node_daemon_id,
@@ -1299,6 +1302,7 @@ impl HarnessStore {
                 // permits only None -> exact current same-generation session;
                 // it never permits replacement of an existing binding.
                 allow_native_session_attachment: true,
+                settlement_only: true,
             },
             "runtime_command",
             command_id,

@@ -47,6 +47,44 @@ const LOCK_NB: i32 = 4;
 const LOCK_UN: i32 = 8;
 pub const PROVIDER_COMPATIBILITY_ADMISSIONS_LEDGER: &str =
     "provider_compatibility_admissions.jsonl";
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct ProcessNodeDaemonAdmissionKey {
+    daemon_id: String,
+    instance_id: String,
+}
+
+fn closed_process_node_daemon_admissions(
+) -> &'static Mutex<std::collections::HashSet<ProcessNodeDaemonAdmissionKey>> {
+    static CLOSED: OnceLock<Mutex<std::collections::HashSet<ProcessNodeDaemonAdmissionKey>>> =
+        OnceLock::new();
+    CLOSED.get_or_init(|| Mutex::new(std::collections::HashSet::new()))
+}
+
+/// Close provider-effect admission for one exact NodeDaemon process instance.
+///
+/// Durable NodeDaemon leases remain per Execution Space, but every Store in
+/// the daemon process consults this shared fence. Once closed, the instance is
+/// settlement-only for the remainder of the process lifetime.
+pub fn close_process_node_daemon_admission(daemon_id: &str, instance_id: &str) {
+    closed_process_node_daemon_admissions()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .insert(ProcessNodeDaemonAdmissionKey {
+            daemon_id: daemon_id.to_string(),
+            instance_id: instance_id.to_string(),
+        });
+}
+
+fn process_node_daemon_admission_is_closed(daemon_id: &str, instance_id: &str) -> bool {
+    closed_process_node_daemon_admissions()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .contains(&ProcessNodeDaemonAdmissionKey {
+            daemon_id: daemon_id.to_string(),
+            instance_id: instance_id.to_string(),
+        })
+}
 fn work_event_order(left: &WorkEvent, right: &WorkEvent) -> std::cmp::Ordering {
     let left_ms = left
         .created_at

@@ -4,6 +4,7 @@ pub(super) enum RuntimeBindingAdmission {
     Invocation,
     RuntimeCommand {
         allow_native_session_attachment: bool,
+        settlement_only: bool,
     },
 }
 
@@ -67,6 +68,15 @@ impl HarnessStore {
                     && registration.execution_space_id == execution_space_id
                     && registration.status == firm_core::NodeProjectRegistrationStatus::Active
             });
+        if crate::process_node_daemon_admission_is_closed(&lease.daemon_id, &lease.instance_id) {
+            return Err(trust_error(
+                TrustErrorCode::SupervisorGenerationFenced,
+                "NodeDaemon process authority is permanently closed for new provider effects",
+                resource_kind,
+                resource_id,
+                None,
+            ));
+        }
         if !registered
             || lease.daemon_id != daemon_id
             || lease.generation != daemon_generation
@@ -76,6 +86,72 @@ impl HarnessStore {
             return Err(trust_error(
                 TrustErrorCode::SupervisorGenerationFenced,
                 "runtime mutation used a stale, foreign, or expired NodeDaemon generation",
+                resource_kind,
+                resource_id,
+                None,
+            ));
+        }
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn require_node_daemon_settlement_authority_unlocked(
+        &self,
+        execution_space_id: &str,
+        node_id: &str,
+        daemon_id: &str,
+        daemon_generation: u64,
+        actor: &ActorRef,
+        resource_kind: &str,
+        resource_id: &str,
+    ) -> StoreResult<()> {
+        if actor.kind != ActorKind::Service || actor.id != daemon_id {
+            return Err(trust_error(
+                TrustErrorCode::UnauthorizedActor,
+                "runtime settlement requires the exact authenticated NodeDaemon service",
+                resource_kind,
+                resource_id,
+                None,
+            ));
+        }
+        let lease = self.latest_node_daemon_lease(node_id)?.ok_or_else(|| {
+            trust_error(
+                TrustErrorCode::SupervisorGenerationFenced,
+                "NodeDaemon settlement lease is missing",
+                resource_kind,
+                resource_id,
+                None,
+            )
+        })?;
+        if lease.daemon_id != daemon_id
+            || lease.generation != daemon_generation
+            || !matches!(
+                lease.status,
+                firm_core::NodeDaemonLeaseStatus::Active
+                    | firm_core::NodeDaemonLeaseStatus::Draining
+                    | firm_core::NodeDaemonLeaseStatus::Expired
+            )
+        {
+            return Err(trust_error(
+                TrustErrorCode::SupervisorGenerationFenced,
+                "runtime settlement used a released, successor, or foreign NodeDaemon generation",
+                resource_kind,
+                resource_id,
+                None,
+            ));
+        }
+        let registered = self
+            .latest_node_project_registrations()?
+            .iter()
+            .any(|registration| {
+                registration.node_id == node_id
+                    && registration.execution_space_id == execution_space_id
+                    && registration.status == firm_core::NodeProjectRegistrationStatus::Active
+            });
+        if !registered {
+            return Err(trust_error(
+                TrustErrorCode::SupervisorGenerationFenced,
+                "runtime settlement belongs to an unregistered Execution Space",
                 resource_kind,
                 resource_id,
                 None,
@@ -98,18 +174,21 @@ impl HarnessStore {
         resource_id: &str,
         current_version: Option<u64>,
     ) -> StoreResult<()> {
-        let (require_member_run_binding, allow_native_session_attachment) = match admission {
-            RuntimeBindingAdmission::Invocation => (false, false),
-            RuntimeBindingAdmission::RuntimeCommand {
-                allow_native_session_attachment,
-            } => (
-                matches!(
-                    session.control_state.driver_ref,
-                    RuntimeDriverRef::TeamSupervisor { .. }
+        let (require_member_run_binding, allow_native_session_attachment, settlement_only) =
+            match admission {
+                RuntimeBindingAdmission::Invocation => (false, false, false),
+                RuntimeBindingAdmission::RuntimeCommand {
+                    allow_native_session_attachment,
+                    settlement_only,
+                } => (
+                    matches!(
+                        session.control_state.driver_ref,
+                        RuntimeDriverRef::TeamSupervisor { .. }
+                    ),
+                    allow_native_session_attachment,
+                    settlement_only,
                 ),
-                allow_native_session_attachment,
-            ),
-        };
+            };
         match (
             binding.target_member_run_id.as_deref(),
             binding.target_member_run_generation,
@@ -216,18 +295,31 @@ impl HarnessStore {
 
         // NodeDaemon is always the Runtime Supervisor, even when the current
         // next-cycle driver is a TeamSupervisor or provider continuation.
-        self.require_current_node_daemon_unlocked(
-            &session.execution_space_id,
-            &session.node_id,
-            &session.node_daemon_id,
-            session.node_daemon_generation,
-            &ActorRef {
-                kind: ActorKind::Service,
-                id: session.node_daemon_id.clone(),
-            },
-            resource_kind,
-            resource_id,
-        )?;
+        let daemon_actor = ActorRef {
+            kind: ActorKind::Service,
+            id: session.node_daemon_id.clone(),
+        };
+        if settlement_only {
+            self.require_node_daemon_settlement_authority_unlocked(
+                &session.execution_space_id,
+                &session.node_id,
+                &session.node_daemon_id,
+                session.node_daemon_generation,
+                &daemon_actor,
+                resource_kind,
+                resource_id,
+            )?;
+        } else {
+            self.require_current_node_daemon_unlocked(
+                &session.execution_space_id,
+                &session.node_id,
+                &session.node_daemon_id,
+                session.node_daemon_generation,
+                &daemon_actor,
+                resource_kind,
+                resource_id,
+            )?;
+        }
 
         match (
             &session.control_state.execution_driver,

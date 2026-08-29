@@ -41,8 +41,17 @@ impl MultiTeamDaemon {
     }
 
     fn latch_machine_authority_loss(&self, failures: &[String]) -> CliError {
+        // Close the shared process admission gate before any durable Store IO.
+        // Other already-running Team supervisors may be in different
+        // Execution Spaces, but they all use this exact daemon instance and
+        // must stop preparing new provider effects immediately.
+        harness_store::close_process_node_daemon_admission(&self.daemon_id, &self.instance_id);
         self.authority_lost.store(true, Ordering::SeqCst);
         self.stop_requested.store(true, Ordering::SeqCst);
+        let mut failures = failures.to_vec();
+        if let Err(error) = self.drain_node_authorities() {
+            failures.push(format!("machine-wide admission drain: {error}"));
+        }
         CliError::Usage(format!(
             "NODE_DAEMON_MACHINE_AUTHORITY_LOST: {}",
             failures.join("; ")
