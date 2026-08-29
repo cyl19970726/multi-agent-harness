@@ -9,6 +9,7 @@ mod access;
 mod decoder;
 mod fold;
 mod model;
+mod persisted;
 mod persisted_model;
 mod reader;
 mod service;
@@ -20,6 +21,7 @@ pub use decoder::{
 };
 pub use fold::{FoldOutcome, ProviderEventFold, ProviderEventFoldError, SessionEpisode};
 pub use model::*;
+pub use persisted::*;
 pub use persisted_model::*;
 pub use reader::*;
 pub use service::*;

@@ -11,6 +11,7 @@ const persistedAdapterSchema = readJson(join(root, "persisted-adapter-manifest-v
 const adapterSchema = readJson(join(root, "adapter-manifest.schema.json"));
 const manifest = readJson(join(root, "manifest.v1.json"));
 const adapters = readJson(join(root, "adapters.v1.json"));
+const persistedAdapters = readJson(join(root, "persisted-adapters.v3.json"));
 const sessionSchema = readJson(join(root, "session-event-projection.schema.json"));
 const teamSchema = readJson(join(root, "team-runtime-activity.schema.json"));
 const liveSchema = readJson(join(root, "live-provider-activity.schema.json"));
@@ -64,6 +65,11 @@ for (const adapter of adapters) {
     failures.push(`${adapter.provider}: invalid adapter manifest: ${ajv.errorsText(validateAdapter.errors)}`);
   }
 }
+for (const adapter of persistedAdapters) {
+  if (!validatePersistedAdapter(adapter)) {
+    failures.push(`${adapter.provider}: invalid persisted adapter manifest: ${ajv.errorsText(validatePersistedAdapter.errors)}`);
+  }
+}
 
 const exactSet = (left, right, label) => {
   const a = [...new Set(left)].sort();
@@ -73,6 +79,7 @@ const exactSet = (left, right, label) => {
   }
 };
 exactSet(adapters.map(({ provider }) => provider), manifest.providers, "provider set");
+exactSet(persistedAdapters.map(({ provider }) => provider), manifest.providers, "persisted provider set");
 exactSet(recordSchema.properties.provider.enum, manifest.providers, "record providers");
 exactSet(adapterSchema.properties.provider.enum, manifest.providers, "adapter providers");
 exactSet(recordSchema.$defs.fragment.properties.semantic_kind.enum, manifest.semantic_kinds, "semantic kinds");
@@ -87,8 +94,10 @@ for (const runtimeKind of ["interaction_required", "interaction_resolved", "runt
 }
 
 const decoder = readFileSync("crates/firm-provider-events/src/decoder.rs", "utf8");
+const persistedProjector = readFileSync("crates/firm-provider-events/src/persisted/projector.rs", "utf8");
 for (const provider of manifest.providers) {
   if (!decoder.includes(`fn decode_${provider}(`)) failures.push(`missing ${provider} decoder`);
+  if (!persistedProjector.includes(`fn project_${provider}(`)) failures.push(`missing persisted ${provider} projector`);
 }
 const model = readFileSync("crates/firm-provider-events/src/model.rs", "utf8");
 const runtime = [
@@ -171,4 +180,4 @@ if (failures.length) {
   console.error(failures.join("\n"));
   process.exit(1);
 }
-console.log(`provider event contract PASS: ${adapters.length} legacy adapters, ${manifest.semantic_kinds.length} legacy kinds, ${manifest.persisted_semantic_kinds.length} persisted v3 kinds`);
+console.log(`provider event contract PASS: ${adapters.length} legacy adapters, ${persistedAdapters.length} persisted adapters, ${manifest.semantic_kinds.length} legacy kinds, ${manifest.persisted_semantic_kinds.length} persisted v3 kinds`);

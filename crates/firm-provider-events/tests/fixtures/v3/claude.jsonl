@@ -1,0 +1,5 @@
+{"type":"system","subtype":"init","session_id":"claude-session"}
+{"type":"user","message":{"role":"user","content":[{"type":"text","text":"claude user prompt"}]}}
+{"type":"assistant","message":{"content":[{"type":"thinking","thinking":"claude reasoning"},{"type":"text","text":"claude answer"},{"type":"tool_use","id":"claude-call","name":"Read","input":{"secret":"not projected"}}]}}
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"claude-call","content":"provider-owned output"}]}}
+{"type":"result","subtype":"success","usage":{"input_tokens":10,"output_tokens":4}}

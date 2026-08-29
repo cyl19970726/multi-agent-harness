@@ -1,0 +1,6 @@
+{"type":"session","id":"pi-session","version":3}
+{"type":"message","message":{"role":"user","content":[{"type":"text","text":"pi user prompt"}]}}
+{"type":"message","message":{"role":"system","content":[{"type":"text","text":"pi system prompt"}]}}
+{"type":"message","message":{"role":"assistant","content":[{"type":"thinking","thinking":"must remain unclaimed"},{"type":"text","text":"pi answer"},{"type":"toolCall","id":"pi-call","name":"Read","arguments":{"secret":"not projected"}}]}}
+{"type":"message","message":{"role":"tool","content":[{"type":"toolResult","toolCallId":"pi-call","content":"provider-owned output"}]}}
+{"type":"message","message":{"role":"assistant","content":[],"stopReason":"stop"}}

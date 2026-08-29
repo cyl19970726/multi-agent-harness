@@ -1,0 +1,5 @@
+{"type":"context.append_loop_event","event":{"type":"content.part","turnId":"kimi-turn","uuid":"think-1","part":{"type":"think","text":"kimi reasoning"}}}
+{"type":"context.append_loop_event","event":{"type":"content.part","turnId":"kimi-turn","uuid":"part-1","part":{"type":"text","text":"kimi answer"}}}
+{"type":"context.append_loop_event","event":{"type":"tool.call","turnId":"kimi-turn","uuid":"call-1","toolCallId":"kimi-call","name":"Read","args":{"secret":"not projected"}}}
+{"type":"context.append_loop_event","event":{"type":"tool.result","turnId":"kimi-turn","uuid":"result-1","toolCallId":"kimi-call","result":{"output":"private tool output"}}}
+{"type":"context.append_loop_event","event":{"type":"step.end","turnId":"kimi-turn","uuid":"end-1","finishReason":"completed"}}
