@@ -30,6 +30,25 @@ pub(super) fn node_authority_refresh_interval(scan_interval: Duration) -> Durati
 }
 
 impl MultiTeamDaemon {
+    fn require_machine_authority_open(&self) -> CliResult<()> {
+        if self.authority_lost.load(Ordering::SeqCst) {
+            return Err(CliError::Usage(
+                "NODE_DAEMON_MACHINE_AUTHORITY_LOST: provider-effect admission is permanently closed for this daemon instance"
+                    .into(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn latch_machine_authority_loss(&self, failures: &[String]) -> CliError {
+        self.authority_lost.store(true, Ordering::SeqCst);
+        self.stop_requested.store(true, Ordering::SeqCst);
+        CliError::Usage(format!(
+            "NODE_DAEMON_MACHINE_AUTHORITY_LOST: {}",
+            failures.join("; ")
+        ))
+    }
+
     /// A dead socket is not sufficient evidence that the previous daemon
     /// generation lost authority. Every registered Execution Space must
     /// either have no active lease for this Node or have an expired one before
@@ -88,6 +107,120 @@ impl MultiTeamDaemon {
             .collect())
     }
 
+    /// Acquire the process-local Node authority bundle before any TeamRun may
+    /// admit a provider effect. Durable leases remain per Execution Space,
+    /// but this daemon treats them as one all-or-nothing machine authority.
+    /// Newly acquired leases are released on partial failure because no
+    /// provider effect can have crossed admission before this method returns.
+    pub(super) fn ensure_node_authority_bundle(&self) -> CliResult<HashSet<String>> {
+        self.require_machine_authority_open()?;
+        let spaces = self.registered_spaces()?;
+        let mut required = Vec::new();
+        for (space, store) in spaces {
+            let node = store
+                .latest_execution_nodes()
+                .map_err(|error| {
+                    self.latch_machine_authority_loss(&[format!("{}: {error}", space.id)])
+                })?
+                .into_iter()
+                .find(|node| node.id == self.node_id);
+            let Some(node) = node else {
+                continue;
+            };
+            if node.status == harness_core::ExecutionNodeStatus::Retired {
+                return Err(self.latch_machine_authority_loss(&[format!(
+                    "{}: NODE_NOT_ACTIVE: Node {} is retired",
+                    space.id, self.node_id
+                )]));
+            }
+            let registered = store
+                .latest_node_project_registrations()
+                .map_err(|error| {
+                    self.latch_machine_authority_loss(&[format!("{}: {error}", space.id)])
+                })?
+                .into_iter()
+                .any(|registration| {
+                    registration.node_id == self.node_id
+                        && registration.execution_space_id == space.id
+                        && registration.status
+                            == harness_core::NodeProjectRegistrationStatus::Active
+                });
+            if registered {
+                let previous = store
+                    .latest_node_daemon_lease(&self.node_id)
+                    .map_err(|error| {
+                        self.latch_machine_authority_loss(&[format!("{}: {error}", space.id)])
+                    })?;
+                let newly_acquired = previous.as_ref().is_none_or(|lease| {
+                    lease.status == harness_core::NodeDaemonLeaseStatus::Released
+                });
+                required.push((space, store, newly_acquired));
+            }
+        }
+
+        let mut acquired = Vec::new();
+        for (space, store, newly_acquired) in &required {
+            match self.ensure_node_authority(space, store) {
+                Ok(lease) => acquired.push((space.id.clone(), store, lease, *newly_acquired)),
+                Err(error) => {
+                    let mut failures = vec![format!("{}: {error}", space.id)];
+                    self.rollback_unused_bundle_leases(&acquired, &mut failures);
+                    return Err(self.latch_machine_authority_loss(&failures));
+                }
+            }
+        }
+
+        let now_ms = current_unix_ms_u64();
+        let mut failures = Vec::new();
+        for (space_id, store, expected, _) in &acquired {
+            match store.latest_node_daemon_lease(&self.node_id) {
+                Ok(Some(current))
+                    if daemon_control_generation_authorized(
+                        Some(&current),
+                        &self.daemon_id,
+                        &self.instance_id,
+                        expected.generation,
+                        now_ms,
+                    ) => {}
+                Ok(Some(current)) => failures.push(format!(
+                    "{space_id}: final bundle revalidation observed daemon {} instance {} generation {} ({:?})",
+                    current.daemon_id, current.instance_id, current.generation, current.status
+                )),
+                Ok(None) => failures.push(format!("{space_id}: final bundle lease is missing")),
+                Err(error) => failures.push(format!("{space_id}: {error}")),
+            }
+        }
+        if !failures.is_empty() {
+            self.rollback_unused_bundle_leases(&acquired, &mut failures);
+            return Err(self.latch_machine_authority_loss(&failures));
+        }
+        Ok(acquired
+            .into_iter()
+            .map(|(space_id, _, _, _)| space_id)
+            .collect())
+    }
+
+    fn rollback_unused_bundle_leases(
+        &self,
+        acquired: &[(String, &HarnessStore, harness_core::NodeDaemonLease, bool)],
+        failures: &mut Vec<String>,
+    ) {
+        for (space_id, store, lease, newly_acquired) in acquired {
+            if !newly_acquired {
+                continue;
+            }
+            if let Err(error) = store.release_node_daemon_lease(
+                &self.node_id,
+                &lease.daemon_id,
+                lease.generation,
+                &lease.instance_id,
+                current_unix_ms_u64(),
+            ) {
+                failures.push(format!("{space_id}: bundle rollback failed: {error}"));
+            }
+        }
+    }
+
     fn node_lease_ttl_ms(&self) -> u64 {
         #[cfg(test)]
         if let Some(ttl_ms) = self.lease_ttl_override_ms {
@@ -106,6 +239,7 @@ impl MultiTeamDaemon {
     /// Discovery remains responsible for first acquisition; this heartbeat is
     /// deliberately unable to steal or create authority in an unscanned Space.
     pub(super) fn refresh_held_node_authorities(&self) -> CliResult<()> {
+        self.require_machine_authority_open()?;
         let now_ms = current_unix_ms_u64();
         let ttl_ms = self.node_lease_ttl_ms();
         let spaces = self.registered_spaces()?;
@@ -113,51 +247,66 @@ impl MultiTeamDaemon {
         // Execution Space can consume the Store reader's bounded retry window.
         // Renew each Space independently so those bounded waits do not add up
         // and expire an unrelated live AgentSession's machine generation.
-        std::thread::scope(|scope| {
+        let failures = std::thread::scope(|scope| {
             let refreshes = spaces
                 .iter()
                 .map(|(space, store)| {
-                    scope.spawn(move || {
+                    scope.spawn(move || -> Result<(), String> {
                         let lease = match store.latest_node_daemon_lease(&self.node_id) {
                             Ok(Some(lease)) => lease,
-                            Ok(None) => return,
-                            Err(error) => {
-                                eprintln!(
-                                    "[node-daemon] cannot refresh Node authority in {}: {error}",
-                                    space.id
-                                );
-                                return;
-                            }
+                            Ok(None) => return Ok(()),
+                            Err(error) => return Err(format!("{}: {error}", space.id)),
                         };
+                        if lease.daemon_id == self.daemon_id
+                            && lease.instance_id == self.instance_id
+                            && lease.status == harness_core::NodeDaemonLeaseStatus::Draining
+                        {
+                            return Ok(());
+                        }
                         if lease.daemon_id != self.daemon_id
                             || lease.instance_id != self.instance_id
                             || lease.status != harness_core::NodeDaemonLeaseStatus::Active
                         {
-                            return;
+                            if lease.status == harness_core::NodeDaemonLeaseStatus::Released {
+                                return Ok(());
+                            }
+                            return Err(format!(
+                                "{}: exact Node authority moved to daemon {} instance {} generation {} ({:?})",
+                                space.id,
+                                lease.daemon_id,
+                                lease.instance_id,
+                                lease.generation,
+                                lease.status
+                            ));
                         }
-                        if let Err(error) = store.renew_node_daemon_lease(
+                        store.renew_node_daemon_lease(
                             &self.node_id,
                             &lease.daemon_id,
                             lease.generation,
                             &lease.instance_id,
                             now_ms,
                             ttl_ms,
-                        ) {
-                            eprintln!(
-                                "[node-daemon] cannot refresh Node authority in {}: {error}",
-                                space.id
-                            );
-                        }
+                        )
+                        .map(|_| ())
+                        .map_err(|error| format!("{}: {error}", space.id))
                     })
                 })
                 .collect::<Vec<_>>();
+            let mut failures = Vec::new();
             for refresh in refreshes {
-                if refresh.join().is_err() {
-                    eprintln!("[node-daemon] Node authority refresh worker panicked");
+                match refresh.join() {
+                    Ok(Ok(())) => {}
+                    Ok(Err(error)) => failures.push(error),
+                    Err(_) => failures.push("authority refresh worker panicked".into()),
                 }
             }
+            failures
         });
-        Ok(())
+        if failures.is_empty() {
+            Ok(())
+        } else {
+            Err(self.latch_machine_authority_loss(&failures))
+        }
     }
 
     /// Acquire or renew this process' parent authority in one registered
@@ -167,6 +316,7 @@ impl MultiTeamDaemon {
         space: &harness_core::ExecutionSpace,
         store: &HarnessStore,
     ) -> CliResult<harness_core::NodeDaemonLease> {
+        self.require_machine_authority_open()?;
         let node = store
             .latest_execution_nodes()?
             .into_iter()

@@ -13,13 +13,14 @@ transcripts. One machine-scoped NodeDaemon owns every local AgentSession,
 provider process/thread, provider delivery, and runtime-control effect across
 the machine's registered Execution Spaces.
 
-Lease renewal is independent of Execution Space discovery. The NodeDaemon
-heartbeats only the exact machine authorities it already owns while the
-discovery loop scans registered Spaces; it never acquires or steals authority
-through that heartbeat path. A slow or unhealthy Space therefore cannot let an
-otherwise live daemon's lease expire underneath an attached AgentSession. A
-heartbeat failure stops the daemon and uses the normal drain/release path;
-lease expiry alone is never treated as a provider-drain receipt.
+Lease renewal is independent of Execution Space discovery, but authority is
+process-local and machine-wide. Before any Team may admit a provider effect,
+the NodeDaemon acquires and revalidates the complete set of per-Space leases
+for every registered Space owned by that Node. A failure in any member of this
+bundle permanently closes admission for that daemon instance and initiates
+machine-wide drain. A partial first acquisition rolls back only leases that
+this instance acquired before provider admission opened. Lease expiry alone is
+never a provider-drain receipt and never permits a successor to steal authority.
 
 ## Canonical separation
 
@@ -328,6 +329,18 @@ older generation's command. Every active WorkExecutionBinding that references
 a Session must be explicitly released, rebound, or quiesced before StopSession;
 rejection changes neither the Session, binding, command journal, nor provider
 process.
+
+An expired predecessor instance retains settlement-only authority: exact
+RuntimeCommand replay/settlement, provider drain, reconciliation, and final
+release. It cannot prepare a new provider effect or reacquire authority. A
+graceful handoff requires explicit drain, proof that exact Sessions and
+commands are settled, and explicit Released rows in every registered Space.
+If the process crashed, the exact Node Operator may use the critical
+`daemon-recover-predecessor` action only after the process is absent, provider
+process groups are proved terminated, every RuntimeCommand effect is known,
+and the exact expired daemon/instance/generation matches. Recovery detaches the
+dead generation's Sessions and releases its Supervisor and NodeDaemon leases;
+only then may a successor generation be acquired.
 
 `RecoveryRequired / Unknown` is visible in the exact Node Operator RoleView.
 Resolution is a critical confirmed action bound to command version, Node,

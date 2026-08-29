@@ -10,7 +10,7 @@ fn agent_session_reattach_preserves_native_identity_and_fences_daemon_driver() {
         )
         .unwrap();
     let mut target = session("session-reattach", "reattach-agent");
-    target.control_state.runtime_residency = RuntimeResidency::Attached;
+    target.control_state.runtime_residency = RuntimeResidency::Detached;
     target.control_state.activity = RuntimeActivity::Idle;
     target.native_session_ref = Some(NativeSessionRef {
         provider: "codex".into(),

@@ -183,6 +183,13 @@ pub(super) enum OperatorActionIntent {
     DaemonStop {
         daemon_generation: u64,
     },
+    RecoverDaemonPredecessor {
+        daemon_id: String,
+        instance_id: String,
+        daemon_generation: u64,
+        provider_process_groups_terminated_confirmed: bool,
+        evidence_ref: String,
+    },
     Diagnose,
     AdmitProvider {
         provider: String,
@@ -544,7 +551,11 @@ pub(super) fn parse_canonical_route(path: &str) -> Option<CanonicalRoute<'_>> {
         ["v1", "agentfirm", "nodes", node, operation]
             if matches!(
                 *operation,
-                "daemon-start" | "daemon-stop" | "diagnostics" | "provider-admission"
+                "daemon-start"
+                    | "daemon-stop"
+                    | "daemon-recover-predecessor"
+                    | "diagnostics"
+                    | "provider-admission"
             ) =>
         {
             Some(CanonicalRoute::Operator {

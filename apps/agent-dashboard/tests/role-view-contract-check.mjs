@@ -84,6 +84,11 @@ operatorFixture.allowed_actions=[{kind:"diagnose",target_ref:{kind:"execution_no
 assert.equal(operatorValidate(operatorFixture),false,"non-daemon actions must not carry a daemon authority generation");
 operatorFixture.allowed_actions=[{kind:"diagnose",target_ref:{kind:"execution_node",id:"node-1"},required_version:1,disabled_reason:null,__unknown_authority:true}];
 assert.equal(operatorValidate(operatorFixture),false,"unknown action fields remain fail-closed");
+const recoveryAction={kind:"recover_daemon_predecessor",target_ref:{kind:"execution_node",id:"node-1"},required_version:1,disabled_reason:null,authority_generation:2,recovery_binding:{daemon_id:"node-daemon:node-1",instance_id:"123:1000:node-daemon:node-1",daemon_generation:2}};
+operatorFixture.allowed_actions=[recoveryAction];
+assert.equal(operatorValidate(operatorFixture),true,`predecessor recovery action: ${ajv.errorsText(operatorValidate.errors)}`);
+delete recoveryAction.recovery_binding.instance_id;
+assert.equal(operatorValidate(operatorFixture),false,"predecessor recovery requires an exact server binding");
 const admissionBinding={provider:"codex",execution_mode:"codex_app_server",eligibility:"eligible",eligibility_fingerprint:"0123456789abcdef",project_binding_id:"project-1",source_store_identity:"/store/space-1",registration_identity:"node-1:space-1:project-1",registration_revision:1};
 operatorFixture.allowed_actions=[{kind:"admit_provider",target_ref:{kind:"execution_node",id:"node-1"},required_version:1,disabled_reason:null,intent_binding:admissionBinding}];
 assert.equal(operatorValidate(operatorFixture),true,`tuple-bound admission action: ${ajv.errorsText(operatorValidate.errors)}`);
@@ -113,10 +118,11 @@ for(const required of [
   "send_message","reply_message","interrupt_member_run","close_member_run","reopen_member_run","retire_member_run","resume_native_session",
   "provision_workspace","attach_workspace","archive_workspace","cleanup_workspace","request_gate_evaluation","evaluate_gate","waive_gate","revoke_waiver",
   "claim_work","start_work","block_work","unblock_work","submit_work","revise_work","write_report","write_finding","write_failure","request_decision",
-  "reconcile_message_delivery","resolve_runtime_recovery","start_daemon","stop_daemon","admit_provider","diagnose",
+  "reconcile_message_delivery","resolve_runtime_recovery","start_daemon","stop_daemon","recover_daemon_predecessor","admit_provider","diagnose",
 ])assert.ok(actions.has(required),`action manifest missing ${required}`);
 for(const item of manifest.actions){for(const field of ["http_endpoint","application_command","actor_policy","expected_version_source","resulting_event","returns"])assert.equal(typeof item[field],"string",`${item.ui_action}.${field}`)}
-for(const kind of ["start_daemon","stop_daemon"])assert.equal(typeof manifest.actions.find(item=>item.ui_action===kind)?.authority_generation_source,"string",`${kind} must declare its server authority-generation source`);
+for(const kind of ["start_daemon","stop_daemon","recover_daemon_predecessor"])assert.equal(typeof manifest.actions.find(item=>item.ui_action===kind)?.authority_generation_source,"string",`${kind} must declare its server authority-generation source`);
+assert.equal(typeof manifest.actions.find(item=>item.ui_action==="recover_daemon_predecessor")?.recovery_binding_source,"string","predecessor recovery must declare its exact server binding source");
 assert.equal(typeof manifest.actions.find(item=>item.ui_action==="admit_provider")?.intent_binding_source,"string","provider admission must declare its server tuple-binding source");
 for(const item of manifest.actions)assert.match(item.http_endpoint,/^(POST \/v1\/agentfirm\/|GET \/v1\/views\/operator\/)/,`${item.ui_action} must use a frozen authenticated route`);
 const emitted=new Set([...rust.matchAll(/action\("([a-z_]+)"/g)].map(match=>match[1]));

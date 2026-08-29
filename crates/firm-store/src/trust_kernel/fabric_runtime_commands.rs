@@ -92,6 +92,30 @@ impl HarnessStore {
                 None,
             ));
         }
+        let lease = self
+            .latest_node_daemon_lease(&command.target_node_id)?
+            .ok_or_else(|| {
+                trust_error(
+                    TrustErrorCode::SupervisorGenerationFenced,
+                    "RuntimeCommand requires an exact current NodeDaemon lease",
+                    "runtime_command",
+                    &command.id,
+                    None,
+                )
+            })?;
+        if lease.daemon_id != command.target_node_daemon_id
+            || lease.generation != command.target_node_daemon_generation
+            || lease.status != firm_core::NodeDaemonLeaseStatus::Active
+            || lease.expires_unix_ms <= now_unix_ms
+        {
+            return Err(trust_error(
+                TrustErrorCode::SupervisorGenerationFenced,
+                "RuntimeCommand cannot be admitted by an expired, released, or stale NodeDaemon generation",
+                "runtime_command",
+                &command.id,
+                Some(lease.generation),
+            ));
+        }
         self.require_current_node_daemon_unlocked(
             &command.execution_space_id,
             &command.target_node_id,

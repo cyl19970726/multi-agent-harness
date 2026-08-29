@@ -126,9 +126,12 @@ through the lease's loopback locator to the Harness service holding the current
 durable Supervisor generation. That service fences the lease again immediately
 before the SDK operation. After it exits or loses its lease, Harness retains
 coordination and the native-session locator but does not pretend to own an
-orphaned process. Starting the TeamRun after lease expiry or release acquires a
-higher generation, reattaches every unclosed Member to its recorded native
-session, and owns all subsequent claims and live controls.
+orphaned process. Lease expiry alone cannot acquire a successor. The exact
+predecessor must explicitly settle, drain and release, or the Node Operator
+must complete the evidence-fenced hard-crash recovery. Starting the TeamRun
+after that Released fact acquires a higher generation, reattaches every
+unclosed Member to its recorded native session, and owns all subsequent claims
+and live controls.
 
 The owner verifies the runner/SDK stream before claiming queued mail. A failed
 probe leaves mail queued and reconnects the recorded session first. Close

@@ -8,8 +8,11 @@ use super::*;
 
 impl MultiTeamDaemon {
     /// Scan every registered Execution Space. One broken Store is logged and
-    /// isolated; it cannot stop healthy local Teams from progressing.
+    /// isolated only before the Node is enrolled there. Every Space that has
+    /// enrolled this Node participates in one machine-wide authority bundle;
+    /// losing any member closes provider-effect admission for all of them.
     pub(super) fn scan_and_adopt(&self) -> CliResult<()> {
+        let authority_spaces = self.ensure_node_authority_bundle()?;
         let mut managed_ids: HashSet<(String, String)> = {
             let ctx = self
                 .contexts
@@ -21,11 +24,7 @@ impl MultiTeamDaemon {
         };
 
         for (space, store) in self.registered_spaces()? {
-            if let Err(error) = self.ensure_node_authority(&space, &store) {
-                eprintln!(
-                    "[node-daemon] isolating Execution Space {} during authority refresh: {error}",
-                    space.id
-                );
+            if !authority_spaces.contains(&space.id) {
                 continue;
             }
             let runs = match crate::latest_team_runs_in_append_order(&store) {
@@ -124,6 +123,13 @@ impl MultiTeamDaemon {
             .supervisor_start_gate
             .lock()
             .map_err(|error| CliError::Usage(format!("supervisor start gate poisoned: {error}")))?;
+        let authority_spaces = self.ensure_node_authority_bundle()?;
+        if !authority_spaces.contains(&space.id) {
+            return Err(CliError::Usage(format!(
+                "NODE_HAS_NO_REGISTERED_PROJECT: Node {} has no active project in Execution Space {}",
+                self.node_id, space.id
+            )));
+        }
         // Provider admissions are scoped to the exact Project Binding and
         // physical Execution Space. The machine daemon opens stores from the
         // space registry rather than through CLI resolution, so recover that

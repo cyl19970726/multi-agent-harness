@@ -13,6 +13,7 @@ export interface AllowedAction {
   kind: string; target_ref: TargetRef; required_version: number; disabled_reason: string | null;
   authority_generation?: number;
   intent_binding?: {provider:string;execution_mode:string;eligibility:"eligible"|"disabled";eligibility_fingerprint:string;project_binding_id:string;source_store_identity:string;registration_identity:string;registration_revision:number};
+  recovery_binding?: {daemon_id:string;instance_id:string;daemon_generation:number};
 }
 
 export interface AgentFirmActionError {
@@ -47,7 +48,7 @@ export type ExecutableRoleActionKind = "create_work" | "accept_work" | keyof typ
   | "provision_workspace" | "attach_workspace" | "archive_workspace" | "cleanup_workspace"
   | "write_report" | "write_finding" | "write_failure" | "request_gate_evaluation"
   | "evaluate_gate" | "waive_gate" | "revoke_waiver" | "reconcile_message_delivery" | "resolve_runtime_recovery"
-  | "start_daemon" | "stop_daemon" | "admit_provider" | "diagnose";
+  | "start_daemon" | "stop_daemon" | "recover_daemon_predecessor" | "admit_provider" | "diagnose";
 export type RoleActionFields = Readonly<Record<string,string>>;
 export interface PreparedRoleAction {
   path: string;
@@ -78,7 +79,7 @@ export function prepareRoleAction(
   const messageActions:Record<string,string>={send_message:"send",reply_message:"reply",request_decision:"request-decision"};
   const path=action.kind==="reconcile_message_delivery"&&node?`/v1/agentfirm/nodes/${node}/message-deliveries/${id}/reconcile`
     :action.kind==="resolve_runtime_recovery"&&node?`/v1/agentfirm/nodes/${node}/runtime-commands/${id}/resolve`
-    :["start_daemon","stop_daemon","admit_provider"].includes(action.kind)&&node?`/v1/agentfirm/nodes/${node}/${action.kind==="start_daemon"?"daemon-start":action.kind==="stop_daemon"?"daemon-stop":"provider-admission"}`
+    :["start_daemon","stop_daemon","recover_daemon_predecessor","admit_provider"].includes(action.kind)&&node?`/v1/agentfirm/nodes/${node}/${action.kind==="start_daemon"?"daemon-start":action.kind==="stop_daemon"?"daemon-stop":action.kind==="recover_daemon_predecessor"?"daemon-recover-predecessor":"provider-admission"}`
     :action.kind==="diagnose"&&node?`/v1/views/operator/${node}`
     :action.kind==="accept_work"&&team
     ?`/v1/agentfirm/teams/${team}/works/${id}/accept`
@@ -129,13 +130,13 @@ export function prepareRoleAction(
       case "request_gate_evaluation": body={action:"request_gate_evaluation",gate_type:required("gate_type"),gate_contract_version:required("gate_contract_version"),evaluator_ref:{kind:fields.evaluator_kind||"agent_member",id:required("evaluator_id")},evaluator_version:required("evaluator_version"),resolved_config:{},required:true};break;
       case "evaluate_gate": body={action:"evaluate_gate",verdict:fields.verdict||"passed",summary:required("summary"),evidence_refs:(fields.evidence_refs??"").split(",").map(v=>v.trim()).filter(Boolean)};break;
       case "waive_gate": body={action:"waive_gate",reason:required("reason"),evidence_refs:(fields.evidence_refs??"").split(",").map(v=>v.trim()).filter(Boolean)};break; case "revoke_waiver": body={action:"revoke_waiver"};break;
-      case "start_daemon": if(!Number.isSafeInteger(action.authority_generation))throw new Error("Exact daemon authority generation is required.");body={action:"daemon_start",daemon_generation:action.authority_generation};break; case "stop_daemon": if(!Number.isSafeInteger(action.authority_generation))throw new Error("Exact daemon authority generation is required.");body={action:"daemon_stop",daemon_generation:action.authority_generation};break; case "admit_provider": {const binding=action.intent_binding;if(!binding||binding.eligibility!=="eligible"||!binding.provider||!binding.execution_mode||!binding.eligibility_fingerprint||!binding.project_binding_id||!binding.source_store_identity||!binding.registration_identity||!Number.isSafeInteger(binding.registration_revision)||binding.registration_revision<1)throw new Error("Server did not provide an eligible provider admission binding.");body={action:"admit_provider",provider:binding.provider,execution_mode:binding.execution_mode,eligibility_fingerprint:binding.eligibility_fingerprint};break;} case "diagnose": body={action:"diagnose"};break;
+      case "start_daemon": if(!Number.isSafeInteger(action.authority_generation))throw new Error("Exact daemon authority generation is required.");body={action:"daemon_start",daemon_generation:action.authority_generation};break; case "stop_daemon": if(!Number.isSafeInteger(action.authority_generation))throw new Error("Exact daemon authority generation is required.");body={action:"daemon_stop",daemon_generation:action.authority_generation};break; case "recover_daemon_predecessor": {const binding=action.recovery_binding;if(!binding||!binding.daemon_id||!binding.instance_id||!Number.isSafeInteger(binding.daemon_generation))throw new Error("Server did not provide the exact predecessor recovery binding.");body={action:"recover_daemon_predecessor",daemon_id:binding.daemon_id,instance_id:binding.instance_id,daemon_generation:binding.daemon_generation,provider_process_groups_terminated_confirmed:confirmed,evidence_ref:required("evidence_ref")};break;} case "admit_provider": {const binding=action.intent_binding;if(!binding||binding.eligibility!=="eligible"||!binding.provider||!binding.execution_mode||!binding.eligibility_fingerprint||!binding.project_binding_id||!binding.source_store_identity||!binding.registration_identity||!Number.isSafeInteger(binding.registration_revision)||binding.registration_revision<1)throw new Error("Server did not provide an eligible provider admission binding.");body={action:"admit_provider",provider:binding.provider,execution_mode:binding.execution_mode,eligibility_fingerprint:binding.eligibility_fingerprint};break;} case "diagnose": body={action:"diagnose"};break;
       case "release_work": body={action:"release_work"};break;
       case "claim_work": body={action:"claim_work"};break;
       case "start_work": body={action:"start_work"};break;
     }
   }catch(error){return {error:error instanceof Error?error.message:String(error)}}
-  const confirmation:Record<string,string>={cancel_work:"cancel",accept_work:"accept",reconcile_message_delivery:"reconcile_message_delivery",resolve_runtime_recovery:"resolve_runtime_recovery",close_member_run:"close_member_run",retire_member_run:"retire_member_run",cleanup_workspace:"cleanup_workspace",waive_gate:"waive_gate",revoke_waiver:"revoke_waiver",start_daemon:"daemon-start",stop_daemon:"daemon-stop"};
+  const confirmation:Record<string,string>={cancel_work:"cancel",accept_work:"accept",reconcile_message_delivery:"reconcile_message_delivery",resolve_runtime_recovery:"resolve_runtime_recovery",close_member_run:"close_member_run",retire_member_run:"retire_member_run",cleanup_workspace:"cleanup_workspace",waive_gate:"waive_gate",revoke_waiver:"revoke_waiver",start_daemon:"daemon-start",stop_daemon:"daemon-stop",recover_daemon_predecessor:"daemon-recover-predecessor"};
   if(confirmation[action.kind]&&!confirmed)return {error:"Server-enforced confirmation is required."};
   return {path,body,headers:{"Idempotency-Key":crypto.randomUUID(),"If-Match":String(action.required_version),...(confirmation[action.kind]?{"X-AgentFirm-Confirm":confirmation[action.kind]}:{})}};
 }
@@ -153,7 +154,7 @@ export function roleActionRoute(action:AllowedAction,context:{teamId?:string;tea
   if(action.kind==="reconcile_message_delivery"&&node)return `/v1/agentfirm/nodes/${node}/message-deliveries/${id}/reconcile`;
   if(action.kind==="resolve_runtime_recovery"&&node)return `/v1/agentfirm/nodes/${node}/runtime-commands/${id}/resolve`;
   if(action.kind==="diagnose"&&node)return `/v1/views/operator/${node}`;
-  if(["start_daemon","stop_daemon","admit_provider"].includes(action.kind)&&node)return `/v1/agentfirm/nodes/${node}/${action.kind==="start_daemon"?"daemon-start":action.kind==="stop_daemon"?"daemon-stop":"provider-admission"}`;
+  if(["start_daemon","stop_daemon","recover_daemon_predecessor","admit_provider"].includes(action.kind)&&node)return `/v1/agentfirm/nodes/${node}/${action.kind==="start_daemon"?"daemon-start":action.kind==="stop_daemon"?"daemon-stop":action.kind==="recover_daemon_predecessor"?"daemon-recover-predecessor":"provider-admission"}`;
   const workRecords:Record<string,string>={request_changes:"request-changes",revise_work:"revise",write_report:"reports",write_finding:"findings",write_failure:"failure-analyses",request_gate_evaluation:"gate-requirements"};
   if(workRecords[action.kind]&&team)return `/v1/agentfirm/teams/${team}/works/${id}/${workRecords[action.kind]}`;
   const messages:Record<string,string>={send_message:"send",reply_message:"reply",request_decision:"request-decision"};

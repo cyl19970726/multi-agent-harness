@@ -122,6 +122,81 @@ fn operator_eligible_daemon_and_server_probed_admission_are_real_and_fail_closed
         &initial_stop_headers,
     );
     assert_eq!(status, 200, "initial daemon stop: {initial_stopped}");
+    let store = HarnessStore::new(home.spaces_dir().join(&space_id))
+        .with_provider_compatibility_scope(&project_id, format!("execution-space:{space_id}"));
+    let release_deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        if store
+            .latest_node_daemon_lease(node_id)
+            .expect("stopped daemon lease")
+            .is_some_and(|lease| lease.status == harness_core::NodeDaemonLeaseStatus::Released)
+        {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < release_deadline,
+            "NodeDaemon did not explicitly release after Stop"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    let dead_instance_id = format!("2147483647:{}:dead-daemon", unix_ms());
+    let dead_lease = store
+        .acquire_node_daemon_lease(node_id, "dead-daemon", &dead_instance_id, unix_ms(), 1)
+        .expect("expired predecessor fixture lease");
+    std::thread::sleep(std::time::Duration::from_millis(5));
+    let (status, recovery_view) =
+        serve.get_json_with_headers(&operator_route, &[("X-AgentFirm-Token", OPERATOR_TOKEN)]);
+    assert_eq!(status, 200, "Operator recovery view: {recovery_view}");
+    let recovery_action = recovery_view["allowed_actions"]
+        .as_array()
+        .and_then(|actions| {
+            actions
+                .iter()
+                .find(|action| action["kind"] == "recover_daemon_predecessor")
+        })
+        .expect("expired predecessor recovery action");
+    assert_eq!(
+        recovery_action["recovery_binding"],
+        serde_json::json!({
+            "daemon_id":"dead-daemon",
+            "instance_id":dead_instance_id,
+            "daemon_generation":dead_lease.generation,
+        })
+    );
+    assert!(recovery_view["allowed_actions"]
+        .as_array()
+        .is_some_and(|actions| !actions
+            .iter()
+            .any(|action| action["kind"] == "start_daemon")));
+    let recovery_headers = [
+        ("X-AgentFirm-Token", OPERATOR_TOKEN),
+        ("Idempotency-Key", "operator-daemon-predecessor-recover"),
+        ("If-Match", node_revision.as_str()),
+        ("X-AgentFirm-Confirm", "daemon-recover-predecessor"),
+    ];
+    let recovery_route =
+        format!("/v1/agentfirm/nodes/{node_id}/daemon-recover-predecessor?project={project_id}");
+    let (status, recovered) = serve.post_json_with_headers(
+        &recovery_route,
+        &serde_json::json!({
+            "action":"recover_daemon_predecessor",
+            "daemon_id":"dead-daemon",
+            "instance_id":dead_instance_id,
+            "daemon_generation":dead_lease.generation,
+            "provider_process_groups_terminated_confirmed":true,
+            "evidence_ref":"test:dead-process-and-provider-groups-absent",
+        }),
+        &recovery_headers,
+    );
+    assert_eq!(status, 200, "predecessor recovery: {recovered}");
+    assert_eq!(
+        store
+            .latest_node_daemon_lease(node_id)
+            .expect("recovered lease")
+            .expect("lease row")
+            .status,
+        harness_core::NodeDaemonLeaseStatus::Released
+    );
     let (status, after_stop) =
         serve.get_json_with_headers(&operator_route, &[("X-AgentFirm-Token", OPERATOR_TOKEN)]);
     assert_eq!(status, 200, "Operator after stop: {after_stop}");
@@ -207,8 +282,6 @@ fn operator_eligible_daemon_and_server_probed_admission_are_real_and_fail_closed
             })
         }));
 
-    let store = HarnessStore::new(home.spaces_dir().join(&space_id))
-        .with_provider_compatibility_scope(&project_id, format!("execution-space:{space_id}"));
     let before = store
         .latest_provider_compatibility_admissions()
         .expect("admissions before")

@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn runtime_command_replay_precedes_successor_fence_but_stale_settlement_is_zero_effect() {
+fn expired_predecessor_replays_and_settles_but_cannot_admit_a_new_effect() {
     let (store, root) = fabric_store();
     store
         .migrate_legacy_agent_identity_same_id(
@@ -66,7 +66,7 @@ fn runtime_command_replay_precedes_successor_fence_but_stale_settlement_is_zero_
         .unwrap();
 
     let successor_time = current_unix_ms() + 60_001;
-    store
+    let successor_error = store
         .acquire_node_daemon_lease(
             "11111111-1111-4111-8111-111111111111",
             "daemon-2",
@@ -74,21 +74,23 @@ fn runtime_command_replay_precedes_successor_fence_but_stale_settlement_is_zero_
             successor_time,
             60_000,
         )
-        .unwrap();
+        .expect_err("an unsettled predecessor cannot be bypassed by a successor");
+    assert!(successor_error
+        .to_string()
+        .contains("NODE_DAEMON_PREDECESSOR_RECOVERY_REQUIRED"));
 
     let replay = store
         .prepare_runtime_command(&admission_context, &command, successor_time, "t3")
-        .expect("exact replay is resolved before mutable successor state");
+        .expect("exact replay is resolved before expired mutable authority state");
     assert!(replay.replayed);
 
-    let operations_before = store.canonical_operations().unwrap();
     let settle_context = MutationContext {
         command_name: "runtime.provider_effect.settle".into(),
         idempotency_key: "runtime-command-fence:settle".into(),
         expected_version: 1,
         ..service_context("unused", "unused", 0)
     };
-    let error = store
+    let settled = store
         .settle_runtime_command(
             &settle_context,
             "runtime-command-fence",
@@ -98,8 +100,28 @@ fn runtime_command_replay_precedes_successor_fence_but_stale_settlement_is_zero_
             None,
             "t4",
         )
-        .expect_err("superseded daemon cannot settle an effect");
-    assert!(error.to_string().contains("SUPERVISOR_GENERATION_FENCED"));
-    assert_eq!(store.canonical_operations().unwrap(), operations_before);
+        .expect("the exact expired predecessor retains settlement-only authority");
+    assert_eq!(settled.projection.status, RuntimeCommandStatus::Applied);
+    assert_eq!(
+        settled.projection.effect_certainty,
+        RuntimeEffectCertainty::Applied
+    );
+
+    let mut new_command = command.clone();
+    new_command.id = "runtime-command-after-expiry".into();
+    new_command.idempotency_key = new_command.id.clone();
+    let mut new_context = admission_context.clone();
+    new_context.idempotency_key = new_command.id.clone();
+    new_context.request_fingerprint =
+        Some(runtime_command_envelope_fingerprint(&new_command).unwrap());
+    let new_effect_error = store
+        .prepare_runtime_command(&new_context, &new_command, successor_time, "t5")
+        .expect_err("expired predecessor cannot prepare a new provider effect");
+    assert!(
+        new_effect_error
+            .to_string()
+            .contains("SUPERVISOR_GENERATION_FENCED"),
+        "{new_effect_error}"
+    );
     fs::remove_dir_all(root).unwrap();
 }

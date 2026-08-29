@@ -135,6 +135,10 @@ pub(crate) struct MultiTeamDaemon {
     /// Ends the NodeDaemon lease heartbeat only after accepted workers and
     /// managed supervisors have converged.
     authority_shutdown: Arc<AtomicBool>,
+    /// Sticky process-local fence. Once any required Execution Space loses
+    /// this instance's exact lease, no Space may admit another provider
+    /// effect and this process may only drain/settle its predecessor bundle.
+    authority_lost: AtomicBool,
     /// Latches an accepted worker that panicked or returned without proving
     /// command completion. Such a generation may drain but never Release.
     control_worker_failed: AtomicBool,
@@ -271,6 +275,7 @@ impl MultiTeamDaemon {
             scan_interval: Duration::from_secs(scan_interval_secs),
             stop_requested: shutdown_sig,
             authority_shutdown: Arc::new(AtomicBool::new(false)),
+            authority_lost: AtomicBool::new(false),
             control_worker_failed: AtomicBool::new(false),
             recovery_blocked_runs: Mutex::new(HashSet::new()),
             #[cfg(test)]
