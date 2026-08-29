@@ -742,6 +742,7 @@ pub(crate) fn reopen_team_member_value(
     }
     let run = latest_team_run(store, team_run_id)?;
     team_run_execution_space_id(store, &run)?;
+    let reopen_actor = store.exact_team_run_host_actor(team_run_id)?;
     if !run.member_run_ids.iter().any(|id| id == member_run_id) {
         return Err(CliError::Usage(format!(
             "member run {member_run_id} does not belong to team run {team_run_id}"
@@ -928,13 +929,19 @@ pub(crate) fn reopen_team_member_value(
         next_run.host_control_mode = target_host_mode;
         next_run.host_thread_id = optional_json_string(body, "host_thread_id")?;
         next_run.updated_at = now_string();
-        store_conflict_as_usage(
-            store.compare_and_transition_host_mode(&run, &next_run, &expected, &member),
-        )?;
+        store_conflict_as_usage(store.compare_and_transition_host_mode(
+            &reopen_actor,
+            &run,
+            &next_run,
+            &expected,
+            &member,
+        ))?;
     } else {
-        store_conflict_as_usage(
-            store.compare_and_advance_member_run_generation(&expected, &member),
-        )?;
+        store_conflict_as_usage(store.compare_and_reopen_member_run_generation(
+            &reopen_actor,
+            &expected,
+            &member,
+        ))?;
     }
 
     let ledger = TeamRunLedger::without_supervisor(store, team_run_id);

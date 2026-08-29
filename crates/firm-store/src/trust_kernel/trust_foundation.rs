@@ -296,21 +296,33 @@ impl HarnessStore {
                 Some(work.version),
             ));
         }
-        let active_bindings = self
+        let work_bindings = self
             .fabric_work_execution_bindings(execution_space_id)?
             .into_iter()
-            .filter(|binding| {
-                binding.work_id == work.id && binding.status == WorkExecutionBindingStatus::Active
-            })
+            .filter(|binding| binding.work_id == work.id)
             .collect::<Vec<_>>();
-        let [binding] = active_bindings.as_slice() else {
-            return Err(trust_error(
-                TrustErrorCode::WorkExecutionBindingActive,
-                "member-owned Work mutation requires exactly one active WorkExecutionBinding",
-                "work",
-                &work.id,
-                Some(work.version),
-            ));
+        let active_bindings = work_bindings
+            .iter()
+            .filter(|binding| binding.status == WorkExecutionBindingStatus::Active)
+            .collect::<Vec<_>>();
+        let binding = match active_bindings.as_slice() {
+            [binding] => (*binding).clone(),
+            [] if allow_reopened_result_settlement => self
+                .require_exact_released_result_binding_unlocked(
+                    execution_space_id,
+                    work,
+                    actor,
+                    &work_bindings,
+                )?,
+            _ => {
+                return Err(trust_error(
+                    TrustErrorCode::WorkExecutionBindingActive,
+                    "member-owned Work mutation requires exactly one active WorkExecutionBinding",
+                    "work",
+                    &work.id,
+                    Some(work.version),
+                ));
+            }
         };
         let responsibility_changed_after_binding = self
             .work_responsibility_changed_after_revision_unlocked(&work.id, binding.work_revision)?;
@@ -429,8 +441,134 @@ impl HarnessStore {
                 Some(work.version),
             ));
         }
-        self.require_provider_received_work_delivery_unlocked(execution_space_id, binding)?;
-        Ok((run.clone(), binding.clone()))
+        self.require_provider_received_work_delivery_unlocked(execution_space_id, &binding)?;
+        Ok((run.clone(), binding))
+    }
+
+    fn require_exact_released_result_binding_unlocked(
+        &self,
+        execution_space_id: &str,
+        work: &Work,
+        actor: &ActorRef,
+        work_bindings: &[WorkExecutionBinding],
+    ) -> StoreResult<WorkExecutionBinding> {
+        let current_runs = self
+            .trust_member_runs(execution_space_id)?
+            .into_iter()
+            .filter(|run| {
+                run.agent_member_id == actor.id
+                    && run.team_run_id == work.team_run_id
+                    && run.has_live_runtime_authority()
+            })
+            .collect::<Vec<_>>();
+        let [current_run] = current_runs.as_slice() else {
+            return Err(trust_error(
+                TrustErrorCode::MemberRunGenerationFenced,
+                "reopened Result settlement requires exactly one current active MemberRun",
+                "work",
+                &work.id,
+                Some(work.version),
+            ));
+        };
+        let mut candidates = Vec::new();
+        for binding in work_bindings
+            .iter()
+            .filter(|binding| binding.status == WorkExecutionBindingStatus::Released)
+        {
+            let admission = self.work_execution_runtime_binding(execution_space_id, &binding.id)?;
+            let exact_close_reopen_lineage = match admission.target_member_run_generation {
+                Some(generation) => {
+                    self.released_binding_has_exact_member_close_evidence_unlocked(
+                        execution_space_id,
+                        binding,
+                        &current_run.id,
+                        generation,
+                    )? && self.member_run_has_exact_close_reopen_lineage_unlocked(
+                        execution_space_id,
+                        &current_run.id,
+                        generation,
+                        current_run.runtime_generation,
+                    )?
+                }
+                None => false,
+            };
+            if admission.target_member_run_id.as_deref() != Some(current_run.id.as_str())
+                || admission.target_session_id.as_deref() != Some(binding.agent_session_id.as_str())
+                || admission.target_runtime_generation != Some(binding.agent_session_generation)
+                || !exact_close_reopen_lineage
+            {
+                continue;
+            }
+            candidates.push(binding.clone());
+        }
+        let [binding] = candidates.as_slice() else {
+            return Err(trust_error(
+                TrustErrorCode::WorkExecutionBindingActive,
+                "reopened Result settlement requires exactly one exact released predecessor WorkExecutionBinding",
+                "work",
+                &work.id,
+                Some(work.version),
+            ));
+        };
+        Ok(binding.clone())
+    }
+
+    fn released_binding_has_exact_member_close_evidence_unlocked(
+        &self,
+        execution_space_id: &str,
+        binding: &WorkExecutionBinding,
+        member_run_id: &str,
+        member_run_generation: u64,
+    ) -> StoreResult<bool> {
+        let releases = self
+            .trust_operation_envelopes_unlocked()?
+            .into_iter()
+            .filter(|envelope| {
+                envelope.execution_space_id == execution_space_id
+                    && envelope.operation.event.aggregate_kind == "work_execution_binding"
+                    && envelope.operation.event.aggregate_id == binding.id
+                    && envelope.operation.event.transition == "released"
+            })
+            .collect::<Vec<_>>();
+        let [release] = releases.as_slice() else {
+            return Ok(false);
+        };
+        let Some(close_request_id) = release.operation.event.payload["close_request_id"].as_str()
+        else {
+            return Ok(false);
+        };
+        let Some(close_runtime_command_id) =
+            release.operation.event.payload["close_runtime_command_id"].as_str()
+        else {
+            return Ok(false);
+        };
+        let exact_close_request = self
+            .latest_team_member_close_request(member_run_id)?
+            .is_some_and(|request| {
+                request.id == close_request_id
+                    && request.status == firm_core::TeamMemberCloseStatus::Applied
+            });
+        let exact_close_command = self
+            .runtime_commands(execution_space_id)?
+            .into_iter()
+            .find(|command| command.id == close_runtime_command_id)
+            .is_some_and(|command| {
+                command.command == RuntimeCommandKind::CloseMember
+                    && command.binding.target_member_run_id.as_deref() == Some(member_run_id)
+                    && command.binding.target_member_run_generation == Some(member_run_generation)
+                    && command.binding.target_session_id.as_deref()
+                        == Some(binding.agent_session_id.as_str())
+                    && command.binding.target_runtime_generation
+                        == Some(binding.agent_session_generation)
+                    && command
+                        .source_record_id
+                        .as_deref()
+                        .is_some_and(|source| source.starts_with(&format!("{close_request_id}:")))
+                    && command.status == RuntimeCommandStatus::Applied
+                    && command.effect_certainty == RuntimeEffectCertainty::Applied
+                    && command.postcondition_status == RuntimePostconditionStatus::Satisfied
+            });
+        Ok(exact_close_request && exact_close_command)
     }
 
     fn member_run_has_exact_close_reopen_lineage_unlocked(
@@ -455,7 +593,12 @@ impl HarnessStore {
         for pair in history.windows(2) {
             let closed_event = &pair[0].operation.event;
             let reopened_event = &pair[1].operation.event;
-            if closed_event.transition != "closed" || reopened_event.transition != "reopened" {
+            let formal_close = matches!(
+                closed_event.transition.as_str(),
+                "closed" | "runtime_projection_synchronized"
+            );
+            let formal_reopen = reopened_event.transition == "reopened";
+            if !formal_close || !formal_reopen {
                 continue;
             }
             let closed = event_projection::<MemberRun>(&pair[0])?;
