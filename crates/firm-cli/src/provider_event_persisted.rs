@@ -167,7 +167,15 @@ pub(crate) fn read_persisted_session_for_daemon(
             CliError::Usage("TEAM_RUN_SCOPE_MISMATCH: TeamRun/project placement differs".into())
         })?;
     let _ = (team, run);
-    authorize_viewer(&store, request)?;
+    let memberships = store.fabric_team_memberships(&request.execution_space_id)?;
+    let target_is_current_team_member = target_is_active_team_member(&memberships, request);
+    if !target_is_current_team_member {
+        return Err(CliError::Usage(
+            "NATIVE_SESSION_TEAM_SCOPE_MISMATCH: Session owner is not an active member of the selected Team"
+                .into(),
+        ));
+    }
+    authorize_viewer(&memberships, request)?;
     let sessions = store
         .fabric_agent_sessions(&request.execution_space_id)?
         .into_iter()
@@ -318,25 +326,42 @@ fn validate_request_shape(request: &PersistedSessionReadRequest) -> CliResult<()
     Ok(())
 }
 
-fn authorize_viewer(store: &HarnessStore, request: &PersistedSessionReadRequest) -> CliResult<()> {
+fn target_is_active_team_member(
+    memberships: &[harness_core::agentfirm_api::TeamMembership],
+    request: &PersistedSessionReadRequest,
+) -> bool {
+    memberships.iter().any(|membership| {
+        membership.team_id == request.team_id
+            && membership.agent_member_id == request.agent_member_id
+            && membership.state == TeamMembershipStatus::Active
+    })
+}
+
+fn authorize_viewer(
+    memberships: &[harness_core::agentfirm_api::TeamMembership],
+    request: &PersistedSessionReadRequest,
+) -> CliResult<()> {
     if request.viewer.local_operator {
         return Ok(());
     }
-    let actors = std::iter::once(&request.viewer.actor)
-        .chain(request.viewer.authority_actors.iter())
-        .filter(|actor| actor.kind == ActorKind::AgentMember)
-        .map(|actor| actor.id.as_str())
-        .collect::<std::collections::BTreeSet<_>>();
-    let authorized = actors.contains(request.agent_member_id.as_str())
-        || store
-            .fabric_team_memberships(&request.execution_space_id)?
-            .iter()
-            .any(|membership| {
+    // Remote transport authenticates the closed business actor only. Additional
+    // payload actors are never authority and are rejected instead of being
+    // treated as an unverified delegation chain.
+    if !request.viewer.authority_actors.is_empty() {
+        return Err(CliError::Usage(
+            "NATIVE_SESSION_READ_NOT_AUTHORIZED: remote authority actors are not transport-bound"
+                .into(),
+        ));
+    }
+    let actor = &request.viewer.actor;
+    let authorized = actor.kind == ActorKind::AgentMember
+        && (actor.id == request.agent_member_id
+            || memberships.iter().any(|membership| {
                 membership.team_id == request.team_id
                     && membership.role == TeamMembershipRole::Host
                     && membership.state == TeamMembershipStatus::Active
-                    && actors.contains(membership.agent_member_id.as_str())
-            });
+                    && membership.agent_member_id == actor.id
+            }));
     if !authorized {
         return Err(CliError::Usage(
             "NATIVE_SESSION_READ_NOT_AUTHORIZED: requires the exact Session owner or Team Host"
@@ -481,6 +506,7 @@ pub(crate) fn build_remote_persisted_session_read_operation(
     authority: &RemotePersistedSessionRouteAuthority,
 ) -> Result<harness_fabric::RoutedOperation, harness_fabric::FabricError> {
     if request.viewer.local_operator
+        || !request.viewer.authority_actors.is_empty()
         || authority.operation_id.trim().is_empty()
         || authority.source_gateway_generation == 0
         || authority.source_node_daemon_generation == 0
@@ -586,9 +612,8 @@ pub(crate) fn build_remote_persisted_session_read_operation(
 mod tests {
     use super::*;
 
-    #[test]
-    fn remote_read_uses_the_closed_node_gateway_application_envelope() {
-        let request = PersistedSessionReadRequest {
+    fn remote_request(viewer_id: &str) -> PersistedSessionReadRequest {
+        PersistedSessionReadRequest {
             execution_space_id: "space-target".into(),
             project_binding_id: "project-target".into(),
             team_id: "team-target".into(),
@@ -606,12 +631,73 @@ mod tests {
             viewer: PersistedSessionViewer {
                 actor: ActorRef {
                     kind: ActorKind::AgentMember,
-                    id: "member-target".into(),
+                    id: viewer_id.into(),
                 },
                 authority_actors: Vec::new(),
                 local_operator: false,
             },
-        };
+        }
+    }
+
+    fn membership(
+        team_id: &str,
+        member_id: &str,
+        role: TeamMembershipRole,
+    ) -> harness_core::agentfirm_api::TeamMembership {
+        harness_core::agentfirm_api::TeamMembership {
+            id: format!("membership:{team_id}:{member_id}"),
+            team_id: team_id.into(),
+            agent_member_id: member_id.into(),
+            node_id: "node-target".into(),
+            role,
+            state: TeamMembershipStatus::Active,
+            membership_generation: 1,
+            default_subscription_refs: Vec::new(),
+            created_by: ActorRef {
+                kind: ActorKind::Service,
+                id: "node-daemon:node-target".into(),
+            },
+            revision: 1,
+            joined_at: "unix-ms:1".into(),
+            left_at: None,
+        }
+    }
+
+    #[test]
+    fn remote_viewer_cannot_inject_host_authority_or_cross_team_session_owner() {
+        let memberships = vec![
+            membership("team-target", "host-target", TeamMembershipRole::Host),
+            membership("team-other", "member-target", TeamMembershipRole::Member),
+            membership("team-target", "viewer-other", TeamMembershipRole::Member),
+        ];
+        let mut request = remote_request("viewer-other");
+        request.viewer.authority_actors.push(ActorRef {
+            kind: ActorKind::AgentMember,
+            id: "host-target".into(),
+        });
+        assert!(authorize_viewer(&memberships, &request).is_err());
+        assert!(!target_is_active_team_member(&memberships, &request));
+
+        request.viewer.authority_actors.clear();
+        request.viewer.actor.id = "host-target".into();
+        assert!(authorize_viewer(&memberships, &request).is_ok());
+        assert!(
+            !target_is_active_team_member(&memberships, &request),
+            "Host authority cannot move a Session owner across Team scope"
+        );
+
+        let mut exact = memberships;
+        exact.push(membership(
+            "team-target",
+            "member-target",
+            TeamMembershipRole::Member,
+        ));
+        assert!(target_is_active_team_member(&exact, &request));
+    }
+
+    #[test]
+    fn remote_read_uses_the_closed_node_gateway_application_envelope() {
+        let request = remote_request("member-target");
         let authority = RemotePersistedSessionRouteAuthority {
             operation_id: "native-read-op-1".into(),
             company_id: "company-1".into(),
