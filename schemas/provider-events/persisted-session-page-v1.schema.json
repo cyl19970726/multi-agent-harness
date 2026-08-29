@@ -1,0 +1,22 @@
+{
+  "$schema":"https://json-schema.org/draft/2020-12/schema",
+  "$id":"https://agentfirm.local/schemas/provider-events/persisted-session-page-v1.schema.json",
+  "title":"PersistedSessionPage",
+  "type":"object",
+  "additionalProperties":false,
+  "required":["reader_authority","source_generation","records","has_more","incomplete_tail"],
+  "properties":{
+    "reader_authority":{"type":"object","additionalProperties":false,"required":["node_id","node_daemon_id","node_daemon_generation","agent_session_id","agent_session_generation"],"properties":{"node_id":{"type":"string","minLength":1},"node_daemon_id":{"type":"string","minLength":1},"node_daemon_generation":{"type":"integer","minimum":1},"agent_session_id":{"type":"string","minLength":1},"agent_session_generation":{"type":"integer","minimum":1}}},
+    "source_generation":{"type":"string","pattern":"^(?!.*\\.\\.)source-generation:[^/\\\\]+$","maxLength":512},
+    "records":{"type":"array","items":{"$ref":"provider-native-event-record-v3.schema.json"}},
+    "snapshot_watermark":{"oneOf":[{"$ref":"provider-native-event-record-v3.schema.json#/$defs/ordering_key"},{"type":"null"}]},
+    "has_more":{"type":"boolean"},
+    "next_cursor":{"oneOf":[{"type":"object","additionalProperties":false,"required":["source_generation","before"],"properties":{"source_generation":{"type":"string","pattern":"^(?!.*\\.\\.)source-generation:[^/\\\\]+$","maxLength":512},"before":{"$ref":"provider-native-event-record-v3.schema.json#/$defs/ordering_key"}}},{"type":"null"}]},
+    "incomplete_tail":{"type":"boolean"},
+    "source_reset":{"oneOf":[{"type":"object","additionalProperties":false,"required":["source_generation","reason"],"properties":{"previous_source_generation":{"type":["string","null"],"pattern":"^(?!.*\\.\\.)source-generation:[^/\\\\]+$","maxLength":512},"source_generation":{"type":"string","pattern":"^(?!.*\\.\\.)source-generation:[^/\\\\]+$","maxLength":512},"reason":{"enum":["truncated","replaced","rotated","compacted","format_changed"]}}},{"type":"null"}]}
+  },
+  "allOf":[
+    {"if":{"properties":{"has_more":{"const":true}}},"then":{"required":["next_cursor"],"properties":{"next_cursor":{"type":"object"}}}},
+    {"if":{"properties":{"has_more":{"const":false}}},"then":{"properties":{"next_cursor":{"type":"null"}}}}
+  ]
+}

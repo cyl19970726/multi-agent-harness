@@ -165,7 +165,7 @@ pub struct ProviderEventFragment {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct ProviderNativeEventRecord {
+pub struct LegacyProviderNativeEventRecordV2 {
     pub schema_version: String,
     pub record_id: String,
     pub provider: ProviderKind,
@@ -208,7 +208,7 @@ pub struct ProviderNativeEventRecord {
     pub fragments: Vec<ProviderEventFragment>,
 }
 
-impl ProviderNativeEventRecord {
+impl LegacyProviderNativeEventRecordV2 {
     pub fn is_team_public_allowlisted(fragment: &ProviderEventFragment) -> bool {
         fragment.visibility == FragmentVisibility::TeamPublic
             && matches!(

@@ -1,10 +1,16 @@
 use firm_provider_events::{
     adapter_manifest, decode_native_event, decode_native_json_line, read_transcript_page,
-    Completeness, DecodeContext, DecodeOutcome, EffectCertainty, FoldOutcome, FragmentPayload,
-    FragmentVisibility, NativeEvent, ProjectionAccessError, ProjectionAuthority,
-    ProjectionReadScope, ProviderEventFold, ProviderEventFoldError, ProviderKind,
-    ProviderProjectionService, SemanticKind, TranscriptReadBoundary, TranscriptReadError,
-    PROVIDER_NATIVE_EVENT_RECORD_SCHEMA_VERSION,
+    Completeness, ContentAvailability, DecodeContext, DecodeOutcome, EffectCertainty, FoldOutcome,
+    FragmentPayload, FragmentVisibility, NativeEvent, NativeSessionReaderAuthority,
+    OrderingKeyKind, PersistedAdapterManifest, PersistedCompleteness, PersistedEventFragment,
+    PersistedFragmentPayload, PersistedNativeRow, PersistedOrderingKey, PersistedPageCursor,
+    PersistedReaderReachability, PersistedRecordValidationError, PersistedSemanticCapability,
+    PersistedSessionPage, PersistedSourceReset, PersistedTailMode, ProjectionAccessError,
+    ProjectionAuthority, ProjectionReadScope, ProviderEventFold, ProviderEventFoldError,
+    ProviderKind, ProviderNativeEventRecord, ProviderProjectionService, SemanticKind,
+    SessionLifecyclePhase, SessionSemanticKind, SourceResetReason, TranscriptReadBoundary,
+    TranscriptReadError, PERSISTED_PROVIDER_EVENT_ADAPTER_VERSION,
+    PROVIDER_NATIVE_EVENT_RECORD_SCHEMA_VERSION, PROVIDER_NATIVE_EVENT_RECORD_V3_SCHEMA_VERSION,
 };
 use serde_json::json;
 use std::{
@@ -42,9 +48,273 @@ fn decode(provider: ProviderKind, position: u64, raw: serde_json::Value) -> Deco
     .expect("decode")
 }
 
-fn observation(outcome: DecodeOutcome) -> firm_provider_events::ProviderNativeEventRecord {
+fn observation(outcome: DecodeOutcome) -> firm_provider_events::LegacyProviderNativeEventRecordV2 {
     let DecodeOutcome::Record(value) = outcome;
     *value
+}
+
+fn persisted_record(
+    source_generation: &str,
+    row_locator: &str,
+    ordering_value: u64,
+) -> ProviderNativeEventRecord {
+    let record_id = ProviderNativeEventRecord::stable_record_id(source_generation, row_locator);
+    ProviderNativeEventRecord {
+        schema_version: PROVIDER_NATIVE_EVENT_RECORD_V3_SCHEMA_VERSION.into(),
+        record_id: record_id.clone(),
+        provider: ProviderKind::Codex,
+        adapter_version: PERSISTED_PROVIDER_EVENT_ADAPTER_VERSION.into(),
+        native_source_ref: "provider-source:codex:session-1".into(),
+        source_generation: source_generation.into(),
+        row_locator: row_locator.into(),
+        ordering_key: PersistedOrderingKey {
+            kind: OrderingKeyKind::ProviderOrdinal,
+            value: ordering_value,
+        },
+        source_content_fingerprint:
+            "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
+        agent_member_id: "agent-1".into(),
+        agent_session_id: "session-1".into(),
+        agent_session_generation: 7,
+        provider_thread_id: Some("thread-1".into()),
+        provider_turn_id: Some("turn-1".into()),
+        provider_event_id: Some("reasoning-1".into()),
+        occurred_at: Some("2026-08-29T08:00:00Z".into()),
+        observed_at: "2026-08-29T08:00:01Z".into(),
+        native_event: json!({"type":"response_item","payload":{"type":"reasoning"}}),
+        fragments: vec![PersistedEventFragment {
+            fragment_id: format!("{record_id}:fragment-0"),
+            fragment_index: 0,
+            semantic_kind: SessionSemanticKind::Reasoning,
+            lifecycle_phase: SessionLifecyclePhase::Progress,
+            completeness: PersistedCompleteness::Complete,
+            content_availability: ContentAvailability::Unavailable,
+            payload: PersistedFragmentPayload::Reasoning { text: None },
+        }],
+    }
+}
+
+#[test]
+fn v3_persisted_record_identity_excludes_reader_daemon_generation() {
+    let record = persisted_record(
+        "source-generation:codex:rollout:file-1",
+        "row-locator:provider-id:reasoning-1",
+        2,
+    );
+    record.validate().expect("valid persisted row");
+    let first = PersistedSessionPage {
+        reader_authority: NativeSessionReaderAuthority {
+            node_id: "node-1".into(),
+            node_daemon_id: "daemon-1".into(),
+            node_daemon_generation: 1,
+            agent_session_id: "session-1".into(),
+            agent_session_generation: 7,
+        },
+        source_generation: record.source_generation.clone(),
+        records: vec![record.clone()],
+        snapshot_watermark: Some(record.ordering_key),
+        has_more: false,
+        next_cursor: None,
+        incomplete_tail: false,
+        source_reset: None,
+    };
+    let mut successor = first.clone();
+    successor.reader_authority.node_daemon_generation = 2;
+    first.validate().expect("predecessor reader authority");
+    successor.validate().expect("successor reader authority");
+    assert_eq!(first.records[0].record_id, successor.records[0].record_id);
+    assert_eq!(first.records[0], successor.records[0]);
+}
+
+#[test]
+fn v3_content_unavailable_is_absent_not_a_placeholder() {
+    let mut record = persisted_record(
+        "source-generation:codex:rollout:file-1",
+        "row-locator:provider-id:reasoning-1",
+        2,
+    );
+    record.validate().expect("absent reasoning is explicit");
+    record.fragments[0].payload = PersistedFragmentPayload::Reasoning {
+        text: Some("Reasoning content unavailable".into()),
+    };
+    assert_eq!(
+        record.validate(),
+        Err(PersistedRecordValidationError::InvalidFragments)
+    );
+}
+
+#[test]
+fn v3_cursor_and_source_reset_are_generation_scoped() {
+    let record = persisted_record(
+        "source-generation:codex:rollout:file-2",
+        "row-locator:offset:512:sha256:aaaaaaaa",
+        512,
+    );
+    let mut page = PersistedSessionPage {
+        reader_authority: NativeSessionReaderAuthority {
+            node_id: "node-1".into(),
+            node_daemon_id: "daemon-1".into(),
+            node_daemon_generation: 2,
+            agent_session_id: "session-1".into(),
+            agent_session_generation: 7,
+        },
+        source_generation: record.source_generation.clone(),
+        records: vec![record.clone()],
+        snapshot_watermark: Some(record.ordering_key),
+        has_more: true,
+        next_cursor: Some(PersistedPageCursor {
+            source_generation: record.source_generation.clone(),
+            before: record.ordering_key,
+        }),
+        incomplete_tail: true,
+        source_reset: Some(PersistedSourceReset {
+            previous_source_generation: Some("source-generation:codex:rollout:file-1".into()),
+            source_generation: record.source_generation.clone(),
+            reason: SourceResetReason::Rotated,
+        }),
+    };
+    page.validate().expect("generation-scoped page");
+    page.next_cursor.as_mut().unwrap().source_generation =
+        "source-generation:codex:rollout:file-1".into();
+    assert_eq!(
+        page.validate(),
+        Err(PersistedRecordValidationError::PageIdentityConflict)
+    );
+    page.next_cursor.as_mut().unwrap().source_generation = page.source_generation.clone();
+    page.next_cursor.as_mut().unwrap().before.kind = OrderingKeyKind::CompleteRowEndOffset;
+    assert_eq!(
+        page.validate(),
+        Err(PersistedRecordValidationError::PageIdentityConflict)
+    );
+}
+
+fn v3_fixture_files(relative: &str) -> Vec<PathBuf> {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../schemas/provider-events/fixtures/v3")
+        .join(relative);
+    let mut files = fs::read_dir(root)
+        .expect("v3 fixture directory")
+        .map(|entry| entry.expect("v3 fixture entry").path())
+        .filter(|path| {
+            path.extension()
+                .is_some_and(|extension| extension == "json")
+        })
+        .collect::<Vec<_>>();
+    files.sort();
+    files
+}
+
+#[test]
+fn checked_in_v3_fixtures_match_the_closed_rust_contract() {
+    for path in v3_fixture_files("valid") {
+        let record: ProviderNativeEventRecord =
+            serde_json::from_slice(&fs::read(&path).expect("read valid record fixture"))
+                .expect("valid record fixture wire");
+        record.validate().expect("valid record fixture contract");
+    }
+    for path in v3_fixture_files("invalid") {
+        if let Ok(record) = serde_json::from_slice::<ProviderNativeEventRecord>(
+            &fs::read(&path).expect("read invalid record fixture"),
+        ) {
+            assert!(
+                record.validate().is_err(),
+                "{} was accepted",
+                path.display()
+            );
+        }
+    }
+    for path in v3_fixture_files("page/valid") {
+        let page: PersistedSessionPage =
+            serde_json::from_slice(&fs::read(&path).expect("read valid page fixture"))
+                .expect("valid page fixture wire");
+        page.validate().expect("valid page fixture contract");
+    }
+    for path in v3_fixture_files("page/invalid") {
+        if let Ok(page) = serde_json::from_slice::<PersistedSessionPage>(
+            &fs::read(&path).expect("read invalid page fixture"),
+        ) {
+            assert!(page.validate().is_err(), "{} was accepted", path.display());
+        }
+    }
+    for path in v3_fixture_files("adapter/valid") {
+        let manifest: PersistedAdapterManifest =
+            serde_json::from_slice(&fs::read(&path).expect("read valid manifest fixture"))
+                .expect("valid manifest fixture wire");
+        manifest
+            .validate()
+            .expect("valid manifest fixture contract");
+    }
+    for path in v3_fixture_files("adapter/invalid") {
+        if let Ok(manifest) = serde_json::from_slice::<PersistedAdapterManifest>(
+            &fs::read(&path).expect("read invalid manifest fixture"),
+        ) {
+            assert!(
+                manifest.validate().is_err(),
+                "{} was accepted",
+                path.display()
+            );
+        }
+    }
+}
+
+#[test]
+fn persisted_row_and_source_scoped_manifest_contracts_are_closed() {
+    let row = PersistedNativeRow {
+        provider: ProviderKind::Codex,
+        source_generation: "source-generation:codex:rollout:file-1".into(),
+        row_locator: "row-locator:provider-id:item-1".into(),
+        ordering_key: PersistedOrderingKey {
+            kind: OrderingKeyKind::ProviderOrdinal,
+            value: 1,
+        },
+        content_fingerprint:
+            "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
+        occurred_at: None,
+        native_event: json!({"type":"response_item"}),
+    };
+    row.validate()
+        .expect("bounded opaque persisted row identity");
+
+    let mut manifest = PersistedAdapterManifest {
+        provider: ProviderKind::Codex,
+        adapter_version: PERSISTED_PROVIDER_EVENT_ADAPTER_VERSION.into(),
+        persisted_source_families: vec!["codex_rollout_jsonl".into()],
+        format_version_fences: vec!["rollout_jsonl_v1".into()],
+        source_generation: true,
+        stable_row_locator: true,
+        pagination: true,
+        tail_mode: PersistedTailMode::Incremental,
+        reader_reachability: vec![PersistedReaderReachability::Local],
+        semantic_capabilities: vec![PersistedSemanticCapability {
+            semantic_kind: SessionSemanticKind::Reasoning,
+            phases: vec![SessionLifecyclePhase::Progress],
+            content_availability: vec![
+                ContentAvailability::Available,
+                ContentAvailability::Unavailable,
+            ],
+        }],
+    };
+    manifest.validate().expect("source-scoped manifest");
+    manifest
+        .semantic_capabilities
+        .push(PersistedSemanticCapability {
+            semantic_kind: SessionSemanticKind::Reasoning,
+            phases: vec![SessionLifecyclePhase::Progress],
+            content_availability: vec![ContentAvailability::Available],
+        });
+    assert_eq!(
+        manifest.validate(),
+        Err(PersistedRecordValidationError::InvalidManifest)
+    );
+
+    manifest.semantic_capabilities.pop();
+    manifest.semantic_capabilities[0]
+        .phases
+        .push(SessionLifecyclePhase::Progress);
+    assert_eq!(
+        manifest.validate(),
+        Err(PersistedRecordValidationError::InvalidManifest)
+    );
 }
 
 #[test]

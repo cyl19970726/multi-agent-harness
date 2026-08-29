@@ -1,0 +1,73 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentfirm.local/schemas/provider-events/provider-native-event-record-v3.schema.json",
+  "title": "ProviderNativeEventRecord v3",
+  "description": "Disposable projection of one exact provider-owned persisted row. Runtime coordination and NodeDaemon authority are outside this record.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version","record_id","provider","adapter_version","native_source_ref","source_generation","row_locator","ordering_key","source_content_fingerprint","agent_member_id","agent_session_id","agent_session_generation","observed_at","native_event","fragments"],
+  "properties": {
+    "schema_version": {"const":"agentfirm.provider_native_event_record.v3"},
+    "record_id": {"type":"string","pattern":"^native-row:sha256:[0-9a-f]{64}$"},
+    "provider": {"enum":["codex","claude","kimi","pi","deepseek_harness"]},
+    "adapter_version": {"const":"agentfirm.persisted_provider_event_adapter.v3"},
+    "native_source_ref": {"type":"string","pattern":"^(?!.*\\.\\.)provider-source:[^/\\\\]+$","maxLength":512},
+    "source_generation": {"type":"string","pattern":"^(?!.*\\.\\.)source-generation:[^/\\\\]+$","maxLength":512},
+    "row_locator": {"type":"string","pattern":"^(?!.*\\.\\.)row-locator:[^/\\\\]+$","maxLength":512},
+    "ordering_key": {"$ref":"#/$defs/ordering_key"},
+    "source_content_fingerprint": {"type":"string","pattern":"^sha256:[0-9a-f]{64}$"},
+    "agent_member_id": {"type":"string","minLength":1},
+    "agent_session_id": {"type":"string","minLength":1},
+    "agent_session_generation": {"type":"integer","minimum":1},
+    "provider_thread_id": {"type":["string","null"]},
+    "provider_turn_id": {"type":["string","null"]},
+    "provider_event_id": {"type":["string","null"]},
+    "occurred_at": {"type":["string","null"]},
+    "observed_at": {"type":"string","minLength":1},
+    "native_event": {"description":"Exact response-local persisted provider row. Never written to a Harness durable store."},
+    "fragments": {"type":"array","minItems":1,"items":{"$ref":"#/$defs/fragment"}}
+  },
+  "$defs": {
+    "ordering_key": {
+      "type":"object","additionalProperties":false,"required":["kind","value"],
+      "properties":{"kind":{"enum":["provider_ordinal","complete_row_end_offset"]},"value":{"type":"integer","minimum":1}}
+    },
+    "fragment": {
+      "type":"object","additionalProperties":false,
+      "required":["fragment_id","fragment_index","semantic_kind","lifecycle_phase","completeness","content_availability","payload"],
+      "properties": {
+        "fragment_id":{"type":"string","minLength":1},
+        "fragment_index":{"type":"integer","minimum":0},
+        "semantic_kind":{"enum":["session_metadata","reasoning","assistant_response","tool_call_requested","tool_call_started","tool_call_completed","tool_call_failed","artifact_created","usage_reported","turn_completed","turn_failed","turn_cancelled","malformed_or_incomplete","unclassified_native"]},
+        "lifecycle_phase":{"enum":["requested","started","progress","terminal"]},
+        "completeness":{"enum":["partial","complete","incomplete"]},
+        "content_availability":{"enum":["available","unavailable"]},
+        "payload":{"type":"object"}
+      },
+      "allOf":[{"oneOf":[
+        {"properties":{"semantic_kind":{"const":"session_metadata"},"payload":{"$ref":"#/$defs/session_metadata_payload"}}},
+        {"properties":{"semantic_kind":{"const":"reasoning"},"payload":{"$ref":"#/$defs/reasoning_payload"}}},
+        {"properties":{"semantic_kind":{"const":"assistant_response"},"payload":{"$ref":"#/$defs/assistant_response_payload"}}},
+        {"properties":{"semantic_kind":{"enum":["tool_call_requested","tool_call_started","tool_call_completed","tool_call_failed"]},"payload":{"$ref":"#/$defs/tool_payload"}}},
+        {"properties":{"semantic_kind":{"const":"artifact_created"},"payload":{"$ref":"#/$defs/artifact_payload"}}},
+        {"properties":{"semantic_kind":{"const":"usage_reported"},"payload":{"$ref":"#/$defs/usage_payload"}}},
+        {"properties":{"semantic_kind":{"enum":["turn_completed","turn_failed","turn_cancelled"]},"payload":{"$ref":"#/$defs/turn_payload"}}},
+        {"properties":{"semantic_kind":{"const":"malformed_or_incomplete"},"payload":{"$ref":"#/$defs/malformed_payload"}}},
+        {"properties":{"semantic_kind":{"const":"unclassified_native"},"payload":{"$ref":"#/$defs/native_payload"}}}
+      ]},
+      {"if":{"properties":{"semantic_kind":{"enum":["reasoning","assistant_response"]},"content_availability":{"const":"unavailable"}},"required":["semantic_kind","content_availability"]},"then":{"properties":{"payload":{"properties":{"text":{"type":"null"}}}}}},
+      {"if":{"properties":{"semantic_kind":{"enum":["reasoning","assistant_response"]},"content_availability":{"const":"available"}},"required":["semantic_kind","content_availability"]},"then":{"properties":{"payload":{"properties":{"text":{"type":"string","minLength":1}},"required":["text"]}}}},
+      {"if":{"properties":{"semantic_kind":{"not":{"enum":["reasoning","assistant_response"]}}},"required":["semantic_kind"]},"then":{"properties":{"content_availability":{"const":"available"}}}}
+      ]
+    },
+    "session_metadata_payload":{"type":"object","additionalProperties":false,"required":["type"],"properties":{"type":{"const":"session_metadata"},"native_session_id":{"type":["string","null"]}}},
+    "reasoning_payload":{"type":"object","additionalProperties":false,"required":["type"],"properties":{"type":{"const":"reasoning"},"text":{"type":["string","null"],"minLength":1}}},
+    "assistant_response_payload":{"type":"object","additionalProperties":false,"required":["type"],"properties":{"type":{"const":"assistant_response"},"text":{"type":["string","null"],"minLength":1}}},
+    "tool_payload":{"type":"object","additionalProperties":false,"required":["type","tool_name"],"properties":{"type":{"const":"tool"},"tool_name":{"type":"string","minLength":1},"call_id":{"type":["string","null"]},"display_detail":{"type":["string","null"]}}},
+    "artifact_payload":{"type":"object","additionalProperties":false,"required":["type","display_name"],"properties":{"type":{"const":"artifact"},"display_name":{"type":"string","minLength":1},"media_type":{"type":["string","null"]},"content_digest":{"type":["string","null"]}}},
+    "usage_payload":{"type":"object","additionalProperties":false,"required":["type"],"properties":{"type":{"const":"usage"},"input_tokens":{"type":["integer","null"],"minimum":0},"output_tokens":{"type":["integer","null"],"minimum":0},"total_tokens":{"type":["integer","null"],"minimum":0}}},
+    "turn_payload":{"type":"object","additionalProperties":false,"required":["type","outcome"],"properties":{"type":{"const":"turn"},"outcome":{"type":"string","minLength":1},"display_summary":{"type":["string","null"]}}},
+    "malformed_payload":{"type":"object","additionalProperties":false,"required":["type","reason_code"],"properties":{"type":{"const":"malformed"},"reason_code":{"type":"string","minLength":1}}},
+    "native_payload":{"type":"object","additionalProperties":false,"required":["type"],"properties":{"type":{"const":"native"},"event_type":{"type":["string","null"]}}}
+  }
+}

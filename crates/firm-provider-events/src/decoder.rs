@@ -4,9 +4,9 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 use crate::{
-    Completeness, EffectCertainty, FragmentPayload, FragmentVisibility, LifecyclePhase,
-    ProviderEventFragment, ProviderKind, ProviderNativeEventRecord, SemanticKind,
-    PROVIDER_EVENT_ADAPTER_VERSION, PROVIDER_NATIVE_EVENT_RECORD_SCHEMA_VERSION,
+    Completeness, EffectCertainty, FragmentPayload, FragmentVisibility,
+    LegacyProviderNativeEventRecordV2, LifecyclePhase, ProviderEventFragment, ProviderKind,
+    SemanticKind, PROVIDER_EVENT_ADAPTER_VERSION, PROVIDER_NATIVE_EVENT_RECORD_SCHEMA_VERSION,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -196,7 +196,7 @@ pub struct NativeEvent {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DecodeOutcome {
-    Record(Box<ProviderNativeEventRecord>),
+    Record(Box<LegacyProviderNativeEventRecordV2>),
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -310,7 +310,7 @@ pub fn decode_native_event(
             payload: decoded.payload,
         })
         .collect();
-    let record = ProviderNativeEventRecord {
+    let record = LegacyProviderNativeEventRecordV2 {
         schema_version: PROVIDER_NATIVE_EVENT_RECORD_SCHEMA_VERSION.into(),
         record_id,
         provider: context.provider,
@@ -422,7 +422,7 @@ fn malformed_record(
     ordering_position: u64,
     occurred_at: Option<String>,
     line: &str,
-) -> ProviderNativeEventRecord {
+) -> LegacyProviderNativeEventRecordV2 {
     let source_fingerprint = format!("sha256:{:x}", Sha256::digest(line.as_bytes()));
     let native_identity = native_event_id.clone().unwrap_or_else(|| {
         format!(
@@ -430,7 +430,7 @@ fn malformed_record(
             &source_fingerprint["sha256:".len()..]
         )
     });
-    ProviderNativeEventRecord {
+    LegacyProviderNativeEventRecordV2 {
         schema_version: PROVIDER_NATIVE_EVENT_RECORD_SCHEMA_VERSION.into(),
         record_id: format!(
             "{}:{}:{native_identity}",

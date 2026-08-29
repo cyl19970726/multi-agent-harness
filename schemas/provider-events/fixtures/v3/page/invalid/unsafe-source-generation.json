@@ -1,0 +1,8 @@
+{
+  "reader_authority":{"node_id":"node-1","node_daemon_id":"daemon-1","node_daemon_generation":2,"agent_session_id":"session-1","agent_session_generation":7},
+  "source_generation":"source-generation:codex:..:file-2",
+  "records":[],
+  "snapshot_watermark":null,
+  "has_more":false,
+  "incomplete_tail":false
+}
