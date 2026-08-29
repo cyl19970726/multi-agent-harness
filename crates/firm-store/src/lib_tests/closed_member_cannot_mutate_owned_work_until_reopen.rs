@@ -91,8 +91,9 @@ fn closed_member_cannot_mutate_owned_work_until_reopen() {
     assert_eq!(current.phase, WorkPhase::Active);
     assert_eq!(current.version, started.version);
 
-    // Reopen restores stable participation but never revives the old execution
-    // binding. A successor scheduler admission must bind the new generation.
+    // A generic generation advance is recovery bookkeeping, not formal
+    // Close→Reopen evidence. It must not revive Result authority even when the
+    // MemberRun id and AgentSession lineage happen to be unchanged.
     let mut reopened_member = closed_member.clone();
     reopened_member.coordination_status = firm_core::MemberCoordinationStatus::Active;
     reopened_member.status = MemberRunStatus::Idle;
@@ -109,7 +110,11 @@ fn closed_member_cannot_mutate_owned_work_until_reopen() {
         Vec::new(),
         "unix-ms:7",
     );
-    let submitted = store
+    let operations_before_recovery_result = store
+        .canonical_operations()
+        .expect("operations before recovery-generation Result")
+        .len();
+    let recovery_result_error = store
         .create_trust_work_report(
             &firm_core::agentfirm_api::MutationContext {
                 execution_space_id: "unit-test-space".into(),
@@ -123,10 +128,38 @@ fn closed_member_cannot_mutate_owned_work_until_reopen() {
             started.accountable_team_id.as_deref().expect("team id"),
             reopened_report,
         )
-        .expect_err("Reopen alone cannot revive stale Work execution authority");
-    assert!(submitted
-        .to_string()
-        .contains("MEMBER_RUN_GENERATION_FENCED"));
+        .expect_err("generic generation advance must not impersonate formal Reopen");
+    assert!(
+        recovery_result_error
+            .to_string()
+            .contains("MEMBER_RUN_GENERATION_FENCED"),
+        "unexpected error: {recovery_result_error}"
+    );
+    assert_eq!(
+        store
+            .canonical_operations()
+            .expect("operations after recovery-generation Result rejection")
+            .len(),
+        operations_before_recovery_result,
+        "generic generation recovery must not write Result, attention, Work, or binding facts"
+    );
+    let current = store
+        .latest_works()
+        .expect("latest works")
+        .into_iter()
+        .find(|work| work.id == started.id)
+        .expect("unsubmitted Work");
+    assert_eq!(current.phase, WorkPhase::Active);
+    let binding = store
+        .fabric_work_execution_bindings("unit-test-space")
+        .expect("bindings")
+        .into_iter()
+        .find(|binding| binding.work_id == started.id)
+        .expect("result binding");
+    assert_eq!(
+        binding.status,
+        firm_core::agentfirm_api::WorkExecutionBindingStatus::Active
+    );
 
     std::fs::remove_dir_all(root).expect("remove temp store");
 }

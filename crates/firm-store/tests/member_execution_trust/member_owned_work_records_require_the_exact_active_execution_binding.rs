@@ -110,30 +110,24 @@ fn member_owned_work_records_require_the_exact_active_execution_binding() {
         .expect("reopen the same MemberRun at generation two");
     assert_eq!(reopened.canonical.projection.runtime_generation, 2);
 
-    let work_before_stale_terminal = harness
+    let work_before_settlement = harness
         .store
         .latest_works()
-        .expect("Works before stale terminal mutation")
+        .expect("Works before reopened settlement")
         .into_iter()
         .find(|work| work.id == "work-1")
-        .expect("original Work before stale terminal mutation");
-    let reports_before_stale_terminal = harness
-        .store
-        .trust_work_reports(SPACE)
-        .expect("reports before stale terminal mutation")
-        .len();
-    let attentions_before_stale_terminal = harness
-        .store
-        .host_attentions()
-        .expect("attentions before stale terminal mutation")
-        .len();
-    let operations_before_stale_terminal = harness
+        .expect("original Work before reopened settlement");
+    let operations_before_progress = harness
         .store
         .canonical_operations()
-        .expect("operations before stale terminal mutation")
+        .expect("operations before reopened progress")
         .len();
-    let mut stale_result = report("generation-2-stale-result", WorkReportKind::Result, &worker);
-    stale_result.work_revision = work_before_stale_terminal.version + 1;
+    let mut stale_progress = report(
+        "generation-2-stale-progress",
+        WorkReportKind::Progress,
+        &worker,
+    );
+    stale_progress.work_revision = work_before_settlement.version;
     assert_eq!(
         trust_code(
             harness
@@ -142,54 +136,70 @@ fn member_owned_work_records_require_the_exact_active_execution_binding() {
                     &context(
                         worker.clone(),
                         "report.create",
-                        "generation-2-stale-result",
+                        "generation-2-stale-progress",
                         0,
                     ),
                     &team_id,
-                    stale_result,
+                    stale_progress,
                 )
-                .expect_err("Reopen must not let an old binding submit terminal Work evidence")
+                .expect_err("Reopen must not revive ordinary stale Work authoring")
         ),
         TrustErrorCode::MemberRunGenerationFenced
     );
     assert_eq!(
         harness
             .store
-            .latest_works()
-            .expect("Works after stale terminal mutation")
-            .into_iter()
-            .find(|work| work.id == "work-1")
-            .expect("original Work after stale terminal mutation"),
-        work_before_stale_terminal,
-        "stale terminal mutation must not change Work"
-    );
-    assert_eq!(
-        harness
-            .store
-            .trust_work_reports(SPACE)
-            .expect("reports after stale terminal mutation")
-            .len(),
-        reports_before_stale_terminal,
-        "stale terminal mutation must not append a WorkReport"
-    );
-    assert_eq!(
-        harness
-            .store
-            .host_attentions()
-            .expect("attentions after stale terminal mutation")
-            .len(),
-        attentions_before_stale_terminal,
-        "stale terminal mutation must not append HostAttention"
-    );
-    assert_eq!(
-        harness
-            .store
             .canonical_operations()
-            .expect("operations after stale terminal mutation")
+            .expect("operations after reopened progress rejection")
             .len(),
-        operations_before_stale_terminal,
-        "stale terminal mutation must not append a canonical operation"
+        operations_before_progress,
+        "ordinary stale authoring must remain zero-write"
     );
+
+    let candidate = CandidateRef {
+        kind: CandidateKind::GitCommit,
+        value: "abcdef0123456789".into(),
+    };
+    let mut settlement_result = report(
+        "generation-2-result-settlement",
+        WorkReportKind::Result,
+        &worker,
+    );
+    settlement_result.work_revision = work_before_settlement.version + 1;
+    settlement_result.candidate_fingerprint = Some(canonical_json_fingerprint(
+        &serde_json::to_value(&candidate).expect("serialize candidate"),
+    ));
+    settlement_result.candidate = Some(candidate);
+    settlement_result.evidence_refs = vec!["evidence://same-session-result".into()];
+    harness
+        .store
+        .create_trust_work_report(
+            &context(
+                worker.clone(),
+                "report.create",
+                "generation-2-result-settlement",
+                0,
+            ),
+            &team_id,
+            settlement_result,
+        )
+        .expect("same-session Reopen may settle exact ProviderReceived Work");
+    let submitted_work = harness
+        .store
+        .latest_works()
+        .expect("Works after settlement")
+        .into_iter()
+        .find(|work| work.id == "work-1")
+        .expect("submitted Work");
+    assert_eq!(submitted_work.phase, WorkPhase::Review);
+    let settled_binding = harness
+        .store
+        .fabric_work_execution_bindings(SPACE)
+        .expect("bindings after settlement")
+        .into_iter()
+        .find(|binding| binding.work_id == "work-1")
+        .expect("settled binding");
+    assert_eq!(settled_binding.status, WorkExecutionBindingStatus::Released);
 
     let run = harness
         .store

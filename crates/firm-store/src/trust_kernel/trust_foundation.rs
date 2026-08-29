@@ -243,6 +243,39 @@ impl HarnessStore {
         actor: &ActorRef,
         actor_session_id: Option<&str>,
     ) -> StoreResult<(MemberRun, WorkExecutionBinding)> {
+        self.require_exact_work_member_binding_with_settlement_unlocked(
+            execution_space_id,
+            work,
+            actor,
+            actor_session_id,
+            false,
+        )
+    }
+
+    pub(super) fn require_exact_work_result_binding_unlocked(
+        &self,
+        execution_space_id: &str,
+        work: &Work,
+        actor: &ActorRef,
+        actor_session_id: Option<&str>,
+    ) -> StoreResult<(MemberRun, WorkExecutionBinding)> {
+        self.require_exact_work_member_binding_with_settlement_unlocked(
+            execution_space_id,
+            work,
+            actor,
+            actor_session_id,
+            true,
+        )
+    }
+
+    fn require_exact_work_member_binding_with_settlement_unlocked(
+        &self,
+        execution_space_id: &str,
+        work: &Work,
+        actor: &ActorRef,
+        actor_session_id: Option<&str>,
+        allow_reopened_result_settlement: bool,
+    ) -> StoreResult<(MemberRun, WorkExecutionBinding)> {
         if actor.kind != ActorKind::AgentMember
             || work.owner_member_id.as_deref() != Some(actor.id.as_str())
         {
@@ -365,8 +398,26 @@ impl HarnessStore {
             ));
         };
         let admission = self.work_execution_runtime_binding(execution_space_id, &binding.id)?;
-        if admission.target_member_run_id.as_deref() != Some(run.id.as_str())
-            || admission.target_member_run_generation != Some(run.runtime_generation)
+        let exact_runtime_generation = admission.target_member_run_id.as_deref()
+            == Some(run.id.as_str())
+            && admission.target_member_run_generation == Some(run.runtime_generation);
+        let reopened_result_settlement = if allow_reopened_result_settlement
+            && admission.target_member_run_id.as_deref() == Some(run.id.as_str())
+        {
+            if let Some(generation) = admission.target_member_run_generation {
+                self.member_run_has_exact_close_reopen_lineage_unlocked(
+                    execution_space_id,
+                    &run.id,
+                    generation,
+                    run.runtime_generation,
+                )?
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+        if (!exact_runtime_generation && !reopened_result_settlement)
             || admission.target_session_id.as_deref() != Some(session.id.as_str())
             || admission.target_runtime_generation != Some(session.runtime_generation)
         {
@@ -380,6 +431,46 @@ impl HarnessStore {
         }
         self.require_provider_received_work_delivery_unlocked(execution_space_id, binding)?;
         Ok((run.clone(), binding.clone()))
+    }
+
+    fn member_run_has_exact_close_reopen_lineage_unlocked(
+        &self,
+        execution_space_id: &str,
+        member_run_id: &str,
+        predecessor_generation: u64,
+        current_generation: u64,
+    ) -> StoreResult<bool> {
+        if current_generation != predecessor_generation.saturating_add(1) {
+            return Ok(false);
+        }
+        let history = self
+            .trust_operation_envelopes_unlocked()?
+            .into_iter()
+            .filter(|envelope| {
+                envelope.execution_space_id == execution_space_id
+                    && envelope.operation.event.aggregate_kind == "member_run"
+                    && envelope.operation.event.aggregate_id == member_run_id
+            })
+            .collect::<Vec<_>>();
+        for pair in history.windows(2) {
+            let closed_event = &pair[0].operation.event;
+            let reopened_event = &pair[1].operation.event;
+            if closed_event.transition != "closed" || reopened_event.transition != "reopened" {
+                continue;
+            }
+            let closed = event_projection::<MemberRun>(&pair[0])?;
+            let reopened = event_projection::<MemberRun>(&pair[1])?;
+            if closed.runtime_generation == predecessor_generation
+                && closed.coordination_status == MemberCoordinationStatus::Closed
+                && closed.runtime_status == MemberRuntimeStatus::Stopped
+                && reopened.runtime_generation == current_generation
+                && reopened.coordination_status == MemberCoordinationStatus::Active
+                && reopened.runtime_status == MemberRuntimeStatus::Queued
+            {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     pub(super) fn trust_operation_envelopes_unlocked(
