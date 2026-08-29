@@ -2,16 +2,14 @@ use super::*;
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "reason", rename_all = "snake_case", deny_unknown_fields)]
-pub(crate) enum LiveProviderActivityUpdate {
-    Updated {
+pub(crate) enum NativeSessionWakeUpdate {
+    MayHaveAdvanced {
         team_run_id: String,
         agent_member_id: String,
         member_run_id: String,
         member_run_generation: u64,
-        provider: String,
-        native_event: serde_json::Value,
     },
-    Terminal {
+    TurnTerminal {
         team_run_id: String,
         agent_member_id: String,
         member_run_id: String,
@@ -33,21 +31,18 @@ pub(super) fn require_live_member_run_generation(
     Ok(())
 }
 
-pub(super) type LiveMemberActivitySink = Arc<dyn Fn(LiveProviderActivityUpdate) + Send + Sync>;
+pub(super) type NativeSessionWakeSink = Arc<dyn Fn(NativeSessionWakeUpdate) + Send + Sync>;
 
-pub(super) fn emit_live_provider_activity(
-    sink: &LiveMemberActivitySink,
+pub(super) fn emit_native_session_wake(
+    sink: &NativeSessionWakeSink,
     ledger: &TeamRunLedger,
     member: &ProviderRuntimeProjection,
-    native_event: serde_json::Value,
 ) {
-    sink(LiveProviderActivityUpdate::Updated {
+    sink(NativeSessionWakeUpdate::MayHaveAdvanced {
         team_run_id: ledger.run_id.clone(),
         agent_member_id: member.agent_member_id.clone(),
         member_run_id: member.id.clone(),
         member_run_generation: member.runtime_generation,
-        provider: member.provider.clone(),
-        native_event,
     });
 }
 
@@ -63,17 +58,17 @@ pub(super) fn display_safe_tool_status(status: &str, started_event: bool) -> &'s
     }
 }
 
-pub(super) struct LiveProviderTurnGuard {
-    pub(super) sink: Option<LiveMemberActivitySink>,
+pub(super) struct NativeSessionWakeGuard {
+    pub(super) sink: Option<NativeSessionWakeSink>,
     pub(super) team_run_id: String,
     pub(super) agent_member_id: String,
     pub(super) member_run_id: String,
     pub(super) member_run_generation: u64,
 }
 
-impl LiveProviderTurnGuard {
+impl NativeSessionWakeGuard {
     pub(super) fn new(
-        sink: Option<LiveMemberActivitySink>,
+        sink: Option<NativeSessionWakeSink>,
         team_run_id: String,
         agent_member_id: String,
         member_run_id: String,
@@ -89,10 +84,10 @@ impl LiveProviderTurnGuard {
     }
 }
 
-impl Drop for LiveProviderTurnGuard {
+impl Drop for NativeSessionWakeGuard {
     fn drop(&mut self) {
         if let Some(sink) = &self.sink {
-            sink(LiveProviderActivityUpdate::Terminal {
+            sink(NativeSessionWakeUpdate::TurnTerminal {
                 team_run_id: self.team_run_id.clone(),
                 agent_member_id: self.agent_member_id.clone(),
                 member_run_id: self.member_run_id.clone(),

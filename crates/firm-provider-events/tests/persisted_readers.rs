@@ -281,6 +281,10 @@ fn deepseek_official_reader_is_bounded_snapshot_diff_and_does_not_claim_reasonin
     assert!(kinds(&records).contains(&SessionSemanticKind::AssistantResponse));
     assert!(kinds(&records).contains(&SessionSemanticKind::UsageReported));
     assert!(kinds(&records).contains(&SessionSemanticKind::TurnCompleted));
+    assert!(
+        records.iter().all(|record| record.occurred_at.is_none()),
+        "DeepSeek's unitless numeric time is source ordering evidence, not a cross-plane timestamp"
+    );
 }
 
 #[test]

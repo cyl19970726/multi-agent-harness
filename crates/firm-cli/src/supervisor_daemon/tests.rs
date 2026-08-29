@@ -106,7 +106,7 @@ fn unreadable_space_latches_machine_wide_authority_loss() {
         contexts: Mutex::new(Vec::new()),
         supervisor_start_gate: Mutex::new(()),
         session_runtimes: Mutex::new(HashMap::new()),
-        live_provider_activity_endpoint: Arc::new(Mutex::new(HashMap::new())),
+        native_session_wake_endpoint: Arc::new(Mutex::new(HashMap::new())),
         max_concurrency: 1,
         idle_timeout_secs: 1,
         scan_interval: Duration::from_millis(50),
@@ -288,7 +288,7 @@ fn authority_bundle_rolls_back_partial_acquisition_until_every_predecessor_is_re
         contexts: Mutex::new(Vec::new()),
         supervisor_start_gate: Mutex::new(()),
         session_runtimes: Mutex::new(HashMap::new()),
-        live_provider_activity_endpoint: Arc::new(Mutex::new(HashMap::new())),
+        native_session_wake_endpoint: Arc::new(Mutex::new(HashMap::new())),
         max_concurrency: 1,
         idle_timeout_secs: 1,
         scan_interval: Duration::from_secs(1),
@@ -355,7 +355,7 @@ fn machine_local_live_sink_rejects_invalid_and_stale_registration_then_replaces_
         contexts: Mutex::new(Vec::new()),
         supervisor_start_gate: Mutex::new(()),
         session_runtimes: Mutex::new(HashMap::new()),
-        live_provider_activity_endpoint: Arc::new(Mutex::new(HashMap::new())),
+        native_session_wake_endpoint: Arc::new(Mutex::new(HashMap::new())),
         max_concurrency: 1,
         idle_timeout_secs: 1,
         scan_interval: Duration::from_secs(1),
@@ -368,14 +368,14 @@ fn machine_local_live_sink_rejects_invalid_and_stale_registration_then_replaces_
     };
     let first_token = "a".repeat(32);
     let first_instance = "b".repeat(32);
-    assert!(!daemon.install_live_provider_activity_endpoint(
+    assert!(!daemon.install_native_session_wake_endpoint(
         "198.51.100.1:19001",
         &first_token,
         "member-owner",
         "daemon-instance-current",
         &first_instance,
     ));
-    assert!(!daemon.install_live_provider_activity_endpoint(
+    assert!(!daemon.install_native_session_wake_endpoint(
         "127.0.0.1:19001",
         &first_token,
         "member-owner",
@@ -383,12 +383,12 @@ fn machine_local_live_sink_rejects_invalid_and_stale_registration_then_replaces_
         &first_instance,
     ));
     assert!(daemon
-        .live_provider_activity_endpoint
+        .native_session_wake_endpoint
         .lock()
         .expect("live sink registry")
         .is_empty());
 
-    assert!(daemon.install_live_provider_activity_endpoint(
+    assert!(daemon.install_native_session_wake_endpoint(
         "127.0.0.1:19001",
         &first_token,
         "member-owner",
@@ -397,7 +397,7 @@ fn machine_local_live_sink_rejects_invalid_and_stale_registration_then_replaces_
     ));
     let successor_token = "c".repeat(32);
     let successor_instance = "d".repeat(32);
-    assert!(daemon.install_live_provider_activity_endpoint(
+    assert!(daemon.install_native_session_wake_endpoint(
         "127.0.0.1:19002",
         &successor_token,
         "member-owner",
@@ -405,7 +405,7 @@ fn machine_local_live_sink_rejects_invalid_and_stale_registration_then_replaces_
         &successor_instance,
     ));
     let endpoints = daemon
-        .live_provider_activity_endpoint
+        .native_session_wake_endpoint
         .lock()
         .expect("live sink registry");
     assert_eq!(endpoints.len(), 1);
@@ -501,7 +501,7 @@ fn status_remains_responsive_while_execution_space_scan_is_blocked() {
         contexts: Mutex::new(Vec::new()),
         supervisor_start_gate: Mutex::new(()),
         session_runtimes: Mutex::new(HashMap::new()),
-        live_provider_activity_endpoint: Arc::new(Mutex::new(HashMap::new())),
+        native_session_wake_endpoint: Arc::new(Mutex::new(HashMap::new())),
         max_concurrency: 1,
         idle_timeout_secs: 1,
         scan_interval: Duration::from_secs(60),
@@ -622,7 +622,7 @@ fn status_remains_responsive_while_a_control_mutation_is_blocked() {
         contexts: Mutex::new(Vec::new()),
         supervisor_start_gate: Mutex::new(()),
         session_runtimes: Mutex::new(HashMap::new()),
-        live_provider_activity_endpoint: Arc::new(Mutex::new(HashMap::new())),
+        native_session_wake_endpoint: Arc::new(Mutex::new(HashMap::new())),
         max_concurrency: 1,
         idle_timeout_secs: 1,
         scan_interval: Duration::from_secs(60),
@@ -755,7 +755,7 @@ fn shutdown_renews_node_authority_until_accepted_worker_finishes() {
         contexts: Mutex::new(Vec::new()),
         supervisor_start_gate: Mutex::new(()),
         session_runtimes: Mutex::new(HashMap::new()),
-        live_provider_activity_endpoint: Arc::new(Mutex::new(HashMap::new())),
+        native_session_wake_endpoint: Arc::new(Mutex::new(HashMap::new())),
         max_concurrency: 1,
         idle_timeout_secs: 1,
         scan_interval: Duration::from_millis(50),
@@ -874,7 +874,7 @@ fn shutdown_renews_node_authority_until_accepted_worker_finishes() {
         contexts: Mutex::new(Vec::new()),
         supervisor_start_gate: Mutex::new(()),
         session_runtimes: Mutex::new(HashMap::new()),
-        live_provider_activity_endpoint: Arc::new(Mutex::new(HashMap::new())),
+        native_session_wake_endpoint: Arc::new(Mutex::new(HashMap::new())),
         max_concurrency: 1,
         idle_timeout_secs: 1,
         scan_interval: Duration::from_millis(50),
@@ -1079,8 +1079,8 @@ fn daemon_control_generation_fences_stale_and_successor_instances() {
 
 #[test]
 fn rejected_live_scope_does_not_discard_the_registered_serve_endpoint() {
-    let rejected = LiveProviderActivityPostError::Rejected("HTTP/1.1 400 Bad Request".into());
-    let unavailable = LiveProviderActivityPostError::Unavailable(std::io::Error::new(
+    let rejected = NativeSessionWakePostError::Rejected("HTTP/1.1 400 Bad Request".into());
+    let unavailable = NativeSessionWakePostError::Unavailable(std::io::Error::new(
         std::io::ErrorKind::ConnectionRefused,
         "serve exited",
     ));

@@ -1,34 +1,14 @@
 {
   "schema_version": "agentfirm.provider_event_manifest.v1",
   "observation_schema": "provider-native-event-record-v3.schema.json",
-  "legacy_live_observation_schema": "provider-native-event-record.schema.json",
   "persisted_page_schema": "persisted-session-page-v1.schema.json",
   "persisted_adapter_manifest_schema": "persisted-adapter-manifest-v1.schema.json",
-  "adapter_manifest_schema": "adapter-manifest.schema.json",
-  "session_projection_schema": "session-event-projection.schema.json",
-  "live_activity_schema": "live-provider-activity.schema.json",
-  "live_activity_event_schema": "live-provider-activity-event.schema.json",
-  "team_activity_schema": "team-runtime-activity.schema.json",
   "providers": ["codex", "claude", "kimi", "pi", "deepseek_harness"],
-  "semantic_kinds": [
-    "session_metadata", "reasoning", "assistant_response", "tool_call_requested",
-    "tool_call_started", "tool_call_completed", "tool_call_failed",
-    "artifact_created", "usage_reported", "interaction_required",
-    "interaction_resolved", "runtime_started", "runtime_ready",
-    "runtime_stopped", "transport_interrupted", "turn_completed",
-    "turn_failed", "turn_cancelled", "command_recovery_required",
-    "malformed_or_incomplete", "unclassified_native"
-  ],
   "persisted_semantic_kinds": [
     "session_metadata", "reasoning", "assistant_response",
     "tool_call_requested", "tool_call_started", "tool_call_completed",
     "tool_call_failed", "artifact_created", "usage_reported",
     "turn_completed", "turn_failed", "turn_cancelled",
     "malformed_or_incomplete", "unclassified_native"
-  ],
-  "team_public_allowlist": [
-    "interaction_required", "interaction_resolved", "runtime_started",
-    "runtime_ready", "runtime_stopped", "transport_interrupted",
-    "command_recovery_required"
   ]
 }

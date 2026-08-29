@@ -20,7 +20,7 @@ impl HttpExchange<'_> {
         let trust_expected_version = self.trust_expected_version;
         let trust_confirmed_action = &self.trust_confirmed_action;
         let trust_identity_override_header = self.trust_identity_override_header;
-        let live_provider_activity_token = &self.live_provider_activity_token;
+        let native_session_wake_token = &self.native_session_wake_token;
         if method == "POST" && role_actions_api::is_retired_legacy_write_path(path_only) {
             write_http_json(
                 stream,

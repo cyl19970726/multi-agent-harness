@@ -7,11 +7,9 @@ const root=process.cwd();
 const schemaDir=path.join(root,"schemas/role-views/agentfirm.role_views.v1");
 const names=["common","role-view","global-work","viewer-context","team-workspace","host-console","agent-workspace","member-workbench","operator"];
 const schemas=names.map(name=>JSON.parse(fs.readFileSync(path.join(schemaDir,`${name}.schema.json`),"utf8")));
-const liveProviderActivitySchema=JSON.parse(fs.readFileSync(path.join(root,"schemas/provider-events/live-provider-activity.schema.json"),"utf8"));
-const providerNativeEventRecordSchema=JSON.parse(fs.readFileSync(path.join(root,"schemas/provider-events/provider-native-event-record.schema.json"),"utf8"));
-const sessionEventProjectionSchema=JSON.parse(fs.readFileSync(path.join(root,"schemas/provider-events/session-event-projection.schema.json"),"utf8"));
+const providerNativeEventRecordSchema=JSON.parse(fs.readFileSync(path.join(root,"schemas/provider-events/provider-native-event-record-v3.schema.json"),"utf8"));
 const ajv=new Ajv2020({strict:false,allErrors:true});
-for(const schema of [providerNativeEventRecordSchema,sessionEventProjectionSchema,liveProviderActivitySchema])ajv.addSchema(schema);
+ajv.addSchema(providerNativeEventRecordSchema);
 for(const file of fs.readdirSync(path.join(root,"schemas/collaboration")).filter(file=>file.endsWith(".schema.json")))ajv.addSchema(JSON.parse(fs.readFileSync(path.join(root,"schemas/collaboration",file),"utf8")));
 for(const schema of schemas)ajv.addSchema(schema);
 for(const name of names.slice(2))assert.equal(typeof ajv.getSchema(`agentfirm.role_views.v1/${name}.schema.json`),"function",`${name} schema compiles`);
@@ -59,8 +57,8 @@ const privateAgentWorkspaceFixture=JSON.parse(fs.readFileSync(path.join(fixtureD
 const teamSessionReadFixture=structuredClone(privateAgentWorkspaceFixture);
 teamSessionReadFixture.data.projection_scope="team_session_read";
 assert.equal(agentWorkspaceValidate(teamSessionReadFixture),true,`Team Session read projection: ${ajv.errorsText(agentWorkspaceValidate.errors)}`);
-delete teamSessionReadFixture.data.session_event_projection;
-assert.equal(agentWorkspaceValidate(teamSessionReadFixture),false,"Team Session read requires provider-native history projection");
+delete teamSessionReadFixture.data.persisted_session_projection;
+assert.equal(agentWorkspaceValidate(teamSessionReadFixture),false,"Team Session read requires the persisted provider-native projection");
 
 const operatorValidate=ajv.getSchema("agentfirm.role_views.v1/operator.schema.json");
 const operatorFixture=JSON.parse(fs.readFileSync(path.join(fixtureDir,"operator.json"),"utf8"));

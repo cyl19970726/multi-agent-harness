@@ -804,7 +804,7 @@ fn typed_ledger_replace_delete_and_recreate_invalidate_without_append_noise() {
 /// Agent and Project. A stream selecting a different Agent, an unscoped
 /// subscriber, a later subscriber, and another project receive no payload.
 #[test]
-fn live_provider_activity_is_direct_only_and_project_isolated() {
+fn native_session_wake_is_direct_only_and_project_isolated() {
     let manager = SseManager::new();
     let owner = manager.subscribe_scoped_agent_session(
         "space-a",
@@ -837,12 +837,7 @@ fn live_provider_activity_is_direct_only_and_project_isolated() {
         "summary": "Reading the current implementation"
     });
 
-    manager.broadcast_live_provider_activity(
-        "space-a",
-        "project-a",
-        "agent-owner",
-        activity.clone(),
-    );
+    manager.broadcast_native_session_wake("space-a", "project-a", "agent-owner", activity.clone());
     let late_owner = manager.subscribe_scoped_agent_session(
         "space-a",
         None,
@@ -851,7 +846,7 @@ fn live_provider_activity_is_direct_only_and_project_isolated() {
     );
 
     match owner.try_recv() {
-        Ok(SseEventFrame::LiveProviderActivity(value)) => assert_eq!(value, activity),
+        Ok(SseEventFrame::NativeSessionWake(value)) => assert_eq!(value, activity),
         other => panic!("exact selected Agent should receive transient activity, got {other:?}"),
     }
     assert!(

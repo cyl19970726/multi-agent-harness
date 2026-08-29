@@ -614,7 +614,7 @@ fn handle_http_connection(
     let mut trust_expected_version = None;
     let mut trust_confirmed_action = None;
     let mut trust_identity_override_header = false;
-    let mut live_provider_activity_token = None;
+    let mut native_session_wake_token = None;
     loop {
         let mut line = String::new();
         reader.read_line(&mut line)?;
@@ -638,8 +638,8 @@ fn handle_http_connection(
             if name.eq_ignore_ascii_case("x-agentfirm-confirm") {
                 trust_confirmed_action = Some(value.trim().to_string());
             }
-            if name.eq_ignore_ascii_case("x-agentfirm-live-token") {
-                live_provider_activity_token = Some(value.trim().to_string());
+            if name.eq_ignore_ascii_case("x-agentfirm-native-session-wake-token") {
+                native_session_wake_token = Some(value.trim().to_string());
             }
             if matches!(
                 name.to_ascii_lowercase().as_str(),
@@ -686,7 +686,7 @@ fn handle_http_connection(
         trust_expected_version,
         trust_confirmed_action,
         trust_identity_override_header,
-        live_provider_activity_token,
+        native_session_wake_token,
     };
     if exchange.handle_trust_routes()?
         || exchange.handle_get_routes()?

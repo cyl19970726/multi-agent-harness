@@ -1,7 +1,7 @@
 # Provider-native session adapter contract
 
 ```text
-status: implemented_v2_and_extension_contract
+status: implemented_persisted_v3_contract
 owner_role: provider-integration
 canonical_for: native session binding, reading, resume, availability, and Dashboard projection
 decision: ADR 0032
@@ -263,10 +263,9 @@ states. UI must not invent native activity or resume from a Harness replay.
   must be the exact Session-owning AgentMember or the exact active Host and is
   carried through the current NodeGateway route; ordinary sibling credentials
   receive coordination data but no native Session content.
-- During the frontend cutover, the older
-  `AgentWorkspace.data.session_event_projection` remains a frozen compatibility
-  field. It does not define the new SSE or remote-read contract and is removed
-  by the subsequent Dashboard Task.
+- The retired v2 Session projection and volatile provider payload overlay are
+  not current API fields. Provider callbacks are no-payload wake hints; the
+  Dashboard renders only persisted v3 snapshot/append/source-reset records.
   The legacy
   `GET /v1/member-runs/{id}/native-activity` route returns `410 Gone` because it
   cannot prove the canonical Team and AgentSession scope.

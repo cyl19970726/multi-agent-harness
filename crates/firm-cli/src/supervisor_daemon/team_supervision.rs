@@ -174,7 +174,7 @@ impl MultiTeamDaemon {
         let run_id = run_id.to_string();
         let max_concurrency = self.max_concurrency;
         let idle_timeout_secs = self.idle_timeout_secs;
-        let live_provider_activity_endpoint = Arc::clone(&self.live_provider_activity_endpoint);
+        let native_session_wake_endpoint = Arc::clone(&self.native_session_wake_endpoint);
 
         // Validate and create registration outside the context lock. Store and
         // provider admission must never run while the registry mutex is held.
@@ -273,26 +273,26 @@ impl MultiTeamDaemon {
         let execution_space_id = space.id.clone();
         let callback_space_id = execution_space_id.clone();
         let thread = std::thread::spawn(move || {
-            let live_sink = Arc::new(move |update: LiveProviderActivityUpdate| {
+            let live_sink = Arc::new(move |update: NativeSessionWakeUpdate| {
                 let agent_member_id = match &update {
-                    LiveProviderActivityUpdate::Updated {
+                    NativeSessionWakeUpdate::MayHaveAdvanced {
                         agent_member_id, ..
                     }
-                    | LiveProviderActivityUpdate::Terminal {
+                    | NativeSessionWakeUpdate::TurnTerminal {
                         agent_member_id, ..
                     } => agent_member_id,
                 };
-                let endpoint = live_provider_activity_endpoint
+                let endpoint = native_session_wake_endpoint
                     .lock()
                     .unwrap_or_else(|error| error.into_inner())
                     .get(agent_member_id)
                     .cloned();
                 if let Some(endpoint) = endpoint {
                     if let Err(error) =
-                        post_live_provider_activity(&endpoint, &callback_space_id, &update)
+                        post_native_session_wake(&endpoint, &callback_space_id, &update)
                     {
                         if error.clears_registered_endpoint() {
-                            let mut endpoints = live_provider_activity_endpoint
+                            let mut endpoints = native_session_wake_endpoint
                                 .lock()
                                 .unwrap_or_else(|lock_error| lock_error.into_inner());
                             if endpoints.get(agent_member_id).is_some_and(|current| {

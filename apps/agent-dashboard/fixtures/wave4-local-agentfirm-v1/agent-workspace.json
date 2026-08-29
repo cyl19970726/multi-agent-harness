@@ -87,19 +87,12 @@
       "native_session_ref":null,
       "native_session_open_target":null
     },
-    "session_event_projection":{
-      "schema_version":"agentfirm.provider_native_event_record.v2",
-      "agent_session_id":null,
-      "agent_session_generation":null,
-      "source_snapshot_fingerprint":null,
-      "episodes":[],
-      "truncated":false,
-      "availability":"unavailable",
-      "unavailable_reason_code":"native_session_unavailable",
-      "disabled_reason":"Provider-native Session source is unavailable in this deterministic fixture.",
-      "page":{"limit":80,"has_more":false,"next_before_position":null}
+    "persisted_session_projection":{
+      "schema_version":"agentfirm.native_session_read.v1",
+      "available":false,
+      "reason_code":"native_session_unavailable",
+      "detail":"Provider-native Session source is unavailable in this deterministic fixture."
     },
-    "live_provider_activity":null,
     "messages":[],
     "works":[],
     "configuration":{

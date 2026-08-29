@@ -71,7 +71,7 @@ pub(super) fn member_supervisor_test_idle_grace() -> Option<Duration> {
         .map(Duration::from_millis)
 }
 
-pub(super) static LIVE_PROVIDER_ACTIVITY_TOKEN: OnceLock<String> = OnceLock::new();
+pub(super) static NATIVE_SESSION_WAKE_TOKEN: OnceLock<String> = OnceLock::new();
 
 /// Process-local control plane for provider sessions started by `serve` or the
 /// MCP server. The durable TeamMessageProjection remains the conversation record; this

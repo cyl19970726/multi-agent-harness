@@ -325,68 +325,6 @@ pub(crate) fn agent_workspace_view(
     };
     // The Team-scoped historical projection is decoded on demand. It is
     // independent from the volatile live overlay and never enters a ledger.
-    let session_before_position = query
-        .values
-        .get("session_before")
-        .and_then(|values| values.first())
-        .and_then(|value| value.parse::<u64>().ok());
-    let session_page_limit = query
-        .values
-        .get("session_limit")
-        .and_then(|values| values.first())
-        .and_then(|value| value.parse::<usize>().ok())
-        .unwrap_or(crate::provider_event_api::DEFAULT_SESSION_PAGE_SIZE);
-    let local_native_session_read = identity.is_some_and(ReadIdentity::may_read_native_session);
-    let session_event_projection = Some(if local_native_session_read {
-        let project_binding_id = store
-            .provider_compatibility_scope()
-            .map(|(project_id, _)| project_id)
-            .unwrap_or_default();
-        read_session_event_projection(
-            store,
-            &facts,
-            SessionProjectionReadRequest {
-                execution_space_id: space_id,
-                project_id: project_binding_id,
-                team_id: &team.id,
-                selected_agent_id,
-                before_position: session_before_position,
-                page_limit: session_page_limit,
-                run,
-                selected_member_run,
-            },
-        )
-    } else {
-        unavailable_session_event_projection_code(
-            "local_operator_required",
-            "Provider-native Session history is available only from the same-machine Dashboard.",
-        )
-    });
-    // Only an exact MemberRun selector plus its current canonical AgentSession
-    // can receive the process-local live overlay. MemberRun and AgentSession
-    // generations are independent fences; detached external Hosts stay null.
-    let project_binding_id = store
-        .provider_compatibility_scope()
-        .map(|(project_id, _)| project_id)
-        .unwrap_or_default();
-    let live_provider_activity = local_native_session_read
-        .then(|| {
-            selected_member_run
-                .and_then(|member_run| {
-                    let typed_member = serde_json::from_value(member_run.clone()).ok()?;
-                    crate::provider_event_api::exact_live_scope(
-                        store,
-                        space_id,
-                        project_binding_id,
-                        member_run["team_run_id"].as_str()?,
-                        &typed_member,
-                    )
-                    .ok()
-                })
-                .as_ref()
-                .and_then(crate::provider_event_api::live_snapshot)
-        })
-        .flatten();
     let persisted_session_projection = current_agent_session
         .and_then(|session| {
             read_persisted_session_projection(
@@ -570,10 +508,8 @@ pub(crate) fn agent_workspace_view(
             "team":safe_team,
             "selected_agent":selected,
             "roster":roster,
-            "session_event_projection":session_event_projection,
             "persisted_session_projection":persisted_session_projection,
             "current_session":current_session,
-            "live_provider_activity":live_provider_activity,
             "messages":messages,
             "works":works,
             "configuration":configuration,
@@ -608,6 +544,17 @@ fn read_persisted_session_projection(
 ) -> Option<Value> {
     let run = run?;
     let identity = identity?;
+    if query
+        .project
+        .as_ref()
+        .is_some_and(|project_binding_id| project_binding_id != &run.project_binding_id)
+    {
+        return Some(json!({
+            "schema_version": "agentfirm.native_session_read.v1",
+            "available": false,
+            "reason_code": "project_binding_mismatch"
+        }));
+    }
     let session: harness_core::agentfirm_api::AgentSession =
         serde_json::from_value(session_value.clone()).ok()?;
     let native = session.native_session_ref.as_ref()?;
@@ -640,15 +587,27 @@ fn read_persisted_session_projection(
         .get("session_source_generation")
         .and_then(|values| values.first())
         .cloned();
+    let ordering_key_kind = query
+        .values
+        .get("session_cursor_kind")
+        .and_then(|values| values.first())
+        .and_then(|value| match value.as_str() {
+            "provider_ordinal" => Some(harness_provider_events::OrderingKeyKind::ProviderOrdinal),
+            "complete_row_end_offset" => {
+                Some(harness_provider_events::OrderingKeyKind::CompleteRowEndOffset)
+            }
+            _ => None,
+        });
     let (mode, cursor) = match mode_and_cursor {
         Some((mode, value)) => {
             let source_generation = source_generation?;
+            let ordering_key_kind = ordering_key_kind?;
             (
                 mode,
                 Some(crate::provider_event_api::PersistedSessionCursor {
                     source_generation,
                     ordering_key: harness_provider_events::PersistedOrderingKey {
-                        kind: harness_provider_events::OrderingKeyKind::CompleteRowEndOffset,
+                        kind: ordering_key_kind,
                         value,
                     },
                 }),

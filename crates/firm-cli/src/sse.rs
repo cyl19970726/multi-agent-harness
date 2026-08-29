@@ -15,8 +15,8 @@ use harness_core::{
 };
 
 /// An event frame sent to SSE clients. Durable frames are reconstructed by tailing
-/// project-scoped JSONL ledgers; `LiveProviderActivity` is deliberately different: it
-/// is a direct-only, volatile display signal and is never replayed from a ledger.
+/// project-scoped JSONL ledgers; `NativeSessionWake` is deliberately different:
+/// it is a direct-only, payload-free reread hint and is never replayed.
 #[derive(Clone, Debug)]
 #[allow(dead_code)]
 pub enum SseEventFrame {
@@ -48,11 +48,9 @@ pub enum SseEventFrame {
     /// must refresh the scoped authoritative snapshot instead of treating this
     /// notification as a second truth store.
     ProjectionInvalidated(ProjectionInvalidation),
-    /// Sanitized, transient member activity for live display only. This value is
-    /// never written to JSONL, included in snapshots, or replayed to a later
-    /// subscriber. Callers must not place provider thinking or other durable
-    /// claims here.
-    LiveProviderActivity(serde_json::Value),
+    /// Scoped no-payload hint that the provider-owned Session may have advanced.
+    /// It is never rendered, stored, snapshotted, or replayed.
+    NativeSessionWake(serde_json::Value),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -208,18 +206,15 @@ impl SseManager {
         self.stream_epoch.as_str()
     }
 
-    /// Directly broadcast an ephemeral member-activity update to current
-    /// subscribers of one project. Unlike the durable frame variants, this
-    /// deliberately has no watched file: reconnecting clients do not receive a
-    /// replay and the activity is not part of any persisted product contract.
-    pub fn broadcast_live_provider_activity(
+    /// Wake current subscribers so they reread the exact persisted Session.
+    pub fn broadcast_native_session_wake(
         &self,
         execution_space_id: &str,
         project_binding_id: &str,
         owner_agent_member_id: &str,
-        activity: serde_json::Value,
+        wake: serde_json::Value,
     ) {
-        let frame = SseEventFrame::LiveProviderActivity(activity);
+        let frame = SseEventFrame::NativeSessionWake(wake);
         let mut clients = self.clients.lock().unwrap();
         if let Some(subscribers) = clients.get_mut(execution_space_id) {
             subscribers.retain(|client| {
@@ -685,7 +680,7 @@ fn emit_invalidation(
 /// Keep the incremental SSE read model aligned with the snapshot projection:
 /// legacy/manual reasoning actions are not product-visible durable state, even
 /// if an old ledger row still contains them. Provider thinking belongs only in
-/// the direct-only `LiveProviderActivity` stream.
+/// the provider-owned persisted Session.
 fn member_action_frames(line: &str) -> Vec<SseEventFrame> {
     serde_json::from_str::<MemberAction>(line)
         .ok()

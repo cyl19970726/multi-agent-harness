@@ -420,14 +420,14 @@ mod dashboard_doctor_tests {
     }
 }
 
-pub(super) fn broadcast_live_provider_activity(
+pub(super) fn broadcast_native_session_wake(
     manager: &sse::SseManager,
     execution_space_id: &str,
     project_binding_id: &str,
     owner_agent_member_id: &str,
     event: serde_json::Value,
 ) -> serde_json::Value {
-    manager.broadcast_live_provider_activity(
+    manager.broadcast_native_session_wake(
         execution_space_id,
         project_binding_id,
         owner_agent_member_id,
@@ -458,20 +458,6 @@ pub(super) fn handle_sse_stream(
         team_id: selected_team_id,
         agent_member_id: selected_agent_member_id,
     } = selection;
-
-    // A Team Session live overlay is valid only for one connected stream lifetime.
-    // Clear any pre-connection residue before subscribing so reconnect cannot
-    // turn process memory into a replay surface.
-    if let (Some(agent_member_id), Some(project_binding_id)) =
-        (selected_agent_member_id, selected_project_binding_id)
-    {
-        provider_event_api::clear_live_for_agent(
-            store,
-            execution_space_id,
-            project_binding_id,
-            agent_member_id,
-        )?;
-    }
 
     // Subscribe before exposing the initial snapshot marker. The browser starts
     // its authoritative GET after that marker; registering first guarantees
@@ -505,7 +491,7 @@ pub(super) fn handle_sse_stream(
         "execution_space_id": execution_space_id,
         "selected_project_binding_id": selected_project_binding_id,
         "company_scope_id": company_scope_id,
-        "team_session_provider_activity": selected_agent_member_id.is_some(),
+        "team_session_persisted_events": selected_agent_member_id.is_some(),
         "stream_epoch": sse_manager.stream_epoch(),
     });
     sse::write_sse_frame(&mut stream, "snapshot", &snapshot_json)?;
@@ -620,12 +606,10 @@ pub(super) fn handle_sse_stream(
                             }
                         }
                     }
-                    sse::SseEventFrame::LiveProviderActivity(activity) => {
-                        if sse::write_sse_frame(&mut stream, "live_provider_activity", &activity)
-                            .is_err()
-                        {
-                            break;
-                        }
+                    sse::SseEventFrame::NativeSessionWake(_wake) => {
+                        // Provider callbacks are payload-free wake hints only.
+                        // The browser receives semantic records exclusively from
+                        // the persisted Session reader below.
                         if persisted_read.is_none() {
                             if let Some(((project_binding_id, team_id), agent_member_id)) =
                                 session_scope
@@ -676,19 +660,6 @@ pub(super) fn handle_sse_stream(
                 break; // Channel closed, exit
             }
         }
-    }
-
-    if let (Some(agent_member_id), Some(project_binding_id)) =
-        (selected_agent_member_id, selected_project_binding_id)
-    {
-        // The transport is already gone; cleanup is best-effort and must not
-        // turn an ordinary disconnect into a new HTTP error response.
-        let _ = provider_event_api::clear_live_for_agent(
-            store,
-            execution_space_id,
-            project_binding_id,
-            agent_member_id,
-        );
     }
 
     Ok(())
@@ -948,7 +919,7 @@ mod dashboard_snapshot_build_tests {
 /// provider execution context. Raw-store and project-derived compatibility
 /// modes retain the historical single-store behavior.
 #[derive(Clone)]
-pub(super) struct LiveProviderActivityCallback {
+pub(super) struct NativeSessionWakeCallback {
     pub(super) authority: String,
     pub(super) token: String,
     pub(super) serve_instance_id: String,
@@ -978,7 +949,7 @@ pub(super) struct ServeProjects {
     /// Process-memory-only callback capability. It is registered per exact
     /// authenticated AgentMember when that owner opens a private SSE stream;
     /// an ambient same-user process cannot install a global private sink.
-    pub(super) live_provider_activity_callback: Option<LiveProviderActivityCallback>,
+    pub(super) native_session_wake_callback: Option<NativeSessionWakeCallback>,
 }
 
 impl ServeProjects {
@@ -1007,7 +978,7 @@ impl ServeProjects {
             default_space: resolved.execution_space_context.clone(),
             default_context: resolved.context.clone(),
             dashboard_snapshot_builds: Arc::new(DashboardSnapshotBuildFence::default()),
-            live_provider_activity_callback: None,
+            native_session_wake_callback: None,
         }
     }
 
@@ -1273,12 +1244,12 @@ pub(super) fn serve_command(
     // a user-facing or per-Agent viewing credential.
     #[cfg(unix)]
     if projects.firm_home.is_some() && bound_addr.ip().is_loopback() {
-        projects.live_provider_activity_callback = Some(LiveProviderActivityCallback {
+        projects.native_session_wake_callback = Some(NativeSessionWakeCallback {
             authority: bound_addr.to_string(),
-            token: LIVE_PROVIDER_ACTIVITY_TOKEN
-                .get_or_init(new_live_provider_activity_token)
+            token: NATIVE_SESSION_WAKE_TOKEN
+                .get_or_init(new_native_session_wake_token)
                 .clone(),
-            serve_instance_id: new_live_provider_activity_token(),
+            serve_instance_id: new_native_session_wake_token(),
         });
     }
 

@@ -22,19 +22,17 @@ import {
   WorkspaceState,
 } from "@/components/workbench/agent/AgentWorkspacePrimitives";
 import { AgentMessageCommandComposer } from "@/components/workbench/agent/AgentMessageCommandComposer";
-import { eventPresentation, OperationalFactRow } from "@/components/workbench/agent/AgentStreamPrimitives";
+import { OperationalFactRow } from "@/components/workbench/agent/AgentStreamPrimitives";
 import type { SelectionState } from "../app/selection";
 import {
   fetchRoleView,
   type AgentWorkspaceData,
   type AgentWorkspaceRosterItem,
   type AllowedAction,
-  type LiveProviderActivity,
-  type LiveProviderActivityEvent,
   type MessageSummary,
+  type PersistedSessionProjection,
   type ProviderEventFragment,
   type ProviderNativeEventRecord,
-  type SessionEventProjection,
   type RoleActionExecutor,
   type RoleView,
   type WorkSummary,
@@ -90,7 +88,7 @@ export function AgentConversationWorkspace({
     fetchRoleView<AgentWorkspaceData>(apiUrl,requestPath,{space,project,company})
       .then((next)=>{if(live){
         const identityChanged=committedPathRef.current!==requestIdentity;
-        const committed=identityChanged?next:mergeAgentWorkspaceViews(next,committedViewRef.current)??next;
+        const committed=next;
         committedPathRef.current=requestIdentity;committedViewRef.current=committed;setView(committed);setViewRequestPath(requestIdentity);setError(null);
         // A background revalidate keeps the selection alive; an identity switch
         // or a selection whose canonical record left the projection honestly drops it.
@@ -121,16 +119,13 @@ export function AgentConversationWorkspace({
 
   const currentView=viewRequestPath===requestIdentity?view:null;
   const privateData=currentView?.data??null;
-  const liveProviderStream=useTeamSessionLiveActivity({
+  const persistedSessionStream=usePersistedSessionTimeline({
     apiUrl,space,project,company,
     teamId:privateData?.team.team_id??null,
     agentId:privateData?.selected_agent.agent_member_ref.id??null,
-    teamRunId:privateData?.team.latest_run_id??null,
-    memberRunId:privateData?.selected_agent.current_member_run_ref??null,
-    memberRunGeneration:privateData?.selected_agent.runtime_generation??null,
-    sessionId:privateData?.current_session?.agent_session_id??privateData?.session_event_projection?.agent_session_id??null,
-    sessionGeneration:privateData?.current_session?.agent_session_generation??privateData?.session_event_projection?.agent_session_generation??null,
-    initialActivity:privateData?.live_provider_activity??null,
+    sessionId:privateData?.current_session?.agent_session_id??null,
+    sessionGeneration:privateData?.current_session?.agent_session_generation??null,
+    initialProjection:privateData?.persisted_session_projection??null,
   });
   if(!currentView)return <main className="agent-team-surface h-full min-h-0 flex-1"><ViewState loading={loading} error={error} identityLabel={`Agent Workspace · ${routeIdentity}`} onRetry={()=>setRefresh(value=>value+1)}>{null}</ViewState></main>;
   const data=currentView.data;
@@ -140,24 +135,23 @@ export function AgentConversationWorkspace({
   const actionsCurrent=currentView.freshness==="current" && !loading && !error;
   const selected=data.selected_agent;
   const selectedRunId=selected.current_member_run_ref;
-  const sessionProjection=data.session_event_projection??null;
+  const sessionProjection=persistedSessionStream.projection;
   const currentSession=data.current_session??null;
-  const visibleSessionId=currentSession?.agent_session_id??sessionProjection?.agent_session_id??null;
-  const visibleSessionGeneration=currentSession?.agent_session_generation??sessionProjection?.agent_session_generation??null;
-  const currentLiveActivity=selectAgentWorkspaceLiveActivity({activity:liveProviderStream.activity,projectionScope:data.projection_scope,executionSpaceId:space,projectId:project,teamRunId:data.team.latest_run_id,memberRunId:selectedRunId,memberRunGeneration:selected.runtime_generation,sessionId:currentSession?.agent_session_id??sessionProjection?.agent_session_id??null,sessionGeneration:currentSession?.agent_session_generation??sessionProjection?.agent_session_generation??null});
+  const visibleSessionId=currentSession?.agent_session_id??null;
+  const visibleSessionGeneration=currentSession?.agent_session_generation??null;
   const loadOlderSessionEvents=async()=>{
-    if(loadingOlder||!sessionProjection?.page.has_more||sessionProjection.page.next_before_position==null)return;
+    if(loadingOlder||!sessionProjection?.available||!sessionProjection.has_more||!sessionProjection.next_before)return;
     const requestedIdentity=requestIdentity;
     setLoadingOlder(true);
     try{
       const olderQuery=new URLSearchParams(requestQuery);
-      olderQuery.set("session_before",String(sessionProjection.page.next_before_position));
+      olderQuery.set("session_before",String(sessionProjection.next_before.ordering_key.value));
+      olderQuery.set("session_cursor_kind",sessionProjection.next_before.ordering_key.kind);
+      olderQuery.set("session_source_generation",sessionProjection.next_before.source_generation);
       const olderPath=`/v1/views/agent-workspace/${encodeURIComponent(routeIdentity)}?${olderQuery.toString()}`;
       const older=await fetchRoleView<AgentWorkspaceData>(apiUrl,olderPath,{space,project,company});
       if(expectedIdentityRef.current!==requestedIdentity)return;
-      const merged=mergeAgentWorkspaceViews(committedViewRef.current,older);
-      committedViewRef.current=merged;
-      setView(merged);
+      persistedSessionStream.mergeOlder(older.data.persisted_session_projection);
     }catch(reason){if(expectedIdentityRef.current===requestedIdentity)setError(String(reason));}finally{setLoadingOlder(false);}
   };
   const currentWork=data.works.find(work=>work.work_id===(contextSelection?.kind==="work"?contextSelection.work.work_id:data.context_summary.current_work_id));
@@ -200,13 +194,13 @@ export function AgentConversationWorkspace({
           <Tabs.Root value={mode} onValueChange={value=>{setContextSelection(null);onSelectionChange({agentWorkspaceMode:value as WorkspaceMode});}} className="flex min-h-0 flex-1 flex-col">
             <div data-testid="agent-workspace-modebar" className="aw-modebar flex min-h-12 shrink-0 items-end border-b border-border px-4 sm:px-7">
               <Tabs.List aria-label="Agent Workspace modes" className="agent-workspace-tabs flex h-full items-end gap-7">
-                <WorkspaceTab value="session" label="Session" count={sessionProjection?.episodes.reduce((count,episode)=>count+episode.records.reduce((sum,record)=>sum+record.fragments.length,0),0)??0}/>
+                <WorkspaceTab value="session" label="Session" count={sessionProjection?.available?sessionProjection.records.reduce((count,record)=>count+record.fragments.length,0):0}/>
                 <WorkspaceTab value="messages" label="Messages" count={data.context_summary.unread_count}/>
                 <WorkspaceTab value="work" label="Work" count={data.works.length}/>
               </Tabs.List>
-              <div className="ml-auto flex h-full items-center gap-3 text-[10px] text-muted-foreground"><span className="flex items-center gap-1.5"><ShieldCheck className="size-3.5"/>{sessionProjection?.agent_session_id?"Team-scoped native Session":"Native Session unavailable"}</span></div>
+              <div className="ml-auto flex h-full items-center gap-3 text-[10px] text-muted-foreground"><span className="flex items-center gap-1.5"><ShieldCheck className="size-3.5"/>{sessionProjection?.available?"Persisted provider-native Session":"Native Session unavailable"}</span></div>
             </div>
-            <Tabs.Content value="session" className="min-h-0 flex-1 outline-none"><SessionCanvas data={data} liveActivity={currentLiveActivity} liveConnectionState={liveProviderStream.connectionState} selectedMessageId={contextSelection?.kind==="message"?contextSelection.message.message_id:null} onSelect={setContextSelection} loadingOlder={loadingOlder} onLoadOlder={loadOlderSessionEvents}/></Tabs.Content>
+            <Tabs.Content value="session" className="min-h-0 flex-1 outline-none"><SessionCanvas data={data} projection={sessionProjection} connectionState={persistedSessionStream.connectionState} selectedMessageId={contextSelection?.kind==="message"?contextSelection.message.message_id:null} onSelect={setContextSelection} loadingOlder={loadingOlder} onLoadOlder={loadOlderSessionEvents}/></Tabs.Content>
             <Tabs.Content value="messages" className="min-h-0 flex-1 outline-none"><MessagesCanvas data={data} onSelect={setContextSelection}/></Tabs.Content>
             <Tabs.Content value="work" className="min-h-0 flex-1 outline-none"><WorkCanvas data={data} onSelect={(work)=>{setContextSelection({kind:"work",work});onSelectionChange({teamWorkId:work.work_id});}}/></Tabs.Content>
           </Tabs.Root>
@@ -246,16 +240,15 @@ function AgentRoster({data,selectedId,onBack,onSelect}:{data:AgentWorkspaceData;
   </div>;
 }
 
-type LiveProviderConnectionState="inactive"|"connecting"|"connected"|"disconnected";
-function SessionCanvas({data,liveActivity,liveConnectionState,selectedMessageId,onSelect,loadingOlder,onLoadOlder}:{data:AgentWorkspaceData;liveActivity:LiveProviderActivity|null;liveConnectionState:LiveProviderConnectionState;selectedMessageId:string|null;onSelect:(next:ContextSelection)=>void;loadingOlder:boolean;onLoadOlder:()=>void}){
+type PersistedSessionConnectionState="inactive"|"connecting"|"connected"|"disconnected";
+function SessionCanvas({data,projection,connectionState,selectedMessageId,onSelect,loadingOlder,onLoadOlder}:{data:AgentWorkspaceData;projection:PersistedSessionProjection|null;connectionState:PersistedSessionConnectionState;selectedMessageId:string|null;onSelect:(next:ContextSelection)=>void;loadingOlder:boolean;onLoadOlder:()=>void}){
   const [selectedEventId,setSelectedEventId]=useState<string|null>(null);
   const viewportRef=useRef<HTMLDivElement>(null);
   const chronologyRef=useRef<HTMLDivElement>(null);
-  const projection=data.session_event_projection??null;
   const rows=useMemo(()=>{
     const sorted=mergeSessionRows(
       data.messages.map(message=>({kind:"message" as const,at:message.created_at,message,continuation:false})).sort((left,right)=>timestampKey(left.at)-timestampKey(right.at)),
-      (projection?.episodes.flatMap(episode=>episode.records.flatMap(record=>record.fragments.map(fragment=>({kind:"native" as const,at:recordTime(record)??"",record,fragment,episode}))))??[]).sort((left,right)=>left.record.ordering_position-right.record.ordering_position||left.fragment.fragment_index-right.fragment.fragment_index),
+      (projection?.available?projection.records.flatMap(record=>record.fragments.map(fragment=>({kind:"native" as const,at:recordTime(record)??"",record,fragment}))):[]).sort((left,right)=>compareOrderingKey(left.record.ordering_key,right.record.ordering_key)||left.fragment.fragment_index-right.fragment.fragment_index),
     );
     const seen=new Set<string>();
     return sorted.map(row=>{
@@ -264,49 +257,35 @@ function SessionCanvas({data,liveActivity,liveConnectionState,selectedMessageId,
       return {...row,continuation};
     });
   },[data.messages,projection]);
+  const hasNativeRowsWithoutComparableProviderTime=rows.some(row=>row.kind==="native"&&!recordTime(row.record));
   const virtualizer=useVirtualizer({count:rows.length,getScrollElement:()=>viewportRef.current,estimateSize:index=>rows[index]?.kind==="native"?240:150,overscan:10,scrollMargin:chronologyRef.current?.offsetTop??0});
   const currentWork=data.works.find(work=>work.work_id===data.context_summary.current_work_id);
   return <ScrollArea.Root className="h-full overflow-hidden"><ScrollArea.Viewport ref={viewportRef} className="size-full min-w-0 [&>div]:!block [&>div]:!min-w-0"><div className="agent-session-stream w-full px-5 pb-8 sm:px-7">
     <div className="aw-session-context-strip">
-      <span className="aw-session-context-strip__label"><Sparkles aria-hidden="true"/>Messages + Team native Session</span>
+      <span className="aw-session-context-strip__label"><Sparkles aria-hidden="true"/>Messages + persisted native Session</span>
       <strong>{currentWork?.title??"Harness Messages and provider-native Session activity"}</strong>
-      <span>{currentWork?`${humanizeToken(currentWork.phase)} Work · `:""}{data.messages.length} messages · {projection?.episodes.reduce((count,episode)=>count+episode.records.reduce((sum,record)=>sum+record.fragments.length,0),0)??0} native fragments{liveConnectionState==="disconnected"?" · live stream disconnected":""}</span>
+      <span>{currentWork?`${humanizeToken(currentWork.phase)} Work · `:""}{data.messages.length} messages · {projection?.available?projection.records.reduce((count,record)=>count+record.fragments.length,0):0} native fragments{connectionState==="disconnected"?" · persisted stream disconnected":""}{projection?.available&&projection.incomplete_tail?" · provider file has an incomplete tail":""}{projection?.available&&projection.source_reset?" · source generation reset":""}</span>
     </div>
-    {liveActivity&&<CurrentExecutionSlot activity={liveActivity}/>}
-    {projection?.page.has_more&&<div className="flex justify-center py-3"><Button type="button" variant="outline" size="sm" disabled={loadingOlder} onClick={onLoadOlder}>{loadingOlder?"Loading provider-native events…":"Load earlier native Session events"}</Button></div>}
+    {hasNativeRowsWithoutComparableProviderTime&&<p className="mb-3 text-[10px] leading-4 text-muted-foreground">Native records without comparable provider timestamps remain in provider source order; their position relative to Harness Messages is not a recorded chronology.</p>}
+    {projection?.available&&projection.has_more&&<div className="flex justify-center py-3"><Button type="button" variant="outline" size="sm" disabled={loadingOlder} onClick={onLoadOlder}>{loadingOlder?"Loading provider-native events…":"Load earlier native Session events"}</Button></div>}
     {rows.length
-      ? <div ref={chronologyRef} className="aw-session-chronology relative" style={{height:virtualizer.getTotalSize()}} aria-label="Harness Messages and provider-native events ordered by recorded time">{virtualizer.getVirtualItems().map(item=>{const row=rows[item.index]!;return <div key={row.kind==="message"?`message:${row.message.message_id}`:`native:${row.fragment.fragment_id}`} data-index={item.index} ref={virtualizer.measureElement} className="absolute left-0 top-0 w-full" style={{transform:`translateY(${item.start-virtualizer.options.scrollMargin}px)`}}>{(()=>{
+      ? <div ref={chronologyRef} className="aw-session-chronology relative" style={{height:virtualizer.getTotalSize()}} aria-label="Harness Messages and persisted provider-native records in their honest partial order">{virtualizer.getVirtualItems().map(item=>{const row=rows[item.index]!;return <div key={row.kind==="message"?`message:${row.message.message_id}`:`native:${row.fragment.fragment_id}`} data-index={item.index} data-session-row-kind={row.kind} ref={virtualizer.measureElement} className="absolute left-0 top-0 w-full" style={{transform:`translateY(${item.start-virtualizer.options.scrollMargin}px)`}}>{(()=>{
         if(row.kind==="message"){
           return <AuthoredTurn data={data} message={row.message} selectedAgentId={data.selected_agent.agent_member_ref.id} selected={selectedMessageId===row.message.message_id} continuation={row.continuation} onSelect={()=>onSelect({kind:"message",message:row.message})}/>;
         }
-        return <NativeEventRecord record={row.record} fragment={row.fragment} episodeTerminal={row.episode.terminal} actorName={data.selected_agent.display_name} selected={selectedEventId===row.fragment.fragment_id} onOpen={()=>{setSelectedEventId(row.fragment.fragment_id);onSelect({kind:"event",record:row.record,fragment:row.fragment});}}/>;
+        return <NativeEventRecord record={row.record} fragment={row.fragment} actorName={data.selected_agent.display_name} selected={selectedEventId===row.fragment.fragment_id} onOpen={()=>{setSelectedEventId(row.fragment.fragment_id);onSelect({kind:"event",record:row.record,fragment:row.fragment});}}/>;
       })()}</div>})}</div>
-      : <EmptyCanvas compact title={projection?.availability==="unavailable"?"Provider-native Session unavailable":data.selected_agent.is_host?"No Host Session events or Team Messages yet":"No Session activity yet"} detail={projection?.disabled_reason??"Original provider-native events and authored Team Messages will appear here when available."}/>
+      : <EmptyCanvas compact title={projection&&!projection.available?"Provider-native Session unavailable":data.selected_agent.is_host?"No Host Session events or Team Messages yet":"No Session activity yet"} detail={projection&&!projection.available?`${humanizeToken(projection.reason_code)}${projection.detail?`: ${projection.detail}`:""}`:"Original provider-native events and authored Team Messages will appear here when persisted by the provider."}/>
     }
-    {projection?.page.has_more&&<p className="mt-4 border-t border-border pt-3 text-[10px] text-muted-foreground">Earlier original provider events remain available on demand.</p>}
+    {projection?.available&&projection.has_more&&<p className="mt-4 border-t border-border pt-3 text-[10px] text-muted-foreground">Earlier original provider events remain available on demand.</p>}
   </div></ScrollArea.Viewport><ScrollArea.Scrollbar orientation="vertical" className="flex w-2 p-0.5"><ScrollArea.Thumb className="rounded-full bg-border"/></ScrollArea.Scrollbar></ScrollArea.Root>;
 }
 
-function NativeEventRecord({record,fragment,episodeTerminal,actorName,selected,onOpen}:{record:ProviderNativeEventRecord;fragment:ProviderEventFragment;episodeTerminal:boolean;actorName:string;selected:boolean;onOpen:()=>void}){
-  return <section className="aw-provider-episode" data-native-ordering-position={record.ordering_position} data-terminal={episodeTerminal||undefined} aria-label={`Provider-native ${humanizeToken(fragment.semantic_kind)} event`}>
+function NativeEventRecord({record,fragment,actorName,selected,onOpen}:{record:ProviderNativeEventRecord;fragment:ProviderEventFragment;actorName:string;selected:boolean;onOpen:()=>void}){
+  return <section className="aw-provider-episode" data-native-ordering-position={record.ordering_key.value} data-terminal={fragment.lifecycle_phase==="terminal"||undefined} aria-label={`Provider-native ${humanizeToken(fragment.semantic_kind)} event`}>
     {fragment.semantic_kind==="assistant_response"
       ? <NativeAuthoredRecord record={record} fragment={fragment} actorName={actorName} selected={selected} onSelect={onOpen}/>
       : <div className="aw-native-facts-trail"><ExpandableEvent record={record} fragment={fragment} selected={selected} onSelect={onOpen}/></div>}
-  </section>;
-}
-
-function CurrentExecutionSlot({activity}:{activity:LiveProviderActivity}){
-  const latest=activity.items[activity.items.length-1];
-  if(!latest)return null;
-  if(latest.record.fragments.length===0)return null;
-  const terminalFragment=latest.record.fragments[latest.record.fragments.length-1]!;
-  const status=fragmentStatus(terminalFragment);
-  const presentation=eventPresentation(fragmentPresentationKind(terminalFragment),status);
-  const Icon=presentation.icon;
-  return <section className="aw-current-execution" data-family={presentation.family} data-status={status} aria-label="Current provider execution" aria-live="polite">
-    <span className="aw-current-execution__pulse" aria-hidden="true"><Icon/></span>
-    <div className="aw-current-execution__copy"><span className="aw-current-execution__eyebrow">Live SSE · shared native event model</span>{latest.record.fragments.map(fragment=><div key={fragment.fragment_id}><strong>{humanizeToken(fragment.semantic_kind)}</strong><FragmentBody fragment={fragment}/></div>)}<details className="mt-2"><summary>Original provider-native record</summary><NativeEventBody value={latest.record.native_event}/></details></div>
-    <span className="aw-current-execution__source"><b>{humanizeToken(latest.record.provider)}</b><small>{activity.items.length} current</small></span>
   </section>;
 }
 
@@ -334,7 +313,7 @@ function ExpandableEvent({record,fragment,selected,onSelect}:{record:ProviderNat
 
 function FragmentBody({fragment}:{fragment:ProviderEventFragment}){
   const payload=fragment.payload;
-  if(payload.type==="assistant_response"||payload.type==="reasoning")return <div className="aw-authored-body"><Markdown source={payload.text}/></div>;
+  if(payload.type==="assistant_response"||payload.type==="reasoning")return payload.text?<div className="aw-authored-body"><Markdown source={payload.text}/></div>:<p className="text-[11px] italic text-muted-foreground">Provider content unavailable in the persisted source.</p>;
   return <pre className="aw-native-event-body" aria-label="Provider-native event fragment">{JSON.stringify(payload,null,2)}</pre>;
 }
 
@@ -431,8 +410,8 @@ function AgentContextRail({view,data,mode,selected,currentWork,actions,onOpenWor
   const assignedSection=isHost&&otherOwnedWorks.length>0&&<ContextSection title="Assigned Work" hint={`${ownedWorks.length} total`}>{otherOwnedWorks.slice(0,2).map(work=><ContextWorkRow key={work.work_id} data={data} work={work}/>)}</ContextSection>;
   const conversationSection=mode==="messages"&&(unreadIncoming.length>0||latestExchange)&&<ContextSection title="Conversation" hint={unreadIncoming.length?`${unreadIncoming.length} unread`:`${incoming.length} incoming`}>{latestExchange&&<ContextMessageRow data={data} message={latestExchange}/>}{hostInbox.filter(message=>message.message_id!==latestExchange?.message_id).map(message=><ContextMessageRow key={message.message_id} data={data} message={message}/>)}</ContextSection>;
   const evidenceSection=evidenceWorks.some(work=>work.work_id===anchoredWork?.work_id)&&<ContextSection title="Evidence"><ContextWorkRow data={data} work={evidenceWorks.find(work=>work.work_id===anchoredWork?.work_id)!} evidence/></ContextSection>;
-  const privateProjection=data.session_event_projection??null;
-  const sessionSection=<ContextSection title="Current Session" hint={data.selected_agent.is_host&&data.selected_agent.host_session_mode==="external_interactive"?"External · unmanaged":privateProjection?.agent_session_id?humanizeToken(data.selected_agent.runtime_status??"available"):"Unavailable"}><ContextFact label="Provider" value={data.selected_agent.provider?humanizeToken(data.selected_agent.provider):"Not bound"}/><ContextFact label="Session" value={shortId(privateProjection?.agent_session_id)}/><ContextFact label="Episodes" value={String(privateProjection?.episodes.length??0)}/><ContextFact label="Last activity" value={formatTime(data.context_summary.last_activity_at)}/></ContextSection>;
+  const privateProjection=data.persisted_session_projection;
+  const sessionSection=<ContextSection title="Current Session" hint={data.selected_agent.is_host&&data.selected_agent.host_session_mode==="external_interactive"?"External · unmanaged":privateProjection.available?humanizeToken(data.selected_agent.runtime_status??"available"):"Unavailable"}><ContextFact label="Provider" value={data.selected_agent.provider?humanizeToken(data.selected_agent.provider):"Not bound"}/><ContextFact label="Session" value={shortId(data.current_session?.agent_session_id)}/><ContextFact label="Persisted rows" value={String(privateProjection.available?privateProjection.records.length:0)}/><ContextFact label="Last activity" value={formatTime(data.context_summary.last_activity_at)}/></ContextSection>;
   const controlsSection=prioritizedActions.some(action=>!action.disabled_reason)&&<ContextSection title={isHost&&anchoredNeedsJudgment?"Decision actions":"Next"}><WorkspaceActionIndex label={isHost&&anchoredNeedsJudgment?"Resolve in composer":isHost?"Available Host Controls":"Available Controls"} actions={prioritizedActions.filter(action=>!action.disabled_reason).slice(0,6).map(action=>({key:action.kind,label:actionLabel(action.kind)}))}/></ContextSection>;
   const projectionDetails=<details className="mt-5 border-t border-border pt-4"><summary className="cursor-pointer text-[10px] font-semibold text-muted-foreground">Projection · {view.freshness} · seq {view.as_of_event_sequence}</summary><div className="mt-3"><ViewProvenance view={view}/></div></details>;
   const memberRunSection=data.selected_agent.current_member_run_ref&&<ContextSection title="Current MemberRun"><ContextFact label="Generation" value={`${data.selected_agent.current_member_run_ref}${runGeneration!=null?` (gen ${runGeneration})`:""}`}/>{executionDriver&&<ContextFact label="Execution driver" value={executionDriver}/>}<ContextFact label="Assigned work" value={String(ownedWorks.length)}/>{data.selected_agent.runtime_status&&<ContextFact label="Runtime" value={humanizeToken(data.selected_agent.runtime_status)}/>}</ContextSection>;
@@ -481,7 +460,7 @@ function ProfileDialog({data,onClose,closeRef,openerRef}:{data:AgentWorkspaceDat
   const selected=data.selected_agent,c=data.configuration;
   const currentSession=data.current_session??null;
   const hasProviderConfiguration=Boolean(selected.provider||selected.execution_mode||c.provider_profile_ref||c.permission_ceiling||c.workspace_policy);
-  const sessionProjection=data.session_event_projection??null;
+  const sessionProjection=data.persisted_session_projection;
   const dialogRef=useRef<HTMLElement>(null);
   const onCloseRef=useRef(onClose);
   onCloseRef.current=onClose;
@@ -510,7 +489,7 @@ function ProfileDialog({data,onClose,closeRef,openerRef}:{data:AgentWorkspaceDat
       <ProfileSection title="Authority">{hasProviderConfiguration?<><ContextFact label="Durable permission ceiling" value={c.permission_ceiling?humanizeToken(c.permission_ceiling):"Not projected"} canonical={c.permission_ceiling??undefined}/><ContextFact label="Effective Session permission" value={c.effective_permission_ceiling?humanizeToken(c.effective_permission_ceiling):"No active Session"} canonical={c.effective_permission_ceiling??undefined}/><ContextFact label="Resolved cwd" value={c.resolved_workspace_cwd??"No active Session"} canonical={c.resolved_workspace_cwd??undefined}/><ContextFact label="Workspace policy" value={c.workspace_policy?humanizeToken(c.workspace_policy):"Not projected"} canonical={c.workspace_policy??undefined}/>{c.prompt_ref&&<ContextFact label="Prompt reference" value={c.prompt_ref}/>} {c.forbidden_actions.length>0&&<ProfileList label="Forbidden actions" values={c.forbidden_actions} humanize empty=""/>}</>:<p className="aw-profile-empty">No execution authority is projected for this Agent.</p>}</ProfileSection>
       {(c.skill_refs.length>0||c.tool_refs.length>0||c.capabilities.length>0)&&<ProfileSection title="Capabilities">{c.skill_refs.length>0&&<ProfileList label="Skills" values={c.skill_refs} empty=""/>}{c.capabilities.length>0&&<ProfileList label="Capabilities" values={c.capabilities} humanize empty=""/>}{c.tool_refs.length>0&&<ProfileList label="Configured tools" values={c.tool_refs} humanize empty=""/>}</ProfileSection>}
       <ProfileSection title="Runtime">{hasProviderConfiguration?<><ContextFact label="Provider" value={currentSession?.provider?humanizeToken(currentSession.provider):selected.provider?humanizeToken(selected.provider):"Not bound"} canonical={currentSession?.provider??selected.provider??undefined}/><ContextFact label="Execution mode" value={currentSession?.native_session_ref?.execution_mode?humanizeToken(currentSession.native_session_ref.execution_mode):selected.execution_mode?humanizeToken(selected.execution_mode):"Not bound"} canonical={currentSession?.native_session_ref?.execution_mode??selected.execution_mode??undefined}/>{c.provider_profile_ref&&<ContextFact label="Provider profile" value={humanizeToken(c.provider_profile_ref)} canonical={c.provider_profile_ref}/>}</>:<p className="aw-profile-empty">No provider runtime is projected for this Agent.</p>}{currentSession&&<div className="aw-profile-current-session"><div><span>Current AgentSession</span><Badge tone={currentSession.lifecycle==="closed"?"muted":"good"}>{humanizeToken(currentSession.lifecycle)}</Badge></div><strong>{humanizeToken(currentSession.provider)} · {humanizeToken(currentSession.effective_permission_ceiling)}</strong><p><span title={currentSession.agent_session_id}>{shortId(currentSession.agent_session_id)}</span> · gen {currentSession.agent_session_generation} · {humanizeToken(currentSession.runtime_residency)}</p>{currentSession.native_session_open_target&&<a className="mt-2 inline-block text-xs font-semibold text-primary hover:underline" href={currentSession.native_session_open_target.uri}>Open exact native Session</a>}</div>}{c.workspace_binding&&<div className="mt-3"><ContextFact label="Workspace" value={c.workspace_binding.status?humanizeToken(c.workspace_binding.status):"Bound"} canonical={c.workspace_binding.id}/>{c.workspace_binding.locator&&<ContextFact label="Path" value={c.workspace_binding.locator}/>}</div>}</ProfileSection>
-      <ProfileSection title="History">{sessionProjection?.agent_session_id?<><ContextFact label="Native episodes" value={String(sessionProjection.episodes.length)}/><ContextFact label="Generation" value={String(sessionProjection.agent_session_generation)}/><p className="aw-profile-empty">History remains provider-native and is read on demand. Opening or resuming a Session is a separate authorized action.</p></>:<p className="aw-profile-empty">{sessionProjection?.disabled_reason??"Private native Session history is not projected in this view."}</p>}</ProfileSection>
+      <ProfileSection title="History">{sessionProjection.available?<><ContextFact label="Persisted native rows" value={String(sessionProjection.records.length)}/><ContextFact label="Source generation" value={shortId(sessionProjection.source_generation)}/><p className="aw-profile-empty">History remains provider-native and is read on demand. Opening or resuming a Session is a separate authorized action.</p></>:<p className="aw-profile-empty">{humanizeToken(sessionProjection.reason_code)}</p>}</ProfileSection>
     </div>
   </section></div>;
 }
@@ -536,79 +515,61 @@ function revalidateContextSelection(current:ContextSelection,data:AgentWorkspace
   if(!current)return null;
   if(current.kind==="message"){const message=data.messages.find(item=>item.message_id===current.message.message_id);return message?{kind:"message",message}:null;}
   if(current.kind==="work"){const work=data.works.find(item=>item.work_id===current.work.work_id);return work?{kind:"work",work}:null;}
-  const projection=data.session_event_projection??null;
-  for(const episode of projection?.episodes??[]){for(const record of episode.records){const fragment=record.fragments.find(item=>item.fragment_id===current.fragment.fragment_id);if(fragment)return{kind:"event",record,fragment};}}
+  const projection=data.persisted_session_projection;
+  if(projection.available){for(const record of projection.records){const fragment=record.fragments.find(item=>item.fragment_id===current.fragment.fragment_id);if(fragment)return{kind:"event",record,fragment};}}
   return null;
 }
-function mergeAgentWorkspaceViews(primary:RoleView<AgentWorkspaceData>|null,additional:RoleView<AgentWorkspaceData>|null):RoleView<AgentWorkspaceData>|null{
-  if(!primary)return additional;
-  if(!additional)return primary;
-  const left=primary.data.session_event_projection;
-  const right=additional.data.session_event_projection;
-  if(left.agent_session_id!==right.agent_session_id||left.agent_session_generation!==right.agent_session_generation)return primary;
-  const episodes=new Map<string,(typeof left.episodes)[number]>();
-  for(const episode of [...left.episodes,...right.episodes]){
-    const current=episodes.get(episode.episode_id);
-    if(!current){episodes.set(episode.episode_id,{...episode,records:[...episode.records]});continue;}
-    const records=new Map(current.records.map(record=>[record.record_id,record]));
-    for(const record of episode.records)records.set(record.record_id,record);
-    current.records=[...records.values()].sort((a,b)=>a.ordering_position-b.ordering_position);
-    current.terminal=current.terminal||episode.terminal;
-    current.incomplete=current.incomplete||episode.incomplete;
-  }
-  return {...primary,data:{...primary.data,session_event_projection:{...left,episodes:[...episodes.values()].sort((a,b)=>(a.records[0]?.ordering_position??Number.MAX_SAFE_INTEGER)-(b.records[0]?.ordering_position??Number.MAX_SAFE_INTEGER)||a.episode_id.localeCompare(b.episode_id)),page:right.page}}};
-}
 type SessionMessageRow={kind:"message";at:string;message:MessageSummary;continuation:boolean};
-type SessionNativeRow={kind:"native";at:string;record:ProviderNativeEventRecord;fragment:ProviderEventFragment;episode:SessionEventProjection["episodes"][number]};
+type SessionNativeRow={kind:"native";at:string;record:ProviderNativeEventRecord;fragment:ProviderEventFragment};
 function mergeSessionRows(messages:SessionMessageRow[],nativeEvents:SessionNativeRow[]):Array<SessionMessageRow|SessionNativeRow>{
   const rows:Array<SessionMessageRow|SessionNativeRow>=[];
   let messageIndex=0;
-  let nativeIndex=0;
-  while(messageIndex<messages.length||nativeIndex<nativeEvents.length){
-    const message=messages[messageIndex];
-    const nativeEvent=nativeEvents[nativeIndex];
-    if(!nativeEvent){rows.push(message!);messageIndex+=1;continue;}
-    if(!message){rows.push(nativeEvent);nativeIndex+=1;continue;}
-    if(timestampKey(message.at)<=timestampKey(nativeEvent.at)){rows.push(message);messageIndex+=1;}
-    else{rows.push(nativeEvent);nativeIndex+=1;}
+  for(const nativeEvent of nativeEvents){
+    const providerTime=recordTime(nativeEvent.record);
+    if(providerTime){
+      while(messageIndex<messages.length&&timestampKey(messages[messageIndex]!.at)<=timestampKey(providerTime)){
+        rows.push(messages[messageIndex]!);
+        messageIndex+=1;
+      }
+    }
+    rows.push(nativeEvent);
   }
+  while(messageIndex<messages.length){rows.push(messages[messageIndex]!);messageIndex+=1;}
   return rows;
 }
 function humanizeToken(value:string){return value.split(/[_-]+/).filter(Boolean).map((part,index)=>index===0?`${part.charAt(0).toUpperCase()}${part.slice(1)}`:part).join(" ")}
 function rosterStateTone(state:string){if(/running|active/.test(state))return "text-status-good";if(/wait|pending|review/.test(state))return "text-status-warn";if(/block/.test(state))return "text-status-bad";return "text-muted-foreground";}
 function rosterStateLabel(agent:AgentWorkspaceRosterItem){const state=agent.runtime_state??agent.capacity??"unknown";if(agent.is_host&&agent.host_session_mode==="external_interactive"&&/running|active/.test(state))return{word:"External · unmanaged",tone:"text-status-warn"};return{word:humanizeToken(state),tone:rosterStateTone(state)};}
 function timestampKey(value:string|null|undefined){if(!value)return 0;if(value.startsWith("unix-ms:")){const parsed=Number(value.slice(8));return Number.isFinite(parsed)?parsed:0;}const parsed=Date.parse(value);return Number.isFinite(parsed)?parsed:0}
-function recordTime(record:ProviderNativeEventRecord){return record.occurred_at??record.observed_at}
+function recordTime(record:ProviderNativeEventRecord){const value=record.occurred_at;if(!value)return null;if(value.startsWith("unix-ms:")){const parsed=Number(value.slice(8));return Number.isFinite(parsed)?value:null;}if(!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(value))return null;return Number.isFinite(Date.parse(value))?value:null}
+function compareOrderingKey(left:ProviderNativeEventRecord["ordering_key"],right:ProviderNativeEventRecord["ordering_key"]){return left.kind===right.kind?left.value-right.value:left.kind.localeCompare(right.kind)}
 function fragmentPresentationKind(fragment:ProviderEventFragment){if(fragment.semantic_kind==="reasoning")return "thinking";if(fragment.semantic_kind.startsWith("tool_call_"))return "tool";if(fragment.semantic_kind==="assistant_response")return "message";if(fragment.semantic_kind==="artifact_created")return "artifact";return "runtime"}
 function fragmentStatus(fragment:ProviderEventFragment){if(fragment.semantic_kind==="tool_call_failed"||fragment.semantic_kind==="turn_failed")return "failed";if(fragment.lifecycle_phase==="terminal")return "completed";return "running"}
-export function isUnexpiredActivity(activity:LiveProviderActivity,now=Date.now()){return activity.expires_unix_ms>now}
-export function selectAgentWorkspaceLiveActivity({activity,projectionScope,executionSpaceId,projectId,teamRunId,memberRunId,memberRunGeneration,sessionId,sessionGeneration,now=Date.now()}:{activity?:LiveProviderActivity|null;projectionScope:AgentWorkspaceData["projection_scope"];executionSpaceId:string;projectId:string;teamRunId:string|null;memberRunId:string|null;memberRunGeneration:number|null|undefined;sessionId:string|null;sessionGeneration:number|null|undefined;now?:number}){
-  return activity
-    && memberRunId
-    && sessionId
-    && sessionGeneration!=null
-    && activity.execution_space_id===executionSpaceId
-    && activity.project_id===projectId
-    && activity.member_run_id===memberRunId
-    && activity.member_run_generation===memberRunGeneration
-    && activity.team_run_id===teamRunId
-    && activity.agent_session_id===sessionId
-    && activity.agent_session_generation===sessionGeneration
-    && isUnexpiredActivity(activity,now)
-      ? activity
-      : null;
+type AvailablePersistedSessionProjection=Extract<PersistedSessionProjection,{available:true}>;
+function normalizePersistedSessionResponse(value:unknown,sessionId:string,sessionGeneration:number):AvailablePersistedSessionProjection|null{
+  if(!value||typeof value!=="object")return null;
+  const response=value as Partial<AvailablePersistedSessionProjection>;
+  if(response.schema_version!=="agentfirm.native_session_read.v1"||!Array.isArray(response.records)||typeof response.source_generation!=="string")return null;
+  const records=response.records.filter(record=>record.schema_version==="agentfirm.provider_native_event_record.v3"&&record.agent_session_id===sessionId&&record.agent_session_generation===sessionGeneration);
+  if(records.length!==response.records.length)return null;
+  return {...response,available:true,records} as AvailablePersistedSessionProjection;
 }
-function liveEventMatches(event:LiveProviderActivityEvent,scope:{executionSpaceId:string;projectId:string;teamRunId:string;memberRunId:string;memberRunGeneration:number;sessionId:string;sessionGeneration:number}){return event.scope.execution_space_id===scope.executionSpaceId&&event.scope.project_id===scope.projectId&&event.scope.team_run_id===scope.teamRunId&&event.scope.member_run_id===scope.memberRunId&&event.scope.member_run_generation===scope.memberRunGeneration&&event.scope.agent_session_id===scope.sessionId&&event.scope.agent_session_generation===scope.sessionGeneration}
-function useTeamSessionLiveActivity({apiUrl,space,project,company,teamId,agentId,teamRunId,memberRunId,memberRunGeneration,sessionId,sessionGeneration,initialActivity}:{apiUrl:string;space:string;project:string;company?:string;teamId:string|null;agentId:string|null;teamRunId:string|null;memberRunId:string|null;memberRunGeneration:number|null;sessionId:string|null;sessionGeneration:number|null;initialActivity:LiveProviderActivity|null}){
-  const [activity,setActivity]=useState<LiveProviderActivity|null>(null);
-  const [connectionState,setConnectionState]=useState<LiveProviderConnectionState>("inactive");
-  const initialActivityRef=useRef(initialActivity);
-  initialActivityRef.current=initialActivity;
+function mergePersistedSessionProjection(current:PersistedSessionProjection|null,incoming:PersistedSessionProjection,mode:"head"|"older"):PersistedSessionProjection{
+  if(mode==="older"&&current&&(!current.available||!incoming.available||current.source_generation!==incoming.source_generation))return current;
+  if(!current||!current.available||!incoming.available||current.source_generation!==incoming.source_generation)return incoming;
+  const records=new Map(current.records.map(record=>[record.record_id,record]));
+  for(const record of incoming.records)records.set(record.record_id,record);
+  return {...incoming,records:[...records.values()].sort((left,right)=>compareOrderingKey(left.ordering_key,right.ordering_key)),has_more:mode==="older"?incoming.has_more:current.has_more,next_before:mode==="older"?incoming.next_before:current.next_before};
+}
+function usePersistedSessionTimeline({apiUrl,space,project,company,teamId,agentId,sessionId,sessionGeneration,initialProjection}:{apiUrl:string;space:string;project:string;company?:string;teamId:string|null;agentId:string|null;sessionId:string|null;sessionGeneration:number|null;initialProjection:PersistedSessionProjection|null}){
+  const [projection,setProjection]=useState<PersistedSessionProjection|null>(initialProjection);
+  const [connectionState,setConnectionState]=useState<PersistedSessionConnectionState>("inactive");
+  const identity=`${space}\u0000${project}\u0000${teamId??""}\u0000${agentId??""}\u0000${sessionId??""}\u0000${sessionGeneration??""}`;
+  const initialProjectionRef=useRef(initialProjection);initialProjectionRef.current=initialProjection;
   useEffect(()=>{
-    const exactScope=teamRunId&&memberRunId&&memberRunGeneration!=null&&sessionId&&sessionGeneration!=null?{executionSpaceId:space,projectId:project,teamRunId,memberRunId,memberRunGeneration,sessionId,sessionGeneration}:null;
-    setActivity(exactScope?selectAgentWorkspaceLiveActivity({activity:initialActivityRef.current,projectionScope:"team_session_read",...exactScope,now:Date.now()}):null);
+    setProjection(initialProjectionRef.current);
     const token=window.__AGENTFIRM_BOOTSTRAP__?.capabilityToken;
-    if(!exactScope||!teamId||!agentId){setConnectionState("inactive");return;}
+    if(!sessionId||sessionGeneration==null||!teamId||!agentId){setConnectionState("inactive");return;}
     setConnectionState("connecting");
     const controller=new AbortController();
     const url=new URL("/v1/events",apiUrl.endsWith("/")?apiUrl:`${apiUrl}/`);
@@ -617,16 +578,17 @@ function useTeamSessionLiveActivity({apiUrl,space,project,company,teamId,agentId
       try{
         const headers:Record<string,string>={Accept:"text/event-stream"};if(token)headers["X-AgentFirm-Token"]=token;
         const response=await fetch(url,{headers,signal:controller.signal});
-        if(!response.ok||!response.body)throw new Error(`Live provider activity stream failed (${response.status})`);
+        if(!response.ok||!response.body)throw new Error(`Persisted native Session stream failed (${response.status})`);
         setConnectionState("connected");
         const reader=response.body.getReader(),decoder=new TextDecoder();let buffer="";
-        while(true){const {done,value}=await reader.read();if(done)break;buffer+=decoder.decode(value,{stream:true});let boundary=buffer.indexOf("\n\n");while(boundary>=0){const block=buffer.slice(0,boundary).replace(/\r/g,"");buffer=buffer.slice(boundary+2);boundary=buffer.indexOf("\n\n");const eventName=block.split("\n").find(line=>line.startsWith("event:"))?.slice(6).trim();if(eventName!=="live_provider_activity")continue;const data=block.split("\n").filter(line=>line.startsWith("data:")).map(line=>line.slice(5).trimStart()).join("\n");if(!data)continue;const event=JSON.parse(data) as LiveProviderActivityEvent;if(event.schema_version!=="agentfirm.live_provider_activity_event.v2"||!liveEventMatches(event,exactScope))continue;if(event.reason==="terminal"||!event.activity)setActivity(null);else setActivity(selectAgentWorkspaceLiveActivity({activity:event.activity,projectionScope:"team_session_read",...exactScope,now:Date.now()}));}}
+        while(true){const {done,value}=await reader.read();if(done)break;buffer+=decoder.decode(value,{stream:true});let boundary=buffer.indexOf("\n\n");while(boundary>=0){const block=buffer.slice(0,boundary).replace(/\r/g,"");buffer=buffer.slice(boundary+2);boundary=buffer.indexOf("\n\n");const eventName=block.split("\n").find(line=>line.startsWith("event:"))?.slice(6).trim();if(!["native_session_snapshot","native_session_append","native_session_source_reset"].includes(eventName??""))continue;const data=block.split("\n").filter(line=>line.startsWith("data:")).map(line=>line.slice(5).trimStart()).join("\n");if(!data)continue;const next=normalizePersistedSessionResponse(JSON.parse(data),sessionId,sessionGeneration);if(!next)continue;if(eventName==="native_session_source_reset")setProjection(next);else setProjection(current=>mergePersistedSessionProjection(current,next,"head"));}}
         if(!controller.signal.aborted)setConnectionState("disconnected");
-      }catch(error){if(!controller.signal.aborted){setConnectionState("disconnected");console.warn("Agent Workspace live activity disconnected",error);}}finally{if(!controller.signal.aborted)setActivity(null);}
+      }catch(error){if(!controller.signal.aborted){setConnectionState("disconnected");console.warn("Agent Workspace persisted Session stream disconnected",error);}}
     })();
-    return()=>{controller.abort();setActivity(null);};
-  },[apiUrl,space,project,company,teamId,agentId,teamRunId,memberRunGeneration,memberRunId,sessionGeneration,sessionId]);
-  return {activity,connectionState};
+    return()=>controller.abort();
+  },[apiUrl,space,project,company,teamId,agentId,sessionGeneration,sessionId,identity]);
+  useEffect(()=>{if(initialProjection)setProjection(current=>mergePersistedSessionProjection(current,initialProjection,"head"));},[initialProjection]);
+  return {projection,connectionState,mergeOlder:(older:PersistedSessionProjection)=>setProjection(current=>mergePersistedSessionProjection(current,older,"older"))};
 }
 function formatTime(value:string|null|undefined){if(!value)return "unknown";const timestamp=timestampKey(value);if(!timestamp)return value;return new Date(timestamp).toLocaleString([], {month:"short",day:"numeric",hour:"2-digit",minute:"2-digit"})}
 function activateOnKeyDown(event:React.KeyboardEvent<HTMLElement>,activate:()=>void){if(event.target!==event.currentTarget)return;if(event.key==="Enter"){event.preventDefault();activate();}else if(event.key===" ")event.preventDefault();}

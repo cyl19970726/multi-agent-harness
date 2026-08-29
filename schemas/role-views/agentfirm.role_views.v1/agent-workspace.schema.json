@@ -22,8 +22,7 @@
         "selected_agent":{"$ref":"#/$defs/selectedAgent"},
         "roster":{"type":"array","items":{"$ref":"#/$defs/rosterAgent"}},
         "current_session":{"anyOf":[{"$ref":"#/$defs/currentSession"},{"type":"null"}]},
-        "session_event_projection":{"$ref":"https://agentfirm.local/schemas/provider-events/session-event-projection.schema.json"},
-        "live_provider_activity":{"anyOf":[{"$ref":"https://agentfirm.local/schemas/provider-events/live-provider-activity.schema.json"},{"type":"null"}]},
+        "persisted_session_projection":{"$ref":"#/$defs/persistedSessionProjection"},
         "messages":{"type":"array","items":{"$ref":"common.schema.json#/$defs/messageSummary"}},
         "works":{"type":"array","items":{"$ref":"common.schema.json#/$defs/workSummary"}},
         "configuration":{"$ref":"#/$defs/configuration"},
@@ -35,8 +34,28 @@
         {"$ref":"#/$defs/agentWorkspaceData"},
         {
           "type":"object",
-          "required":["current_session","session_event_projection","live_provider_activity"],
-          "properties":{"projection_scope":{"const":"team_session_read"},"session_event_projection":{"$ref":"https://agentfirm.local/schemas/provider-events/session-event-projection.schema.json"},"live_provider_activity":{"anyOf":[{"$ref":"https://agentfirm.local/schemas/provider-events/live-provider-activity.schema.json"},{"type":"null"}]}}
+          "required":["current_session","persisted_session_projection"],
+          "properties":{"projection_scope":{"const":"team_session_read"},"persisted_session_projection":{"$ref":"#/$defs/persistedSessionProjection"}}
+        }
+      ]
+    },
+    "persistedSessionProjection":{
+      "oneOf":[
+        {
+          "type":"object","additionalProperties":false,
+          "required":["schema_version","available","native_source_ref","source_generation","snapshot_watermark","records","has_more","next_before","incomplete_tail","source_reset"],
+          "properties":{
+            "schema_version":{"const":"agentfirm.native_session_read.v1"},"available":{"const":true},"native_source_ref":{"type":"string","minLength":1},"source_generation":{"type":"string","minLength":1},
+            "snapshot_watermark":{"anyOf":[{"$ref":"https://agentfirm.local/schemas/provider-events/provider-native-event-record-v3.schema.json#/$defs/ordering_key"},{"type":"null"}]},
+            "records":{"type":"array","items":{"$ref":"https://agentfirm.local/schemas/provider-events/provider-native-event-record-v3.schema.json"}},"has_more":{"type":"boolean"},
+            "next_before":{"anyOf":[{"type":"object","additionalProperties":false,"required":["source_generation","ordering_key"],"properties":{"source_generation":{"type":"string","minLength":1},"ordering_key":{"$ref":"https://agentfirm.local/schemas/provider-events/provider-native-event-record-v3.schema.json#/$defs/ordering_key"}}},{"type":"null"}]},
+            "incomplete_tail":{"type":"boolean"},"source_reset":{"type":"boolean"}
+          }
+        },
+        {
+          "type":"object","additionalProperties":false,
+          "required":["schema_version","available","reason_code"],
+          "properties":{"schema_version":{"const":"agentfirm.native_session_read.v1"},"available":{"const":false},"reason_code":{"type":"string","minLength":1},"detail":{"type":"string"}}
         }
       ]
     },

@@ -18,7 +18,7 @@ use std::time::{Duration, Instant};
 use crate::{
     bind_team_runtime_supervisor, current_unix_ms_u64, drive_prepared_team_run,
     ensure_team_message_fabric, ensure_team_runtime_fabric, prepare_team_run_start_body, CliError,
-    CliResult, HarnessStore, LiveProviderActivityUpdate, PreparedTeamRunStart, TeamRunLedger,
+    CliResult, HarnessStore, NativeSessionWakeUpdate, PreparedTeamRunStart, TeamRunLedger,
     TeamSupervisorRegistration,
 };
 
@@ -94,7 +94,7 @@ struct PendingControlConnection {
 }
 
 #[derive(Clone)]
-struct LiveProviderActivityEndpoint {
+struct NativeSessionWakeEndpoint {
     authority: String,
     token: String,
     serve_instance_id: String,
@@ -125,7 +125,7 @@ pub(crate) struct MultiTeamDaemon {
     /// Volatile callback registered by the current local `serve` process. It
     /// is never written to the Store and a daemon restart deliberately loses
     /// it. The bearer token is required on every loopback ingress request.
-    live_provider_activity_endpoint: Arc<Mutex<HashMap<String, LiveProviderActivityEndpoint>>>,
+    native_session_wake_endpoint: Arc<Mutex<HashMap<String, NativeSessionWakeEndpoint>>>,
     max_concurrency: usize,
     idle_timeout_secs: u64,
     scan_interval: Duration,
@@ -151,7 +151,7 @@ pub(crate) struct MultiTeamDaemon {
 }
 
 impl MultiTeamDaemon {
-    fn install_live_provider_activity_endpoint(
+    fn install_native_session_wake_endpoint(
         &self,
         authority: &str,
         token: &str,
@@ -173,12 +173,12 @@ impl MultiTeamDaemon {
         {
             return false;
         }
-        self.live_provider_activity_endpoint
+        self.native_session_wake_endpoint
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .insert(
                 agent_member_id.to_string(),
-                LiveProviderActivityEndpoint {
+                NativeSessionWakeEndpoint {
                     authority: authority.to_string(),
                     token: token.to_string(),
                     serve_instance_id: serve_instance_id.to_string(),
@@ -269,7 +269,7 @@ impl MultiTeamDaemon {
             contexts: Mutex::new(Vec::new()),
             supervisor_start_gate: Mutex::new(()),
             session_runtimes: Mutex::new(HashMap::new()),
-            live_provider_activity_endpoint: Arc::new(Mutex::new(HashMap::new())),
+            native_session_wake_endpoint: Arc::new(Mutex::new(HashMap::new())),
             max_concurrency,
             idle_timeout_secs,
             scan_interval: Duration::from_secs(scan_interval_secs),
@@ -564,18 +564,18 @@ pub(crate) fn daemon_status_via_socket(firm_home: &Path, node_id: &str) -> Optio
 }
 
 #[derive(Debug)]
-enum LiveProviderActivityPostError {
+enum NativeSessionWakePostError {
     Unavailable(std::io::Error),
     Rejected(String),
 }
 
-impl LiveProviderActivityPostError {
+impl NativeSessionWakePostError {
     fn clears_registered_endpoint(&self) -> bool {
         matches!(self, Self::Unavailable(_))
     }
 }
 
-impl std::fmt::Display for LiveProviderActivityPostError {
+impl std::fmt::Display for NativeSessionWakePostError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Unavailable(error) => write!(formatter, "serve callback unavailable: {error}"),
@@ -586,17 +586,17 @@ impl std::fmt::Display for LiveProviderActivityPostError {
     }
 }
 
-impl From<std::io::Error> for LiveProviderActivityPostError {
+impl From<std::io::Error> for NativeSessionWakePostError {
     fn from(error: std::io::Error) -> Self {
         Self::Unavailable(error)
     }
 }
 
-fn post_live_provider_activity(
-    endpoint: &LiveProviderActivityEndpoint,
+fn post_native_session_wake(
+    endpoint: &NativeSessionWakeEndpoint,
     execution_space_id: &str,
-    update: &LiveProviderActivityUpdate,
-) -> Result<(), LiveProviderActivityPostError> {
+    update: &NativeSessionWakeUpdate,
+) -> Result<(), NativeSessionWakePostError> {
     let mut stream = std::net::TcpStream::connect(&endpoint.authority)?;
     stream.set_read_timeout(Some(Duration::from_millis(500)))?;
     stream.set_write_timeout(Some(Duration::from_millis(500)))?;
@@ -604,7 +604,7 @@ fn post_live_provider_activity(
     let encoded_space = execution_space_id.replace('%', "%25").replace(' ', "%20");
     write!(
         stream,
-        "POST /v1/live/provider-activity?space={encoded_space} HTTP/1.1\r\nHost: {}\r\nContent-Type: application/json\r\nX-AgentFirm-Live-Token: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        "POST /v1/live/native-session-wake?space={encoded_space} HTTP/1.1\r\nHost: {}\r\nContent-Type: application/json\r\nX-AgentFirm-Native-Session-Wake-Token: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
         endpoint.authority,
         endpoint.token,
         body.len(),
@@ -614,7 +614,7 @@ fn post_live_provider_activity(
     let mut status_line = String::new();
     std::io::BufReader::new(&mut stream).read_line(&mut status_line)?;
     if !status_line.contains(" 202 ") {
-        return Err(LiveProviderActivityPostError::Rejected(
+        return Err(NativeSessionWakePostError::Rejected(
             status_line.trim().to_string(),
         ));
     }
@@ -624,7 +624,7 @@ fn post_live_provider_activity(
 /// Register the current `serve` process as the volatile live-activity sink.
 /// A missing daemon is not an error: serve remains usable and a later restart
 /// registers again. The endpoint is loopback-only and never durable.
-pub(crate) struct LiveProviderActivityRegistration<'a> {
+pub(crate) struct NativeSessionWakeRegistration<'a> {
     pub authority: &'a str,
     pub token: &'a str,
     pub agent_member_id: &'a str,
@@ -632,10 +632,10 @@ pub(crate) struct LiveProviderActivityRegistration<'a> {
     pub serve_instance_id: &'a str,
 }
 
-pub(crate) fn register_live_provider_activity_via_socket(
+pub(crate) fn register_native_session_wake_via_socket(
     firm_home: &Path,
     node_id: &str,
-    registration: LiveProviderActivityRegistration<'_>,
+    registration: NativeSessionWakeRegistration<'_>,
 ) -> Option<Result<String, std::io::Error>> {
     let socket_path = node_daemon_socket_path(firm_home, node_id);
     let mut stream = match UnixStream::connect(&socket_path) {
@@ -649,7 +649,7 @@ pub(crate) fn register_live_provider_activity_via_socket(
         return Some(Err(error));
     }
     let command = serde_json::json!({
-        "cmd": "register_live_provider_activity",
+        "cmd": "register_native_session_wake",
         "authority": registration.authority,
         "token": registration.token,
         "agent_member_id": registration.agent_member_id,

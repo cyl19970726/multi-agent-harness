@@ -222,7 +222,7 @@ fn exact_self_session_projection_follows_fresh_start_settle_sync() {
         let status = run_firm(&home, &root, &["daemon", "status"]);
         if status.status.success()
             && serde_json::from_slice::<serde_json::Value>(&status.stdout)
-                .is_ok_and(|value| value["live_provider_activity_sink_registered"] == true)
+                .is_ok_and(|value| value["native_session_wake_sink_registered"] == true)
         {
             sink_registered = true;
             break;
@@ -231,50 +231,13 @@ fn exact_self_session_projection_follows_fresh_start_settle_sync() {
     }
     assert!(
         sink_registered,
-        "serve never registered its volatile live provider activity sink"
+        "serve never registered its native Session wake sink"
     );
     let (status, started) = serve.post_json(
         &format!("/v1/team-runs/{run_id}/start"),
         &serde_json::json!({}),
     );
     assert_eq!(status, 202, "start: {started}");
-
-    let live_frames = collect_named_sse_data(
-        &mut member_sse,
-        std::time::Duration::from_secs(10),
-        "live_provider_activity",
-    );
-    let private_live = live_frames
-        .iter()
-        .filter(|frame| frame["schema_version"] == "agentfirm.live_provider_activity_event.v2")
-        .collect::<Vec<_>>();
-    assert!(private_live.iter().any(|frame| {
-        frame["reason"] == "updated"
-            && frame["scope"]["member_run_id"] == member_run_id
-            && frame["activity"]["items"].as_array().is_some_and(|items| {
-                items.iter().any(|item| {
-                    item["record"]["fragments"].as_array().is_some_and(|fragments| {
-                        fragments.iter().any(|fragment| {
-                            matches!(
-                                fragment["semantic_kind"].as_str(),
-                                Some("tool_call_started" | "assistant_response")
-                            )
-                        })
-                    })
-                })
-            })
-    }), "independent NodeDaemon provider activity never reached authenticated serve SSE: {private_live:?}");
-    assert!(
-        private_live.iter().any(|frame| {
-            frame["reason"] == "terminal"
-                && frame["scope"]["member_run_id"] == member_run_id
-                && frame["activity"].is_null()
-        }),
-        "provider terminal did not clear the volatile overlay: {private_live:?}"
-    );
-    let serialized_live = serde_json::to_string(&private_live).expect("private SSE JSON");
-    assert!(serialized_live.contains("cargo check"));
-    assert!(!serialized_live.contains("hidden"));
 
     let mut settled = false;
     for _ in 0..500 {
@@ -368,27 +331,6 @@ fn exact_self_session_projection_follows_fresh_start_settle_sync() {
         status, 200,
         "exact-self Member AgentWorkspace: {member_self_workspace}"
     );
-    let owner_projection = &member_self_workspace["data"]["session_event_projection"];
-    assert_eq!(owner_projection["disabled_reason"], serde_json::Value::Null);
-    assert!(owner_projection["agent_session_id"]
-        .as_str()
-        .is_some_and(|id| id.starts_with("agent-session:")));
-    assert!(owner_projection["source_snapshot_fingerprint"]
-        .as_str()
-        .is_some_and(|fingerprint| fingerprint.starts_with("sha256:")));
-    let settled_episode = owner_projection["episodes"]
-        .as_array()
-        .and_then(|episodes| {
-            episodes
-                .iter()
-                .find(|episode| episode["provider_turn_id"] == "turn-settle-1")
-        })
-        .expect("settled provider turn episode");
-    assert_eq!(settled_episode["terminal"], true);
-    let serialized_owner_projection =
-        serde_json::to_string(owner_projection).expect("projection JSON");
-    assert!(serialized_owner_projection.contains("display-safe settled result"));
-    assert!(serialized_owner_projection.contains("raw-provider-reasoning-is-preserved"));
     let persisted_owner = &member_self_workspace["data"]["persisted_session_projection"];
     assert_eq!(persisted_owner["available"], true, "{persisted_owner}");
     assert_eq!(
@@ -415,12 +357,9 @@ fn exact_self_session_projection_follows_fresh_start_settle_sync() {
         host_selected_member["data"]["projection_scope"],
         "team_session_read"
     );
-    assert!(
-        host_selected_member["data"]
-            .get("session_event_projection")
-            .is_some(),
-        "Host-selected Member must include the Team Session projection"
-    );
+    assert!(host_selected_member["data"]
+        .get("session_event_projection")
+        .is_none());
     assert_eq!(
         host_selected_member["data"]["persisted_session_projection"]["available"], true,
         "exact Team Host receives the same NodeDaemon persisted reader"
@@ -440,11 +379,11 @@ fn exact_self_session_projection_follows_fresh_start_settle_sync() {
         sibling_selected_member["data"]["projection_scope"],
         "team_session_read"
     );
-    assert!(
-        serde_json::to_string(&sibling_selected_member["data"]["session_event_projection"])
-            .expect("sibling projection JSON")
-            .contains("raw-provider-reasoning-is-preserved")
-    );
+    assert!(serde_json::to_string(
+        &sibling_selected_member["data"]["persisted_session_projection"]
+    )
+    .expect("sibling projection JSON")
+    .contains("raw-provider-reasoning-is-preserved"));
     assert_eq!(
         sibling_selected_member["allowed_actions"],
         serde_json::json!([]),
@@ -528,20 +467,9 @@ fn exact_self_session_projection_follows_fresh_start_settle_sync() {
         &[("X-AgentFirm-Token", SIBLING_MEMBER_TOKEN)],
     );
     assert_eq!(status, 200, "unavailable exact-self projection");
-    let unavailable = &sibling_self_unavailable["data"]["session_event_projection"];
-    for field in [
-        "agent_session_id",
-        "agent_session_generation",
-        "source_snapshot_fingerprint",
-    ] {
-        assert!(
-            unavailable[field].is_null(),
-            "unavailable provider projection must not fabricate {field}"
-        );
-    }
-    assert_eq!(unavailable["episodes"], serde_json::json!([]));
-    assert_eq!(unavailable["truncated"], false);
-    assert!(unavailable["disabled_reason"].as_str().is_some());
+    let unavailable = &sibling_self_unavailable["data"]["persisted_session_projection"];
+    assert_eq!(unavailable["available"], false);
+    assert!(unavailable["reason_code"].as_str().is_some());
 
     // Stop is an execution fence, not read authority. Close the exact Member
     // through its Supervisor, then stop the NodeDaemon cleanly before proving
@@ -600,13 +528,8 @@ fn exact_self_session_projection_follows_fresh_start_settle_sync() {
         "stopped owner workspace: {stopped_owner_workspace}"
     );
     assert_eq!(
-        stopped_owner_workspace["data"]["session_event_projection"]["availability"],
-        "available"
-    );
-    assert!(
-        stopped_owner_workspace["data"]["session_event_projection"]["episodes"]
-            .as_array()
-            .is_some_and(|episodes| !episodes.is_empty())
+        stopped_owner_workspace["data"].get("session_event_projection"),
+        None
     );
     assert_eq!(
         stopped_owner_workspace["data"]["persisted_session_projection"]["available"], false,

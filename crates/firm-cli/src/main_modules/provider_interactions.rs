@@ -13,7 +13,7 @@ mod tests_live_provider_preview {
     }
 }
 
-pub(super) fn new_live_provider_activity_token() -> String {
+pub(super) fn new_native_session_wake_token() -> String {
     let mut bytes = [0u8; 32];
     if std::fs::File::open("/dev/urandom")
         .and_then(|mut source| source.read_exact(&mut bytes))

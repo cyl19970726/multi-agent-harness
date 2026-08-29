@@ -348,8 +348,8 @@ fn delivery_projection_is_consistent_correlated_and_host_mode_is_labeled() {
     );
 
     // Issue 1: the exact Host self view carries the external-interactive mode
-    // label, the Team-scoped Session projection, the transient live slot,
-    // and the authorized conversation surface.
+    // label, the persisted Session projection, and the authorized conversation
+    // surface without reintroducing a volatile transcript overlay.
     let host_workspace_route =
         format!("/v1/views/agent-workspace/{run_id}?project={project_id}&agent_id={host_id}");
     let (status, host_workspace) =
@@ -368,18 +368,22 @@ fn delivery_projection_is_consistent_correlated_and_host_mode_is_labeled() {
         .find(|member| member["agent_member_ref"]["id"] == host_id)
         .expect("Host roster entry");
     assert_eq!(host_roster["host_session_mode"], "external_interactive");
-    let host_projection = &host_workspace["data"]["session_event_projection"];
+    let host_projection = &host_workspace["data"]["persisted_session_projection"];
     assert_eq!(
-        host_projection["disabled_reason"],
-        "No provider-native Session is bound to this selected Agent run."
+        host_projection["available"], false,
+        "an unbound external Host has no persisted native Session"
     );
-    assert_eq!(host_projection["agent_session_id"], serde_json::Value::Null);
-    assert_eq!(host_projection["episodes"], serde_json::json!([]));
+    assert!(
+        host_workspace["data"]
+            .get("session_event_projection")
+            .is_none(),
+        "the retired v2 Session projection must not be published"
+    );
     assert!(
         host_workspace["data"]
             .get("live_provider_activity")
-            .is_some(),
-        "Host self view carries the nullable transient live slot"
+            .is_none(),
+        "the retired volatile transcript overlay must not be published"
     );
     assert!(host_workspace["allowed_actions"]
         .as_array()
@@ -414,7 +418,7 @@ fn delivery_projection_is_consistent_correlated_and_host_mode_is_labeled() {
         "external_interactive"
     );
     assert_eq!(
-        unbound_workspace["data"]["session_event_projection"]["disabled_reason"],
-        "No provider-native Session is bound to this selected Agent run."
+        unbound_workspace["data"]["persisted_session_projection"]["available"],
+        false
     );
 }

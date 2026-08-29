@@ -40,7 +40,7 @@ use harness_core::agentfirm_api::{AgentSessionStatus, PermissionCeiling};
 use crate::provider_adapter::{self, PendingProviderControl, ProviderControlDispatch};
 use crate::supervisor_wake::{WakeBackoff, WakePolicy};
 use crate::{
-    active_work_continuation_prompt, emit_live_provider_activity, mark_message_delivered,
+    active_work_continuation_prompt, emit_native_session_wake, mark_message_delivered,
     member_work_collaboration_envelope, native_session_ref, now_string, parse_round_result,
     prepare_provider_effect, record_provider_cycle_correlation,
     refresh_member_after_provider_callbacks, requeue_managed_host_attentions,
@@ -48,8 +48,8 @@ use crate::{
     settle_provider_effect_not_applied, stop_member_for_latched_close, team_messages_prompt,
     transition_provider_session_for_member, wait_for_idle_member_wake, work_contract_prompt,
     ClaimedWork, CliError, CliResult, ControlReceiver, HostAttention, IdleMemberWake,
-    LiveMemberControlRegistration, LiveProviderTurnGuard, MemberActionStatus, MemberControlCommand,
-    MemberOutcome, MemberRoundResult, MemberRunStatus, MemberRuntimeContext,
+    LiveMemberControlRegistration, MemberActionStatus, MemberControlCommand, MemberOutcome,
+    MemberRoundResult, MemberRunStatus, MemberRuntimeContext, NativeSessionWakeGuard,
     ProviderRuntimeProjection, TeamMessageProjection, TeamRunEventSourceKind, TeamRunLedger,
 };
 
@@ -675,7 +675,7 @@ pub(crate) fn run_team_member_with_adapter<A: TeamRuntimeAdapter<Error = CliErro
             let mut round_start = member_row.clone();
             let turn_result = {
                 let _turn_lease = context.turn_leases.acquire();
-                let _live_turn_guard = LiveProviderTurnGuard::new(
+                let _native_session_wake_guard = NativeSessionWakeGuard::new(
                     context.live_sink.clone(),
                     ledger.run_id.clone(),
                     member_row.agent_member_id.clone(),
@@ -830,12 +830,7 @@ pub(crate) fn run_team_member_with_adapter<A: TeamRuntimeAdapter<Error = CliErro
                         }
                     }
                     if let Some(sink) = &live_sink {
-                        emit_live_provider_activity(
-                            sink,
-                            ledger,
-                            &round_start,
-                            event.clone(),
-                        );
+                        emit_native_session_wake(sink, ledger, &round_start);
                     }
                 },
                 &mut || {
