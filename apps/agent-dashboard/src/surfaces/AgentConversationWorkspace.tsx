@@ -275,7 +275,7 @@ function SessionCanvas({data,projection,connectionState,selectedMessageId,onSele
     const boundaryAt=data.runtime_truth.harness_control.occurred_at;
     if(boundaryAt&&["blocked","recovery_required"].includes(data.runtime_truth.harness_control.state)){
       const boundary:SessionBoundaryRow={kind:"control_boundary",at:boundaryAt};
-      const observedAfterBoundary=sorted.findIndex(row=>row.kind==="provider"&&row.record.observed_at>boundaryAt);
+      const observedAfterBoundary=sorted.findIndex(row=>row.kind==="provider"&&providerTimelineObservedAfter(row.item,boundaryAt));
       const chronologicalBoundary=sorted.findIndex(row=>timestampKey(row.at)>=timestampKey(boundaryAt));
       const index=observedAfterBoundary>=0?observedAfterBoundary:chronologicalBoundary;
       sorted.splice(index<0?sorted.length:index,0,boundary);
@@ -586,6 +586,7 @@ function mergeSessionRows(messages:SessionMessageRow[],nativeEvents:SessionProvi
   return rows;
 }
 function providerTimelineRecord(item:ProviderTimelineItem){return item.kind==="tool_episode"?item.occurrences[0]!.record:item.record}
+function providerTimelineObservedAfter(item:ProviderTimelineItem,boundaryAt:string){return item.kind==="tool_episode"?item.occurrences.some(({record})=>record.observed_at>boundaryAt):item.record.observed_at>boundaryAt}
 function providerTimelineId(item:ProviderTimelineItem){return item.kind==="tool_episode"?item.episode_id:`native:${item.fragment.fragment_id}`}
 function toolEpisodeTime(episode:ToolEpisode){const times=episode.occurrences.map(({record})=>recordTime(record)).filter((value):value is string=>Boolean(value));if(times.length)return times.length===1?formatTime(times[0]):`${formatTime(times[0])} – ${formatTime(times[times.length-1])}`;const positions=episode.occurrences.map(({record})=>record.ordering_key.value);return positions.length===1?`source #${positions[0]}`:`source #${positions[0]}–${positions[positions.length-1]}`}
 function humanizeToken(value:string){return value.split(/[_-]+/).filter(Boolean).map((part,index)=>index===0?`${part.charAt(0).toUpperCase()}${part.slice(1)}`:part).join(" ")}
