@@ -479,7 +479,7 @@ pub(crate) fn agent_workspace_view(
         "status":team_data["team"]["status"],
         "latest_run_id":team_data["team"]["latest_run"]["id"],
     });
-    let current_work_id = works
+    let current_work = works
         .iter()
         .filter(|work| selected_is_host || work["owner_actor_ref"]["id"] == selected_agent_id)
         .find(|work| work["phase"] == "active")
@@ -498,8 +498,15 @@ pub(crate) fn agent_workspace_view(
                     selected_is_host || work["owner_actor_ref"]["id"] == selected_agent_id
                 })
                 .find(|work| work["phase"] == "open")
-        })
-        .and_then(|work| work["work_id"].as_str());
+        });
+    let current_work_id = current_work.and_then(|work| work["work_id"].as_str());
+    let runtime_truth = agent_workspace_runtime_truth(
+        selected_member_run,
+        current_agent_session,
+        current_work,
+        &persisted_session_projection,
+        &facts.runtime_commands,
+    );
     let mut response = envelope(
         "agent_workspace",
         &facts,
@@ -510,6 +517,7 @@ pub(crate) fn agent_workspace_view(
             "roster":roster,
             "persisted_session_projection":persisted_session_projection,
             "current_session":current_session,
+            "runtime_truth":runtime_truth,
             "messages":messages,
             "works":works,
             "configuration":configuration,
@@ -529,6 +537,170 @@ pub(crate) fn agent_workspace_view(
         .expect("AgentWorkspace data object")
         .remove("runtime_fabric");
     Ok(response)
+}
+
+fn agent_workspace_runtime_truth(
+    member_run: Option<&Value>,
+    session: Option<&Value>,
+    work: Option<&Value>,
+    persisted: &Value,
+    runtime_commands: &[Value],
+) -> Value {
+    let member_run_id = member_run.and_then(|value| value["id"].as_str());
+    let member_generation = member_run.and_then(|value| value["runtime_generation"].as_u64());
+    let session_id = session.and_then(|value| value["id"].as_str());
+    let session_generation = session.and_then(|value| value["runtime_generation"].as_u64());
+    let exact_commands = runtime_commands
+        .iter()
+        .filter(|command| {
+            let session_matches = session_id.is_some_and(|id| {
+                command["binding"]["target_session_id"].as_str() == Some(id)
+                    || command["target_session_id"].as_str() == Some(id)
+            }) && session_generation.is_none_or(|generation| {
+                command["binding"]["target_runtime_generation"].as_u64() == Some(generation)
+                    || command["target_session_generation"].as_u64() == Some(generation)
+            });
+            let member_matches = member_run_id
+                .is_some_and(|id| command["binding"]["target_member_run_id"].as_str() == Some(id))
+                && member_generation.is_none_or(|generation| {
+                    command["binding"]["target_member_run_generation"].as_u64() == Some(generation)
+                });
+            session_matches || member_matches
+        })
+        .collect::<Vec<_>>();
+    let latest_command = exact_commands.iter().copied().max_by(|left, right| {
+        left["updated_at"]
+            .as_str()
+            .cmp(&right["updated_at"].as_str())
+            .then_with(|| left["id"].as_str().cmp(&right["id"].as_str()))
+    });
+    let coordination = member_run
+        .and_then(|value| value["coordination_status"].as_str())
+        .unwrap_or("unknown");
+    let member_runtime = member_run
+        .and_then(|value| value["runtime_status"].as_str())
+        .unwrap_or("unknown");
+    let session_lifecycle = session
+        .and_then(|value| value["lifecycle"].as_str())
+        .unwrap_or("unknown");
+    let session_activity = session
+        .and_then(|value| value["control_state"]["activity"].as_str())
+        .unwrap_or("unknown");
+    let (control_state, reason_code, boundary_at, next_action) =
+        if matches!(coordination, "closed" | "retired")
+            || matches!(session_lifecycle, "closed")
+            || matches!(member_runtime, "completed" | "stopped")
+        {
+            (
+                "closed",
+                "RUNTIME_AUTHORITY_CLOSED",
+                member_run.and_then(|value| {
+                    value["finished_at"]
+                        .as_str()
+                        .or_else(|| value["last_event_at"].as_str())
+                }),
+                "Reopen the same verified native Session if continuation is required.",
+            )
+        } else if let Some(command) =
+            latest_command.filter(|command| command["status"] == "recovery_required")
+        {
+            (
+                "recovery_required",
+                command["failure_code"]
+                    .as_str()
+                    .unwrap_or("RUNTIME_COMMAND_RECOVERY_REQUIRED"),
+                command["updated_at"].as_str(),
+                "Resolve the exact RuntimeCommand from evidence; do not replay blindly.",
+            )
+        } else if latest_command.is_some_and(|command| command["status"] == "failed") {
+            (
+                "blocked",
+                latest_command
+                    .and_then(|command| command["failure_code"].as_str())
+                    .unwrap_or("RUNTIME_COMMAND_FAILED"),
+                latest_command.and_then(|command| command["updated_at"].as_str()),
+                "Inspect the failed RuntimeCommand before sending another provider effect.",
+            )
+        } else if session_lifecycle == "recovery_required" {
+            (
+                "recovery_required",
+                "AGENT_SESSION_RECOVERY_REQUIRED",
+                member_run.and_then(|value| value["last_event_at"].as_str()),
+                "Inspect the exact Session and RuntimeCommand evidence before dispatch.",
+            )
+        } else if matches!(member_runtime, "blocked" | "failed" | "disconnected") {
+            let reason = match member_runtime {
+                "failed" => "MEMBER_RUNTIME_FAILED",
+                "disconnected" => "MEMBER_RUNTIME_DISCONNECTED",
+                _ => "MEMBER_RUNTIME_BLOCKED",
+            };
+            (
+                "blocked",
+                reason,
+                member_run.and_then(|value| value["last_event_at"].as_str()),
+                "Restore exact runtime authority before sending another provider effect.",
+            )
+        } else if session_activity == "running" || member_runtime == "running" {
+            (
+                "running",
+                "CURRENT_PROVIDER_CYCLE_RUNNING",
+                None,
+                "Wait for the current cycle or use an authorized Interrupt or Close.",
+            )
+        } else if coordination == "active"
+            && matches!(session_lifecycle, "idle" | "active" | "waiting")
+        {
+            (
+                "ready",
+                "RUNTIME_READY",
+                None,
+                "The runtime is ready for an authorized next cycle.",
+            )
+        } else {
+            (
+                "unknown",
+                "RUNTIME_CONTROL_NOT_PROVEN",
+                None,
+                "Inspect canonical runtime facts; native activity alone cannot prove control.",
+            )
+        };
+    let records = persisted["records"].as_array();
+    let last_native_observed_at = records
+        .into_iter()
+        .flatten()
+        .filter_map(|record| record["observed_at"].as_str())
+        .max();
+    let native_state = if persisted["available"] == true && last_native_observed_at.is_some() {
+        "observed"
+    } else if persisted["available"] == true {
+        "quiet"
+    } else {
+        "unknown"
+    };
+    let observed_after_control_loss = boundary_at
+        .zip(last_native_observed_at)
+        .is_some_and(|(boundary, observed)| observed > boundary);
+    let explanation = if observed_after_control_loss {
+        format!(
+            "Harness control is {} ({}). Provider-native activity was observed afterward; it does not prove recovery or Work completion.",
+            control_state, reason_code
+        )
+    } else {
+        format!(
+            "Work is {}; coordination is {}; Harness control is {}; provider-native activity is {}.",
+            work.and_then(|value| value["phase"].as_str()).unwrap_or("unavailable"),
+            coordination,
+            control_state,
+            native_state
+        )
+    };
+    json!({
+        "work":{"work_id":work.and_then(|value|value["work_id"].as_str()),"phase":work.and_then(|value|value["phase"].as_str()).unwrap_or("unavailable"),"condition":work.and_then(|value|value["condition"].as_str()).unwrap_or("unavailable"),"updated_at":work.and_then(|value|value["updated_at"].as_str())},
+        "coordination":{"state":coordination,"member_run_id":member_run_id,"runtime_generation":member_generation,"runtime_status":member_runtime},
+        "harness_control":{"state":control_state,"reason_code":reason_code,"occurred_at":boundary_at,"last_command":latest_command.map(|command|json!({"id":command["id"],"command":command["command"],"status":command["status"],"updated_at":command["updated_at"],"failure_code":command["failure_code"]})),"next_action":next_action},
+        "provider_native_activity":{"state":native_state,"last_observed_at":last_native_observed_at,"observed_after_control_loss":observed_after_control_loss},
+        "explanation":explanation,
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -665,4 +837,133 @@ fn read_persisted_session_projection(
             }),
         },
     )
+}
+
+#[cfg(test)]
+mod runtime_truth_tests {
+    use super::*;
+
+    fn member(runtime_status: &str, coordination: &str) -> Value {
+        json!({
+            "id":"member-run-1","runtime_generation":2,
+            "runtime_status":runtime_status,"coordination_status":coordination,
+            "last_event_at":"2026-08-31T10:00:00Z","finished_at":null
+        })
+    }
+
+    fn session(lifecycle: &str, activity: &str) -> Value {
+        json!({
+            "id":"agent-session-1","runtime_generation":4,"lifecycle":lifecycle,
+            "control_state":{"activity":activity,"runtime_residency":"attached"}
+        })
+    }
+
+    fn command(status: &str, failure_code: Option<&str>) -> Value {
+        json!({
+            "id":"runtime-command-1","command":"start_cycle","status":status,
+            "failure_code":failure_code,"updated_at":"2026-08-31T10:01:00Z",
+            "binding":{"target_member_run_id":"member-run-1","target_member_run_generation":2,
+                "target_session_id":"agent-session-1","target_runtime_generation":4}
+        })
+    }
+
+    fn persisted(observed_at: Option<&str>) -> Value {
+        json!({"available":true,"records":observed_at.map(|at|vec![json!({"observed_at":at})]).unwrap_or_default()})
+    }
+
+    #[test]
+    fn runtime_truth_keeps_the_four_axes_independent() {
+        for (runtime, activity, expected) in [
+            ("running", "running", "running"),
+            ("idle", "idle", "ready"),
+            ("blocked", "idle", "blocked"),
+        ] {
+            let member = member(runtime, "active");
+            let session = session("active", activity);
+            let truth = agent_workspace_runtime_truth(
+                Some(&member),
+                Some(&session),
+                Some(
+                    &json!({"work_id":"work-1","phase":"active","condition":"normal","updated_at":"2026-08-31T09:00:00Z"}),
+                ),
+                &persisted(Some("2026-08-31T09:59:00Z")),
+                &[],
+            );
+            assert_eq!(truth["work"]["phase"], "active");
+            assert_eq!(truth["coordination"]["state"], "active");
+            assert_eq!(truth["harness_control"]["state"], expected);
+            assert_eq!(truth["provider_native_activity"]["state"], "observed");
+        }
+    }
+
+    #[test]
+    fn recovery_boundary_does_not_turn_later_native_activity_into_recovery() {
+        let member = member("blocked", "active");
+        let session = session("recovery_required", "idle");
+        let command = command("recovery_required", Some("PROVIDER_IDLE_TIMEOUT"));
+        let truth = agent_workspace_runtime_truth(
+            Some(&member),
+            Some(&session),
+            Some(
+                &json!({"work_id":"work-1","phase":"active","condition":"normal","updated_at":"2026-08-31T09:00:00Z"}),
+            ),
+            &persisted(Some("2026-08-31T10:05:00Z")),
+            &[command],
+        );
+        assert_eq!(truth["harness_control"]["state"], "recovery_required");
+        assert_eq!(
+            truth["harness_control"]["reason_code"],
+            "PROVIDER_IDLE_TIMEOUT"
+        );
+        assert_eq!(truth["provider_native_activity"]["state"], "observed");
+        assert_eq!(
+            truth["provider_native_activity"]["observed_after_control_loss"],
+            true
+        );
+        assert!(truth["explanation"]
+            .as_str()
+            .is_some_and(|value| value.contains("does not prove recovery or Work completion")));
+    }
+
+    #[test]
+    fn historical_recovery_does_not_override_a_later_exact_settlement() {
+        let member = member("idle", "active");
+        let session = session("active", "idle");
+        let recovery = command("recovery_required", Some("PROVIDER_IDLE_TIMEOUT"));
+        let mut applied = command("applied", None);
+        applied["id"] = json!("runtime-command-2");
+        applied["updated_at"] = json!("2026-08-31T10:02:00Z");
+        let truth = agent_workspace_runtime_truth(
+            Some(&member),
+            Some(&session),
+            None,
+            &persisted(None),
+            &[recovery, applied],
+        );
+        assert_eq!(truth["harness_control"]["state"], "ready");
+        assert_eq!(
+            truth["harness_control"]["last_command"]["id"],
+            "runtime-command-2"
+        );
+        assert_eq!(
+            truth["provider_native_activity"]["observed_after_control_loss"],
+            false
+        );
+    }
+
+    #[test]
+    fn closed_coordination_wins_over_quiet_or_stale_runtime_labels() {
+        let member = member("idle", "closed");
+        let truth = agent_workspace_runtime_truth(
+            Some(&member),
+            None,
+            None,
+            &json!({"available":false,"reason_code":"exact_session_unavailable"}),
+            &[],
+        );
+        assert_eq!(truth["work"]["phase"], "unavailable");
+        assert_eq!(truth["coordination"]["state"], "closed");
+        assert_eq!(truth["harness_control"]["state"], "closed");
+        assert_eq!(truth["provider_native_activity"]["state"], "unknown");
+    }
 }
