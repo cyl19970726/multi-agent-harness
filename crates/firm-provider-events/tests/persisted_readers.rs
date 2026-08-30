@@ -6,9 +6,10 @@ use std::{
 
 use firm_provider_events::{
     persisted_adapter_manifest, read_persisted_file_page, read_persisted_jsonl_snapshot,
-    read_persisted_jsonl_snapshot_after, ContentAvailability, PersistedFileBoundary,
-    PersistedFragmentPayload, PersistedProjectionContext, PersistedReaderSource,
-    PersistedSessionProjector, PersistedTailMode, ProviderKind, SessionSemanticKind,
+    read_persisted_jsonl_snapshot_after, ContentAvailability, ContentUnavailableReason,
+    NativeClassificationReason, PersistedFileBoundary, PersistedFragmentPayload,
+    PersistedProjectionContext, PersistedReaderSource, PersistedSessionProjector,
+    PersistedTailMode, ProviderKind, SessionSemanticKind, ToolCallOutcome, ToolOperationCategory,
 };
 
 fn source(provider: ProviderKind) -> PersistedReaderSource {
@@ -89,7 +90,7 @@ fn paged_tool_result_keeps_exact_prior_tool_name_without_cursor_payload() {
     assert!(matches!(
         &record.fragments[0].payload,
         PersistedFragmentPayload::Tool { tool_name, call_id: Some(call_id), .. }
-            if tool_name == "Read" && call_id == "call-1"
+            if tool_name.as_deref() == Some("Read") && call_id == "call-1"
     ));
 }
 
@@ -143,6 +144,192 @@ fn five_provider_persisted_corpora_reach_only_honest_manifest_capabilities() {
 }
 
 #[test]
+fn five_provider_tools_expose_readable_exact_response_local_contract() {
+    let expectations = [
+        (
+            ProviderKind::Codex,
+            "exec",
+            ToolOperationCategory::Command,
+            "cargo test -p firm-provider-events",
+        ),
+        (
+            ProviderKind::Claude,
+            "Read",
+            ToolOperationCategory::Read,
+            "AGENTS.md",
+        ),
+        (
+            ProviderKind::Kimi,
+            "Read",
+            ToolOperationCategory::Read,
+            "docs/current/architecture/agent-runtime.md",
+        ),
+        (
+            ProviderKind::Pi,
+            "Read",
+            ToolOperationCategory::Read,
+            "package.json",
+        ),
+        (
+            ProviderKind::DeepseekHarness,
+            "bash",
+            ToolOperationCategory::Command,
+            "rg -n NodeDaemonLease crates/",
+        ),
+    ];
+    for (provider, expected_name, expected_category, expected_target) in expectations {
+        let records = project(provider, corpus(provider));
+        let requested = records
+            .iter()
+            .flat_map(|record| {
+                record
+                    .fragments
+                    .iter()
+                    .map(move |fragment| (record, fragment))
+            })
+            .find(|(_, fragment)| {
+                matches!(
+                    fragment.semantic_kind,
+                    SessionSemanticKind::ToolCallRequested | SessionSemanticKind::ToolCallStarted
+                )
+            })
+            .expect("tool request/start");
+        let PersistedFragmentPayload::Tool {
+            tool_name,
+            call_id,
+            operation_category,
+            primary_target,
+            arguments: Some(arguments),
+            outcome,
+            ..
+        } = &requested.1.payload
+        else {
+            panic!("readable tool request/start payload for {provider:?}");
+        };
+        assert_eq!(tool_name.as_deref(), Some(expected_name));
+        assert!(call_id.as_ref().is_some_and(|value| !value.is_empty()));
+        assert_eq!(*operation_category, Some(expected_category));
+        assert_eq!(primary_target.as_deref(), Some(expected_target));
+        assert_eq!(arguments.availability, ContentAvailability::Available);
+        assert!(requested
+            .0
+            .native_event
+            .pointer(
+                arguments
+                    .json_pointer
+                    .as_deref()
+                    .expect("arguments pointer")
+            )
+            .is_some());
+        assert!(matches!(
+            outcome,
+            Some(ToolCallOutcome::Requested | ToolCallOutcome::Started)
+        ));
+
+        let completed = records
+            .iter()
+            .flat_map(|record| {
+                record
+                    .fragments
+                    .iter()
+                    .map(move |fragment| (record, fragment))
+            })
+            .find(|(_, fragment)| fragment.semantic_kind == SessionSemanticKind::ToolCallCompleted)
+            .expect("tool completion");
+        let PersistedFragmentPayload::Tool {
+            tool_name,
+            call_id: completed_call_id,
+            result: Some(result),
+            outcome: Some(ToolCallOutcome::Completed),
+            ..
+        } = &completed.1.payload
+        else {
+            panic!("readable tool result payload for {provider:?}");
+        };
+        assert_eq!(tool_name.as_deref(), Some(expected_name));
+        assert_eq!(completed_call_id, call_id);
+        assert_eq!(result.availability, ContentAvailability::Available);
+        assert!(completed
+            .0
+            .native_event
+            .pointer(result.json_pointer.as_deref().expect("result pointer"))
+            .is_some());
+    }
+}
+
+#[test]
+fn five_provider_failed_tools_keep_typed_outcome_and_missing_content_reason() {
+    for provider in [
+        ProviderKind::Codex,
+        ProviderKind::Claude,
+        ProviderKind::Kimi,
+        ProviderKind::Pi,
+        ProviderKind::DeepseekHarness,
+    ] {
+        let records = project(provider, capability_corpus(provider));
+        let failed = records
+            .iter()
+            .flat_map(|record| &record.fragments)
+            .find(|fragment| fragment.semantic_kind == SessionSemanticKind::ToolCallFailed)
+            .expect("failed tool fragment");
+        assert!(matches!(
+            &failed.payload,
+            PersistedFragmentPayload::Tool {
+                call_id: Some(call_id),
+                outcome: Some(ToolCallOutcome::Failed),
+                error: Some(error),
+                ..
+            } if !call_id.is_empty()
+                && error.availability == ContentAvailability::Unavailable
+                && error.unavailable_reason == Some(ContentUnavailableReason::ProviderAbsent)
+                && error.json_pointer.is_none()
+        ));
+    }
+}
+
+#[test]
+fn missing_related_tool_request_is_typed_and_never_guessed_by_adjacency() {
+    let records = project(
+        ProviderKind::Claude,
+        concat!(
+            "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"nearby but unrelated\"}]}}\n",
+            "{\"type\":\"user\",\"message\":{\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"orphan-call\",\"content\":\"output\"}]}}\n",
+        ),
+    );
+    let fragment = &records[1].fragments[0];
+    assert_eq!(
+        fragment.semantic_kind,
+        SessionSemanticKind::ToolCallCompleted
+    );
+    assert!(matches!(
+        &fragment.payload,
+        PersistedFragmentPayload::Tool {
+            tool_name: None,
+            tool_name_unavailable_reason: Some(ContentUnavailableReason::RelatedRecordMissing),
+            call_id: Some(call_id),
+            ..
+        } if call_id == "orphan-call"
+    ));
+}
+
+#[test]
+fn unclassified_native_keeps_type_subtype_and_typed_reason() {
+    let records = project(
+        ProviderKind::Claude,
+        "{\"type\":\"future_event\",\"subtype\":\"background_update\",\"payload\":{\"private\":true}}\n",
+    );
+    assert!(matches!(
+        &records[0].fragments[0].payload,
+        PersistedFragmentPayload::Native {
+            event_type: Some(event_type),
+            event_subtype: Some(event_subtype),
+            classification_reason: Some(NativeClassificationReason::UnsupportedEventType),
+        } if event_type == "future_event" && event_subtype == "background_update"
+    ));
+    assert_eq!(records[0].native_event["payload"]["private"], true);
+}
+
+#[test]
 fn checked_in_persisted_manifests_are_exact_rust_claims() {
     let checked_in: Vec<firm_provider_events::PersistedAdapterManifest> = serde_json::from_str(
         include_str!("../../../schemas/provider-events/persisted-adapters.v3.json"),
@@ -175,6 +362,10 @@ fn codex_persisted_item_discriminator_and_unavailable_reasoning_are_exact() {
     assert_eq!(
         reasoning.content_availability,
         ContentAvailability::Unavailable
+    );
+    assert_eq!(
+        reasoning.content_unavailable_reason,
+        Some(ContentUnavailableReason::ProviderAbsent)
     );
     assert!(matches!(
         &reasoning.payload,
@@ -210,7 +401,7 @@ fn claude_user_tool_result_reaches_the_exact_prior_call_without_user_message_sem
     assert!(matches!(
         &completed.payload,
         PersistedFragmentPayload::Tool { tool_name, call_id: Some(call_id), .. }
-            if tool_name == "Read" && call_id == "claude-call"
+            if tool_name.as_deref() == Some("Read") && call_id == "claude-call"
     ));
 }
 

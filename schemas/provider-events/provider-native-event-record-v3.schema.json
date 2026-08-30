@@ -42,6 +42,7 @@
         "lifecycle_phase":{"enum":["requested","started","progress","terminal"]},
         "completeness":{"enum":["partial","complete","incomplete"]},
         "content_availability":{"enum":["available","unavailable"]},
+        "content_unavailable_reason":{"type":["string","null"],"enum":["provider_absent","decoder_unsupported","incomplete_tail","related_record_missing","malformed",null]},
         "payload":{"type":"object"}
       },
       "allOf":[{"oneOf":[
@@ -57,17 +58,51 @@
       ]},
       {"if":{"properties":{"semantic_kind":{"enum":["reasoning","assistant_response"]},"content_availability":{"const":"unavailable"}},"required":["semantic_kind","content_availability"]},"then":{"properties":{"payload":{"properties":{"text":{"type":"null"}}}}}},
       {"if":{"properties":{"semantic_kind":{"enum":["reasoning","assistant_response"]},"content_availability":{"const":"available"}},"required":["semantic_kind","content_availability"]},"then":{"properties":{"payload":{"properties":{"text":{"type":"string","minLength":1}},"required":["text"]}}}},
+      {"if":{"properties":{"content_availability":{"const":"available"}},"required":["content_availability"]},"then":{"properties":{"content_unavailable_reason":{"type":"null"}}}},
       {"if":{"properties":{"semantic_kind":{"not":{"enum":["reasoning","assistant_response"]}}},"required":["semantic_kind"]},"then":{"properties":{"content_availability":{"const":"available"}}}}
       ]
     },
     "session_metadata_payload":{"type":"object","additionalProperties":false,"required":["type"],"properties":{"type":{"const":"session_metadata"},"native_session_id":{"type":["string","null"]}}},
     "reasoning_payload":{"type":"object","additionalProperties":false,"required":["type"],"properties":{"type":{"const":"reasoning"},"text":{"type":["string","null"],"minLength":1}}},
     "assistant_response_payload":{"type":"object","additionalProperties":false,"required":["type"],"properties":{"type":{"const":"assistant_response"},"text":{"type":["string","null"],"minLength":1}}},
-    "tool_payload":{"type":"object","additionalProperties":false,"required":["type","tool_name"],"properties":{"type":{"const":"tool"},"tool_name":{"type":"string","minLength":1},"call_id":{"type":["string","null"]},"display_detail":{"type":["string","null"]}}},
+    "content_reference":{
+      "type":"object","additionalProperties":false,"required":["availability"],
+      "properties":{
+        "availability":{"enum":["available","unavailable"]},
+        "unavailable_reason":{"type":["string","null"],"enum":["provider_absent","decoder_unsupported","incomplete_tail","related_record_missing","malformed",null]},
+        "json_pointer":{"type":["string","null"],"pattern":"^/","maxLength":512}
+      },
+      "allOf":[
+        {"if":{"properties":{"availability":{"const":"available"}},"required":["availability"]},"then":{"required":["json_pointer"],"properties":{"json_pointer":{"type":"string","pattern":"^/","maxLength":512},"unavailable_reason":{"type":"null"}}}},
+        {"if":{"properties":{"availability":{"const":"unavailable"}},"required":["availability"]},"then":{"required":["unavailable_reason"],"properties":{"json_pointer":{"type":"null"},"unavailable_reason":{"enum":["provider_absent","decoder_unsupported","incomplete_tail","related_record_missing","malformed"]}}}}
+      ]
+    },
+    "tool_payload":{
+      "type":"object","additionalProperties":false,
+      "required":["type","tool_name"],
+      "properties":{
+        "type":{"const":"tool"},
+        "tool_name":{"type":["string","null"],"minLength":1,"maxLength":256},
+        "tool_name_unavailable_reason":{"type":["string","null"],"enum":["related_record_missing",null]},
+        "call_id":{"type":["string","null"],"minLength":1,"maxLength":512},
+        "parent_call_id":{"type":["string","null"],"minLength":1,"maxLength":512},
+        "operation_category":{"enum":["read","search","command","write","edit","network","subagent","other"]},
+        "primary_target":{"type":["string","null"],"minLength":1,"maxLength":512},
+        "arguments":{"anyOf":[{"$ref":"#/$defs/content_reference"},{"type":"null"}]},
+        "result":{"anyOf":[{"$ref":"#/$defs/content_reference"},{"type":"null"}]},
+        "error":{"anyOf":[{"$ref":"#/$defs/content_reference"},{"type":"null"}]},
+        "outcome":{"enum":["requested","started","completed","failed"]},
+        "display_detail":{"type":["string","null"]}
+      },
+      "allOf":[
+        {"if":{"properties":{"tool_name":{"type":"null"}},"required":["tool_name"]},"then":{"required":["tool_name_unavailable_reason"],"properties":{"tool_name_unavailable_reason":{"const":"related_record_missing"}}}},
+        {"if":{"properties":{"tool_name":{"type":"string"}},"required":["tool_name"]},"then":{"properties":{"tool_name_unavailable_reason":{"type":"null"}}}}
+      ]
+    },
     "artifact_payload":{"type":"object","additionalProperties":false,"required":["type","display_name"],"properties":{"type":{"const":"artifact"},"display_name":{"type":"string","minLength":1},"media_type":{"type":["string","null"]},"content_digest":{"type":["string","null"]}}},
     "usage_payload":{"type":"object","additionalProperties":false,"required":["type"],"properties":{"type":{"const":"usage"},"input_tokens":{"type":["integer","null"],"minimum":0},"output_tokens":{"type":["integer","null"],"minimum":0},"total_tokens":{"type":["integer","null"],"minimum":0}}},
     "turn_payload":{"type":"object","additionalProperties":false,"required":["type","outcome"],"properties":{"type":{"const":"turn"},"outcome":{"type":"string","minLength":1},"display_summary":{"type":["string","null"]}}},
     "malformed_payload":{"type":"object","additionalProperties":false,"required":["type","reason_code"],"properties":{"type":{"const":"malformed"},"reason_code":{"type":"string","minLength":1}}},
-    "native_payload":{"type":"object","additionalProperties":false,"required":["type"],"properties":{"type":{"const":"native"},"event_type":{"type":["string","null"]}}}
+    "native_payload":{"type":"object","additionalProperties":false,"required":["type"],"properties":{"type":{"const":"native"},"event_type":{"type":["string","null"],"minLength":1,"maxLength":256},"event_subtype":{"type":["string","null"],"minLength":1,"maxLength":256},"classification_reason":{"enum":["unsupported_event_type","missing_event_type"]}}}
   }
 }

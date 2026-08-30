@@ -357,21 +357,31 @@ export type ProviderEventSemanticKind =
   | "artifact_created" | "usage_reported"
   | "turn_completed" | "turn_failed" | "turn_cancelled"
   | "malformed_or_incomplete" | "unclassified_native";
+export type ProviderEventUnavailableReason =
+  | "provider_absent" | "decoder_unsupported" | "incomplete_tail"
+  | "related_record_missing" | "malformed";
+export interface ProviderEventContentReference {
+  availability:"available"|"unavailable";
+  unavailable_reason?:ProviderEventUnavailableReason|null;
+  /** RFC 6901 pointer into this record's response-local native_event. */
+  json_pointer?:string|null;
+}
 export type ProviderEventPayload =
   | {type:"session_metadata";native_session_id?:string|null}
   | {type:"assistant_response";text?:string|null}
   | {type:"reasoning";text?:string|null}
-  | {type:"tool";tool_name:string;call_id?:string|null;display_detail?:string|null}
+  | {type:"tool";tool_name?:string|null;tool_name_unavailable_reason?:"related_record_missing"|null;call_id?:string|null;parent_call_id?:string|null;operation_category?:"read"|"search"|"command"|"write"|"edit"|"network"|"subagent"|"other";primary_target?:string|null;arguments?:ProviderEventContentReference|null;result?:ProviderEventContentReference|null;error?:ProviderEventContentReference|null;outcome?:"requested"|"started"|"completed"|"failed";display_detail?:string|null}
   | {type:"artifact";display_name:string;media_type?:string|null;content_digest?:string|null}
   | {type:"usage";input_tokens?:number|null;output_tokens?:number|null;total_tokens?:number|null}
   | {type:"turn";outcome:string;display_summary?:string|null}
   | {type:"malformed";reason_code:string}
-  | {type:"native";event_type?:string|null};
+  | {type:"native";event_type?:string|null;event_subtype?:string|null;classification_reason?:"unsupported_event_type"|"missing_event_type"};
 export interface ProviderEventFragment {
   fragment_id:string; fragment_index:number; semantic_kind:ProviderEventSemanticKind;
   lifecycle_phase:"requested"|"started"|"progress"|"terminal";
   completeness:"partial"|"complete"|"incomplete";
   content_availability:"available"|"unavailable";
+  content_unavailable_reason?:ProviderEventUnavailableReason|null;
   payload:ProviderEventPayload;
 }
 export interface PersistedOrderingKey {kind:"provider_ordinal"|"complete_row_end_offset";value:number}
