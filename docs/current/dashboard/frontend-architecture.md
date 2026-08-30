@@ -78,6 +78,14 @@ Harness store / provider adapters
   control marker and continues to label the rows as observation rather than
   recovered control or completed Work. Header, selected roster row, timeline,
   and context rail render the same axes.
+- Agent Workspace labels every timeline/context fact by its owning plane.
+  Harness Message delivery, provider receipt, Member Result, and Host
+  acceptance are four different facts. A Message's Work id is reading context
+  only and cannot authorize or imply a Work transition. Current Work continues
+  to come only from canonical Work and execution-binding facts, never from a
+  nearby provider-native event. Message authoring remains deferred; the bottom
+  surface exposes only currently authorized Work/runtime actions and does not
+  fabricate a writable conversation model.
 - Agent Workspace reads one server-built RoleView. The browser
   never joins Team snapshots to MemberRuns or native provider activity. The
   selected Agent's provider-native Session projection is populated only for a

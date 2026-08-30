@@ -150,7 +150,13 @@ try{
   });return next;};
   const page=await makePage(liveConfig?.memberToken??"fixture-member-token");
   const open=async(target,url)=>{await target.goto(url,{waitUntil:"domcontentloaded"});await target.getByTestId("agent-workspace").waitFor();assert.equal(await target.evaluate(()=>document.documentElement.scrollWidth<=document.documentElement.clientWidth),true,"desktop horizontal overflow");};
-  const waitForStableWriteSurface=async target=>{await target.getByText("Authoritative Agent Workspace refresh is pending or failed. Composer and action writes are unavailable.",{exact:true}).waitFor({state:"detached"});};
+  const waitForStableWriteSurface=async target=>{await target.getByText("Authoritative Agent Workspace refresh is pending or failed. Action writes are unavailable.",{exact:true}).waitFor({state:"detached"});};
+  const executeFixtureAction=async target=>{
+    await target.getByLabel("Composer action").selectOption({label:"Assign work"});
+    await target.getByRole("button",{name:"assign work",exact:true}).click();
+    await target.getByLabel("TeamMembership ID").fill("membership-mira");
+    await target.getByRole("button",{name:"Execute action",exact:true}).click();
+  };
   const routeState=liveConfig?{teamRun:liveConfig.teamRun,member:liveConfig.member,memberRun:liveConfig.memberRun,host:liveConfig.host,space:liveConfig.space,project:liveConfig.project}:{teamRun:team.latest_run.id,member:"agent-mira",memberRun:"member-run-mira",host:"agent-host",space:"fixture-space",project:"fixture-project"};
   await open(page,`${base}/?surface=team&team=${routeState.teamRun}&conversation=${routeState.member}&memberRun=${routeState.memberRun}&space=${routeState.space}&project=${routeState.project}`);
   if(!liveConfig){assert.ok(firstMemberWorkspaceRequestAt!==null,"owner Agent Workspace request never started");assert.ok(Date.now()-firstMemberWorkspaceRequestAt<900,"continuous snapshot churn cancelled the first owner Agent Workspace load");}
@@ -160,10 +166,14 @@ try{
   assert.deepEqual(await page.locator(".agent-roster-meta").evaluateAll(nodes=>nodes.filter(node=>node.scrollHeight>node.clientHeight+1).map(node=>node.textContent)),[],"Agent roster role/runtime meta wraps beyond its single-line row");
   if(!liveConfig){const hostMeta=await page.locator(".agent-roster-row").first().locator(".agent-roster-meta").textContent();assert.ok(hostMeta?.includes("External · unmanaged"),"external-interactive Host roster row must not masquerade as Running");assert.ok(!hostMeta?.includes("Running"),"external-interactive Host roster row still shows Running");}
   assert.deepEqual(await page.locator(".aw-context-work-title, .aw-context-work-row-title, .aw-context-work-row-meta").evaluateAll(nodes=>nodes.filter(node=>node.scrollWidth>node.clientWidth).map(node=>node.textContent)),[],"Current or assigned Work is visually clipped");
-  assert.deepEqual(await page.locator(".agent-team-composer span[title]").evaluateAll(nodes=>nodes.filter(node=>node.scrollWidth>node.clientWidth).map(node=>node.textContent)),[],"Composer recipient target is visually clipped");
+  await page.getByText(/Member messaging composer is a later capability/).waitFor();
+  assert.equal(await page.locator('textarea[aria-label="Message"]').count(),0,"Agent Workspace exposed the deferred message composer as a writable surface");
   if(!liveConfig){await page.getByText(/Implemented the Team-scoped Session projection/).waitFor();await page.locator(".aw-native-facts-trail .aw-stream-fact__trigger").first().waitFor();assert.ok(await page.locator(".aw-native-facts-trail .aw-stream-fact__trigger").count()>=3,"native observations are not presented as individual expandable event rows");}
   if(!liveConfig){
     assert.equal(await page.locator(".aw-runtime-truth").count(),1,"four-axis runtime truth is missing");
+    await page.getByText("Harness Message · coordination",{exact:true}).waitFor();
+    await page.getByText("Work link · context only",{exact:true}).waitFor();
+    await page.getByText("Provider-native · execution evidence",{exact:true}).waitFor();
     await page.getByText("Harness Recovery required",{exact:true}).waitFor();
     await page.getByText("Native Observed",{exact:true}).waitFor();
     const selectedRosterMeta=await page.locator('.agent-roster-row[data-selected="true"] .agent-roster-meta').textContent();
@@ -183,8 +193,7 @@ try{
   assert.equal(await page.locator(".aw-current-execution").count(),0,"Agent Workspace fabricated a current-execution preview without an exact Team Session live projection");
   assert.equal(await page.locator('[data-testid="agent-workspace"]').evaluate(node=>node.textContent?.includes("Live · transient")??false),false,"legacy live member activity entered the Team Session execution slot without exact Session generation scope");
   await waitForStableWriteSurface(page);
-  const composerAlignment=await page.getByTestId("agent-workspace-composer").evaluate(composer=>{const bounds=composer.getBoundingClientRect();const send=[...composer.querySelectorAll('button')].find(node=>node.textContent?.trim()==="Send");const sendBounds=send?.getBoundingClientRect();const parent=send?.parentElement;const parentBounds=parent?.getBoundingClientRect();const style=send?getComputedStyle(send):null;return {composerRight:bounds.right,sendRight:sendBounds?.right??0,gap:sendBounds?bounds.right-sendBounds.right:null,parentClass:parent?.className,parentDisplay:parent?getComputedStyle(parent).display:null,parentLeft:parentBounds?.left,parentRight:parentBounds?.right,marginLeft:style?.marginLeft,position:style?.position};});
-  assert.ok(composerAlignment.gap!=null&&composerAlignment.gap<=24,`Composer primary action does not close the command surface at the right edge: ${JSON.stringify(composerAlignment)}`);
+  assert.equal(await page.getByTestId("agent-workspace-composer").getAttribute("data-composer-kind"),"action","canonical Work/runtime controls did not remain separate from the deferred Message composer");
   await page.screenshot({path:join(evidenceDir,`member-session--1440x1000--${capturedSourceSha}.png`),animations:"disabled"});
   if(!liveConfig){
     const eventRow=page.locator('[data-tool-call-id="call-1"] .aw-stream-fact__trigger');
@@ -201,18 +210,22 @@ try{
     await eventRow.click();assert.equal(await eventRow.getAttribute("aria-expanded"),"false","tool episode does not collapse in place");
     const authoredMessage=page.getByRole("button",{name:/Open authored Message from Marcus Allen/}).first();
     await authoredMessage.focus();await page.keyboard.press("Enter");await page.getByText("Message in focus",{exact:true}).waitFor();
+    await page.getByText("Harness Message delivery",{exact:true}).waitFor();
+    await page.getByText("Provider receipt",{exact:true}).waitFor();
+    await page.getByText("Work context only",{exact:true}).waitFor();
+    await page.getByText(/does not mutate Work or prove a Member Result or Host acceptance/).waitFor();
     const toolRow=page.locator('[data-tool-call-id="call-1"] .aw-stream-fact__trigger');await toolRow.focus();await page.keyboard.press("Space");assert.equal(await toolRow.getAttribute("aria-expanded"),"true","tool episode keyboard selection");
     assert.equal(await toolRow.locator('xpath=ancestor::article').getAttribute("data-selected"),"true","selected event does not retain a stable center-row state");
     assert.equal(await page.getByText("Tool call in focus",{exact:true}).count(),1,"selected tool detail is not delegated to the context rail");
-    await page.locator('textarea[aria-label="Message"]').fill("Trigger a benign background revalidate");
-    await page.getByRole("button",{name:"Send",exact:true}).click();
-    await page.getByText("Message recorded. Refreshing this Agent Workspace.",{exact:true}).waitFor();
+    await executeFixtureAction(page);
+    await page.getByText("Completed assign_work. Refetching canonical RoleView.",{exact:true}).waitFor();
     await page.waitForLoadState("networkidle");
     assert.equal(await page.getByText("Tool call in focus",{exact:true}).count(),1,"background revalidate dropped the selected tool episode");
     assert.equal(await toolRow.locator('xpath=ancestor::article').getAttribute("data-selected"),"true","background revalidate dropped the selected stream row state");
     await page.screenshot({path:join(evidenceDir,`member-event-detail--1440x1000--${capturedSourceSha}.png`),animations:"disabled"});
   }
   await page.getByRole("tab",{name:/Messages/}).click();await page.getByRole("button",{name:"inbox",exact:true}).waitFor();
+  if(!liveConfig){assert.ok(await page.locator('[data-message-fact="work-context"]').count()>0,"Messages view does not label Work as context-only");assert.ok(await page.locator('[data-message-fact="delivery"]').count()>0,"Messages view omits Harness delivery state");assert.ok(await page.locator('[data-message-fact="provider-receipt"]').count()>0,"Messages view omits provider-receipt state");}
   await waitForStableWriteSurface(page);
   const visibleTogether=await page.evaluate(()=>{
     const selectors=['[data-testid="agent-workspace-identity"]','[data-testid="agent-workspace-modebar"]','[role="tabpanel"][data-state="active"]','[data-testid="agent-workspace-composer"]'];
@@ -238,6 +251,9 @@ try{
     await page.getByText("Work in focus",{exact:true}).waitFor();
     assert.ok(await page.locator('.aw-context-selection-inset').getByText(/rev 4 \(latest\)/).count()===1,"selected Work detail does not expose its canonical revision");
     assert.equal(await page.locator('.aw-context-selection-inset .aw-fact-row').filter({hasText:"Gates"}).filter({hasText:"1/2"}).count(),1,"selected Work detail does not expose gate progress");
+    await page.locator('.aw-context-selection-inset').getByText("Member Result",{exact:true}).waitFor();
+    await page.locator('.aw-context-selection-inset').getByText("Host acceptance",{exact:true}).waitFor();
+    await page.locator('.aw-context-selection-inset').getByText("Not accepted",{exact:true}).waitFor();
   }
   if(!liveConfig){
     const clippedWorkRows=await page.locator('.agent-work-row').evaluateAll(rows=>rows.filter(row=>{const rect=row.getBoundingClientRect();return rect.top<window.innerHeight&&rect.bottom>window.innerHeight;}).map(row=>row.textContent?.trim().slice(0,80)));
@@ -256,11 +272,10 @@ try{
   assert.equal(await profileOpener.evaluate(node=>node===document.activeElement),true,"Profile dialog restores opener focus after Escape");
   if(!liveConfig){
     await open(page,`${base}/?surface=team&team=${routeState.teamRun}&conversation=${routeState.member}&memberRun=${routeState.memberRun}&space=${routeState.space}&project=${routeState.project}`);
-    await page.locator('textarea[aria-label="Message"]').waitFor();
+    await page.getByLabel("Composer action").waitFor();
     assert.equal(await page.locator(".aw-current-execution").count(),0,"reconnecting replayed volatile provider activity from the previous Session stream");
     failMemberRefresh=true;
-    await page.locator('textarea[aria-label="Message"]').fill("Trigger authoritative refresh failure");
-    await page.getByRole("button",{name:"Send",exact:true}).click();
+    await executeFixtureAction(page);
     await page.getByRole("alert").filter({hasText:"Refresh failed; writes are disabled"}).waitFor();
     assert.equal(await page.locator('textarea[aria-label="Message"]').count(),0,"refresh failure retained a writable message composer");
     assert.equal(await page.getByLabel("Composer action").count(),0,"refresh failure retained a writable action selector");
@@ -277,7 +292,7 @@ try{
     assert.equal(await page.getByLabel("Composer action").count(),0,"pending retry restored a writable action selector before success");
     releaseMemberRefreshRetry();memberRefreshRetryGate=null;observeMemberRefreshRetry=null;
     await page.getByRole("alert").filter({hasText:"Refresh failed; writes are disabled"}).waitFor({state:"detached"});
-    await page.locator('textarea[aria-label="Message"]').waitFor();
+    await page.getByLabel("Composer action").waitFor();
     await page.getByTestId("agent-workspace-identity").getByText("Session session-mira-current · gen 3",{exact:true}).waitFor();
   }
   const hostPage=await makePage(liveConfig?.hostToken??"fixture-host-token");
