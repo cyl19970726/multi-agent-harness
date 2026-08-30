@@ -31,16 +31,20 @@ Operator may inspect any locally bound Host or Member's complete provider-native
 Session without a per-Agent secret. Remote RoleView credentials remain limited
 to coordination data and receive no native Session content. `team_session_read` carries current
 AgentSession/native-session identity plus paged raw native events but grants no
-mutation action of its own. Authored Messages remain separate coordination records
-and are visible through their authenticated sender AgentMember/Session,
-recipients, optional Work link and per-recipient public delivery state.
+mutation action of its own. Authored Messages remain separate coordination
+records and are visible through their authenticated sender AgentMember/Session,
+recipients, correlation and causation lineage, optional Work context,
+per-recipient Harness delivery, and provider receipt when one exists. A Work id
+on a Message is context only: it does not mutate Work, submit a Member Result,
+or prove Host acceptance.
 
 ## Read model
 
-Live activity renders from exact volatile provider events delivered over SSE;
-reopen reads the provider-native Session file through the same display model.
-When the projection is unavailable the page reports it and does not silently
-fall back to a mirrored history.
+The provider-owned Session file is the canonical transcript source. Harness
+SSE only wakes or advances the paged read; it does not carry a second semantic
+event model. Current and reopened views therefore render the same normalized
+provider records. When the projection is unavailable the page reports it and
+does not silently fall back to a mirrored history.
 
 The focus page joins by canonical ids:
 
@@ -64,10 +68,13 @@ MemberRun actions close, reopen, or retire one coordination participation; they
 must never be labeled as stopping, resuming, or interrupting an AgentSession.
 Provider turn/session control uses durable RuntimeCommand authority and is not
 currently exposed by the Agent Workspace RoleAction adapter. Work actions
-operate on exact Work revisions. Messaging creates one immutable identity-first
-Message and one `CanonicalMessageDelivery` per authorized recipient identity.
-Every write uses the canonical trust service and returns its operation/event
-identity. The page never reads or writes the Legacy TeamMessage projection.
+operate on exact Work revisions. The current Agent Workspace intentionally does
+not expose a writable Member message composer. Future message authoring must
+create one immutable identity-first Message and one
+`CanonicalMessageDelivery` per authorized recipient identity through the
+canonical trust service. Until that interaction contract is accepted, the
+workspace reads Messages and keeps Work/runtime actions on their separate
+authorized surface. It never reads or writes the Legacy TeamMessage projection.
 
 ## Empty and failure states
 
