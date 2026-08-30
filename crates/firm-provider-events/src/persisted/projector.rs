@@ -711,7 +711,7 @@ fn tool(
 fn content_reference(raw: &Value, pointers: &[&str]) -> PersistedContentReference {
     if let Some(pointer) = pointers
         .iter()
-        .find(|pointer| raw.pointer(pointer).is_some())
+        .find(|pointer| raw.pointer(pointer).is_some_and(|value| !value.is_null()))
     {
         PersistedContentReference {
             availability: ContentAvailability::Available,
@@ -850,6 +850,22 @@ fn malformed(reason: &str) -> FragmentDraft {
 
 fn unclassified(raw: &Value) -> FragmentDraft {
     let event_type = event_type(raw);
+    let event_subtype = first_text(
+        raw,
+        &[
+            "/subtype",
+            "/event/subtype",
+            "/event/type",
+            "/payload/subtype",
+            "/payload/type",
+            "/data/subtype",
+            "/data/type",
+            "/data/chunk/type",
+            "/message/subtype",
+            "/message/type",
+        ],
+    )
+    .filter(|value| Some(*value) != event_type);
     FragmentDraft {
         semantic_kind: SessionSemanticKind::UnclassifiedNative,
         lifecycle_phase: SessionLifecyclePhase::Progress,
@@ -860,17 +876,9 @@ fn unclassified(raw: &Value) -> FragmentDraft {
             event_type: event_type
                 .filter(|value| value.chars().count() <= 256)
                 .map(str::to_owned),
-            event_subtype: first_text(
-                raw,
-                &[
-                    "/subtype",
-                    "/event/subtype",
-                    "/payload/subtype",
-                    "/data/subtype",
-                ],
-            )
-            .filter(|value| value.chars().count() <= 256)
-            .map(str::to_owned),
+            event_subtype: event_subtype
+                .filter(|value| value.chars().count() <= 256)
+                .map(str::to_owned),
             classification_reason: Some(if event_type.is_some() {
                 NativeClassificationReason::UnsupportedEventType
             } else {

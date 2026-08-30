@@ -327,6 +327,82 @@ fn unclassified_native_keeps_type_subtype_and_typed_reason() {
         } if event_type == "future_event" && event_subtype == "background_update"
     ));
     assert_eq!(records[0].native_event["payload"]["private"], true);
+
+    let codex = project(
+        ProviderKind::Codex,
+        "{\"type\":\"response_item\",\"payload\":{\"type\":\"future_item\",\"private\":true}}\n",
+    );
+    assert!(matches!(
+        &codex[0].fragments[0].payload,
+        PersistedFragmentPayload::Native {
+            event_type: Some(event_type),
+            event_subtype: Some(event_subtype),
+            classification_reason: Some(NativeClassificationReason::UnsupportedEventType),
+        } if event_type == "response_item" && event_subtype == "future_item"
+    ));
+
+    let kimi = project(
+        ProviderKind::Kimi,
+        "{\"type\":\"context.append_loop_event\",\"event\":{\"type\":\"future.event\",\"private\":true}}\n",
+    );
+    assert!(matches!(
+        &kimi[0].fragments[0].payload,
+        PersistedFragmentPayload::Native {
+            event_type: Some(event_type),
+            event_subtype: Some(event_subtype),
+            classification_reason: Some(NativeClassificationReason::UnsupportedEventType),
+        } if event_type == "context.append_loop_event" && event_subtype == "future.event"
+    ));
+}
+
+#[test]
+fn structured_provider_errors_skip_null_result_and_reference_exact_error() {
+    let cases = [
+        (
+            ProviderKind::Kimi,
+            concat!(
+                "{\"type\":\"context.append_loop_event\",\"event\":{\"type\":\"tool.call\",\"name\":\"Read\",\"toolCallId\":\"call-1\"}}\n",
+                "{\"type\":\"context.append_loop_event\",\"event\":{\"type\":\"tool.result\",\"toolCallId\":\"call-1\",\"status\":\"failed\",\"result\":null,\"error\":{\"code\":\"EIO\"}}}\n",
+            ),
+            "/event/error",
+        ),
+        (
+            ProviderKind::DeepseekHarness,
+            concat!(
+                "{\"type\":\"tool/call\",\"data\":{\"name\":\"bash\",\"callId\":\"call-1\"}}\n",
+                "{\"type\":\"tool/result\",\"data\":{\"message\":{\"source\":{\"callId\":\"call-1\"}},\"status\":\"failed\",\"result\":null,\"error\":{\"code\":\"EIO\"}}}\n",
+            ),
+            "/data/error",
+        ),
+    ];
+    for (provider, content, expected_pointer) in cases {
+        let records = project(provider, content);
+        let (record, failed) = records
+            .iter()
+            .flat_map(|record| {
+                record
+                    .fragments
+                    .iter()
+                    .map(move |fragment| (record, fragment))
+            })
+            .find(|(_, fragment)| fragment.semantic_kind == SessionSemanticKind::ToolCallFailed)
+            .expect("failed tool fragment");
+        let PersistedFragmentPayload::Tool {
+            error: Some(error),
+            outcome: Some(ToolCallOutcome::Failed),
+            ..
+        } = &failed.payload
+        else {
+            panic!("structured provider error for {provider:?}");
+        };
+        assert_eq!(error.availability, ContentAvailability::Available);
+        assert_eq!(error.json_pointer.as_deref(), Some(expected_pointer));
+        assert!(!record
+            .native_event
+            .pointer(expected_pointer)
+            .expect("exact error pointer")
+            .is_null());
+    }
 }
 
 #[test]
