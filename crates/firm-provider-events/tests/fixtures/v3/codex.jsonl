@@ -1,6 +1,6 @@
 {"timestamp":"2026-08-13T07:59:59Z","type":"session_meta","payload":{"id":"codex-session","cwd":"/provider-owned"}}
 {"timestamp":"2026-08-13T08:00:00Z","type":"response_item","payload":{"id":"reasoning-1","type":"reasoning","summary":[]}}
 {"timestamp":"2026-08-13T08:00:01Z","type":"response_item","payload":{"id":"message-1","type":"message","role":"assistant","content":[{"type":"output_text","text":"codex answer"}]}}
-{"timestamp":"2026-08-13T08:00:02Z","type":"response_item","payload":{"type":"custom_tool_call","name":"exec","call_id":"codex-call","status":"completed","input":"not projected"}}
+{"timestamp":"2026-08-13T08:00:02Z","type":"response_item","payload":{"type":"custom_tool_call","name":"exec","call_id":"codex-call","status":"completed","input":"cargo test -p firm-provider-events"}}
 {"timestamp":"2026-08-13T08:00:03Z","type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"codex-call","output":"provider-owned"}}
 {"timestamp":"2026-08-13T08:00:04Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"codex-turn","last_agent_message":"not projected duplicate"}}

@@ -73,12 +73,66 @@ pub enum ContentAvailability {
     Unavailable,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ContentUnavailableReason {
+    ProviderAbsent,
+    DecoderUnsupported,
+    IncompleteTail,
+    RelatedRecordMissing,
+    Malformed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolOperationCategory {
+    Read,
+    Search,
+    Command,
+    Write,
+    Edit,
+    Network,
+    Subagent,
+    Other,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolCallOutcome {
+    Requested,
+    Started,
+    Completed,
+    Failed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NativeClassificationReason {
+    UnsupportedEventType,
+    MissingEventType,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PersistedContentReference {
+    pub availability: ContentAvailability,
+    #[serde(default)]
+    pub unavailable_reason: Option<ContentUnavailableReason>,
+    /// RFC 6901 pointer into this record's response-local `native_event`.
+    #[serde(default)]
+    pub json_pointer: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum PersistedFragmentPayload {
     Native {
         #[serde(default)]
         event_type: Option<String>,
+        #[serde(default)]
+        event_subtype: Option<String>,
+        #[serde(default)]
+        classification_reason: Option<NativeClassificationReason>,
     },
     SessionMetadata {
         #[serde(default)]
@@ -93,9 +147,26 @@ pub enum PersistedFragmentPayload {
         text: Option<String>,
     },
     Tool {
-        tool_name: String,
+        #[serde(default)]
+        tool_name: Option<String>,
+        #[serde(default)]
+        tool_name_unavailable_reason: Option<ContentUnavailableReason>,
         #[serde(default)]
         call_id: Option<String>,
+        #[serde(default)]
+        parent_call_id: Option<String>,
+        #[serde(default)]
+        operation_category: Option<ToolOperationCategory>,
+        #[serde(default)]
+        primary_target: Option<String>,
+        #[serde(default)]
+        arguments: Option<PersistedContentReference>,
+        #[serde(default)]
+        result: Option<PersistedContentReference>,
+        #[serde(default)]
+        error: Option<PersistedContentReference>,
+        #[serde(default)]
+        outcome: Option<ToolCallOutcome>,
         #[serde(default)]
         display_detail: Option<String>,
     },
@@ -133,6 +204,8 @@ pub struct PersistedEventFragment {
     pub lifecycle_phase: SessionLifecyclePhase,
     pub completeness: PersistedCompleteness,
     pub content_availability: ContentAvailability,
+    #[serde(default)]
+    pub content_unavailable_reason: Option<ContentUnavailableReason>,
     pub payload: PersistedFragmentPayload,
 }
 
@@ -251,6 +324,7 @@ impl ProviderNativeEventRecord {
                 || fragment.fragment_id != format!("{}:fragment-{index}", self.record_id)
                 || !payload_matches(fragment)
                 || !content_availability_matches(fragment)
+                || !content_references_resolve(fragment, &self.native_event)
             {
                 return Err(PersistedRecordValidationError::InvalidFragments);
             }
@@ -494,8 +568,49 @@ fn payload_matches(fragment: &PersistedEventFragment) -> bool {
             | SessionSemanticKind::ToolCallStarted
             | SessionSemanticKind::ToolCallCompleted
             | SessionSemanticKind::ToolCallFailed,
-            PersistedFragmentPayload::Tool { tool_name, .. },
-        ) => !tool_name.is_empty(),
+            PersistedFragmentPayload::Tool {
+                tool_name,
+                tool_name_unavailable_reason,
+                call_id,
+                parent_call_id,
+                primary_target,
+                arguments,
+                result,
+                error,
+                outcome,
+                ..
+            },
+        ) => {
+            let expected_outcome = match fragment.semantic_kind {
+                SessionSemanticKind::ToolCallRequested => ToolCallOutcome::Requested,
+                SessionSemanticKind::ToolCallStarted => ToolCallOutcome::Started,
+                SessionSemanticKind::ToolCallCompleted => ToolCallOutcome::Completed,
+                SessionSemanticKind::ToolCallFailed => ToolCallOutcome::Failed,
+                _ => unreachable!("tool semantic kind"),
+            };
+            call_id
+                .as_ref()
+                .is_none_or(|value| !value.is_empty() && value.len() <= 512)
+                && parent_call_id
+                    .as_ref()
+                    .is_none_or(|value| !value.is_empty() && value.len() <= 512)
+                && primary_target
+                    .as_ref()
+                    .is_none_or(|value| !value.is_empty() && value.chars().count() <= 512)
+                && outcome.is_none_or(|outcome| outcome == expected_outcome)
+                && match (tool_name, tool_name_unavailable_reason) {
+                    (Some(name), None) => !name.is_empty() && name.len() <= 256,
+                    (None, Some(ContentUnavailableReason::RelatedRecordMissing)) => matches!(
+                        fragment.semantic_kind,
+                        SessionSemanticKind::ToolCallCompleted
+                            | SessionSemanticKind::ToolCallFailed
+                    ),
+                    _ => false,
+                }
+                && arguments.as_ref().is_none_or(content_reference_matches)
+                && result.as_ref().is_none_or(content_reference_matches)
+                && error.as_ref().is_none_or(content_reference_matches)
+        }
         (
             SessionSemanticKind::ArtifactCreated,
             PersistedFragmentPayload::Artifact { display_name, .. },
@@ -511,7 +626,21 @@ fn payload_matches(fragment: &PersistedEventFragment) -> bool {
             SessionSemanticKind::MalformedOrIncomplete,
             PersistedFragmentPayload::Malformed { reason_code },
         ) => !reason_code.is_empty(),
-        (SessionSemanticKind::UnclassifiedNative, PersistedFragmentPayload::Native { .. }) => true,
+        (
+            SessionSemanticKind::UnclassifiedNative,
+            PersistedFragmentPayload::Native {
+                event_type,
+                event_subtype,
+                ..
+            },
+        ) => {
+            event_type
+                .as_ref()
+                .is_none_or(|value| !value.is_empty() && value.len() <= 256)
+                && event_subtype
+                    .as_ref()
+                    .is_none_or(|value| !value.is_empty() && value.len() <= 256)
+        }
         _ => false,
     }
 }
@@ -522,12 +651,53 @@ fn content_availability_matches(fragment: &PersistedEventFragment) -> bool {
         | PersistedFragmentPayload::Reasoning { text } => Some(text),
         _ => None,
     };
-    match (fragment.content_availability, text) {
-        (ContentAvailability::Available, Some(Some(text))) => !text.is_empty(),
-        (ContentAvailability::Unavailable, Some(None)) => true,
-        (ContentAvailability::Available, None) => true,
+    match (
+        fragment.content_availability,
+        fragment.content_unavailable_reason,
+        text,
+    ) {
+        (ContentAvailability::Available, None, Some(Some(text))) => !text.is_empty(),
+        (ContentAvailability::Unavailable, _, Some(None)) => true,
+        (ContentAvailability::Available, None, None) => true,
         _ => false,
     }
+}
+
+fn content_reference_matches(reference: &PersistedContentReference) -> bool {
+    match (
+        reference.availability,
+        reference.unavailable_reason,
+        reference.json_pointer.as_deref(),
+    ) {
+        (ContentAvailability::Available, None, Some(pointer)) => {
+            pointer.starts_with('/') && pointer.len() <= 512
+        }
+        (ContentAvailability::Unavailable, Some(_), None) => true,
+        _ => false,
+    }
+}
+
+fn content_references_resolve(
+    fragment: &PersistedEventFragment,
+    native_event: &serde_json::Value,
+) -> bool {
+    let PersistedFragmentPayload::Tool {
+        arguments,
+        result,
+        error,
+        ..
+    } = &fragment.payload
+    else {
+        return true;
+    };
+    arguments
+        .iter()
+        .chain(result)
+        .chain(error)
+        .all(|reference| match reference.json_pointer.as_deref() {
+            Some(pointer) => native_event.pointer(pointer).is_some(),
+            None => true,
+        })
 }
 
 fn capability_content_availability_matches(capability: &PersistedSemanticCapability) -> bool {
