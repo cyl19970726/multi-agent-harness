@@ -68,6 +68,16 @@ Harness store / provider adapters
   content and raw records enter the DOM only when their row or context detail
   is expanded; a source-generation reset replaces the prior native page rather
   than merging across provider file identity.
+- Agent Workspace projects four independent operator axes from existing
+  canonical facts: Work phase/condition, MemberRun coordination, Harness
+  control, and provider-native activity. The server supplies the typed control
+  reason, control boundary time, last exact RuntimeCommand, and next action;
+  the browser does not collapse these into one badge or infer recovery from a
+  later native row. When provider-native activity appears after a blocked or
+  recovery-required control boundary, the timeline inserts an explicit loss-of-
+  control marker and continues to label the rows as observation rather than
+  recovered control or completed Work. Header, selected roster row, timeline,
+  and context rail render the same axes.
 - Agent Workspace reads one server-built RoleView. The browser
   never joins Team snapshots to MemberRuns or native provider activity. The
   selected Agent's provider-native Session projection is populated only for a

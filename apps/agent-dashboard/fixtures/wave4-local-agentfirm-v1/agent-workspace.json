@@ -87,6 +87,33 @@
       "native_session_ref":null,
       "native_session_open_target":null
     },
+    "runtime_truth":{
+      "work":{
+        "work_id":null,
+        "phase":"unavailable",
+        "condition":"unavailable",
+        "updated_at":null
+      },
+      "coordination":{
+        "state":"active",
+        "member_run_id":"member-run-1",
+        "runtime_generation":1,
+        "runtime_status":"running"
+      },
+      "harness_control":{
+        "state":"running",
+        "reason_code":"CURRENT_PROVIDER_CYCLE_RUNNING",
+        "occurred_at":null,
+        "last_command":null,
+        "next_action":"Wait for the current cycle or use an authorized Interrupt or Close."
+      },
+      "provider_native_activity":{
+        "state":"unknown",
+        "last_observed_at":null,
+        "observed_after_control_loss":false
+      },
+      "explanation":"No Work is selected; coordination is active; Harness control is running; provider-native activity is unknown."
+    },
     "persisted_session_projection":{
       "schema_version":"agentfirm.native_session_read.v1",
       "available":false,

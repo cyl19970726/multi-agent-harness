@@ -15,7 +15,7 @@
     "agentWorkspaceData":{
       "type":"object",
       "additionalProperties":false,
-      "required":["projection_scope","team","selected_agent","roster","messages","works","configuration","context_summary"],
+      "required":["projection_scope","team","selected_agent","roster","runtime_truth","messages","works","configuration","context_summary"],
       "properties":{
         "projection_scope":{"const":"team_session_read"},
         "team":{"$ref":"#/$defs/team"},
@@ -23,10 +23,22 @@
         "roster":{"type":"array","items":{"$ref":"#/$defs/rosterAgent"}},
         "current_session":{"anyOf":[{"$ref":"#/$defs/currentSession"},{"type":"null"}]},
         "persisted_session_projection":{"$ref":"#/$defs/persistedSessionProjection"},
+        "runtime_truth":{"$ref":"#/$defs/runtimeTruth"},
         "messages":{"type":"array","items":{"$ref":"common.schema.json#/$defs/messageSummary"}},
         "works":{"type":"array","items":{"$ref":"common.schema.json#/$defs/workSummary"}},
         "configuration":{"$ref":"#/$defs/configuration"},
         "context_summary":{"$ref":"#/$defs/contextSummary"}
+      }
+    },
+    "runtimeTruth":{
+      "type":"object","additionalProperties":false,
+      "required":["work","coordination","harness_control","provider_native_activity","explanation"],
+      "properties":{
+        "work":{"type":"object","additionalProperties":false,"required":["work_id","phase","condition","updated_at"],"properties":{"work_id":{"type":["string","null"]},"phase":{"type":"string"},"condition":{"type":"string"},"updated_at":{"type":["string","null"]}}},
+        "coordination":{"type":"object","additionalProperties":false,"required":["state","member_run_id","runtime_generation","runtime_status"],"properties":{"state":{"type":"string"},"member_run_id":{"type":["string","null"]},"runtime_generation":{"type":["integer","null"]},"runtime_status":{"type":["string","null"]}}},
+        "harness_control":{"type":"object","additionalProperties":false,"required":["state","reason_code","occurred_at","last_command","next_action"],"properties":{"state":{"enum":["ready","running","recovery_required","blocked","closed","unknown"]},"reason_code":{"type":"string"},"occurred_at":{"type":["string","null"]},"last_command":{"anyOf":[{"type":"object","additionalProperties":false,"required":["id","command","status","updated_at","failure_code"],"properties":{"id":{"type":"string"},"command":{"type":"string"},"status":{"type":"string"},"updated_at":{"type":"string"},"failure_code":{"type":["string","null"]}}},{"type":"null"}]},"next_action":{"type":"string"}}},
+        "provider_native_activity":{"type":"object","additionalProperties":false,"required":["state","last_observed_at","observed_after_control_loss"],"properties":{"state":{"enum":["observed","quiet","unknown"]},"last_observed_at":{"type":["string","null"]},"observed_after_control_loss":{"type":"boolean"}}},
+        "explanation":{"type":"string"}
       }
     },
     "teamSessionReadData":{

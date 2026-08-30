@@ -417,6 +417,13 @@ interface AgentWorkspaceConfiguration {
 export interface AgentWorkspaceCurrentSession {
   agent_session_id:string;agent_session_generation:number;lifecycle:string;runtime_residency:string;activity:string;provider:string;effective_permission_ceiling:string;workspace_cwd:string|null;native_session_ref:{native_session_id:string;provider:string;execution_mode:string}|null;native_session_open_target:{uri:string;desktop_session_id:string;provider:string;execution_mode:string}|null;
 }
+export interface AgentWorkspaceRuntimeTruth {
+  work:{work_id:string|null;phase:string;condition:string;updated_at:string|null};
+  coordination:{state:string;member_run_id:string|null;runtime_generation:number|null;runtime_status:string};
+  harness_control:{state:"ready"|"running"|"recovery_required"|"blocked"|"closed"|"unknown";reason_code:string;occurred_at:string|null;last_command:{id:string;command:string;status:string;updated_at:string;failure_code:string|null}|null;next_action:string};
+  provider_native_activity:{state:"observed"|"quiet"|"unknown";last_observed_at:string|null;observed_after_control_loss:boolean};
+  explanation:string;
+}
 interface AgentWorkspaceDataBase {
   team:{team_id:string;display_name:string;team_revision:number;mission_id:string;host_agent_id:string;viewer_role:"operator"|"host"|"member";status:string;latest_run_id:string|null};
   selected_agent:AgentWorkspaceSelectedAgent;
@@ -429,6 +436,7 @@ interface AgentWorkspaceDataBase {
 export type AgentWorkspacePrivateData=AgentWorkspaceDataBase&{
   projection_scope:"team_session_read";
   current_session:AgentWorkspaceCurrentSession|null;
+  runtime_truth:AgentWorkspaceRuntimeTruth;
   persisted_session_projection:PersistedSessionProjection;
 };
 export type AgentWorkspaceData=AgentWorkspacePrivateData;
