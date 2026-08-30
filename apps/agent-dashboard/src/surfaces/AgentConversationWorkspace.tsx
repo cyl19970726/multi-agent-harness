@@ -23,7 +23,9 @@ import {
 } from "@/components/workbench/agent/AgentWorkspacePrimitives";
 import { AgentMessageCommandComposer } from "@/components/workbench/agent/AgentMessageCommandComposer";
 import { OperationalFactRow } from "@/components/workbench/agent/AgentStreamPrimitives";
+import { ToolEpisodeDetails, ToolEpisodeRow } from "@/components/workbench/agent/ProviderEventTimeline";
 import type { SelectionState } from "../app/selection";
+import { projectProviderTimeline, type ProviderTimelineItem, type ToolEpisode } from "../model/providerEventTimeline";
 import {
   fetchRoleView,
   type AgentWorkspaceData,
@@ -44,6 +46,7 @@ import "./agent-workspace.css";
 type WorkspaceMode = "session" | "messages" | "work";
 type ContextSelection =
   | {kind:"event"; record:ProviderNativeEventRecord; fragment:ProviderEventFragment}
+  | {kind:"tool"; episode:ToolEpisode}
   | {kind:"message"; message:MessageSummary}
   | {kind:"work"; work:WorkSummary}
   | null;
@@ -242,13 +245,13 @@ function AgentRoster({data,selectedId,onBack,onSelect}:{data:AgentWorkspaceData;
 
 type PersistedSessionConnectionState="inactive"|"connecting"|"connected"|"disconnected";
 function SessionCanvas({data,projection,connectionState,selectedMessageId,onSelect,loadingOlder,onLoadOlder}:{data:AgentWorkspaceData;projection:PersistedSessionProjection|null;connectionState:PersistedSessionConnectionState;selectedMessageId:string|null;onSelect:(next:ContextSelection)=>void;loadingOlder:boolean;onLoadOlder:()=>void}){
-  const [selectedEventId,setSelectedEventId]=useState<string|null>(null);
+  const [selectedTimelineId,setSelectedTimelineId]=useState<string|null>(null);
   const viewportRef=useRef<HTMLDivElement>(null);
   const chronologyRef=useRef<HTMLDivElement>(null);
   const rows=useMemo(()=>{
     const sorted=mergeSessionRows(
       data.messages.map(message=>({kind:"message" as const,at:message.created_at,message,continuation:false})).sort((left,right)=>timestampKey(left.at)-timestampKey(right.at)),
-      (projection?.available?projection.records.flatMap(record=>record.fragments.map(fragment=>({kind:"native" as const,at:recordTime(record)??"",record,fragment}))):[]).sort((left,right)=>compareOrderingKey(left.record.ordering_key,right.record.ordering_key)||left.fragment.fragment_index-right.fragment.fragment_index),
+      (projection?.available?projectProviderTimeline(projection.records).map(item=>({kind:"provider" as const,at:recordTime(providerTimelineRecord(item))??"",record:providerTimelineRecord(item),item})):[]),
     );
     const seen=new Set<string>();
     return sorted.map(row=>{
@@ -257,8 +260,8 @@ function SessionCanvas({data,projection,connectionState,selectedMessageId,onSele
       return {...row,continuation};
     });
   },[data.messages,projection]);
-  const hasNativeRowsWithoutComparableProviderTime=rows.some(row=>row.kind==="native"&&!recordTime(row.record));
-  const virtualizer=useVirtualizer({count:rows.length,getScrollElement:()=>viewportRef.current,estimateSize:index=>rows[index]?.kind==="native"?240:150,overscan:10,scrollMargin:chronologyRef.current?.offsetTop??0});
+  const hasNativeRowsWithoutComparableProviderTime=rows.some(row=>row.kind==="provider"&&!recordTime(row.record));
+  const virtualizer=useVirtualizer({count:rows.length,getScrollElement:()=>viewportRef.current,estimateSize:index=>rows[index]?.kind==="provider"?240:150,overscan:10,scrollMargin:chronologyRef.current?.offsetTop??0});
   const currentWork=data.works.find(work=>work.work_id===data.context_summary.current_work_id);
   return <ScrollArea.Root className="h-full overflow-hidden"><ScrollArea.Viewport ref={viewportRef} className="size-full min-w-0 [&>div]:!block [&>div]:!min-w-0"><div className="agent-session-stream w-full px-5 pb-8 sm:px-7">
     <div className="aw-session-context-strip">
@@ -269,16 +272,22 @@ function SessionCanvas({data,projection,connectionState,selectedMessageId,onSele
     {hasNativeRowsWithoutComparableProviderTime&&<p className="mb-3 text-[10px] leading-4 text-muted-foreground">Native records without comparable provider timestamps remain in provider source order; their position relative to Harness Messages is not a recorded chronology.</p>}
     {projection?.available&&projection.has_more&&<div className="flex justify-center py-3"><Button type="button" variant="outline" size="sm" disabled={loadingOlder} onClick={onLoadOlder}>{loadingOlder?"Loading provider-native events…":"Load earlier native Session events"}</Button></div>}
     {rows.length
-      ? <div ref={chronologyRef} className="aw-session-chronology relative" style={{height:virtualizer.getTotalSize()}} aria-label="Harness Messages and persisted provider-native records in their honest partial order">{virtualizer.getVirtualItems().map(item=>{const row=rows[item.index]!;return <div key={row.kind==="message"?`message:${row.message.message_id}`:`native:${row.fragment.fragment_id}`} data-index={item.index} data-session-row-kind={row.kind} ref={virtualizer.measureElement} className="absolute left-0 top-0 w-full" style={{transform:`translateY(${item.start-virtualizer.options.scrollMargin}px)`}}>{(()=>{
+      ? <div ref={chronologyRef} className="aw-session-chronology relative" style={{height:virtualizer.getTotalSize()}} aria-label="Harness Messages and persisted provider-native records in their honest partial order">{virtualizer.getVirtualItems().map(item=>{const row=rows[item.index]!;const providerId=row.kind==="provider"?providerTimelineId(row.item):null;return <div key={row.kind==="message"?`message:${row.message.message_id}`:providerId!} data-index={item.index} data-session-row-kind={row.kind} ref={virtualizer.measureElement} className="absolute left-0 top-0 w-full" style={{transform:`translateY(${item.start-virtualizer.options.scrollMargin}px)`}}>{(()=>{
         if(row.kind==="message"){
           return <AuthoredTurn data={data} message={row.message} selectedAgentId={data.selected_agent.agent_member_ref.id} selected={selectedMessageId===row.message.message_id} continuation={row.continuation} onSelect={()=>onSelect({kind:"message",message:row.message})}/>;
         }
-        return <NativeEventRecord record={row.record} fragment={row.fragment} actorName={data.selected_agent.display_name} selected={selectedEventId===row.fragment.fragment_id} onOpen={()=>{setSelectedEventId(row.fragment.fragment_id);onSelect({kind:"event",record:row.record,fragment:row.fragment});}}/>;
+        return <ProviderTimelineRecord item={row.item} actorName={data.selected_agent.display_name} selected={selectedTimelineId===providerId} onToggle={()=>{const next=selectedTimelineId===providerId?null:providerId;setSelectedTimelineId(next);onSelect(next?(row.item.kind==="tool_episode"?{kind:"tool",episode:row.item}:{kind:"event",record:row.item.record,fragment:row.item.fragment}):null);}}/>;
       })()}</div>})}</div>
       : <EmptyCanvas compact title={projection&&!projection.available?"Provider-native Session unavailable":data.selected_agent.is_host?"No Host Session events or Team Messages yet":"No Session activity yet"} detail={projection&&!projection.available?`${humanizeToken(projection.reason_code)}${projection.detail?`: ${projection.detail}`:""}`:"Original provider-native events and authored Team Messages will appear here when persisted by the provider."}/>
     }
     {projection?.available&&projection.has_more&&<p className="mt-4 border-t border-border pt-3 text-[10px] text-muted-foreground">Earlier original provider events remain available on demand.</p>}
   </div></ScrollArea.Viewport><ScrollArea.Scrollbar orientation="vertical" className="flex w-2 p-0.5"><ScrollArea.Thumb className="rounded-full bg-border"/></ScrollArea.Scrollbar></ScrollArea.Root>;
+}
+
+function ProviderTimelineRecord({item,actorName,selected,onToggle}:{item:ProviderTimelineItem;actorName:string;selected:boolean;onToggle:()=>void}){
+  const record=providerTimelineRecord(item);
+  if(item.kind==="tool_episode")return <section className="aw-provider-episode" data-native-ordering-position={record.ordering_key.value} aria-label={`Tool call ${item.tool_name??"unknown"}`}><ToolEpisodeRow episode={item} expanded={selected} selected={selected} timestamp={toolEpisodeTime(item)} onToggle={onToggle}/></section>;
+  return <NativeEventRecord record={item.record} fragment={item.fragment} actorName={actorName} selected={selected} onOpen={onToggle}/>;
 }
 
 function NativeEventRecord({record,fragment,actorName,selected,onOpen}:{record:ProviderNativeEventRecord;fragment:ProviderEventFragment;actorName:string;selected:boolean;onOpen:()=>void}){
@@ -308,12 +317,16 @@ function AuthoredTurn({data,message,selectedAgentId,selected,continuation,onSele
 }
 
 function ExpandableEvent({record,fragment,selected,onSelect}:{record:ProviderNativeEventRecord;fragment:ProviderEventFragment;selected:boolean;onSelect:()=>void}){
-  return <div data-boundary-aligned={selected||undefined}><OperationalFactRow kind={fragmentPresentationKind(fragment)} status={fragmentStatus(fragment)} title={humanizeToken(fragment.semantic_kind)} summary={`${humanizeToken(record.provider)} native fragment · ${record.native_source_ref}`} timestamp={formatTime(recordTime(record))} expanded={selected} selected={selected} onToggle={onSelect}/>{selected&&<><FragmentBody fragment={fragment}/><details className="mt-2"><summary>Original provider-native record</summary><NativeEventBody value={record.native_event}/></details></>}</div>;
+  const payload=fragment.payload;
+  const summary=payload.type==="native"?`${payload.event_type??"Unknown type"} · ${humanizeToken(payload.classification_reason??"unsupported event type")}`:payload.type==="malformed"?humanizeToken(payload.reason_code):`${humanizeToken(record.provider)} native fragment · ${record.native_source_ref}`;
+  return <div data-boundary-aligned={selected||undefined}><OperationalFactRow kind={fragmentPresentationKind(fragment)} status={fragmentStatus(fragment)} title={humanizeToken(fragment.semantic_kind)} summary={summary} timestamp={formatTime(recordTime(record))} expanded={selected} selected={selected} onToggle={onSelect}/>{selected&&<><FragmentBody fragment={fragment}/><details className="mt-2"><summary>Original provider-native record</summary><NativeEventBody value={record.native_event}/></details></>}</div>;
 }
 
 function FragmentBody({fragment}:{fragment:ProviderEventFragment}){
   const payload=fragment.payload;
-  if(payload.type==="assistant_response"||payload.type==="reasoning")return payload.text?<div className="aw-authored-body"><Markdown source={payload.text}/></div>:<p className="text-[11px] italic text-muted-foreground">Provider content unavailable in the persisted source.</p>;
+  if(payload.type==="assistant_response"||payload.type==="reasoning")return payload.text?<div className="aw-authored-body"><Markdown source={payload.text}/></div>:<p className="text-[11px] italic text-muted-foreground">Provider content unavailable: {humanizeToken(fragment.content_unavailable_reason??"not projected")}.</p>;
+  if(payload.type==="native")return <div className="aw-unclassified-native"><p><strong>{payload.event_type??"Unknown native event"}</strong>{payload.event_subtype&&<span> · {payload.event_subtype}</span>}</p><p>{humanizeToken(payload.classification_reason??"unsupported event type")}</p></div>;
+  if(payload.type==="malformed")return <div className="aw-unclassified-native" data-error="true"><p><strong>Malformed provider record</strong></p><p>{humanizeToken(payload.reason_code)}</p></div>;
   return <pre className="aw-native-event-body" aria-label="Provider-native event fragment">{JSON.stringify(payload,null,2)}</pre>;
 }
 
@@ -403,7 +416,7 @@ function AgentContextRail({view,data,mode,selected,currentWork,actions,onOpenWor
   const otherOwnedWorks=ownedWorks.filter(work=>work.work_id!==anchoredWork?.work_id&&!attentionWorks.some(attention=>attention.work_id===work.work_id));
   const prioritizedActions=[...actionIndex].sort((left,right)=>decisionActionRank(left.kind,anchoredWork)-decisionActionRank(right.kind,anchoredWork));
   const workSection=<WorkContext work={anchoredWork} title={isHost&&anchoredNeedsJudgment?"Current decision":"Current Work"} onOpenWork={onOpenWork}/>;
-  const selectionInset=selected&&<div className="aw-context-selection-inset" aria-label="Selected context">{selected.kind==="message"?<MessageContext data={data} message={selected.message}/>:selected.kind==="event"?<EventContext record={selected.record} fragment={selected.fragment}/>:<WorkSelectionContext data={data} work={selected.work}/>}</div>;
+  const selectionInset=selected&&<div className="aw-context-selection-inset" aria-label="Selected context">{selected.kind==="message"?<MessageContext data={data} message={selected.message}/>:selected.kind==="event"?<EventContext record={selected.record} fragment={selected.fragment}/>:selected.kind==="tool"?<ToolContext episode={selected.episode}/>:<WorkSelectionContext data={data} work={selected.work}/>}</div>;
   const responsibilitySection=!isHost&&<ContextSection title="Responsibility" hint={eligibleWorks.length?`${eligibleWorks.length} eligible Work`:undefined}><ResponsibilityStrip values={responsibility}/><button type="button" className="aw-context-link" onClick={()=>onOpenWork()}>View ready work ↗</button>{latestExchange&&<div className="mt-3"><ContextMessageRow data={data} message={latestExchange}/></div>}</ContextSection>;
   const needsHostSection=isHost&&attentionWorks.length>0&&<ContextSection title="Needs Host" hint={`${attentionWorks.length} ${attentionWorks.length===1?"responsibility":"responsibilities"}`}>{attentionWorks.filter(work=>work.work_id!==anchoredWork?.work_id).slice(0,2).map(work=><ContextWorkRow key={work.work_id} data={data} work={work}/>)}</ContextSection>;
   const inboxSection=isHost&&hostInbox.length>0&&<ContextSection title="Team Inbox" hint={unreadIncoming.length?`${unreadIncoming.length} unsettled`:`${hostInbox.length} recent`}>{hostInbox.map(message=><ContextMessageRow key={message.message_id} data={data} message={message}/>)}</ContextSection>;
@@ -430,6 +443,7 @@ function AgentContextRail({view,data,mode,selected,currentWork,actions,onOpenWor
 function WorkContext({work,title,onOpenWork}:{work?:WorkSummary;title:string;onOpenWork:(work?:WorkSummary)=>void}){return <ContextSection title={title} primary>{work?<><div><ContextFact label="Work ID" value={work.work_id}/><ContextFact label="Revision" value={`rev ${work.work_revision} (latest)`}/><div className="aw-fact-row"><span>Phase</span><strong><WorkspaceState label={humanizeToken(work.phase)} tone={work.phase==="active"?"good":work.phase==="review"?"warn":"muted"}/></strong></div><div className="aw-fact-row"><span>Condition</span><strong><WorkspaceState label={humanizeToken(String(work.condition))} tone={work.condition==="blocked"?"bad":work.condition==="normal"?"muted":"warn"}/></strong></div>{work.condition==="blocked"&&work.blocker_reason&&<ContextFact label="Blocker" value={work.blocker_reason}/>}{work.resolution&&<ContextFact label="Resolution" value={humanizeToken(String(work.resolution))}/>}<ContextFact label="Gates" value={`${work.gate_summary.passed}/${work.gate_summary.required}`}/></div><button type="button" className="aw-context-link" onClick={()=>onOpenWork(work)}>Open work ↗</button></>:<p className="text-[11px] leading-5 text-muted-foreground">No current Work is projected for this Agent.</p>}</ContextSection>}
 function MessageContext({data,message}:{data:AgentWorkspaceData;message:MessageSummary}){const actor=data.roster.find(item=>item.agent_member_ref.id===message.sender.id);return <ContextSection title="Message in focus" hint={formatTime(message.created_at)}><p className="aw-context-focus-title">{message.sender.display_name??actor?.display_name??message.sender.id}</p><p className="aw-context-focus-copy">{message.body}</p><div className="mt-3"><ContextFact label="Delivery" value={message.delivery_state?humanizeToken(message.delivery_state):message.deliveries.map(item=>humanizeToken(item.status)).join(", ")||"Recorded"}/>{message.work_id&&<ContextFact label="Linked Work" value={shortId(message.work_id)}/>}</div></ContextSection>}
 function EventContext({record,fragment}:{record:ProviderNativeEventRecord;fragment:ProviderEventFragment}){return <ContextSection title="Native event in focus" hint={formatTime(recordTime(record))}><p className="aw-context-focus-title">{humanizeToken(fragment.semantic_kind)}</p><FragmentBody fragment={fragment}/><details className="mt-3"><summary>Original provider-native record</summary><NativeEventBody value={record.native_event}/></details><div className="mt-3"><ContextFact label="Provider" value={humanizeToken(record.provider)}/><ContextFact label="Native session" value={record.provider_thread_id??record.agent_session_id}/><ContextFact label="Source" value={record.native_source_ref}/><ContextFact label="Lifecycle" value={humanizeToken(fragment.lifecycle_phase)}/><ContextFact label="Completeness" value={humanizeToken(fragment.completeness)}/></div></ContextSection>}
+function ToolContext({episode}:{episode:ToolEpisode}){const record=episode.occurrences[0]!.record;return <ContextSection title="Tool call in focus" hint={formatTime(recordTime(record))}><p className="aw-context-focus-title">{episode.tool_name??"Unknown tool"}</p>{episode.primary_target&&<p className="aw-context-focus-summary">{episode.primary_target}</p>}<ToolEpisodeDetails episode={episode} context/></ContextSection>}
 function WorkSelectionContext({data,work}:{data:AgentWorkspaceData;work:WorkSummary}){
   const owner=work.owner_actor_ref?data.roster.find(item=>item.agent_member_ref.id===work.owner_actor_ref!.id):undefined;
   const runtimeState=typeof work.runtime_summary.state==="string"?work.runtime_summary.state:null;
@@ -516,13 +530,16 @@ function revalidateContextSelection(current:ContextSelection,data:AgentWorkspace
   if(current.kind==="message"){const message=data.messages.find(item=>item.message_id===current.message.message_id);return message?{kind:"message",message}:null;}
   if(current.kind==="work"){const work=data.works.find(item=>item.work_id===current.work.work_id);return work?{kind:"work",work}:null;}
   const projection=data.persisted_session_projection;
-  if(projection.available){for(const record of projection.records){const fragment=record.fragments.find(item=>item.fragment_id===current.fragment.fragment_id);if(fragment)return{kind:"event",record,fragment};}}
+  if(projection.available){
+    if(current.kind==="tool"){const episode=projectProviderTimeline(projection.records).find(item=>item.kind==="tool_episode"&&item.episode_id===current.episode.episode_id);return episode?.kind==="tool_episode"?{kind:"tool",episode}:null;}
+    for(const record of projection.records){const fragment=record.fragments.find(item=>item.fragment_id===current.fragment.fragment_id);if(fragment)return{kind:"event",record,fragment};}
+  }
   return null;
 }
 type SessionMessageRow={kind:"message";at:string;message:MessageSummary;continuation:boolean};
-type SessionNativeRow={kind:"native";at:string;record:ProviderNativeEventRecord;fragment:ProviderEventFragment};
-function mergeSessionRows(messages:SessionMessageRow[],nativeEvents:SessionNativeRow[]):Array<SessionMessageRow|SessionNativeRow>{
-  const rows:Array<SessionMessageRow|SessionNativeRow>=[];
+type SessionProviderRow={kind:"provider";at:string;record:ProviderNativeEventRecord;item:ProviderTimelineItem};
+function mergeSessionRows(messages:SessionMessageRow[],nativeEvents:SessionProviderRow[]):Array<SessionMessageRow|SessionProviderRow>{
+  const rows:Array<SessionMessageRow|SessionProviderRow>=[];
   let messageIndex=0;
   for(const nativeEvent of nativeEvents){
     const providerTime=recordTime(nativeEvent.record);
@@ -537,6 +554,9 @@ function mergeSessionRows(messages:SessionMessageRow[],nativeEvents:SessionNativ
   while(messageIndex<messages.length){rows.push(messages[messageIndex]!);messageIndex+=1;}
   return rows;
 }
+function providerTimelineRecord(item:ProviderTimelineItem){return item.kind==="tool_episode"?item.occurrences[0]!.record:item.record}
+function providerTimelineId(item:ProviderTimelineItem){return item.kind==="tool_episode"?item.episode_id:`native:${item.fragment.fragment_id}`}
+function toolEpisodeTime(episode:ToolEpisode){const times=episode.occurrences.map(({record})=>recordTime(record)).filter((value):value is string=>Boolean(value));if(times.length)return times.length===1?formatTime(times[0]):`${formatTime(times[0])} – ${formatTime(times[times.length-1])}`;const positions=episode.occurrences.map(({record})=>record.ordering_key.value);return positions.length===1?`source #${positions[0]}`:`source #${positions[0]}–${positions[positions.length-1]}`}
 function humanizeToken(value:string){return value.split(/[_-]+/).filter(Boolean).map((part,index)=>index===0?`${part.charAt(0).toUpperCase()}${part.slice(1)}`:part).join(" ")}
 function rosterStateTone(state:string){if(/running|active/.test(state))return "text-status-good";if(/wait|pending|review/.test(state))return "text-status-warn";if(/block/.test(state))return "text-status-bad";return "text-muted-foreground";}
 function rosterStateLabel(agent:AgentWorkspaceRosterItem){const state=agent.runtime_state??agent.capacity??"unknown";if(agent.is_host&&agent.host_session_mode==="external_interactive"&&/running|active/.test(state))return{word:"External · unmanaged",tone:"text-status-warn"};return{word:humanizeToken(state),tone:rosterStateTone(state)};}
