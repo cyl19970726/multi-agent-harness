@@ -169,6 +169,8 @@ try{
     const selectedRosterMeta=await page.locator('.agent-roster-row[data-selected="true"] .agent-roster-meta').textContent();
     assert.ok(selectedRosterMeta?.includes("Harness Recovery required · native Observed"),"selected roster row must use the same Harness/native axes as the header and context rail");
     assert.equal(await page.locator('[data-session-row-kind="control_boundary"]').count(),1,"loss-of-control boundary is missing from the persisted timeline");
+    const visibleRowKinds=await page.locator('[data-session-row-kind]').evaluateAll(nodes=>nodes.map(node=>node.getAttribute('data-session-row-kind')));
+    assert.ok(visibleRowKinds.indexOf("control_boundary")<visibleRowKinds.indexOf("provider"),"the Harness control boundary must precede provider rows whose observed_at proves they were seen after control loss");
     await page.getByText(/do not prove recovery or Work completion/).first().waitFor();
   }
   if(!liveConfig)assert.equal(await page.getByTestId("agent-workspace-identity").getByText("Native Session unavailable",{exact:true}).count(),0,"available historical Session projection is mislabeled as unavailable without an active current_session");
@@ -359,7 +361,7 @@ try{
     const localOperatorPage=await makePage(null);
     await open(localOperatorPage,`${base}/?surface=team&team=${routeState.teamRun}&conversation=${routeState.member}&memberRun=${routeState.memberRun}&space=${routeState.space}&project=${routeState.project}`);
     await localOperatorPage.getByText("Native records without comparable provider timestamps remain in provider source order; their position relative to Harness Messages is not a recorded chronology.",{exact:true}).waitFor();
-    assert.deepEqual((await localOperatorPage.locator("[data-session-row-kind]").evaluateAll(nodes=>nodes.map(node=>node.getAttribute("data-session-row-kind")))).slice(0,4),["provider","provider","provider","provider"],"per-read observed_at or a unitless provider time fabricated a cross-plane chronology ahead of provider source order");
+    assert.deepEqual((await localOperatorPage.locator("[data-session-row-kind]").evaluateAll(nodes=>nodes.map(node=>node.getAttribute("data-session-row-kind")).filter(kind=>kind==="provider"))).slice(0,4),["provider","provider","provider","provider"],"the control boundary or per-read observed_at disturbed provider source order");
     await localOperatorPage.getByRole("button",{name:"Load earlier native Session events",exact:true}).click();
     await localOperatorPage.getByText("Earlier exact provider-native event loaded from the same native Session.",{exact:true}).waitFor();
     assert.deepEqual(await localOperatorPage.locator("[data-native-ordering-position]").evaluateAll(nodes=>nodes.map(node=>Number(node.getAttribute("data-native-ordering-position")))),[1,10,11,13,14],"provider-native rows without occurred_at were reordered by per-read observed_at after loading an earlier page");

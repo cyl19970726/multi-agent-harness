@@ -241,7 +241,7 @@ function RuntimeTruthStrip({truth}:{truth:AgentWorkspaceData["runtime_truth"]}){
 function RuntimeControlBoundary({truth}:{truth:AgentWorkspaceData["runtime_truth"]}){
   return <section className="aw-runtime-control-boundary" role="note" aria-label="Harness control loss boundary">
     <AlertTriangle aria-hidden="true"/>
-    <div><strong>Harness control was {humanizeToken(truth.harness_control.state).toLowerCase()} here.</strong><p>Native records below were observed after this boundary and do not prove recovery or Work completion.</p><span>{truth.harness_control.reason_code} · {formatTime(truth.harness_control.occurred_at)}</span></div>
+    <div><strong>Harness control was {humanizeToken(truth.harness_control.state).toLowerCase()} here.</strong><p>Provider-native records explicitly observed after this boundary do not prove recovery or Work completion. Rows without comparable provider time keep provider source order.</p><span>{truth.harness_control.reason_code} · {formatTime(truth.harness_control.occurred_at)}</span></div>
   </section>;
 }
 
@@ -275,7 +275,9 @@ function SessionCanvas({data,projection,connectionState,selectedMessageId,onSele
     const boundaryAt=data.runtime_truth.harness_control.occurred_at;
     if(boundaryAt&&["blocked","recovery_required"].includes(data.runtime_truth.harness_control.state)){
       const boundary:SessionBoundaryRow={kind:"control_boundary",at:boundaryAt};
-      const index=sorted.findIndex(row=>timestampKey(row.at)>=timestampKey(boundaryAt));
+      const observedAfterBoundary=sorted.findIndex(row=>row.kind==="provider"&&row.record.observed_at>boundaryAt);
+      const chronologicalBoundary=sorted.findIndex(row=>timestampKey(row.at)>=timestampKey(boundaryAt));
+      const index=observedAfterBoundary>=0?observedAfterBoundary:chronologicalBoundary;
       sorted.splice(index<0?sorted.length:index,0,boundary);
     }
     const seen=new Set<string>();

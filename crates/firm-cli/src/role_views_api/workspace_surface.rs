@@ -550,22 +550,22 @@ fn agent_workspace_runtime_truth(
     let member_generation = member_run.and_then(|value| value["runtime_generation"].as_u64());
     let session_id = session.and_then(|value| value["id"].as_str());
     let session_generation = session.and_then(|value| value["runtime_generation"].as_u64());
+    let exact_binding = member_run_id
+        .zip(member_generation)
+        .zip(session_id.zip(session_generation));
     let exact_commands = runtime_commands
         .iter()
         .filter(|command| {
-            let session_matches = session_id.is_some_and(|id| {
-                command["binding"]["target_session_id"].as_str() == Some(id)
-                    || command["target_session_id"].as_str() == Some(id)
-            }) && session_generation.is_none_or(|generation| {
-                command["binding"]["target_runtime_generation"].as_u64() == Some(generation)
-                    || command["target_session_generation"].as_u64() == Some(generation)
-            });
-            let member_matches = member_run_id
-                .is_some_and(|id| command["binding"]["target_member_run_id"].as_str() == Some(id))
-                && member_generation.is_none_or(|generation| {
-                    command["binding"]["target_member_run_generation"].as_u64() == Some(generation)
-                });
-            session_matches || member_matches
+            exact_binding.is_some_and(
+                |((member_run_id, member_generation), (session_id, session_generation))| {
+                    command["binding"]["target_member_run_id"].as_str() == Some(member_run_id)
+                        && command["binding"]["target_member_run_generation"].as_u64()
+                            == Some(member_generation)
+                        && command["binding"]["target_session_id"].as_str() == Some(session_id)
+                        && command["binding"]["target_runtime_generation"].as_u64()
+                            == Some(session_generation)
+                },
+            )
         })
         .collect::<Vec<_>>();
     let latest_command = exact_commands.iter().copied().max_by(|left, right| {
@@ -949,6 +949,37 @@ mod runtime_truth_tests {
             truth["provider_native_activity"]["observed_after_control_loss"],
             false
         );
+    }
+
+    #[test]
+    fn partial_runtime_command_bindings_cannot_override_exact_settlement() {
+        let member = member("idle", "active");
+        let session = session("active", "idle");
+        let mut applied = command("applied", None);
+        applied["updated_at"] = json!("2026-08-31T10:01:00Z");
+
+        for (mismatched_field, mismatched_value) in [
+            ("target_member_run_generation", json!(1)),
+            ("target_runtime_generation", json!(3)),
+        ] {
+            let mut stale_recovery = command("recovery_required", Some("STALE_AUTHORITY"));
+            stale_recovery["id"] = json!(format!("stale-{mismatched_field}"));
+            stale_recovery["updated_at"] = json!("2026-08-31T10:02:00Z");
+            stale_recovery["binding"][mismatched_field] = mismatched_value;
+
+            let truth = agent_workspace_runtime_truth(
+                Some(&member),
+                Some(&session),
+                None,
+                &persisted(None),
+                &[applied.clone(), stale_recovery],
+            );
+            assert_eq!(truth["harness_control"]["state"], "ready");
+            assert_eq!(
+                truth["harness_control"]["last_command"]["id"],
+                "runtime-command-1"
+            );
+        }
     }
 
     #[test]
