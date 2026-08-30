@@ -56,6 +56,18 @@ Harness store / provider adapters
 - Provider-native events are loaded on demand and remain outside Harness durable
   state; transient live frames disappear from memory, while reopening reloads
   the same native event model from the provider-owned Session.
+- Agent Workspace derives readable Tool episodes only from exact provider
+  `call_id` equality within one provider, Session generation, and source
+  generation. It never pairs adjacent rows. The collapsed row shows the
+  provider tool name, primary target, outcome, and provider time/source order;
+  expansion renders response-local arguments/result/error first, provenance
+  second, and the complete original provider records last. Missing pairs,
+  content, timestamps, and classifications remain visibly unavailable instead
+  of being guessed or summarized into Harness state.
+- Native-session pages stay virtualized and paginated. Large response-local
+  content and raw records enter the DOM only when their row or context detail
+  is expanded; a source-generation reset replaces the prior native page rather
+  than merging across provider file identity.
 - Agent Workspace reads one server-built RoleView. The browser
   never joins Team snapshots to MemberRuns or native provider activity. The
   selected Agent's provider-native Session projection is populated only for a

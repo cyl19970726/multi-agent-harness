@@ -544,7 +544,19 @@ textarea):focus{
     background: color-mix(in srgb, var(--aw-coral-wash) 24%, var(--aw-canvas));
     box-shadow: none;
   }.agent-workspace .aw-stream-fact[data-family="tool"] .aw-stream-kind{ color: #657c75; }.agent-workspace .aw-stream-fact[data-family="result"] .aw-stream-kind,
-.agent-workspace .aw-stream-fact[data-family="delivery"] .aw-stream-kind{ color: var(--aw-good); }.agent-workspace .aw-stream-fact[data-family="review"] .aw-stream-kind{ color: var(--aw-warn); }.agent-workspace .aw-stream-fact[data-family="reasoning"] .aw-stream-kind{ color: #71688c; }.agent-workspace .agent-message-toolbar,
+.agent-workspace .aw-stream-fact[data-family="delivery"] .aw-stream-kind{ color: var(--aw-good); }.agent-workspace .aw-stream-fact[data-family="review"] .aw-stream-kind{ color: var(--aw-warn); }.agent-workspace .aw-stream-fact[data-family="reasoning"] .aw-stream-kind{ color: #71688c; }.agent-workspace .aw-tool-episode-detail{
+    min-width: 0;
+  }.agent-workspace .aw-tool-structured-content{ display: grid; min-width: 0; gap: 0.65rem; }.agent-workspace .aw-tool-content{ min-width: 0; }.agent-workspace .aw-tool-content h4{
+    margin-bottom: 0.22rem; color: var(--aw-muted); font-size: 0.59rem; font-weight: 680; letter-spacing: 0.08em; text-transform: uppercase;
+  }.agent-workspace .aw-tool-content pre,
+.agent-workspace .aw-tool-raw pre{
+    max-height: 26rem; overflow: auto; padding: 0.65rem 0.7rem; border: 1px solid var(--aw-line-soft); background: color-mix(in srgb, var(--aw-rail) 56%, transparent); color: color-mix(in srgb, var(--aw-ink) 88%, transparent); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.66rem; line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere;
+  }.agent-workspace .aw-tool-content > p,
+.agent-workspace .aw-unclassified-native{ color: var(--aw-muted); font-size: 0.7rem; font-style: italic; }.agent-workspace .aw-unclassified-native[data-error="true"]{ color: var(--aw-bad); }.agent-workspace .aw-tool-facts{
+    display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 0.45rem 1rem; margin-top: 0.8rem; padding-top: 0.7rem; border-top: 1px solid var(--aw-line-soft);
+  }.agent-workspace .aw-tool-facts div{ min-width: 0; }.agent-workspace .aw-tool-facts dt{ color: var(--aw-faint); font-size: 0.58rem; text-transform: uppercase; }.agent-workspace .aw-tool-facts dd{
+    overflow: hidden; margin-top: 0.08rem; color: var(--aw-muted); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.62rem; text-overflow: ellipsis; white-space: nowrap;
+  }.agent-workspace .aw-tool-raw{ margin-top: 0.8rem; padding-top: 0.65rem; border-top: 1px solid var(--aw-line-soft); }.agent-workspace .aw-tool-raw summary{ cursor: pointer; color: var(--aw-muted); font-size: 0.66rem; font-weight: 620; }.agent-workspace .aw-tool-raw section{ margin-top: 0.65rem; }.agent-workspace .aw-tool-raw section > p{ margin-bottom: 0.25rem; color: var(--aw-faint); font-size: 0.6rem; }.agent-workspace .aw-tool-episode-detail[data-context="true"] .aw-tool-facts{ grid-template-columns: minmax(0,1fr); }.agent-workspace .aw-context-focus-summary{ margin-top: 0.2rem; color: var(--aw-muted); font-size: 0.72rem; overflow-wrap: anywhere; }.agent-workspace .agent-message-toolbar,
 .agent-workspace .aw-filter-strip{
     min-width: 0;
     border-color: var(--aw-line);

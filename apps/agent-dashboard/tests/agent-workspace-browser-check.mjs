@@ -60,15 +60,16 @@ const actions=[
 ];
 const configuration={description:"Owns the frontend implementation and exact-source validation.",prompt_ref:null,prompt_projection:"not_modeled",skill_refs:["harness-frontend-product-design","frontend-visual-contract"],capabilities:["workspace_write","browser_acceptance","source_review"],tool_refs:[],tools_projection:"not_modeled_by_agent_member",provider_profile_ref:"codex-app-server-v1",model_preference:"gpt-5",workspace_policy:"isolated_worktree",permission_ceiling:"full_access",forbidden_actions:[],forbidden_actions_projection:"not_modeled",workspace_binding:{kind:"workspace_binding",id:"workspace-mira",work_id:baseWork.work_id,member_run_id:"member-run-mira",requirement_id:null,status:"attached",version:2,actor_ref:null,summary:null,created_at:"2026-08-12T07:00:00Z",source_id:null,target_id:null,locator:"/fixture/worktree"}};
 const sourceGeneration="source-generation:fixture-a";
-const observation=(id,semanticKind,payload,at,position)=>({schema_version:"agentfirm.provider_native_event_record.v3",record_id:`native-row:sha256:${createHash("sha256").update(`${sourceGeneration}\0row-locator:${id}\0`).digest("hex")}`,provider:"codex",adapter_version:"agentfirm.persisted_provider_event_adapter.v3",native_source_ref:"provider-source:fixture-a",source_generation:sourceGeneration,row_locator:`row-locator:${id}`,ordering_key:{kind:"complete_row_end_offset",value:position},agent_member_id:"agent-mira",agent_session_id:"session-mira-current",agent_session_generation:3,provider_thread_id:"thread-mira",provider_turn_id:"turn-mira-1",provider_event_id:id,occurred_at:at,observed_at:at,native_event:{type:semanticKind,payload},source_content_fingerprint:`sha256:${createHash("sha256").update(id).digest("hex")}`,fragments:[{fragment_id:`${id}:fragment-0`,fragment_index:0,semantic_kind:semanticKind,lifecycle_phase:"terminal",completeness:"complete",content_availability:"available",payload}]});
+const observation=(id,semanticKind,payload,at,position,nativeEvent={type:semanticKind,payload})=>({schema_version:"agentfirm.provider_native_event_record.v3",record_id:`native-row:sha256:${createHash("sha256").update(`${sourceGeneration}\0row-locator:${id}\0`).digest("hex")}`,provider:"codex",adapter_version:"agentfirm.persisted_provider_event_adapter.v3",native_source_ref:"provider-source:fixture-a",source_generation:sourceGeneration,row_locator:`row-locator:${id}`,ordering_key:{kind:"complete_row_end_offset",value:position},agent_member_id:"agent-mira",agent_session_id:"session-mira-current",agent_session_generation:3,provider_thread_id:"thread-mira",provider_turn_id:"turn-mira-1",provider_event_id:id,occurred_at:at,observed_at:at,native_event:nativeEvent,source_content_fingerprint:`sha256:${createHash("sha256").update(id).digest("hex")}`,fragments:[{fragment_id:`${id}:fragment-0`,fragment_index:0,semantic_kind:semanticKind,lifecycle_phase:payload.outcome==="requested"?"requested":"terminal",completeness:"complete",content_availability:"available",payload}]});
 const memberObservations=[
   observation("native-0","assistant_response",{type:"assistant_response",text:"I mapped the Agent Workspace read model to the approved composition and started with the privacy boundary."},"2026-08-12T07:58:00Z",10),
-  observation("native-1","tool_call_completed",{type:"tool",tool_name:"Inspected canonical RoleView contracts",call_id:"call-1",display_detail:"Read the current projections without creating a second task, message, or provider-event store."},"2026-08-12T08:01:00Z",11),
-  observation("native-2","tool_call_completed",{type:"tool",tool_name:"Validated Team-scoped native Session",call_id:"call-2",display_detail:"Resolved the exact MemberRun and provider-native source; exact Team readers can inspect the native event."},"2026-08-12T08:03:00Z",12),
-  observation("native-3","turn_completed",{type:"turn",outcome:"completed",display_summary:"Frontend build passed for the unified three-column shell."},"2026-08-12T08:07:00Z",13),
+  observation("native-1","tool_call_requested",{type:"tool",tool_name:"Read",call_id:"call-1",parent_call_id:"turn-mira-1",operation_category:"read",primary_target:"AGENTS.md",arguments:{availability:"available",json_pointer:"/item/arguments"},outcome:"requested"},"2026-08-12T08:01:00Z",11,{type:"item.started",item:{type:"tool_call",name:"Read",arguments:{path:"AGENTS.md",line_start:1,line_end:120}}}),
+  observation("native-2","tool_call_completed",{type:"tool",tool_name:"Read",call_id:"call-1",parent_call_id:"turn-mira-1",operation_category:"read",primary_target:"AGENTS.md",result:{availability:"available",json_pointer:"/item/result"},outcome:"completed"},"2026-08-12T08:03:00Z",12,{type:"item.completed",item:{type:"tool_call",name:"Read",result:{lines:120,summary:"Canonical operating rules loaded."}}}),
+  observation("native-3","tool_call_failed",{type:"tool",tool_name:null,tool_name_unavailable_reason:"related_record_missing",call_id:"orphan-call",operation_category:"command",primary_target:"unknown command",error:{availability:"available",json_pointer:"/error"},outcome:"failed"},"2026-08-12T08:05:00Z",13,{type:"item.completed",call_id:"orphan-call",error:{code:"ENOENT",message:"Requested command was not found."}}),
+  observation("native-4","turn_completed",{type:"turn",outcome:"completed",display_summary:"Frontend build passed for the unified three-column shell."},"2026-08-12T08:07:00Z",14),
 ].map((event,index)=>({...event,occurred_at:null,observed_at:`2026-08-12T09:0${index}:00Z`}));
 memberObservations[0].occurred_at="1";
-const memberProjection={schema_version:"agentfirm.native_session_read.v1",available:true,native_source_ref:"provider-source:fixture-a",source_generation:sourceGeneration,snapshot_watermark:{kind:"complete_row_end_offset",value:13},records:memberObservations,has_more:true,next_before:{source_generation:sourceGeneration,ordering_key:{kind:"complete_row_end_offset",value:10}},incomplete_tail:false,source_reset:false};
+const memberProjection={schema_version:"agentfirm.native_session_read.v1",available:true,native_source_ref:"provider-source:fixture-a",source_generation:sourceGeneration,snapshot_watermark:{kind:"complete_row_end_offset",value:14},records:memberObservations,has_more:true,next_before:{source_generation:sourceGeneration,ordering_key:{kind:"complete_row_end_offset",value:10}},incomplete_tail:false,source_reset:false};
 const memberCurrentSession={agent_session_id:"session-mira-current",agent_session_generation:3,lifecycle:"active",runtime_residency:"attached",activity:"idle",provider:"codex",effective_permission_ceiling:"full_access",workspace_cwd:"/fixture/worktree",native_session_ref:{native_session_id:"thread-mira",provider:"codex",execution_mode:"codex_app_server"},native_session_open_target:null};
 const privateBase={projection_scope:"team_session_read",team,selected_agent:{agent_member_ref:member.agent_member_ref,display_name:member.display_name,role:member.role,organization_status:"active",is_host:false,current_member_run_ref:"member-run-mira",provider:"codex",execution_mode:"codex_app_server",runtime_status:"running",runtime_generation:3,host_session_mode:null},roster,current_session:memberCurrentSession,persisted_session_projection:memberProjection,messages,works,configuration,context_summary:{current_work_id:baseWork.work_id,message_count:messages.length,unread_count:1,last_activity_at:"2026-08-12T08:07:00Z",authorization_count:actions.length}};
 const memberView=envelope("agent_workspace",privateBase,actions);
@@ -83,7 +84,7 @@ const resetObservation={...observation("native-after-reset","assistant_response"
 const resetProjection={...memberProjection,native_source_ref:"provider-source:fixture-reset",source_generation:resetSourceGeneration,records:[resetObservation],has_more:false,next_before:null,snapshot_watermark:{kind:"complete_row_end_offset",value:30},source_reset:true};
 const otherAgentView=envelope("agent_workspace",{...otherProjectMemberView.data,selected_agent:{...otherProjectMemberView.data.selected_agent,agent_member_ref:analyst.agent_member_ref,display_name:analyst.display_name,role:analyst.role,current_member_run_ref:analyst.current_member_run_ref,provider:analyst.provider}},actions);
 const hostMessages=messages;
-const hostObservations=[observation("host-native-0","assistant_response",{type:"assistant_response",text:"I reviewed the current decision surface and sent the next bounded assignment."},"2026-08-12T08:05:00Z",1),observation("host-native-1","tool_call_completed",{type:"tool",tool_name:"Read Lead inbox",call_id:"host-call-1",display_detail:"Provider-native Host observation from the selected Team Session."},"2026-08-12T08:08:00Z",2)].map(item=>({...item,agent_member_id:"agent-host",agent_session_id:"host-thread-current",agent_session_generation:1,provider_turn_id:"turn-host-1"}));
+const hostObservations=[observation("host-native-0","assistant_response",{type:"assistant_response",text:"I reviewed the current decision surface and sent the next bounded assignment."},"2026-08-12T08:05:00Z",1),observation("host-native-1","tool_call_completed",{type:"tool",tool_name:"Read Lead inbox",call_id:"host-call-1",operation_category:"read",primary_target:"Team inbox",outcome:"completed"},"2026-08-12T08:08:00Z",2)].map(item=>({...item,agent_member_id:"agent-host",agent_session_id:"host-thread-current",agent_session_generation:1,provider_turn_id:"turn-host-1"}));
 const hostView=envelope("agent_workspace",{...memberView.data,projection_scope:"team_session_read",selected_agent:{agent_member_ref:{kind:"agent_member",id:"agent-host"},display_name:"Marcus Allen",role:"Team Lead",organization_status:"active",is_host:true,current_member_run_ref:"member-run-host",provider:"codex",execution_mode:"host_native",runtime_status:"active",runtime_generation:1,host_session_mode:"external_interactive"},current_session:{...memberCurrentSession,agent_session_id:"host-thread-current",agent_session_generation:1,native_session_ref:{native_session_id:"host-thread-current",provider:"codex",execution_mode:"host_native"}},persisted_session_projection:{...memberProjection,records:hostObservations,has_more:false,next_before:null},messages:hostMessages,configuration:{...configuration,description:"Owns Team judgment and assignment authority."},context_summary:{current_work_id:works[1].work_id,message_count:hostMessages.length,unread_count:0,last_activity_at:"2026-08-12T08:08:00Z",authorization_count:actions.length}},actions);
 const hostMemberTeamRead=envelope("agent_workspace",{...memberView.data,projection_scope:"team_session_read"},actions);
 assert.equal(hostMemberTeamRead.data.persisted_session_projection.records[0].agent_session_id,"session-mira-current","exact Host must receive selected Team Member native history");
@@ -173,23 +174,28 @@ try{
   assert.ok(composerAlignment.gap!=null&&composerAlignment.gap<=24,`Composer primary action does not close the command surface at the right edge: ${JSON.stringify(composerAlignment)}`);
   await page.screenshot({path:join(evidenceDir,`member-session--1440x1000--${capturedSourceSha}.png`),animations:"disabled"});
   if(!liveConfig){
-    const eventRow=page.locator(".aw-native-facts-trail .aw-stream-fact__trigger").nth(1);
+    const eventRow=page.locator('[data-tool-call-id="call-1"] .aw-stream-fact__trigger');
     await eventRow.click();assert.equal(await eventRow.getAttribute("aria-expanded"),"true","clicking an individual event row expands it in place");
-    await eventRow.locator('xpath=ancestor::div[@data-boundary-aligned="true"]').getByLabel("Provider-native event fragment").filter({hasText:"Validated Team-scoped native Session"}).waitFor();
-    await page.getByText("Native event in focus",{exact:true}).waitFor();
+    await page.getByText(/Canonical operating rules loaded\./).first().waitFor();
+    await page.getByText("Tool call in focus",{exact:true}).waitFor();
+    assert.equal(await page.getByText("Read",{exact:true}).count()>0,true,"collapsed tool name is unavailable");
+    assert.equal(await page.getByText("AGENTS.md",{exact:true}).count()>0,true,"collapsed primary target is unavailable");
+    assert.equal(await page.getByText("Arguments",{exact:true}).count()>0,true,"structured arguments are unavailable");
+    assert.equal(await page.getByText("Original provider-native records (2)",{exact:true}).count()>0,true,"raw evidence trail is unavailable");
+    assert.equal(await page.locator('[data-tool-call-id="call-1"]').count(),1,"exact call id did not collapse request and completion into one episode");
+    assert.equal(await page.locator('[data-tool-call-id="orphan-call"]').count(),1,"unpaired terminal tool evidence was dropped or guessed into another call");
+    assert.equal(await page.getByText("Unknown tool",{exact:true}).count(),1,"unpaired tool evidence is not labeled honestly");
+    await eventRow.click();assert.equal(await eventRow.getAttribute("aria-expanded"),"false","tool episode does not collapse in place");
     const authoredMessage=page.getByRole("button",{name:/Open authored Message from Marcus Allen/}).first();
     await authoredMessage.focus();await page.keyboard.press("Enter");await page.getByText("Message in focus",{exact:true}).waitFor();
-    const nativeMessage=page.locator('.aw-stream-fact__trigger').first();
-    await nativeMessage.focus();await page.keyboard.press("Space");await page.getByText("Native event in focus",{exact:true}).waitFor();
-    const toolRow=page.locator(".aw-native-facts-trail .aw-stream-fact__trigger").nth(1);await toolRow.focus();await page.keyboard.press("Enter");assert.equal(await toolRow.getAttribute("aria-expanded"),"true","event row keyboard selection");
-    await toolRow.locator('xpath=ancestor::div[@data-boundary-aligned="true"]').waitFor();
+    const toolRow=page.locator('[data-tool-call-id="call-1"] .aw-stream-fact__trigger');await toolRow.focus();await page.keyboard.press("Space");assert.equal(await toolRow.getAttribute("aria-expanded"),"true","tool episode keyboard selection");
     assert.equal(await toolRow.locator('xpath=ancestor::article').getAttribute("data-selected"),"true","selected event does not retain a stable center-row state");
-    assert.equal(await page.getByText("Native event in focus",{exact:true}).count(),1,"selected event detail is not delegated to the context rail");
+    assert.equal(await page.getByText("Tool call in focus",{exact:true}).count(),1,"selected tool detail is not delegated to the context rail");
     await page.locator('textarea[aria-label="Message"]').fill("Trigger a benign background revalidate");
     await page.getByRole("button",{name:"Send",exact:true}).click();
     await page.getByText("Message recorded. Refreshing this Agent Workspace.",{exact:true}).waitFor();
     await page.waitForLoadState("networkidle");
-    assert.equal(await page.getByText("Native event in focus",{exact:true}).count(),1,"background revalidate dropped the selected native observation");
+    assert.equal(await page.getByText("Tool call in focus",{exact:true}).count(),1,"background revalidate dropped the selected tool episode");
     assert.equal(await toolRow.locator('xpath=ancestor::article').getAttribute("data-selected"),"true","background revalidate dropped the selected stream row state");
     await page.screenshot({path:join(evidenceDir,`member-event-detail--1440x1000--${capturedSourceSha}.png`),animations:"disabled"});
   }
@@ -265,7 +271,7 @@ try{
   await open(hostPage,`${base}/?surface=team&team=${routeState.teamRun}&conversation=${routeState.host}&space=${routeState.space}&project=${routeState.project}`);
   if(liveConfig&&(await hostPage.locator(".agent-authored-turn").count())>0)await hostPage.locator(".agent-authored-turn").first().waitFor();
   await waitForStableWriteSurface(hostPage);
-  if(!liveConfig){assert.equal(await hostPage.getByText("Validated Team-scoped native Session",{exact:true}).count(),0,"Host Session incorrectly showed a non-selected Member event");const hostToolEvent=hostPage.locator(".aw-native-facts-trail .aw-stream-fact__trigger").first();await hostToolEvent.click();await hostToolEvent.locator('xpath=ancestor::div[@data-boundary-aligned="true"]').getByLabel("Provider-native event fragment").filter({hasText:"Read Lead inbox"}).waitFor();}
+  if(!liveConfig){assert.equal(await hostPage.getByText("AGENTS.md",{exact:true}).count(),0,"Host Session incorrectly showed a non-selected Member event");const hostToolEvent=hostPage.locator('[data-tool-call-id="host-call-1"] .aw-stream-fact__trigger');await hostToolEvent.click();await hostPage.getByText("Tool call in focus",{exact:true}).waitFor();}
   if(!liveConfig){
     await hostPage.getByText("Current decision",{exact:true}).waitFor();
     await hostPage.getByText("Team Inbox",{exact:true}).waitFor();
@@ -291,7 +297,7 @@ try{
   await waitForStableWriteSurface(hostPage);
   const hostMemberEvents=hostPage.locator(".aw-native-facts-trail .aw-stream-fact__trigger");
   assert.ok(await hostMemberEvents.count()>=3,"Host-selected Team Member native activity is missing");
-  const hostMemberTool=hostMemberEvents.nth(1);await hostMemberTool.click();await hostMemberTool.locator('xpath=ancestor::div[@data-boundary-aligned="true"]').getByLabel("Provider-native event fragment").filter({hasText:"Validated Team-scoped native Session"}).waitFor();
+  const hostMemberTool=hostPage.locator('[data-tool-call-id="call-1"] .aw-stream-fact__trigger');await hostMemberTool.click();await hostPage.getByText(/Canonical operating rules loaded\./).first().waitFor();
   await hostPage.screenshot({path:join(evidenceDir,`host-member-team-session--1440x1000--${capturedSourceSha}.png`),animations:"disabled"});
   if(!liveConfig){
     await open(hostPage,`${base}/?surface=team&team=${routeState.teamRun}&conversation=${routeState.host}&space=${routeState.space}&project=${routeState.project}`);
@@ -308,7 +314,7 @@ try{
     await hostPage.getByTestId("agent-workspace-identity").getByText("Session session-mira-current · gen 3",{exact:true}).waitFor();
     const recoveredMemberEvents=hostPage.locator(".aw-native-facts-trail .aw-stream-fact__trigger");
     assert.ok(await recoveredMemberEvents.count()>=3,"same-page retry did not recover the selected Member native activity");
-    const recoveredMemberTool=recoveredMemberEvents.nth(1);await recoveredMemberTool.click();await recoveredMemberTool.locator('xpath=ancestor::div[@data-boundary-aligned="true"]').getByLabel("Provider-native event fragment").filter({hasText:"Validated Team-scoped native Session"}).waitFor();
+    const recoveredMemberTool=hostPage.locator('[data-tool-call-id="call-1"] .aw-stream-fact__trigger');await recoveredMemberTool.click();await hostPage.getByText(/Canonical operating rules loaded\./).first().waitFor();
     assert.equal(hostPage.url(),selectedMemberUrl,"same-page retry changed the exact selected Member route");
   }
   if(!liveConfig){
@@ -343,14 +349,14 @@ try{
     const localOperatorPage=await makePage(null);
     await open(localOperatorPage,`${base}/?surface=team&team=${routeState.teamRun}&conversation=${routeState.member}&memberRun=${routeState.memberRun}&space=${routeState.space}&project=${routeState.project}`);
     await localOperatorPage.getByText("Native records without comparable provider timestamps remain in provider source order; their position relative to Harness Messages is not a recorded chronology.",{exact:true}).waitFor();
-    assert.deepEqual((await localOperatorPage.locator("[data-session-row-kind]").evaluateAll(nodes=>nodes.map(node=>node.getAttribute("data-session-row-kind")))).slice(0,4),["native","native","native","native"],"per-read observed_at or a unitless provider time fabricated a cross-plane chronology ahead of provider source order");
+    assert.deepEqual((await localOperatorPage.locator("[data-session-row-kind]").evaluateAll(nodes=>nodes.map(node=>node.getAttribute("data-session-row-kind")))).slice(0,4),["provider","provider","provider","provider"],"per-read observed_at or a unitless provider time fabricated a cross-plane chronology ahead of provider source order");
     await localOperatorPage.getByRole("button",{name:"Load earlier native Session events",exact:true}).click();
     await localOperatorPage.getByText("Earlier exact provider-native event loaded from the same native Session.",{exact:true}).waitFor();
-    assert.deepEqual(await localOperatorPage.locator("[data-native-ordering-position]").evaluateAll(nodes=>nodes.map(node=>Number(node.getAttribute("data-native-ordering-position")))),[1,10,11,12,13],"provider-native rows without occurred_at were reordered by per-read observed_at after loading an earlier page");
+    assert.deepEqual(await localOperatorPage.locator("[data-native-ordering-position]").evaluateAll(nodes=>nodes.map(node=>Number(node.getAttribute("data-native-ordering-position")))),[1,10,11,13,14],"provider-native rows without occurred_at were reordered by per-read observed_at after loading an earlier page");
     assert.equal(await localOperatorPage.getByRole("button",{name:"Load earlier native Session events",exact:true}).count(),0,"terminal native Session page kept offering an invalid earlier cursor");
     await localOperatorPage.waitForTimeout(900);
-    assert.deepEqual(await localOperatorPage.locator("[data-native-ordering-position]").evaluateAll(nodes=>nodes.map(node=>Number(node.getAttribute("data-native-ordering-position")))),[1,10,11,12,13],"ambient RoleView refresh discarded an already loaded provider-native history page");
-    const localOperatorEvent=localOperatorPage.locator(".aw-native-facts-trail .aw-stream-fact__trigger").nth(1);await localOperatorEvent.click();await localOperatorEvent.locator('xpath=ancestor::div[@data-boundary-aligned="true"]').getByLabel("Provider-native event fragment").filter({hasText:"Validated Team-scoped native Session"}).waitFor();
+    assert.deepEqual(await localOperatorPage.locator("[data-native-ordering-position]").evaluateAll(nodes=>nodes.map(node=>Number(node.getAttribute("data-native-ordering-position")))),[1,10,11,13,14],"ambient RoleView refresh discarded an already loaded provider-native history page");
+    const localOperatorEvent=localOperatorPage.locator('[data-tool-call-id="call-1"] .aw-stream-fact__trigger');await localOperatorEvent.click();await localOperatorPage.getByText(/Canonical operating rules loaded\./).first().waitFor();
     assert.equal(await localOperatorPage.getByText("Persisted provider-native Session",{exact:true}).count(),1,"same-machine local Operator could not open the selected persisted Session without a token");
     const projectBUrl=new URL(localOperatorPage.url());projectBUrl.searchParams.set("project","fixture-project-b");
     await localOperatorPage.goto(projectBUrl.toString(),{waitUntil:"domcontentloaded"});
