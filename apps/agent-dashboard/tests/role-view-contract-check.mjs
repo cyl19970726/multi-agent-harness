@@ -12,6 +12,11 @@ const ajv=new Ajv2020({strict:false,allErrors:true});
 ajv.addSchema(providerNativeEventRecordSchema);
 for(const file of fs.readdirSync(path.join(root,"schemas/collaboration")).filter(file=>file.endsWith(".schema.json")))ajv.addSchema(JSON.parse(fs.readFileSync(path.join(root,"schemas/collaboration",file),"utf8")));
 for(const schema of schemas)ajv.addSchema(schema);
+const runtimeSummarySchema=schemas[0].$defs.runtimeSummary;
+assert.deepEqual(runtimeSummarySchema.required,["state","generation","freshness","work_execution_binding_id","agent_session_id","agent_session_generation","provider","native_session_id"],"RoleView schema freezes the complete current runtime projection");
+assert.deepEqual(runtimeSummarySchema.properties.freshness.enum,["current","conflict_or_unavailable"],"RoleView schema accepts only server-emitted runtime freshness states");
+const workspaceSummarySchema=schemas[0].$defs.workspaceSummary;
+assert.deepEqual(workspaceSummarySchema.required,["binding_id","cwd","lifecycle","safety"],"RoleView schema freezes the complete current workspace projection");
 for(const name of names.slice(2))assert.equal(typeof ajv.getSchema(`agentfirm.role_views.v1/${name}.schema.json`),"function",`${name} schema compiles`);
 const fixtureDir=path.join(root,"apps/agent-dashboard/fixtures/wave4-local-agentfirm-v1");
 for(const name of names.slice(2)){

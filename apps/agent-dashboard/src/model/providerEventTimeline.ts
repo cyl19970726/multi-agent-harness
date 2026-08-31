@@ -12,7 +12,7 @@ export interface ProviderEventOccurrence {
 export interface ToolEpisode {
   kind:"tool_episode";
   episode_id:string;
-  call_id:string;
+  call_id:string|null;
   provider:ProviderNativeEventRecord["provider"];
   tool_name:string|null;
   tool_name_unavailable_reason:string|null;
@@ -66,7 +66,7 @@ function contentReference(occurrences:ProviderEventOccurrence[],field:"arguments
   return null;
 }
 
-function buildEpisode(episodeId:string,callId:string,occurrences:ProviderEventOccurrence[]):ToolEpisode {
+function buildEpisode(episodeId:string,callId:string|null,occurrences:ProviderEventOccurrence[]):ToolEpisode {
   const payloads=occurrences.flatMap(({fragment})=>fragment.payload.type==="tool"?[fragment.payload]:[]);
   return {
     kind:"tool_episode",
@@ -89,7 +89,8 @@ function buildEpisode(episodeId:string,callId:string,occurrences:ProviderEventOc
 /**
  * Builds one readable timeline without inventing provider relationships.
  * Tool fragments are paired only by their exact response-local call id and
- * provider/session/source generation. Missing call ids remain standalone.
+ * provider/session/source generation. Missing call ids become structured,
+ * standalone episodes and are never paired by adjacency.
  */
 export function projectProviderTimeline(records:ProviderNativeEventRecord[]):ProviderTimelineItem[] {
   const occurrences=records
@@ -107,7 +108,11 @@ export function projectProviderTimeline(records:ProviderNativeEventRecord[]):Pro
   const timeline:ProviderTimelineItem[]=[];
   for(const occurrence of occurrences){
     const payload=occurrence.fragment.payload;
-    if(payload.type!=="tool"||!payload.call_id){timeline.push({kind:"native",...occurrence});continue;}
+    if(payload.type!=="tool"){timeline.push({kind:"native",...occurrence});continue;}
+    if(!payload.call_id){
+      timeline.push(buildEpisode(`tool:${occurrence.record.record_id}:${occurrence.fragment.fragment_id}`,null,[occurrence]));
+      continue;
+    }
     const key=toolEpisodeKey(occurrence.record,payload.call_id);
     if(emitted.has(key))continue;
     emitted.add(key);

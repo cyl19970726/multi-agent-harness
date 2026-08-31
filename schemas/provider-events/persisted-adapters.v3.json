@@ -108,6 +108,7 @@
     "reader_reachability":["local","remote"],
     "semantic_capabilities":[
       {"semantic_kind":"assistant_response","phases":["progress"],"content_availability":["available","unavailable"]},
+      {"semantic_kind":"reasoning","phases":["progress"],"content_availability":["available","unavailable"]},
       {"semantic_kind":"tool_call_started","phases":["started"],"content_availability":["available"]},
       {"semantic_kind":"tool_call_completed","phases":["terminal"],"content_availability":["available"]},
       {"semantic_kind":"tool_call_failed","phases":["terminal"],"content_availability":["available"]},
