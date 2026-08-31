@@ -75,9 +75,9 @@ memberObservations[0].occurred_at="1";
 const memberProjection={schema_version:"agentfirm.native_session_read.v1",available:true,native_source_ref:"provider-source:fixture-a",source_generation:sourceGeneration,snapshot_watermark:{kind:"complete_row_end_offset",value:15},records:memberObservations,has_more:true,next_before:{source_generation:sourceGeneration,ordering_key:{kind:"complete_row_end_offset",value:10}},incomplete_tail:false,source_reset:false};
 const memberCurrentSession={agent_session_id:"session-mira-current",agent_session_generation:3,lifecycle:"active",runtime_residency:"attached",activity:"idle",provider:"codex",effective_permission_ceiling:"full_access",workspace_cwd:"/fixture/worktree",native_session_ref:{native_session_id:"thread-mira",provider:"codex",execution_mode:"codex_app_server"},native_session_open_target:null};
 const runtimeTruth={work:{work_id:baseWork.work_id,phase:"active",condition:"normal",updated_at:"2026-08-12T08:00:00Z"},coordination:{state:"active",member_run_id:"member-run-mira",runtime_generation:3,runtime_status:"blocked"},harness_control:{state:"recovery_required",reason_code:"PROVIDER_IDLE_TIMEOUT",occurred_at:"2026-08-12T08:04:00Z",last_command:{id:"runtime-command-mira-1",command:"start_cycle",status:"recovery_required",updated_at:"2026-08-12T08:04:00Z",failure_code:"PROVIDER_IDLE_TIMEOUT"},next_action:"Resolve the exact RuntimeCommand from evidence; do not replay blindly."},provider_native_activity:{state:"observed",last_observed_at:"2026-08-12T09:02:00Z",observed_after_control_loss:true},explanation:"Harness control is recovery_required (PROVIDER_IDLE_TIMEOUT). Provider-native activity was observed afterward; it does not prove recovery or Work completion."};
-const privateBase={projection_scope:"team_session_read",team,selected_agent:{agent_member_ref:member.agent_member_ref,display_name:member.display_name,role:member.role,organization_status:"active",is_host:false,current_member_run_ref:"member-run-mira",provider:"codex",execution_mode:"codex_app_server",runtime_status:"running",runtime_generation:3,host_session_mode:null},roster,current_session:memberCurrentSession,persisted_session_projection:memberProjection,runtime_truth:runtimeTruth,messages,works,configuration,context_summary:{current_work_id:baseWork.work_id,message_count:messages.length,unread_count:1,last_activity_at:"2026-08-12T08:07:00Z",authorization_count:actions.length}};
+const privateBase={projection_scope:"team_session_read",team:{...team,viewer_role:"member"},selected_agent:{agent_member_ref:member.agent_member_ref,display_name:member.display_name,role:member.role,organization_status:"active",is_host:false,current_member_run_ref:"member-run-mira",provider:"codex",execution_mode:"codex_app_server",runtime_status:"running",runtime_generation:3,host_session_mode:null},roster,current_session:memberCurrentSession,persisted_session_projection:memberProjection,runtime_truth:runtimeTruth,messages,works,configuration,context_summary:{current_work_id:baseWork.work_id,message_count:messages.length,unread_count:1,last_activity_at:"2026-08-12T08:07:00Z",authorization_count:actions.length}};
 const memberView=envelope("agent_workspace",privateBase,actions);
-memberView.data.team={team_id:team.team_id,display_name:team.display_name,team_revision:team.team_revision,mission_id:team.mission_id,host_agent_id:team.host_agent_id,viewer_role:team.viewer_role,status:team.status,latest_run_id:team.latest_run.id};
+memberView.data.team={team_id:team.team_id,display_name:team.display_name,team_revision:team.team_revision,mission_id:team.mission_id,host_agent_id:team.host_agent_id,viewer_role:"member",status:team.status,latest_run_id:team.latest_run.id};
 const olderWithoutProviderTimestamp={...observation("native-earlier","assistant_response",{type:"assistant_response",text:"Earlier exact provider-native event loaded from the same native Session."},"2026-08-12T10:00:00Z",1),occurred_at:null};
 const olderMemberView=envelope("agent_workspace",{...memberView.data,persisted_session_projection:{...memberProjection,records:[olderWithoutProviderTimestamp],has_more:false,next_before:null,snapshot_watermark:{kind:"complete_row_end_offset",value:1}}},actions);
 const otherProjectSourceGeneration="source-generation:fixture-b";
@@ -90,7 +90,9 @@ const otherAgentView=envelope("agent_workspace",{...otherProjectMemberView.data,
 const hostMessages=messages;
 const hostObservations=[observation("host-native-0","assistant_response",{type:"assistant_response",text:"I reviewed the current decision surface and sent the next bounded assignment."},"2026-08-12T08:05:00Z",1),observation("host-native-1","tool_call_completed",{type:"tool",tool_name:"Read Lead inbox",call_id:"host-call-1",operation_category:"read",primary_target:"Team inbox",outcome:"completed"},"2026-08-12T08:08:00Z",2)].map(item=>({...item,agent_member_id:"agent-host",agent_session_id:"host-thread-current",agent_session_generation:1,provider_turn_id:"turn-host-1"}));
 const hostView=envelope("agent_workspace",{...memberView.data,projection_scope:"team_session_read",selected_agent:{agent_member_ref:{kind:"agent_member",id:"agent-host"},display_name:"Marcus Allen",role:"Team Lead",organization_status:"active",is_host:true,current_member_run_ref:"member-run-host",provider:"codex",execution_mode:"host_native",runtime_status:"active",runtime_generation:1,host_session_mode:"external_interactive"},current_session:{...memberCurrentSession,agent_session_id:"host-thread-current",agent_session_generation:1,native_session_ref:{native_session_id:"host-thread-current",provider:"codex",execution_mode:"host_native"}},persisted_session_projection:{...memberProjection,records:hostObservations,has_more:false,next_before:null},messages:hostMessages,configuration:{...configuration,description:"Owns Team judgment and assignment authority."},context_summary:{current_work_id:works[1].work_id,message_count:hostMessages.length,unread_count:0,last_activity_at:"2026-08-12T08:08:00Z",authorization_count:actions.length}},actions);
-const hostMemberTeamRead=envelope("agent_workspace",{...memberView.data,projection_scope:"team_session_read"},actions);
+const hostMemberTeamRead=envelope("agent_workspace",{...memberView.data,team:{...memberView.data.team,viewer_role:"host"},projection_scope:"team_session_read"},actions);
+const hostOtherAgentRead=envelope("agent_workspace",{...otherAgentView.data,team:{...otherAgentView.data.team,viewer_role:"host"},projection_scope:"team_session_read"},actions);
+const operatorMemberRead=envelope("agent_workspace",{...memberView.data,team:{...memberView.data.team,viewer_role:"operator"},projection_scope:"team_session_read"},[]);
 assert.equal(hostMemberTeamRead.data.persisted_session_projection.records[0].agent_session_id,"session-mira-current","exact Host must receive selected Team Member native history");
 const teamWorkspace=envelope("team_workspace",{team,pressure_summary:{active_turns:1,ready_members:1,total_members:2,ready_work:1,review_work:1,blocked_work:0},works,work_graph:{nodes:works,edges:[],ready_work_ids:[],attention_work_ids:[]},members:[member,analyst],messages,activity:[],activity_truncated:false,reports:[],findings:[],failures:[],gate_requirements:[],gate_evaluations:[],gate_waivers:[],workspace_attention:[],delegation_provenance:[],page:{as_of_event_sequence:72,item_count:works.length,next_cursor:null}});
 const viewerContext=(token)=>{const host=token==="fixture-host-token";const teams=[{team_id:team.team_id,display_name:team.display_name,viewer_role:host?"host":"member",viewer_agent_member_id:host?"agent-host":"agent-mira",default_conversation:host?"host":"agent-mira",latest_run_id:team.latest_run.id,team_run_ids:[team.latest_run.id],current_member_run_id:host?"member-run-host":"member-run-mira"}];if(token==="fixture-multi-token")teams.push({team_id:"team-second-authorized",display_name:"Second Authorized Team",viewer_role:"member",viewer_agent_member_id:"agent-mira",default_conversation:"agent-mira",latest_run_id:null,team_run_ids:[],current_member_run_id:null});return envelope("viewer_context",{viewer_actor_ref:{kind:"agent_member",id:host?"agent-host":"agent-mira"},teams});};
@@ -103,6 +105,7 @@ try{
   const consoleErrors=[];
   const httpFailures=[];
   const unknownFixturePaths=[];
+  const postedActions=[];
   const agentWorkspaceRequests=[];
   let failMemberRefresh=false;
   let memberRefreshRetryGate=null;
@@ -113,10 +116,15 @@ try{
   let delayedOlderPageGate=null;
   let failDelayedOlderPage=false;
   let delayedSourceResetGate=null;
+  let failNextMessagePost=false;
   const makePage=async token=>{const next=await browser.newPage({viewport:{width:1440,height:1000}});next.on("console",message=>{if(message.type()==="error")consoleErrors.push(message.text());});next.on("pageerror",error=>consoleErrors.push(error.message));next.on("response",response=>{if(response.status()>=400)httpFailures.push(`${response.status()} ${response.url()}`);});await next.addInitScript(({token,fixture})=>{window.__AGENTFIRM_BOOTSTRAP__={capabilityToken:token};class QuietEventSource{timer;started=false;addEventListener(type,listener){if(!fixture||type!=="snapshot"||this.started)return;this.started=true;let revision=0;this.timer=setInterval(()=>{revision+=1;listener({data:JSON.stringify({generated_at:`2026-08-12T08:10:${String(revision).padStart(2,"0")}Z`,execution_space_id:"fixture-space"})});if(revision===80){clearInterval(this.timer);this.timer=undefined;}},15);}close(){if(this.timer)clearInterval(this.timer);}}Object.defineProperty(window,"EventSource",{value:QuietEventSource,configurable:true});},{token,fixture:!liveConfig});if(!liveConfig)await next.route("**/v1/**",async route=>{
     const request=route.request(),url=new URL(request.url());
     const token=request.headers()["x-agentfirm-token"];
-    if(request.method()==="POST")return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({ok:true})});
+    if(request.method()==="POST"){
+      postedActions.push({path:url.pathname,body:request.postDataJSON(),headers:request.headers()});
+      if(failNextMessagePost&&url.pathname.endsWith("/messages/send")){failNextMessagePost=false;return route.fulfill({status:409,contentType:"application/json",body:JSON.stringify({error:{code:"VERSION_CONFLICT",message:"Authoritative Team revision changed."}})});}
+      return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({ok:true})});
+    }
     if(url.pathname==="/v1/events"){
       const selectedAgent=url.searchParams.get("agent_id");
       const sourceResetGate=delayedSourceResetGate;
@@ -146,7 +154,7 @@ try{
         if(failHostMemberProjection)return route.abort("failed");
       }
       if(memberSelected&&url.searchParams.get("session_before")==="10"&&delayedOlderPageGate){await delayedOlderPageGate;if(failDelayedOlderPage)return route.fulfill({status:503,contentType:"application/json",body:JSON.stringify({error:{message:"stale Project pagination failed"}})});}
-      body=otherAgentSelected?otherAgentView:memberSelected?(url.searchParams.get("project")==="fixture-project-b"?otherProjectMemberView:url.searchParams.get("session_before")==="10"?olderMemberView:(token==="fixture-member-token"?memberView:hostMemberTeamRead)):hostView;
+      body=otherAgentSelected?(token==="fixture-host-token"?hostOtherAgentRead:otherAgentView):memberSelected?(url.searchParams.get("project")==="fixture-project-b"?otherProjectMemberView:url.searchParams.get("session_before")==="10"?olderMemberView:(token==="fixture-member-token"?memberView:token==="fixture-host-token"?hostMemberTeamRead:operatorMemberRead)):hostView;
     }
     else { unknownFixturePaths.push(url.pathname); return route.fulfill({status:404,contentType:"application/json",body:JSON.stringify({error:{message:url.pathname}})}); }
     return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(body)});
@@ -155,6 +163,8 @@ try{
   const open=async(target,url)=>{await target.goto(url,{waitUntil:"domcontentloaded"});await target.getByTestId("agent-workspace").waitFor();assert.equal(await target.evaluate(()=>document.documentElement.scrollWidth<=document.documentElement.clientWidth),true,"desktop horizontal overflow");};
   const waitForStableWriteSurface=async target=>{await target.getByText("Authoritative Agent Workspace refresh is pending or failed. Action writes are unavailable.",{exact:true}).waitFor({state:"detached"});};
   const executeFixtureAction=async target=>{
+    const secondary=target.locator(".aw-secondary-actions");
+    if(await secondary.count()&&await secondary.getAttribute("open")===null)await secondary.locator("summary").click();
     await target.getByLabel("Composer action").selectOption({label:"Assign work"});
     await target.getByRole("button",{name:"assign work",exact:true}).click();
     await target.getByLabel("TeamMembership ID").fill("membership-mira");
@@ -169,8 +179,8 @@ try{
   assert.deepEqual(await page.locator(".agent-roster-meta").evaluateAll(nodes=>nodes.filter(node=>node.scrollHeight>node.clientHeight+1).map(node=>node.textContent)),[],"Agent roster role/runtime meta wraps beyond its single-line row");
   if(!liveConfig){const hostMeta=await page.locator(".agent-roster-row").first().locator(".agent-roster-meta").textContent();assert.ok(hostMeta?.includes("External · unmanaged"),"external-interactive Host roster row must not masquerade as Running");assert.ok(!hostMeta?.includes("Running"),"external-interactive Host roster row still shows Running");}
   assert.deepEqual(await page.locator(".aw-context-work-title, .aw-context-work-row-title, .aw-context-work-row-meta").evaluateAll(nodes=>nodes.filter(node=>node.scrollWidth>node.clientWidth).map(node=>node.textContent)),[],"Current or assigned Work is visually clipped");
-  await page.getByText(/Member messaging composer is a later capability/).waitFor();
-  assert.equal(await page.locator('textarea[aria-label="Message"]').count(),0,"Agent Workspace exposed the deferred message composer as a writable surface");
+  await page.getByText(/no Host-authored Message authority/).waitFor();
+  assert.equal(await page.locator('textarea[aria-label="Message"]').count(),0,"Member self-view borrowed Host Message authority");
   if(!liveConfig){await page.getByText(/Implemented the Team-scoped Session projection/).waitFor();await page.locator(".aw-native-facts-trail .aw-stream-fact__trigger").first().waitFor();assert.ok(await page.locator(".aw-native-facts-trail .aw-stream-fact__trigger").count()>=3,"native observations are not presented as individual expandable event rows");}
   if(!liveConfig){
     assert.equal(await page.locator(".aw-runtime-truth").count(),1,"four-axis runtime truth is missing");
@@ -196,7 +206,7 @@ try{
   assert.equal(await page.locator(".aw-current-execution").count(),0,"Agent Workspace fabricated a current-execution preview without an exact Team Session live projection");
   assert.equal(await page.locator('[data-testid="agent-workspace"]').evaluate(node=>node.textContent?.includes("Live · transient")??false),false,"legacy live member activity entered the Team Session execution slot without exact Session generation scope");
   await waitForStableWriteSurface(page);
-  assert.equal(await page.getByTestId("agent-workspace-composer").getAttribute("data-composer-kind"),"action","canonical Work/runtime controls did not remain separate from the deferred Message composer");
+  assert.equal(await page.getByTestId("agent-workspace-composer").getAttribute("data-composer-kind"),"action","canonical Work/runtime controls did not remain separate from the read-only Message boundary");
   await page.screenshot({path:join(evidenceDir,`member-session--1440x1000--${capturedSourceSha}.png`),animations:"disabled"});
   if(!liveConfig){
     const eventRow=page.locator('[data-tool-call-id="call-1"] .aw-stream-fact__trigger');
@@ -280,7 +290,7 @@ try{
   assert.equal(await profileOpener.evaluate(node=>node===document.activeElement),true,"Profile dialog restores opener focus after Escape");
   if(!liveConfig){
     await open(page,`${base}/?surface=team&team=${routeState.teamRun}&conversation=${routeState.member}&memberRun=${routeState.memberRun}&space=${routeState.space}&project=${routeState.project}`);
-    await page.getByLabel("Composer action").waitFor();
+    await page.getByLabel("Composer action").waitFor({state:"attached"});
     assert.equal(await page.locator(".aw-current-execution").count(),0,"reconnecting replayed volatile provider activity from the previous Session stream");
     failMemberRefresh=true;
     await executeFixtureAction(page);
@@ -300,13 +310,14 @@ try{
     assert.equal(await page.getByLabel("Composer action").count(),0,"pending retry restored a writable action selector before success");
     releaseMemberRefreshRetry();memberRefreshRetryGate=null;observeMemberRefreshRetry=null;
     await page.getByRole("alert").filter({hasText:"Refresh failed; writes are disabled"}).waitFor({state:"detached"});
-    await page.getByLabel("Composer action").waitFor();
+    await page.getByLabel("Composer action").waitFor({state:"attached"});
     await page.getByTestId("agent-workspace-identity").getByText("Session session-mira-current · gen 3",{exact:true}).waitFor();
   }
   const hostPage=await makePage(liveConfig?.hostToken??"fixture-host-token");
   await open(hostPage,`${base}/?surface=team&team=${routeState.teamRun}&conversation=${routeState.host}&space=${routeState.space}&project=${routeState.project}`);
   if(liveConfig&&(await hostPage.locator(".agent-authored-turn").count())>0)await hostPage.locator(".agent-authored-turn").first().waitFor();
   await waitForStableWriteSurface(hostPage);
+  assert.equal(await hostPage.locator('textarea[aria-label="Message"]').count(),0,"selected Host self-view exposed a Host-to-self composer");
   if(!liveConfig){assert.equal(await hostPage.getByText("AGENTS.md",{exact:true}).count(),0,"Host Session incorrectly showed a non-selected Member event");const hostToolEvent=hostPage.locator('[data-tool-call-id="host-call-1"] .aw-stream-fact__trigger');await hostToolEvent.click();await hostPage.getByText("Tool call in focus",{exact:true}).waitFor();}
   if(!liveConfig){
     await hostPage.getByText("Current decision",{exact:true}).waitFor();
@@ -331,6 +342,52 @@ try{
   await hostPage.getByText("Current Session",{exact:true}).waitFor();
   if(liveConfig&&(await hostPage.locator(".agent-authored-turn").count())>0)await hostPage.locator(".agent-authored-turn").first().waitFor();
   await waitForStableWriteSurface(hostPage);
+  const hostComposer=hostPage.getByTestId("agent-workspace-composer");
+  assert.equal(await hostComposer.getAttribute("data-composer-kind"),"message","exact Host did not receive the selected Member Message composer");
+  const hostMessage=hostComposer.locator('textarea[aria-label="Message"]');
+  await hostMessage.waitFor();
+  if(!liveConfig){
+    await hostComposer.getByRole("button",{name:"Open slash commands",exact:true}).click();
+    await hostPage.screenshot({path:join(evidenceDir,`host-member-composer--1440x1000--${capturedSourceSha}.png`),animations:"disabled"});
+    await hostMessage.press("Enter");
+    await hostMessage.fill("/work Restore authored");
+    await hostMessage.press("Enter");
+    await hostComposer.getByText("Restore authored conversation dominance",{exact:true}).waitFor();
+    await hostMessage.fill("Please verify the canonical composer boundary.");
+    await hostMessage.press("Shift+Enter");
+    await hostMessage.type("Keep Work as context only.");
+    await hostMessage.press("Enter");
+    await hostComposer.getByText("Message recorded. Refreshing this Agent Workspace.",{exact:true}).waitFor();
+    const sent=postedActions.at(-1);
+    assert.equal(sent.path,`/v1/agentfirm/team-runs/${team.latest_run.id}/messages/send`,"Host composer used a non-canonical Message route");
+    assert.deepEqual(sent.body.recipient_ids,["agent-mira"],"Host composer did not freeze the selected AgentMember recipient");
+    assert.equal(sent.body.work_id,baseWork.work_id,"/work did not bind the exact selected context");
+    assert.equal(sent.body.body,"Please verify the canonical composer boundary.\nKeep Work as context only.","Host composer changed authored Message text or multiline keyboard input");
+    assert.equal(sent.body.response_required,false,"ordinary composer fabricated response-required intent");
+    assert.match(sent.headers["idempotency-key"],/^[0-9a-f-]{36}$/,"Host composer omitted a stable idempotency key");
+    await hostMessage.fill("Keep this draft after the typed rejection.");
+    failNextMessagePost=true;
+    await hostComposer.getByRole("button",{name:"Send message",exact:true}).click();
+    await hostComposer.getByText(/VERSION_CONFLICT: Authoritative Team revision changed/).waitFor();
+    assert.equal(await hostMessage.inputValue(),"Keep this draft after the typed rejection.","typed rejection cleared the browser-local draft");
+    const failedAttempt=postedActions.at(-1);
+    await hostPage.screenshot({path:join(evidenceDir,`host-member-composer-error--1440x1000--${capturedSourceSha}.png`),animations:"disabled"});
+    await hostPage.getByRole("button",{name:/Noah Park/}).first().click();
+    const noahComposer=hostPage.getByTestId("agent-workspace-composer");
+    await noahComposer.getByText(/Host →/).waitFor();
+    assert.equal(await noahComposer.locator('textarea[aria-label="Message"]').inputValue(),"","selected Member inherited another Member's draft");
+    await noahComposer.locator('textarea[aria-label="Message"]').fill("Noah-specific draft.");
+    await hostPage.getByRole("button",{name:/Mira Chen/}).first().click();
+    await hostPage.getByTestId("agent-workspace-identity").getByText("Mira Chen",{exact:true}).waitFor();
+    const restoredComposer=hostPage.getByTestId("agent-workspace-composer");
+    assert.equal(await restoredComposer.locator('textarea[aria-label="Message"]').inputValue(),"Keep this draft after the typed rejection.","returning to a Member did not restore its own draft");
+    await restoredComposer.getByRole("button",{name:"Send message",exact:true}).click();
+    await restoredComposer.getByText("Message recorded. Refreshing this Agent Workspace.",{exact:true}).waitFor();
+    const retry=postedActions.at(-1);
+    assert.equal(retry.headers["idempotency-key"],failedAttempt.headers["idempotency-key"],"typed retry did not preserve the original Message idempotency key");
+    assert.equal(retry.body.body,failedAttempt.body.body,"typed retry changed the retained authored draft");
+    assert.equal(await restoredComposer.locator('textarea[aria-label="Message"]').inputValue(),"","successful retry did not clear the browser-local draft");
+  }
   const hostMemberEvents=hostPage.locator(".aw-native-facts-trail .aw-stream-fact__trigger");
   assert.ok(await hostMemberEvents.count()>=3,"Host-selected Team Member native activity is missing");
   const hostMemberTool=hostPage.locator('[data-tool-call-id="call-1"] .aw-stream-fact__trigger');await hostMemberTool.click();await hostPage.getByText(/Canonical operating rules loaded\./).first().waitFor();
@@ -384,6 +441,8 @@ try{
 
     const localOperatorPage=await makePage(null);
     await open(localOperatorPage,`${base}/?surface=team&team=${routeState.teamRun}&conversation=${routeState.member}&memberRun=${routeState.memberRun}&space=${routeState.space}&project=${routeState.project}`);
+    await localOperatorPage.getByText(/Local Operator access is read-only/).waitFor();
+    assert.equal(await localOperatorPage.locator('textarea[aria-label="Message"]').count(),0,"local Operator borrowed Host Message authority");
     await localOperatorPage.getByText("Native records without comparable provider timestamps remain in provider source order; their position relative to Harness Messages is not a recorded chronology.",{exact:true}).waitFor();
     assert.deepEqual((await localOperatorPage.locator("[data-session-row-kind]").evaluateAll(nodes=>nodes.map(node=>node.getAttribute("data-session-row-kind")).filter(kind=>kind==="provider"))).slice(0,4),["provider","provider","provider","provider"],"the control boundary or per-read observed_at disturbed provider source order");
     await localOperatorPage.getByRole("button",{name:"Load earlier native Session events",exact:true}).click();
@@ -454,10 +513,13 @@ try{
   if(!liveConfig)assert.equal(expectedFailureErrors.length,2,`fixture should exercise exactly two expected 503 projection failures: ${expectedFailureErrors.join(" | ")}`);
   const expectedFetchErrors=consoleErrors.filter(message=>message.includes("net::ERR_FAILED"));
   if(!liveConfig)assert.equal(expectedFetchErrors.length,1,`fixture should exercise exactly one initial Failed-to-fetch recovery: ${expectedFetchErrors.join(" | ")}`);
-  const unexpectedConsoleErrors=consoleErrors.filter(message=>!message.includes("503 (Service Unavailable)")&&!message.includes("net::ERR_FAILED")&&!message.includes("404"));
+  const expectedConflictErrors=consoleErrors.filter(message=>message.includes("409 (Conflict)"));
+  if(!liveConfig)assert.equal(expectedConflictErrors.length,1,`fixture should exercise exactly one typed Message rejection: ${expectedConflictErrors.join(" | ")}`);
+  const browserTeardownErrors=["net::ERR_CONNECTION_CLOSED","net::ERR_CONNECTION_RESET"];
+  const unexpectedConsoleErrors=consoleErrors.filter(message=>!message.includes("503 (Service Unavailable)")&&!message.includes("409 (Conflict)")&&!message.includes("net::ERR_FAILED")&&!message.includes("404")&&!browserTeardownErrors.some(error=>message.includes(error)));
   const unexpectedHttpFailures=httpFailures.filter(failure=>!failure.startsWith("404 https://fonts.gstatic.com/"));
   assert.deepEqual(unexpectedConsoleErrors,[],`unexpected console errors: ${consoleErrors.join(" | ")}; HTTP failures: ${httpFailures.join(" | ")}; unknown fixture paths: ${unknownFixturePaths.join(", ")}`);
-  assert.deepEqual(unexpectedHttpFailures.filter(failure=>!failure.startsWith("503 ")),[],`unexpected HTTP failures: ${httpFailures.join(" | ")}`);
+  assert.deepEqual(unexpectedHttpFailures.filter(failure=>!failure.startsWith("503 ")&&!failure.startsWith("409 ")),[],`unexpected HTTP failures: ${httpFailures.join(" | ")}`);
 
   for(const viewport of [{width:900,height:1180},{width:390,height:844},{width:320,height:844}]){
     await page.setViewportSize(viewport);
@@ -473,12 +535,27 @@ try{
       assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=document.documentElement.clientWidth),true,"390px context sheet overflow");
       await page.getByRole("button",{name:"Close Agent context"}).click();
     }
+    if(!liveConfig&&viewport.width<=390){
+      await hostPage.setViewportSize(viewport);
+      await open(hostPage,`${base}/?surface=team&team=${routeState.teamRun}&conversation=${routeState.member}&memberRun=${routeState.memberRun}&space=${routeState.space}&project=${routeState.project}`);
+      const compactComposer=hostPage.getByTestId("agent-workspace-composer");
+      await compactComposer.locator('textarea[aria-label="Message"]').waitFor();
+      assert.equal(await hostPage.evaluate(()=>document.documentElement.scrollWidth<=document.documentElement.clientWidth),true,`${viewport.width}px Host Message composer overflow`);
+      if(viewport.width===390){
+        await compactComposer.getByRole("button",{name:"Open slash commands",exact:true}).click();
+        await compactComposer.getByRole("option",{name:/\/work/}).waitFor();
+        assert.equal(await hostPage.evaluate(()=>document.documentElement.scrollWidth<=document.documentElement.clientWidth),true,"390px slash palette overflow");
+        await hostPage.screenshot({path:join(evidenceDir,`host-member-composer--390x844--${capturedSourceSha}.png`),animations:"disabled"});
+        await compactComposer.locator('textarea[aria-label="Message"]').press("Escape");
+      }
+    }
   }
   const captures=[];
   for(const name of ["member-session",...(!liveConfig?["member-event-detail"]:[]),"member-messages","member-work","member-configuration","host-session","host-member-team-session"]){
     const file=`${name}--1440x1000--${capturedSourceSha}.png`;
     captures.push({name,file,viewport:{width:1440,height:1000},sha256:createHash("sha256").update(await readFile(join(evidenceDir,file))).digest("hex")});
   }
+  if(!liveConfig){const file=`host-member-composer--390x844--${capturedSourceSha}.png`;captures.push({name:"host-member-composer-compact",file,viewport:{width:390,height:844},sha256:createHash("sha256").update(await readFile(join(evidenceDir,file))).digest("hex")});}
   const liveMeta=liveConfig?await fetch(`${liveConfig.api}/v1/meta?space=${encodeURIComponent(liveConfig.space)}&project=${encodeURIComponent(liveConfig.project)}`).then(async response=>{assert.equal(response.ok,true,`live meta ${response.status}`);return response.json();}):null;
   if(liveMeta){
     assert.equal(liveMeta.build_sha,capturedSourceSha,"live server build SHA differs from frozen frontend SHA");

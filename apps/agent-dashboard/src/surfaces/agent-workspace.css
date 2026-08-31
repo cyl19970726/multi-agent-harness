@@ -1033,11 +1033,12 @@ textarea):focus{
     margin-top: 0.08rem;
     color: var(--aw-coral-ink);
   }.agent-workspace .aw-command-composer{
+    position: relative;
     background: color-mix(in srgb, var(--aw-canvas) 97%, white);
   }.agent-workspace .aw-command-route{
     display: grid;
     min-height: 2.4rem;
-    grid-template-columns: minmax(8rem, 11rem) minmax(10rem, 1fr) auto minmax(7.5rem, 9.5rem);
+    grid-template-columns: minmax(8rem, 13rem) minmax(10rem, 1fr);
     gap: 0.75rem;
     align-items: center;
     padding-inline: 1rem;
@@ -1138,6 +1139,7 @@ textarea):focus{
     height: 0.75rem;
     accent-color: var(--aw-coral);
   }.agent-workspace .aw-command-input{
+    position: relative;
     display: grid;
     min-height: 4rem;
     grid-template-rows: minmax(1.8rem, auto) auto;
@@ -1268,6 +1270,82 @@ select){
     border-color: var(--aw-line-soft);
   }
 
+  .agent-workspace .aw-slash-trigger{
+    display: inline-flex;
+    min-height: 1.75rem;
+    align-items: center;
+    gap: 0.3rem;
+    border: 0;
+    background: transparent;
+    color: var(--aw-muted);
+    font-size: 0.62rem;
+    cursor: pointer;
+  }.agent-workspace .aw-slash-trigger svg{
+    width: 0.78rem;
+    height: 0.78rem;
+  }.agent-workspace .aw-slash-menu{
+    position: absolute;
+    z-index: 30;
+    right: 0.75rem;
+    bottom: calc(100% - 0.1rem);
+    left: 0.75rem;
+    max-height: min(18rem, 50vh);
+    overflow-y: auto;
+    border: 1px solid var(--aw-line);
+    border-radius: 0.7rem;
+    background: color-mix(in srgb, var(--aw-canvas) 98%, white);
+    box-shadow: 0 14px 36px rgb(53 41 32 / 0.16);
+  }.agent-workspace .aw-slash-menu > button{
+    display: grid;
+    width: 100%;
+    min-height: 3rem;
+    grid-template-columns: 1.5rem minmax(0, 1fr);
+    gap: 0.55rem;
+    align-items: center;
+    padding: 0.55rem 0.75rem;
+    border: 0;
+    border-bottom: 1px solid var(--aw-line-soft);
+    background: transparent;
+    color: var(--aw-ink);
+    text-align: left;
+    cursor: pointer;
+  }.agent-workspace .aw-slash-menu > button:last-of-type{
+    border-bottom: 0;
+  }.agent-workspace .aw-slash-menu > button:is(:hover,[data-active="true"]){
+    background: color-mix(in srgb, var(--aw-coral) 10%, var(--aw-canvas));
+  }.agent-workspace .aw-slash-menu > button > svg{
+    width: 0.9rem;
+    height: 0.9rem;
+    color: var(--aw-coral-ink);
+  }.agent-workspace .aw-slash-menu > button span{
+    display: grid;
+    min-width: 0;
+    gap: 0.08rem;
+  }.agent-workspace .aw-slash-menu strong,
+.agent-workspace .aw-slash-menu small{
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }.agent-workspace .aw-slash-menu strong{
+    font-size: 0.72rem;
+    font-weight: 650;
+  }.agent-workspace .aw-slash-menu small,
+.agent-workspace .aw-slash-menu > p{
+    color: var(--aw-muted);
+    font-size: 0.61rem;
+  }.agent-workspace .aw-slash-menu > p{
+    padding: 0.8rem;
+  }.agent-workspace .aw-secondary-actions{
+    border-top: 1px solid var(--aw-line-soft);
+  }.agent-workspace .aw-secondary-actions > summary{
+    padding: 0.55rem 1rem;
+    color: var(--aw-muted);
+    font-size: 0.62rem;
+    cursor: pointer;
+  }.agent-workspace .aw-secondary-actions__body{
+    padding: 0 1rem 0.75rem;
+  }
+
   @media (min-width: 1024px) {.agent-workspace .agent-workspace-layout[data-host="true"]{
       grid-template-columns: 17.5rem minmax(0, 1fr) 20rem;
     }.agent-workspace .agent-team-composer > div:nth-child(2){
@@ -1276,8 +1354,8 @@ select){
   }
 
   @media (max-width: 1100px) {.agent-workspace .aw-command-route{
-      grid-template-columns: minmax(7.5rem, 9.5rem) minmax(5rem, 1fr) minmax(7rem, 9rem);
-    }.agent-workspace .aw-command-response{ grid-column: 2; grid-row: 1; }.agent-workspace .aw-command-action{ grid-column: 3; grid-row: 1; }.agent-workspace .aw-command-work{ grid-column: 1 / span 3; grid-row: 2; }
+      grid-template-columns: minmax(7.5rem, 10rem) minmax(0, 1fr);
+    }
   }.agent-workspace .aw-empty-state{
     display: flex;
     min-height: 9rem;
@@ -1479,6 +1557,15 @@ select){
       gap: 0.75rem;
     }.agent-workspace .agent-work-row > :last-child{
       display: none;
+    }.agent-workspace .aw-command-route{
+      grid-template-columns: minmax(0, 1fr);
+      gap: 0.35rem;
+      padding-block: 0.4rem;
+    }.agent-workspace .aw-command-submit-hint{
+      display: none;
+    }.agent-workspace .aw-slash-menu{
+      right: 0.35rem;
+      left: 0.35rem;
     }
   }
 
