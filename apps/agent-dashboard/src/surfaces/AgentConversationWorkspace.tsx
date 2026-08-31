@@ -21,6 +21,7 @@ import {
   WorkspaceSection,
   WorkspaceState,
 } from "@/components/workbench/agent/AgentWorkspacePrimitives";
+import { AgentMessageCommandComposer } from "@/components/workbench/agent/AgentMessageCommandComposer";
 import { OperationalFactRow } from "@/components/workbench/agent/AgentStreamPrimitives";
 import { ToolEpisodeDetails, ToolEpisodeRow } from "@/components/workbench/agent/ProviderEventTimeline";
 import type { SelectionState } from "../app/selection";
@@ -507,13 +508,19 @@ function WorkSelectionContext({data,work}:{data:AgentWorkspaceData;work:WorkSumm
 }
 
 function AgentComposer({data,actions,actionsCurrent,selectedRunId,onAction,onCompleted}:{data:AgentWorkspaceData;actions:AllowedAction[];actionsCurrent:boolean;selectedRunId:string|null;onAction:RoleActionExecutor;onCompleted:()=>void}){
-  const usable=actions.filter(action=>action.kind!=="send_message"&&action.kind!=="reply_message");
+  const messageAction=actions.find(action=>action.kind==="send_message"&&action.target_ref.kind==="team_run");
+  const canCompose=data.team.viewer_role==="host"&&!data.selected_agent.is_host&&Boolean(messageAction);
+  const usable=actions.filter(action=>!["send_message","reply_message","request_decision"].includes(action.kind));
   const [selectedKey,setSelectedKey]=useState(usable[0]?keyForAction(usable[0]):"");
   const selected=usable.find(action=>keyForAction(action)===selectedKey)??usable[0];
   useEffect(()=>{if(selectedKey&&!usable.some(action=>keyForAction(action)===selectedKey))setSelectedKey(usable[0]?keyForAction(usable[0]):"");},[selectedKey,usable]);
   if(!actionsCurrent)return <div className="agent-workspace-composer shrink-0 border-t border-border bg-background/95 px-4 py-3 text-xs text-muted-foreground" role="status">Authoritative Agent Workspace refresh is pending or failed. Action writes are unavailable.</div>;
   const actionControl=<label className="flex min-w-0 items-center gap-2 text-[9px] font-semibold uppercase tracking-wider text-muted-foreground"><SlidersHorizontal className="size-3 shrink-0 text-primary"/><span className="sr-only">Action</span><span className="aw-command-action__select"><select aria-label="Composer action" value={selected?keyForAction(selected):""} onChange={event=>setSelectedKey(event.target.value)} title={selected?.disabled_reason??actionLabel(selected?.kind??"")}><option value="" disabled>No Work or runtime action authorized</option>{usable.map(action=><option key={keyForAction(action)} value={keyForAction(action)} disabled={Boolean(action.disabled_reason)}>{actionLabel(action.kind)}</option>)}</select><ChevronDown aria-hidden="true"/></span></label>;
-  return <div data-testid="agent-workspace-composer" data-composer-kind={selected?"action":"deferred"} className="agent-workspace-composer shrink-0 border-t border-border bg-background/95"><div className="mx-auto max-w-4xl px-4 py-3"><p className="aw-composer-boundary"><MessageSquare aria-hidden="true"/>Member messaging composer is a later capability. This workspace currently reads canonical Messages without inventing a writable conversation model.</p>{selected?<><div className="mb-2 mt-2">{actionControl}</div><RoleActionPanel compact actions={[selected]} onAction={onAction} context={{teamId:data.team.team_id,teamRunId:data.team.latest_run_id??undefined}} actionsCurrent={actionsCurrent} onCompleted={onCompleted}/>{selected.target_ref.kind==="member_run"&&selectedRunId&&selected.target_ref.id!==selectedRunId&&<p className="mt-2 text-[10px] text-status-warn">This action targets a different MemberRun and is not executed from this selected Agent context.</p>}</>:<p className="mt-2 text-xs text-muted-foreground">No canonical Work or runtime action is authorized for this identity and state.</p>}</div></div>;
+  return <div data-testid="agent-workspace-composer" data-composer-kind={canCompose?"message":selected?"action":"read_only"} className="agent-workspace-composer shrink-0 border-t border-border bg-background/95"><div className="mx-auto max-w-4xl">
+    {canCompose&&messageAction?<AgentMessageCommandComposer key={`${data.team.latest_run_id??data.team.team_id}:${data.selected_agent.agent_member_ref.id}`} action={messageAction} recipient={{id:data.selected_agent.agent_member_ref.id,label:data.selected_agent.display_name}} works={data.works} teamId={data.team.team_id} teamRunId={data.team.latest_run_id??undefined} actionsCurrent={actionsCurrent} onAction={onAction} onCompleted={onCompleted}/>:<p className="aw-composer-boundary px-4 py-3"><MessageSquare aria-hidden="true"/>{data.selected_agent.is_host?"Direct Host conversation stays in its provider-native Session.":data.team.viewer_role==="operator"?"Local Operator access is read-only; it never borrows the Team Host's Message authority.":"This view has no Host-authored Message authority for the selected Agent."}</p>}
+    {selected&&<details className="aw-secondary-actions"><summary>{actionLabel(selected.kind)} and other authorized actions</summary><div className="aw-secondary-actions__body"><div className="mb-2">{actionControl}</div><RoleActionPanel compact actions={[selected]} onAction={onAction} context={{teamId:data.team.team_id,teamRunId:data.team.latest_run_id??undefined}} actionsCurrent={actionsCurrent} onCompleted={onCompleted}/>{selected.target_ref.kind==="member_run"&&selectedRunId&&selected.target_ref.id!==selectedRunId&&<p className="mt-2 text-[10px] text-status-warn">This action targets a different MemberRun and is not executed from this selected Agent context.</p>}</div></details>}
+    {!canCompose&&!selected&&<p className="px-4 pb-3 text-xs text-muted-foreground">No canonical Work or runtime action is authorized for this identity and state.</p>}
+  </div></div>;
 }
 
 function ProfileDialog({data,onClose,closeRef,openerRef}:{data:AgentWorkspaceData;onClose:()=>void;closeRef:React.RefObject<HTMLButtonElement>;openerRef:React.RefObject<HTMLButtonElement>}){
