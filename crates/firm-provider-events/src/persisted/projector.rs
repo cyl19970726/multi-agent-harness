@@ -413,7 +413,14 @@ fn project_pi(raw: &Value, tools: &mut BTreeMap<String, String>) -> Vec<Fragment
             }
             fragments
         }
-        "message" if string(raw, "/message/role") == Some("tool") => pi_tool_results(raw, tools),
+        "message"
+            if matches!(
+                string(raw, "/message/role"),
+                Some("tool" | "toolResult" | "tool_result" | "tool-result")
+            ) =>
+        {
+            pi_tool_results(raw, tools)
+        }
         // User and system rows remain available in native_event but cannot be
         // relabeled as provider-authored assistant output.
         "message" => Vec::new(),
@@ -471,27 +478,35 @@ fn pi_content(raw: &Value, tools: &mut BTreeMap<String, String>) -> Vec<Fragment
 }
 
 fn pi_tool_results(raw: &Value, tools: &BTreeMap<String, String>) -> Vec<FragmentDraft> {
+    let role_is_result = matches!(
+        string(raw, "/message/role"),
+        Some("toolResult" | "tool_result" | "tool-result")
+    );
     raw.pointer("/message/content")
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
         .enumerate()
-        .filter(|(_, part)| {
-            matches!(
+        .filter_map(|(index, part)| {
+            let part_is_result = matches!(
                 string(part, "/type"),
                 Some("toolResult" | "tool_result" | "tool-result")
-            )
-        })
-        .filter_map(|(index, part)| {
+            );
+            if !(part_is_result || role_is_result && string(part, "/type") == Some("text")) {
+                return None;
+            }
             let content_pointer = format!("/message/content/{index}/content");
+            let text_pointer = format!("/message/content/{index}/text");
             let result_pointer = format!("/message/content/{index}/result");
-            tool_terminal(
-                tools,
-                first_text(part, &["/toolCallId", "/tool_use_id", "/id"]),
-                part.get("isError").and_then(Value::as_bool) == Some(true)
-                    || part.get("is_error").and_then(Value::as_bool) == Some(true),
-                Some(content_reference(raw, &[&content_pointer, &result_pointer])),
-            )
+            let failed = part.get("isError").and_then(Value::as_bool) == Some(true)
+                || part.get("is_error").and_then(Value::as_bool) == Some(true);
+            let result = Some(content_reference(
+                raw,
+                &[&content_pointer, &text_pointer, &result_pointer],
+            ));
+            let call_id = first_text(part, &["/toolCallId", "/tool_use_id", "/id"]);
+            tool_terminal(tools, call_id, failed, result.clone())
+                .or_else(|| role_is_result.then(|| unpaired_tool_terminal(failed, result)))
         })
         .collect()
 }
@@ -521,9 +536,44 @@ fn project_deepseek_harness(
         )
         .into_iter()
         .collect(),
-        "assistant/chunk" if string(raw, "/data/chunk/type") == Some("usage") => {
-            vec![usage(raw.pointer("/data/chunk/usage"))]
-        }
+        "assistant/chunk" => match string(raw, "/data/chunk/type").unwrap_or_default() {
+            "usage" => vec![usage(raw.pointer("/data/chunk/usage"))],
+            "text-delta" => vec![partial_text_fragment(
+                SessionSemanticKind::AssistantResponse,
+                string(raw, "/data/chunk/text"),
+                |text| PersistedFragmentPayload::AssistantResponse { text },
+            )],
+            "reasoning-delta" => vec![partial_text_fragment(
+                SessionSemanticKind::Reasoning,
+                string(raw, "/data/chunk/text"),
+                |text| PersistedFragmentPayload::Reasoning { text },
+            )],
+            "tool-call-delta" => partial_tool_call_chunks(
+                raw,
+                tools,
+                string(raw, "/data/chunk/id"),
+                string(raw, "/data/chunk/name"),
+                "/data/chunk/argumentsDelta",
+            ),
+            _ => Vec::new(),
+        },
+        "text-chunks" => vec![partial_text_fragment(
+            SessionSemanticKind::AssistantResponse,
+            joined_text(raw, "/data/texts").as_deref(),
+            |text| PersistedFragmentPayload::AssistantResponse { text },
+        )],
+        "reasoning-chunks" => vec![partial_text_fragment(
+            SessionSemanticKind::Reasoning,
+            joined_text(raw, "/data/texts").as_deref(),
+            |text| PersistedFragmentPayload::Reasoning { text },
+        )],
+        "tool-call-chunks" => partial_tool_call_chunks(
+            raw,
+            tools,
+            string(raw, "/data/id"),
+            string(raw, "/data/name"),
+            "/data/args",
+        ),
         "turn/end" => vec![turn(
             match string(raw, "/data/reason/kind").unwrap_or_default() {
                 "completed" => "completed",
@@ -533,6 +583,56 @@ fn project_deepseek_harness(
         )],
         _ => Vec::new(),
     }
+}
+
+fn joined_text(raw: &Value, pointer: &str) -> Option<String> {
+    raw.pointer(pointer)?
+        .as_array()?
+        .iter()
+        .map(Value::as_str)
+        .collect::<Option<Vec<_>>>()
+        .map(|parts| parts.concat())
+}
+
+fn partial_text_fragment(
+    semantic_kind: SessionSemanticKind,
+    text: Option<&str>,
+    payload: impl FnOnce(Option<String>) -> PersistedFragmentPayload,
+) -> FragmentDraft {
+    let mut fragment = text_fragment(semantic_kind, text, payload);
+    fragment.completeness = PersistedCompleteness::Partial;
+    fragment
+}
+
+fn partial_tool_call_chunks(
+    raw: &Value,
+    tools: &mut BTreeMap<String, String>,
+    call_id: Option<&str>,
+    name: Option<&str>,
+    arguments_pointer: &str,
+) -> Vec<FragmentDraft> {
+    let Some(call_id) = nonempty(call_id) else {
+        return Vec::new();
+    };
+    if let Some(name) = nonempty(name) {
+        tools.insert(call_id.to_owned(), name.to_owned());
+    }
+    let resolved_name = nonempty(name).or_else(|| tools.get(call_id).map(String::as_str));
+    let mut fragment = tool(
+        SessionSemanticKind::ToolCallStarted,
+        SessionLifecyclePhase::Started,
+        ToolDraft {
+            name: resolved_name,
+            call_id,
+            parent_call_id: None,
+            arguments: Some(content_reference(raw, &[arguments_pointer])),
+            result: None,
+            error: None,
+            primary_target: None,
+        },
+    );
+    fragment.completeness = PersistedCompleteness::Partial;
+    vec![fragment]
 }
 
 fn response_parts(content: &Value, accepted_types: &[&str]) -> Vec<FragmentDraft> {
@@ -664,6 +764,48 @@ fn tool_terminal(
             primary_target: None,
         },
     ))
+}
+
+fn unpaired_tool_terminal(
+    failed: bool,
+    content: Option<PersistedContentReference>,
+) -> FragmentDraft {
+    let (result, error) = if failed {
+        (None, content)
+    } else {
+        (content, None)
+    };
+    FragmentDraft {
+        semantic_kind: if failed {
+            SessionSemanticKind::ToolCallFailed
+        } else {
+            SessionSemanticKind::ToolCallCompleted
+        },
+        lifecycle_phase: SessionLifecyclePhase::Terminal,
+        completeness: PersistedCompleteness::Complete,
+        content_availability: ContentAvailability::Available,
+        content_unavailable_reason: None,
+        payload: PersistedFragmentPayload::Tool {
+            tool_name: None,
+            tool_name_unavailable_reason: Some(ContentUnavailableReason::RelatedRecordMissing),
+            call_id: None,
+            parent_call_id: None,
+            operation_category: Some(ToolOperationCategory::Other),
+            primary_target: None,
+            arguments: None,
+            result,
+            error,
+            outcome: Some(if failed {
+                ToolCallOutcome::Failed
+            } else {
+                ToolCallOutcome::Completed
+            }),
+            display_detail: Some(
+                "Provider omitted the exact tool-call discriminator; this result remains independent."
+                    .to_owned(),
+            ),
+        },
+    }
 }
 
 fn tool(

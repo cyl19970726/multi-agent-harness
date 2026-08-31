@@ -540,9 +540,9 @@ try {
   check(await page.getByRole("button", {name:/collaboration|delegation/i}).count()===0,
     "real Host browser exposes unavailable collaboration state without an executable action");
   await page.getByRole("button", {name:"assign work",exact:true}).click();
-  await page.getByLabel("MemberRun ID").fill(liveMemberRunId);
+  await page.getByLabel("TeamMembership ID").fill(`membership:${liveTeam.id}:worker`);
   await page.getByRole("button", {name:"Execute action"}).click();
-  await page.getByRole("button", {name:"rebind work",exact:true}).waitFor();
+  await page.getByRole("button", {name:"release work",exact:true}).waitFor();
   check(true, "Host browser executes authenticated assign_work and refetches HostConsole");
 
   const memberContext = await browser.newContext({viewport:{width:1200,height:900},reducedMotion:"reduce"});
@@ -555,17 +555,12 @@ try {
   await waitForText(memberPage, "Real browser RoleAction loop");
   const composerActionLabels = await memberPage.getByLabel("Composer action").locator("option").allTextContents();
   check(
-    composerActionLabels.includes("start work"),
-    "Agent Workspace composer preserves canonical RoleAction token labels",
+    !composerActionLabels.includes("start work")
+      && (await memberPage.getByLabel("Composer action").getAttribute("title"))?.includes("current NodeDaemon"),
+    "Agent Workspace does not invent runtime authority before exact NodeDaemon admission",
   );
-  await memberPage.getByLabel("Composer action").selectOption({label:"start work"});
   check(await memberPage.getByRole("button", {name:/collaboration|delegation/i}).count()===0,
     "real Member browser exposes unavailable collaboration state without an executable action");
-  await memberPage.getByRole("button", {name:"start work"}).click();
-  await memberPage.getByRole("button", {name:"Execute action"}).click();
-  await memberPage.getByLabel("Composer action").selectOption({label:"block work"});
-  await memberPage.getByRole("button", {name:"block work",exact:true}).waitFor();
-  check(true, "Member browser executes authenticated start_work and refetches the unified Agent Workspace");
   await memberContext.close();
 
   const operatorContext = await browser.newContext({viewport:{width:1200,height:900},reducedMotion:"reduce"});
@@ -616,8 +611,8 @@ try {
 
   await page.goto(`${appBase}/?${new URLSearchParams({...roleBaseQuery,surface:"work"})}`, {waitUntil:"domcontentloaded"});
   await waitForText(page, "work-role-live");
-  await waitForText(page, "active");
-  check(true, "five-view loop converges the Member mutation into real Global Work truth");
+  await waitForText(page, "open");
+  check(true, "five-view loop preserves stable Work responsibility without fabricating runtime execution");
   // `page` is already at {space: spaceId, company: "company-a", surface:
   // "work"} from the five-view loop above (Company no longer differentiates
   // any backend response, so no further scope navigation is needed here).

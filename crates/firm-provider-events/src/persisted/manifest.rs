@@ -235,6 +235,11 @@ pub fn persisted_adapter_manifest(provider: ProviderKind) -> PersistedAdapterMan
                     true,
                 ),
                 capability(
+                    SessionSemanticKind::Reasoning,
+                    &[SessionLifecyclePhase::Progress],
+                    true,
+                ),
+                capability(
                     SessionSemanticKind::ToolCallStarted,
                     &[SessionLifecyclePhase::Started],
                     false,

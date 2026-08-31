@@ -313,6 +313,86 @@ fn missing_related_tool_request_is_typed_and_never_guessed_by_adjacency() {
 }
 
 #[test]
+fn pi_role_tool_result_without_call_id_stays_structured_and_independent() {
+    let records = project(
+        ProviderKind::Pi,
+        concat!(
+            "{\"type\":\"message\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"toolCall\",\"id\":\"call-1\",\"name\":\"bash\",\"arguments\":{\"command\":\"exit 7\"}}]}}\n",
+            "{\"type\":\"message\",\"message\":{\"role\":\"toolResult\",\"content\":[{\"type\":\"text\",\"text\":\"expected-tool-error\\nCommand exited with code 7\"}]}}\n",
+        ),
+    );
+    let fragment = &records[1].fragments[0];
+    assert!(matches!(
+        &fragment.payload,
+        PersistedFragmentPayload::Tool {
+            call_id: None,
+            tool_name: None,
+            tool_name_unavailable_reason: Some(ContentUnavailableReason::RelatedRecordMissing),
+            result: Some(result),
+            outcome: Some(ToolCallOutcome::Completed),
+            display_detail: Some(detail),
+            ..
+        } if result.json_pointer.as_deref() == Some("/message/content/0/text")
+            && detail.contains("remains independent")
+    ));
+    assert_eq!(
+        records[1]
+            .native_event
+            .pointer("/message/content/0/text")
+            .and_then(serde_json::Value::as_str),
+        Some("expected-tool-error\nCommand exited with code 7")
+    );
+}
+
+#[test]
+fn deepseek_reviewed_chunk_rows_project_without_losing_raw_boundaries() {
+    let records = project(
+        ProviderKind::DeepseekHarness,
+        concat!(
+            "{\"type\":\"reasoning-chunks\",\"seq0\":1,\"time0\":10,\"data\":{\"turn\":1,\"step\":1,\"index\":0,\"dt\":[1],\"texts\":[\"why \",\"now\"]}}\n",
+            "{\"type\":\"text-chunks\",\"seq0\":3,\"time0\":12,\"data\":{\"turn\":1,\"step\":1,\"index\":1,\"dt\":[1],\"texts\":[\"done\",\".\"]}}\n",
+            "{\"type\":\"tool-call-chunks\",\"seq0\":5,\"time0\":14,\"data\":{\"turn\":1,\"step\":1,\"index\":2,\"dt\":[1],\"id\":\"call-2\",\"name\":\"bash\",\"args\":[\"{\\\"command\\\":\\\"rg\\\"}\",\"\"]}}\n",
+            "{\"type\":\"tool-call-chunks\",\"seq0\":7,\"time0\":16,\"data\":{\"turn\":1,\"step\":1,\"index\":2,\"dt\":[1],\"id\":\"call-2\",\"args\":[\" \",\"--files\"]}}\n",
+        ),
+    );
+    assert_eq!(records[0].native_event["data"]["texts"][0], "why ");
+    assert!(matches!(
+        &records[0].fragments[0].payload,
+        PersistedFragmentPayload::Reasoning { text: Some(text) } if text == "why now"
+    ));
+    assert_eq!(
+        records[0].fragments[0].completeness,
+        firm_provider_events::PersistedCompleteness::Partial
+    );
+    assert!(matches!(
+        &records[1].fragments[0].payload,
+        PersistedFragmentPayload::AssistantResponse { text: Some(text) } if text == "done."
+    ));
+    assert!(
+        matches!(
+            &records[2].fragments[0].payload,
+            PersistedFragmentPayload::Tool {
+                call_id: Some(call_id),
+                tool_name: Some(name),
+                arguments: Some(arguments),
+                ..
+            } if call_id == "call-2" && name == "bash" && arguments.json_pointer.as_deref() == Some("/data/args")
+        ),
+        "tool chunk projection: {:?}",
+        records[2].fragments[0].payload
+    );
+    assert!(matches!(
+        &records[3].fragments[0].payload,
+        PersistedFragmentPayload::Tool {
+            call_id: Some(call_id),
+            tool_name: Some(name),
+            arguments: Some(arguments),
+            ..
+        } if call_id == "call-2" && name == "bash" && arguments.json_pointer.as_deref() == Some("/data/args")
+    ));
+}
+
+#[test]
 fn unclassified_native_keeps_type_subtype_and_typed_reason() {
     let records = project(
         ProviderKind::Claude,
@@ -533,11 +613,11 @@ fn managed_pi_manifest_and_projection_never_claim_reasoning_or_rpc_updates() {
 }
 
 #[test]
-fn deepseek_official_reader_is_bounded_snapshot_diff_and_does_not_claim_reasoning() {
+fn deepseek_official_reader_is_bounded_snapshot_diff_and_claims_reviewed_reasoning() {
     let manifest = persisted_adapter_manifest(ProviderKind::DeepseekHarness);
     assert_eq!(manifest.tail_mode, PersistedTailMode::BoundedSnapshotDiff);
     assert!(!manifest.pagination);
-    assert!(!manifest
+    assert!(manifest
         .semantic_capabilities
         .iter()
         .any(|capability| capability.semantic_kind == SessionSemanticKind::Reasoning));

@@ -1,3 +1,4 @@
+{"type":"reasoning-chunks","seq0":0,"time0":0,"data":{"turn":1,"step":1,"index":0,"dt":[1],"texts":["reviewed ","reasoning"]}}
 {"type":"assistant/message","seq":1,"time":1,"data":{"turn":1,"step":1,"message":{"role":"assistant","content":[{"type":"reasoning","text":"not projected"},{"type":"text","text":"done"},{"type":"text","text":" together"}]}}}
 {"type":"tool/call","seq":2,"time":2,"data":{"turn":1,"step":1,"callId":"dsh-call","name":"bash","arguments":{"command":"rg -n NodeDaemonLease crates/"}}}
 {"type":"tool/result","seq":3,"time":3,"data":{"turn":1,"message":{"source":{"callId":"dsh-call"}},"result":"provider-owned"}}

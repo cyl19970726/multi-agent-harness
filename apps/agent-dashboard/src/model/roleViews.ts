@@ -192,8 +192,24 @@ export interface WorkSummary {
   module_refs: string[];
   gate_summary: { required: number; passed: number; failed: number; pending: number; waived: number; stale: number };
   latest_report_ref: string | null; latest_finding_refs: string[]; latest_failure_ref: string | null;
-  delivery_summary: Record<string, number | string>; runtime_summary: Record<string, unknown>;
-  workspace_summary: Record<string, unknown>; delegation_summary: Record<string, unknown>; updated_at: string;
+  delivery_summary: Record<string, number | string>; runtime_summary: WorkRuntimeSummary;
+  workspace_summary: WorkWorkspaceSummary; delegation_summary: Record<string, unknown>; updated_at: string;
+}
+export interface WorkRuntimeSummary {
+  state:string;
+  generation:number|null;
+  freshness:"current"|"conflict_or_unavailable";
+  work_execution_binding_id:string|null;
+  agent_session_id:string|null;
+  agent_session_generation:number|null;
+  provider:string|null;
+  native_session_id:string|null;
+}
+export interface WorkWorkspaceSummary {
+  binding_id:string|null;
+  cwd:string|null;
+  lifecycle:string;
+  safety:"safe"|"attention"|"unknown";
 }
 export interface WorkReadiness {
   state:"ready"|"waiting_prerequisites"|"requires_host_attention"|"not_claimable";

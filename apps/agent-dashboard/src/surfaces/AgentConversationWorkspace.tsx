@@ -386,18 +386,25 @@ function MessageThreads({data,messages,selectedId,onSelect}:{data:AgentWorkspace
     .map(([correlationId,items])=>({correlationId,items:[...items].sort((left,right)=>timestampKey(left.created_at)-timestampKey(right.created_at))}))
     .sort((left,right)=>timestampKey(right.items[right.items.length-1]?.created_at)-timestampKey(left.items[left.items.length-1]?.created_at));
   return <div className="agent-message-stream">{threads.map(thread=>{
-    const linkedWork=data.works.find(work=>work.work_id===thread.items.find(message=>message.work_id)?.work_id);
+    const workContexts=[...new Set(thread.items.flatMap(message=>message.work_id?[message.work_id]:[]))];
+    const linkedWork=workContexts.length===1?data.works.find(work=>work.work_id===workContexts[0]):undefined;
+    const contextLabel=workContexts.length===0
+      ? "General coordination"
+      : workContexts.length===1
+        ? linkedWork?.title??`Work context · ${shortId(workContexts[0]!)}`
+        : "Multiple Work contexts";
     const participantIds=[...new Set(thread.items.flatMap(message=>[message.sender.id,...message.recipients.map(recipient=>recipient.id)]))];
     const participants=participantIds.map(id=>data.roster.find(item=>item.agent_member_ref.id===id)?.display_name??id);
     const latest=thread.items[thread.items.length-1]!;
-    return <section key={thread.correlationId} className="aw-message-thread" aria-label={`Conversation about ${linkedWork?.title??"unlinked coordination"}`}>
-      <header className="aw-message-thread__header"><h3>{linkedWork?.title??"General coordination"}</h3><span>{participants.join(" ↔ ")} · {thread.items.length} {thread.items.length===1?"message":"messages"} · {formatTime(latest.created_at)}</span></header>
+    return <section key={thread.correlationId} className="aw-message-thread" aria-label={`Conversation about ${contextLabel}`}>
+      <header className="aw-message-thread__header"><h3>{contextLabel}</h3><span>{participants.join(" ↔ ")} · {thread.items.length} {thread.items.length===1?"message":"messages"} · {formatTime(latest.created_at)}</span></header>
       <div className="aw-message-thread__turns">{thread.items.map((message,index)=>{
         const actor=data.roster.find(item=>item.agent_member_ref.id===message.sender.id);
         const actorName=message.sender.display_name??actor?.display_name??message.sender.id;
         const recipients=message.recipients.map(recipient=>recipient.display_name??data.roster.find(item=>item.agent_member_ref.id===recipient.id)?.display_name??recipient.id).join(", ");
         const unread=message.deliveries.some(item=>["queued","delivered"].includes(item.status));
-        return <button key={message.message_id} type="button" data-thread-continuation={index>0||undefined} className="agent-message-row flex w-full gap-3 text-left" onClick={()=>onSelect({kind:"message",message})}><Avatar name={actorName} identity={`${message.sender.id} ${actor?.role??""}`} size="md" tone={actor?.runtime_state==="running"?"running":"idle"}/><span className="min-w-0 flex-1"><span className="flex items-baseline gap-2">{unread&&<span className="aw-message-unread-dot" title="Unread"/>}<b className="truncate text-[12.5px]">{actorName}</b><span className="aw-kind-chip">{humanizeToken(message.kind)}</span><span className="aw-record-kind">{message.sender.id===selectedId?"Outbox":"Inbox"} → {recipients}</span><time className="ml-auto text-[10.5px] text-muted-foreground">{formatTime(message.created_at)}</time></span><span className="mt-1.5 block max-w-[42rem] whitespace-pre-wrap text-[13.5px] leading-[1.58] text-foreground/90">{message.body}</span><span className="aw-record-meta">{message.work_id&&<span data-message-fact="work-context">Work context only</span>}{message.causation_id&&<span>Reply · {shortId(message.causation_id)}</span>}<MessageEvidenceLabels message={message}/></span></span></button>;
+        const messageWork=data.works.find(work=>work.work_id===message.work_id);
+        return <button key={message.message_id} type="button" data-thread-continuation={index>0||undefined} className="agent-message-row flex w-full gap-3 text-left" onClick={()=>onSelect({kind:"message",message})}><Avatar name={actorName} identity={`${message.sender.id} ${actor?.role??""}`} size="md" tone={actor?.runtime_state==="running"?"running":"idle"}/><span className="min-w-0 flex-1"><span className="flex items-baseline gap-2">{unread&&<span className="aw-message-unread-dot" title="Unread"/>}<b className="truncate text-[12.5px]">{actorName}</b><span className="aw-kind-chip">{humanizeToken(message.kind)}</span><span className="aw-record-kind">{message.sender.id===selectedId?"Outbox":"Inbox"} → {recipients}</span><time className="ml-auto text-[10.5px] text-muted-foreground">{formatTime(message.created_at)}</time></span><span className="mt-1.5 block max-w-[42rem] whitespace-pre-wrap text-[13.5px] leading-[1.58] text-foreground/90">{message.body}</span><span className="aw-record-meta">{message.work_id&&<span data-message-fact="work-context" title={message.work_id}>Work context only · {messageWork?.title??shortId(message.work_id)}</span>}{message.causation_id&&<span>Reply · {shortId(message.causation_id)}</span>}<MessageEvidenceLabels message={message}/></span></span></button>;
       })}</div>
     </section>;
   })}</div>;

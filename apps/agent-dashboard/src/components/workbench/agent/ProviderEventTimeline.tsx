@@ -28,7 +28,7 @@ function ContentSection({label,content}:{label:string;content:ToolEpisodeContent
 function EpisodeFacts({episode}:{episode:ToolEpisode}) {
   const first=episode.occurrences[0]!.record;
   return <dl className="aw-tool-facts">
-    <div><dt>Call ID</dt><dd title={episode.call_id}>{episode.call_id}</dd></div>
+    <div><dt>Call ID</dt><dd title={episode.call_id??undefined}>{episode.call_id??"Provider omitted pairing discriminator"}</dd></div>
     {!episode.tool_name&&<div><dt>Tool name</dt><dd>{readable(episode.tool_name_unavailable_reason,"Unavailable")}</dd></div>}
     <div><dt>Parent call</dt><dd title={episode.parent_call_id??undefined}>{episode.parent_call_id??"No parent recorded"}</dd></div>
     <div><dt>Category</dt><dd>{readable(episode.operation_category)}</dd></div>
@@ -61,8 +61,8 @@ export function ToolEpisodeDetails({episode,context=false}:{episode:ToolEpisode;
 }
 
 export function ToolEpisodeRow({episode,expanded,selected,onToggle,timestamp}:{episode:ToolEpisode;expanded:boolean;selected:boolean;onToggle:()=>void;timestamp:string}) {
-  const summary=[episode.primary_target,episode.parent_call_id?`parent ${episode.parent_call_id}`:null].filter(Boolean).join(" · ")||"Target unavailable in provider record";
-  return <div className="aw-native-facts-trail" data-tool-call-id={episode.call_id}>
+  const summary=[!episode.call_id?"Standalone provider result · no exact call id":null,episode.primary_target,episode.parent_call_id?`parent ${episode.parent_call_id}`:null].filter(Boolean).join(" · ")||"Target unavailable in provider record";
+  return <div className="aw-native-facts-trail" data-tool-call-id={episode.call_id??undefined} data-unpaired-tool-result={!episode.call_id||undefined}>
     <OperationalFactRow
       kind="tool"
       status={episode.outcome}
