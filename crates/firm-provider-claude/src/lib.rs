@@ -494,14 +494,14 @@ impl ClaudeRunnerTransport {
     fn run_cycle(
         &mut self,
         input: &str,
-        idle_timeout: Duration,
+        input_acceptance_timeout: Duration,
         on_input_accepted: &mut dyn FnMut(&ControlTransportReceipt) -> CliResult<()>,
         on_steer_result: &mut dyn FnMut(&SteerRequest, &SteerProviderResult) -> CliResult<()>,
         on_event: &mut dyn FnMut(&Value),
         poll_control: &mut dyn FnMut() -> CycleControl,
     ) -> CliResult<ExecutionCycleOutcome> {
         let input_id = self.send_input(input)?;
-        let started = Instant::now();
+        let input_sent_at = Instant::now();
         let mut final_text = String::new();
         let mut input_acceptance_receipt = None;
         let mut control_receipts = Vec::new();
@@ -537,10 +537,20 @@ impl ClaudeRunnerTransport {
             }
 
             let Some(event) = self.receive_event(CONTROL_POLL)? else {
-                if started.elapsed() >= idle_timeout {
+                // A healthy Claude turn may legitimately run for hours, and a
+                // provider tool may be silent while it does real work. The
+                // caller's timeout therefore fences only the unacknowledged
+                // delivery boundary; it is not a hidden wall-clock limit on
+                // an already accepted provider cycle. After `consumed`, child
+                // exit and stdout disconnect remain fail-closed transport
+                // errors, while Interrupt and Close keep polling normally.
+                self.ensure_alive()?;
+                if input_acceptance_receipt.is_none()
+                    && input_sent_at.elapsed() >= input_acceptance_timeout
+                {
                     return Err(CliError::Usage(format!(
-                        "Claude Agent SDK cycle {input_id} exceeded idle timeout of {}s",
-                        idle_timeout.as_secs()
+                        "CLAUDE_AGENT_SDK_INPUT_ACCEPTANCE_TIMEOUT: cycle {input_id} was not consumed within {}s",
+                        input_acceptance_timeout.as_secs()
                     )));
                 }
                 continue;
