@@ -89,6 +89,11 @@ hostConsole.data.team_ref = "teamrun-mission-current";
 hostConsole.data.all_works = teamWorkspace.data.works;
 const agentWorkspace = await json("agent-workspace");
 agentWorkspace.source_execution_space_id = "fixture-space";
+agentWorkspace.data.team = {
+  ...agentWorkspace.data.team,
+  team_id: teamWorkspace.data.team.team_id,
+  latest_run_id: teamWorkspace.data.team.latest_run.id,
+};
 agentWorkspace.allowed_actions = [interruptAction];
 hostConsole.data.member_capacity = agentWorkspace.data.roster.filter((member) => !member.is_host);
 hostConsole.data.member_runtime = hostConsole.data.member_capacity;
@@ -228,8 +233,16 @@ async function installCommonRoutes(page, snapshotHandler, writes) {
 }
 
 async function executeInterrupt(page, label) {
+  const secondaryActions = page.locator(".aw-secondary-actions");
   const action = page.getByRole("button", { name: "interrupt member run" });
-  await action.waitFor({ timeout: 8_000 });
+  const deadline = Date.now() + 8_000;
+  while (!(await action.isVisible()) && Date.now() < deadline) {
+    if (await secondaryActions.count() > 0 && !(await secondaryActions.first().getAttribute("open"))) {
+      await secondaryActions.first().locator("summary").click();
+    }
+    await delay(25);
+  }
+  await action.waitFor({ timeout: Math.max(1, deadline - Date.now()) });
   assert.equal(await action.isEnabled(), true, `${label} RoleView action was disabled by ambient snapshot latency`);
   await action.click();
   await page.getByLabel("Interrupt reason").fill(`DEV-33 ${label} independent gate`);
@@ -344,7 +357,11 @@ try {
     await delay(12_000);
     return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(snapshot("late ambient agent snapshot")) });
   }, agentWrites);
-  await agentPage.goto(`${appBase}/?${query({ surface: "team", team: "teamrun-mission-current", conversation: "agent-member-1", memberRun: "member-run-1" })}`, { waitUntil: "domcontentloaded" });
+  // Exercise the MemberRun deep link directly. A Team-scoped conversation first
+  // needs the ambient Team snapshot to canonicalize its selected member, while
+  // this acceptance proves that the authoritative Agent RoleView stays usable
+  // even when that ambient snapshot is deliberately slow.
+  await agentPage.goto(`${appBase}/?${query({ surface: "team", memberRun: "member-run-1" })}`, { waitUntil: "domcontentloaded" });
   await executeInterrupt(agentPage, "Agent");
   await waitFor(() => agentWrites.length === 1, "Agent RoleView write");
   assert.equal(agentWrites.length, 1, "current Agent RoleView did not execute while ambient snapshot was pending");
