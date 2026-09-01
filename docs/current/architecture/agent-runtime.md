@@ -253,6 +253,14 @@ delivery authority and cannot synthesize a WorkDelivery. See ADR 0060.
 Start, resume, turn, queued input, interrupt, and stop all use the same durable
 RuntimeCommand protocol:
 
+Provider adapters do not impose a hidden wall-clock limit on an accepted
+cycle. A long reasoning turn or silent provider tool remains live while the
+owned runner process and transport remain intact, and Interrupt/Close continue
+to poll through that interval. A configured delivery timeout fences only the
+provider input-acceptance boundary before an exact receipt; child exit, stdout
+disconnect, runner error, and unsettled durable effects remain explicit
+fail-closed recovery conditions.
+
 ```text
 authenticate and resolve authority
   -> bind exact Node + NodeDaemon generation
