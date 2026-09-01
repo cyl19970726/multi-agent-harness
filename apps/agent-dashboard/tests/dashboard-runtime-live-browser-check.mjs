@@ -550,13 +550,14 @@ try {
   await memberPage.addInitScript(({capabilityToken})=>{window.__AGENTFIRM_BOOTSTRAP__={capabilityToken}}, {capabilityToken:memberAgentFirmToken});
   await memberPage.goto(`${appBase}/?${new URLSearchParams({...roleBaseQuery,surface:"team",team:liveTeamRunId,conversation:"worker",memberRun:liveMemberRunId})}`, {waitUntil:"domcontentloaded"});
   await memberPage.getByRole("button", {name:/Open .* configuration/}).waitFor();
-  await memberPage.getByRole("tab", {name:/Session/}).waitFor();
-  await memberPage.getByRole("tab", {name:/Work/}).click();
-  await waitForText(memberPage, "Real browser RoleAction loop");
-  const composerActionLabels = await memberPage.getByLabel("Composer action").locator("option").allTextContents();
+  await memberPage.locator('[data-testid="agent-workspace-sessionbar"]').waitFor();
+  await memberPage.getByRole("button", {name:"Open Work dock",exact:true}).click();
+  const memberDock=memberPage.getByRole("complementary", {name:"Work and Messages dock"});
+  await memberDock.waitFor();
+  await memberDock.getByRole("heading", {name:"Real browser RoleAction loop",exact:true}).waitFor();
   check(
-    !composerActionLabels.includes("start work")
-      && (await memberPage.getByLabel("Composer action").getAttribute("title"))?.includes("current NodeDaemon"),
+    await memberPage.getByLabel("Composer action").count()===0
+      && await memberPage.getByText("No canonical Work or runtime action is authorized for this identity and state.", {exact:true}).count()===1,
     "Agent Workspace does not invent runtime authority before exact NodeDaemon admission",
   );
   check(await memberPage.getByRole("button", {name:/collaboration|delegation/i}).count()===0,
