@@ -1347,7 +1347,13 @@ select){
   }
 
   @media (min-width: 1024px) {.agent-workspace .agent-workspace-layout[data-host="true"]{
-      grid-template-columns: 17.5rem minmax(0, 1fr) 20rem;
+      grid-template-columns: 17.5rem minmax(0, 1fr);
+    }.agent-workspace .agent-workspace-layout:not([data-host="true"]){
+      grid-template-columns: 15.25rem minmax(0, 1fr);
+    }.agent-workspace .agent-workspace-layout[data-host="true"][data-dock-open="true"]{
+      grid-template-columns: 17.5rem minmax(0, 1fr) var(--agent-dock-width);
+    }.agent-workspace .agent-workspace-layout:not([data-host="true"])[data-dock-open="true"]{
+      grid-template-columns: 15.25rem minmax(0, 1fr) var(--agent-dock-width);
     }.agent-workspace .agent-team-composer > div:nth-child(2){
       grid-template-columns: 9rem minmax(9rem, 12rem) minmax(8rem, 1fr) auto;
     }

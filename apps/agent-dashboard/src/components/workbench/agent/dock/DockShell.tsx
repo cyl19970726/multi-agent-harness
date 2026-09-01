@@ -90,7 +90,7 @@ export function DockShell({
     event.preventDefault();
     set({ width: state.width + (event.key === "ArrowLeft" ? 24 : -24) });
   };
-  const bodyProps = { works, roster, selectedAgentId, expanded };
+  const bodyProps = { works, messages, roster, selectedAgentId, expanded };
   return <>
     {displayMode === "overlay" && <button type="button" className="agent-dock-backdrop" aria-label="Close Work and Messages dock" onClick={() => set({ open: false })}/>}
     <aside ref={shellRef} className="agent-dock-shell" data-display={displayMode} data-expanded={expanded || undefined} style={{ "--agent-dock-width": `${state.width}px` } as React.CSSProperties} aria-label="Work and Messages dock">
@@ -106,10 +106,10 @@ export function DockShell({
         <Button size="icon" variant="ghost" aria-label="Close Work and Messages dock" onClick={() => set({ open: false })}><X/></Button>
       </header>
       <div className="agent-dock-module" role="tabpanel" hidden={state.module !== "work"} aria-label="Work">
-        <WorkDock {...bodyProps} currentWorkId={currentWorkId} initialWorkId={initialWorkId} status={workStatus} allowedActions={allowedActions} renderAuthorizedActions={renderAuthorizedActions} onSelectWork={onSelectWork}/>
+        <WorkDock {...bodyProps} currentWorkId={currentWorkId} initialWorkId={initialWorkId} status={workStatus} allowedActions={allowedActions} renderAuthorizedActions={renderAuthorizedActions} onSelectWork={onSelectWork} onOpenMessages={() => set({ module: "messages" })}/>
       </div>
       <div className="agent-dock-module" role="tabpanel" hidden={state.module !== "messages"} aria-label="Messages">
-        <MessagesDock {...bodyProps} messages={messages} initialMessageId={initialMessageId} status={messagesStatus} onSelectMessage={onSelectMessage}/>
+        <MessagesDock {...bodyProps} initialMessageId={initialMessageId} status={messagesStatus} onSelectMessage={onSelectMessage}/>
       </div>
       {displayMode === "overlay" && <footer className="agent-dock-overlay-footer"><button type="button" onClick={() => set({ module: state.module === "work" ? "messages" : "work" })}>{state.module === "work" ? <><ChevronLeft/>Messages</> : <>Work<ChevronRight/></>}</button></footer>}
     </aside>
