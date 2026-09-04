@@ -580,6 +580,7 @@ pub enum TrustErrorCode {
     NativeSessionMissing,
     NativeSessionIncompatible,
     DeliveryClaimConflict,
+    DeliveryNotDispatched,
     DeliveryReceiptMissing,
     DeliveryRecoveryUncertain,
     RuntimeEffectUnknown,

@@ -282,6 +282,26 @@ fn trust_error(
     })
 }
 
+/// A typed rejection for a certain, transient state that resolves without any
+/// operator reconciliation. The caller may repeat the same command unchanged
+/// once the awaited transition happens.
+fn retryable_trust_error(
+    code: TrustErrorCode,
+    message: impl Into<String>,
+    resource_kind: &str,
+    resource_id: &str,
+    current_version: Option<u64>,
+) -> StoreError {
+    trust_conflict(TrustError {
+        code,
+        message: message.into(),
+        retryable: true,
+        resource_kind: resource_kind.to_string(),
+        resource_id: resource_id.to_string(),
+        current_version,
+    })
+}
+
 fn required(value: &str, field: &str) -> StoreResult<()> {
     if value.trim().is_empty() {
         return Err(trust_error(

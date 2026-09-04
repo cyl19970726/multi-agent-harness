@@ -240,6 +240,14 @@ history unchanged. An unsettled `Claimed` delivery remains uncertain and
 fences cancellation until it is reconciled. Cancellation never fabricates a
 provider effect, delivery failure, binding release, or semantic Work start.
 
+Only an unsettled `Claimed` delivery is uncertain. A `Queued` delivery that was
+never claimed and never produced a provider receipt is a certain, transient
+state, so a member Start or semantic Work report against it returns the
+retryable `DELIVERY_NOT_DISPATCHED` rather than `DELIVERY_RECOVERY_UNCERTAIN`:
+the member simply waits for the Supervisor wake and repeats the same command.
+A member that already holds one active Work is answered `MEMBER_BUSY` before
+either delivery check runs.
+
 `HostAttention` uses the same boundary with different storage ownership. The
 canonical trust side record owns the immutable causal source fact; the
 HostAttention lifecycle ledger may change only claim, transport, receipt,

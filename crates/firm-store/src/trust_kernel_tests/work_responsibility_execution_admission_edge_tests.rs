@@ -1,5 +1,7 @@
 use super::*;
-use firm_core::agentfirm_api::{Confidence, PrimaryCauseStatus, RetrySafety, WorkFindingKind};
+use firm_core::agentfirm_api::{
+    Confidence, PrimaryCauseStatus, RetrySafety, TrustErrorCode, WorkFindingKind,
+};
 
 #[test]
 fn start_requires_provider_received_delivery() {
@@ -91,7 +93,18 @@ fn start_requires_provider_received_delivery() {
                 },
             )
             .expect_err("Start requires exact ProviderReceived evidence");
-        assert!(error.to_string().contains("DELIVERY_RECOVERY_UNCERTAIN"));
+        let trust = error.trust_error().expect("typed trust rejection");
+        if claimed {
+            // Claimed without a provider receipt is genuinely uncertain: the
+            // provider may or may not have received the delivery.
+            assert_eq!(trust.code, TrustErrorCode::DeliveryRecoveryUncertain);
+            assert!(!trust.retryable);
+        } else {
+            // Queued and never claimed is certain and self-resolving.
+            assert_eq!(trust.code, TrustErrorCode::DeliveryNotDispatched);
+            assert!(trust.retryable);
+            assert!(error.to_string().contains("DELIVERY_NOT_DISPATCHED"));
+        }
         assert_eq!(store.canonical_operations().unwrap(), operations_before);
         assert_eq!(
             store
@@ -174,6 +187,11 @@ fn every_member_work_authoring_path_requires_provider_received_delivery() {
                 )
                 .unwrap();
         }
+        let expected_delivery_code = if claimed {
+            TrustErrorCode::DeliveryRecoveryUncertain
+        } else {
+            TrustErrorCode::DeliveryNotDispatched
+        };
         let active = work.clone();
         let operations_before = store.canonical_operations().unwrap();
         let progress = WorkReport {
@@ -208,9 +226,13 @@ fn every_member_work_authoring_path_requires_provider_received_delivery() {
                 progress,
             )
             .expect_err("Progress requires exact ProviderReceived evidence");
-        assert!(progress_error
-            .to_string()
-            .contains("DELIVERY_RECOVERY_UNCERTAIN"));
+        assert_eq!(
+            progress_error
+                .trust_error()
+                .expect("typed trust rejection")
+                .code,
+            expected_delivery_code
+        );
 
         let finding_id = format!("finding-{suffix}");
         let finding_error = store
@@ -237,9 +259,13 @@ fn every_member_work_authoring_path_requires_provider_received_delivery() {
                 },
             )
             .expect_err("Finding requires exact ProviderReceived evidence");
-        assert!(finding_error
-            .to_string()
-            .contains("DELIVERY_RECOVERY_UNCERTAIN"));
+        assert_eq!(
+            finding_error
+                .trust_error()
+                .expect("typed trust rejection")
+                .code,
+            expected_delivery_code
+        );
 
         let analysis_id = format!("analysis-failure-{suffix}");
         let analysis_error = store
@@ -278,9 +304,13 @@ fn every_member_work_authoring_path_requires_provider_received_delivery() {
                 },
             )
             .expect_err("FailureAnalysis requires exact ProviderReceived evidence");
-        assert!(analysis_error
-            .to_string()
-            .contains("DELIVERY_RECOVERY_UNCERTAIN"));
+        assert_eq!(
+            analysis_error
+                .trust_error()
+                .expect("typed trust rejection")
+                .code,
+            expected_delivery_code
+        );
 
         assert_eq!(store.canonical_operations().unwrap(), operations_before);
         let work_before_message = store
@@ -701,4 +731,156 @@ fn member_run_cutover_linearizes_before_stale_execution_admission() {
         .fabric_work_deliveries("space-test")
         .unwrap()
         .is_empty());
+}
+
+/// A member that already holds one active Work is busy on the member plane.
+/// That answer must not be replaced by a WorkDelivery-plane rejection just
+/// because the second Work's delivery has not been dispatched yet.
+#[test]
+fn start_reports_member_busy_before_a_queued_second_delivery() {
+    let (store, _root) = fabric_store();
+    append_runtime_team(&store, "team-admission", "run-admission");
+    store
+        .migrate_legacy_agent_identity_same_id(
+            &context("operator", "identity.create", "identity-busy-worker", 0),
+            identity("busy-worker"),
+        )
+        .unwrap();
+    let membership = join_runtime_membership(
+        &store,
+        "membership-busy-worker",
+        "team-admission",
+        "busy-worker",
+        TeamMembershipRole::Member,
+    );
+    let target = session("session-busy-worker", "busy-worker");
+    store
+        .create_agent_session(
+            &service_context("session.create", &target.id, 0),
+            target.clone(),
+        )
+        .unwrap();
+    admit_member_run(
+        &store,
+        canonical_member_run("member-run-busy-worker", "busy-worker", "run-admission"),
+    );
+    let mut runtime_binding = runtime_command_fixture(
+        "runtime-busy-worker",
+        RuntimeCommandKind::StartCycle,
+        &target,
+        "start_cycle",
+    )
+    .0
+    .binding;
+    runtime_binding.target_member_run_id = Some("member-run-busy-worker".into());
+    runtime_binding.target_member_run_generation = Some(1);
+
+    let active_work = assign_responsibility(&store, "work-busy-active", &membership.id);
+    let active_binding =
+        execution_binding(&active_work, &membership, &target, "binding-busy-active");
+    store
+        .bind_responsible_work_execution(
+            &service_context("work.bind", &active_binding.id, 0),
+            &runtime_binding,
+            active_binding.clone(),
+        )
+        .unwrap();
+    let queued_work = assign_responsibility(&store, "work-busy-queued", &membership.id);
+    let queued_binding =
+        execution_binding(&queued_work, &membership, &target, "binding-busy-queued");
+    store
+        .bind_responsible_work_execution(
+            &service_context("work.bind", &queued_binding.id, 0),
+            &runtime_binding,
+            queued_binding.clone(),
+        )
+        .unwrap();
+    store
+        .claim_work_for_provider(
+            &service_context("work.claim", "claim-busy-active", 0),
+            &active_binding.delivery_id,
+            &target.node_id,
+            &target.node_daemon_id,
+            target.node_daemon_generation,
+            "claim-busy-active",
+            firm_core::agentfirm_api::RuntimeDispatchMode::QueueOnly,
+            "t-claim-busy-active",
+        )
+        .unwrap();
+    store
+        .record_work_provider_receipt(
+            &service_context("work.receipt", "receipt-busy-active", 0),
+            &active_binding.delivery_id,
+            &target.node_id,
+            &target.node_daemon_id,
+            target.node_daemon_generation,
+            "claim-busy-active",
+            "provider-receipt-busy-active",
+            "t-receipt-busy-active",
+        )
+        .unwrap();
+    store
+        .start_work(
+            &active_work.id,
+            active_work.version,
+            "member-run-busy-worker",
+            firm_core::WorkCommandContext {
+                event_id: "event-start-busy-active".into(),
+                performed_by_actor: firm_core::TeamActorRef {
+                    kind: firm_core::TeamActorKind::ProviderRuntimeProjection,
+                    id: "member-run-busy-worker".into(),
+                    display_name: None,
+                    authn_source: Some("test".into()),
+                },
+                authority_actor: None,
+                causation_ref: None,
+                idempotency_key: "command-start-busy-active".into(),
+                created_at: "t-start-busy-active".into(),
+                duplicate_ok: false,
+            },
+        )
+        .expect("provider-received delivery admits the first Start");
+
+    assert_eq!(
+        store
+            .fabric_work_deliveries("space-test")
+            .unwrap()
+            .into_iter()
+            .find(|delivery| delivery.id == queued_binding.delivery_id)
+            .unwrap()
+            .status,
+        WorkDeliveryStatus::Queued
+    );
+    let operations_before = store.canonical_operations().unwrap();
+    let error = store
+        .start_work(
+            &queued_work.id,
+            queued_work.version,
+            "member-run-busy-worker",
+            firm_core::WorkCommandContext {
+                event_id: "event-start-busy-queued".into(),
+                performed_by_actor: firm_core::TeamActorRef {
+                    kind: firm_core::TeamActorKind::ProviderRuntimeProjection,
+                    id: "member-run-busy-worker".into(),
+                    display_name: None,
+                    authn_source: Some("test".into()),
+                },
+                authority_actor: None,
+                causation_ref: None,
+                idempotency_key: "command-start-busy-queued".into(),
+                created_at: "t-start-busy-queued".into(),
+                duplicate_ok: false,
+            },
+        )
+        .expect_err("a member with active Work cannot start a second Work");
+    assert!(
+        error.to_string().contains("MEMBER_BUSY")
+            && error.to_string().contains("already has active Work"),
+        "{error}"
+    );
+    assert!(
+        !error.to_string().contains("DELIVERY_"),
+        "member-plane busyness must not be reported as a delivery-plane fault: {error}"
+    );
+    assert_eq!(store.canonical_operations().unwrap(), operations_before);
 }
