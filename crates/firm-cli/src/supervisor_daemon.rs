@@ -38,6 +38,8 @@ pub(crate) use recovery::reconcile_team_run_start_postcondition;
 
 const SIGINT: i32 = 2;
 const SIGTERM: i32 = 15;
+const CONTROL_TRANSIENT_READ_RETRIES: usize = 2;
+const CONTROL_TRANSIENT_READ_BACKOFF: Duration = Duration::from_millis(25);
 type SigHandler = extern "C" fn(i32);
 extern "C" {
     fn signal(signum: i32, handler: SigHandler) -> usize;
@@ -755,9 +757,13 @@ pub(crate) fn try_delegate_to_node_daemon(
 
     let mut buf = String::new();
     let mut reader = std::io::BufReader::new(&mut stream);
-    reader
-        .read_line(&mut buf)
-        .map_err(NodeDaemonStartRequestError::after_send)?;
+    read_control_response_line(
+        &mut reader,
+        &mut buf,
+        CONTROL_TRANSIENT_READ_RETRIES,
+        CONTROL_TRANSIENT_READ_BACKOFF,
+    )
+    .map_err(NodeDaemonStartRequestError::after_send)?;
     if buf.trim().is_empty() || !buf.ends_with('\n') {
         return Err(NodeDaemonStartRequestError::after_send(
             std::io::Error::new(
@@ -912,9 +918,34 @@ pub(crate) fn runtime_command_via_socket(
     node_id: &str,
     envelope: &harness_core::agentfirm_api::ControlCommandEnvelope,
 ) -> Result<serde_json::Value, std::io::Error> {
+    runtime_command_via_socket_with_policy(
+        firm_home,
+        node_id,
+        envelope,
+        ControlSocketReadPolicy {
+            timeout: Duration::from_secs(10),
+            transient_retries: CONTROL_TRANSIENT_READ_RETRIES,
+            retry_backoff: CONTROL_TRANSIENT_READ_BACKOFF,
+        },
+    )
+}
+
+#[derive(Clone, Copy)]
+struct ControlSocketReadPolicy {
+    timeout: Duration,
+    transient_retries: usize,
+    retry_backoff: Duration,
+}
+
+fn runtime_command_via_socket_with_policy(
+    firm_home: &Path,
+    node_id: &str,
+    envelope: &harness_core::agentfirm_api::ControlCommandEnvelope,
+    read_policy: ControlSocketReadPolicy,
+) -> Result<serde_json::Value, std::io::Error> {
     let socket_path = node_daemon_socket_path(firm_home, node_id);
     let mut stream = UnixStream::connect(&socket_path)?;
-    stream.set_read_timeout(Some(Duration::from_secs(10)))?;
+    stream.set_read_timeout(Some(read_policy.timeout))?;
     stream.set_write_timeout(Some(Duration::from_secs(10)))?;
     let command = serde_json::json!({"cmd": "runtime", "envelope": envelope});
     writeln!(
@@ -924,7 +955,13 @@ pub(crate) fn runtime_command_via_socket(
     )?;
     stream.flush()?;
     let mut line = String::new();
-    std::io::BufReader::new(&mut stream).read_line(&mut line)?;
+    let mut reader = std::io::BufReader::new(&mut stream);
+    read_control_response_line(
+        &mut reader,
+        &mut line,
+        read_policy.transient_retries,
+        read_policy.retry_backoff,
+    )?;
     if line.trim().is_empty() {
         return Err(std::io::Error::new(
             std::io::ErrorKind::UnexpectedEof,
@@ -932,6 +969,33 @@ pub(crate) fn runtime_command_via_socket(
         ));
     }
     serde_json::from_str(line.trim()).map_err(std::io::Error::other)
+}
+
+fn read_control_response_line(
+    reader: &mut impl BufRead,
+    line: &mut String,
+    max_transient_retries: usize,
+    retry_backoff: Duration,
+) -> Result<(), std::io::Error> {
+    // A read timeout is post-send and the daemon may still be applying the
+    // command. Keep waiting on this connection; reconnecting or rewriting the
+    // frame would turn a transport delay into an ambiguous duplicate effect.
+    let mut transient_retries = 0;
+    loop {
+        match reader.read_line(line) {
+            Ok(_) => return Ok(()),
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) && transient_retries < max_transient_retries =>
+            {
+                transient_retries += 1;
+                std::thread::sleep(retry_backoff);
+            }
+            Err(error) => return Err(error),
+        }
+    }
 }
 
 /// Read one bounded provider-owned Session page through the exact local
@@ -1096,16 +1160,32 @@ pub(crate) fn daemon_stop_via_socket(
     execution_space_id: &str,
     daemon_generation: u64,
 ) -> Option<String> {
+    daemon_stop_via_socket_with_policy(
+        firm_home,
+        node_id,
+        execution_space_id,
+        daemon_generation,
+        ControlSocketReadPolicy {
+            timeout: NODE_DAEMON_STOP_DRAIN_BOUND.saturating_add(Duration::from_secs(25)),
+            transient_retries: CONTROL_TRANSIENT_READ_RETRIES,
+            retry_backoff: CONTROL_TRANSIENT_READ_BACKOFF,
+        },
+    )
+}
+
+fn daemon_stop_via_socket_with_policy(
+    firm_home: &Path,
+    node_id: &str,
+    execution_space_id: &str,
+    daemon_generation: u64,
+    read_policy: ControlSocketReadPolicy,
+) -> Option<String> {
     let socket_path = node_daemon_socket_path(firm_home, node_id);
     let mut stream = UnixStream::connect(&socket_path).ok()?;
     // Stop answers with the drain result, not with its acceptance, so the
     // client must outwait the documented drain bound plus the bounded
     // settle/release writes that follow it (#584).
-    stream
-        .set_read_timeout(Some(
-            NODE_DAEMON_STOP_DRAIN_BOUND.saturating_add(Duration::from_secs(25)),
-        ))
-        .ok()?;
+    stream.set_read_timeout(Some(read_policy.timeout)).ok()?;
 
     let cmd = serde_json::json!({
         "cmd": "stop",
@@ -1117,7 +1197,13 @@ pub(crate) fn daemon_stop_via_socket(
 
     let mut buf = String::new();
     let mut reader = std::io::BufReader::new(&mut stream);
-    reader.read_line(&mut buf).ok()?;
+    read_control_response_line(
+        &mut reader,
+        &mut buf,
+        read_policy.transient_retries,
+        read_policy.retry_backoff,
+    )
+    .ok()?;
     Some(buf.trim().to_string())
 }
 
