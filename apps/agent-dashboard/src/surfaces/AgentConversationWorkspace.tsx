@@ -23,7 +23,7 @@ import {
 } from "@/components/workbench/agent/AgentWorkspacePrimitives";
 import { AgentMessageCommandComposer } from "@/components/workbench/agent/AgentMessageCommandComposer";
 import { OperationalFactRow } from "@/components/workbench/agent/AgentStreamPrimitives";
-import { ToolEpisodeDetails, ToolEpisodeRow } from "@/components/workbench/agent/ProviderEventTimeline";
+import { EnvelopeGroupRow, ToolEpisodeDetails, ToolEpisodeRow } from "@/components/workbench/agent/ProviderEventTimeline";
 import type { SelectionState } from "../app/selection";
 import { projectProviderTimeline, type ProviderTimelineItem, type ToolEpisode } from "../model/providerEventTimeline";
 import {
@@ -288,7 +288,7 @@ function SessionCanvas({data,projection,connectionState,selectedMessageId,onSele
     });
   },[data.messages,data.runtime_truth,projection]);
   const hasNativeRowsWithoutComparableProviderTime=rows.some(row=>row.kind==="provider"&&!recordTime(row.record));
-  const virtualizer=useVirtualizer({count:rows.length,getScrollElement:()=>viewportRef.current,estimateSize:index=>rows[index]?.kind==="provider"?240:rows[index]?.kind==="control_boundary"?112:150,overscan:10,scrollMargin:chronologyRef.current?.offsetTop??0});
+  const virtualizer=useVirtualizer({count:rows.length,getScrollElement:()=>viewportRef.current,estimateSize:index=>{const row=rows[index];if(row?.kind==="provider")return row.item.kind==="envelope_group"?72:240;return row?.kind==="control_boundary"?112:150;},overscan:10,scrollMargin:chronologyRef.current?.offsetTop??0});
   const currentWork=data.works.find(work=>work.work_id===data.context_summary.current_work_id);
   return <ScrollArea.Root className="h-full overflow-hidden"><ScrollArea.Viewport ref={viewportRef} className="size-full min-w-0 [&>div]:!block [&>div]:!min-w-0"><div className="agent-session-stream w-full px-5 pb-8 sm:px-7">
     <div className="aw-session-context-strip">
@@ -305,7 +305,7 @@ function SessionCanvas({data,projection,connectionState,selectedMessageId,onSele
           return <AuthoredTurn data={data} message={row.message} selectedAgentId={data.selected_agent.agent_member_ref.id} selected={selectedMessageId===row.message.message_id} continuation={row.continuation} onSelect={()=>onSelect({kind:"message",message:row.message})}/>;
         }
         if(row.kind==="control_boundary")return <RuntimeControlBoundary truth={data.runtime_truth}/>;
-        return <ProviderTimelineRecord item={row.item} actorName={data.selected_agent.display_name} selected={selectedTimelineId===providerId} onToggle={()=>{const next=selectedTimelineId===providerId?null:providerId;setSelectedTimelineId(next);onSelect(next?(row.item.kind==="tool_episode"?{kind:"tool",episode:row.item}:{kind:"event",record:row.item.record,fragment:row.item.fragment}):null);}}/>;
+        return <ProviderTimelineRecord item={row.item} actorName={data.selected_agent.display_name} selected={selectedTimelineId===providerId} onSelectFragment={(record,fragment)=>onSelect({kind:"event",record,fragment})} onToggle={()=>{const next=selectedTimelineId===providerId?null:providerId;setSelectedTimelineId(next);onSelect(next?(row.item.kind==="tool_episode"?{kind:"tool",episode:row.item}:row.item.kind==="envelope_group"?null:{kind:"event",record:row.item.record,fragment:row.item.fragment}):null);}}/>;
       })()}</div>})}</div>
       : <EmptyCanvas compact title={projection&&!projection.available?"Provider-native Session unavailable":data.selected_agent.is_host?"No Host Session events or Team Messages yet":"No Session activity yet"} detail={projection&&!projection.available?`${humanizeToken(projection.reason_code)}${projection.detail?`: ${projection.detail}`:""}`:"Original provider-native events and authored Team Messages will appear here when persisted by the provider."}/>
     }
@@ -313,9 +313,10 @@ function SessionCanvas({data,projection,connectionState,selectedMessageId,onSele
   </div></ScrollArea.Viewport><ScrollArea.Scrollbar orientation="vertical" className="flex w-2 p-0.5"><ScrollArea.Thumb className="rounded-full bg-border"/></ScrollArea.Scrollbar></ScrollArea.Root>;
 }
 
-function ProviderTimelineRecord({item,actorName,selected,onToggle}:{item:ProviderTimelineItem;actorName:string;selected:boolean;onToggle:()=>void}){
+function ProviderTimelineRecord({item,actorName,selected,onToggle,onSelectFragment}:{item:ProviderTimelineItem;actorName:string;selected:boolean;onToggle:()=>void;onSelectFragment?:(record:ProviderNativeEventRecord,fragment:ProviderEventFragment)=>void}){
   const record=providerTimelineRecord(item);
   if(item.kind==="tool_episode")return <section className="aw-provider-episode" data-native-ordering-position={record.ordering_key.value} aria-label={`Tool call ${item.tool_name??"unknown"}`}><ToolEpisodeRow episode={item} expanded={selected} selected={selected} timestamp={toolEpisodeTime(item)} onToggle={onToggle}/></section>;
+  if(item.kind==="envelope_group")return <section className="aw-provider-episode" data-native-ordering-position={record.ordering_key.value} aria-label={`${item.occurrences.length} provider envelope frames`}><EnvelopeGroupRow group={item} timestamp={envelopeGroupTime(item)} onSelectFrame={onSelectFragment?(occurrence)=>onSelectFragment(occurrence.record,occurrence.fragment):undefined}/></section>;
   return <NativeEventRecord record={item.record} fragment={item.fragment} actorName={actorName} selected={selected} onOpen={onToggle}/>;
 }
 
@@ -608,10 +609,13 @@ function mergeSessionRows(messages:SessionMessageRow[],nativeEvents:SessionProvi
   while(messageIndex<messages.length){rows.push(messages[messageIndex]!);messageIndex+=1;}
   return rows;
 }
-function providerTimelineRecord(item:ProviderTimelineItem){return item.kind==="tool_episode"?item.occurrences[0]!.record:item.record}
-function providerTimelineObservedAfter(item:ProviderTimelineItem,boundaryAt:string){return item.kind==="tool_episode"?item.occurrences.some(({record})=>record.observed_at>boundaryAt):item.record.observed_at>boundaryAt}
-function providerTimelineId(item:ProviderTimelineItem){return item.kind==="tool_episode"?item.episode_id:`native:${item.fragment.fragment_id}`}
-function toolEpisodeTime(episode:ToolEpisode){const times=episode.occurrences.map(({record})=>recordTime(record)).filter((value):value is string=>Boolean(value));if(times.length)return times.length===1?formatTime(times[0]):`${formatTime(times[0])} – ${formatTime(times[times.length-1])}`;const positions=episode.occurrences.map(({record})=>record.ordering_key.value);return positions.length===1?`source #${positions[0]}`:`source #${positions[0]}–${positions[positions.length-1]}`}
+function providerTimelineOccurrences(item:ProviderTimelineItem){return item.kind==="tool_episode"||item.kind==="envelope_group"?item.occurrences:[{record:item.record,fragment:item.fragment}]}
+function providerTimelineRecord(item:ProviderTimelineItem){return providerTimelineOccurrences(item)[0]!.record}
+function providerTimelineObservedAfter(item:ProviderTimelineItem,boundaryAt:string){return providerTimelineOccurrences(item).some(({record})=>record.observed_at>boundaryAt)}
+function providerTimelineId(item:ProviderTimelineItem){return item.kind==="tool_episode"?item.episode_id:item.kind==="envelope_group"?item.group_id:`native:${item.fragment.fragment_id}`}
+function occurrenceRangeTime(records:ProviderNativeEventRecord[]){const times=records.map(record=>recordTime(record)).filter((value):value is string=>Boolean(value));if(times.length)return times.length===1?formatTime(times[0]):`${formatTime(times[0])} – ${formatTime(times[times.length-1])}`;const positions=records.map(record=>record.ordering_key.value);return positions.length===1?`source #${positions[0]}`:`source #${positions[0]}–${positions[positions.length-1]}`}
+function toolEpisodeTime(episode:ToolEpisode){return occurrenceRangeTime(episode.occurrences.map(({record})=>record))}
+function envelopeGroupTime(group:Extract<ProviderTimelineItem,{kind:"envelope_group"}>){return occurrenceRangeTime(group.occurrences.map(({record})=>record))}
 function humanizeToken(value:string){return value.split(/[_-]+/).filter(Boolean).map((part,index)=>index===0?`${part.charAt(0).toUpperCase()}${part.slice(1)}`:part).join(" ")}
 function rosterStateTone(state:string){if(/running|active/.test(state))return "text-status-good";if(/wait|pending|review/.test(state))return "text-status-warn";if(/block/.test(state))return "text-status-bad";return "text-muted-foreground";}
 function rosterStateLabel(agent:AgentWorkspaceRosterItem){const state=agent.runtime_state??agent.capacity??"unknown";if(agent.is_host&&agent.host_session_mode==="external_interactive"&&/running|active/.test(state))return{word:"External · unmanaged",tone:"text-status-warn"};return{word:humanizeToken(state),tone:rosterStateTone(state)};}
