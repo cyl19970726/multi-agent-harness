@@ -106,10 +106,16 @@ the browser does not write graph semantics or infer readiness.
 Mutation surface (all executable Work mutations):
 
 ```bash
-firm team-run work list|show|create|assign|claim|start|block|resume|release
-firm team-run work submit|review|request-changes|accept|cancel|retarget
+firm team-run work list|show|create|assign|redeliver|claim|start|block|resume
+firm team-run work release|submit|review|request-changes|accept|cancel|retarget
 firm team-run work reconcile-projection|poll-github-ci
 ```
+
+`redeliver` is the Host re-authorization of an open, never-started Work whose
+`WorkDelivery` is frozen on a member generation that no longer runs; it
+supersedes that delivery in an explicit `Rebound` WorkOperation without
+touching the delivery row or moving responsibility. See
+[member-continuation-model.md](../architecture/member-continuation-model.md).
 
 `firm work list` (DOC-106) replaces the retired `firm company work
 list/query`; it reads native Work read-only and never falls back to the
