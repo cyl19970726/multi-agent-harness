@@ -32,9 +32,12 @@ export function freshnessDomainsForInvalidation(
 ): readonly FreshnessDomain[] {
   if (!invalidation) return freshnessDomains;
   const ledger = invalidation.ledger.toLowerCase();
-  // A Team Supervisor heartbeat only rewrites its ambient lease file. That
-  // churn proves liveness; it never dirties a product projection domain.
-  if (ledger.split("/").pop() === "team_supervisor_leases.jsonl") return [];
+  // NodeDaemon and Team Supervisor heartbeats only rewrite ambient lease
+  // files. That churn proves liveness; it never dirties product projection
+  // truth, so a healthy SSE stream must not turn it into snapshot polling.
+  if (["node_daemon_leases.jsonl", "team_supervisor_leases.jsonl"].includes(
+    ledger.split("/").pop() ?? "",
+  )) return [];
   if (invalidation.scope === "execution_space") {
     return ledger.includes("work")
       ? ["works", "runtime"]

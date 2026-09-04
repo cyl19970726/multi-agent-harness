@@ -362,8 +362,8 @@ function TopBar({
             {!canPoll
               ? "Load a live source to enable polling"
               : pollEnabled
-                ? "Stop auto-refresh (~5s)"
-                : "Auto-refresh every ~5s"}
+                ? "Stop healthy-stream safety polling (~15s); reconnect fallback remains ~5s"
+                : "Poll a healthy stream every ~15s; reconnect fallback is automatic (~5s)"}
           </TooltipContent>
         </Tooltip>
         <Tooltip>

@@ -26,6 +26,7 @@ import {
   type SelectionState,
 } from "./selection";
 import { useEventStream } from "./useEventStream";
+import { useSnapshotPolling } from "./useSnapshotPolling";
 import { WorkbenchShell } from "./WorkbenchShell";
 import {
   freshnessDomains,
@@ -164,8 +165,6 @@ const offlineLabel = "not connected";
  * that already has them.
  */
 const emptySnapshot: DashboardSnapshot = {};
-/** Live-poll cadence: re-fetch /v1/snapshot roughly every 5s while polling. */
-const pollIntervalMs = 5000;
 /** One bounded authoritative probe per quiet connection epoch. SSE comments
  * are invisible to EventSource, so a successful probe is sufficient to restore
  * freshness even when no named event arrives. */
@@ -868,7 +867,8 @@ export function App() {
   }, [requestAuthoritativeResync, selectedCompanyId, selectedProjectId, selectedSpaceId]);
 
   // SSE is a freshness channel only. Raw ledger rows never become browser
-  // truth; every frame invalidates and converges through an authoritative GET.
+  // truth; durable frames invalidate and converge through an authoritative
+  // GET, while heartbeat-only lease invalidations remain transport activity.
   const handleSseFrame = useCallback((streamKey: string, frame: SseFrame) => {
     if (selectedStreamRef.current !== streamKey || !streamScopeTrustedRef.current) return;
     if (frame.kind === "projection_invalidated") {
@@ -877,7 +877,8 @@ export function App() {
         confirmedScopeRef.current,
       );
       if (decision.kind === "refresh") {
-        requestAuthoritativeResync(freshnessDomainsForInvalidation(frame.invalidation));
+        const affectedDomains = freshnessDomainsForInvalidation(frame.invalidation);
+        if (affectedDomains.length > 0) requestAuthoritativeResync(affectedDomains);
       }
       return;
     }
@@ -1000,29 +1001,16 @@ export function App() {
     [],
   );
 
-  // Interval poll of /v1/snapshot is manual opt-in only. Its ticks are freshness
-  // signals, not permission to start overlapping HTTP requests: the shared
-  // scheduler keeps one read in flight and one coalesced dirty follow-up.
-  // Automatic recovery is
-  // edge-triggered above and on stream reconnect, so an outage does not create
-  // permanent high-frequency polling. A failed
-  // poll surfaces the error but keeps the last good snapshot — it does not tear
-  // the view down to the empty workspace the way a manual "Load live" failure
-  // does. The interval is cleared on unmount, when it is no longer needed, and
-  // whenever apiUrl changes so we never poll a stale endpoint.
-  const shouldPoll = isLive && pollEnabled;
-  useEffect(() => {
-    if (!shouldPoll) return;
-    const id = window.setInterval(() => {
-      requestAuthoritativeResync();
-    }, pollIntervalMs);
-    return () => {
-      window.clearInterval(id);
-    };
-  }, [
-    shouldPoll,
-    requestAuthoritativeResync,
-  ]);
+  // SSE invalidations own normal refresh. The polling hook preserves a
+  // five-second degraded fallback, while a healthy stream disables polling
+  // unless the operator explicitly asks for the 15-second safety net. Every
+  // tick still enters the shared one-read/one-dirty scheduler.
+  useSnapshotPolling({
+    isLive,
+    pollEnabled,
+    streamMode: eventStream.mode,
+    onPoll: requestAuthoritativeResync,
+  });
 
   // Returns whether the action succeeded so callers that chain actions (e.g. the
   // composer's queue-then-deliver) can stop on failure instead of clobbering the
