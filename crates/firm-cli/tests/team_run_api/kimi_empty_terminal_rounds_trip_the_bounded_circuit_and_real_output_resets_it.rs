@@ -1,5 +1,32 @@
 use super::*;
 
+/// Load-independent round gate: the shim's own prompt marker is the round
+/// counter, so each phase waits for round completions instead of a wall-clock
+/// cadence. A phase fails with its name, the observed round count and the
+/// elapsed time instead of a bare iteration timeout.
+fn wait_for_prompt_count(
+    prompts: &std::path::Path,
+    expected: usize,
+    phase: &str,
+    started_at: std::time::Instant,
+    budget: Duration,
+) {
+    loop {
+        let count = std::fs::read_to_string(prompts)
+            .map(|content| content.lines().count())
+            .unwrap_or(0);
+        if count >= expected {
+            return;
+        }
+        assert!(
+            started_at.elapsed() < budget,
+            "phase '{phase}' exceeded its hard deadline: {:?} elapsed with {count}/{expected} provider rounds completed",
+            started_at.elapsed()
+        );
+        std::thread::sleep(Duration::from_millis(25));
+    }
+}
+
 #[test]
 fn kimi_empty_terminal_rounds_trip_the_bounded_circuit_and_real_output_resets_it() {
     let home = TempHome::new("team-run-kimi-empty-circuit");
@@ -48,36 +75,56 @@ fn kimi_empty_terminal_rounds_trip_the_bounded_circuit_and_real_output_resets_it
     );
     assert_eq!(status, 202, "body: {started}");
 
-    let mut stopped = None;
-    let mut last_snapshot = serde_json::Value::Null;
-    let mut post_reset_nudge_sent = false;
-    let mut circuit_converged = false;
-    for _ in 0..500 {
-        // Predicate-gated wake intentionally sleeps after round 3 produces a
-        // real report without changing Work. One explicit Host nudge starts
-        // the next empty sequence; the bounded zero-output probation then
-        // drives rounds 5/6 to the circuit threshold without fixed polling.
-        if !post_reset_nudge_sent
-            && std::fs::read_to_string(&prompts)
-                .ok()
-                .is_some_and(|content| content.lines().count() >= 3)
-        {
-            let (status, nudge) = serve.post_json(
-                &format!("/v1/team-runs/{run_id}/messages"),
-                &serde_json::json!({
-                    "sender_runtime_id": "host",
-                    "recipient_runtime_ids": [member_id],
-                    "kind": "message",
-                    "response_intent": "response_required",
-                    "body": "Continue the active lane after the productive reset round",
-                }),
-            );
-            assert_eq!(status, 200, "body: {nudge}");
-            post_reset_nudge_sent = true;
-        }
+    // The circuit's own bound is 3 consecutive unproductive rounds
+    // (WakePolicy::default, supervisor_wake.rs:81) per sequence, and this
+    // test exercises two sequences: rounds 1-3 (round 3 is the productive
+    // reset) and rounds 4-6. The per-round budget derives from that bound
+    // with >10x headroom over the isolated per-round cadence (~1-2s): a phase
+    // fails only when a single round stalls for 30s, which is a wedge, not
+    // scheduling jitter. Rounds are observed through the shim's prompt
+    // marker, never through wall-clock polling cadence.
+    const PER_ROUND_BUDGET: Duration = Duration::from_secs(30);
+    let started_at = std::time::Instant::now();
+    wait_for_prompt_count(
+        &prompts,
+        3,
+        "rounds 1-3: productive reset round",
+        started_at,
+        PER_ROUND_BUDGET * 3,
+    );
+
+    // Predicate-gated wake intentionally sleeps after round 3 produces a
+    // real report without changing Work. One explicit Host nudge starts
+    // the next empty sequence; the bounded zero-output probation then
+    // drives rounds 5/6 to the circuit threshold without fixed polling.
+    let (status, nudge) = serve.post_json(
+        &format!("/v1/team-runs/{run_id}/messages"),
+        &serde_json::json!({
+            "sender_runtime_id": "host",
+            "recipient_runtime_ids": [member_id],
+            "kind": "message",
+            "response_intent": "response_required",
+            "body": "Continue the active lane after the productive reset round",
+        }),
+    );
+    assert_eq!(status, 200, "body: {nudge}");
+
+    wait_for_prompt_count(
+        &prompts,
+        6,
+        "rounds 4-6: post-reset empty probation",
+        started_at,
+        PER_ROUND_BUDGET * 6,
+    );
+
+    // The breaker audit action and ProviderRuntimeProjection transition live in
+    // separate append-only ledgers, and both follow the sixth round. Require
+    // the breaker action, the failed projection and all five empty-round
+    // records to converge instead of treating a split read as a product
+    // failure.
+    let (stopped, last_snapshot) = loop {
         let (_, snapshot) = serve.get_json("/v1/snapshot");
-        last_snapshot = snapshot.clone();
-        stopped = snapshot["member_actions"]
+        let stopped = snapshot["member_actions"]
             .as_array()
             .into_iter()
             .flatten()
@@ -86,52 +133,50 @@ fn kimi_empty_terminal_rounds_trip_the_bounded_circuit_and_real_output_resets_it
                     && action["action_type"].as_str() == Some("provider_circuit_breaker")
             })
             .cloned();
-        if stopped.is_some() {
-            let member_failed = snapshot["member_runs"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .any(|member| {
-                    member["id"].as_str() == Some(member_id.as_str())
-                        && member["status"].as_str() == Some("failed")
-                });
-            // The breaker audit action and ProviderRuntimeProjection transition live in
-            // separate append-only ledgers. A snapshot may briefly observe
-            // the action before the failed ProviderRuntimeProjection revision; require both
-            // facts to converge instead of treating that split read as a
-            // product failure.
-            if !member_failed {
-                std::thread::sleep(Duration::from_millis(20));
-                continue;
-            }
-            let empty_rounds = snapshot["member_actions"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .filter(|action| {
-                    action["member_run_id"].as_str() == Some(member_id.as_str())
-                        && action["action_type"].as_str() == Some("empty_provider_round")
-                })
-                .collect::<Vec<_>>();
-            assert_eq!(empty_rounds.len(), 5, "snapshot: {snapshot}");
-            assert!(empty_rounds
-                .iter()
-                .all(|action| action["status"].as_str() == Some("failed")));
-            circuit_converged = true;
-            break;
+        let member_failed = snapshot["member_runs"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(|member| {
+                member["id"].as_str() == Some(member_id.as_str())
+                    && member["status"].as_str() == Some("failed")
+            });
+        let empty_rounds = snapshot["member_actions"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|action| {
+                action["member_run_id"].as_str() == Some(member_id.as_str())
+                    && action["action_type"].as_str() == Some("empty_provider_round")
+            })
+            .count();
+        let breaker_seen = stopped.is_some();
+        if breaker_seen && member_failed && empty_rounds == 5 {
+            break (stopped.expect("breaker action observed"), snapshot);
         }
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    let stopped = stopped.unwrap_or_else(|| {
-        panic!(
-            "repeated empty rounds must open the circuit; prompts={:?}; snapshot={last_snapshot}",
+        assert!(
+            started_at.elapsed() < PER_ROUND_BUDGET * 6 + Duration::from_secs(60),
+            "phase 'circuit convergence' exceeded its hard deadline: {:?} elapsed with breaker_action={} member_failed={} empty_rounds={}/5; prompts={:?}; snapshot={snapshot}",
+            started_at.elapsed(),
+            breaker_seen,
+            member_failed,
+            empty_rounds,
             std::fs::read_to_string(&prompts).ok()
-        )
-    });
-    assert!(
-        circuit_converged,
-        "breaker action and failed ProviderRuntimeProjection did not converge: {last_snapshot}"
-    );
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    let empty_round_actions = last_snapshot["member_actions"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|action| {
+            action["member_run_id"].as_str() == Some(member_id.as_str())
+                && action["action_type"].as_str() == Some("empty_provider_round")
+        })
+        .collect::<Vec<_>>();
+    assert!(empty_round_actions
+        .iter()
+        .all(|action| action["status"].as_str() == Some("failed")));
     let summary = stopped["summary"].as_str().unwrap_or_default();
     assert!(
         summary.contains("3 consecutive unproductive rounds"),
