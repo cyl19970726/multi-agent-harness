@@ -125,6 +125,9 @@ use team_run_setup::*;
 #[path = "main_modules/team_messaging.rs"]
 mod team_messaging;
 use team_messaging::*;
+#[path = "main_modules/team_authority.rs"]
+mod team_authority;
+use team_authority::*;
 #[path = "main_modules/team_recovery_work.rs"]
 mod team_recovery_work;
 use team_recovery_work::*;

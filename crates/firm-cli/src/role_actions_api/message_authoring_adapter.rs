@@ -65,11 +65,10 @@ pub(super) fn prepare_canonical_message(
         | MessageAuthoringIntent::RequestDecision { work_id, .. } => work_id.as_deref(),
     };
     let (_run, team) = team_for_run(store, team_run_id)?;
-    let current_team_revision = store
-        .teams()?
-        .into_iter()
-        .filter(|candidate| candidate.id == team.id)
-        .count() as u64;
+    let current_team_revision = crate::derive_team_revisions(&store.teams()?)
+        .get(&team.id)
+        .copied()
+        .unwrap_or_default();
     let member_runs = store
         .trust_member_runs(&auth.execution_space_id)?
         .into_iter()

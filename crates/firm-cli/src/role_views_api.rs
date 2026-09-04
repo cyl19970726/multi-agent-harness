@@ -328,13 +328,10 @@ impl Facts {
         side.extend(unkeyed_side);
         let team_rows = store.teams().map_err(|error| error.to_string())?;
         let run_rows = store.team_runs().map_err(|error| error.to_string())?;
-        let team_revisions = team_rows
-            .iter()
-            .filter(|team| team_ids.is_none_or(|ids| ids.contains(&team.id)))
-            .fold(BTreeMap::new(), |mut revisions, team| {
-                *revisions.entry(team.id.clone()).or_insert(0) += 1;
-                revisions
-            });
+        let mut team_revisions = crate::derive_team_revisions(&team_rows);
+        if let Some(team_ids) = team_ids {
+            team_revisions.retain(|team_id, _| team_ids.contains(team_id));
+        }
         let mut all_latest_runs = BTreeMap::new();
         for run in &run_rows {
             all_latest_runs.insert(run.id.clone(), run.clone());

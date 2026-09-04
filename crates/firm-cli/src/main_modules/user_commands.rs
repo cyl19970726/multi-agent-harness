@@ -870,11 +870,10 @@ pub(super) fn bound_member_message_command(store: &HarnessStore, args: &[String]
         .latest_teams()?
         .remove(&run.agent_team_id)
         .ok_or_else(|| CliError::Usage("TeamRun references a missing AgentTeam".into()))?;
-    let team_revision = store
-        .teams()?
-        .into_iter()
-        .filter(|candidate| candidate.id == team.id)
-        .count() as u64;
+    let team_revision = derive_team_revisions(&store.teams()?)
+        .get(&team.id)
+        .copied()
+        .unwrap_or_default();
     let body = required(args, "--body")?;
     if body.trim().is_empty() {
         return Err(CliError::Usage("--body must be non-empty Markdown".into()));

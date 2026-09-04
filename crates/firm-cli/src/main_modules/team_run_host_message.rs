@@ -21,14 +21,7 @@ pub(super) fn team_run_host_message_command(
     let surface = required(args, "--surface")?;
     let thread_id = required(args, "--thread-id")?;
     let run = latest_team_run(store, &team_run_id)?;
-    if run.host_control_mode != HostControlMode::ExternalInteractive
-        || canonical_surface(&run.host_surface) != canonical_surface(&surface)
-        || run.host_thread_id.as_deref() != Some(thread_id.as_str())
-    {
-        return Err(CliError::Usage(format!(
-            "UNAUTHORIZED_ACTOR: --surface and --thread-id must identify the exact external_interactive Host binding for TeamRun {team_run_id}"
-        )));
-    }
+    require_external_interactive_host_binding(&run, &surface, &thread_id)?;
 
     let execution_space_id = team_run_execution_space_id(store, &run)?;
     let team = store
@@ -51,11 +44,10 @@ pub(super) fn team_run_host_message_command(
             team.id
         )));
     };
-    let current_team_revision = store
-        .teams()?
-        .into_iter()
-        .filter(|candidate| candidate.id == team.id)
-        .count() as u64;
+    let current_team_revision = derive_team_revisions(&store.teams()?)
+        .get(&team.id)
+        .copied()
+        .unwrap_or_default();
     let body_digest = harness_core::agentfirm_api::message_body_digest(&body);
     let supplied_idempotency_key = value(args, "--idempotency-key");
     if supplied_idempotency_key
