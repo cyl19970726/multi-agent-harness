@@ -597,7 +597,7 @@ fn skills_validates_frontmatter_and_metadata() {
         "skills/good/agents/openai.yaml",
         "display_name: G\nshort_description: g\ndefault_prompt: do",
     );
-    let r = check_skills(&root, &["skills".into()], None);
+    let r = check_skills(&root, &["skills".into()], None, None);
     assert!(r.failures.is_empty(), "got {:?}", r.failures);
     assert!(r.summary.contains("checked 1 skills"));
 }
@@ -615,7 +615,7 @@ fn skills_flags_name_mismatch_and_short_description() {
         "skills/mine/agents/openai.yaml",
         "display_name: M\nshort_description: m\ndefault_prompt: do",
     );
-    let r = check_skills(&root, &["skills".into()], None);
+    let r = check_skills(&root, &["skills".into()], None, None);
     assert!(r
         .failures
         .iter()
@@ -640,12 +640,98 @@ fn skills_flags_dangling_member_ref() {
         ".agents/data/x-agent-member.json",
         "{\"skill_refs\":[\"real\",\"ghost\"]}",
     );
-    let r = check_skills(&root, &["skills".into()], Some(".agents/data"));
+    let r = check_skills(&root, &["skills".into()], Some(".agents/data"), None);
     assert!(r
         .failures
         .iter()
         .any(|f| f.contains("skill_ref \"ghost\" does not exist")));
     assert!(!r.failures.iter().any(|f| f.contains("\"real\"")));
+}
+
+#[test]
+fn skills_flags_retired_skill_name_under_a_skill_root() {
+    let root = tmp("skills-retired-root");
+    write(&root, "skills/company-org-operator/SKILL.md", "---\nname: company-org-operator\ndescription: a sufficiently long and specific description of the skill\n---\n");
+    let retired = RetiredSkillsConfig {
+        names: vec!["company-org-operator".into()],
+    };
+    let r = check_skills(&root, &["skills".into()], None, Some(&retired));
+    assert!(
+        r.failures
+            .iter()
+            .any(|f| f.contains("skills/company-org-operator") && f.contains("retired skill name")),
+        "got {:?}",
+        r.failures
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn skills_flags_a_retired_skill_name_symlinked_into_a_skill_root() {
+    let root = tmp("skills-retired-symlink");
+    write(&root, "elsewhere/company-org-operator/SKILL.md", "---\nname: company-org-operator\ndescription: a sufficiently long and specific description of the skill\n---\n");
+    std::fs::create_dir_all(root.join("skills")).expect("create skill root");
+    std::os::unix::fs::symlink(
+        root.join("elsewhere/company-org-operator"),
+        root.join("skills/company-org-operator"),
+    )
+    .expect("symlink retired skill into the root");
+    let retired = RetiredSkillsConfig {
+        names: vec!["company-org-operator".into()],
+    };
+    let r = check_skills(&root, &["skills".into()], None, Some(&retired));
+    assert!(
+        r.failures
+            .iter()
+            .any(|f| f.contains("skills/company-org-operator") && f.contains("retired skill name")),
+        "got {:?}",
+        r.failures
+    );
+}
+
+#[test]
+fn skills_ignores_retired_skill_name_outside_skill_roots() {
+    let root = tmp("skills-retired-outside");
+    write(&root, "archive/skills/company-org-operator/SKILL.md", "---\nname: company-org-operator\ndescription: a sufficiently long and specific description of the skill\n---\n");
+    let retired = RetiredSkillsConfig {
+        names: vec!["company-org-operator".into()],
+    };
+    let r = check_skills(&root, &["skills".into()], None, Some(&retired));
+    assert!(r.failures.is_empty(), "got {:?}", r.failures);
+}
+
+#[test]
+fn skills_without_retired_skills_config_keeps_existing_behaviour() {
+    let root = tmp("skills-retired-unconfigured");
+    write(&root, "skills/company-org-operator/SKILL.md", "---\nname: company-org-operator\ndescription: a sufficiently long and specific description of the skill\n---\n");
+    write(
+        &root,
+        "skills/company-org-operator/agents/openai.yaml",
+        "display_name: C\nshort_description: c\ndefault_prompt: do",
+    );
+    let r = check_skills(&root, &["skills".into()], None, None);
+    assert!(r.failures.is_empty(), "got {:?}", r.failures);
+}
+
+/// The retired-name check never bans a NON-retired symlink: skill
+/// distributions deliver symlinks into skill roots (PR #769 relies on them),
+/// and only configured names may be fenced.
+#[cfg(unix)]
+#[test]
+fn skills_admits_a_non_retired_symlink_under_a_skill_root() {
+    let root = tmp("skills-non-retired-symlink");
+    write(&root, "elsewhere/collaborate-as-agent-team-member/SKILL.md", "---\nname: collaborate-as-agent-team-member\ndescription: a sufficiently long and specific description of the skill\n---\n");
+    std::fs::create_dir_all(root.join("skills")).expect("create skill root");
+    std::os::unix::fs::symlink(
+        root.join("elsewhere/collaborate-as-agent-team-member"),
+        root.join("skills/collaborate-as-agent-team-member"),
+    )
+    .expect("symlink non-retired skill into the root");
+    let retired = RetiredSkillsConfig {
+        names: vec!["company-org-operator".into()],
+    };
+    let r = check_skills(&root, &["skills".into()], None, Some(&retired));
+    assert!(r.failures.is_empty(), "got {:?}", r.failures);
 }
 
 #[test]

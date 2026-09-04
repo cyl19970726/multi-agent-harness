@@ -22,6 +22,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+mod retired_skills;
+pub use retired_skills::RetiredSkillsConfig;
+
 /// Whether a gate's failures block the overall result or only warn.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -95,6 +98,10 @@ pub struct GovernanceConfig {
     /// and lines that clearly label migration/history remain readable.
     #[serde(default)]
     pub retired_vocabulary: Option<RetiredVocabularyConfig>,
+    /// Optional blocker that keeps retired skill names out of every
+    /// `skill_roots` entry, including ignored or untracked local copies.
+    #[serde(default)]
+    pub retired_skills: Option<RetiredSkillsConfig>,
     /// Exact document contracts that must keep teaching the same product
     /// invariants. Unlike retired vocabulary, this can cover unregistered
     /// repository entry points such as `AGENTS.md`.
@@ -268,6 +275,7 @@ impl GovernanceConfig {
                 coverage_exclude: Vec::new(),
             }),
             retired_vocabulary: None,
+            retired_skills: None,
             document_invariants: Vec::new(),
         }
     }
@@ -288,6 +296,7 @@ impl GovernanceConfig {
             member_data_root: None,
             registry: None,
             retired_vocabulary: None,
+            retired_skills: None,
             document_invariants: Vec::new(),
         }
     }
@@ -336,6 +345,7 @@ pub fn run_check_at(root: &Path, config: &GovernanceConfig, today: &str) -> Gove
             root,
             &config.skill_roots,
             config.member_data_root.as_deref(),
+            config.retired_skills.as_ref(),
         ),
     ];
     if let Some(reg) = &config.registry {
@@ -1066,10 +1076,12 @@ pub fn check_skills(
     root: &Path,
     skill_roots: &[String],
     member_data_root: Option<&str>,
+    retired_skills: Option<&RetiredSkillsConfig>,
 ) -> GateReport {
     let mut failures = Vec::new();
     let mut checked = 0usize;
     let mut resolved: BTreeSet<String> = BTreeSet::new();
+    let retired_names = retired_skills::retired_name_set(retired_skills);
 
     for skills_root in skill_roots {
         let abs_root = root.join(skills_root);
@@ -1077,6 +1089,13 @@ pub fn check_skills(
             continue;
         }
         for entry in sorted_dir(&abs_root) {
+            // Retired names fail before the symlink skip: a retired copy
+            // symlinked into a skill root is still a retired copy, and the
+            // name check does not depend on the entry being a valid skill.
+            if retired_names.contains(entry.as_str()) {
+                failures.push(retired_skills::retired_skill_finding(skills_root, &entry));
+                continue;
+            }
             let abs = abs_root.join(&entry);
             // Skip symlinks: a deliverable symlinked into .agents/skills/ for
             // runtime discovery is validated once at its real source.

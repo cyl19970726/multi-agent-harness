@@ -10,7 +10,6 @@ coverage/
 artifacts/
 tmp/
 .agents/runtime/
-.agents/skills/company-*/
 .research-cache/
 .claude/*
 !.claude/skills
