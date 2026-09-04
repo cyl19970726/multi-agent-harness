@@ -341,10 +341,16 @@ impl HttpExchange<'_> {
                 "/v1/snapshot" | "/v1/dashboard/snapshot" => {
                     // DOC-108: the snapshot no longer merges a Company Store
                     // projection; the execution store is the only source.
-                    let snapshot = projects
+                    match projects
                         .dashboard_snapshot_builds
-                        .build(|| dashboard_snapshot(store_owned))?;
-                    write_http_json(stream, "200 OK", &snapshot)?
+                        .build(|| dashboard_snapshot(store_owned))
+                    {
+                        Ok(snapshot) => write_http_json(stream, "200 OK", &snapshot)?,
+                        Err(error) => {
+                            let (status, body) = http_action_error_response(error);
+                            write_http_json(stream, status, &body)?
+                        }
+                    }
                 }
                 "/v1/test/dashboard-snapshot-builds"
                     if dashboard_snapshot_build_test_pause().is_some() =>

@@ -1,6 +1,94 @@
 use super::*;
 
 #[test]
+fn fixture_get_json_retries_an_empty_non_success_response() {
+    use std::io::{Read as _, Write as _};
+    use std::net::TcpListener;
+
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind fixture server");
+    let addr = listener.local_addr().expect("fixture server address");
+    let server = std::thread::spawn(move || {
+        for response in [
+            "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 11\r\nConnection: close\r\n\r\n{\"ok\":true}",
+        ] {
+            let (mut stream, _) = listener.accept().expect("accept fixture GET");
+            let mut request = [0_u8; 1024];
+            let _ = stream.read(&mut request).expect("read fixture GET");
+            stream
+                .write_all(response.as_bytes())
+                .expect("write fixture response");
+        }
+    });
+
+    let (status, body) = firm_env::get_json_at(&addr.to_string(), "/v1/snapshot");
+    server.join().expect("fixture server");
+    assert_eq!(status, 200);
+    assert_eq!(body, serde_json::json!({"ok": true}));
+}
+
+#[test]
+fn fixture_get_json_does_not_retry_a_malformed_success_body() {
+    use std::io::{Read as _, Write as _};
+    use std::net::TcpListener;
+
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind fixture server");
+    let addr = listener.local_addr().expect("fixture server address");
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("accept fixture GET");
+        let mut request = [0_u8; 1024];
+        let _ = stream.read(&mut request).expect("read fixture GET");
+        stream
+            .write_all(
+                b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 8\r\nConnection: close\r\n\r\nnot-json",
+            )
+            .expect("write malformed success");
+        drop(stream);
+        listener
+            .set_nonblocking(true)
+            .expect("make fixture listener nonblocking");
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(
+            matches!(listener.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock),
+            "malformed 2xx response must not be retried"
+        );
+    });
+
+    let panic =
+        std::panic::catch_unwind(|| firm_env::get_json_at(&addr.to_string(), "/v1/snapshot"))
+            .expect_err("malformed 2xx must fail");
+    server.join().expect("fixture server");
+    let message = panic
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .or_else(|| panic.downcast_ref::<&str>().copied())
+        .expect("panic message");
+    assert!(message.contains("status line: \"HTTP/1.1 200 OK\""));
+    assert!(message.contains("Content-Type: application/json"));
+}
+
+#[test]
+fn snapshot_read_error_has_a_json_http_error_body() {
+    let home = TempHome::new("snapshot-json-error");
+    let project_id = init_project(&home, "alpha");
+    let serve = ServeHandle::spawn(&home, home.base(), &[]);
+    std::fs::write(
+        home.spaces_dir()
+            .join(project_id)
+            .join("provider_launch_profiles.jsonl"),
+        "not-json\n",
+    )
+    .expect("poison snapshot ledger");
+
+    let (status, body) = serve.get_json("/v1/snapshot");
+    assert_eq!(status, 400, "body: {body}");
+    assert_eq!(body["ok"], false);
+    assert!(body["error"]
+        .as_str()
+        .is_some_and(|error| !error.is_empty()));
+}
+
+#[test]
 fn post_mutation_response_is_bounded_and_dashboard_can_refresh_from_get_snapshot() {
     let home = TempHome::new("bounded-mutation-response");
     let _project_id = init_project(&home, "alpha");
