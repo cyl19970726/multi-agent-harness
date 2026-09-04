@@ -18,6 +18,16 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 static COUNTER: AtomicU64 = AtomicU64::new(0);
+const GET_JSON_TRANSIENT_RETRIES: usize = 3;
+const GET_JSON_TRANSIENT_BACKOFF: std::time::Duration = std::time::Duration::from_millis(25);
+
+#[derive(Debug)]
+struct TestHttpResponse {
+    status: u16,
+    status_line: String,
+    headers: String,
+    body: String,
+}
 
 pub fn unix_ms() -> u64 {
     std::time::SystemTime::now()
@@ -428,8 +438,8 @@ impl ServeHandle {
     fn wait_until_ready(&self) {
         let deadline = Instant::now() + Duration::from_secs(10);
         while Instant::now() < deadline {
-            if let Ok((status, body)) = self.try_get("/health") {
-                if status == 200 && body.contains("\"status\"") {
+            if let Ok(response) = self.try_get("/health") {
+                if response.status == 200 && response.body.contains("\"status\"") {
                     return;
                 }
             }
@@ -438,26 +448,15 @@ impl ServeHandle {
         panic!("harness serve did not become ready on {}", self.addr());
     }
 
-    /// GET a path, returning (status_code, body). Errors propagate (used by the
-    /// readiness poll); production calls use `get`.
-    fn try_get(&self, path: &str) -> std::io::Result<(u16, String)> {
-        let mut stream = TcpStream::connect(self.addr())?;
-        stream.set_read_timeout(Some(Duration::from_secs(5)))?;
-        write!(
-            stream,
-            "GET {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
-        )?;
-        let mut raw = String::new();
-        read_http_to_string(&mut stream, &mut raw)?;
-        Ok(split_status_body(&raw))
+    /// GET a path. Errors propagate (used by the readiness poll); production
+    /// calls use `get_json`.
+    fn try_get(&self, path: &str) -> std::io::Result<TestHttpResponse> {
+        try_get_at(&self.addr(), path)
     }
 
     /// GET a path, returning (status_code, parsed JSON body).
     pub fn get_json(&self, path: &str) -> (u16, serde_json::Value) {
-        let (status, body) = self.try_get(path).expect("GET request");
-        let json = serde_json::from_str(&body)
-            .unwrap_or_else(|e| panic!("GET {path} body not JSON ({e}): {body}"));
-        (status, json)
+        get_json_at(&self.addr(), path)
     }
 
     /// GET JSON with explicit request headers (for authenticated read models).
@@ -908,19 +907,22 @@ impl ServeHandle {
         // production fallback for missing AgentTeam identity.
         let mut normalized_body = body.clone();
         if path == "/v1/team-runs" && body.get("agent_team_id").is_none() {
-            if let Ok((200, snapshot)) = self.try_get("/v1/snapshot") {
-                if let Ok(snapshot) = serde_json::from_str::<serde_json::Value>(&snapshot) {
-                    let has_fixture = snapshot["teams"].as_array().is_some_and(|teams| {
-                        teams
-                            .iter()
-                            .any(|team| team["id"].as_str() == Some("team-runtime-fixture"))
-                    });
-                    if has_fixture {
-                        normalized_body["agent_team_id"] =
-                            serde_json::Value::String("team-runtime-fixture".to_string());
-                        if let Some(object) = normalized_body.as_object_mut() {
-                            object.remove("mission_id");
-                            object.remove("wave_id");
+            if let Ok(response) = self.try_get("/v1/snapshot") {
+                if response.status == 200 {
+                    if let Ok(snapshot) = serde_json::from_str::<serde_json::Value>(&response.body)
+                    {
+                        let has_fixture = snapshot["teams"].as_array().is_some_and(|teams| {
+                            teams
+                                .iter()
+                                .any(|team| team["id"].as_str() == Some("team-runtime-fixture"))
+                        });
+                        if has_fixture {
+                            normalized_body["agent_team_id"] =
+                                serde_json::Value::String("team-runtime-fixture".to_string());
+                            if let Some(object) = normalized_body.as_object_mut() {
+                                object.remove("mission_id");
+                                object.remove("wave_id");
+                            }
                         }
                     }
                 }
@@ -1108,6 +1110,42 @@ fn read_http_to_string(stream: &mut TcpStream, raw: &mut String) -> std::io::Res
     }
 }
 
+fn try_get_at(addr: &str, path: &str) -> std::io::Result<TestHttpResponse> {
+    let mut stream = TcpStream::connect(addr)?;
+    stream.set_read_timeout(Some(Duration::from_secs(5)))?;
+    write!(
+        stream,
+        "GET {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
+    )?;
+    let mut raw = String::new();
+    read_http_to_string(&mut stream, &mut raw)?;
+    Ok(split_http_response(&raw))
+}
+
+pub(crate) fn get_json_at(addr: &str, path: &str) -> (u16, serde_json::Value) {
+    for attempt in 0..=GET_JSON_TRANSIENT_RETRIES {
+        let response = try_get_at(addr, path).expect("GET request");
+        let parsed = serde_json::from_str::<serde_json::Value>(&response.body);
+        let retryable = response.body.is_empty() && !(200..300).contains(&response.status)
+            || response.status == 503
+                && parsed
+                    .as_ref()
+                    .is_ok_and(|body| body["error"] == "store_busy" && body["retryable"] == true);
+        if retryable && attempt < GET_JSON_TRANSIENT_RETRIES {
+            std::thread::sleep(GET_JSON_TRANSIENT_BACKOFF);
+            continue;
+        }
+        let json = parsed.unwrap_or_else(|error| {
+            panic!(
+                "GET {path} body not JSON ({error}); status line: {:?}; headers: {:?}; body: {}",
+                response.status_line, response.headers, response.body
+            )
+        });
+        return (response.status, json);
+    }
+    unreachable!("bounded GET retry loop always returns or panics")
+}
+
 fn complete_http_response(raw: &str) -> bool {
     let Some((headers, body)) = raw
         .split_once("\r\n\r\n")
@@ -1129,18 +1167,28 @@ fn complete_http_response(raw: &str) -> bool {
 /// Split a raw HTTP response into (status_code, body). Tolerant of either CRLF or
 /// LF header separators.
 fn split_status_body(raw: &str) -> (u16, String) {
-    let status = raw
-        .lines()
-        .next()
-        .and_then(|l| l.split_whitespace().nth(1))
-        .and_then(|c| c.parse::<u16>().ok())
-        .unwrap_or(0);
-    let body = raw
+    let response = split_http_response(raw);
+    (response.status, response.body)
+}
+
+fn split_http_response(raw: &str) -> TestHttpResponse {
+    let (header_block, body) = raw
         .split_once("\r\n\r\n")
         .or_else(|| raw.split_once("\n\n"))
-        .map(|(_, b)| b.to_string())
-        .unwrap_or_default();
-    (status, body)
+        .unwrap_or((raw, ""));
+    let mut header_lines = header_block.lines();
+    let status_line = header_lines.next().unwrap_or("<missing>").to_string();
+    let status = status_line
+        .split_whitespace()
+        .nth(1)
+        .and_then(|c| c.parse::<u16>().ok())
+        .unwrap_or(0);
+    TestHttpResponse {
+        status,
+        status_line,
+        headers: header_lines.collect::<Vec<_>>().join("\n"),
+        body: body.to_string(),
+    }
 }
 
 /// Run `harness <args...>` from `cwd` against `home`; return its Output.
