@@ -218,6 +218,9 @@ use gateway_runtime::*;
 #[path = "main_modules/dashboard_projection.rs"]
 mod dashboard_projection;
 use dashboard_projection::*;
+#[path = "main_modules/dashboard_team_run_projection.rs"]
+mod dashboard_team_run_projection;
+use dashboard_team_run_projection::*;
 #[path = "main_modules/process_reaper.rs"]
 mod process_reaper;
 use process_reaper::*;
