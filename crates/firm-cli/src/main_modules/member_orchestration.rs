@@ -775,6 +775,29 @@ fn prepare_member_workspace_for_spawn_with_hooks(
     unreachable!("bounded pre-spawn ProviderRuntimeProjection CAS loop returns on every path")
 }
 
+/// What one Supervisor generation proved about the TeamRun it adopted.
+///
+/// A Supervisor that returns `Ok(())` has not thereby converged anything: the
+/// TeamRun may be exactly as `Running` and exactly as stuck as it was before
+/// adoption. Naming that outcome is what lets the NodeDaemon stop re-adopting
+/// an unchanged run under a fresh Supervisor generation (#704, #671). A
+/// failure stays an `Err` and keeps its existing recovery-marker handling.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum TeamRunDriveOutcome {
+    /// The TeamRun left `Running`, or its canonical TeamRun/MemberRun/Work/
+    /// Message/RuntimeCommand state changed under this generation. A later
+    /// adoption would start from a different canonical state.
+    Progressed { team_run_status: TeamRunStatus },
+    /// The Supervisor returned with the TeamRun still `Running` and not one
+    /// canonical row changed. Re-adopting this exact `canonical_state` can
+    /// only repeat this outcome, so the daemon holds adoption until the state
+    /// changes or an explicit recovery/start intent arrives.
+    NoProgress {
+        canonical_state: String,
+        detail: String,
+    },
+}
+
 pub(crate) fn drive_prepared_team_run(
     prepared: PreparedTeamRunStart,
     execution_space: Option<ExecutionSpace>,
@@ -782,7 +805,7 @@ pub(crate) fn drive_prepared_team_run(
     max_concurrency: usize,
     idle_timeout: Duration,
     live_sink: Option<NativeSessionWakeSink>,
-) -> CliResult<()> {
+) -> CliResult<TeamRunDriveOutcome> {
     let PreparedTeamRunStart {
         run_id,
         objective,
@@ -813,6 +836,15 @@ pub(crate) fn drive_prepared_team_run(
         }
     };
     let execution_space_id = execution_space.as_ref().map(|space| space.id.clone());
+    // Observe the canonical state this generation inherits before any member
+    // runtime touches it. The same observation at exit is what distinguishes
+    // "this adoption changed something" from "this adoption produced nothing
+    // a further adoption could improve on".
+    let entry_canonical_state = team_run_canonical_state_fingerprint(
+        &ledger.store,
+        execution_space_id.as_deref(),
+        &run_id,
+    )?;
     let project_id = project_context.as_ref().map(|context| context.id.clone());
     let project_selector = project_context
         .as_ref()
@@ -1079,6 +1111,29 @@ pub(crate) fn drive_prepared_team_run(
     }
 
     let current = latest_team_run(&ledger.store, &run_id)?;
+    // The exit observation must be taken before this generation journals its
+    // own stop event, and the fingerprint deliberately excludes that journal,
+    // so "nothing changed" stays provable rather than self-refuting.
+    let exit_canonical_state = team_run_canonical_state_fingerprint(
+        &ledger.store,
+        execution_space_id.as_deref(),
+        &run_id,
+    )?;
+    let drive_outcome = if current.status == TeamRunStatus::Running
+        && exit_canonical_state == entry_canonical_state
+    {
+        TeamRunDriveOutcome::NoProgress {
+            canonical_state: exit_canonical_state,
+            detail: format!(
+                "member supervisor stopped with team run still running and no canonical TeamRun, MemberRun, Work, Message or RuntimeCommand change ({} runtime outcome(s))",
+                outcomes.len()
+            ),
+        }
+    } else {
+        TeamRunDriveOutcome::Progressed {
+            team_run_status: current.status,
+        }
+    };
     ledger.fold_event(
         TeamRunEventSourceKind::Host,
         None,
@@ -1086,9 +1141,13 @@ pub(crate) fn drive_prepared_team_run(
         &run_id,
         "updated",
         &format!(
-            "member supervisor stopped with team run still {} ({} runtime outcome(s))",
+            "member supervisor stopped with team run still {} ({} runtime outcome(s), canonical state {})",
             serde_snake_label(&current.status),
-            outcomes.len()
+            outcomes.len(),
+            match &drive_outcome {
+                TeamRunDriveOutcome::NoProgress { .. } => "unchanged",
+                TeamRunDriveOutcome::Progressed { .. } => "changed",
+            }
         ),
     )?;
 
@@ -1105,7 +1164,7 @@ pub(crate) fn drive_prepared_team_run(
             println!("    {line}");
         }
     }
-    Ok(())
+    Ok(drive_outcome)
 }
 
 pub(super) enum MemberProviderStartClaim {

@@ -44,12 +44,17 @@ impl MultiTeamDaemon {
                 {
                     continue;
                 }
-                match self.team_run_recovery_is_blocking(&space.id, &store, &run.id) {
+                // A durable adoption hold means the last generation already
+                // proved what this canonical state produces. Honour it until
+                // canonical state changes or an explicit recovery/start
+                // intent clears it, instead of burning a fresh Supervisor
+                // generation on the identical observation (#704, #671).
+                match self.team_run_adoption_is_held(&space.id, &store, &run.id) {
                     Ok(true) => continue,
                     Ok(false) => {}
                     Err(error) => {
                         eprintln!(
-                            "[node-daemon] cannot inspect Supervisor recovery marker for {}/{}: {error}",
+                            "[node-daemon] cannot inspect Supervisor adoption hold for {}/{}: {error}",
                             space.id, run.id
                         );
                         continue;
@@ -339,36 +344,39 @@ impl MultiTeamDaemon {
     }
 
     /// Reap finished supervisor threads and remove them from the context registry.
+    ///
+    /// Swapping the registry is the only step that needs the `contexts` lock.
+    /// Joining a thread and reconciling its durable outcome are whole-Store
+    /// scans; holding the registry lock across them head-of-line blocks every
+    /// `status` and `stop` request and is what made `daemon start` miss its
+    /// 60-second ready deadline (#671).
     pub(super) fn reap_finished(&self) -> CliResult<()> {
-        let mut contexts = self
-            .contexts
-            .lock()
-            .map_err(|e| CliError::Usage(format!("context lock poisoned: {e}")))?;
+        let finished = {
+            let mut contexts = self
+                .contexts
+                .lock()
+                .map_err(|e| CliError::Usage(format!("context lock poisoned: {e}")))?;
 
-        let mut finished = Vec::new();
-        let mut still_running = Vec::new();
+            let mut finished = Vec::new();
+            let mut still_running = Vec::new();
 
-        for ctx in contexts.drain(..) {
-            let is_done = ctx.thread.as_ref().map(|t| t.is_finished()).unwrap_or(true);
-            if is_done {
-                finished.push(ctx);
-            } else {
-                still_running.push(ctx);
+            for ctx in contexts.drain(..) {
+                let is_done = ctx.thread.as_ref().map(|t| t.is_finished()).unwrap_or(true);
+                if is_done {
+                    finished.push(ctx);
+                } else {
+                    still_running.push(ctx);
+                }
             }
-        }
 
-        *contexts = still_running;
+            *contexts = still_running;
+            finished
+        };
 
         for mut ctx in finished {
             if let Some(thread) = ctx.thread.take() {
                 match thread.join() {
-                    Ok(Ok(())) => {
-                        self.block_finished_supervisor_if_unresolved(&ctx);
-                        eprintln!(
-                            "[node-daemon] {}/{} completed",
-                            ctx.execution_space_id, ctx.run_id
-                        );
-                    }
+                    Ok(Ok(outcome)) => self.settle_finished_supervisor(&ctx, outcome),
                     Ok(Err(e)) => {
                         self.block_finished_supervisor_failure(&ctx, &e);
                         eprintln!(
@@ -390,6 +398,47 @@ impl MultiTeamDaemon {
             }
         }
         Ok(())
+    }
+
+    /// Record what one finished Supervisor generation proved. An unresolved
+    /// RuntimeCommand is the stronger diagnosis and wins; otherwise a
+    /// no-progress generation leaves a durable, canonical-state-keyed hold so
+    /// the next scan does not re-adopt the identical observation.
+    fn settle_finished_supervisor(&self, ctx: &MultiTeamContext, outcome: TeamRunDriveOutcome) {
+        if self.block_finished_supervisor_if_unresolved(ctx) {
+            eprintln!(
+                "[node-daemon] {}/{} completed with an unresolved RuntimeCommand; adoption requires explicit recovery",
+                ctx.execution_space_id, ctx.run_id
+            );
+            return;
+        }
+        match outcome {
+            TeamRunDriveOutcome::Progressed { .. } => {
+                eprintln!(
+                    "[node-daemon] {}/{} completed",
+                    ctx.execution_space_id, ctx.run_id
+                );
+            }
+            TeamRunDriveOutcome::NoProgress {
+                canonical_state,
+                detail,
+            } => {
+                match self.store_for_space(&ctx.execution_space_id) {
+                    Ok(store) => self.hold_adoption_without_progress(
+                        &ctx.execution_space_id,
+                        &store,
+                        &ctx.run_id,
+                        &detail,
+                        Some(&canonical_state),
+                    ),
+                    Err(error) => self.block_finished_supervisor_failure(ctx, &error),
+                }
+                eprintln!(
+                    "[node-daemon] {}/{} completed without canonical progress; adoption is held until canonical state changes",
+                    ctx.execution_space_id, ctx.run_id
+                );
+            }
+        }
     }
 }
 

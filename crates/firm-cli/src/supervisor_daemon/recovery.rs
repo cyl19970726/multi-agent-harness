@@ -2,6 +2,24 @@ use super::*;
 
 const SUPERVISOR_RECOVERY_REQUIRED: &str = "team_supervisor_recovery_required";
 const SUPERVISOR_RECOVERED: &str = "team_supervisor_recovered";
+/// One adoption of this TeamRun ended without changing any canonical state.
+/// Unlike `SUPERVISOR_RECOVERY_REQUIRED` this is not a diagnosis of runtime
+/// damage: it is a bounded statement that repeating the same adoption against
+/// the same observed canonical state cannot produce a different result.
+const SUPERVISOR_NO_PROGRESS: &str = "team_supervisor_no_progress";
+
+/// Why automatic adoption of one TeamRun is currently held.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum SupervisorAdoptionHold {
+    /// Nothing holds adoption.
+    None,
+    /// A Supervisor generation ended in a state that needs an explicit
+    /// operator recovery or start intent regardless of canonical change.
+    RecoveryRequired,
+    /// The last adoption produced no canonical progress at this exact
+    /// fingerprint. Adoption resumes as soon as canonical state differs.
+    NoProgressAt(String),
+}
 
 fn latest_supervisor_recovery_action(
     store: &HarnessStore,
@@ -14,17 +32,51 @@ fn latest_supervisor_recovery_action(
             action.team_run_id == run_id
                 && matches!(
                     action.action_type.as_str(),
-                    SUPERVISOR_RECOVERY_REQUIRED | SUPERVISOR_RECOVERED
+                    SUPERVISOR_RECOVERY_REQUIRED | SUPERVISOR_RECOVERED | SUPERVISOR_NO_PROGRESS
                 )
         })
         .max_by_key(|action| action.seq))
 }
 
-fn recovery_marker_is_blocking(action: Option<&harness_core::MemberAction>) -> bool {
-    action.is_some_and(|action| {
-        action.action_type == SUPERVISOR_RECOVERY_REQUIRED
-            && action.status == harness_core::MemberActionStatus::Failed
-    })
+/// Read the latest durable adoption outcome as a hold. Only the newest marker
+/// counts: an explicit `SUPERVISOR_RECOVERED` after either kind of block is
+/// the operator/Host intent that re-enables automatic adoption.
+fn adoption_hold(action: Option<&harness_core::MemberAction>) -> SupervisorAdoptionHold {
+    let Some(action) = action else {
+        return SupervisorAdoptionHold::None;
+    };
+    if action.status != harness_core::MemberActionStatus::Failed {
+        return SupervisorAdoptionHold::None;
+    }
+    match action.action_type.as_str() {
+        SUPERVISOR_RECOVERY_REQUIRED => SupervisorAdoptionHold::RecoveryRequired,
+        SUPERVISOR_NO_PROGRESS => match crate::canonical_state_from_evidence(&action.evidence_refs)
+        {
+            Some(fingerprint) => SupervisorAdoptionHold::NoProgressAt(fingerprint.to_string()),
+            // A no-progress marker without its canonical-state binding cannot
+            // prove what it was observed under. Fail closed: hold adoption
+            // until an explicit recovery or start intent clears it.
+            None => SupervisorAdoptionHold::RecoveryRequired,
+        },
+        _ => SupervisorAdoptionHold::None,
+    }
+}
+
+/// Whether any durable hold currently stands, of either kind.
+fn adoption_hold_stands(action: Option<&harness_core::MemberAction>) -> bool {
+    !matches!(adoption_hold(action), SupervisorAdoptionHold::None)
+}
+
+/// Start failures that say nothing durable about this TeamRun. Holding
+/// adoption on them would suppress a run that a freed concurrency slot or a
+/// restored daemon generation makes startable again with no canonical change.
+fn start_failure_is_transient(error: &CliError) -> bool {
+    let message = error.to_string();
+    message.contains("NodeDaemon at capacity")
+        || message.contains("NodeDaemon already manages")
+        || message.contains("NODE_HAS_NO_REGISTERED_PROJECT")
+        || message.contains("NODE_DAEMON_GENERATION_FENCED")
+        || message.contains("SUPERVISOR_GENERATION_FENCED")
 }
 
 pub(super) fn team_run_has_unresolved_runtime_command(
@@ -197,6 +249,11 @@ fn start_postcondition_matches(
 }
 
 impl MultiTeamDaemon {
+    /// A start that never reached a RuntimeCommand still has to leave a
+    /// durable outcome. Without one, a structurally dead historical run
+    /// (missing cwd, missing Team, stale permission ceiling, unreleased
+    /// AgentSession) is retried on every scan and burns a Supervisor
+    /// generation each time (#671).
     pub(super) fn block_start_failure_if_unresolved(
         &self,
         execution_space_id: &str,
@@ -204,6 +261,36 @@ impl MultiTeamDaemon {
         run_id: &str,
         error: &CliError,
     ) {
+        if self.block_start_failure_with_unresolved_runtime_command(
+            execution_space_id,
+            store,
+            run_id,
+            error,
+        ) {
+            return;
+        }
+        if start_failure_is_transient(error) {
+            return;
+        }
+        self.hold_adoption_without_progress(
+            execution_space_id,
+            store,
+            run_id,
+            &format!("TEAM_SUPERVISOR_START_FAILED_BEFORE_RUNTIME_COMMAND: {error}"),
+            None,
+        );
+    }
+
+    /// Returns true when a blocking recovery marker was written (or already
+    /// stood) because an unresolved RuntimeCommand exists under this exact
+    /// daemon+Supervisor authority.
+    fn block_start_failure_with_unresolved_runtime_command(
+        &self,
+        execution_space_id: &str,
+        store: &HarnessStore,
+        run_id: &str,
+        error: &CliError,
+    ) -> bool {
         let daemon = store
             .latest_node_daemon_lease(&self.node_id)
             .ok()
@@ -222,7 +309,7 @@ impl MultiTeamDaemon {
                 })
             });
         let (Some(daemon), Some(supervisor)) = (daemon, supervisor) else {
-            return;
+            return false;
         };
         match team_run_has_unresolved_runtime_command(
             store,
@@ -233,7 +320,7 @@ impl MultiTeamDaemon {
             &supervisor.supervisor_id,
             supervisor.generation,
         ) {
-            Ok(false) => {}
+            Ok(false) => false,
             Ok(true) => {
                 if let Err(marker_error) = self.block_team_run_after_supervisor_failure(
                     execution_space_id,
@@ -247,19 +334,28 @@ impl MultiTeamDaemon {
                         "[node-daemon] could not persist start-failure recovery marker for {execution_space_id}/{run_id}: {marker_error}"
                     );
                 }
+                true
             }
-            Err(read_error) => eprintln!(
-                "[node-daemon] could not inspect unresolved RuntimeCommands after start failure for {execution_space_id}/{run_id}: {read_error}"
-            ),
+            Err(read_error) => {
+                eprintln!(
+                    "[node-daemon] could not inspect unresolved RuntimeCommands after start failure for {execution_space_id}/{run_id}: {read_error}"
+                );
+                false
+            }
         }
     }
 
-    pub(super) fn block_finished_supervisor_if_unresolved(&self, context: &MultiTeamContext) {
+    /// Returns true when a blocking recovery marker was written because the
+    /// finished Supervisor left an unresolved RuntimeCommand behind.
+    pub(super) fn block_finished_supervisor_if_unresolved(
+        &self,
+        context: &MultiTeamContext,
+    ) -> bool {
         let store = match self.store_for_space(&context.execution_space_id) {
             Ok(store) => store,
             Err(error) => {
                 self.block_finished_supervisor_volatile(context, &error);
-                return;
+                return true;
             }
         };
         match team_run_has_unresolved_runtime_command(
@@ -271,14 +367,96 @@ impl MultiTeamDaemon {
             &context.supervisor_id,
             context.supervisor_generation,
         ) {
-            Ok(false) => {}
-            Ok(true) => self.block_finished_supervisor(
-                context,
-                &store,
-                &CliError::Usage("TEAM_SUPERVISOR_EXITED_WITH_UNRESOLVED_RUNTIME_COMMAND".into()),
-            ),
-            Err(error) => self.block_finished_supervisor_volatile(context, &error),
+            Ok(false) => false,
+            Ok(true) => {
+                self.block_finished_supervisor(
+                    context,
+                    &store,
+                    &CliError::Usage(
+                        "TEAM_SUPERVISOR_EXITED_WITH_UNRESOLVED_RUNTIME_COMMAND".into(),
+                    ),
+                );
+                true
+            }
+            Err(error) => {
+                self.block_finished_supervisor_volatile(context, &error);
+                true
+            }
         }
+    }
+
+    /// Record that one adoption produced no canonical progress, bound to the
+    /// exact canonical state it observed. `observed_state` is supplied by the
+    /// Supervisor that measured it; when absent the state is re-observed here
+    /// (the start-failure path never got far enough to measure one).
+    pub(super) fn hold_adoption_without_progress(
+        &self,
+        execution_space_id: &str,
+        store: &HarnessStore,
+        run_id: &str,
+        detail: &str,
+        observed_state: Option<&str>,
+    ) {
+        let canonical_state = match observed_state {
+            Some(state) => Ok(state.to_string()),
+            None => {
+                crate::team_run_canonical_state_fingerprint(store, Some(execution_space_id), run_id)
+            }
+        };
+        let result = canonical_state.and_then(|canonical_state| {
+            self.record_no_progress_adoption_outcome(store, run_id, &canonical_state, detail)
+        });
+        if let Err(error) = result {
+            // Without a durable outcome the next scan would adopt this run
+            // again immediately. Fall back to the process-local block that the
+            // finished-Supervisor path already uses when its durable
+            // projection is unavailable.
+            self.recovery_blocked_runs
+                .lock()
+                .unwrap_or_else(|lock_error| lock_error.into_inner())
+                .insert((execution_space_id.to_string(), run_id.to_string()));
+            eprintln!(
+                "[node-daemon] volatile adoption hold for {execution_space_id}/{run_id} because its durable no-progress outcome could not be written: {error}"
+            );
+        }
+    }
+
+    fn record_no_progress_adoption_outcome(
+        &self,
+        store: &HarnessStore,
+        run_id: &str,
+        canonical_state: &str,
+        detail: &str,
+    ) -> CliResult<()> {
+        let latest = latest_supervisor_recovery_action(store, run_id)?;
+        match adoption_hold(latest.as_ref()) {
+            // A hard recovery diagnosis outranks a no-progress observation.
+            SupervisorAdoptionHold::RecoveryRequired => return Ok(()),
+            // The same fingerprint is already held; appending again would only
+            // grow the journal.
+            SupervisorAdoptionHold::NoProgressAt(held) if held == canonical_state => return Ok(()),
+            _ => {}
+        }
+        let host = crate::latest_member_runs_in_append_order(store)?
+            .into_iter()
+            .find(|member| member.team_run_id == run_id && member.role == "host")
+            .ok_or_else(|| {
+                CliError::Usage(format!(
+                    "TEAM_RUN_HOST_NOT_FOUND: cannot project Supervisor adoption outcome for {run_id}"
+                ))
+            })?;
+        TeamRunLedger::without_supervisor(store, run_id).append_action_with_provider_status(
+            &host.id,
+            SUPERVISOR_NO_PROGRESS,
+            harness_core::MemberActionStatus::Failed,
+            "TeamSupervisor adoption produced no canonical progress",
+            &format!(
+                "{detail}. Automatic adoption is held until this TeamRun's canonical TeamRun, MemberRun, Work, Message or RuntimeCommand state changes, or an explicit operator recovery or start intent arrives."
+            ),
+            None,
+            &[crate::canonical_state_evidence_ref(canonical_state)],
+        )?;
+        Ok(())
     }
 
     pub(super) fn block_finished_supervisor_failure(
@@ -335,7 +513,13 @@ impl MultiTeamDaemon {
         Ok(HarnessStore::new(space.store_root))
     }
 
-    pub(super) fn team_run_recovery_is_blocking(
+    /// Whether automatic adoption of this TeamRun is currently held.
+    ///
+    /// A `NoProgressAt` hold is honoured only while the canonical state still
+    /// matches the fingerprint it was written under; any canonical change (new
+    /// Work, new Message, a Reopen, a RuntimeCommand) re-enables adoption with
+    /// no operator action at all.
+    pub(super) fn team_run_adoption_is_held(
         &self,
         execution_space_id: &str,
         store: &HarnessStore,
@@ -349,9 +533,16 @@ impl MultiTeamDaemon {
         {
             return Ok(true);
         }
-        Ok(recovery_marker_is_blocking(
-            latest_supervisor_recovery_action(store, run_id)?.as_ref(),
-        ))
+        match adoption_hold(latest_supervisor_recovery_action(store, run_id)?.as_ref()) {
+            SupervisorAdoptionHold::None => Ok(false),
+            SupervisorAdoptionHold::RecoveryRequired => Ok(true),
+            SupervisorAdoptionHold::NoProgressAt(held) => Ok(held
+                == crate::team_run_canonical_state_fingerprint(
+                    store,
+                    Some(execution_space_id),
+                    run_id,
+                )?),
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -368,7 +559,13 @@ impl MultiTeamDaemon {
             .lock()
             .unwrap_or_else(|lock_error| lock_error.into_inner())
             .insert((execution_space_id.to_string(), run_id.to_string()));
-        if recovery_marker_is_blocking(latest_supervisor_recovery_action(store, run_id)?.as_ref()) {
+        // A no-progress hold is a weaker statement than a recovery diagnosis,
+        // so it must not suppress this marker; only an existing recovery
+        // requirement already says everything this one would.
+        if matches!(
+            adoption_hold(latest_supervisor_recovery_action(store, run_id)?.as_ref()),
+            SupervisorAdoptionHold::RecoveryRequired
+        ) {
             return Ok(());
         }
         let host = crate::latest_member_runs_in_append_order(store)?
@@ -419,8 +616,7 @@ impl MultiTeamDaemon {
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .remove(&(execution_space_id.to_string(), run_id.to_string()));
-        if !recovery_marker_is_blocking(latest_supervisor_recovery_action(store, run_id)?.as_ref())
-        {
+        if !adoption_hold_stands(latest_supervisor_recovery_action(store, run_id)?.as_ref()) {
             return Ok(());
         }
         let host = crate::latest_member_runs_in_append_order(store)?
@@ -479,9 +675,78 @@ mod tests {
             SUPERVISOR_RECOVERED,
             harness_core::MemberActionStatus::Succeeded,
         );
-        assert!(recovery_marker_is_blocking(Some(&blocked)));
-        assert!(!recovery_marker_is_blocking(Some(&recovered)));
-        assert!(!recovery_marker_is_blocking(None));
+        assert!(adoption_hold_stands(Some(&blocked)));
+        assert_eq!(
+            adoption_hold(Some(&blocked)),
+            SupervisorAdoptionHold::RecoveryRequired
+        );
+        assert!(!adoption_hold_stands(Some(&recovered)));
+        assert_eq!(
+            adoption_hold(Some(&recovered)),
+            SupervisorAdoptionHold::None
+        );
+        assert!(!adoption_hold_stands(None));
+        assert_eq!(adoption_hold(None), SupervisorAdoptionHold::None);
+    }
+
+    #[test]
+    fn no_progress_hold_is_keyed_to_the_canonical_state_it_observed() {
+        let no_progress = |seq: u64, evidence: Vec<String>| harness_core::MemberAction {
+            id: format!("action-{seq}"),
+            seq,
+            team_run_id: "run".into(),
+            member_run_id: "host".into(),
+            task_id: None,
+            provider_call_id: None,
+            action_type: SUPERVISOR_NO_PROGRESS.into(),
+            status: harness_core::MemberActionStatus::Failed,
+            provider_status: None,
+            semantic_status: None,
+            title: "Supervisor".into(),
+            summary: "no canonical progress".into(),
+            evidence_refs: evidence,
+            started_at: "unix-ms:1".into(),
+            completed_at: Some("unix-ms:1".into()),
+        };
+        assert_eq!(
+            adoption_hold(Some(&no_progress(
+                1,
+                vec![crate::canonical_state_evidence_ref("sha256:one")]
+            ))),
+            SupervisorAdoptionHold::NoProgressAt("sha256:one".into()),
+            "the hold must name the exact canonical state it was observed under"
+        );
+        assert_eq!(
+            adoption_hold(Some(&no_progress(2, Vec::new()))),
+            SupervisorAdoptionHold::RecoveryRequired,
+            "a no-progress marker that cannot prove its canonical state must fail closed"
+        );
+    }
+
+    #[test]
+    fn only_transient_start_failures_skip_a_durable_adoption_hold() {
+        for transient in [
+            "NodeDaemon at capacity (4/4 runs); cannot start space/run",
+            "NodeDaemon already manages space/run",
+            "NODE_HAS_NO_REGISTERED_PROJECT: Node n has no active project in Execution Space s",
+            "NODE_DAEMON_GENERATION_FENCED: current lease is missing",
+        ] {
+            assert!(
+                start_failure_is_transient(&CliError::Usage(transient.into())),
+                "{transient} must not hold adoption"
+            );
+        }
+        for structural in [
+            "team run r is pinned to unavailable Project Binding p",
+            "REMOTE_TEAM_RUN_NOT_ADOPTED: TeamRun r belongs to Node other",
+            "member workspace canonical_root no longer exists",
+            "AgentSession for member m was never released",
+        ] {
+            assert!(
+                !start_failure_is_transient(&CliError::Usage(structural.into())),
+                "{structural} must leave a durable adoption outcome"
+            );
+        }
     }
 
     #[test]

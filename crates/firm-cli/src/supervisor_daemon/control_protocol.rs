@@ -54,11 +54,32 @@ impl MultiTeamDaemon {
                     let command_name = serde_json::from_str::<serde_json::Value>(&command)
                         .ok()
                         .and_then(|value| value["cmd"].as_str().map(str::to_string));
-                    // Status and Stop are deliberately reserved control-lane
-                    // commands. They are bounded Store/registry reads and must
-                    // remain reachable even when every mutation worker is
-                    // waiting on a provider-native effect.
-                    if matches!(command_name.as_deref(), Some("status" | "stop")) {
+                    // Stop is admitted on the reserved control lane, but its
+                    // answer is the drain result rather than the acceptance.
+                    // Hold the client socket until `serve_loop` knows whether
+                    // this generation actually drained (#584).
+                    if command_name.as_deref() == Some("stop") {
+                        match self.accept_stop_command(&mut connection.stream, command.as_str()) {
+                            Ok(Some(daemon_generation)) => self
+                                .deferred_stop_responses
+                                .lock()
+                                .unwrap_or_else(|error| error.into_inner())
+                                .push(DeferredStopResponse {
+                                    stream: connection.stream,
+                                    daemon_generation,
+                                }),
+                            Ok(None) => {}
+                            Err(error) => {
+                                eprintln!("[node-daemon] control client error: {error}")
+                            }
+                        }
+                        continue;
+                    }
+                    // Status is deliberately a reserved control-lane command.
+                    // It is a bounded registry read and must remain reachable
+                    // even when every mutation worker is waiting on a
+                    // provider-native effect.
+                    if command_name.as_deref() == Some("status") {
                         if let Err(error) =
                             self.handle_control_command(&mut connection.stream, command.as_str())
                         {
@@ -179,7 +200,11 @@ impl MultiTeamDaemon {
     }
 
     /// Handle a single control socket command.
-    fn handle_control_command(&self, stream: &mut UnixStream, cmd_line: &str) -> CliResult<()> {
+    pub(super) fn handle_control_command(
+        &self,
+        stream: &mut UnixStream,
+        cmd_line: &str,
+    ) -> CliResult<()> {
         let cmd: serde_json::Value = match serde_json::from_str(cmd_line) {
             Ok(v) => v,
             Err(e) => {
@@ -1062,56 +1087,6 @@ impl MultiTeamDaemon {
                 });
                 Self::write_control_response(stream, &resp)?;
             }
-            "stop" => {
-                let execution_space_id = cmd["execution_space_id"].as_str().unwrap_or("");
-                let daemon_generation = cmd["daemon_generation"].as_u64();
-                if execution_space_id.is_empty() || daemon_generation.is_none() {
-                    Self::write_control_response(
-                        stream,
-                        &serde_json::json!({
-                            "ok": false,
-                            "error": "execution_space_id and daemon_generation are required"
-                        }),
-                    )?;
-                    return Ok(());
-                }
-                let space =
-                    crate::execution_space::context_for_id(&self.firm_home, execution_space_id)
-                        .map_err(|error| CliError::Usage(error.to_string()))?
-                        .ok_or_else(|| {
-                            CliError::Usage(format!(
-                                "Execution Space not found: {execution_space_id}"
-                            ))
-                        })?;
-                let store = HarnessStore::new(space.store_root);
-                let now_ms = current_unix_ms_u64();
-                let lease = store.latest_node_daemon_lease(&self.node_id)?;
-                let authorized = daemon_control_generation_authorized(
-                    lease.as_ref(),
-                    &self.daemon_id,
-                    &self.instance_id,
-                    daemon_generation.unwrap_or_default(),
-                    now_ms,
-                );
-                if !authorized {
-                    Self::write_control_response(
-                        stream,
-                        &serde_json::json!({
-                            "ok": false,
-                            "error": "SUPERVISOR_GENERATION_FENCED: stop does not match this live NodeDaemon generation"
-                        }),
-                    )?;
-                    return Ok(());
-                }
-                self.stop_requested.store(true, Ordering::SeqCst);
-                Self::write_control_response(
-                    stream,
-                    &serde_json::json!({
-                        "ok": true,
-                        "daemon_generation": daemon_generation
-                    }),
-                )?;
-            }
             _ => {
                 let response = serde_json::json!({
                     "ok": false,
@@ -1121,6 +1096,84 @@ impl MultiTeamDaemon {
             }
         }
         Ok(())
+    }
+}
+
+impl MultiTeamDaemon {
+    /// Validate and admit one `stop` request without answering it.
+    ///
+    /// `Ok(Some(generation))` means the request was accepted and its response
+    /// is owed once the drain result exists; `Ok(None)` means a rejection was
+    /// already written and the connection is finished. Stop must never report
+    /// success from acceptance alone: `daemon status` went absent while the
+    /// exact serve process still spun at ~200% CPU precisely because the
+    /// acceptance was the answer (#584).
+    pub(super) fn accept_stop_command(
+        &self,
+        stream: &mut UnixStream,
+        cmd_line: &str,
+    ) -> CliResult<Option<u64>> {
+        let cmd: serde_json::Value = match serde_json::from_str(cmd_line) {
+            Ok(value) => value,
+            Err(error) => {
+                Self::write_control_response(
+                    stream,
+                    &serde_json::json!({
+                        "ok": false,
+                        "error": format!("invalid json: {error}"),
+                    }),
+                )?;
+                return Ok(None);
+            }
+        };
+        let execution_space_id = cmd["execution_space_id"].as_str().unwrap_or("");
+        let Some(daemon_generation) = cmd["daemon_generation"].as_u64() else {
+            Self::write_control_response(
+                stream,
+                &serde_json::json!({
+                    "ok": false,
+                    "error": "execution_space_id and daemon_generation are required"
+                }),
+            )?;
+            return Ok(None);
+        };
+        if execution_space_id.is_empty() {
+            Self::write_control_response(
+                stream,
+                &serde_json::json!({
+                    "ok": false,
+                    "error": "execution_space_id and daemon_generation are required"
+                }),
+            )?;
+            return Ok(None);
+        }
+        let space = crate::execution_space::context_for_id(&self.firm_home, execution_space_id)
+            .map_err(|error| CliError::Usage(error.to_string()))?
+            .ok_or_else(|| {
+                CliError::Usage(format!("Execution Space not found: {execution_space_id}"))
+            })?;
+        let store = HarnessStore::new(space.store_root);
+        let now_ms = current_unix_ms_u64();
+        let lease = store.latest_node_daemon_lease(&self.node_id)?;
+        let authorized = daemon_control_generation_authorized(
+            lease.as_ref(),
+            &self.daemon_id,
+            &self.instance_id,
+            daemon_generation,
+            now_ms,
+        );
+        if !authorized {
+            Self::write_control_response(
+                stream,
+                &serde_json::json!({
+                    "ok": false,
+                    "error": "SUPERVISOR_GENERATION_FENCED: stop does not match this live NodeDaemon generation"
+                }),
+            )?;
+            return Ok(None);
+        }
+        self.stop_requested.store(true, Ordering::SeqCst);
+        Ok(Some(daemon_generation))
     }
 }
 

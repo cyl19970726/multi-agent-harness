@@ -1,9 +1,9 @@
 use super::*;
 
-struct TestTree(PathBuf);
+pub(super) struct TestTree(pub(super) PathBuf);
 
 impl TestTree {
-    fn new(label: &str) -> Self {
+    pub(super) fn new(label: &str) -> Self {
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
         let sequence = NEXT.fetch_add(1, Ordering::Relaxed);
         let path = std::env::temp_dir().join(format!(
@@ -116,6 +116,8 @@ fn unreadable_space_latches_machine_wide_authority_loss() {
         control_worker_failed: AtomicBool::new(false),
         recovery_blocked_runs: Mutex::new(HashSet::new()),
         lease_ttl_override_ms: Some(3_000),
+        deferred_stop_responses: Mutex::new(Vec::new()),
+        drain_timeout_override_ms: None,
     };
 
     let command_actor = harness_core::agentfirm_api::ActorRef {
@@ -298,6 +300,8 @@ fn authority_bundle_rolls_back_partial_acquisition_until_every_predecessor_is_re
         control_worker_failed: AtomicBool::new(false),
         recovery_blocked_runs: Mutex::new(HashSet::new()),
         lease_ttl_override_ms: Some(60_000),
+        deferred_stop_responses: Mutex::new(Vec::new()),
+        drain_timeout_override_ms: None,
     };
     let error = daemon
         .ensure_node_authority_bundle()
@@ -365,6 +369,8 @@ fn machine_local_live_sink_rejects_invalid_and_stale_registration_then_replaces_
         control_worker_failed: AtomicBool::new(false),
         recovery_blocked_runs: Mutex::new(HashSet::new()),
         lease_ttl_override_ms: None,
+        deferred_stop_responses: Mutex::new(Vec::new()),
+        drain_timeout_override_ms: None,
     };
     let first_token = "a".repeat(32);
     let first_instance = "b".repeat(32);
@@ -511,6 +517,8 @@ fn status_remains_responsive_while_execution_space_scan_is_blocked() {
         control_worker_failed: AtomicBool::new(false),
         recovery_blocked_runs: Mutex::new(HashSet::new()),
         lease_ttl_override_ms: None,
+        deferred_stop_responses: Mutex::new(Vec::new()),
+        drain_timeout_override_ms: None,
     });
 
     std::thread::scope(|scope| {
@@ -632,6 +640,8 @@ fn status_remains_responsive_while_a_control_mutation_is_blocked() {
         control_worker_failed: AtomicBool::new(false),
         recovery_blocked_runs: Mutex::new(HashSet::new()),
         lease_ttl_override_ms: None,
+        deferred_stop_responses: Mutex::new(Vec::new()),
+        drain_timeout_override_ms: None,
     });
 
     std::thread::scope(|scope| {
@@ -765,6 +775,8 @@ fn shutdown_renews_node_authority_until_accepted_worker_finishes() {
         control_worker_failed: AtomicBool::new(false),
         recovery_blocked_runs: Mutex::new(HashSet::new()),
         lease_ttl_override_ms: Some(1_500),
+        deferred_stop_responses: Mutex::new(Vec::new()),
+        drain_timeout_override_ms: None,
     });
 
     std::thread::scope(|scope| {
@@ -792,26 +804,37 @@ fn shutdown_renews_node_authority_until_accepted_worker_finishes() {
 
         sent_rx.recv().expect("slow mutation was sent");
         std::thread::sleep(Duration::from_millis(100));
-        let mut stop_client = UnixStream::connect(&socket_path).expect("connect stop client");
-        stop_client
-            .write_all(
-                format!(
-                    "{{\"cmd\":\"stop\",\"execution_space_id\":\"{}\",\"daemon_generation\":{}}}\n",
-                    space.id, lease.generation
+        // Stop is answered from the drain result, not from its acceptance
+        // (#584), so read that answer on its own thread while this one
+        // observes the drain it is waiting for.
+        let (stop_sent_tx, stop_sent_rx) = std::sync::mpsc::sync_channel(1);
+        let stop_socket_path = socket_path.clone();
+        let stop_space_id = space.id.clone();
+        let stop_generation = lease.generation;
+        let stopper = scope.spawn(move || {
+            let mut stop_client =
+                UnixStream::connect(&stop_socket_path).expect("connect stop client");
+            stop_client
+                .set_read_timeout(Some(Duration::from_secs(20)))
+                .expect("bound stop response wait");
+            stop_client
+                .write_all(
+                    format!(
+                        "{{\"cmd\":\"stop\",\"execution_space_id\":\"{stop_space_id}\",\"daemon_generation\":{stop_generation}}}\n"
+                    )
+                    .as_bytes(),
                 )
-                .as_bytes(),
-            )
-            .expect("send stop request");
-        stop_client.flush().expect("flush stop request");
-        let mut stop_response = String::new();
-        BufReader::new(&mut stop_client)
-            .read_line(&mut stop_response)
-            .expect("reserved stop lane responds");
-        assert_eq!(
+                .expect("send stop request");
+            stop_client.flush().expect("flush stop request");
+            stop_sent_tx.send(()).expect("announce stop request");
+            let mut stop_response = String::new();
+            BufReader::new(&mut stop_client)
+                .read_line(&mut stop_response)
+                .expect("reserved stop lane answers with its drain result");
             serde_json::from_str::<serde_json::Value>(stop_response.trim())
-                .expect("stop response JSON")["ok"],
-            true
-        );
+                .expect("stop response JSON")
+        });
+        stop_sent_rx.recv().expect("stop request was sent");
 
         // Cross the lease TTL that existed when Stop was accepted. The
         // heartbeat must have renewed this exact generation while the
@@ -833,6 +856,9 @@ fn shutdown_renews_node_authority_until_accepted_worker_finishes() {
         );
 
         assert_eq!(blocker.join().expect("blocking control client")["ok"], true);
+        let stop_response = stopper.join().expect("stop control client");
+        assert_eq!(stop_response["ok"], true, "stop response: {stop_response}");
+        assert_eq!(stop_response["drained"], true);
         server
             .join()
             .expect("daemon control thread")
@@ -884,6 +910,8 @@ fn shutdown_renews_node_authority_until_accepted_worker_finishes() {
         control_worker_failed: AtomicBool::new(false),
         recovery_blocked_runs: Mutex::new(HashSet::new()),
         lease_ttl_override_ms: Some(1_500),
+        deferred_stop_responses: Mutex::new(Vec::new()),
+        drain_timeout_override_ms: None,
     });
     std::thread::scope(|scope| {
         let server = scope.spawn(|| failed_daemon.serve_loop(&failure_listener));
@@ -939,11 +967,16 @@ fn shutdown_renews_node_authority_until_accepted_worker_finishes() {
         BufReader::new(&mut stop_client)
             .read_line(&mut stop_response)
             .expect("failure-generation stop responds");
-        assert_eq!(
-            serde_json::from_str::<serde_json::Value>(stop_response.trim())
-                .expect("failure stop response JSON")["ok"],
-            true
-        );
+        // The accepted worker never proved completion, so this generation may
+        // drain but never Release. Stop must report that, not success (#584).
+        let stop_response = serde_json::from_str::<serde_json::Value>(stop_response.trim())
+            .expect("failure stop response JSON");
+        assert_eq!(stop_response["ok"], false, "stop response: {stop_response}");
+        assert_eq!(stop_response["drained"], false);
+        assert_eq!(stop_response["authority_released"], false);
+        assert!(stop_response["error"]
+            .as_str()
+            .is_some_and(|error| error.contains("NODE_DAEMON_CONTROL_DRAIN_INCOMPLETE")));
         let error = server
             .join()
             .expect("failure daemon control thread")

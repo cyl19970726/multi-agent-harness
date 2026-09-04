@@ -18,8 +18,8 @@ use std::time::{Duration, Instant};
 use crate::{
     bind_team_runtime_supervisor, current_unix_ms_u64, drive_prepared_team_run,
     ensure_team_message_fabric, ensure_team_runtime_fabric, prepare_team_run_start_body, CliError,
-    CliResult, HarnessStore, NativeSessionWakeUpdate, PreparedTeamRunStart, TeamRunLedger,
-    TeamSupervisorRegistration,
+    CliResult, HarnessStore, NativeSessionWakeUpdate, PreparedTeamRunStart, TeamRunDriveOutcome,
+    TeamRunLedger, TeamSupervisorRegistration,
 };
 
 // ---------------------------------------------------------------------------
@@ -83,7 +83,7 @@ struct MultiTeamContext {
     supervisor_id: String,
     supervisor_generation: u64,
     heartbeat_valid: Arc<AtomicBool>,
-    thread: Option<std::thread::JoinHandle<CliResult<()>>>,
+    thread: Option<std::thread::JoinHandle<CliResult<TeamRunDriveOutcome>>>,
     started_at: Instant,
 }
 
@@ -98,6 +98,24 @@ struct NativeSessionWakeEndpoint {
     authority: String,
     token: String,
     serve_instance_id: String,
+}
+
+/// How long Stop waits for managed Supervisor threads to converge before it
+/// escalates to owned-process-group termination.
+const SUPERVISOR_DRAIN_TIMEOUT: Duration = Duration::from_secs(30);
+/// How long Stop then waits for those threads to observe the termination.
+const FORCED_PROCESS_GROUP_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
+/// Documented upper bound a `stop` caller must outwait before the daemon can
+/// answer truthfully. Stop replies with the drain result, never before it
+/// (#584), so the client read timeout has to exceed this bound.
+pub(crate) const NODE_DAEMON_STOP_DRAIN_BOUND: Duration = Duration::from_secs(
+    SUPERVISOR_DRAIN_TIMEOUT.as_secs() + FORCED_PROCESS_GROUP_DRAIN_TIMEOUT.as_secs(),
+);
+
+/// One accepted `stop` whose truthful answer is still being determined.
+struct DeferredStopResponse {
+    stream: UnixStream,
+    daemon_generation: u64,
 }
 
 enum ControlReadState {
@@ -146,8 +164,17 @@ pub(crate) struct MultiTeamDaemon {
     /// rescan window even when the recovery projection itself cannot be
     /// written because the Execution Space is temporarily unavailable.
     recovery_blocked_runs: Mutex<HashSet<(String, String)>>,
+    /// Accepted `stop` client sockets held open until the drain result is
+    /// known. Stop is answered from that result rather than from acceptance,
+    /// so a caller can never read `ok:true` while this process still spins.
+    deferred_stop_responses: Mutex<Vec<DeferredStopResponse>>,
     #[cfg(test)]
     lease_ttl_override_ms: Option<u64>,
+    /// Bounded (cooperative, forced) drain deadlines in milliseconds. Tests
+    /// use it to exercise the honest Stop answer without waiting the full
+    /// production bound.
+    #[cfg(test)]
+    drain_timeout_override_ms: Option<(u64, u64)>,
 }
 
 impl MultiTeamDaemon {
@@ -278,8 +305,11 @@ impl MultiTeamDaemon {
             authority_lost: AtomicBool::new(false),
             control_worker_failed: AtomicBool::new(false),
             recovery_blocked_runs: Mutex::new(HashSet::new()),
+            deferred_stop_responses: Mutex::new(Vec::new()),
             #[cfg(test)]
             lease_ttl_override_ms: None,
+            #[cfg(test)]
+            drain_timeout_override_ms: None,
         });
 
         // `serve_loop` owns the two-phase shutdown: it stops accepting new
@@ -402,6 +432,20 @@ impl MultiTeamDaemon {
             } else {
                 Ok(())
             };
+            // Every accepted `stop` is answered from what the drain actually
+            // proved. Authority release is part of that answer: a caller must
+            // never see `ok:true` while this process still owns runtimes.
+            self.answer_deferred_stop_responses(
+                control_result
+                    .as_ref()
+                    .err()
+                    .or(supervisor_result.as_ref().err())
+                    .or(settlement_result.as_ref().err())
+                    .or(drain_result.as_ref().err())
+                    .or(heartbeat_result.as_ref().err())
+                    .or(release_result.as_ref().err()),
+            );
+
             scan_result
                 .and(control_result)
                 .and(supervisor_result)
@@ -410,6 +454,37 @@ impl MultiTeamDaemon {
                 .and(heartbeat_result)
                 .and(release_result)
         })
+    }
+
+    /// Deliver the truthful Stop answer to every caller still waiting on it.
+    fn answer_deferred_stop_responses(&self, drain_failure: Option<&CliError>) {
+        let deferred = {
+            let mut guard = self
+                .deferred_stop_responses
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            std::mem::take(&mut *guard)
+        };
+        for mut pending in deferred {
+            let response = match drain_failure {
+                None => serde_json::json!({
+                    "ok": true,
+                    "daemon_generation": pending.daemon_generation,
+                    "drained": true,
+                    "authority_released": true,
+                }),
+                Some(error) => serde_json::json!({
+                    "ok": false,
+                    "daemon_generation": pending.daemon_generation,
+                    "drained": false,
+                    "authority_released": false,
+                    "error": error.to_string(),
+                }),
+            };
+            if let Err(error) = Self::write_control_response(&mut pending.stream, &response) {
+                eprintln!("[node-daemon] could not deliver the stop drain result: {error}");
+            }
+        }
     }
 }
 
@@ -848,7 +923,14 @@ pub(crate) fn daemon_stop_via_socket(
 ) -> Option<String> {
     let socket_path = node_daemon_socket_path(firm_home, node_id);
     let mut stream = UnixStream::connect(&socket_path).ok()?;
-    stream.set_read_timeout(Some(Duration::from_secs(5))).ok()?;
+    // Stop answers with the drain result, not with its acceptance, so the
+    // client must outwait the documented drain bound plus the bounded
+    // settle/release writes that follow it (#584).
+    stream
+        .set_read_timeout(Some(
+            NODE_DAEMON_STOP_DRAIN_BOUND.saturating_add(Duration::from_secs(25)),
+        ))
+        .ok()?;
 
     let cmd = serde_json::json!({
         "cmd": "stop",
@@ -868,5 +950,9 @@ pub(crate) fn daemon_stop_via_socket(
 // Tests
 // ---------------------------------------------------------------------------
 
+#[cfg(test)]
+mod adoption_tests;
+#[cfg(test)]
+mod stop_drain_tests;
 #[cfg(test)]
 mod tests;
