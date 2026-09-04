@@ -109,6 +109,56 @@ fn team_create_persists_and_enforces_flat_identity_and_placement() {
     assert!(root.get("parent_team_id").is_none());
     assert!(root.get("host_member_id").is_none());
 
+    let shown_root = run_json(&home, &project_id, &["team", "show", "--id", "team-root"]);
+    assert_eq!(shown_root["id"], root["id"]);
+    assert_eq!(shown_root["name"], root["name"]);
+    assert_eq!(shown_root["description"], root["description"]);
+    assert_eq!(shown_root["node_id"], root["node_id"]);
+    assert_eq!(shown_root["status"], root["status"]);
+    assert_eq!(shown_root["revision"], root["revision"]);
+    assert_eq!(shown_root["legacy_mission_id"], root["legacy_mission_id"]);
+    assert_eq!(shown_root["created_at"], root["created_at"]);
+    assert_eq!(shown_root["updated_at"], root["updated_at"]);
+    assert_eq!(
+        shown_root["memberships"],
+        serde_json::json!([
+            {
+                "id": "membership:team-root:agent-cto",
+                "team_id": "team-root",
+                "agent_member_id": "agent-cto",
+                "node_id": node_id,
+                "role": "member",
+                "state": "active",
+                "membership_generation": 1,
+                "default_subscription_refs": [
+                    "direct:agent-cto:membership:team-root:agent-cto",
+                    "team:team-root:membership:team-root:agent-cto"
+                ],
+                "created_by": {"kind": "human", "id": "operator:cli"},
+                "revision": 1,
+                "joined_at": root["created_at"],
+                "left_at": null
+            },
+            {
+                "id": "membership:team-root:agent-lead",
+                "team_id": "team-root",
+                "agent_member_id": "agent-lead",
+                "node_id": node_id,
+                "role": "host",
+                "state": "active",
+                "membership_generation": 1,
+                "default_subscription_refs": [
+                    "direct:agent-lead:membership:team-root:agent-lead",
+                    "team:team-root:membership:team-root:agent-lead"
+                ],
+                "created_by": {"kind": "human", "id": "operator:cli"},
+                "revision": 1,
+                "joined_at": root["created_at"],
+                "left_at": null
+            }
+        ])
+    );
+
     let peer = run_json(
         &home,
         &project_id,
