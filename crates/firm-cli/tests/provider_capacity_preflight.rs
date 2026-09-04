@@ -145,6 +145,27 @@ impl<'a> FakeCodex<'a> {
         command.output().expect("run harness")
     }
 
+    /// `run` with a hard deadline: a wedged CLI fails with the phase name and
+    /// elapsed time instead of hanging the full-acceptance tier forever.
+    fn run_with_deadline(
+        &self,
+        home: &TempHome,
+        args: &[&str],
+        phase: &str,
+        budget: std::time::Duration,
+    ) -> std::process::Output {
+        let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_firm"));
+        command
+            .args(args)
+            .current_dir(home.base())
+            .envs(home.envs())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        self.configure(home, &mut command);
+        let mut child = command.spawn().expect("spawn harness");
+        wait_output_with_deadline(&mut child, phase, budget)
+    }
+
     fn configure(&self, home: &TempHome, command: &mut std::process::Command) {
         let path = format!(
             "{}:{}",
@@ -274,8 +295,85 @@ fn is_honest_unknown_effect_fence(home: &TempHome, project_id: &str, receipt: &s
     true
 }
 
+/// Poll a spawned child to exit with a hard deadline. On expiry the child is
+/// killed and the test fails naming the phase and the elapsed time, so a
+/// wedged daemon or CLI can never hang the full-acceptance tier (the 2h CI
+/// hang in run 33900360030).
+fn wait_output_with_deadline(
+    child: &mut std::process::Child,
+    phase: &str,
+    budget: std::time::Duration,
+) -> std::process::Output {
+    let started = std::time::Instant::now();
+    let status = loop {
+        if let Some(status) = child.try_wait().expect("poll firm process") {
+            break status;
+        }
+        if started.elapsed() >= budget {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!(
+                "phase '{phase}' exceeded its hard deadline: {:?} elapsed",
+                started.elapsed()
+            );
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    };
+    let mut stdout = Vec::new();
+    if let Some(mut pipe) = child.stdout.take() {
+        std::io::Read::read_to_end(&mut pipe, &mut stdout).expect("read firm stdout");
+    }
+    let mut stderr = Vec::new();
+    if let Some(mut pipe) = child.stderr.take() {
+        std::io::Read::read_to_end(&mut pipe, &mut stderr).expect("read firm stderr");
+    }
+    std::process::Output {
+        status,
+        stdout,
+        stderr,
+    }
+}
+
+/// `daemon stop` through the same CLI the tests already use, but with a hard
+/// deadline (the documented drain bound is 75s; 120s is generous slack, after
+/// which the stop is a genuine wedge and must fail, not hang).
+fn stop_daemon_with_deadline(home: &TempHome, phase: &str) -> std::process::Output {
+    let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_firm"));
+    command
+        .args(["daemon", "stop"])
+        .current_dir(home.base())
+        .envs(home.envs())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    let mut child = command.spawn().expect("spawn daemon stop");
+    wait_output_with_deadline(&mut child, phase, std::time::Duration::from_secs(120))
+}
+
+/// Wait for the NodeDaemon process to exit after a stop, bounded so a drain
+/// wedge fails with the phase name and elapsed time instead of hanging.
+fn wait_node_authority_exit(
+    child: &mut std::process::Child,
+    phase: &str,
+) -> std::process::ExitStatus {
+    let started = std::time::Instant::now();
+    loop {
+        if let Some(status) = child.try_wait().expect("poll NodeDaemon") {
+            return status;
+        }
+        if started.elapsed() >= std::time::Duration::from_secs(120) {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!(
+                "phase '{phase}' exceeded its hard deadline: {:?} elapsed waiting for the NodeDaemon process to exit",
+                started.elapsed()
+            );
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+}
+
 fn stop_node_authority(home: &TempHome, project_id: &str, child: &mut std::process::Child) {
-    let stop = run_firm(home, home.base(), &["daemon", "stop"]);
+    let stop = stop_daemon_with_deadline(home, "daemon stop drain");
     // `daemon stop` answers with its drain result and exits non-zero when that
     // drain did not complete. The stderr assertion below already accepted the
     // unknown-effect fence for the daemon *process*; the stop client must be
@@ -289,7 +387,7 @@ fn stop_node_authority(home: &TempHome, project_id: &str, child: &mut std::proce
             ),
         "NodeDaemon stop must either succeed or return the exact unknown-effect recovery fence: {stop:?}"
     );
-    let status = child.wait().expect("wait NodeDaemon");
+    let status = wait_node_authority_exit(child, "NodeDaemon exit after daemon stop");
     let mut stderr = String::new();
     if let Some(mut stream) = child.stderr.take() {
         std::io::Read::read_to_string(&mut stream, &mut stderr).expect("read NodeDaemon stderr");
@@ -304,7 +402,7 @@ fn stop_node_authority(home: &TempHome, project_id: &str, child: &mut std::proce
 }
 
 fn stop_node_authority_expecting_release(home: &TempHome, child: &mut std::process::Child) {
-    let stop = run_firm(home, home.base(), &["daemon", "stop"]);
+    let stop = stop_daemon_with_deadline(home, "daemon stop drain expecting authority release");
     assert!(
         stop.status.success(),
         "NodeDaemon stop must release authority before an in-test restart: {stop:?}"
@@ -317,7 +415,7 @@ fn stop_node_authority_expecting_release(home: &TempHome, child: &mut std::proce
         "NodeDaemon must release authority before an in-test restart: {receipt}"
     );
 
-    let status = child.wait().expect("wait NodeDaemon");
+    let status = wait_node_authority_exit(child, "NodeDaemon exit after authority release");
     let mut stderr = String::new();
     if let Some(mut stream) = child.stderr.take() {
         std::io::Read::read_to_string(&mut stream, &mut stderr).expect("read NodeDaemon stderr");
@@ -794,7 +892,7 @@ fn fresh_exhausted_capacity_blocks_start_and_leaves_work_queued() {
     );
     let before = worker_member_run(&home, &project_id).expect("member run before start");
 
-    let start = fake.run(
+    let start = fake.run_with_deadline(
         &home,
         &[
             "--project",
@@ -804,6 +902,8 @@ fn fresh_exhausted_capacity_blocks_start_and_leaves_work_queued() {
             "--id",
             &run_id,
         ],
+        "capacity-refused team-run start",
+        std::time::Duration::from_secs(60),
     );
     assert!(
         start.status.success(),
@@ -924,7 +1024,7 @@ fn fresh_exhausted_capacity_blocks_start_and_leaves_work_queued() {
     };
     stop_node_authority_expecting_release(&home, &mut daemon);
     let mut daemon = spawn_node_authority(&home, &recovered, &[]);
-    let restart = recovered.run(
+    let restart = recovered.run_with_deadline(
         &home,
         &[
             "--project",
@@ -934,6 +1034,8 @@ fn fresh_exhausted_capacity_blocks_start_and_leaves_work_queued() {
             "--id",
             &run_id,
         ],
+        "capacity-recovered team-run start",
+        std::time::Duration::from_secs(60),
     );
     assert!(
         restart.status.success(),

@@ -48,10 +48,12 @@ fn host_close_contention_is_bounded_or_machine_fenced_without_writing() {
         &serde_json::json!({}),
     );
     assert_eq!(status, 202, "body: {started}");
-    let mut live = false;
-    for _ in 0..100 {
+    // Hard-deadline polls: a loaded runner may stretch startup, but a wedge
+    // fails with the phase name and elapsed time instead of hanging forever.
+    let member_live_started = std::time::Instant::now();
+    loop {
         let (_, snapshot) = serve.get_json("/v1/snapshot");
-        live = snapshot["member_runs"]
+        let live = snapshot["member_runs"]
             .as_array()
             .into_iter()
             .flatten()
@@ -65,12 +67,13 @@ fn host_close_contention_is_bounded_or_machine_fenced_without_writing() {
         if live {
             break;
         }
+        assert!(
+            member_live_started.elapsed() < Duration::from_secs(120),
+            "phase 'idle member binds live native session' exceeded its hard deadline: {:?} elapsed",
+            member_live_started.elapsed()
+        );
         std::thread::sleep(Duration::from_millis(20));
     }
-    assert!(
-        live,
-        "idle member did not bind its live native session before contention test"
-    );
 
     let store = HarnessStore::new(home.spaces_dir().join(&project_id));
     let close_rows_before = store
@@ -86,18 +89,18 @@ fn host_close_contention_is_bounded_or_machine_fenced_without_writing() {
         .write(true)
         .open(&lock_path)
         .expect("open project Store lock");
-    let mut locked = false;
-    for _ in 0..100 {
+    let lock_acquire_started = std::time::Instant::now();
+    loop {
         if unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
-            locked = true;
             break;
         }
+        assert!(
+            lock_acquire_started.elapsed() < Duration::from_secs(10),
+            "phase 'acquire deterministic Store contention lock' exceeded its hard deadline: {:?} elapsed",
+            lock_acquire_started.elapsed()
+        );
         std::thread::sleep(Duration::from_millis(10));
     }
-    assert!(
-        locked,
-        "could not acquire deterministic Store contention lock"
-    );
     let (status, outcome) = serve.post_json(
         &format!("/v1/team-runs/{run_id}/members/{member_id}/close"),
         &serde_json::json!({"requested_by": "host", "reason": "deterministic contention"}),

@@ -648,14 +648,19 @@ fn status_remains_responsive_while_execution_space_scan_is_blocked() {
         drain_timeout_override_ms: None,
     });
 
-    std::thread::scope(|scope| {
-        let server = scope.spawn(|| daemon.serve_loop(&listener));
-
+    // Unscoped spawn: when a phase exceeds its hard deadline the test must
+    // fail fast instead of blocking on a scoped join against a thread that is
+    // still parked in the blocked FIFO read (the 2h CI hang in run
+    // 33900360030). A detached leftover thread only happens on the failure
+    // path, where the test has already lost.
+    let server_daemon = Arc::clone(&daemon);
+    let server = std::thread::spawn(move || server_daemon.serve_loop(&listener));
+    let test_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         // Opening the FIFO writer nonblocking succeeds only after the
         // scanner is waiting in its blocking registry read. Keep the
         // writer open without data so the scan cannot finish while the
         // status request below is served.
-        let deadline = Instant::now() + Duration::from_secs(2);
+        let scanner_wait_started = Instant::now();
         let registry_writer = loop {
             match OpenOptions::new()
                 .write(true)
@@ -663,9 +668,12 @@ fn status_remains_responsive_while_execution_space_scan_is_blocked() {
                 .open(&registry_path)
             {
                 Ok(file) => break file,
-                Err(error)
-                    if error.raw_os_error() == Some(libc::ENXIO) && Instant::now() < deadline =>
-                {
+                Err(error) if error.raw_os_error() == Some(libc::ENXIO) => {
+                    assert!(
+                        scanner_wait_started.elapsed() < Duration::from_secs(10),
+                        "phase 'wait for scanner to open registry FIFO' exceeded its hard deadline: {:?} elapsed",
+                        scanner_wait_started.elapsed()
+                    );
                     std::thread::sleep(Duration::from_millis(5));
                 }
                 Err(error) => {
@@ -675,9 +683,9 @@ fn status_remains_responsive_while_execution_space_scan_is_blocked() {
             }
         };
 
-        // Always release the scanner before the scoped server is joined,
-        // including when a response assertion panics. That keeps a useful
-        // failure from turning into a hung test process.
+        // Always release the scanner before the server is joined, including
+        // when a response assertion panics. That keeps a useful failure from
+        // turning into a hung test process.
         let status_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let mut client = UnixStream::connect(&socket_path).expect("connect control client");
             client
@@ -704,9 +712,20 @@ fn status_remains_responsive_while_execution_space_scan_is_blocked() {
         // The FIFO deliberately replaces a normal registry file. Release
         // every two-phase shutdown read (scanner, heartbeat and drain), not
         // merely the first late reader, so the fixture does not manufacture
-        // an unbounded filesystem operation that production cannot have.
-        let release_deadline = Instant::now() + Duration::from_secs(2);
-        while !server.is_finished() && Instant::now() < release_deadline {
+        // an unbounded filesystem operation that production cannot have. The
+        // join is bounded by a hard deadline: a daemon that cannot be
+        // released fails this test with the phase name and elapsed time
+        // instead of hanging the CI job.
+        let release_started = Instant::now();
+        loop {
+            if server.is_finished() {
+                break;
+            }
+            assert!(
+                release_started.elapsed() < Duration::from_secs(60),
+                "phase 'release blocked scan and join daemon control thread' exceeded its hard deadline: {:?} elapsed",
+                release_started.elapsed()
+            );
             match OpenOptions::new()
                 .write(true)
                 .custom_flags(libc::O_NONBLOCK)
@@ -728,12 +747,26 @@ fn status_remains_responsive_while_execution_space_scan_is_blocked() {
                 Err(error) => panic!("release late registry FIFO reader: {error}"),
             }
         }
-        let server_result = server.join().expect("daemon control thread");
         if let Err(payload) = status_result {
             std::panic::resume_unwind(payload);
         }
-        server_result.expect("daemon exits cleanly after blocked scan is released");
-    });
+    }));
+    match test_result {
+        Ok(()) => {
+            server
+                .join()
+                .expect("daemon control thread")
+                .expect("daemon exits cleanly after blocked scan is released");
+        }
+        Err(payload) => {
+            // The hard-deadline path may leave the daemon thread parked in
+            // the blocked FIFO read; detach it rather than re-hang on join.
+            if server.is_finished() {
+                let _ = server.join();
+            }
+            std::panic::resume_unwind(payload);
+        }
+    }
 }
 
 #[test]
