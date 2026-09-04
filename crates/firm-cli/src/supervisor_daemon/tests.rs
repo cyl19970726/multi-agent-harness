@@ -491,6 +491,20 @@ fn runtime_command_client_retries_a_transient_response_timeout_on_the_same_socke
         stream
             .write_all(b"{\"ok\":true,\"result\":{\"retried\":true}}\n")
             .expect("write delayed runtime response");
+        stream
+            .set_read_timeout(Some(Duration::from_millis(20)))
+            .expect("bound duplicate request check");
+        let mut extra = [0_u8; 1];
+        match stream.read(&mut extra) {
+            Ok(0) => {}
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) => {}
+            Ok(count) => panic!("client replayed {count} unexpected request byte(s)"),
+            Err(error) => panic!("check for a replayed request: {error}"),
+        }
     });
     let payload = serde_json::json!({});
     let envelope = harness_core::agentfirm_api::ControlCommandEnvelope {
@@ -522,13 +536,56 @@ fn runtime_command_client_retries_a_transient_response_timeout_on_the_same_socke
         &envelope,
         ControlSocketReadPolicy {
             timeout: Duration::from_millis(20),
-            transient_retries: 3,
+            transient_retries: 20,
             retry_backoff: Duration::from_millis(2),
         },
     )
     .expect("same-socket retry receives delayed response");
 
     assert_eq!(response["result"]["retried"], true);
+    server.join().expect("control server");
+}
+
+#[test]
+fn daemon_stop_client_retries_a_transient_response_timeout_on_the_same_socket() {
+    let tree = TestTree::new("stop-control-read-retry");
+    let firm_home = tree.0.join("home");
+    let node_id = "stop-control-retry-node";
+    let socket_path = node_daemon_socket_path(&firm_home, node_id);
+    std::fs::create_dir_all(socket_path.parent().expect("control socket parent"))
+        .expect("create control socket parent");
+    let listener = UnixListener::bind(&socket_path).expect("bind control socket");
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("accept stop command");
+        let mut request = String::new();
+        std::io::BufReader::new(&mut stream)
+            .read_line(&mut request)
+            .expect("read one stop command");
+        let request =
+            serde_json::from_str::<serde_json::Value>(request.trim()).expect("stop command JSON");
+        assert_eq!(request["cmd"], "stop");
+        assert_eq!(request["execution_space_id"], "space-test");
+        assert_eq!(request["daemon_generation"], 7);
+        std::thread::sleep(Duration::from_millis(45));
+        stream
+            .write_all(b"{\"ok\":true,\"state\":\"released\"}\n")
+            .expect("write delayed stop response");
+    });
+
+    let response = daemon_stop_via_socket_with_policy(
+        &firm_home,
+        node_id,
+        "space-test",
+        7,
+        ControlSocketReadPolicy {
+            timeout: Duration::from_millis(20),
+            transient_retries: 20,
+            retry_backoff: Duration::from_millis(2),
+        },
+    )
+    .expect("same-socket retry receives accepted stop response");
+
+    assert_eq!(response, r#"{"ok":true,"state":"released"}"#);
     server.join().expect("control server");
 }
 

@@ -1160,16 +1160,32 @@ pub(crate) fn daemon_stop_via_socket(
     execution_space_id: &str,
     daemon_generation: u64,
 ) -> Option<String> {
+    daemon_stop_via_socket_with_policy(
+        firm_home,
+        node_id,
+        execution_space_id,
+        daemon_generation,
+        ControlSocketReadPolicy {
+            timeout: NODE_DAEMON_STOP_DRAIN_BOUND.saturating_add(Duration::from_secs(25)),
+            transient_retries: CONTROL_TRANSIENT_READ_RETRIES,
+            retry_backoff: CONTROL_TRANSIENT_READ_BACKOFF,
+        },
+    )
+}
+
+fn daemon_stop_via_socket_with_policy(
+    firm_home: &Path,
+    node_id: &str,
+    execution_space_id: &str,
+    daemon_generation: u64,
+    read_policy: ControlSocketReadPolicy,
+) -> Option<String> {
     let socket_path = node_daemon_socket_path(firm_home, node_id);
     let mut stream = UnixStream::connect(&socket_path).ok()?;
     // Stop answers with the drain result, not with its acceptance, so the
     // client must outwait the documented drain bound plus the bounded
     // settle/release writes that follow it (#584).
-    stream
-        .set_read_timeout(Some(
-            NODE_DAEMON_STOP_DRAIN_BOUND.saturating_add(Duration::from_secs(25)),
-        ))
-        .ok()?;
+    stream.set_read_timeout(Some(read_policy.timeout)).ok()?;
 
     let cmd = serde_json::json!({
         "cmd": "stop",
@@ -1181,7 +1197,13 @@ pub(crate) fn daemon_stop_via_socket(
 
     let mut buf = String::new();
     let mut reader = std::io::BufReader::new(&mut stream);
-    reader.read_line(&mut buf).ok()?;
+    read_control_response_line(
+        &mut reader,
+        &mut buf,
+        read_policy.transient_retries,
+        read_policy.retry_backoff,
+    )
+    .ok()?;
     Some(buf.trim().to_string())
 }
 
