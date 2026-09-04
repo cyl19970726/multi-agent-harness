@@ -1009,7 +1009,15 @@ pub(crate) fn start_daemon_process_fenced(
             "SUPERVISOR_GENERATION_FENCED: observed generation {observed_generation}, current generation {current_generation}"
         )));
     }
-    let mut command = std::process::Command::new(std::env::current_exe()?);
+    let (log_path, stdout, stderr) =
+        crate::daemon_cli::node_daemon_log_streams(firm_home, node_id)?;
+    let executable = std::env::current_exe().map_err(|error| {
+        CliError::Usage(format!(
+            "cannot resolve NodeDaemon executable (log: {}): {error}",
+            log_path.display()
+        ))
+    })?;
+    let mut command = std::process::Command::new(executable);
     command
         .arg("daemon")
         .arg("serve")
@@ -1020,11 +1028,16 @@ pub(crate) fn start_daemon_process_fenced(
         .arg("--scan-interval-secs")
         .arg("5")
         .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null());
+        .stdout(stdout)
+        .stderr(stderr);
     use std::os::unix::process::CommandExt;
     command.process_group(0);
-    let mut child = command.spawn()?;
+    let mut child = command.spawn().map_err(|error| {
+        CliError::Usage(format!(
+            "cannot start NodeDaemon (log: {}): {error}",
+            log_path.display()
+        ))
+    })?;
     // Recovery/adoption can legitimately take longer than a trivial socket
     // bind. A failed start must not leave a child that later acquires the
     // NodeDaemon generation behind the caller's back.
@@ -1047,7 +1060,7 @@ pub(crate) fn start_daemon_process_fenced(
                         && lease.status == harness_core::NodeDaemonLeaseStatus::Active
                         && lease.expires_unix_ms > current_unix_ms_u64()
                 }) {
-                    return Ok(status);
+                    return crate::daemon_cli::daemon_status_with_log_path(&status, &log_path);
                 }
                 std::thread::sleep(Duration::from_millis(50));
                 continue;
@@ -1057,18 +1070,20 @@ pub(crate) fn start_daemon_process_fenced(
             ));
         }
         if let Some(status) = child.try_wait()? {
-            return Err(CliError::Usage(format!(
-                "NodeDaemon pid {} exited before acquiring generation: {status}",
-                child.id()
-            )));
+            return Err(crate::daemon_cli::daemon_start_failure(
+                child.id(),
+                &format!("exited before acquiring generation ({status})"),
+                &log_path,
+            ));
         }
         if Instant::now() >= deadline {
             let _ = child.kill();
             let _ = child.wait();
-            return Err(CliError::Usage(format!(
-                "NodeDaemon pid {} did not become ready within 60s and was stopped",
-                child.id()
-            )));
+            return Err(crate::daemon_cli::daemon_start_failure(
+                child.id(),
+                "did not become ready within 60s and was stopped",
+                &log_path,
+            ));
         }
         std::thread::sleep(Duration::from_millis(50));
     }

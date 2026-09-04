@@ -1069,6 +1069,10 @@ impl MultiTeamDaemon {
                     "daemon_id": self.daemon_id,
                     "instance_id": self.instance_id,
                     "process_id": std::process::id(),
+                    "log_path": crate::daemon_cli::node_daemon_log_path(
+                        &self.firm_home,
+                        &self.node_id,
+                    ),
                     "native_session_wake_sink_registered": !self
                         .native_session_wake_endpoint
                         .lock()

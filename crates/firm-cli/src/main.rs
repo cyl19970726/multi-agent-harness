@@ -183,6 +183,11 @@ use provider_interactions::*;
 #[path = "main_modules/dashboard_server.rs"]
 mod dashboard_server;
 use dashboard_server::*;
+#[cfg(unix)]
+#[path = "main_modules/daemon_cli.rs"]
+mod daemon_cli;
+#[cfg(unix)]
+use daemon_cli::*;
 #[path = "main_modules/http_action_dispatch.rs"]
 mod http_action_dispatch;
 use http_action_dispatch::*;

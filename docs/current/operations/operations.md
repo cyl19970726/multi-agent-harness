@@ -308,6 +308,16 @@ cargo run -p firm-cli -- dashboard snapshot
 cargo run -p firm-cli -- serve --addr 127.0.0.1:8787
 ```
 
+Detached `harness daemon start` appends both stdout and stderr to
+`<FIRM_HOME>/nodes/<node_id>/node-daemon.log`. Start prints that stable path
+whether the daemon becomes ready or fails; a readiness failure also includes
+the last 20 log lines so the underlying `daemon serve` error is immediately
+visible. `harness daemon status` includes `log_path` in a live daemon's JSON
+and includes the same path in absent status output. If no live daemon exists
+but any registered Execution Space retains a latest `NodeDaemonLease` that is
+not `Released`, status names the lease state and the operator recovery action
+`daemon-recover-predecessor` instead of reporting a bare absence.
+
 `team-run start` is an accepted-command boundary, not a fire-and-forget hint.
 If the request was sent but the response socket times out or closes, the CLI
 uses the reserved daemon status lane once and accepts success only when the
