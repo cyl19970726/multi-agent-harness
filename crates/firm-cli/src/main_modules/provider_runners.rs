@@ -594,9 +594,22 @@ pub(super) fn run_codex_member_shared(
         member
     };
     let callback_member_id = callback_member.id.clone();
+    // TODO(reverse-rpc-snapshot): same frozen-snapshot shape as the Kimi
+    // runner. `callback_member` is captured once at attach and serves every
+    // later cycle, so `validate_provider_callback_drift` is the guard: it must
+    // compare only genuine authority and never the supervisor round
+    // bookkeeping (`zero_output_streak`, `last_consumed_work_version`,
+    // `started_at`, `finished_at`, `status`, `last_event_at`) the Supervisor
+    // rewrites after every settled round. The follow-up is to share a
+    // round-refreshed snapshot instead of this frozen clone.
     let mut adapter = crate::codex_team_runtime::CodexTeamRuntime::new(app_server)
         .with_provider_request_handler(move |client, frame| {
-            let reply = handle_codex_provider_request(ledger, &callback_member, frame)?;
+            let reply = trace_provider_callback_rejection(
+                ledger,
+                &callback_member.id,
+                frame,
+                handle_codex_provider_request(ledger, &callback_member, frame),
+            )?;
             let request_id = frame
                 .get("id")
                 .ok_or_else(|| CliError::Usage("Codex reverse request omitted id".to_string()))?;
@@ -1315,12 +1328,27 @@ pub(super) fn run_kimi_member_shared(
     ));
     let request_replies = Rc::clone(&pending_replies);
     let written_replies = Rc::clone(&pending_replies);
+    // TODO(reverse-rpc-snapshot): this snapshot is frozen once at runtime
+    // attach and then serves every later cycle of the runtime, so the
+    // Supervisor's per-round member save makes it stale from round 2 on. The
+    // guard that keeps that safe is `validate_provider_callback_drift`, which
+    // re-reads the current row and must compare only genuine authority
+    // (identity, provenance, native session, permission ceiling, runtime
+    // generation) — never supervisor round bookkeeping such as
+    // `zero_output_streak`, `last_consumed_work_version`, `started_at`,
+    // `finished_at`, `status` or `last_event_at`. The follow-up is to share a
+    // round-refreshed snapshot instead of this frozen clone.
     let request_member = callback_member.clone();
     let written_member_id = callback_member_id.clone();
     let mut adapter = crate::kimi_team_runtime::KimiTeamRuntime::new(
         client,
         move |frame| {
-            let reply = handle_kimi_provider_request(ledger, &request_member, frame)?;
+            let reply = trace_provider_callback_rejection(
+                ledger,
+                &request_member.id,
+                frame,
+                handle_kimi_provider_request(ledger, &request_member, frame),
+            )?;
             let key = frame
                 .get("id")
                 .map(|id| id.to_string())
