@@ -23,7 +23,7 @@ mod firm_env;
 
 use firm_env::{
     create_canonical_agent_member, current_project_id, member_run_for_work_owner, run_firm,
-    run_firm_with_env, ServeHandle, TempHome,
+    run_firm_with_env, store_jsonl_rows, ServeHandle, TempHome,
 };
 
 fn run_with_fake_pi(
@@ -215,37 +215,6 @@ fn create_pi_identity_with_ceiling(home: &TempHome, project_id: &str, id: &str, 
     );
 }
 
-fn store_rows(home: &TempHome, project_id: &str, file: &str) -> Vec<serde_json::Value> {
-    let path = home.spaces_dir().join(project_id).join(file);
-    let text = match std::fs::read_to_string(&path) {
-        Ok(text) => text,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
-        Err(error) => panic!("read {}: {error}", path.display()),
-    };
-    let mut ids: Vec<String> = Vec::new();
-    let mut by_id: std::collections::HashMap<String, serde_json::Value> =
-        std::collections::HashMap::new();
-    for line in text.lines() {
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        let row: serde_json::Value =
-            serde_json::from_str(trimmed).unwrap_or_else(|e| panic!("{file} row not JSON: {e}"));
-        let id = row["id"]
-            .as_str()
-            .or_else(|| row["delivery_id"].as_str())
-            .expect("row id or delivery_id")
-            .to_string();
-        ids.retain(|known| known != &id);
-        ids.push(id.clone());
-        by_id.insert(id, row);
-    }
-    ids.into_iter()
-        .map(|id| by_id.remove(&id).unwrap())
-        .collect()
-}
-
 /// Poll a predicate over the HTTP snapshot with a bounded deadline.
 fn poll_snapshot<F>(serve: &ServeHandle, what: &str, mut predicate: F) -> serde_json::Value
 where
@@ -399,7 +368,7 @@ fn pi_rpc_member_two_round_journey_via_canonical_message() {
     );
 
     // Exactly two completed rounds and never a disconnect.
-    let actions = store_rows(&home, &project_id, "member_actions.jsonl");
+    let actions = store_jsonl_rows(&home, &project_id, "member_actions.jsonl");
     let member_actions = actions
         .iter()
         .filter(|action| action["member_run_id"] == member_id)
@@ -485,7 +454,7 @@ fn pi_rpc_member_two_round_journey_via_canonical_message() {
     );
 
     // Native session binding.
-    let member = store_rows(&home, &project_id, "member_runs.jsonl")
+    let member = store_jsonl_rows(&home, &project_id, "member_runs.jsonl")
         .into_iter()
         .find(|member| member["id"] == member_id)
         .expect("latest Pi ProviderRuntimeProjection");
@@ -738,7 +707,7 @@ fn pi_prompt_receipt_survives_disconnect_without_redelivery() {
         1,
         "accepted input must not be blindly replayed after transport loss: {prompts:?}"
     );
-    let actions = store_rows(&home, &project_id, "member_actions.jsonl");
+    let actions = store_jsonl_rows(&home, &project_id, "member_actions.jsonl");
     assert!(
         actions
             .iter()

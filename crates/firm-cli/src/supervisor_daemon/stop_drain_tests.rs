@@ -242,10 +242,19 @@ fn stop_reports_drain_incomplete_without_releasing_authority() {
             team_run_status: harness_core::TeamRunStatus::Completed,
         })
     });
+    // Drain bounds: 2 s cooperative / 50 ms forced. The cooperative bound is
+    // shared by the control-worker and recovery-scanner waits, so it must
+    // cover one full scanner pass (a 20 ms poll loop around scan_and_adopt)
+    // plus worst-case CI thread scheduling — not just the happy path. The
+    // old (50, 50) let the scanner lose a scheduling race and be named the
+    // failed phase (#774); 2 s cannot flip, because the scanner here has a
+    // single trivial Space to scan, while the deliberately spinning
+    // Supervisor still times out deterministically at ~2.05 s and remains
+    // the only phase that can fail.
     let fixture = stop_fixture(
         "stop-incomplete",
         Some(managed_context(thread, heartbeat)),
-        (50, 50),
+        (2_000, 50),
     );
 
     std::thread::scope(|scope| {
