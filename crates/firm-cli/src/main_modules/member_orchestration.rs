@@ -798,6 +798,31 @@ pub(crate) enum TeamRunDriveOutcome {
     },
 }
 
+/// Decide what one Supervisor generation proved, from the TeamRun status it
+/// left behind and the canonical state it entered and exited on.
+///
+/// A generation that ends with the run still `Running` and not one canonical
+/// row moved has, by definition, nothing a repeat of the same adoption could
+/// improve on. Anything else is progress and the next adoption starts from a
+/// different observation.
+pub(crate) fn classify_team_run_drive_outcome(
+    team_run_status: TeamRunStatus,
+    entry_canonical_state: &str,
+    exit_canonical_state: &str,
+    runtime_outcome_count: usize,
+) -> TeamRunDriveOutcome {
+    if team_run_status == TeamRunStatus::Running && exit_canonical_state == entry_canonical_state {
+        TeamRunDriveOutcome::NoProgress {
+            canonical_state: exit_canonical_state.to_string(),
+            detail: format!(
+                "member supervisor stopped with team run still running and no canonical TeamRun, MemberRun, Work, Message or RuntimeCommand change ({runtime_outcome_count} runtime outcome(s))"
+            ),
+        }
+    } else {
+        TeamRunDriveOutcome::Progressed { team_run_status }
+    }
+}
+
 pub(crate) fn drive_prepared_team_run(
     prepared: PreparedTeamRunStart,
     execution_space: Option<ExecutionSpace>,
@@ -1119,21 +1144,12 @@ pub(crate) fn drive_prepared_team_run(
         execution_space_id.as_deref(),
         &run_id,
     )?;
-    let drive_outcome = if current.status == TeamRunStatus::Running
-        && exit_canonical_state == entry_canonical_state
-    {
-        TeamRunDriveOutcome::NoProgress {
-            canonical_state: exit_canonical_state,
-            detail: format!(
-                "member supervisor stopped with team run still running and no canonical TeamRun, MemberRun, Work, Message or RuntimeCommand change ({} runtime outcome(s))",
-                outcomes.len()
-            ),
-        }
-    } else {
-        TeamRunDriveOutcome::Progressed {
-            team_run_status: current.status,
-        }
-    };
+    let drive_outcome = classify_team_run_drive_outcome(
+        current.status,
+        &entry_canonical_state,
+        &exit_canonical_state,
+        outcomes.len(),
+    );
     ledger.fold_event(
         TeamRunEventSourceKind::Host,
         None,

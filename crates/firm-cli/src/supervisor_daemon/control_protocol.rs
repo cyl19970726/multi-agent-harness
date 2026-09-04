@@ -1078,9 +1078,13 @@ impl MultiTeamDaemon {
                         .lock()
                         .unwrap_or_else(|error| error.into_inner())
                         .iter()
-                        .map(|(space, run)| serde_json::json!({
+                        .map(|((space, run), hold)| serde_json::json!({
                             "execution_space_id": space,
                             "run_id": run,
+                            "lifted_by": match hold {
+                                VolatileAdoptionHold::Unconditional => "explicit_start",
+                                VolatileAdoptionHold::AtCanonicalState(_) => "canonical_change",
+                            },
                         }))
                         .collect::<Vec<_>>(),
                     "runs": runs

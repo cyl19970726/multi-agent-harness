@@ -9,11 +9,35 @@
 //! only lets the NodeDaemon say "this exact observed state already produced
 //! its outcome".
 //!
-//! The fingerprint deliberately ignores TeamRunEvent and MemberAction rows.
-//! Those are the daemon's own journal: an adoption that achieved nothing still
-//! appends them, so including them would make every no-progress adoption look
-//! like a canonical change and restore the re-adoption loop this fingerprint
-//! exists to close (#704, #671).
+//! Two exclusions carry the whole design, and both exist because a fingerprint
+//! that any failing adoption can move is worthless:
+//!
+//! 1. **No journal rows.** TeamRunEvent and MemberAction are the daemon's own
+//!    log; an adoption that achieved nothing still appends them.
+//! 2. **No clock stamps.** `last_event_at`, `updated_at` and `finished_at` are
+//!    wall-clock observations, not coordination facts.
+//!    `claim_member_provider_start` stamps `last_event_at = now()` before the
+//!    transport is even attempted, so including it made every provider-start
+//!    failure — the unreleased AgentSession, stale permission ceiling and
+//!    provider start-error classes of #671 — look like canonical progress and
+//!    earn another Supervisor generation. `finished_at` is reduced to the
+//!    boolean coordination fact it stands for.
+//!
+//! `runtime_generation` is deliberately kept: it moves only on an explicit
+//! Reopen, which is precisely the Host intent that should re-enable adoption.
+//! `zero_output_streak` is deliberately dropped: it is bookkeeping for the
+//! degradation ladder whose only adoption-relevant end state, `Blocked`, is
+//! already carried by `status`.
+//!
+//! Known limit: a `Message` whose `team_run_id` is `None` is invisible here,
+//! so it cannot by itself lift a hold. Such a message is not addressed to this
+//! run's execution attempt, and any delivery it produces moves a MemberRun row
+//! or a WorkDelivery that this fingerprint does see.
+//!
+//! A member start that fails *after* its status CAS legitimately changes
+//! `status` and so costs one further adoption; the next one finds the member
+//! unclaimable, writes nothing, and holds. That is still at most one adoption
+//! per distinct canonical state, which is the invariant (#704, #671).
 
 use harness_core::agentfirm_api::RuntimeDriverRef;
 use harness_store::HarnessStore;
@@ -23,6 +47,17 @@ use crate::CliResult;
 /// Evidence-ref prefix that binds a durable adoption outcome to the exact
 /// canonical state it was observed under.
 pub(super) const CANONICAL_STATE_EVIDENCE_PREFIX: &str = "team-run-canonical-state:";
+
+// TODO(#726 follow-up): each call re-reads `member_runs`, `work_operations`,
+// `fabric_messages` and `runtime_commands` for the whole Store. A scan that
+// holds N runs therefore pays N whole-Store passes. That is already the
+// existing shape of `scan_and_adopt` (`team_run_has_active_member` reads the
+// same member-run collection per run), and the fingerprint is only computed
+// for runs that actually carry a hold, so it strictly replaces a far more
+// expensive Supervisor spawn. Hoisting all four collections to one read per
+// scan pass means threading a borrowed snapshot through `team_run_adoption_is_held`,
+// `drive_prepared_team_run` and the reap path, which is a wider change than
+// this review; recorded rather than half-done.
 
 /// Fingerprint the canonical coordination state of one TeamRun.
 ///
@@ -45,9 +80,7 @@ pub(super) fn team_run_canonical_state_fingerprint(
                 "status": member.status,
                 "coordination_status": member.coordination_status,
                 "runtime_generation": member.runtime_generation,
-                "zero_output_streak": member.zero_output_streak,
-                "last_event_at": member.last_event_at,
-                "finished_at": member.finished_at,
+                "finished": member.finished_at.is_some(),
                 "native_session": member.native_session.as_ref().map(|session| {
                     serde_json::json!({
                         "provider": session.provider,
@@ -67,6 +100,10 @@ pub(super) fn team_run_canonical_state_fingerprint(
         .filter(|operation| operation.work.team_run_id == run_id)
         .count();
 
+    let member_run_ids = members
+        .iter()
+        .filter_map(|member| member["id"].as_str().map(str::to_string))
+        .collect::<std::collections::BTreeSet<_>>();
     let (messages, runtime_commands) = match execution_space_id {
         Some(space_id) => {
             let messages = store
@@ -74,6 +111,10 @@ pub(super) fn team_run_canonical_state_fingerprint(
                 .into_iter()
                 .filter(|message| message.team_run_id.as_deref() == Some(run_id))
                 .count();
+            // A RuntimeCommand reaches this TeamRun either through its
+            // TeamSupervisor driver or by binding one of the run's MemberRuns.
+            // Counting only the first missed every command a Host issued
+            // against a member directly, leaving those invisible to the hold.
             let runtime_commands = store
                 .runtime_commands(space_id)?
                 .into_iter()
@@ -82,7 +123,11 @@ pub(super) fn team_run_canonical_state_fingerprint(
                         &command.binding.target_driver,
                         RuntimeDriverRef::TeamSupervisor { team_run_id, .. }
                             if team_run_id == run_id
-                    )
+                    ) || command
+                        .binding
+                        .target_member_run_id
+                        .as_deref()
+                        .is_some_and(|member_run_id| member_run_ids.contains(member_run_id))
                 })
                 .count();
             (Some(messages), Some(runtime_commands))
@@ -95,8 +140,7 @@ pub(super) fn team_run_canonical_state_fingerprint(
             "team_run": {
                 "id": run.id,
                 "status": run.status,
-                "updated_at": run.updated_at,
-                "completed_at": run.completed_at,
+                "completed": run.completed_at.is_some(),
                 "member_run_ids": run.member_run_ids,
             },
             "member_runs": members,

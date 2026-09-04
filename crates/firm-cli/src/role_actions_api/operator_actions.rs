@@ -574,11 +574,25 @@ pub(super) fn execute_operator_action(
                         )
                     })?;
                 if control["ok"] != true {
+                    // Two different failures arrive on this one path and must
+                    // not share a code. A generation fence means the stop was
+                    // refused with no effect; a drain that did not complete
+                    // means the daemon accepted the stop, is still working,
+                    // and deliberately retains machine authority (#584).
+                    let message = control["error"]
+                        .as_str()
+                        .unwrap_or("NodeDaemon rejected the generation-fenced stop");
+                    let code = if control["drained"] == false {
+                        "NODE_DAEMON_DRAIN_INCOMPLETE"
+                    } else {
+                        "SUPERVISOR_GENERATION_FENCED"
+                    };
                     return Err(encoded_error(
-                        "SUPERVISOR_GENERATION_FENCED",
-                        control["error"]
-                            .as_str()
-                            .unwrap_or("NodeDaemon rejected the generation-fenced stop"),
+                        code,
+                        match control["failed_phase"].as_str() {
+                            Some(phase) => format!("{message} (failed phase: {phase})"),
+                            None => message.to_string(),
+                        },
                         "node_daemon_lease",
                         node_id,
                         Some(daemon_generation),

@@ -1428,6 +1428,21 @@ pub(super) fn daemon_command(args: &[String]) -> CliResult<()> {
                 CliError::Usage(format!("no NodeDaemon is running for Node {node_id}"))
             })?;
             println!("{response}");
+            // Stop now answers with its drain result. Printing that result and
+            // exiting 0 would put the honest `NODE_DAEMON_DRAIN_INCOMPLETE`
+            // behind a success exit code, which is how a still-spinning daemon
+            // looked stopped in the first place (#584).
+            let receipt = serde_json::from_str::<serde_json::Value>(&response)
+                .map_err(|error| CliError::Usage(format!("invalid stop receipt: {error}")))?;
+            if receipt["ok"] != true {
+                return Err(CliError::Usage(format!(
+                    "{}: NodeDaemon {node_id} retains machine authority (failed phase: {})",
+                    receipt["error"]
+                        .as_str()
+                        .unwrap_or("NODE_DAEMON_DRAIN_INCOMPLETE"),
+                    receipt["failed_phase"].as_str().unwrap_or("unknown"),
+                )));
+            }
         }
         other => return Err(CliError::Usage(format!("unknown daemon command: {other}"))),
     }

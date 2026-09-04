@@ -21,10 +21,10 @@ pub(super) enum SupervisorAdoptionHold {
     NoProgressAt(String),
 }
 
-fn latest_supervisor_recovery_action(
+fn supervisor_recovery_actions(
     store: &HarnessStore,
     run_id: &str,
-) -> CliResult<Option<harness_core::MemberAction>> {
+) -> CliResult<Vec<harness_core::MemberAction>> {
     Ok(store
         .member_actions()?
         .into_iter()
@@ -35,48 +35,124 @@ fn latest_supervisor_recovery_action(
                     SUPERVISOR_RECOVERY_REQUIRED | SUPERVISOR_RECOVERED | SUPERVISOR_NO_PROGRESS
                 )
         })
-        .max_by_key(|action| action.seq))
+        .collect())
 }
 
-/// Read the latest durable adoption outcome as a hold. Only the newest marker
-/// counts: an explicit `SUPERVISOR_RECOVERED` after either kind of block is
-/// the operator/Host intent that re-enables automatic adoption.
-fn adoption_hold(action: Option<&harness_core::MemberAction>) -> SupervisorAdoptionHold {
-    let Some(action) = action else {
-        return SupervisorAdoptionHold::None;
+/// Read the durable adoption outcome for one TeamRun as a hold.
+///
+/// This deliberately does not read only the newest row. `seq` is assigned per
+/// ledger instance, so two concurrent writers can tie, and a weaker
+/// `SUPERVISOR_NO_PROGRESS` row must never shadow a hard
+/// `SUPERVISOR_RECOVERY_REQUIRED` diagnosis that no explicit recovery has
+/// settled. The rule is therefore: any recovery requirement newer than the
+/// last explicit recovery wins outright; otherwise the newest unsettled
+/// no-progress observation applies. An exact tie resolves toward
+/// `SUPERVISOR_RECOVERED` so an operator can always clear a hold, and toward
+/// `SUPERVISOR_RECOVERY_REQUIRED` over `SUPERVISOR_NO_PROGRESS` so the
+/// stronger diagnosis is never lost.
+fn adoption_hold(actions: &[harness_core::MemberAction]) -> SupervisorAdoptionHold {
+    let newest = |action_type: &str, status: harness_core::MemberActionStatus| {
+        actions
+            .iter()
+            .filter(|action| action.action_type == action_type && action.status == status)
+            .max_by_key(|action| action.seq)
     };
-    if action.status != harness_core::MemberActionStatus::Failed {
-        return SupervisorAdoptionHold::None;
+    let recovered_seq = newest(
+        SUPERVISOR_RECOVERED,
+        harness_core::MemberActionStatus::Succeeded,
+    )
+    .map(|action| action.seq);
+    let unsettled = |action: &harness_core::MemberAction| {
+        recovered_seq.is_none_or(|recovered| action.seq > recovered)
+    };
+
+    if newest(
+        SUPERVISOR_RECOVERY_REQUIRED,
+        harness_core::MemberActionStatus::Failed,
+    )
+    .is_some_and(unsettled)
+    {
+        return SupervisorAdoptionHold::RecoveryRequired;
     }
-    match action.action_type.as_str() {
-        SUPERVISOR_RECOVERY_REQUIRED => SupervisorAdoptionHold::RecoveryRequired,
-        SUPERVISOR_NO_PROGRESS => match crate::canonical_state_from_evidence(&action.evidence_refs)
-        {
+    match newest(
+        SUPERVISOR_NO_PROGRESS,
+        harness_core::MemberActionStatus::Failed,
+    )
+    .filter(|action| unsettled(action))
+    {
+        None => SupervisorAdoptionHold::None,
+        Some(action) => match crate::canonical_state_from_evidence(&action.evidence_refs) {
             Some(fingerprint) => SupervisorAdoptionHold::NoProgressAt(fingerprint.to_string()),
             // A no-progress marker without its canonical-state binding cannot
             // prove what it was observed under. Fail closed: hold adoption
             // until an explicit recovery or start intent clears it.
             None => SupervisorAdoptionHold::RecoveryRequired,
         },
-        _ => SupervisorAdoptionHold::None,
     }
 }
 
 /// Whether any durable hold currently stands, of either kind.
-fn adoption_hold_stands(action: Option<&harness_core::MemberAction>) -> bool {
-    !matches!(adoption_hold(action), SupervisorAdoptionHold::None)
+fn adoption_hold_stands(actions: &[harness_core::MemberAction]) -> bool {
+    !matches!(adoption_hold(actions), SupervisorAdoptionHold::None)
+}
+
+/// Codes that describe this daemon generation or a lost race, never a durable
+/// property of the TeamRun. They are matched as the error's own leading code
+/// token, never as a substring of the whole chain: an error that merely quotes
+/// a fenced code while reporting something structural must still hold.
+const TRANSIENT_START_FAILURE_CODES: &[&str] = &[
+    "NODE_HAS_NO_REGISTERED_PROJECT",
+    "NODE_DAEMON_GENERATION_FENCED",
+    "NODE_DAEMON_MACHINE_AUTHORITY_LOST",
+    "SUPERVISOR_GENERATION_FENCED",
+];
+
+/// The two capacity/ownership rejections `start_supervising` writes as prose
+/// rather than as a code. Matched as a prefix for the same reason.
+const TRANSIENT_START_FAILURE_PREFIXES: &[&str] =
+    &["NodeDaemon at capacity", "NodeDaemon already manages"];
+
+/// The leading `CODE:` token of a message, when it has one.
+fn leading_error_code(message: &str) -> Option<&str> {
+    let code = message.split(':').next()?.trim();
+    (!code.is_empty()
+        && code.chars().all(|character| {
+            character.is_ascii_uppercase() || character.is_ascii_digit() || character == '_'
+        }))
+    .then_some(code)
 }
 
 /// Start failures that say nothing durable about this TeamRun. Holding
-/// adoption on them would suppress a run that a freed concurrency slot or a
-/// restored daemon generation makes startable again with no canonical change.
+/// adoption on them would suppress a run that a freed concurrency slot, a won
+/// CAS retry or a restored daemon generation makes startable again with no
+/// canonical change at all.
+///
+/// Classification is typed first. `CliError::Usage` is the catch-all this
+/// codebase flattens Store conflicts into, so its text is consulted only for
+/// the error's own leading code token: matching a substring anywhere in the
+/// chain let an ordinary CAS conflict — or any error that merely mentioned a
+/// fenced code — decide the outcome for a whole TeamRun.
 fn start_failure_is_transient(error: &CliError) -> bool {
-    let message = error.to_string();
-    message.contains("NodeDaemon at capacity")
-        || message.contains("NodeDaemon already manages")
-        || message.contains("NODE_HAS_NO_REGISTERED_PROJECT")
-        || message.contains("NODE_DAEMON_GENERATION_FENCED")
-        || message.contains("SUPERVISOR_GENERATION_FENCED")
+    match error {
+        // Store contention, provider-admission contention and a lost
+        // machine/Supervisor authority are properties of this attempt, never
+        // of the run.
+        CliError::Store(_)
+        | CliError::ProviderAdmissionContention(_)
+        | CliError::SupervisorLeaseLost(_)
+        | CliError::ProviderProcessAdmissionClosed(_) => true,
+        // An accepted or ambiguous provider effect is never a no-progress
+        // observation; the RuntimeCommand recovery paths own those.
+        CliError::ProviderEffectAccepted(_) | CliError::RuntimeRecoveryRequired(_) => true,
+        CliError::Usage(message) => {
+            TRANSIENT_START_FAILURE_PREFIXES
+                .iter()
+                .any(|prefix| message.starts_with(prefix))
+                || leading_error_code(message)
+                    .is_some_and(|code| TRANSIENT_START_FAILURE_CODES.contains(&code))
+        }
+        _ => false,
+    }
 }
 
 pub(super) fn team_run_has_unresolved_runtime_command(
@@ -403,22 +479,57 @@ impl MultiTeamDaemon {
                 crate::team_run_canonical_state_fingerprint(store, Some(execution_space_id), run_id)
             }
         };
-        let result = canonical_state.and_then(|canonical_state| {
+        let canonical_state = match canonical_state {
+            Ok(canonical_state) => canonical_state,
+            Err(error) => {
+                // Nothing can prove this run has since changed, so the hold
+                // cannot be state-keyed. Only an explicit start clears it.
+                self.insert_volatile_hold(
+                    execution_space_id,
+                    run_id,
+                    VolatileAdoptionHold::Unconditional,
+                    &error,
+                );
+                return;
+            }
+        };
+        if let Err(error) =
             self.record_no_progress_adoption_outcome(store, run_id, &canonical_state, detail)
-        });
-        if let Err(error) = result {
+        {
             // Without a durable outcome the next scan would adopt this run
-            // again immediately. Fall back to the process-local block that the
-            // finished-Supervisor path already uses when its durable
-            // projection is unavailable.
-            self.recovery_blocked_runs
-                .lock()
-                .unwrap_or_else(|lock_error| lock_error.into_inner())
-                .insert((execution_space_id.to_string(), run_id.to_string()));
-            eprintln!(
-                "[node-daemon] volatile adoption hold for {execution_space_id}/{run_id} because its durable no-progress outcome could not be written: {error}"
+            // again immediately. Hold it in-process instead — but keyed to the
+            // same canonical state, so a legacy run with no Host MemberRun to
+            // project a marker onto is not stranded for this daemon's whole
+            // lifetime.
+            self.insert_volatile_hold(
+                execution_space_id,
+                run_id,
+                VolatileAdoptionHold::AtCanonicalState(canonical_state),
+                &error,
             );
         }
+    }
+
+    fn insert_volatile_hold(
+        &self,
+        execution_space_id: &str,
+        run_id: &str,
+        hold: VolatileAdoptionHold,
+        error: &CliError,
+    ) {
+        let liftable = matches!(hold, VolatileAdoptionHold::AtCanonicalState(_));
+        self.recovery_blocked_runs
+            .lock()
+            .unwrap_or_else(|lock_error| lock_error.into_inner())
+            .insert((execution_space_id.to_string(), run_id.to_string()), hold);
+        eprintln!(
+            "[node-daemon] volatile adoption hold ({}) for {execution_space_id}/{run_id} because its durable no-progress outcome could not be written: {error}",
+            if liftable {
+                "lifted by any canonical change"
+            } else {
+                "explicit start required"
+            }
+        );
     }
 
     fn record_no_progress_adoption_outcome(
@@ -428,8 +539,7 @@ impl MultiTeamDaemon {
         canonical_state: &str,
         detail: &str,
     ) -> CliResult<()> {
-        let latest = latest_supervisor_recovery_action(store, run_id)?;
-        match adoption_hold(latest.as_ref()) {
+        match adoption_hold(&supervisor_recovery_actions(store, run_id)?) {
             // A hard recovery diagnosis outranks a no-progress observation.
             SupervisorAdoptionHold::RecoveryRequired => return Ok(()),
             // The same fingerprint is already held; appending again would only
@@ -492,10 +602,15 @@ impl MultiTeamDaemon {
     }
 
     fn block_finished_supervisor_volatile(&self, context: &MultiTeamContext, error: &CliError) {
+        // The Store itself is unreadable here, so there is no canonical state
+        // to key the hold to. This one is deliberately unconditional.
         self.recovery_blocked_runs
             .lock()
             .unwrap_or_else(|lock_error| lock_error.into_inner())
-            .insert((context.execution_space_id.clone(), context.run_id.clone()));
+            .insert(
+                (context.execution_space_id.clone(), context.run_id.clone()),
+                VolatileAdoptionHold::Unconditional,
+            );
         eprintln!(
             "[node-daemon] volatile Supervisor recovery block for {}/{} because its durable projection is unavailable: {error}",
             context.execution_space_id, context.run_id
@@ -525,15 +640,30 @@ impl MultiTeamDaemon {
         store: &HarnessStore,
         run_id: &str,
     ) -> CliResult<bool> {
+        // A run whose dead generation is still writing its outcome must not be
+        // adopted; that marker would otherwise land on the live successor.
         if self
-            .recovery_blocked_runs
+            .settling_runs
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .contains(&(execution_space_id.to_string(), run_id.to_string()))
         {
             return Ok(true);
         }
-        match adoption_hold(latest_supervisor_recovery_action(store, run_id)?.as_ref()) {
+        let volatile = self
+            .recovery_blocked_runs
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .get(&(execution_space_id.to_string(), run_id.to_string()))
+            .cloned();
+        let hold = match volatile {
+            Some(VolatileAdoptionHold::Unconditional) => return Ok(true),
+            Some(VolatileAdoptionHold::AtCanonicalState(fingerprint)) => {
+                SupervisorAdoptionHold::NoProgressAt(fingerprint)
+            }
+            None => adoption_hold(&supervisor_recovery_actions(store, run_id)?),
+        };
+        match hold {
             SupervisorAdoptionHold::None => Ok(false),
             SupervisorAdoptionHold::RecoveryRequired => Ok(true),
             SupervisorAdoptionHold::NoProgressAt(held) => Ok(held
@@ -555,15 +685,19 @@ impl MultiTeamDaemon {
         supervisor_generation: Option<u64>,
         error: &CliError,
     ) -> CliResult<()> {
+        // A hard diagnosis is never state-liftable.
         self.recovery_blocked_runs
             .lock()
             .unwrap_or_else(|lock_error| lock_error.into_inner())
-            .insert((execution_space_id.to_string(), run_id.to_string()));
+            .insert(
+                (execution_space_id.to_string(), run_id.to_string()),
+                VolatileAdoptionHold::Unconditional,
+            );
         // A no-progress hold is a weaker statement than a recovery diagnosis,
         // so it must not suppress this marker; only an existing recovery
         // requirement already says everything this one would.
         if matches!(
-            adoption_hold(latest_supervisor_recovery_action(store, run_id)?.as_ref()),
+            adoption_hold(&supervisor_recovery_actions(store, run_id)?),
             SupervisorAdoptionHold::RecoveryRequired
         ) {
             return Ok(());
@@ -616,7 +750,7 @@ impl MultiTeamDaemon {
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .remove(&(execution_space_id.to_string(), run_id.to_string()));
-        if !adoption_hold_stands(latest_supervisor_recovery_action(store, run_id)?.as_ref()) {
+        if !adoption_hold_stands(&supervisor_recovery_actions(store, run_id)?) {
             return Ok(());
         }
         let host = crate::latest_member_runs_in_append_order(store)?
@@ -644,80 +778,117 @@ impl MultiTeamDaemon {
 mod tests {
     use super::*;
 
-    #[test]
-    fn only_latest_failed_supervisor_recovery_marker_blocks_adoption() {
-        let action = |seq: u64, action_type: &str, status: harness_core::MemberActionStatus| {
-            harness_core::MemberAction {
-                id: format!("action-{seq}"),
-                seq,
-                team_run_id: "run".into(),
-                member_run_id: "host".into(),
-                task_id: None,
-                provider_call_id: None,
-                action_type: action_type.into(),
-                status,
-                provider_status: None,
-                semantic_status: None,
-                title: "Supervisor".into(),
-                summary: "bounded coordination diagnostic".into(),
-                evidence_refs: Vec::new(),
-                started_at: "unix-ms:1".into(),
-                completed_at: Some("unix-ms:1".into()),
-            }
-        };
-        let blocked = action(
-            1,
-            SUPERVISOR_RECOVERY_REQUIRED,
-            harness_core::MemberActionStatus::Failed,
-        );
-        let recovered = action(
-            2,
-            SUPERVISOR_RECOVERED,
-            harness_core::MemberActionStatus::Succeeded,
-        );
-        assert!(adoption_hold_stands(Some(&blocked)));
-        assert_eq!(
-            adoption_hold(Some(&blocked)),
-            SupervisorAdoptionHold::RecoveryRequired
-        );
-        assert!(!adoption_hold_stands(Some(&recovered)));
-        assert_eq!(
-            adoption_hold(Some(&recovered)),
-            SupervisorAdoptionHold::None
-        );
-        assert!(!adoption_hold_stands(None));
-        assert_eq!(adoption_hold(None), SupervisorAdoptionHold::None);
-    }
-
-    #[test]
-    fn no_progress_hold_is_keyed_to_the_canonical_state_it_observed() {
-        let no_progress = |seq: u64, evidence: Vec<String>| harness_core::MemberAction {
+    fn marker(
+        seq: u64,
+        action_type: &str,
+        status: harness_core::MemberActionStatus,
+        evidence_refs: Vec<String>,
+    ) -> harness_core::MemberAction {
+        harness_core::MemberAction {
             id: format!("action-{seq}"),
             seq,
             team_run_id: "run".into(),
             member_run_id: "host".into(),
             task_id: None,
             provider_call_id: None,
-            action_type: SUPERVISOR_NO_PROGRESS.into(),
-            status: harness_core::MemberActionStatus::Failed,
+            action_type: action_type.into(),
+            status,
             provider_status: None,
             semantic_status: None,
             title: "Supervisor".into(),
-            summary: "no canonical progress".into(),
-            evidence_refs: evidence,
+            summary: "bounded coordination diagnostic".into(),
+            evidence_refs,
             started_at: "unix-ms:1".into(),
             completed_at: Some("unix-ms:1".into()),
-        };
+        }
+    }
+
+    fn required(seq: u64) -> harness_core::MemberAction {
+        marker(
+            seq,
+            SUPERVISOR_RECOVERY_REQUIRED,
+            harness_core::MemberActionStatus::Failed,
+            Vec::new(),
+        )
+    }
+
+    fn recovered(seq: u64) -> harness_core::MemberAction {
+        marker(
+            seq,
+            SUPERVISOR_RECOVERED,
+            harness_core::MemberActionStatus::Succeeded,
+            Vec::new(),
+        )
+    }
+
+    fn no_progress(seq: u64, evidence: Vec<String>) -> harness_core::MemberAction {
+        marker(
+            seq,
+            SUPERVISOR_NO_PROGRESS,
+            harness_core::MemberActionStatus::Failed,
+            evidence,
+        )
+    }
+
+    #[test]
+    fn only_unsettled_supervisor_recovery_markers_block_adoption() {
+        assert!(adoption_hold_stands(&[required(1)]));
         assert_eq!(
-            adoption_hold(Some(&no_progress(
+            adoption_hold(&[required(1)]),
+            SupervisorAdoptionHold::RecoveryRequired
+        );
+        assert!(!adoption_hold_stands(&[required(1), recovered(2)]));
+        assert_eq!(
+            adoption_hold(&[required(1), recovered(2)]),
+            SupervisorAdoptionHold::None
+        );
+        assert!(!adoption_hold_stands(&[]));
+        assert_eq!(adoption_hold(&[]), SupervisorAdoptionHold::None);
+    }
+
+    #[test]
+    fn a_no_progress_row_never_shadows_an_unsettled_recovery_requirement() {
+        let state = crate::canonical_state_evidence_ref("sha256:one");
+        // Newer by seq, and even tied with it: the weaker observation must
+        // never hide the hard diagnosis while no recovery has settled it.
+        assert_eq!(
+            adoption_hold(&[required(4), no_progress(9, vec![state.clone()])]),
+            SupervisorAdoptionHold::RecoveryRequired
+        );
+        assert_eq!(
+            adoption_hold(&[required(4), no_progress(4, vec![state.clone()])]),
+            SupervisorAdoptionHold::RecoveryRequired
+        );
+        // Once an explicit recovery settles it, the later no-progress
+        // observation is the one that applies.
+        assert_eq!(
+            adoption_hold(&[
+                required(4),
+                recovered(5),
+                no_progress(6, vec![state.clone()]),
+            ]),
+            SupervisorAdoptionHold::NoProgressAt("sha256:one".into())
+        );
+        // An explicit recovery tied with the requirement still clears it, so
+        // an operator can never be wedged by a seq collision.
+        assert_eq!(
+            adoption_hold(&[required(4), recovered(4)]),
+            SupervisorAdoptionHold::None
+        );
+    }
+
+    #[test]
+    fn no_progress_hold_is_keyed_to_the_canonical_state_it_observed() {
+        assert_eq!(
+            adoption_hold(&[no_progress(
                 1,
                 vec![crate::canonical_state_evidence_ref("sha256:one")]
-            ))),
+            )]),
             SupervisorAdoptionHold::NoProgressAt("sha256:one".into()),
             "the hold must name the exact canonical state it was observed under"
         );
         assert_eq!(
-            adoption_hold(Some(&no_progress(2, Vec::new()))),
+            adoption_hold(&[no_progress(2, Vec::new())]),
             SupervisorAdoptionHold::RecoveryRequired,
             "a no-progress marker that cannot prove its canonical state must fail closed"
         );
@@ -728,8 +899,11 @@ mod tests {
         for transient in [
             "NodeDaemon at capacity (4/4 runs); cannot start space/run",
             "NodeDaemon already manages space/run",
+            "NodeDaemon already manages space/run (settling the previous Supervisor generation; retry)",
             "NODE_HAS_NO_REGISTERED_PROJECT: Node n has no active project in Execution Space s",
             "NODE_DAEMON_GENERATION_FENCED: current lease is missing",
+            "NODE_DAEMON_MACHINE_AUTHORITY_LOST: space s lost this instance lease",
+            "SUPERVISOR_GENERATION_FENCED: another generation owns this run",
         ] {
             assert!(
                 start_failure_is_transient(&CliError::Usage(transient.into())),
@@ -739,6 +913,7 @@ mod tests {
         for structural in [
             "team run r is pinned to unavailable Project Binding p",
             "REMOTE_TEAM_RUN_NOT_ADOPTED: TeamRun r belongs to Node other",
+            "TEAM_RUN_DORMANT: TeamRun r has no Active MemberRun",
             "member workspace canonical_root no longer exists",
             "AgentSession for member m was never released",
         ] {
@@ -747,6 +922,53 @@ mod tests {
                 "{structural} must leave a durable adoption outcome"
             );
         }
+    }
+
+    #[test]
+    fn start_failure_classification_is_typed_not_substring_matched() {
+        // A CAS conflict is an ordinary lost race. It used to arrive as
+        // `CliError::Usage` carrying the Store's conflict text, be classified
+        // structural, and wedge a healthy run until canonical state changed.
+        assert!(start_failure_is_transient(&CliError::Store(
+            harness_store::StoreError::Conflict(
+                "TEAM_RUN_LIFECYCLE_CONFLICT: expected version 3".into()
+            )
+        )));
+        assert!(start_failure_is_transient(&CliError::SupervisorLeaseLost(
+            "supervisor lease lost".into()
+        )));
+        assert!(start_failure_is_transient(
+            &CliError::RuntimeRecoveryRequired("ambiguous provider effect".into())
+        ));
+
+        // A structural failure that merely quotes a fenced code somewhere in
+        // its chain must still hold: only the error's own leading code counts.
+        assert!(!start_failure_is_transient(&CliError::Usage(
+            "member workspace canonical_root is gone (previous attempt reported SUPERVISOR_GENERATION_FENCED)"
+                .into()
+        )));
+        assert!(!start_failure_is_transient(&CliError::Usage(
+            "TEAM_RUN_HOST_NOT_FOUND: NODE_DAEMON_GENERATION_FENCED appears only in this detail"
+                .into()
+        )));
+        assert!(!start_failure_is_transient(&CliError::Io(
+            std::io::Error::new(std::io::ErrorKind::NotFound, "provider cwd is missing")
+        )));
+    }
+
+    #[test]
+    fn leading_error_code_reads_only_a_real_leading_code_token() {
+        assert_eq!(
+            leading_error_code("NODE_DAEMON_GENERATION_FENCED: detail"),
+            Some("NODE_DAEMON_GENERATION_FENCED")
+        );
+        assert_eq!(leading_error_code("CODE_9: detail"), Some("CODE_9"));
+        assert_eq!(leading_error_code("team run r is pinned"), None);
+        assert_eq!(
+            leading_error_code("store error: SUPERVISOR_GENERATION_FENCED"),
+            None
+        );
+        assert_eq!(leading_error_code(""), None);
     }
 
     #[test]

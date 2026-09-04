@@ -322,6 +322,43 @@ that TeamRun until such explicit intent. Losing only the client response after
 a command completed is diagnostic response loss and never poisons the daemon
 generation.
 
+There is a second, deliberately weaker hold. A Supervisor that returns with its
+TeamRun still `running` and no canonical `TeamRun`, `MemberRun`, `Work`,
+`Message` or `RuntimeCommand` change, and a start that fails structurally
+before any RuntimeCommand exists (missing cwd, missing Team, stale permission
+ceiling, unreleased AgentSession), record `team_supervisor_no_progress` bound
+by an evidence ref to a fingerprint of the canonical state they observed.
+Automatic adoption skips that TeamRun only while the fingerprint still matches.
+This is what stops a NodeDaemon re-adopting an unchanged run and burning a new
+Supervisor generation on every scan.
+
+- It clears by itself as soon as any of those canonical rows changes — no
+  operator action is required, and clock stamps deliberately do not count.
+- It also clears on an explicit operator recovery or Host start intent, which
+  records `team_supervisor_recovered`.
+- `team_supervisor_recovery_required` always outranks it: a hard diagnosis is
+  never shadowed by a no-progress observation, and a no-progress marker that
+  cannot prove which canonical state it observed fails closed as one.
+- Transient rejections — capacity, an already-managed run, a lost CAS race, a
+  fenced daemon generation — never record a hold.
+- `harness daemon status` lists any process-local holds under
+  `recovery_blocked_runs`, each with whether a canonical change or an explicit
+  start lifts it.
+
+`harness daemon stop` answers with its drain result, not with its acceptance.
+It replies only after accepted control commands, the recovery scanner, managed
+Supervisor threads and authority settlement have converged, within a documented
+75-second bound (20s control workers + 20s scanner + 30s Supervisor drain + 5s
+forced process-group drain). A drain that does not complete returns
+`ok:false` with `NODE_DAEMON_DRAIN_INCOMPLETE`, the failing phase, and
+`authority_released:false`; the CLI exits non-zero and the Operator action
+returns the `NODE_DAEMON_DRAIN_INCOMPLETE` code rather than
+`SUPERVISOR_GENERATION_FENCED`. Machine authority is deliberately retained in
+that case — never treat a failed stop as a stopped daemon. Known limit:
+`harness daemon status` is unanswered for the remainder of the drain, because
+control ingress closes when the stop is accepted; the bound above is the
+window.
+
 NodeDaemon lease expiry is not takeover authority. If the exact predecessor
 process is still alive, let that instance settle commands, drain providers and
 release every registered Execution Space. If it crashed, use the Operator

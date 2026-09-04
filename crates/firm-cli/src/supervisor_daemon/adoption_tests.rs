@@ -5,21 +5,33 @@
 use super::tests::TestTree;
 use super::*;
 
-struct AdoptionFixture {
+pub(super) struct AdoptionFixture {
     _tree: TestTree,
-    execution_space_id: String,
-    store: HarnessStore,
-    run_id: String,
-    daemon: MultiTeamDaemon,
+    pub(super) execution_space_id: String,
+    pub(super) store: HarnessStore,
+    pub(super) run_id: String,
+    pub(super) daemon: MultiTeamDaemon,
 }
 
 /// The unit-test AgentTeam fixture that `create_team_run` bootstraps binds
 /// its canonical AgentMembers to this Execution Space id.
 const ADOPTION_SPACE_ID: &str = "unit-test-space";
 
-fn adoption_fixture(label: &str) -> AdoptionFixture {
+pub(super) fn adoption_fixture(label: &str) -> AdoptionFixture {
     let tree = TestTree::new(label);
-    let store = HarnessStore::new(tree.0.join("store"));
+    let firm_home = tree.0.join("home");
+    // Register the Space the unit-test AgentTeam fixture binds to, so the reap
+    // path's `store_for_space` resolves this exact Store.
+    let space = crate::execution_space::register_and_activate(
+        &firm_home,
+        ADOPTION_SPACE_ID,
+        "Adoption Space",
+        Some("unit-test-project".to_string()),
+        None,
+        "unix-ms:1",
+    )
+    .expect("register adoption Execution Space");
+    let store = HarnessStore::new(space.store_root.clone());
     store.init().expect("initialize adoption Store");
 
     let member = |agent_member_id: &str, name: &str, role: &str| crate::TeamMemberSpec {
@@ -58,7 +70,7 @@ fn adoption_fixture(label: &str) -> AdoptionFixture {
     .expect("create adoption TeamRun");
 
     let daemon = MultiTeamDaemon {
-        firm_home: tree.0.join("home"),
+        firm_home,
         node_id: "adoption-node".into(),
         daemon_id: "node-daemon:adoption-node".into(),
         instance_id: "adoption-instance".into(),
@@ -73,7 +85,8 @@ fn adoption_fixture(label: &str) -> AdoptionFixture {
         authority_shutdown: Arc::new(AtomicBool::new(false)),
         authority_lost: AtomicBool::new(false),
         control_worker_failed: AtomicBool::new(false),
-        recovery_blocked_runs: Mutex::new(HashSet::new()),
+        recovery_blocked_runs: Mutex::new(HashMap::new()),
+        settling_runs: Mutex::new(HashSet::new()),
         lease_ttl_override_ms: None,
         deferred_stop_responses: Mutex::new(Vec::new()),
         drain_timeout_override_ms: None,
@@ -89,13 +102,13 @@ fn adoption_fixture(label: &str) -> AdoptionFixture {
 }
 
 impl AdoptionFixture {
-    fn adoption_is_held(&self) -> bool {
+    pub(super) fn adoption_is_held(&self) -> bool {
         self.daemon
             .team_run_adoption_is_held(&self.execution_space_id, &self.store, &self.run_id)
             .expect("read adoption hold")
     }
 
-    fn canonical_state(&self) -> String {
+    pub(super) fn canonical_state(&self) -> String {
         crate::team_run_canonical_state_fingerprint(
             &self.store,
             Some(&self.execution_space_id),
@@ -335,7 +348,8 @@ fn status_remains_responsive_while_reap_joins_a_finished_supervisor() {
         authority_shutdown: Arc::new(AtomicBool::new(false)),
         authority_lost: AtomicBool::new(false),
         control_worker_failed: AtomicBool::new(false),
-        recovery_blocked_runs: Mutex::new(HashSet::new()),
+        recovery_blocked_runs: Mutex::new(HashMap::new()),
+        settling_runs: Mutex::new(HashSet::new()),
         lease_ttl_override_ms: None,
         deferred_stop_responses: Mutex::new(Vec::new()),
         drain_timeout_override_ms: None,
