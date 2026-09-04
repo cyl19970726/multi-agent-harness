@@ -218,13 +218,15 @@ team-run start      --id <id> [--max-concurrency <n>] [--idle-timeout-s <n>]
 team-run add-member --id <id> --member <spec> [--initial-work <text>]
 team-run status     --id <id> [--json]
 team-run wait       --id <id> [--after-seq <n>] [--timeout-secs <n>] [--json]
-team-run host-inbox --surface <s> --thread-id <id> [--all] [--json]
+team-run host-inbox --surface <s> --thread-id <id> [--all] [--json]  (both required)
 team-run events     --id <id> [--after-seq <n>] [--json]
 team-run board-summary --id <id>
 team-run recover    --id <id> [--json]
-team message send   --from-team <id> --from-member <id> --to-team <id>
+team message send   (peer-Team only) --from-team <id> --from-member <id> --to-team <id>
                     [--to-member <id> | --to-membership <id>] --body <md>
                     [--company <id> --to-node <id> --to-space <id>]
+  intra-Team: POST /v1/agentfirm/team-runs/{run}/messages/send
+              or firm member message send (Supervisor-bound member)
 team message inbox  --team <id> [--all] [--json]
 team message claim  --team <id> --delivery-id <id> --membership-id <id>
 "#;
@@ -258,7 +260,7 @@ team-run start --id <id> [--max-concurrency <n>]
 team-run add-member --id <id> --member <spec>
 team-run status --id <id> [--json]
 team-run wait --id <id> [--after-seq <n>] [--timeout-secs <n>] [--json]
-team-run host-inbox --surface <s> --thread-id <id> [--all] [--json]
+team-run host-inbox --surface <s> --thread-id <id> [--all] [--json]  (both required)
 team-run events --id <id> [--json]
 team-run board-summary --id <id>
 team-run recover --id <id> [--json]
@@ -280,7 +282,10 @@ work poll-github-ci --team-run-id <id>
 
 team create --name <text> --description <text> --host-agent-id <id>
   --node-id <uuid> [--member <id>] [--legacy-mission-id <id>]
-team message send --from-team <id> --from-member <id> --to-team <id> --body <md>
+team message send (peer-Team only) --from-team <id> --from-member <id>
+  --to-team <id> --body <md>
+  intra-Team: POST /v1/agentfirm/team-runs/{run}/messages/send
+              or firm member message send (Supervisor-bound member)
 team message inbox --team <id> [--all]
 mission list
 mission show --id <id>
@@ -305,6 +310,8 @@ pub(super) fn print_help() {
   mission log show --mission-id <id> [--tail <n>] (read-only legacy)
   legacy wave list|show|history (historical reads only)
   team-run create|list|status|recover|host-inbox|bind-host|host-lease-status|renew-host-lease|release-host-lease|inbox|add-member|rename-member|interrupt-member|close-member|reopen-member|deactivate-member|start|answer-message|events|complete|cancel
+  team-run host-inbox --surface <surface> --thread-id <id> [--all] [--json]
+      Both --surface and --thread-id are required.
   team-run board-summary --id <team-run-id>
       <=500-char plain-text board digest: counts by status, assigned/unassigned,
       ready, and one idle|working|awaiting-review line per active member.
@@ -321,9 +328,12 @@ pub(super) fn print_help() {
                    [--to-member <agent-member-id> | --to-membership <membership-id>]
                    --body <markdown> [--work-id <id>] [--correlation-id <id>] [--causation-id <id>]
                    [--company <id> --to-node <node> --to-space <id> [--to-subscription-revision <n>]]
-      Ordinary peer-Team Message without WorkDelegation. A Team target lands in
-      the shared Team Inbox without waking Members; a Member target binds one
-      exact TeamMembership. Remote route facts are all-or-nothing.
+      Peer-Team only; ordinary Message without WorkDelegation. For intra-team
+      messages, use POST /v1/agentfirm/team-runs/{{run}}/messages/send (the Host
+      Console composer) or firm member message send from a Supervisor-bound
+      member. A Team target lands in the shared Team Inbox without waking
+      Members; a Member target binds one exact TeamMembership. Remote route
+      facts are all-or-nothing.
   team message inbox --team <id> [--all] [--json]
       Read the shared Team Inbox (default: unclaimed queued deliveries).
   team message claim --team <id> --delivery-id <id> --membership-id <id> [--claim-id <id>]

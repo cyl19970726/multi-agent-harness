@@ -94,6 +94,62 @@ fn seed_sender_session(home: &TempHome, project_id: &str, node_id: &str) {
 }
 
 #[test]
+fn same_team_send_names_supported_intra_team_paths_before_peer_admission() {
+    let home = TempHome::new("team-message-same-team");
+    let project_root = home.base().join("project");
+    std::fs::create_dir_all(&project_root).expect("project root");
+    let initialized = run_firm(&home, &project_root, &["init"]);
+    assert!(initialized.status.success(), "init failed: {initialized:?}");
+    let project_id = current_project_id(&home);
+
+    let error = run_err(
+        &home,
+        &project_id,
+        &[
+            "team",
+            "message",
+            "send",
+            "--from-team",
+            "same-team",
+            "--from-member",
+            "sender",
+            "--to-team",
+            "same-team",
+            "--body",
+            "intra-team note",
+        ],
+    );
+    assert!(
+        error.contains("POST /v1/agentfirm/team-runs/{run}/messages/send"),
+        "same-Team rejection must name the Host Console route: {error}"
+    );
+    assert!(
+        error.contains("firm member message send"),
+        "same-Team rejection must name the Supervisor-bound member route: {error}"
+    );
+    assert!(
+        !error.contains("ordinary peer-Team admission requires"),
+        "same-Team rejection must happen before peer admission: {error}"
+    );
+
+    let store = HarnessStore::new(home.spaces_dir().join(&project_id));
+    assert!(
+        store
+            .fabric_messages(&project_id)
+            .expect("messages")
+            .is_empty(),
+        "rejected same-Team send must not author a Message"
+    );
+    assert!(
+        store
+            .fabric_message_deliveries(&project_id)
+            .expect("deliveries")
+            .is_empty(),
+        "rejected same-Team send must not create a delivery"
+    );
+}
+
+#[test]
 fn peer_team_message_send_inbox_claim_and_replay() {
     let home = TempHome::new("team-peer-messaging");
     let project_root = home.base().join("project");
