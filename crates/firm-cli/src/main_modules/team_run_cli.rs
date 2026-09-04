@@ -220,7 +220,7 @@ pub(super) fn team_run_command(
             )
             .to_string();
             let host_thread_id = explicit_host_thread_id.or(ambient_host_thread_id);
-            let created = create_team_run(
+            let created = create_team_run_with_initial_work_policy(
                 store,
                 resolved.context.as_ref(),
                 resolved
@@ -238,6 +238,7 @@ pub(super) fn team_run_command(
                 value(args, "--mission-id"),
                 value(args, "--wave-id"),
                 &members,
+                !has_flag(args, "--no-initial-work"),
             )?;
             let mut host_lease = None;
             if created.team_run.host_thread_id.is_some() {

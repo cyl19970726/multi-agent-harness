@@ -136,6 +136,8 @@ substituted); the version of the Work it is mutating; its inbox at safe
 boundaries; and the submission contract (result summary + artifact/check refs
 matching the declared gates).
 
+A member with no standing Work waits for an assigned Work instead of creating one.
+
 **Both fail without the shared model above** — that is why it comes first.
 
 ## Part III — Operating loops

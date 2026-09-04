@@ -79,6 +79,12 @@ acceptance criteria. A Member dependency proposal has no effect until the
 kernel accepts the versioned operation. A Message can explain or request the
 change but never mutates the graph.
 
+By default, an explicit `team-run create --member ...#<brief>` preserves the
+historical per-member bootstrap Work. Passing `--no-initial-work` creates the
+MemberRuns without any bootstrap Work so Host assignment can follow directly.
+A member with no standing Work waits for an assigned Work instead of creating
+one.
+
 ## Module scope
 
 Work Module support is currently a closed built-in mechanism:

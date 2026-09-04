@@ -810,6 +810,43 @@ pub(super) fn create_team_run(
     wave_id: Option<String>,
     members: &[TeamMemberSpec],
 ) -> CliResult<CreatedTeamRun> {
+    create_team_run_with_initial_work_policy(
+        store,
+        project_context,
+        execution_space_id,
+        requested_execution_root,
+        objective,
+        budget_limit_usd,
+        host_surface,
+        host_thread_id,
+        host_control_mode,
+        previous_run_id,
+        agent_team_id,
+        mission_id,
+        wave_id,
+        members,
+        true,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn create_team_run_with_initial_work_policy(
+    store: &HarnessStore,
+    project_context: Option<&ProjectContext>,
+    execution_space_id: Option<&str>,
+    requested_execution_root: Option<String>,
+    objective: &str,
+    budget_limit_usd: Option<f64>,
+    host_surface: &str,
+    host_thread_id: Option<String>,
+    host_control_mode: HostControlMode,
+    previous_run_id: Option<String>,
+    agent_team_id: Option<String>,
+    mission_id: Option<String>,
+    wave_id: Option<String>,
+    members: &[TeamMemberSpec],
+    create_initial_work: bool,
+) -> CliResult<CreatedTeamRun> {
     if objective.trim().is_empty() {
         return Err(CliError::Usage(
             "team-run objective must not be empty".to_string(),
@@ -1079,7 +1116,10 @@ pub(super) fn create_team_run(
         )?;
         seq += 1;
 
-        if let Some(brief) = member.initial_work.as_deref() {
+        if create_initial_work {
+            let Some(brief) = member.initial_work.as_deref() else {
+                continue;
+            };
             let now = now_string();
             let actor = team_run.host_actor.clone().ok_or_else(|| {
                 CliError::Usage("TeamRun has no exact Host AgentMember actor".to_string())
