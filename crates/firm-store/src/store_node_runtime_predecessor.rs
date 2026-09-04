@@ -205,8 +205,8 @@ impl HarnessStore {
                     "node_daemon_generation": generation,
                     "instance_id": instance_id,
                     "evidence_ref": evidence_ref,
-                    "process_terminated_confirmed": true,
-                    "provider_process_groups_terminated_confirmed": true,
+                    "process_terminated_confirmed": process_terminated_confirmed,
+                    "provider_process_groups_terminated_confirmed": provider_process_groups_terminated_confirmed,
                 }),
                 updated_at,
             )?;

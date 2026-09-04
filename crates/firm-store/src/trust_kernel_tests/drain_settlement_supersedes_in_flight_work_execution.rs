@@ -210,6 +210,7 @@ fn drain_settlement_supersedes_only_the_in_flight_work_it_killed() {
         )
         .unwrap();
 
+    let provider_process_groups_terminated = true;
     store
         .settle_node_daemon_shutdown_sessions(
             &daemon_context(
@@ -222,7 +223,7 @@ fn drain_settlement_supersedes_only_the_in_flight_work_it_killed() {
             "daemon-1",
             1,
             "instance-1",
-            true,
+            provider_process_groups_terminated,
             "t-drain",
         )
         .expect("the exact daemon settles its own generation");
@@ -249,7 +250,8 @@ fn drain_settlement_supersedes_only_the_in_flight_work_it_killed() {
     );
     assert_eq!(
         ended.payload["lost_runtime_generation"]["evidence"]["provider_process_groups_terminated"],
-        serde_json::json!(true)
+        serde_json::json!(provider_process_groups_terminated),
+        "the settlement event must record the verified parameter value"
     );
     assert_eq!(
         ended.payload["lost_runtime_generation"]["evidence"]["node_daemon_generation"],

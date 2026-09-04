@@ -232,13 +232,14 @@ fn drained_in_flight_work_is_redelivered_under_the_successor_generation() {
         "the fresh delivery generation is a new binding, never a revived one"
     );
 
-    // The killed cycle stays exactly one settled, terminal, non-replayed fact
-    // on the dead daemon generation.
+    // Settlement plus ordinary re-delivery minted no extra StartCycle row; the
+    // killed cycle remains the one settled terminal fact on the dead daemon
+    // generation.
     let after = fixture.start_cycles();
     assert_eq!(
         after.len(),
         1,
-        "re-delivery must never replay the killed StartCycle"
+        "settlement plus re-delivery must not mint an extra StartCycle row"
     );
     assert_eq!(after[0].id, killed_cycle[0].id);
     assert_eq!(after[0].status, RuntimeCommandStatus::Applied);
