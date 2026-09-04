@@ -1144,10 +1144,11 @@ pub fn collect_named_sse_data(
     out
 }
 
-/// Linux may report `ECONNRESET`, `EAGAIN`, or a timeout after the server has
-/// already written a complete `Connection: close` response. Accept that
-/// transport ending only when the declared Content-Length is fully present;
-/// never retry a mutation.
+/// Linux may report `ECONNRESET`, `EAGAIN`, a timeout, or an unexpected EOF
+/// after the server has already written a complete `Connection: close`
+/// response. Accept that transport ending only when a complete response is
+/// already buffered; never mask a reset that arrives before the status line,
+/// and never retry a mutation.
 fn read_http_to_string(stream: &mut TcpStream, raw: &mut String) -> std::io::Result<()> {
     match stream.read_to_string(raw) {
         Ok(_) => Ok(()),
@@ -1155,6 +1156,7 @@ fn read_http_to_string(stream: &mut TcpStream, raw: &mut String) -> std::io::Res
             if matches!(
                 error.kind(),
                 std::io::ErrorKind::ConnectionReset
+                    | std::io::ErrorKind::UnexpectedEof
                     | std::io::ErrorKind::WouldBlock
                     | std::io::ErrorKind::TimedOut
             ) && complete_http_response(raw) =>
@@ -1208,13 +1210,23 @@ fn complete_http_response(raw: &str) -> bool {
     else {
         return false;
     };
+    // A reset that arrives before the status line is never masked.
+    if !headers
+        .lines()
+        .next()
+        .is_some_and(|line| line.starts_with("HTTP/"))
+    {
+        return false;
+    }
     let Some(content_length) = headers.lines().find_map(|line| {
         let (name, value) = line.split_once(':')?;
         name.eq_ignore_ascii_case("content-length")
             .then(|| value.trim().parse::<usize>().ok())
             .flatten()
     }) else {
-        return false;
+        // No Content-Length: the body is delimited by the connection close,
+        // so a complete head already makes the response readable to its end.
+        return true;
     };
     body.len() >= content_length
 }
