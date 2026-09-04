@@ -20,18 +20,18 @@ use harness_core::{
 };
 
 /// The unit-test AgentTeam fixture binds its canonical AgentMembers here.
-const DRAIN_SPACE_ID: &str = "unit-test-space";
-const MID_TURN_MEMBER: &str = "agent-builder-a";
-const IDLE_MEMBER: &str = "agent-builder-b";
+pub(super) const DRAIN_SPACE_ID: &str = "unit-test-space";
+pub(super) const MID_TURN_MEMBER: &str = "agent-builder-a";
+pub(super) const IDLE_MEMBER: &str = "agent-builder-b";
 
-struct DrainFixture {
+pub(super) struct DrainFixture {
     _tree: TestTree,
-    store: HarnessStore,
-    run_id: String,
+    pub(super) store: HarnessStore,
+    pub(super) run_id: String,
     node_id: String,
     project_binding_id: String,
     daemon: MultiTeamDaemon,
-    daemon_generation: u64,
+    pub(super) daemon_generation: u64,
 }
 
 fn drain_native_session(native_session_id: &str) -> NativeSessionRef {
@@ -49,7 +49,7 @@ fn drain_native_session(native_session_id: &str) -> NativeSessionRef {
     }
 }
 
-fn member_named(
+pub(super) fn member_named(
     store: &HarnessStore,
     run_id: &str,
     agent_member_id: &str,
@@ -61,7 +61,7 @@ fn member_named(
         .unwrap_or_else(|| panic!("MemberRun for {agent_member_id}"))
 }
 
-fn agent_session(
+pub(super) fn agent_session(
     store: &HarnessStore,
     agent_member_id: &str,
 ) -> harness_core::agentfirm_api::AgentSession {
@@ -73,7 +73,7 @@ fn agent_session(
         .unwrap_or_else(|| panic!("AgentSession for {agent_member_id}"))
 }
 
-fn drain_fixture(label: &str) -> DrainFixture {
+pub(super) fn drain_fixture(label: &str) -> DrainFixture {
     let tree = TestTree::new(label);
     let firm_home = tree.0.join("home");
     let space = crate::execution_space::register_and_activate(
@@ -225,7 +225,11 @@ fn drain_fixture(label: &str) -> DrainFixture {
 }
 
 impl DrainFixture {
-    fn supervise(&self, supervisor_id: &str, daemon_generation: u64) -> Arc<TeamRunLedger> {
+    pub(super) fn supervise(
+        &self,
+        supervisor_id: &str,
+        daemon_generation: u64,
+    ) -> Arc<TeamRunLedger> {
         let lease = self
             .store
             .acquire_team_supervisor_under_node_lease(
@@ -274,6 +278,11 @@ impl DrainFixture {
     /// Put one member mid-turn: an Active Session with an attached, running
     /// provider handle and one settled StartCycle.
     fn start_one_cycle(&self, ledger: &TeamRunLedger) {
+        self.start_cycle_for(ledger, "work-delivery:drain:turn:1");
+    }
+
+    /// The same mid-turn state, driven by one exact canonical WorkDelivery.
+    pub(super) fn start_cycle_for(&self, ledger: &TeamRunLedger, delivery_id: &str) {
         let member = member_named(&self.store, &self.run_id, MID_TURN_MEMBER);
         crate::transition_provider_session_for_member(ledger, &member, AgentSessionStatus::Active)
             .expect("activate the mid-turn Session");
@@ -287,7 +296,7 @@ impl DrainFixture {
         let admission = crate::prepare_provider_effect(
             ledger,
             &member,
-            "work-delivery:drain:turn:1",
+            delivery_id,
             "execute the mid-turn work",
             1,
         )
@@ -309,7 +318,7 @@ impl DrainFixture {
         .expect("settle the StartCycle before the drain");
     }
 
-    fn idle_one_member(&self, ledger: &TeamRunLedger) {
+    pub(super) fn idle_one_member(&self, ledger: &TeamRunLedger) {
         let member = member_named(&self.store, &self.run_id, IDLE_MEMBER);
         crate::transition_provider_session_for_member(ledger, &member, AgentSessionStatus::Idle)
             .expect("idle the second Session");
@@ -325,7 +334,7 @@ impl DrainFixture {
     /// The drain the r5 dogfood run observed: the Supervisor lease is released,
     /// this daemon settles its own Sessions after killing the owned provider
     /// process groups, then releases its machine authority.
-    fn drain(&self, supervisor_id: &str, supervisor_generation: u64) {
+    pub(super) fn drain(&self, supervisor_id: &str, supervisor_generation: u64) {
         self.store
             .release_team_supervisor_lease(
                 &self.run_id,
@@ -344,7 +353,7 @@ impl DrainFixture {
 
     /// The successor NodeDaemon generation re-adopts the TeamRun exactly the way
     /// `team-run start` does after `daemon start`.
-    fn readopt(&self) -> u64 {
+    pub(super) fn readopt(&self) -> u64 {
         let successor = self
             .store
             .acquire_node_daemon_lease(
@@ -367,7 +376,7 @@ impl DrainFixture {
         successor.generation
     }
 
-    fn start_cycles(&self) -> Vec<harness_core::agentfirm_api::RuntimeCommandRecord> {
+    pub(super) fn start_cycles(&self) -> Vec<harness_core::agentfirm_api::RuntimeCommandRecord> {
         self.store
             .runtime_commands(DRAIN_SPACE_ID)
             .expect("runtime commands")

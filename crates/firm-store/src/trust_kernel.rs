@@ -780,6 +780,10 @@ mod fabric_runtime_commands;
 mod fabric_teams;
 mod fabric_work_execution;
 pub use fabric_work_execution::WorkExecutionBindingReconciliation;
+mod fabric_work_execution_recovery;
+pub use fabric_work_execution_recovery::{
+    InvalidatedWorkExecution, LostRuntimeGenerationCause, LostRuntimeLane,
+};
 mod trust_deliveries;
 mod trust_foundation;
 mod trust_members;

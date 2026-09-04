@@ -416,6 +416,30 @@ TeamRun, reattaches each Session to the new generation and resumes it
 time keep `Idle` and resume unchanged. The killed cycle's `RuntimeCommand`
 remains settled against the dead daemon generation and is never replayed.
 
+Resuming the Session does not resume the killed turn, and the member does not
+pick up its in-flight Work where it left off. The drain settlement ends that
+Work's execution authority in the same write: a `WorkExecutionBinding` whose
+delivery was `Claimed` or `ProviderReceived` moves to `Released` under the
+canonical transition `invalidated_by_lost_runtime_generation` (cause
+`node_daemon_drain`, or `node_daemon_predecessor_recovery` for the Operator
+recovery path), and its `CanonicalWorkDelivery` moves to `Failed` with
+`WORK_DELIVERY_SUPERSEDED_BY_NODE_DAEMON_DRAIN` (respectively
+`..._BY_NODE_DAEMON_PREDECESSOR_RECOVERY`) while keeping its
+`provider_receipt_id` as evidence. Neither record claims a turn outcome.
+
+The path that re-drives it is the ordinary one: the Work keeps its assignee,
+revision and phase, so the next Supervisor pass after `daemon start` +
+`team-run start` binds a new binding generation and queues a new delivery with
+a new claim id. No Host verb is needed. Read it back with
+`harness team-run work show --work-id <id>`; the superseded delivery and the
+fresh one are both visible. A delivery that was still `Queued` at drain time is
+untouched and is claimed unchanged by the reattached lane. `team-run work
+redeliver` remains the Host's way to supersede a delivery it still owns and is
+not the recovery path for a killed one — if it answers `WORK_DELIVERY_LIVE`,
+the binding is still Active and the member must be closed first. That is still
+the case after a member Close and Reopen, which deliberately never replays a
+provider-received Work; the Host re-drives it with `redeliver`.
+
 If a resume is refused with `AgentSession interrupted by a NodeDaemon drain may
 resume only from a detached, disarmed lane…`, the lane still claims a live
 provider handle or carries an ambiguous `RuntimeCommand`: reconcile that command

@@ -1214,6 +1214,8 @@ fn daemon_stop_via_socket_with_policy(
 #[cfg(test)]
 mod adoption_tests;
 #[cfg(test)]
+mod drain_inflight_work_tests;
+#[cfg(test)]
 mod drain_recovery_tests;
 #[cfg(test)]
 mod drive_outcome_tests;

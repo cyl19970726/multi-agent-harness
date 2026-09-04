@@ -113,7 +113,7 @@ impl HarnessStore {
             binding.work_id == current.id && binding_can_still_execute(binding.status)
         }) {
             return Err(StoreError::Conflict(format!(
-                "WORK_DELIVERY_LIVE: Work {work_id} binding {} is still executable under generation {}; close the member runtime so the binding is released, then redeliver; if the runtime is already gone this is GitHub #734",
+                "WORK_DELIVERY_LIVE: Work {work_id} binding {} is still executable under generation {}; close the member runtime so the binding is released, then redeliver. A binding killed by a NodeDaemon drain or predecessor recovery is instead superseded by that settlement, after which the ordinary dispatch path re-delivers the Work without a Host verb; if the runtime is already gone for any other reason this is GitHub #734",
                 binding.id, binding.binding_generation
             )));
         }

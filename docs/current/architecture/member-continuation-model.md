@@ -147,6 +147,40 @@ so the Host's Close and the detached-recovery Close both apply to it. Fencing
 Close on the lifecycle label alone would leave a member whose runtime is
 provably dead with no exit at all.
 
+### The Lane's In-Flight Work Is Superseded, Not Resumed
+
+Resuming the Session does not resume the turn, so it cannot resume that turn's
+Work either. The member does not simply pick up where it was: the drain kills
+the process group, so a `WorkExecutionBinding` whose `CanonicalWorkDelivery` was
+`Claimed` or `ProviderReceived` can never reach a provider outcome under that
+generation. The same settlement that detaches the Session therefore ends that
+binding's authority in the same write:
+
+- the binding moves `Active -> Released` under the canonical transition
+  `invalidated_by_lost_runtime_generation`, whose payload names the cause
+  (`node_daemon_drain` or `node_daemon_predecessor_recovery`) and the exact
+  generation evidence;
+- its delivery moves to `Failed` with an explicit failure code
+  (`WORK_DELIVERY_SUPERSEDED_BY_NODE_DAEMON_DRAIN` and siblings), keeping the
+  immutable `provider_receipt_id` as evidence of what did cross the provider
+  boundary.
+
+Neither record asserts a turn outcome. The Work keeps its responsibility,
+revision and phase, so the ordinary dispatch path re-drives it: the next
+Supervisor pass under the successor generation mints a new binding generation
+and a new `CanonicalWorkDelivery` with a new claim id. No Host verb is required,
+and `team-run work redeliver` stays what it always was — the Host's way to
+supersede a delivery it still owns, not the recovery path for a killed one. A
+delivery that was still `Queued` was never handed to a provider, so the drain
+leaves it alone and the reattached lane claims it unchanged.
+
+This rule covers the drain and the Operator's predecessor recovery only. A lane
+whose MemberRun generation advances through an explicit Close and Reopen keeps
+the opposite contract on purpose: Reopen never replays a provider-received Work,
+so the Host re-drives it explicitly. A binding left `Active` with a
+`ProviderReceived` delivery after a *non-clean* generation advance is the open
+case in GitHub #734 and is not settled by this mechanism.
+
 ## Continuation State Is A Projection
 
 Harness must not create a generic persisted Goal object. The Adapter exposes a
