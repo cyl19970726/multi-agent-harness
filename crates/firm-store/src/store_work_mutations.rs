@@ -805,6 +805,25 @@ impl HarnessStore {
             ));
         }
         let member = self.require_member_run_unlocked(member_run_id, &current.team_run_id)?;
+        let works = self
+            .latest_works_unlocked()?
+            .into_values()
+            .collect::<Vec<_>>();
+        // One active Work per member is a member-plane fact that needs no
+        // delivery evidence, so it is answered before the responsibility and
+        // WorkDelivery guards. Otherwise a busy member asking to start a
+        // second, still-undispatched Work would be told its delivery evidence
+        // is missing instead of that it is already busy.
+        if works.iter().any(|work| {
+            work.team_run_id == current.team_run_id
+                && work.phase == WorkPhase::Active
+                && work.condition == WorkCondition::Normal
+                && work.owner_member_id.as_deref() == Some(member.agent_member_id.as_str())
+        }) {
+            return Err(StoreError::Conflict(format!(
+                "MEMBER_BUSY: ProviderRuntimeProjection {member_run_id} already has active Work"
+            )));
+        }
         if current.phase != WorkPhase::Open
             || current.condition != WorkCondition::Normal
             || !self.member_run_holds_work_responsibility_unlocked(&current, &member)?
@@ -822,22 +841,8 @@ impl HarnessStore {
                 "MEMBER_BUSY: ProviderRuntimeProjection {member_run_id} is not available and active"
             )));
         }
-        let works = self
-            .latest_works_unlocked()?
-            .into_values()
-            .collect::<Vec<_>>();
         if !current.is_claim_ready(works.iter()) {
             return Err(StoreError::Conflict(format!("work {work_id} is not ready")));
-        }
-        if works.iter().any(|work| {
-            work.team_run_id == current.team_run_id
-                && work.phase == WorkPhase::Active
-                && work.condition == WorkCondition::Normal
-                && work.owner_member_id.as_deref() == Some(member.agent_member_id.as_str())
-        }) {
-            return Err(StoreError::Conflict(format!(
-                "MEMBER_BUSY: ProviderRuntimeProjection {member_run_id} already has active Work"
-            )));
         }
         let mut next = current.clone();
         next.phase = WorkPhase::Active;

@@ -19,6 +19,7 @@ Protocol: `agentfirm-member-trust/1`
 | `NATIVE_SESSION_MISSING` | Typed kernel rejection; inspect message, resource and current_version. | false unless the returned payload explicitly says otherwise |
 | `NATIVE_SESSION_INCOMPATIBLE` | Typed kernel rejection; inspect message, resource and current_version. | false unless the returned payload explicitly says otherwise |
 | `DELIVERY_CLAIM_CONFLICT` | Typed kernel rejection; inspect message, resource and current_version. | false unless the returned payload explicitly says otherwise |
+| `DELIVERY_NOT_DISPATCHED` | Typed kernel rejection; inspect message, resource and current_version. | false unless the returned payload explicitly says otherwise |
 | `DELIVERY_RECEIPT_MISSING` | Typed kernel rejection; inspect message, resource and current_version. | false unless the returned payload explicitly says otherwise |
 | `DELIVERY_RECOVERY_UNCERTAIN` | Typed kernel rejection; inspect message, resource and current_version. | false unless the returned payload explicitly says otherwise |
 | `RUNTIME_EFFECT_UNKNOWN` | Typed kernel rejection; inspect message, resource and current_version. | false unless the returned payload explicitly says otherwise |
