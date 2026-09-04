@@ -308,13 +308,13 @@ cargo run -p firm-cli -- dashboard snapshot
 cargo run -p firm-cli -- serve --addr 127.0.0.1:8787
 ```
 
-Detached `harness daemon start` appends both stdout and stderr to
+Detached `firm daemon start` appends both stdout and stderr to
 `<FIRM_HOME>/nodes/<node_id>/node-daemon.log`. Start prints that stable path
 whether the daemon becomes ready or fails; a readiness failure also includes
 the last 20 lines from a seek-from-end read bounded to 64 KiB, so the underlying
 `daemon serve` error is immediately visible without loading an unbounded log.
 At daemon start, a log larger than 8 MiB rotates to `node-daemon.log.1`,
-replacing the previous `.1`, before a new current log is opened. `harness daemon
+replacing the previous `.1`, before a new current log is opened. `firm daemon
 status` includes `log_path` in a live daemon's JSON and includes the same path
 in absent status output. If no live daemon exists but any registered Execution
 Space retains a latest `NodeDaemonLease` that is not `Released`, status names
@@ -356,11 +356,11 @@ Supervisor generation on every scan.
   cannot prove which canonical state it observed fails closed as one.
 - Transient rejections — capacity, an already-managed run, a lost CAS race, a
   fenced daemon generation — never record a hold.
-- `harness daemon status` lists any process-local holds under
+- `firm daemon status` lists any process-local holds under
   `recovery_blocked_runs`, each with whether a canonical change or an explicit
   start lifts it.
 
-`harness daemon stop` answers with its drain result, not with its acceptance.
+`firm daemon stop` answers with its drain result, not with its acceptance.
 It replies only after accepted control commands, the recovery scanner, managed
 Supervisor threads and authority settlement have converged, within a documented
 75-second bound (20s control workers + 20s scanner + 30s Supervisor drain + 5s
@@ -385,7 +385,7 @@ others are not. The receipt names them in `released_execution_space_ids` and
 
 Two known limits:
 
-- `harness daemon status` is unanswered for the remainder of the drain, because
+- `firm daemon status` is unanswered for the remainder of the drain, because
   control ingress closes when the stop is accepted; the bound above is the
   window. `daemon status` also lists only process-local adoption holds under
   `recovery_blocked_runs` — a durable `team_supervisor_no_progress` hold is
@@ -410,7 +410,7 @@ this settlement boundary.
 
 A drain leaves every member that was mid-turn with an `Interrupted`
 AgentSession. That is recoverable, not wedged: after the predecessor lease is
-Released, `harness daemon start` plus `harness team-run start` re-adopts the
+Released, `firm daemon start` plus `firm team-run start` re-adopts the
 TeamRun, reattaches each Session to the new generation and resumes it
 (`Interrupted -> Idle`, then a fresh cycle). Members that were idle at drain
 time keep `Idle` and resume unchanged. The killed cycle's `RuntimeCommand`
@@ -431,7 +431,7 @@ The path that re-drives it is the ordinary one: the Work keeps its assignee,
 revision and phase, so the next Supervisor pass after `daemon start` +
 `team-run start` binds a new binding generation and queues a new delivery with
 a new claim id. No Host verb is needed. Read it back with
-`harness team-run work show --work-id <id>`; the superseded delivery and the
+`firm team-run work show --work-id <id>`; the superseded delivery and the
 fresh one are both visible. A delivery that was still `Queued` at drain time is
 untouched and is claimed unchanged by the reattached lane. `team-run work
 redeliver` remains the Host's way to supersede a delivery it still owns and is
@@ -480,7 +480,7 @@ GET /v1/views/agent-workspace/{team-run-or-member-run}?agent_id={exact-team-memb
 ```
 
 Managed provider members read only their exact-self coordination Inbox through
-the Supervisor-bound `harness member inbox [--all] [--json]` command. The
+the Supervisor-bound `firm member inbox [--all] [--json]` command. The
 former unauthenticated per-Member HTTP Inbox route is retired. The cooperative
 `external_interactive` hook may still use `team-run inbox` only for the
 TeamRun and MemberRun already bound in its environment; it cannot select
