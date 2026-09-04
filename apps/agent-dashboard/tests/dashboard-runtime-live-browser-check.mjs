@@ -553,10 +553,15 @@ try {
   await memberPage.getByRole("tab", {name:/Session/}).waitFor();
   await memberPage.getByRole("tab", {name:/Work/}).click();
   await waitForText(memberPage, "Real browser RoleAction loop");
-  const composerActionLabels = await memberPage.getByLabel("Composer action").locator("option").allTextContents();
+  // No runtime action is authorized before exact NodeDaemon admission, so the
+  // current AgentComposer intentionally renders a read-only boundary instead
+  // of the former action selector.
+  const memberComposer = memberPage.getByTestId("agent-workspace-composer");
+  await memberComposer.waitFor();
   check(
-    !composerActionLabels.includes("start work")
-      && (await memberPage.getByLabel("Composer action").getAttribute("title"))?.includes("current NodeDaemon"),
+    await memberComposer.getAttribute("data-composer-kind") === "read_only"
+      && await memberPage.getByLabel("Composer action").count() === 0
+      && await memberPage.getByRole("button", {name:"start work",exact:true}).count() === 0,
     "Agent Workspace does not invent runtime authority before exact NodeDaemon admission",
   );
   check(await memberPage.getByRole("button", {name:/collaboration|delegation/i}).count()===0,
