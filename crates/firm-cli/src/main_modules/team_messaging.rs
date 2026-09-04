@@ -869,6 +869,26 @@ pub(super) fn team_run_execution_space_id(
     store_conflict_as_usage(store.current_team_run_execution_space(run))
 }
 
+/// Same resolution, with the Store's typed error preserved.
+///
+/// The adoption/start path classifies a failed start by error *type*, not by
+/// text. `current_team_run_execution_space` returns
+/// `Conflict("TEAM_RUN_CHANGED: ...")` whenever a Host appends an AgentTeamRun
+/// row between the caller's read and the resolver's comparison, and that retry
+/// is not covered by the resolver's own materialization loop. Flattened into
+/// `CliError::Usage` it reads as a structural defect and earns the healthy run
+/// a durable no-progress hold; every later scan and explicit start then skips
+/// it until canonical state changes again (DEV-149-REVIEW-03). CLI and HTTP
+/// callers keep the `Usage` spelling above.
+pub(crate) fn team_run_execution_space_id_for_start(
+    store: &HarnessStore,
+    run: &AgentTeamRun,
+) -> CliResult<String> {
+    store
+        .current_team_run_execution_space(run)
+        .map_err(CliError::Store)
+}
+
 pub(super) fn team_run_unacknowledged_message_count(
     store: &HarnessStore,
     team_run_id: &str,

@@ -7,6 +7,15 @@
 
 use super::*;
 
+/// Which Execution Space leases this generation actually released, and which
+/// it could not. Partial release is a real outcome, so the stop receipt
+/// reports both lists rather than one boolean.
+#[derive(Debug, Default, Clone)]
+pub(super) struct AuthorityReleaseReport {
+    pub(super) released_space_ids: Vec<String>,
+    pub(super) failed_space_ids: Vec<String>,
+}
+
 pub(super) fn daemon_control_generation_authorized(
     lease: Option<&harness_core::NodeDaemonLease>,
     daemon_id: &str,
@@ -381,13 +390,26 @@ impl MultiTeamDaemon {
             .map_err(CliError::Store)
     }
 
-    pub(super) fn release_node_authorities(&self) -> CliResult<()> {
+    /// Release this generation's lease in every registered Execution Space.
+    ///
+    /// This deliberately continues past a per-Space failure, so a failure is
+    /// *partial*: some Space leases may already be Released while others are
+    /// not. The report says which, because `authority_released: false` on a
+    /// stop receipt therefore means "not wholly released", never "nothing was
+    /// released" (DEV-149-REVIEW-03).
+    pub(super) fn release_node_authorities(&self) -> (CliResult<()>, AuthorityReleaseReport) {
+        let mut report = AuthorityReleaseReport::default();
         let mut failures = Vec::new();
-        for (space, store) in self.registered_spaces()? {
+        let spaces = match self.registered_spaces() {
+            Ok(spaces) => spaces,
+            Err(error) => return (Err(error), report),
+        };
+        for (space, store) in spaces {
             let lease = match store.latest_node_daemon_lease(&self.node_id) {
                 Ok(Some(lease)) => lease,
                 Ok(None) => continue,
                 Err(error) => {
+                    report.failed_space_ids.push(space.id.clone());
                     failures.push(format!("{}: {error}", space.id));
                     continue;
                 }
@@ -395,24 +417,30 @@ impl MultiTeamDaemon {
             if lease.daemon_id != self.daemon_id || lease.instance_id != self.instance_id {
                 continue;
             }
-            if let Err(error) = store.release_node_daemon_lease(
+            match store.release_node_daemon_lease(
                 &self.node_id,
                 &lease.daemon_id,
                 lease.generation,
                 &lease.instance_id,
                 current_unix_ms_u64(),
             ) {
-                failures.push(format!("{}: {error}", space.id));
+                Ok(_) => report.released_space_ids.push(space.id.clone()),
+                Err(error) => {
+                    report.failed_space_ids.push(space.id.clone());
+                    failures.push(format!("{}: {error}", space.id));
+                }
             }
         }
-        if failures.is_empty() {
+        let result = if failures.is_empty() {
             Ok(())
         } else {
             Err(CliError::Usage(format!(
-                "NODE_DAEMON_RELEASE_INCOMPLETE: {}",
+                "NODE_DAEMON_RELEASE_INCOMPLETE: released {} Execution Space lease(s) before failing: {}",
+                report.released_space_ids.len(),
                 failures.join("; ")
             )))
-        }
+        };
+        (result, report)
     }
 
     pub(super) fn settle_node_authorities_for_shutdown(&self) -> CliResult<()> {

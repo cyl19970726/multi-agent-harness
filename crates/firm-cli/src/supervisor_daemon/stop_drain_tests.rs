@@ -213,6 +213,15 @@ fn stop_answers_only_after_the_managed_runtime_drains() {
             Some(observed_lease_is_released(&fixture)),
             "the receipt must report the release that actually happened, not a prediction"
         );
+        assert_eq!(
+            response["released_execution_space_ids"],
+            serde_json::json!(["stop-space"]),
+            "a whole release names every Execution Space lease it released: {response}"
+        );
+        assert_eq!(
+            response["release_failed_execution_space_ids"],
+            serde_json::json!([])
+        );
     });
 }
 
@@ -271,6 +280,18 @@ fn stop_reports_drain_incomplete_without_releasing_authority() {
             response["authority_released"].as_bool(),
             Some(released),
             "the receipt must report the lease state the Store actually holds"
+        );
+        // `authority_released:false` means "not wholly released". Release
+        // never ran here, so both lists are empty and the operator can tell
+        // that apart from a partial release (DEV-149-REVIEW-03).
+        assert_eq!(
+            response["released_execution_space_ids"],
+            serde_json::json!([]),
+            "a stop that never reached release must not claim released Spaces: {response}"
+        );
+        assert_eq!(
+            response["release_failed_execution_space_ids"],
+            serde_json::json!([])
         );
     });
 

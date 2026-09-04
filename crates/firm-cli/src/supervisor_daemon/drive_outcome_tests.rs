@@ -260,56 +260,121 @@ fn a_settling_run_is_not_adopted_while_its_dead_generation_writes_its_outcome() 
     assert!(!fixture.adoption_is_held());
 }
 
+/// Every Store `Conflict` reachable from `start_supervising` must arrive at
+/// `start_failure_is_transient` typed, and must therefore leave no durable
+/// adoption hold. Three sites on that path can produce one; this drives the
+/// real Store method behind each and asserts the same end-to-end property, so
+/// the class is covered rather than one site at a time (DEV-149-REVIEW-03).
 #[test]
-fn a_member_run_cas_conflict_on_the_start_path_is_transient_and_records_no_hold() {
-    let fixture = adoption_fixture("start-cas-conflict");
+fn every_start_path_store_conflict_is_typed_and_records_no_hold() {
+    let fixture = adoption_fixture("start-path-conflicts");
+    let run = crate::latest_team_run(&fixture.store, &fixture.run_id).expect("read TeamRun");
 
-    // Reproduce the exact error `prepare_team_run_start_body` now returns when
-    // a concurrent Host write wins the MemberRun CAS while an adoption is
-    // refreshing the provider profile. It must arrive typed: flattened into
-    // `CliError::Usage` its text carries no leading code, so the classifier
-    // read an ordinary lost race as structural and wedged a healthy TeamRun
-    // until canonical state changed (DEV-149-REVIEW-02).
+    // Site 1 — TeamRun scope resolution. A Host appends an AgentTeamRun row
+    // between the caller's read and the resolver's comparison, so the resolver
+    // returns `TEAM_RUN_CHANGED`. Driving the real resolver with the run value
+    // the caller already held is exactly that observation.
+    let mut advanced = run.clone();
+    advanced.status = harness_core::TeamRunStatus::Running;
+    advanced.updated_at = crate::now_string();
+    fixture
+        .store
+        .compare_and_append_team_run_lifecycle(&run, &advanced)
+        .expect("the concurrent Host lifecycle append lands first");
+    let scope_conflict = crate::team_run_execution_space_id_for_start(&fixture.store, &run)
+        .expect_err("a stale TeamRun value must not resolve scope");
+    assert!(
+        matches!(
+            scope_conflict,
+            CliError::Store(harness_store::StoreError::Conflict(ref message))
+                if message.starts_with("TEAM_RUN_CHANGED:")
+        ),
+        "scope resolution must surface a typed Store conflict: {scope_conflict}"
+    );
+
+    // Site 2 — the MemberRun CAS `prepare_team_run_start_body` performs when a
+    // refreshed provider profile has to be written back.
     let mut member = crate::latest_member_runs_in_append_order(&fixture.store)
         .expect("read canonical MemberRuns")
         .into_iter()
         .find(|member| member.team_run_id == fixture.run_id && member.role != "host")
         .expect("exact fixture MemberRun");
-    let stale = member.clone();
+    let stale_member = member.clone();
     member.last_event_at = Some(crate::now_string());
     fixture
         .store
-        .compare_and_append_member_run(&stale, &member)
+        .compare_and_append_member_run(&stale_member, &member)
         .expect("the concurrent Host write lands first");
-
-    let mut losing = stale.clone();
+    let mut losing = stale_member.clone();
     losing.provider_cwd_hint = Some("/tmp/losing-adoption".into());
-    let conflict = fixture
+    let member_conflict = fixture
         .store
-        .compare_and_append_member_run(&stale, &losing)
+        .compare_and_append_member_run(&stale_member, &losing)
         .map_err(CliError::Store)
         .expect_err("the adoption's CAS must lose against the newer row");
     assert!(
         matches!(
-            conflict,
+            member_conflict,
             CliError::Store(harness_store::StoreError::Conflict(_))
         ),
-        "the start path must surface a typed Store conflict: {conflict}"
+        "the MemberRun CAS must surface a typed Store conflict: {member_conflict}"
     );
 
-    fixture.daemon.block_start_failure_if_unresolved(
-        &fixture.execution_space_id,
-        &fixture.store,
-        &fixture.run_id,
-        &conflict,
+    // Site 3 — the Supervisor lease `TeamSupervisorRegistration::start`
+    // acquires. A live lease held by another owner makes the acquisition lose.
+    let node_lease = fixture
+        .store
+        .acquire_node_daemon_lease(
+            &run.execution_node_id,
+            "node-daemon:conflict-test",
+            "conflict-test-instance",
+            current_unix_ms_u64(),
+            600_000,
+        )
+        .expect("acquire the parent NodeDaemon lease");
+    let acquire_supervisor = |supervisor_id: &str| {
+        fixture.store.acquire_team_supervisor_under_node_lease(
+            &fixture.run_id,
+            &run.execution_node_id,
+            &node_lease.daemon_id,
+            node_lease.generation,
+            &fixture.execution_space_id,
+            &run.project_binding_id,
+            supervisor_id,
+            std::process::id(),
+            "test://incumbent-supervisor",
+            current_unix_ms_u64(),
+            600_000,
+        )
+    };
+    acquire_supervisor("incumbent-supervisor").expect("the incumbent Supervisor holds the lease");
+    let lease_conflict = acquire_supervisor("adopting-supervisor")
+        .map_err(CliError::Store)
+        .expect_err("a live incumbent lease must deny a second Supervisor");
+    assert!(
+        matches!(
+            lease_conflict,
+            CliError::Store(harness_store::StoreError::Conflict(_))
+        ),
+        "the Supervisor lease acquisition must surface a typed Store conflict: {lease_conflict}"
     );
+
+    // The property under test: none of the three records a durable hold.
+    for conflict in [&scope_conflict, &member_conflict, &lease_conflict] {
+        fixture.daemon.block_start_failure_if_unresolved(
+            &fixture.execution_space_id,
+            &fixture.store,
+            &fixture.run_id,
+            conflict,
+        );
+    }
     assert_eq!(
         fixture.no_progress_markers(),
         0,
-        "a lost CAS race is this attempt's problem, never a durable property of the TeamRun"
+        "a lost race on the start path is this attempt's problem, never a durable property of the TeamRun"
     );
     assert!(
         !fixture.adoption_is_held(),
-        "a healthy run must stay adoptable after an ordinary CAS conflict"
+        "a healthy run must stay adoptable after any start-path Store conflict"
     );
 }

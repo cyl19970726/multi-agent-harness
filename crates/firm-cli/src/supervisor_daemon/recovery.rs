@@ -105,6 +105,11 @@ const TRANSIENT_START_FAILURE_CODES: &[&str] = &[
     "NODE_DAEMON_GENERATION_FENCED",
     "NODE_DAEMON_MACHINE_AUTHORITY_LOST",
     "SUPERVISOR_GENERATION_FENCED",
+    // Defense in depth. The start path resolves TeamRun scope through the
+    // typed route, so this arrives as `CliError::Store(Conflict)` and is
+    // already transient; listing the code keeps a future re-flattening from
+    // silently turning a lost race back into a structural verdict.
+    "TEAM_RUN_CHANGED",
 ];
 
 /// The two capacity/ownership rejections `start_supervising` writes as prose

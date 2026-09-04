@@ -400,7 +400,9 @@ pub(crate) fn prepare_team_run_start_body(
     _max_concurrency: usize,
 ) -> CliResult<PreparedTeamRunBody> {
     let run = latest_team_run(store, run_id)?;
-    team_run_execution_space_id(store, &run)?;
+    // Typed on purpose: a concurrent Host append makes this resolver return
+    // `TEAM_RUN_CHANGED`, which is a lost race, not a defect of the TeamRun.
+    team_run_execution_space_id_for_start(store, &run)?;
     if matches!(run.status, TeamRunStatus::Failed | TeamRunStatus::Cancelled) {
         return Err(CliError::Usage(format!(
             "team run {run_id} is {} and cannot attach a member supervisor",

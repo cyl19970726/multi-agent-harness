@@ -356,11 +356,17 @@ code rather than `SUPERVISOR_GENERATION_FENCED`. Never treat a failed stop as a
 stopped daemon.
 
 `authority_released` on that receipt is an observation, not a prediction: it is
-true only when `release_node_authorities` actually ran and succeeded. Every
-phase — including the recovery scanner — gates the release, so a scanner
-failure leaves the lease `Draining` and the receipt reports
-`authority_released:false` consistently with the Store. Read the
-`NodeDaemonLease` when you need certainty; the receipt agrees with it.
+true only when `release_node_authorities` actually ran and every registered
+Execution Space lease came back Released. Every phase — including the recovery
+scanner — gates the release, so a scanner failure leaves the lease `Draining`
+and the receipt reports `authority_released:false`.
+
+Read `authority_released:false` as **not wholly released**, never as "nothing
+was released". Release walks every registered Execution Space and continues
+past a per-Space failure, so some Space leases may already be Released while
+others are not. The receipt names them in `released_execution_space_ids` and
+`release_failed_execution_space_ids`, and the CLI prints both. Read each
+`NodeDaemonLease` when you need certainty about a specific Space.
 
 Two known limits:
 

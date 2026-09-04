@@ -1435,12 +1435,32 @@ pub(super) fn daemon_command(args: &[String]) -> CliResult<()> {
             let receipt = serde_json::from_str::<serde_json::Value>(&response)
                 .map_err(|error| CliError::Usage(format!("invalid stop receipt: {error}")))?;
             if receipt["ok"] != true {
+                // Release continues past a per-Space failure, so a failed stop
+                // does not mean nothing was released. Say "not wholly
+                // released" and name the Spaces rather than asserting the
+                // daemon still holds everything (DEV-149-REVIEW-03).
+                let space_ids = |key: &str| {
+                    receipt[key]
+                        .as_array()
+                        .map(|ids| {
+                            ids.iter()
+                                .filter_map(|id| id.as_str())
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        })
+                        .filter(|joined| !joined.is_empty())
+                        .unwrap_or_else(|| "none".to_string())
+                };
                 return Err(CliError::Usage(format!(
-                    "{}: NodeDaemon {node_id} retains machine authority (failed phase: {})",
+                    "{}: NodeDaemon {node_id} machine authority is NOT wholly released \
+                     (failed phase: {}; Execution Space leases already released: {}; \
+                     release failed: {}). Read each NodeDaemonLease for certainty.",
                     receipt["error"]
                         .as_str()
                         .unwrap_or("NODE_DAEMON_DRAIN_INCOMPLETE"),
                     receipt["failed_phase"].as_str().unwrap_or("unknown"),
+                    space_ids("released_execution_space_ids"),
+                    space_ids("release_failed_execution_space_ids"),
                 )));
             }
         }

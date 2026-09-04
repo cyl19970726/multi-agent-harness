@@ -31,7 +31,9 @@ mod machine_authority;
 mod recovery;
 mod shutdown;
 mod team_supervision;
-use machine_authority::{daemon_control_generation_authorized, node_authority_refresh_interval};
+use machine_authority::{
+    daemon_control_generation_authorized, node_authority_refresh_interval, AuthorityReleaseReport,
+};
 pub(crate) use recovery::reconcile_team_run_start_postcondition;
 
 const SIGINT: i32 = 2;
@@ -453,6 +455,7 @@ impl MultiTeamDaemon {
                         )),
                     }),
                     false,
+                    &AuthorityReleaseReport::default(),
                 );
             }
 
@@ -518,13 +521,15 @@ impl MultiTeamDaemon {
                 && settlement_result.is_ok()
                 && drain_result.is_ok()
                 && heartbeat_result.is_ok();
-            let release_result = if release_attempted {
+            let (release_result, release_report) = if release_attempted {
                 self.release_node_authorities()
             } else {
-                Ok(())
+                (Ok(()), AuthorityReleaseReport::default())
             };
-            // Observed, never predicted: authority is released only when the
-            // release actually ran and actually succeeded.
+            // Observed, never predicted: authority is wholly released only when
+            // the release actually ran and every registered Execution Space
+            // lease actually came back Released. A partial release reports
+            // false here and names the Spaces in the receipt.
             let authority_released = release_attempted && release_result.is_ok();
             // Every accepted `stop` is answered from what the drain actually
             // proved. Authority release is part of that answer: a caller must
@@ -546,7 +551,11 @@ impl MultiTeamDaemon {
                     error: CliError::Usage(error.to_string()),
                 })
             });
-            self.answer_deferred_stop_responses(failure.as_ref(), authority_released);
+            self.answer_deferred_stop_responses(
+                failure.as_ref(),
+                authority_released,
+                &release_report,
+            );
 
             scan_result
                 .and(control_result)
@@ -563,6 +572,7 @@ impl MultiTeamDaemon {
         &self,
         drain_failure: Option<&StopDrainFailure>,
         authority_released: bool,
+        release_report: &AuthorityReleaseReport,
     ) {
         let deferred = {
             let mut guard = self
@@ -578,12 +588,19 @@ impl MultiTeamDaemon {
                     "daemon_generation": pending.daemon_generation,
                     "drained": true,
                     "authority_released": authority_released,
+                    "released_execution_space_ids": release_report.released_space_ids,
+                    "release_failed_execution_space_ids": release_report.failed_space_ids,
                 }),
+                // `authority_released: false` means "not wholly released".
+                // Release continues past a per-Space failure, so the two lists
+                // are the only truthful account of what happened.
                 Some(failure) => serde_json::json!({
                     "ok": false,
                     "daemon_generation": pending.daemon_generation,
                     "drained": false,
                     "authority_released": authority_released,
+                    "released_execution_space_ids": release_report.released_space_ids,
+                    "release_failed_execution_space_ids": release_report.failed_space_ids,
                     "failed_phase": failure.phase,
                     "error": failure.error.to_string(),
                 }),
