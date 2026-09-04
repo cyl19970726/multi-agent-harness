@@ -26,10 +26,10 @@ and normal navigation:
 
 - no writer exists on any surface (CLI, HTTP, MCP, SSE, frontend);
 - historical rows remain readable as legacy provenance
-  (`harness mission list|show|log show`, `harness legacy wave
+  (`firm mission list|show|log show`, `firm legacy wave
   list|show|history`, `AgentTeam.legacy_mission_id`);
 - historical runtime data is export/verify-only through
-  `harness legacy-company-os export|verify` (the Stage A contract);
+  `firm legacy-company-os export|verify` (the Stage A contract);
 - ADR 0026/0027/0034/0051 remain as superseded historical evidence, never
   deleted.
 
