@@ -211,7 +211,7 @@ pub(super) fn cheatsheet_command(args: &[String]) -> CliResult<()> {
 // the real CLI definitions in this file. Length budgets are enforced by the
 // anti-drift test (cheatsheet_length_budgets).
 
-pub(super) const CHEATSHEET_TEAM: &str = r#"team-run create     --objective <text> --agent-team-id <id> [--budget-usd <n>]
+pub(super) const CHEATSHEET_TEAM: &str = r#"team-run create     --objective <text> --agent-team-id <id> [--budget-usd <n>] [--no-initial-work]
                     --member name:role:provider[/mode][:model][@paths]
 team-run start      --id <id> [--max-concurrency <n>] [--idle-timeout-s <n>]
 team-run status     --id <id> [--dashboard-base <url>] [--json]
@@ -302,6 +302,8 @@ pub(super) fn print_help() {
   mission log show --mission-id <id> [--tail <n>] (read-only legacy)
   legacy wave list|show|history (historical reads only)
   team-run create|list|status|recover|host-inbox|message|bind-host|host-lease-status|renew-host-lease|release-host-lease|inbox|add-member|rename-member|interrupt-member|close-member|reopen-member|deactivate-member|start|answer-message|events|complete|cancel
+  team-run create --no-initial-work
+      Create MemberRuns without per-member bootstrap Work; Host assignment can follow directly.
   team-run host-inbox --surface <surface> --thread-id <id> [--all] [--json]
       Both --surface and --thread-id are required.
   team-run message send --team-run-id <team-run-id> --to-membership <membership-id>

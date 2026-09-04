@@ -139,7 +139,7 @@ fn init_project_selector_clean(home: &TempHome, name: &str) -> String {
     project_id
 }
 
-/// `harness init` a project rooted at `<base>/<name>` and return its derived id.
+/// Initialize `<base>/<name>` and return its derived Project Binding id.
 fn init_project(home: &TempHome, name: &str) -> String {
     let root = home.base().join(name);
     std::fs::create_dir_all(&root).unwrap();
@@ -150,9 +150,7 @@ fn init_project(home: &TempHome, name: &str) -> String {
     project_id
 }
 
-/// Every TeamRun now belongs to a durable flat AgentTeam. The broad runtime
-/// regression suite predates that invariant, so give its scenarios one
-/// explicit Mission-owned Team instead of weakening production admission.
+/// Give pre-invariant fixtures a durable flat AgentTeam without weakening admission.
 fn seed_runtime_team(home: &TempHome, project_id: &str, env: &[(&str, &str)]) {
     let run = |args: &[&str]| {
         let mut full = vec!["--project", project_id];
@@ -1481,6 +1479,8 @@ mod team_run_cli_create_list_status_send_events;
 #[cfg(any())]
 #[path = "team_run_api/team_run_cli_message_reuses_conversation_lineage_only_within_its_run.rs"]
 mod team_run_cli_message_reuses_conversation_lineage_only_within_its_run;
+#[path = "team_run_api/team_run_create_without_initial_work.rs"]
+mod team_run_create_without_initial_work;
 #[path = "team_run_api/team_run_dashboard_urls.rs"]
 mod team_run_dashboard_urls;
 #[path = "team_run_api/team_run_host_message_revision.rs"]
