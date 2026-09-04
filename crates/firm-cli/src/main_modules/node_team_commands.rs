@@ -503,7 +503,6 @@ pub(super) fn team_message_send(
     };
 
     let firm_home = execution_space::firm_home().map_err(execution_space_err)?;
-    let local_node_id = read_local_node_id()?;
     let source_team_id = required(args, "--from-team")?;
     let from_member = required(args, "--from-member")?;
     let body = required(args, "--body")?;
@@ -511,6 +510,13 @@ pub(super) fn team_message_send(
         return Err(CliError::Usage("--body must be non-empty Markdown".into()));
     }
     let target_team_id = required(args, "--to-team")?;
+    if source_team_id == target_team_id {
+        return Err(CliError::Usage(
+            "team message send is peer-Team only; for intra-team messages, use POST /v1/agentfirm/team-runs/{run}/messages/send (the Host Console composer) or `firm member message send` for a Supervisor-bound member"
+                .into(),
+        ));
+    }
+    let local_node_id = read_local_node_id()?;
     if value(args, "--to-member").is_some() && value(args, "--to-membership").is_some() {
         return Err(CliError::Usage(
             "--to-member and --to-membership are mutually exclusive".into(),
