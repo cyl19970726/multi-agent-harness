@@ -1,10 +1,8 @@
 //! Agent Team CLI, HTTP, Dashboard snapshot, and SSE integration coverage.
-
 use std::time::Duration;
 
 use harness_core::agentfirm_api::CanonicalMessageDeliveryStatus;
 use harness_store::HarnessStore;
-
 mod fake_provider;
 mod firm_env;
 use firm_env::{
