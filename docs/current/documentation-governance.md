@@ -237,6 +237,31 @@ lifecycle, the Implementation Crosswalk, or the lifecycle of
 `.agents/skills/agentfirm-development-loop`. That Skill is the reviewed
 repository projection of Development Playbook intent.
 
+## Governance Contract
+
+Governance becomes portable when it is stated as a CONTRACT — invariants any
+project must hold — kept separate from the tool that enforces them. The
+contract does not depend on a language, a registry format, or a CI runner:
+
+- every durable doc has an owner, a status, a lifecycle, and what it is
+  canonical for;
+- no intra-repo link is broken (docs, skills, and their pointers into code
+  resolve);
+- no doc outgrows its split rule without a recorded reason;
+- every machine consumer a doc claims (schema, fixture, command) actually
+  exists;
+- a deprecated doc links to its replacement;
+- the doc tree mirrors the key-module decomposition (see
+  [Documentation modules](#documentation-modules) above).
+
+The ENFORCER is project-specific; the contract is not. The harness enforces
+it with a project-portable native gate, `firm governance check` (the
+`firm-governance` crate), driven by a per-project `.governance.toml` and the
+registry it declares (default `docs/registry.json`); see
+[docs/current/operations/governance-engine.md](operations/governance-engine.md).
+So a Go, Python, mdBook, or no-node project inherits the same contract
+without hosting per-repo scripts.
+
 ## Authority alignment evidence
 
 This source-to-target map records the repository entry-point repair without

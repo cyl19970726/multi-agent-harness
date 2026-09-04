@@ -8,9 +8,9 @@ governance with zero hosted scripts.
 
 This is the generalization of what used to be `scripts/check-doc-*.mjs` +
 `check-skills.mjs` (Node/pnpm only, hardcoded to this repo's `docs/` layout). The
-portable methodology stays in the
-[bootstrap-project-workflow](../../../skills/bootstrap-project-workflow/references/governance.md)
-skill (the Governance Contract); the firm binary is the enforcer.
+portable methodology (the Governance Contract) stays in
+[documentation-governance.md](../documentation-governance.md#governance-contract);
+the firm binary is the enforcer.
 
 Governance must fail when current documentation or distribution metadata
 reintroduces Dynamic Workflow commands, routes, writers, live projections, or
@@ -70,7 +70,16 @@ coverage_exclude = []
 terms = ["Goal -> Task", "Goal/Task Workbench"]
 allowed_paths = ["docs/migrations/old-model.md"]
 context_markers = ["archived", "compatibility", "historical", "retired"]
+
+[retired_skills]                    # optional
+names = ["company-org-operator"]
 ```
+
+`[retired_skills]` lists skill names that are retired and archived: the
+`skills` gate fails when a directory (or a symlink to one) directly under any
+`skill_roots` entry carries one of these names, so an ignored or untracked
+local copy is caught the same as a committed one. Archived copies outside the
+skill roots (for example `archive/skills/`) are not scanned.
 
 A project with docs in `book/` sets `doc_roots` accordingly; an mdBook project
 drops the `[registry]` block and keeps `links` + `size`.
@@ -81,7 +90,7 @@ drops the `[registry]` block and keeps `links` + `size`.
 | --- | --- | --- | --- |
 | `links` | blocker | every relative Markdown link resolves to a file | `check-doc-links.mjs` |
 | `size` | blocker | markdown over `max_lines` warns; maintained `.rs/.ts/.tsx/.js/.mjs/.cjs` over `source_max_lines` blocks | doc-size port plus native architecture guard |
-| `skills` | blocker | SKILL.md frontmatter + `agents/openai.yaml` + member `skill_refs` resolve | `check-skills.mjs` |
+| `skills` | blocker | SKILL.md frontmatter + `agents/openai.yaml` + member `skill_refs` resolve; `[retired_skills]` names are rejected under every `skill_roots` entry | `check-skills.mjs` |
 | `registry` | blocker | required fields, allowed enums, path/dependency existence, no duplicate paths or active canonical scopes, core docs and every Markdown file under configured coverage roots registered, valid `reviewAfter` | extended native port |
 | `retired_vocabulary` | blocker | exact retired phrases cannot appear as current language in active registered Markdown; archival/deprecated docs, configured owner paths and explicitly historical lines are allowed | native governance extension |
 
@@ -111,7 +120,7 @@ port drift.
 
 The historical doc-sync built-in phase is retained only in the legacy archive.
 Its successor runs after execution phases pass, applies the
-bootstrap-project-workflow methodology and then the doc gates. As the engine
+Governance Contract methodology and then the doc gates. As the engine
 takes over, that phase's gate command becomes `firm governance check` (one
 toolchain-agnostic command) instead of the three Node invocations, so the loop
 gates identically on a no-node project. The phase mechanism — auto-append,

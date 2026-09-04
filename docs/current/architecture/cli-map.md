@@ -47,7 +47,6 @@ Active repository skills:
 
 - `skills/collaborate-as-agent-team-member` (mirrored into the Star Harness plugin)
 - `skills/shared-references` (cross-reference, mirrored)
-- `skills/bootstrap-project-workflow`
 
 The retired Company OS operator skills and the Mission-orchestration skill were
 archived to `archive/skills/` with the DOC-108 cutover and must not be

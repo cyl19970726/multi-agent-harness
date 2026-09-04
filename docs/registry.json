@@ -207,7 +207,8 @@
       "canonicalFor": [
         "repository-document module taxonomy and lifecycle",
         "question-scoped repository-document routing",
-        "default context packs and archive policy; not product intent, Development Task/Review, Crosswalk, or Skill lifecycle"
+        "default context packs and archive policy; not product intent, Development Task/Review, Crosswalk, or Skill lifecycle",
+        "the portable Governance Contract for documentation and skill invariants"
       ],
       "dependsOn": [
         "docs/current/operations/governance-engine.md",
@@ -1893,13 +1894,13 @@
       "status": "stable",
       "lifecycle": "volatile",
       "canonicalFor": [
-        "the harness-native doc/skill governance engine (harness governance check) and the harness-governance crate",
+        "the harness-native doc/skill governance engine (harness governance check) and the firm-governance crate",
         "the per-project .governance.toml config shape and the absent-config light default",
         "byte-parity with the legacy check-doc-*.mjs / check-skills.mjs gates and the self-host regression test"
       ],
       "dependsOn": [
         "docs/current/architecture/agent-integration-model.md",
-        "skills/bootstrap-project-workflow/references/governance.md"
+        "docs/current/documentation-governance.md"
       ],
       "machineConsumers": [
         "harness governance check",

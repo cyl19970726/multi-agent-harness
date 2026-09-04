@@ -140,6 +140,31 @@ context_markers = [
     "superseded",
 ]
 
+# Retired skill names must never reappear under any skill_roots entry —
+# including ignored or untracked local copies (the skills gate scans the
+# filesystem). Each name is either archived under archive/skills/ or was
+# deleted with its methodology relocated into
+# docs/current/documentation-governance.md (bootstrap-project-workflow).
+[retired_skills]
+names = [
+    "bootstrap-project-workflow",
+    "company-org-operator",
+    "company-work-operator",
+    # Parked as parked-company-finance-operator-20260805 (ADR 0053), but the
+    # retired NAME itself stays excluded: stray local copies carry it
+    # (e.g. .agents/skills/company-finance-operator).
+    "company-finance-operator",
+    "parked-company-finance-operator-20260805",
+    "company-docs-operator",
+    "company-module-designer",
+    "company-page-builder",
+    "company-business-project-bootstrap",
+    "connect-github-company-os",
+    "dogfood-company-os",
+    "orchestrate-mission-waves",
+    "multi-agent-system-design",
+]
+
 [[document_invariants]]
 name = "flat-team-placement-and-legacy-mission"
 paths = [
