@@ -232,11 +232,11 @@ fn spawn_node_authority(
 /// settles `RecoveryRequired/Unknown` with
 /// `PREPARED_PROVIDER_EFFECT_SCOPE_EXITED_WITHOUT_RECEIPT`. Refusing to release
 /// machine authority there is the invariant, not a defect.
-fn is_honest_unknown_effect_fence(receipt: &str) -> bool {
+fn is_honest_unknown_effect_fence(home: &TempHome, project_id: &str, receipt: &str) -> bool {
     let Ok(receipt) = serde_json::from_str::<serde_json::Value>(receipt) else {
         return false;
     };
-    receipt["ok"] == false
+    let exact_fence = receipt["ok"] == false
         && receipt["drained"] == false
         && receipt["authority_released"] == false
         && receipt["failed_phase"] == "authority_settlement"
@@ -244,10 +244,35 @@ fn is_honest_unknown_effect_fence(receipt: &str) -> bool {
             error.contains("NODE_DAEMON_SHUTDOWN_SETTLEMENT_INCOMPLETE")
                 && error.contains("NODE_DAEMON_SHUTDOWN_COMMAND_UNSETTLED")
                 && error.contains("RecoveryRequired/Unknown")
-        })
+        });
+    if !exact_fence {
+        return false;
+    }
+
+    let error = receipt["error"].as_str().expect("fence error");
+    let command_id = error
+        .split_once("RuntimeCommand ")
+        .and_then(|(_, suffix)| suffix.split_whitespace().next())
+        .expect("unknown-effect fence must name its unsettled RuntimeCommand");
+    let commands = store_rows(home, project_id, "runtime_commands.jsonl");
+    let command = commands
+        .iter()
+        .find(|command| command["id"].as_str() == Some(command_id))
+        .unwrap_or_else(|| panic!("unsettled RuntimeCommand {command_id} missing: {commands:?}"));
+    assert_eq!(
+        command["command"],
+        serde_json::json!("start_cycle"),
+        "only a StartCycle may use the fixture unknown-effect stop fence: {command}"
+    );
+    assert_eq!(
+        command["failure_code"],
+        serde_json::json!("PREPARED_PROVIDER_EFFECT_SCOPE_EXITED_WITHOUT_RECEIPT"),
+        "the unknown-effect stop fence must carry the exact prepared-effect failure: {command}"
+    );
+    true
 }
 
-fn stop_node_authority(home: &TempHome, child: &mut std::process::Child) {
+fn stop_node_authority(home: &TempHome, project_id: &str, child: &mut std::process::Child) {
     let stop = run_firm(home, home.base(), &["daemon", "stop"]);
     // `daemon stop` answers with its drain result and exits non-zero when that
     // drain did not complete. The stderr assertion below already accepted the
@@ -255,7 +280,11 @@ fn stop_node_authority(home: &TempHome, child: &mut std::process::Child) {
     // held to the same standard rather than to unconditional success.
     assert!(
         stop.status.success()
-            || is_honest_unknown_effect_fence(&String::from_utf8_lossy(&stop.stdout)),
+            || is_honest_unknown_effect_fence(
+                home,
+                project_id,
+                &String::from_utf8_lossy(&stop.stdout),
+            ),
         "NodeDaemon stop must either succeed or return the exact unknown-effect recovery fence: {stop:?}"
     );
     let status = child.wait().expect("wait NodeDaemon");
@@ -269,6 +298,31 @@ fn stop_node_authority(home: &TempHome, child: &mut std::process::Child) {
                 && stderr.contains("NODE_DAEMON_SHUTDOWN_COMMAND_UNSETTLED")
                 && stderr.contains("RecoveryRequired/Unknown")),
         "NodeDaemon shutdown must either settle completely or preserve an exact unknown-effect recovery fence: {stderr}"
+    );
+}
+
+fn stop_node_authority_expecting_release(home: &TempHome, child: &mut std::process::Child) {
+    let stop = run_firm(home, home.base(), &["daemon", "stop"]);
+    assert!(
+        stop.status.success(),
+        "NodeDaemon stop must release authority before an in-test restart: {stop:?}"
+    );
+    let receipt: serde_json::Value =
+        serde_json::from_slice(&stop.stdout).expect("NodeDaemon stop receipt JSON");
+    assert_eq!(receipt["ok"], true, "NodeDaemon stop receipt: {receipt}");
+    assert_eq!(
+        receipt["authority_released"], true,
+        "NodeDaemon must release authority before an in-test restart: {receipt}"
+    );
+
+    let status = child.wait().expect("wait NodeDaemon");
+    let mut stderr = String::new();
+    if let Some(mut stream) = child.stderr.take() {
+        std::io::Read::read_to_string(&mut stream, &mut stderr).expect("read NodeDaemon stderr");
+    }
+    assert!(
+        status.success(),
+        "NodeDaemon must exit cleanly after releasing authority: {stderr}"
     );
 }
 
@@ -301,6 +355,38 @@ fn worker_member_run(home: &TempHome, project_id: &str) -> Option<serde_json::Va
     store_rows(home, project_id, "member_runs.jsonl")
         .into_iter()
         .find(|member| member["agent_member_id"] == "codex-worker")
+}
+
+fn close_worker_member_runtime(home: &TempHome, project_id: &str, run_id: &str) {
+    let member = worker_member_run(home, project_id).expect("worker member run before Close");
+    let member_run_id = member["id"].as_str().expect("worker member run id");
+    let close = run_firm(
+        home,
+        home.base(),
+        &[
+            "--space",
+            project_id,
+            "--project",
+            project_id,
+            "team-run",
+            "close-member",
+            "--id",
+            run_id,
+            "--member-run-id",
+            member_run_id,
+            "--reason",
+            "provider capacity preflight teardown",
+        ],
+    );
+    assert!(
+        close.status.success(),
+        "close worker member failed: {close:?}"
+    );
+    wait_for_runtime_projection("closed worker member runtime", || {
+        worker_member_run(home, project_id).is_some_and(|member| {
+            member["status"] == "stopped" && member["coordination_status"] == "closed"
+        })
+    });
 }
 
 fn wait_for_runtime_projection(description: &str, mut ready: impl FnMut() -> bool) {
@@ -859,7 +945,7 @@ fn fresh_exhausted_capacity_blocks_start_and_leaves_work_queued() {
         thread_marker: Some(thread_marker.clone()),
         ..FakeCodex::new(&bin)
     };
-    stop_node_authority(&home, &mut daemon);
+    stop_node_authority_expecting_release(&home, &mut daemon);
     let mut daemon = spawn_node_authority(&home, &recovered, &[]);
     let restart = recovered.run(
         &home,
@@ -889,7 +975,8 @@ fn fresh_exhausted_capacity_blocks_start_and_leaves_work_queued() {
             .is_some_and(|member| !member["native_session"].is_null()),
         "the recovered start must bind the first provider-native session"
     );
-    stop_node_authority(&home, &mut daemon);
+    close_worker_member_runtime(&home, &project_id, &run_id);
+    stop_node_authority(&home, &project_id, &mut daemon);
 }
 
 #[test]
@@ -960,7 +1047,8 @@ fn unknown_capacity_still_starts_the_member_and_delivers_work() {
         serde_json::json!("queued"),
         "an ungated member must claim its Work: {delivery}"
     );
-    stop_node_authority(&home, &mut daemon);
+    close_worker_member_runtime(&home, &project_id, &run_id);
+    stop_node_authority(&home, &project_id, &mut daemon);
 }
 
 #[test]
@@ -1053,5 +1141,6 @@ fn a_disabled_preflight_records_no_snapshot_and_never_blocks() {
         "a disabled probe observes nothing rather than asserting availability"
     );
     assert_ne!(member["status"], serde_json::json!("blocked"));
-    stop_node_authority(&home, &mut daemon);
+    close_worker_member_runtime(&home, &project_id, &run_id);
+    stop_node_authority(&home, &project_id, &mut daemon);
 }
