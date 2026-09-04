@@ -443,42 +443,7 @@ pub(crate) fn prepare_team_run_start_body(
     // The refreshed profile is still durable operator evidence; native-session
     // locators and Work/canonical delivery rows are intentionally untouched.
     for member in &mut members {
-        if member.is_external_interactive() {
-            continue;
-        }
-        let expected = member.clone();
-        let (mut profile, probe_error) = refreshed_team_member_provider_profile(member)?;
-        let permission_ceiling = store
-            .all_trust_agent_members()?
-            .into_iter()
-            .find(|candidate| candidate.id == member.agent_member_id)
-            .ok_or_else(|| {
-                CliError::Usage(format!(
-                    "AGENT_IDENTITY_NOT_FOUND: MemberRun {} references missing AgentMember {}",
-                    member.id, member.agent_member_id
-                ))
-            })?
-            .permission_ceiling;
-        let permission_ceiling =
-            effective_member_permission_ceiling(store, permission_ceiling, &run, member)?;
-        // Freeze the permission mapping into the persisted profile before
-        // AgentSession materialization. Recomputing it only after the runtime
-        // has spawned would make the profile and exact session composition
-        // fences disagree for the first provider effect.
-        apply_permission_enforcement_to_profile(&mut profile, permission_ceiling)?;
-        let resolution = resolve_provider_compatibility(store, &profile, probe_error.as_deref())?;
-        let refusal = provider_compatibility_block_reason(
-            member,
-            &profile,
-            &resolution,
-            "start or resume persistent Agent Team execution",
-        );
-        if apply_refreshed_provider_profile(member, profile) {
-            persist_refreshed_member_profile(store, &expected, member)?;
-        }
-        if let Some(refusal) = refusal {
-            return Err(CliError::Usage(refusal));
-        }
+        prepare_member_provider_profile_for_start(store, &run, member)?;
     }
     Ok(PreparedTeamRunBody {
         run_id: run_id.to_string(),
@@ -1005,6 +970,36 @@ pub(crate) fn drive_prepared_team_run(
                     "provider_environment_observation",
                     &format!("member workspace resolved to {}", cwd.display()),
                 )?;
+                // A member admitted into a live run never passed through the
+                // adoption seam that materializes AgentSessions, so provision
+                // it here before any provider effect is prepared (#749). An
+                // original member already has its session and is untouched.
+                match ensure_joined_member_runtime_fabric(&member_ledger, &mut member) {
+                    Ok(JoinedMemberRuntimeFabric::AlreadyProvisioned) => {}
+                    Ok(JoinedMemberRuntimeFabric::Provisioned { session_id }) => {
+                        member_ledger.fold_event(
+                            TeamRunEventSourceKind::Host,
+                            Some(member.id.clone()),
+                            "member_run",
+                            &member.id,
+                            "updated",
+                            &format!(
+                                "member {} joined a live run; AgentSession {session_id} bound to supervisor {} generation {}",
+                                member.name, ledger.supervisor_id, ledger.supervisor_generation
+                            ),
+                        )?;
+                    }
+                    Err(error) => {
+                        // Nothing reached a provider, so this is an ordinary
+                        // failure the Host can read and fix — never a recovery
+                        // claim about an ambiguous provider effect.
+                        let reason =
+                            format!("AgentSession provisioning failed before start: {error}");
+                        journal_member_failure(&member_ledger, &member, &reason);
+                        outcomes.push(MemberOutcome::new(&member, MemberRunStatus::Failed, reason));
+                        continue;
+                    }
+                }
                 let handle_member = member.clone();
                 let member_live_sink = live_sink.clone();
                 let member_project_id = project_id.clone();
