@@ -246,6 +246,7 @@ pub fn latest_works(home: &TempHome, project_id: &str) -> Vec<serde_json::Value>
 /// A spawned `harness serve` child bound to `127.0.0.1:<port>`. Killed on drop.
 pub struct ServeHandle {
     child: Child,
+    stdout_drain: Option<std::thread::JoinHandle<()>>,
     node_daemon: Option<Child>,
     port: u16,
     fixture_store_root: PathBuf,
@@ -258,8 +259,10 @@ impl ServeHandle {
         &self.fixture_store_root
     }
 
-    /// Spawn `harness serve` from `cwd` against `home`, on a free ephemeral port.
-    /// Extra env can pin `--project`/`FIRM_PROJECT` via the args/env.
+    /// Spawn `harness serve` from `cwd` against `home`, on an OS-assigned port.
+    /// The child binds `:0` itself and reports the actual address on its readiness
+    /// line, so no bind/drop/rebind window exists. Extra env can pin
+    /// `--project`/`FIRM_PROJECT` via the args/env.
     pub fn spawn(home: &TempHome, cwd: &Path, extra_args: &[&str]) -> Self {
         Self::spawn_with_env(home, cwd, extra_args, &[])
     }
@@ -348,10 +351,8 @@ impl ServeHandle {
                 std::thread::sleep(Duration::from_millis(25));
             }
         }
-        let port = free_port();
-        let addr = format!("127.0.0.1:{port}");
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_firm"));
-        cmd.arg("serve").arg("--addr").arg(&addr);
+        cmd.arg("serve").arg("--addr").arg("127.0.0.1:0");
         for a in extra_args {
             cmd.arg(a);
         }
@@ -370,12 +371,40 @@ impl ServeHandle {
         // Integration processes need a bounded escape after they have
         // asserted the idle state so test teardown can join cleanly.
         cmd.env("FIRM_MEMBER_SUPERVISOR_TEST_IDLE_MS", "250");
+        cmd.stdout(Stdio::piped());
         for (key, value) in extra_env {
             cmd.env(key, value);
         }
-        let child = cmd.spawn().expect("spawn harness serve");
+        let mut child = cmd.spawn().expect("spawn harness serve");
+        let stdout = child.stdout.take().expect("capture harness serve stdout");
+        let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(1);
+        let stdout_drain = std::thread::spawn(move || {
+            for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+                if let Some(addr) = line.strip_prefix("serving harness API on http://") {
+                    let _ =
+                        ready_tx.send(addr.parse::<std::net::SocketAddr>().map(|addr| addr.port()));
+                }
+                println!("{line}");
+            }
+        });
+        let port = match ready_rx.recv_timeout(Duration::from_secs(10)) {
+            Ok(Ok(port)) => port,
+            Ok(Err(error)) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = stdout_drain.join();
+                panic!("harness serve reported an invalid bound address: {error}");
+            }
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = stdout_drain.join();
+                panic!("harness serve did not report its bound address: {error}");
+            }
+        };
         let handle = Self {
             child,
+            stdout_drain: Some(stdout_drain),
             node_daemon,
             port,
             fixture_store_root,
@@ -979,6 +1008,9 @@ impl Drop for ServeHandle {
     fn drop(&mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
+        if let Some(stdout_drain) = self.stdout_drain.take() {
+            let _ = stdout_drain.join();
+        }
         if let Some(daemon) = self.node_daemon.as_mut() {
             let _ = daemon.kill();
             let _ = daemon.wait();
@@ -1052,15 +1084,6 @@ pub fn collect_named_sse_data(
         }
     }
     out
-}
-
-/// Find a free TCP port by binding to :0 and reading the assigned port.
-fn free_port() -> u16 {
-    std::net::TcpListener::bind("127.0.0.1:0")
-        .expect("bind ephemeral")
-        .local_addr()
-        .expect("local addr")
-        .port()
 }
 
 /// Linux may report `ECONNRESET`, `EAGAIN`, or a timeout after the server has
