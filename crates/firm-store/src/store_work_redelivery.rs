@@ -67,16 +67,28 @@ impl HarnessStore {
     ) -> StoreResult<Work> {
         self.init()?;
         let _lock = self.acquire_write_lock()?;
+        let require_work_execution_space = |work: &Work| -> StoreResult<String> {
+            let run = self.require_team_run_unlocked(&work.team_run_id)?;
+            let work_execution_space_id = self.current_team_run_execution_space(&run)?;
+            if execution_space_id != work_execution_space_id {
+                return Err(StoreError::Conflict(format!(
+                    "EXECUTION_SPACE_SCOPE_MISMATCH: Work {work_id} belongs to Execution Space {work_execution_space_id}, not caller-supplied Execution Space {execution_space_id}"
+                )));
+            }
+            Ok(work_execution_space_id)
+        };
         if let Some(existing) = self.idempotent_work_operation_unlocked(
             &context.idempotency_key,
             work_id,
             WorkEventKind::Rebound,
         )? {
+            require_work_execution_space(&existing.work)?;
             return Ok(existing.work);
         }
         require_host_actor(&context.performed_by_actor)?;
         let current = self.current_work_unlocked(work_id, expected_version)?;
         self.require_exact_team_run_host_actor(&context.performed_by_actor, &current.team_run_id)?;
+        let work_execution_space_id = require_work_execution_space(&current)?;
         if current.is_terminal() {
             return Err(StoreError::Conflict(format!(
                 "WORK_TERMINAL_NOT_REDELIVERABLE: Work {work_id} is closed; create a new Work instead of redelivering a terminal one"
@@ -96,15 +108,16 @@ impl HarnessStore {
                 "WORK_NOT_ASSIGNED: Work {work_id} has no TeamMembership assignee to redeliver to; use team-run work assign"
             )));
         };
-        let bindings = self.fabric_work_execution_bindings(execution_space_id)?;
-        if bindings.iter().any(|binding| {
+        let bindings = self.fabric_work_execution_bindings(&work_execution_space_id)?;
+        if let Some(binding) = bindings.iter().find(|binding| {
             binding.work_id == current.id && binding_can_still_execute(binding.status)
         }) {
             return Err(StoreError::Conflict(format!(
-                "WORK_DELIVERY_LIVE: Work {work_id} still has an execution binding that can reach the provider, so its delivery is not stale; close the member runtime, or use team-run work release / team-run work assign"
+                "WORK_DELIVERY_LIVE: Work {work_id} binding {} is still executable under generation {}; close the member runtime so the binding is released, then redeliver; if the runtime is already gone this is GitHub #734",
+                binding.id, binding.binding_generation
             )));
         }
-        let sessions = self.fabric_agent_sessions(execution_space_id)?;
+        let sessions = self.fabric_agent_sessions(&work_execution_space_id)?;
         let mut superseded = self
             .canonical_work_deliveries_for_work_unlocked(&current)?
             .into_iter()
@@ -122,7 +135,7 @@ impl HarnessStore {
                     .iter()
                     .find(|binding| binding.id == delivery.work_execution_binding_id);
                 SupersededWorkDelivery {
-                    stale_because: delivery_staleness(&delivery, binding, &sessions),
+                    stale_because: delivery_staleness(binding).to_string(),
                     delivery_id: delivery.id.clone(),
                     delivery_version: delivery.version,
                     status: delivery.status,
@@ -176,34 +189,20 @@ impl HarnessStore {
 /// Name the exact reason one delivery can never reach the provider again. The
 /// value is durable evidence in the `Rebound` WorkEvent, so it stays a stable
 /// snake_case token rather than prose.
-fn delivery_staleness(
-    delivery: &CanonicalWorkDelivery,
-    binding: Option<&WorkExecutionBinding>,
-    sessions: &[firm_core::agentfirm_api::AgentSession],
-) -> String {
+pub(crate) fn delivery_staleness(binding: Option<&WorkExecutionBinding>) -> &'static str {
+    // WORK_DELIVERY_LIVE rejects Offered, Accepted, and Active before this
+    // projection. Only these four stale tokens are reachable here.
     let Some(binding) = binding else {
-        return "work_execution_binding_missing".to_string();
+        return "work_execution_binding_missing";
     };
-    if !binding_can_still_execute(binding.status) {
-        return match binding.status {
-            WorkExecutionBindingStatus::Released => "work_execution_binding_released",
-            WorkExecutionBindingStatus::Completed => "work_execution_binding_completed",
-            WorkExecutionBindingStatus::Invalidated => "work_execution_binding_invalidated",
-            _ => "work_execution_binding_not_executable",
+    match binding.status {
+        WorkExecutionBindingStatus::Released => "work_execution_binding_released",
+        WorkExecutionBindingStatus::Completed => "work_execution_binding_completed",
+        WorkExecutionBindingStatus::Invalidated => "work_execution_binding_invalidated",
+        WorkExecutionBindingStatus::Offered
+        | WorkExecutionBindingStatus::Accepted
+        | WorkExecutionBindingStatus::Active => {
+            unreachable!("live execution bindings are rejected before staleness projection")
         }
-        .to_string();
     }
-    let Some(session) = sessions
-        .iter()
-        .find(|session| session.id == delivery.recipient_session_id)
-    else {
-        return "agent_session_missing".to_string();
-    };
-    if session.lifecycle == AgentSessionStatus::Closed {
-        return "agent_session_closed".to_string();
-    }
-    if session.runtime_generation != delivery.recipient_session_generation {
-        return "agent_session_generation_advanced".to_string();
-    }
-    "agent_session_generation_current".to_string()
 }
