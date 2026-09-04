@@ -12,6 +12,8 @@ mod close_admission_is_serialized_with_successor_supervisor_generation;
 mod close_without_live_supervisor_requires_runtime_command_recovery_without_side_effects;
 #[path = "../general/codex_multi_question_request_fails_closed_without_durable_side_effects.rs"]
 mod codex_multi_question_request_fails_closed_without_durable_side_effects;
+#[path = "../general/codex_request_user_input_survives_settled_round_work_progress_bookkeeping.rs"]
+mod codex_request_user_input_survives_settled_round_work_progress_bookkeeping;
 #[path = "../general/coordination_close_retries_provider_callback_status_race.rs"]
 mod coordination_close_retries_provider_callback_status_race;
 #[path = "../general/detached_blocked_member_recovery_close_is_exact_and_fail_closed.rs"]
@@ -40,6 +42,8 @@ mod kimi_safe_approval_atomic_receipt_loses_to_concurrent_close;
 mod kimi_safe_approval_rejects_closed_retired_generation_and_session_drift;
 #[path = "../general/kimi_safe_approval_survives_same_session_verification_timestamp_refresh.rs"]
 mod kimi_safe_approval_survives_same_session_verification_timestamp_refresh;
+#[path = "../general/kimi_safe_approval_survives_settled_round_work_progress_bookkeeping.rs"]
+mod kimi_safe_approval_survives_settled_round_work_progress_bookkeeping;
 #[path = "../general/locally_invalid_supervisor_rejects_close_with_current_durable_generation.rs"]
 mod locally_invalid_supervisor_rejects_close_with_current_durable_generation;
 #[path = "../general/managed_member_close_reconciliation_requires_the_exact_terminal_binding.rs"]
@@ -66,6 +70,8 @@ mod member_run_snapshots_requested_provider_controls_before_start;
 mod native_session_open_target_rejects_unsupported_or_unsafe_sessions;
 #[path = "../general/provider_authority_never_borrows_a_sole_foreign_space_session.rs"]
 mod provider_authority_never_borrows_a_sole_foreign_space_session;
+#[path = "../general/provider_callback_drift_separates_authority_from_round_bookkeeping.rs"]
+mod provider_callback_drift_separates_authority_from_round_bookkeeping;
 #[path = "../general/provider_collaboration_capability_reaches_only_declared_agent_tool_boundaries.rs"]
 mod provider_collaboration_capability_reaches_only_declared_agent_tool_boundaries;
 #[path = "../general/provider_error_after_start_claim_applies_close_before_prebind_failure.rs"]
@@ -82,6 +88,8 @@ mod provider_start_claim_accepts_reopened_queued_generation;
 mod provider_start_claim_reconciles_close_latched_between_read_and_cas;
 #[path = "../general/provider_tool_status_is_a_closed_display_safe_vocabulary.rs"]
 mod provider_tool_status_is_a_closed_display_safe_vocabulary;
+#[path = "../general/rejected_provider_callback_leaves_a_durable_trace.rs"]
+mod rejected_provider_callback_leaves_a_durable_trace;
 #[path = "../general/reopen_unchanged_profile_does_not_drift_last_event_at.rs"]
 mod reopen_unchanged_profile_does_not_drift_last_event_at;
 #[path = "../general/runtime_anchor_accepts_owned_progress_but_rejects_authority_drift.rs"]

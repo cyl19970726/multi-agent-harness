@@ -28,19 +28,45 @@ pub(super) fn provider_callback_native_session_matches(
     }
 }
 
-/// Provider callbacks may project only the transient `status` and
-/// `last_event_at` fields while a round is in flight.  Accepting any other
-/// drift here would let a stale transport overwrite lifecycle authority,
-/// runtime generation, native-session provenance, or operator changes.
+/// Compare only genuine authority between the callback's frozen snapshot and
+/// the current ProviderRuntimeProjection. Accepting drift on an authority
+/// field would let a stale transport overwrite lifecycle authority, runtime
+/// generation, native-session provenance, or operator changes.
+///
+/// The field classification is deliberate and load-bearing, because the
+/// callback snapshot is taken once at runtime attach and then serves every
+/// later cycle of that runtime:
+///
+/// * Authority — must fail closed. `id`, `team_run_id`, `slot_id`,
+///   `agent_member_id`, `role`, `provider`, `model`, `provider_controls`,
+///   `coordination_status`, `runtime_generation`, `native_session` (its
+///   identity/provenance subset), `provider_cwd_hint`,
+///   `provider_environment_observation`, `owned_paths`. These establish
+///   execution identity, provenance, permission ceiling, native-session
+///   ownership, or the operator-owned workspace boundary.
+/// * Supervisor round bookkeeping — must NOT fail closed.
+///   `zero_output_streak`, `last_consumed_work_version`, `started_at`,
+///   `finished_at`, plus the already-excluded `status` and `last_event_at`.
+///   The Supervisor rewrites these after EVERY settled round (see
+///   `runtime_adapter.rs`, which saves `zero_output_streak`,
+///   `last_consumed_work_version` and `finished_at = None` at round end), so
+///   treating them as authority made every reverse-RPC callback from the
+///   second cycle on fail closed: an observed full-access Kimi member had all
+///   13 `session/request_permission` calls approved in cycle 1 and every one
+///   rejected afterwards, silently losing Bash and Read.
+///   `native_session.last_verified_at` is excluded by
+///   `provider_callback_native_session_matches` for the same reason: an
+///   observation clock is not authority.
+/// * Same-generation refresh — intentionally rebased from `latest`. `name`,
+///   `provider_profile`, `provider_capacity`,
+///   `provider_compatibility_block_cause`.
+///
+/// A newly added `ProviderRuntimeProjection` field must be placed in one of
+/// those three groups explicitly; the drift table test enumerates them.
 pub(super) fn validate_provider_callback_drift(
     supplied: &ProviderRuntimeProjection,
     latest: &ProviderRuntimeProjection,
 ) -> CliResult<()> {
-    // Name/profile/capacity may be refreshed by same-generation operator and
-    // probe paths while the provider is paused. Those fields are intentionally
-    // rebased from `latest`. Everything that establishes execution identity,
-    // provenance, permissions, native-session ownership, or outer-round state
-    // remains frozen.
     if latest.id != supplied.id
         || latest.team_run_id != supplied.team_run_id
         || latest.slot_id != supplied.slot_id
@@ -58,10 +84,6 @@ pub(super) fn validate_provider_callback_drift(
         || latest.provider_cwd_hint != supplied.provider_cwd_hint
         || latest.provider_environment_observation != supplied.provider_environment_observation
         || latest.owned_paths != supplied.owned_paths
-        || latest.zero_output_streak != supplied.zero_output_streak
-        || latest.last_consumed_work_version != supplied.last_consumed_work_version
-        || latest.started_at != supplied.started_at
-        || latest.finished_at != supplied.finished_at
     {
         return Err(CliError::Usage(format!(
             "provider callback for ProviderRuntimeProjection {} crossed identity, provenance, lifecycle, native-session, or provider-control authority",
