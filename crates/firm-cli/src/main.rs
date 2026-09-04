@@ -162,6 +162,9 @@ use member_lifecycle::*;
 #[path = "main_modules/member_orchestration.rs"]
 mod member_orchestration;
 use member_orchestration::*;
+#[path = "main_modules/team_run_canonical_state.rs"]
+mod team_run_canonical_state;
+use team_run_canonical_state::*;
 #[path = "main_modules/provider_runners.rs"]
 mod provider_runners;
 use provider_runners::*;

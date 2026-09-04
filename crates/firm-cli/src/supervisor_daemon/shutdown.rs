@@ -3,9 +3,20 @@ use super::*;
 impl MultiTeamDaemon {
     /// Stop every machine-owned runtime before releasing this daemon generation.
     pub(super) fn graceful_shutdown(&self) -> CliResult<()> {
-        self.graceful_shutdown_with_deadline(Duration::from_secs(30))
+        #[cfg(test)]
+        if let Some((cooperative_ms, forced_ms)) = self.drain_timeout_override_ms {
+            return self.graceful_shutdown_with_deadlines(
+                Duration::from_millis(cooperative_ms),
+                Duration::from_millis(forced_ms),
+            );
+        }
+        self.graceful_shutdown_with_deadlines(
+            SUPERVISOR_DRAIN_TIMEOUT,
+            FORCED_PROCESS_GROUP_DRAIN_TIMEOUT,
+        )
     }
 
+    #[cfg(test)]
     fn graceful_shutdown_with_deadline(&self, cooperative_timeout: Duration) -> CliResult<()> {
         self.graceful_shutdown_with_deadlines(cooperative_timeout, Duration::from_secs(5))
     }
@@ -146,11 +157,11 @@ fn observe_join(
     failures: &mut Vec<String>,
     space_id: &str,
     run_id: &str,
-    result: std::thread::Result<CliResult<()>>,
+    result: std::thread::Result<CliResult<TeamRunDriveOutcome>>,
     phase: &str,
 ) {
     match result {
-        Ok(Ok(())) => {}
+        Ok(Ok(_)) => {}
         // A Supervisor commonly observes the intentional heartbeat loss and
         // returns its typed runtime error while Stop is draining. Its owning
         // path already records recovery state; process release is the daemon
@@ -181,7 +192,7 @@ mod tests {
         let heartbeat = Arc::new(AtomicBool::new(true));
         let thread_heartbeat = Arc::clone(&heartbeat);
         let (pid_tx, pid_rx) = std::sync::mpsc::channel();
-        let thread = std::thread::spawn(move || -> CliResult<()> {
+        let thread = std::thread::spawn(move || -> CliResult<TeamRunDriveOutcome> {
             let mut command = std::process::Command::new("sh");
             command.arg("-c").arg("sleep 30").process_group(0);
             let mut child = command.spawn()?;
@@ -193,7 +204,9 @@ mod tests {
             let status = registration.kill_and_reap(&mut child)?;
             assert!(status.is_some(), "shutdown child must be terminal-reaped");
             assert!(!thread_heartbeat.load(Ordering::Acquire));
-            Ok(())
+            Ok(TeamRunDriveOutcome::Progressed {
+                team_run_status: harness_core::TeamRunStatus::Completed,
+            })
         });
         let pid = pid_rx.recv().expect("owned provider group pid");
         let daemon = MultiTeamDaemon {
@@ -222,8 +235,11 @@ mod tests {
             authority_shutdown: Arc::new(AtomicBool::new(false)),
             authority_lost: AtomicBool::new(false),
             control_worker_failed: AtomicBool::new(false),
-            recovery_blocked_runs: Mutex::new(HashSet::new()),
+            recovery_blocked_runs: Mutex::new(HashMap::new()),
+            settling_runs: Mutex::new(HashSet::new()),
             lease_ttl_override_ms: None,
+            deferred_stop_responses: Mutex::new(Vec::new()),
+            drain_timeout_override_ms: None,
         };
 
         daemon
@@ -244,12 +260,14 @@ mod tests {
         let release = Arc::new(AtomicBool::new(false));
         let thread_release = Arc::clone(&release);
         let (finished_tx, finished_rx) = std::sync::mpsc::channel();
-        let thread = std::thread::spawn(move || -> CliResult<()> {
+        let thread = std::thread::spawn(move || -> CliResult<TeamRunDriveOutcome> {
             while !thread_release.load(Ordering::Acquire) {
                 std::thread::sleep(Duration::from_millis(5));
             }
             finished_tx.send(()).expect("publish provider thread exit");
-            Ok(())
+            Ok(TeamRunDriveOutcome::Progressed {
+                team_run_status: harness_core::TeamRunStatus::Completed,
+            })
         });
         let daemon = MultiTeamDaemon {
             firm_home: std::env::temp_dir(),
@@ -277,8 +295,11 @@ mod tests {
             authority_shutdown: Arc::new(AtomicBool::new(false)),
             authority_lost: AtomicBool::new(false),
             control_worker_failed: AtomicBool::new(false),
-            recovery_blocked_runs: Mutex::new(HashSet::new()),
+            recovery_blocked_runs: Mutex::new(HashMap::new()),
+            settling_runs: Mutex::new(HashSet::new()),
             lease_ttl_override_ms: None,
+            deferred_stop_responses: Mutex::new(Vec::new()),
+            drain_timeout_override_ms: None,
         };
 
         let started = Instant::now();

@@ -394,13 +394,34 @@ pub(crate) fn ensure_team_message_fabric(
 /// Validate the team run, filter active members, check provider compat, and
 /// return the raw run + members WITHOUT reserving a supervisor or creating a
 /// ledger. The caller (in-process path or daemon) builds the rest.
+/// Write back a MemberRun whose provider profile was refreshed during start
+/// preparation, keeping the Store's typed error.
+///
+/// This mapping lives in one named function so a test can pin it: a concurrent
+/// Host write loses this CAS routinely, and flattening that Conflict into
+/// `CliError::Usage` hides it from the adoption-hold classifier, which would
+/// read an ordinary lost race as structural and wedge a healthy TeamRun
+/// (DEV-149-REVIEW-02).
+pub(crate) fn persist_refreshed_member_profile(
+    store: &HarnessStore,
+    expected: &ProviderRuntimeProjection,
+    member: &ProviderRuntimeProjection,
+) -> CliResult<()> {
+    store
+        .compare_and_append_member_run(expected, member)
+        .map_err(CliError::Store)?;
+    Ok(())
+}
+
 pub(crate) fn prepare_team_run_start_body(
     store: &HarnessStore,
     run_id: &str,
     _max_concurrency: usize,
 ) -> CliResult<PreparedTeamRunBody> {
     let run = latest_team_run(store, run_id)?;
-    team_run_execution_space_id(store, &run)?;
+    // Typed on purpose: a concurrent Host append makes this resolver return
+    // `TEAM_RUN_CHANGED`, which is a lost race, not a defect of the TeamRun.
+    team_run_execution_space_id_for_start(store, &run)?;
     if matches!(run.status, TeamRunStatus::Failed | TeamRunStatus::Cancelled) {
         return Err(CliError::Usage(format!(
             "team run {run_id} is {} and cannot attach a member supervisor",
@@ -453,7 +474,7 @@ pub(crate) fn prepare_team_run_start_body(
             "start or resume persistent Agent Team execution",
         );
         if apply_refreshed_provider_profile(member, profile) {
-            store_conflict_as_usage(store.compare_and_append_member_run(&expected, member))?;
+            persist_refreshed_member_profile(store, &expected, member)?;
         }
         if let Some(refusal) = refusal {
             return Err(CliError::Usage(refusal));
@@ -775,6 +796,54 @@ fn prepare_member_workspace_for_spawn_with_hooks(
     unreachable!("bounded pre-spawn ProviderRuntimeProjection CAS loop returns on every path")
 }
 
+/// What one Supervisor generation proved about the TeamRun it adopted.
+///
+/// A Supervisor that returns `Ok(())` has not thereby converged anything: the
+/// TeamRun may be exactly as `Running` and exactly as stuck as it was before
+/// adoption. Naming that outcome is what lets the NodeDaemon stop re-adopting
+/// an unchanged run under a fresh Supervisor generation (#704, #671). A
+/// failure stays an `Err` and keeps its existing recovery-marker handling.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum TeamRunDriveOutcome {
+    /// The TeamRun left `Running`, or its canonical TeamRun/MemberRun/Work/
+    /// Message/RuntimeCommand state changed under this generation. A later
+    /// adoption would start from a different canonical state.
+    Progressed { team_run_status: TeamRunStatus },
+    /// The Supervisor returned with the TeamRun still `Running` and not one
+    /// canonical row changed. Re-adopting this exact `canonical_state` can
+    /// only repeat this outcome, so the daemon holds adoption until the state
+    /// changes or an explicit recovery/start intent arrives.
+    NoProgress {
+        canonical_state: String,
+        detail: String,
+    },
+}
+
+/// Decide what one Supervisor generation proved, from the TeamRun status it
+/// left behind and the canonical state it entered and exited on.
+///
+/// A generation that ends with the run still `Running` and not one canonical
+/// row moved has, by definition, nothing a repeat of the same adoption could
+/// improve on. Anything else is progress and the next adoption starts from a
+/// different observation.
+pub(crate) fn classify_team_run_drive_outcome(
+    team_run_status: TeamRunStatus,
+    entry_canonical_state: &str,
+    exit_canonical_state: &str,
+    runtime_outcome_count: usize,
+) -> TeamRunDriveOutcome {
+    if team_run_status == TeamRunStatus::Running && exit_canonical_state == entry_canonical_state {
+        TeamRunDriveOutcome::NoProgress {
+            canonical_state: exit_canonical_state.to_string(),
+            detail: format!(
+                "member supervisor stopped with team run still running and no canonical TeamRun, MemberRun, Work, Message or RuntimeCommand change ({runtime_outcome_count} runtime outcome(s))"
+            ),
+        }
+    } else {
+        TeamRunDriveOutcome::Progressed { team_run_status }
+    }
+}
+
 pub(crate) fn drive_prepared_team_run(
     prepared: PreparedTeamRunStart,
     execution_space: Option<ExecutionSpace>,
@@ -782,7 +851,7 @@ pub(crate) fn drive_prepared_team_run(
     max_concurrency: usize,
     idle_timeout: Duration,
     live_sink: Option<NativeSessionWakeSink>,
-) -> CliResult<()> {
+) -> CliResult<TeamRunDriveOutcome> {
     let PreparedTeamRunStart {
         run_id,
         objective,
@@ -813,6 +882,15 @@ pub(crate) fn drive_prepared_team_run(
         }
     };
     let execution_space_id = execution_space.as_ref().map(|space| space.id.clone());
+    // Observe the canonical state this generation inherits before any member
+    // runtime touches it. The same observation at exit is what distinguishes
+    // "this adoption changed something" from "this adoption produced nothing
+    // a further adoption could improve on".
+    let entry_canonical_state = team_run_canonical_state_fingerprint(
+        &ledger.store,
+        execution_space_id.as_deref(),
+        &run_id,
+    )?;
     let project_id = project_context.as_ref().map(|context| context.id.clone());
     let project_selector = project_context
         .as_ref()
@@ -1079,6 +1157,20 @@ pub(crate) fn drive_prepared_team_run(
     }
 
     let current = latest_team_run(&ledger.store, &run_id)?;
+    // The exit observation must be taken before this generation journals its
+    // own stop event, and the fingerprint deliberately excludes that journal,
+    // so "nothing changed" stays provable rather than self-refuting.
+    let exit_canonical_state = team_run_canonical_state_fingerprint(
+        &ledger.store,
+        execution_space_id.as_deref(),
+        &run_id,
+    )?;
+    let drive_outcome = classify_team_run_drive_outcome(
+        current.status,
+        &entry_canonical_state,
+        &exit_canonical_state,
+        outcomes.len(),
+    );
     ledger.fold_event(
         TeamRunEventSourceKind::Host,
         None,
@@ -1086,9 +1178,13 @@ pub(crate) fn drive_prepared_team_run(
         &run_id,
         "updated",
         &format!(
-            "member supervisor stopped with team run still {} ({} runtime outcome(s))",
+            "member supervisor stopped with team run still {} ({} runtime outcome(s), canonical state {})",
             serde_snake_label(&current.status),
-            outcomes.len()
+            outcomes.len(),
+            match &drive_outcome {
+                TeamRunDriveOutcome::NoProgress { .. } => "unchanged",
+                TeamRunDriveOutcome::Progressed { .. } => "changed",
+            }
         ),
     )?;
 
@@ -1105,7 +1201,7 @@ pub(crate) fn drive_prepared_team_run(
             println!("    {line}");
         }
     }
-    Ok(())
+    Ok(drive_outcome)
 }
 
 pub(super) enum MemberProviderStartClaim {

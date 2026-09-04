@@ -688,6 +688,30 @@ pub(super) fn stop_member_for_latched_close_with_pending_hook(
     Ok(())
 }
 
+/// One pass of the idle wake loop. `Retry` is the only way back into the
+/// loop, and the driver below is the only thing that can act on it, so no
+/// decision arm can re-enter the loop's whole-Store scans without the bounded
+/// backoff (#584).
+pub(super) enum IdleWakeStep {
+    Ready(IdleMemberWake),
+    Retry,
+}
+
+/// The wake loop's single re-entry gate. Either the bounded test idle grace
+/// retires the member, or the loop sleeps its current backoff before running
+/// another iteration.
+pub(super) fn idle_wake_retry_gate(
+    idle_since: Instant,
+    policy: &supervisor_wake::WakePolicy,
+    backoff: &mut supervisor_wake::WakeBackoff,
+) -> Option<IdleMemberWake> {
+    if member_supervisor_test_idle_grace().is_some_and(|grace| idle_since.elapsed() >= grace) {
+        return Some(IdleMemberWake::TestRetired);
+    }
+    backoff.sleep_and_tick(policy);
+    None
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn wait_for_idle_member_wake(
     ledger: &TeamRunLedger,
@@ -706,6 +730,39 @@ pub(super) fn wait_for_idle_member_wake(
     )?;
     let idle_since = Instant::now();
     loop {
+        let step = poll_idle_member_wake(
+            ledger,
+            member_row,
+            controls,
+            &mut ensure_transport_alive,
+            zero_output_streak,
+            last_consumed_work_version,
+            policy,
+            backoff,
+        )?;
+        match step {
+            IdleWakeStep::Ready(wake) => return Ok(wake),
+            IdleWakeStep::Retry => {
+                if let Some(retired) = idle_wake_retry_gate(idle_since, policy, backoff) {
+                    return Ok(retired);
+                }
+            }
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn poll_idle_member_wake(
+    ledger: &TeamRunLedger,
+    member_row: &mut ProviderRuntimeProjection,
+    controls: &ControlReceiver<MemberControlCommand>,
+    ensure_transport_alive: &mut impl FnMut() -> CliResult<()>,
+    zero_output_streak: u32,
+    last_consumed_work_version: Option<u64>,
+    policy: &supervisor_wake::WakePolicy,
+    backoff: &mut supervisor_wake::WakeBackoff,
+) -> CliResult<IdleWakeStep> {
+    {
         // A command may have passed the control-plane fence just before this
         // generation lost ownership. Recheck before reading any process-local
         // handle or touching the durable mailbox.
@@ -736,10 +793,10 @@ pub(super) fn wait_for_idle_member_wake(
                             return Err(CliError::RuntimeRecoveryRequired(detail.into()));
                         }
                     };
-                    return Ok(IdleMemberWake::CloseRequested {
+                    return Ok(IdleWakeStep::Ready(IdleMemberWake::CloseRequested {
                         close,
                         reply: Some(reply),
-                    });
+                    }));
                 }
                 MemberControlCommand::Interrupt { reply, .. } => {
                     let _ = reply.send(Ok(serde_json::json!({
@@ -757,7 +814,10 @@ pub(super) fn wait_for_idle_member_wake(
             }
         }
         if let Some(close) = pending_member_close(&ledger.store, &member_row.id)? {
-            return Ok(IdleMemberWake::CloseRequested { close, reply: None });
+            return Ok(IdleWakeStep::Ready(IdleMemberWake::CloseRequested {
+                close,
+                reply: None,
+            }));
         }
 
         // Fence the provider transport before taking durable ownership of any
@@ -778,7 +838,7 @@ pub(super) fn wait_for_idle_member_wake(
                 member_row,
                 harness_core::agentfirm_api::AgentSessionStatus::Active,
             )?;
-            return Ok(IdleMemberWake::Work(Box::new(claimed)));
+            return Ok(IdleWakeStep::Ready(IdleMemberWake::Work(Box::new(claimed))));
         }
         let canonical_messages = claim_canonical_messages_for_member(ledger, member_row)?;
         if !canonical_messages.is_empty() {
@@ -795,10 +855,10 @@ pub(super) fn wait_for_idle_member_wake(
                 member_row,
                 harness_core::agentfirm_api::AgentSessionStatus::Active,
             )?;
-            return Ok(IdleMemberWake::Messages {
+            return Ok(IdleWakeStep::Ready(IdleMemberWake::Messages {
                 messages: canonical_messages,
                 host_attentions,
-            });
+            }));
         }
         let host_attentions = claim_managed_host_attentions_for_member(ledger, member_row, false)?;
         if !host_attentions.is_empty() {
@@ -813,7 +873,9 @@ pub(super) fn wait_for_idle_member_wake(
                 member_row,
                 harness_core::agentfirm_api::AgentSessionStatus::Active,
             )?;
-            return Ok(IdleMemberWake::HostAttentions(host_attentions));
+            return Ok(IdleWakeStep::Ready(IdleMemberWake::HostAttentions(
+                host_attentions,
+            )));
         }
         // Build pure views from the store for the decision function.
         let Some(member_view) = retryable_idle_projection(build_member_wake_view(
@@ -827,9 +889,9 @@ pub(super) fn wait_for_idle_member_wake(
             // concurrent canonical append may exhaust the bounded seqlock
             // stabilization window, but retrying the read cannot replay a
             // provider effect. The loop revalidates the Supervisor lease at
-            // its next iteration before reading or controlling anything.
-            backoff.sleep_and_tick(policy);
-            continue;
+            // its next iteration before reading or controlling anything, and
+            // re-enters through the same bounded backoff as every other arm.
+            return Ok(IdleWakeStep::Retry);
         };
         let board_view = build_board_wake_view(ledger, member_row)?;
 
@@ -849,7 +911,7 @@ pub(super) fn wait_for_idle_member_wake(
                         member_row,
                         harness_core::agentfirm_api::AgentSessionStatus::Active,
                     )?;
-                    return Ok(IdleMemberWake::Work(Box::new(claimed)));
+                    return Ok(IdleWakeStep::Ready(IdleMemberWake::Work(Box::new(claimed))));
                 }
                 // Then try active-work continuation.
                 if member_supervisor_test_idle_grace().is_none() {
@@ -872,10 +934,10 @@ pub(super) fn wait_for_idle_member_wake(
                                 member_row,
                                 harness_core::agentfirm_api::AgentSessionStatus::Active,
                             )?;
-                            return Ok(IdleMemberWake::Messages {
+                            return Ok(IdleWakeStep::Ready(IdleMemberWake::Messages {
                                 messages: pending,
                                 host_attentions: Vec::new(),
-                            });
+                            }));
                         }
                         backoff.reset();
                         let expected = member_row.clone();
@@ -888,7 +950,9 @@ pub(super) fn wait_for_idle_member_wake(
                             member_row,
                             harness_core::agentfirm_api::AgentSessionStatus::Active,
                         )?;
-                        return Ok(IdleMemberWake::ActiveWorkContinuation(Box::new(work)));
+                        return Ok(IdleWakeStep::Ready(IdleMemberWake::ActiveWorkContinuation(
+                            Box::new(work),
+                        )));
                     }
                 }
                 // Then terminal-work notifications (informational messages
@@ -923,10 +987,10 @@ pub(super) fn wait_for_idle_member_wake(
                         member_row,
                         harness_core::agentfirm_api::AgentSessionStatus::Active,
                     )?;
-                    return Ok(IdleMemberWake::Messages {
+                    return Ok(IdleWakeStep::Ready(IdleMemberWake::Messages {
                         messages: notifs,
                         host_attentions: Vec::new(),
-                    });
+                    }));
                 }
                 // DeliverPending predicted but nothing claimable — fall through to Sleep.
             }
@@ -945,7 +1009,9 @@ pub(super) fn wait_for_idle_member_wake(
                             member_row,
                             harness_core::agentfirm_api::AgentSessionStatus::Active,
                         )?;
-                        return Ok(IdleMemberWake::ActiveWorkContinuation(Box::new(work)));
+                        return Ok(IdleWakeStep::Ready(IdleMemberWake::ActiveWorkContinuation(
+                            Box::new(work),
+                        )));
                     }
                 }
                 // Work version changed but continuation candidate disappeared — fall through to Sleep.
@@ -967,17 +1033,13 @@ pub(super) fn wait_for_idle_member_wake(
                         member_row,
                         harness_core::agentfirm_api::AgentSessionStatus::Active,
                     )?;
-                    return Ok(IdleMemberWake::ActiveWorkContinuation(Box::new(work)));
+                    return Ok(IdleWakeStep::Ready(IdleMemberWake::ActiveWorkContinuation(
+                        Box::new(work),
+                    )));
                 }
             }
             supervisor_wake::WakeDecision::Sleep(_duration) => {
-                if member_supervisor_test_idle_grace()
-                    .is_some_and(|grace| idle_since.elapsed() >= grace)
-                {
-                    return Ok(IdleMemberWake::TestRetired);
-                }
-                backoff.sleep_and_tick(policy);
-                continue;
+                // Fall through to the single bounded backoff below.
             }
             supervisor_wake::WakeDecision::Degraded(reason) => {
                 // Mark the member blocked so continuation stops.
@@ -1002,10 +1064,16 @@ pub(super) fn wait_for_idle_member_wake(
                     "degraded",
                     &format!("member {} degraded: {reason}", member_row.name),
                 )?;
-                return Ok(IdleMemberWake::Degraded(reason));
+                return Ok(IdleWakeStep::Ready(IdleMemberWake::Degraded(reason)));
             }
         }
     }
+    // No arm produced a wake. `DeliverPending`, `Continue` and `ClaimHint` are
+    // predictions from a pure view built before the claim; when the matching
+    // claim has already disappeared they used to re-enter the loop with no
+    // sleep at all and re-ran whole-Store scans at 100% CPU (#584). `Retry` is
+    // now the only way back in, and only `idle_wake_retry_gate` acts on it.
+    Ok(IdleWakeStep::Retry)
 }
 
 pub(super) fn retryable_idle_projection<T>(result: CliResult<T>) -> CliResult<Option<T>> {

@@ -322,6 +322,67 @@ that TeamRun until such explicit intent. Losing only the client response after
 a command completed is diagnostic response loss and never poisons the daemon
 generation.
 
+There is a second, deliberately weaker hold. A Supervisor that returns with its
+TeamRun still `running` and no canonical `TeamRun`, `MemberRun`, `Work`,
+`Message` or `RuntimeCommand` change, and a start that fails structurally
+before any RuntimeCommand exists (missing cwd, missing Team, stale permission
+ceiling, unreleased AgentSession), record `team_supervisor_no_progress` bound
+by an evidence ref to a fingerprint of the canonical state they observed.
+Automatic adoption skips that TeamRun only while the fingerprint still matches.
+This is what stops a NodeDaemon re-adopting an unchanged run and burning a new
+Supervisor generation on every scan.
+
+- It clears by itself as soon as any of those canonical rows changes — no
+  operator action is required, and clock stamps deliberately do not count.
+- It also clears on an explicit operator recovery or Host start intent, which
+  records `team_supervisor_recovered`.
+- `team_supervisor_recovery_required` always outranks it: a hard diagnosis is
+  never shadowed by a no-progress observation, and a no-progress marker that
+  cannot prove which canonical state it observed fails closed as one.
+- Transient rejections — capacity, an already-managed run, a lost CAS race, a
+  fenced daemon generation — never record a hold.
+- `harness daemon status` lists any process-local holds under
+  `recovery_blocked_runs`, each with whether a canonical change or an explicit
+  start lifts it.
+
+`harness daemon stop` answers with its drain result, not with its acceptance.
+It replies only after accepted control commands, the recovery scanner, managed
+Supervisor threads and authority settlement have converged, within a documented
+75-second bound (20s control workers + 20s scanner + 30s Supervisor drain + 5s
+forced process-group drain). A drain that does not complete returns `ok:false`
+with `NODE_DAEMON_DRAIN_INCOMPLETE` and the failing phase; the CLI exits
+non-zero and the Operator action returns the `NODE_DAEMON_DRAIN_INCOMPLETE`
+code rather than `SUPERVISOR_GENERATION_FENCED`. Never treat a failed stop as a
+stopped daemon.
+
+`authority_released` on that receipt is an observation, not a prediction: it is
+true only when `release_node_authorities` actually ran and every registered
+Execution Space lease came back Released. Every phase — including the recovery
+scanner — gates the release, so a scanner failure leaves the lease `Draining`
+and the receipt reports `authority_released:false`.
+
+Read `authority_released:false` as **not wholly released**, never as "nothing
+was released". Release walks every registered Execution Space and continues
+past a per-Space failure, so some Space leases may already be Released while
+others are not. The receipt names them in `released_execution_space_ids` and
+`release_failed_execution_space_ids`, and the CLI prints both. Read each
+`NodeDaemonLease` when you need certainty about a specific Space.
+
+Two known limits:
+
+- `harness daemon status` is unanswered for the remainder of the drain, because
+  control ingress closes when the stop is accepted; the bound above is the
+  window. `daemon status` also lists only process-local adoption holds under
+  `recovery_blocked_runs` — a durable `team_supervisor_no_progress` hold is
+  read from the TeamRun's MemberAction journal, not from status, because
+  listing it would put whole-Store scans on the reserved control lane.
+- The Operator `daemon-stop` HTTP action can occupy its connection for the full
+  drain bound. The serving loop sets no socket timeouts and handles each
+  connection on its own thread, so this starves nothing, but a dashboard or
+  proxy client with a shorter timeout may give up before the receipt arrives. A
+  client-side timeout is not a failed stop: re-read the `NodeDaemonLease` to
+  learn whether authority was released.
+
 NodeDaemon lease expiry is not takeover authority. If the exact predecessor
 process is still alive, let that instance settle commands, drain providers and
 release every registered Execution Space. If it crashed, use the Operator

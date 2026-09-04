@@ -574,11 +574,45 @@ pub(super) fn execute_operator_action(
                         )
                     })?;
                 if control["ok"] != true {
+                    // Two different failures arrive on this one path and must
+                    // not share a code. A generation fence means the stop was
+                    // refused with no effect; a drain that did not complete
+                    // means the daemon accepted the stop, is still working,
+                    // and deliberately retains machine authority (#584).
+                    let message = control["error"]
+                        .as_str()
+                        .unwrap_or("NodeDaemon rejected the generation-fenced stop");
+                    let code = if control["drained"] == false {
+                        "NODE_DAEMON_DRAIN_INCOMPLETE"
+                    } else {
+                        "SUPERVISOR_GENERATION_FENCED"
+                    };
+                    // A partial release is a real outcome, so name the
+                    // Execution Space leases on both sides rather than leaving
+                    // the operator to guess (DEV-149-REVIEW-04).
+                    let space_ids = |key: &str| {
+                        control[key]
+                            .as_array()
+                            .map(|ids| {
+                                ids.iter()
+                                    .filter_map(|id| id.as_str())
+                                    .collect::<Vec<_>>()
+                                    .join(", ")
+                            })
+                            .filter(|joined| !joined.is_empty())
+                            .unwrap_or_else(|| "none".to_string())
+                    };
+                    let detail = match control["failed_phase"].as_str() {
+                        Some(phase) => format!(
+                            "{message} (failed phase: {phase}; Execution Space leases already released: {}; release failed: {})",
+                            space_ids("released_execution_space_ids"),
+                            space_ids("release_failed_execution_space_ids"),
+                        ),
+                        None => message.to_string(),
+                    };
                     return Err(encoded_error(
-                        "SUPERVISOR_GENERATION_FENCED",
-                        control["error"]
-                            .as_str()
-                            .unwrap_or("NodeDaemon rejected the generation-fenced stop"),
+                        code,
+                        detail,
                         "node_daemon_lease",
                         node_id,
                         Some(daemon_generation),

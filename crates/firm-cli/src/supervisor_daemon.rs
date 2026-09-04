@@ -18,8 +18,8 @@ use std::time::{Duration, Instant};
 use crate::{
     bind_team_runtime_supervisor, current_unix_ms_u64, drive_prepared_team_run,
     ensure_team_message_fabric, ensure_team_runtime_fabric, prepare_team_run_start_body, CliError,
-    CliResult, HarnessStore, NativeSessionWakeUpdate, PreparedTeamRunStart, TeamRunLedger,
-    TeamSupervisorRegistration,
+    CliResult, HarnessStore, NativeSessionWakeUpdate, PreparedTeamRunStart, TeamRunDriveOutcome,
+    TeamRunLedger, TeamSupervisorRegistration,
 };
 
 // ---------------------------------------------------------------------------
@@ -31,7 +31,9 @@ mod machine_authority;
 mod recovery;
 mod shutdown;
 mod team_supervision;
-use machine_authority::{daemon_control_generation_authorized, node_authority_refresh_interval};
+use machine_authority::{
+    daemon_control_generation_authorized, node_authority_refresh_interval, AuthorityReleaseReport,
+};
 pub(crate) use recovery::reconcile_team_run_start_postcondition;
 
 const SIGINT: i32 = 2;
@@ -83,7 +85,7 @@ struct MultiTeamContext {
     supervisor_id: String,
     supervisor_generation: u64,
     heartbeat_valid: Arc<AtomicBool>,
-    thread: Option<std::thread::JoinHandle<CliResult<()>>>,
+    thread: Option<std::thread::JoinHandle<CliResult<TeamRunDriveOutcome>>>,
     started_at: Instant,
 }
 
@@ -98,6 +100,50 @@ struct NativeSessionWakeEndpoint {
     authority: String,
     token: String,
     serve_instance_id: String,
+}
+
+/// How long Stop waits for already-accepted control mutations to converge.
+const CONTROL_WORKER_DRAIN_TIMEOUT: Duration = Duration::from_secs(20);
+/// How long Stop then waits for the recovery scanner's current pass to finish.
+const SCANNER_DRAIN_TIMEOUT: Duration = Duration::from_secs(20);
+/// How long Stop waits for managed Supervisor threads to converge before it
+/// escalates to owned-process-group termination.
+const SUPERVISOR_DRAIN_TIMEOUT: Duration = Duration::from_secs(30);
+/// How long Stop then waits for those threads to observe the termination.
+const FORCED_PROCESS_GROUP_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
+/// Documented upper bound a `stop` caller must outwait before the daemon can
+/// answer truthfully. Stop replies with the drain result, never before it
+/// (#584), so the client read timeout has to exceed this bound.
+///
+/// It covers every phase Stop actually waits on, in the order `serve_loop`
+/// runs them. Deriving it from the Supervisor drain alone understated it by
+/// the two unbounded joins that precede that drain, and a caller that timed
+/// out was then told no daemon was running while this one was still draining.
+pub(crate) const NODE_DAEMON_STOP_DRAIN_BOUND: Duration = Duration::from_secs(
+    CONTROL_WORKER_DRAIN_TIMEOUT.as_secs()
+        + SCANNER_DRAIN_TIMEOUT.as_secs()
+        + SUPERVISOR_DRAIN_TIMEOUT.as_secs()
+        + FORCED_PROCESS_GROUP_DRAIN_TIMEOUT.as_secs(),
+);
+
+/// A process-local adoption hold, used only when the durable marker could not
+/// be written. It is deliberately liftable wherever possible: an unliftable
+/// hold would strand a run for this daemon's whole lifetime, including legacy
+/// runs with no Host MemberRun to project a marker onto.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum VolatileAdoptionHold {
+    /// The canonical state could not be read at all, so nothing can prove the
+    /// run has since changed. Only an explicit start intent clears this.
+    Unconditional,
+    /// The durable write failed but the observed canonical state is known.
+    /// Behaves exactly like the durable no-progress marker.
+    AtCanonicalState(String),
+}
+
+/// One accepted `stop` whose truthful answer is still being determined.
+struct DeferredStopResponse {
+    stream: UnixStream,
+    daemon_generation: u64,
 }
 
 enum ControlReadState {
@@ -145,9 +191,23 @@ pub(crate) struct MultiTeamDaemon {
     /// Volatile companion to the durable recovery MemberAction. It closes the
     /// rescan window even when the recovery projection itself cannot be
     /// written because the Execution Space is temporarily unavailable.
-    recovery_blocked_runs: Mutex<HashSet<(String, String)>>,
+    recovery_blocked_runs: Mutex<HashMap<(String, String), VolatileAdoptionHold>>,
+    /// Runs whose finished Supervisor outcome is being reconciled outside the
+    /// `contexts` lock. An explicit Start must not adopt one of these: the
+    /// dead generation is still deciding what durable marker to write, and
+    /// that marker would land on the live successor.
+    settling_runs: Mutex<HashSet<(String, String)>>,
+    /// Accepted `stop` client sockets held open until the drain result is
+    /// known. Stop is answered from that result rather than from acceptance,
+    /// so a caller can never read `ok:true` while this process still spins.
+    deferred_stop_responses: Mutex<Vec<DeferredStopResponse>>,
     #[cfg(test)]
     lease_ttl_override_ms: Option<u64>,
+    /// Bounded (cooperative, forced) drain deadlines in milliseconds. Tests
+    /// use it to exercise the honest Stop answer without waiting the full
+    /// production bound.
+    #[cfg(test)]
+    drain_timeout_override_ms: Option<(u64, u64)>,
 }
 
 impl MultiTeamDaemon {
@@ -277,9 +337,13 @@ impl MultiTeamDaemon {
             authority_shutdown: Arc::new(AtomicBool::new(false)),
             authority_lost: AtomicBool::new(false),
             control_worker_failed: AtomicBool::new(false),
-            recovery_blocked_runs: Mutex::new(HashSet::new()),
+            recovery_blocked_runs: Mutex::new(HashMap::new()),
+            settling_runs: Mutex::new(HashSet::new()),
+            deferred_stop_responses: Mutex::new(Vec::new()),
             #[cfg(test)]
             lease_ttl_override_ms: None,
+            #[cfg(test)]
+            drain_timeout_override_ms: None,
         });
 
         // `serve_loop` owns the two-phase shutdown: it stops accepting new
@@ -345,15 +409,65 @@ impl MultiTeamDaemon {
             // daemon generation and lets the normal drain/release path run.
             self.stop_requested.store(true, Ordering::SeqCst);
 
+            // Known limit: control ingress stops here, so `daemon status` gets
+            // no answer for the rest of the drain. The drain is bounded by
+            // NODE_DAEMON_STOP_DRAIN_BOUND and the in-flight `stop` caller is
+            // answered with the real result, so the window is documented
+            // rather than papered over with a stale "running" reply. Serving a
+            // `draining` status would need the socket poll moved onto its own
+            // thread; that is a separate change to the ingress model.
+
             // Every accepted mutation owns a response socket and may already
             // have crossed the durable RuntimeCommand prepare boundary. Do
             // not abandon those effects when Stop wins: stop accepting new
             // work, then join every bounded control worker before releasing
             // this daemon generation.
+            //
+            // The *wait* is bounded even though the join is not. Stop answers
+            // from what actually drained, so an unbounded wait here would make
+            // the answer arrive after the caller's read timeout and report "no
+            // daemon is running" about a daemon that is still draining (#584).
+            // Overrunning either bound is itself a drain-incomplete result:
+            // authority is retained and the threads are still joined before
+            // this generation returns.
+            let control_drained = wait_for(self.control_worker_drain_timeout(), || {
+                control_workers.iter().all(|worker| worker.is_finished())
+            });
+            let scanner_drained = wait_for(self.scanner_drain_timeout(), || scanner.is_finished());
+            // Answer Stop before the unbounded joins when either phase
+            // overran. The joins still happen — no accepted effect is
+            // abandoned — but the operator learns the truth inside the bound
+            // instead of timing out and being told no daemon is running.
+            if !control_drained || !scanner_drained {
+                let phase = if !control_drained {
+                    "control_workers"
+                } else {
+                    "recovery_scanner"
+                };
+                // Release has not run at this point, and the gate below can
+                // no longer reach it, so `false` here is an observation rather
+                // than the prediction this message used to make.
+                self.answer_deferred_stop_responses(
+                    Some(&StopDrainFailure {
+                        phase,
+                        error: CliError::Usage(format!(
+                            "NODE_DAEMON_DRAIN_INCOMPLETE: {phase} did not converge within the documented stop bound; authority release is deferred until the joins complete"
+                        )),
+                    }),
+                    false,
+                    &AuthorityReleaseReport::default(),
+                );
+            }
+
             for worker in control_workers {
                 self.observe_control_worker_result(worker.join(), "while draining");
             }
-            let control_result = if self.control_worker_failed.load(Ordering::SeqCst) {
+            let control_result = if !control_drained {
+                Err(CliError::Usage(
+                    "NODE_DAEMON_DRAIN_INCOMPLETE: accepted control commands did not converge within the documented stop bound"
+                        .into(),
+                ))
+            } else if self.control_worker_failed.load(Ordering::SeqCst) {
                 Err(CliError::Usage(
                     "NODE_DAEMON_CONTROL_DRAIN_INCOMPLETE: an accepted control command did not prove completion"
                         .into(),
@@ -363,6 +477,10 @@ impl MultiTeamDaemon {
             };
 
             let scan_result = match scanner.join() {
+                Ok(result) if !scanner_drained => result.and(Err(CliError::Usage(
+                    "NODE_DAEMON_DRAIN_INCOMPLETE: the recovery scanner did not converge within the documented stop bound"
+                        .into(),
+                ))),
                 Ok(result) => result,
                 Err(_) => Err(CliError::Usage(
                     "NODE_DAEMON_SCAN_PANICKED: recovery scanner terminated unexpectedly".into(),
@@ -392,16 +510,53 @@ impl MultiTeamDaemon {
                         .into(),
                 )),
             };
-            let release_result = if control_result.is_ok()
+            // The scanner belongs in this gate. It is the phase that proves
+            // every registered Execution Space is still readable under this
+            // exact generation; releasing machine authority after it failed
+            // would both silently drop the fence and make the stop receipt
+            // contradict itself (DEV-149-REVIEW-02).
+            let release_attempted = control_result.is_ok()
+                && scan_result.is_ok()
                 && supervisor_result.is_ok()
                 && settlement_result.is_ok()
                 && drain_result.is_ok()
-                && heartbeat_result.is_ok()
-            {
+                && heartbeat_result.is_ok();
+            let (release_result, release_report) = if release_attempted {
                 self.release_node_authorities()
             } else {
-                Ok(())
+                (Ok(()), AuthorityReleaseReport::default())
             };
+            // Observed, never predicted: authority is wholly released only when
+            // the release actually ran and every registered Execution Space
+            // lease actually came back Released. A partial release reports
+            // false here and names the Spaces in the receipt.
+            let authority_released = release_attempted && release_result.is_ok();
+            // Every accepted `stop` is answered from what the drain actually
+            // proved. Authority release is part of that answer: a caller must
+            // never see `ok:true` while this process still owns runtimes, and
+            // the failing phase is named so an operator knows what to inspect.
+            let failure = [
+                ("control_workers", control_result.as_ref().err()),
+                ("recovery_scanner", scan_result.as_ref().err()),
+                ("supervisor_drain", supervisor_result.as_ref().err()),
+                ("authority_settlement", settlement_result.as_ref().err()),
+                ("authority_drain", drain_result.as_ref().err()),
+                ("authority_heartbeat", heartbeat_result.as_ref().err()),
+                ("authority_release", release_result.as_ref().err()),
+            ]
+            .into_iter()
+            .find_map(|(phase, error)| {
+                error.map(|error| StopDrainFailure {
+                    phase,
+                    error: CliError::Usage(error.to_string()),
+                })
+            });
+            self.answer_deferred_stop_responses(
+                failure.as_ref(),
+                authority_released,
+                &release_report,
+            );
+
             scan_result
                 .and(control_result)
                 .and(supervisor_result)
@@ -410,6 +565,86 @@ impl MultiTeamDaemon {
                 .and(heartbeat_result)
                 .and(release_result)
         })
+    }
+
+    /// Deliver the truthful Stop answer to every caller still waiting on it.
+    fn answer_deferred_stop_responses(
+        &self,
+        drain_failure: Option<&StopDrainFailure>,
+        authority_released: bool,
+        release_report: &AuthorityReleaseReport,
+    ) {
+        let deferred = {
+            let mut guard = self
+                .deferred_stop_responses
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            std::mem::take(&mut *guard)
+        };
+        for mut pending in deferred {
+            let response = match drain_failure {
+                None => serde_json::json!({
+                    "ok": true,
+                    "daemon_generation": pending.daemon_generation,
+                    "drained": true,
+                    "authority_released": authority_released,
+                    "released_execution_space_ids": release_report.released_space_ids,
+                    "release_failed_execution_space_ids": release_report.failed_space_ids,
+                }),
+                // `authority_released: false` means "not wholly released".
+                // Release continues past a per-Space failure, so the two lists
+                // are the only truthful account of what happened.
+                Some(failure) => serde_json::json!({
+                    "ok": false,
+                    "daemon_generation": pending.daemon_generation,
+                    "drained": false,
+                    "authority_released": authority_released,
+                    "released_execution_space_ids": release_report.released_space_ids,
+                    "release_failed_execution_space_ids": release_report.failed_space_ids,
+                    "failed_phase": failure.phase,
+                    "error": failure.error.to_string(),
+                }),
+            };
+            if let Err(error) = Self::write_control_response(&mut pending.stream, &response) {
+                eprintln!("[node-daemon] could not deliver the stop drain result: {error}");
+            }
+        }
+    }
+
+    fn control_worker_drain_timeout(&self) -> Duration {
+        #[cfg(test)]
+        if let Some((cooperative_ms, _)) = self.drain_timeout_override_ms {
+            return Duration::from_millis(cooperative_ms);
+        }
+        CONTROL_WORKER_DRAIN_TIMEOUT
+    }
+
+    fn scanner_drain_timeout(&self) -> Duration {
+        #[cfg(test)]
+        if let Some((cooperative_ms, _)) = self.drain_timeout_override_ms {
+            return Duration::from_millis(cooperative_ms);
+        }
+        SCANNER_DRAIN_TIMEOUT
+    }
+}
+
+/// Which drain phase denied a clean Stop, and why.
+struct StopDrainFailure {
+    phase: &'static str,
+    error: CliError,
+}
+
+/// Poll `ready` until it holds or `timeout` elapses. Returns whether it held.
+fn wait_for(timeout: Duration, ready: impl Fn() -> bool) -> bool {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if ready() {
+            return true;
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(10));
     }
 }
 
@@ -848,7 +1083,14 @@ pub(crate) fn daemon_stop_via_socket(
 ) -> Option<String> {
     let socket_path = node_daemon_socket_path(firm_home, node_id);
     let mut stream = UnixStream::connect(&socket_path).ok()?;
-    stream.set_read_timeout(Some(Duration::from_secs(5))).ok()?;
+    // Stop answers with the drain result, not with its acceptance, so the
+    // client must outwait the documented drain bound plus the bounded
+    // settle/release writes that follow it (#584).
+    stream
+        .set_read_timeout(Some(
+            NODE_DAEMON_STOP_DRAIN_BOUND.saturating_add(Duration::from_secs(25)),
+        ))
+        .ok()?;
 
     let cmd = serde_json::json!({
         "cmd": "stop",
@@ -868,5 +1110,11 @@ pub(crate) fn daemon_stop_via_socket(
 // Tests
 // ---------------------------------------------------------------------------
 
+#[cfg(test)]
+mod adoption_tests;
+#[cfg(test)]
+mod drive_outcome_tests;
+#[cfg(test)]
+mod stop_drain_tests;
 #[cfg(test)]
 mod tests;
