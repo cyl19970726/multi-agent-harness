@@ -410,8 +410,13 @@ this settlement boundary.
 
 A drain leaves every member that was mid-turn with an `Interrupted`
 AgentSession. That is recoverable, not wedged: after the predecessor lease is
-Released, `firm daemon start` plus `firm team-run start` re-adopts the
-TeamRun, reattaches each Session to the new generation and resumes it
+Released, run `firm daemon start`, then inspect `firm daemon status`. The new
+daemon automatically adopts eligible runs during boot; only run `firm team-run
+start --id <team-run-id>` when that status does not list the run. A start for a
+run already listed returns `already_managed: true`, prints `already managed by
+NodeDaemon <id> (gen <generation>)`, and exits successfully without creating a
+second Supervisor generation or restarting its members. Either path reattaches
+each Session to the new generation and resumes it
 (`Interrupted -> Idle`, then a fresh cycle). Members that were idle at drain
 time keep `Idle` and resume unchanged. The killed cycle's `RuntimeCommand`
 remains settled against the dead daemon generation and is never replayed.
