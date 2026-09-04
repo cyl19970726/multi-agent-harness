@@ -1,6 +1,9 @@
 use super::*;
+use std::io::{Seek as _, SeekFrom};
 
 const STARTUP_LOG_TAIL_LINES: usize = 20;
+const STARTUP_LOG_TAIL_MAX_BYTES: u64 = 64 * 1024;
+const DAEMON_LOG_ROTATE_BYTES: u64 = 8 * 1024 * 1024;
 
 pub(crate) fn node_daemon_log_path(firm_home: &Path, node_id: &str) -> PathBuf {
     project::canonicalize_best_effort(firm_home)
@@ -26,6 +29,12 @@ pub(crate) fn node_daemon_log_streams(
             parent.display()
         ))
     })?;
+    rotate_daemon_log_if_needed(&path).map_err(|error| {
+        CliError::Usage(format!(
+            "cannot rotate NodeDaemon log {}: {error}",
+            path.display()
+        ))
+    })?;
     let stdout = fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -45,6 +54,45 @@ pub(crate) fn node_daemon_log_streams(
     Ok((path, Stdio::from(stdout), Stdio::from(stderr)))
 }
 
+fn rotated_daemon_log_path(path: &Path) -> PathBuf {
+    let mut rotated = path.as_os_str().to_os_string();
+    rotated.push(".1");
+    rotated.into()
+}
+
+fn rotate_daemon_log_if_needed(path: &Path) -> std::io::Result<()> {
+    let metadata = match fs::metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    if metadata.len() <= DAEMON_LOG_ROTATE_BYTES {
+        return Ok(());
+    }
+    fs::rename(path, rotated_daemon_log_path(path))
+}
+
+fn read_log_tail(path: &Path) -> std::io::Result<String> {
+    let mut file = fs::File::open(path)?;
+    let length = file.metadata()?.len();
+    file.seek(SeekFrom::Start(
+        length.saturating_sub(STARTUP_LOG_TAIL_MAX_BYTES),
+    ))?;
+    let capacity = usize::try_from(length.min(STARTUP_LOG_TAIL_MAX_BYTES))
+        .expect("64 KiB log tail window fits usize");
+    let mut bytes = Vec::with_capacity(capacity);
+    file.take(STARTUP_LOG_TAIL_MAX_BYTES)
+        .read_to_end(&mut bytes)?;
+    let text = String::from_utf8_lossy(&bytes);
+    let mut lines = text
+        .lines()
+        .rev()
+        .take(STARTUP_LOG_TAIL_LINES)
+        .collect::<Vec<_>>();
+    lines.reverse();
+    Ok(lines.join("\n"))
+}
+
 pub(crate) fn daemon_status_with_log_path(response: &str, log_path: &Path) -> CliResult<String> {
     let mut status = serde_json::from_str::<serde_json::Value>(response)
         .map_err(|error| CliError::Usage(format!("invalid daemon status JSON: {error}")))?;
@@ -59,18 +107,8 @@ pub(crate) fn daemon_status_with_log_path(response: &str, log_path: &Path) -> Cl
 }
 
 pub(crate) fn daemon_start_failure(pid: u32, reason: &str, log_path: &Path) -> CliError {
-    let tail = fs::read(log_path)
-        .map(|bytes| {
-            let text = String::from_utf8_lossy(&bytes);
-            let mut lines = text
-                .lines()
-                .rev()
-                .take(STARTUP_LOG_TAIL_LINES)
-                .collect::<Vec<_>>();
-            lines.reverse();
-            lines.join("\n")
-        })
-        .unwrap_or_else(|error| format!("<could not read log: {error}>"));
+    let tail =
+        read_log_tail(log_path).unwrap_or_else(|error| format!("<could not read log: {error}>"));
     let tail = if tail.is_empty() {
         "<log is empty>"
     } else {
@@ -84,10 +122,11 @@ pub(crate) fn daemon_start_failure(pid: u32, reason: &str, log_path: &Path) -> C
 
 fn daemon_absent_status(firm_home: &Path, node_id: &str, log_path: &Path) -> CliResult<String> {
     let mut predecessors = Vec::new();
+    let mut unreadable_spaces = Vec::new();
     for space in execution_space::list_spaces(firm_home).map_err(execution_space_err)? {
         let store = HarnessStore::new(space.store_root);
-        if let Some(lease) = store.latest_node_daemon_lease(node_id)? {
-            if lease.status != NodeDaemonLeaseStatus::Released {
+        match store.latest_node_daemon_lease(node_id) {
+            Ok(Some(lease)) if lease.status != NodeDaemonLeaseStatus::Released => {
                 let status = match lease.status {
                     NodeDaemonLeaseStatus::Active => "active",
                     NodeDaemonLeaseStatus::Draining => "draining",
@@ -99,18 +138,33 @@ fn daemon_absent_status(firm_home: &Path, node_id: &str, log_path: &Path) -> Cli
                     space.id, lease.generation, lease.daemon_id, lease.instance_id
                 ));
             }
+            Ok(_) => {}
+            Err(error) => unreadable_spaces.push(format!("{} ({error})", space.id)),
         }
     }
-    if predecessors.is_empty() {
+    if predecessors.is_empty() && unreadable_spaces.is_empty() {
         Ok(format!(
             "absent (no NodeDaemon for Node {node_id}); log: {}",
             log_path.display()
         ))
     } else {
+        let mut details = Vec::new();
+        if !predecessors.is_empty() {
+            details.push(format!(
+                "unreleased predecessor NodeDaemonLease: {}",
+                predecessors.join(", ")
+            ));
+        }
+        if !unreadable_spaces.is_empty() {
+            details.push(format!(
+                "unreadable NodeDaemonLease stores: {}",
+                unreadable_spaces.join(", ")
+            ));
+        }
         Ok(format!(
-            "absent (no live NodeDaemon for Node {node_id}); unreleased predecessor \
-             NodeDaemonLease: {}; recovery action: daemon-recover-predecessor; log: {}",
-            predecessors.join(", "),
+            "absent (no live NodeDaemon for Node {node_id}); {}; recovery action: \
+             daemon-recover-predecessor; log: {}",
+            details.join("; "),
             log_path.display()
         ))
     }
@@ -321,4 +375,97 @@ pub(super) fn daemon_command(args: &[String]) -> CliResult<()> {
         other => return Err(CliError::Usage(format!("unknown daemon command: {other}"))),
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct TestDir(PathBuf);
+
+    impl TestDir {
+        fn new(tag: &str) -> Self {
+            let unique = format!(
+                "firm-daemon-cli-{tag}-{}-{}",
+                std::process::id(),
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .expect("test clock")
+                    .as_nanos()
+            );
+            let path = std::env::temp_dir().join(unique);
+            fs::create_dir_all(&path).expect("create test directory");
+            Self(path)
+        }
+
+        fn path(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TestDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn log_tail_reads_a_short_file() {
+        let root = TestDir::new("short-tail");
+        let path = root.path().join("node-daemon.log");
+        fs::write(&path, "first\nsecond\n").expect("write short log");
+
+        assert_eq!(read_log_tail(&path).expect("read tail"), "first\nsecond");
+    }
+
+    #[test]
+    fn log_tail_reads_only_the_bounded_window() {
+        let root = TestDir::new("bounded-tail");
+        let path = root.path().join("node-daemon.log");
+        let mut contents = "outside-window"
+            .repeat(usize::try_from(STARTUP_LOG_TAIL_MAX_BYTES).expect("window size") + 1);
+        contents.push('\n');
+        for line in 0..25 {
+            contents.push_str(&format!("tail-line-{line}\n"));
+        }
+        fs::write(&path, contents).expect("write long log");
+
+        let expected = (5..25)
+            .map(|line| format!("tail-line-{line}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert_eq!(read_log_tail(&path).expect("read tail"), expected);
+    }
+
+    #[test]
+    fn log_tail_reads_an_empty_file() {
+        let root = TestDir::new("empty-tail");
+        let path = root.path().join("node-daemon.log");
+        fs::write(&path, "").expect("write empty log");
+
+        assert_eq!(read_log_tail(&path).expect("read tail"), "");
+    }
+
+    #[test]
+    fn daemon_log_streams_rotates_an_oversized_log_and_replaces_the_previous_backup() {
+        let root = TestDir::new("rotation");
+        let path = node_daemon_log_path(root.path(), "node-test");
+        fs::create_dir_all(path.parent().expect("log parent")).expect("create log parent");
+        let current = fs::File::create(&path).expect("create current log");
+        current
+            .set_len(DAEMON_LOG_ROTATE_BYTES + 1)
+            .expect("extend current log");
+        let rotated = rotated_daemon_log_path(&path);
+        fs::write(&rotated, "stale backup").expect("write stale backup");
+
+        let (_, stdout, stderr) =
+            node_daemon_log_streams(root.path(), "node-test").expect("open log streams");
+        drop((stdout, stderr));
+
+        assert_eq!(fs::metadata(&path).expect("new current log").len(), 0);
+        assert_eq!(
+            fs::metadata(&rotated).expect("rotated log").len(),
+            DAEMON_LOG_ROTATE_BYTES + 1
+        );
+    }
 }

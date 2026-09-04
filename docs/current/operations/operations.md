@@ -311,12 +311,17 @@ cargo run -p firm-cli -- serve --addr 127.0.0.1:8787
 Detached `harness daemon start` appends both stdout and stderr to
 `<FIRM_HOME>/nodes/<node_id>/node-daemon.log`. Start prints that stable path
 whether the daemon becomes ready or fails; a readiness failure also includes
-the last 20 log lines so the underlying `daemon serve` error is immediately
-visible. `harness daemon status` includes `log_path` in a live daemon's JSON
-and includes the same path in absent status output. If no live daemon exists
-but any registered Execution Space retains a latest `NodeDaemonLease` that is
-not `Released`, status names the lease state and the operator recovery action
-`daemon-recover-predecessor` instead of reporting a bare absence.
+the last 20 lines from a seek-from-end read bounded to 64 KiB, so the underlying
+`daemon serve` error is immediately visible without loading an unbounded log.
+At daemon start, a log larger than 8 MiB rotates to `node-daemon.log.1`,
+replacing the previous `.1`, before a new current log is opened. `harness daemon
+status` includes `log_path` in a live daemon's JSON and includes the same path
+in absent status output. If no live daemon exists but any registered Execution
+Space retains a latest `NodeDaemonLease` that is not `Released`, status names
+the lease state and the operator recovery action
+`daemon-recover-predecessor` instead of reporting a bare absence. A lease store
+that cannot be read is reported by Execution Space without hiding readable
+Spaces or changing the absent status exit code.
 
 `team-run start` is an accepted-command boundary, not a fire-and-forget hint.
 If the request was sent but the response socket times out or closes, the CLI
