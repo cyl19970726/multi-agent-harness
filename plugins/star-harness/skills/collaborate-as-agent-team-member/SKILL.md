@@ -194,10 +194,14 @@ Member essentials (full sequence in the member loop reference):
   --idempotency-key <stable-command-key>
 ```
 
-To send message or reply, use the authenticated Member Role Action
+To send message or reply as a managed Member, use the authenticated Member Role Action
 (`send_message`, `reply_message`, `request_decision`) of the current
-server-built view — legacy TeamRun send/ACK commands are retired because they
-let a caller select another identity. Do not use provider Plan Mode
+server-built view. An `external_interactive` Host may use `firm team-run message
+send --team-run-id <run> --to-membership <membership> --body <markdown>
+--surface <surface> --thread-id <id>`; this exact native Host binding authors
+through the same application seam as the Host HTTP route. Legacy TeamRun
+send/ACK commands are retired because they let a caller select another
+identity. Do not use provider Plan Mode
 (EnterPlanMode/ExitPlanMode) in team context — Harness has no Plan Gate and it
 blocks headless members indefinitely (ADR 0039); plan-first means an ordinary
 Markdown plan message to the Host.

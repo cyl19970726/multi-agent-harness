@@ -522,7 +522,7 @@ pub(super) fn team_message_send(
     let target_team_id = required(args, "--to-team")?;
     if source_team_id == target_team_id {
         return Err(CliError::Usage(
-            "team message send is peer-Team only; for intra-team messages, use POST /v1/agentfirm/team-runs/{run}/messages/send (the Host Console composer) or `firm member message send` for a Supervisor-bound member"
+            "team message send is peer-Team only; for intra-team messages, use `firm team-run message send` for the external_interactive Host, POST /v1/agentfirm/team-runs/{run}/messages/send (the Host Console composer), or `firm member message send` for a Supervisor-bound member"
                 .into(),
         ));
     }

@@ -140,6 +140,11 @@ Public callers cannot submit retention anchors.
 - Harness coordination has no MCP server. Cross-machine mutations use the
   authenticated CLI or HTTP application surface; central projections remain
   read-only.
+- `firm team-run message send` authenticates the exact `external_interactive`
+  Host binding by surface and native thread id, then authors an intra-Team
+  Message through the same application seam as
+  `POST /v1/agentfirm/team-runs/{run}/messages/send`. Supervisor-bound Members
+  use `firm member message send`.
 - OperatorView reports Node-local outbox/inbox depth, oldest age, current
   gateway generation, Control Plane-derived health, reconcile lag and exact
   recovery inventory. Local journal presence never implies remote health.

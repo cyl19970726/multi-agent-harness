@@ -212,21 +212,18 @@ pub(super) fn cheatsheet_command(args: &[String]) -> CliResult<()> {
 // anti-drift test (cheatsheet_length_budgets).
 
 pub(super) const CHEATSHEET_TEAM: &str = r#"team-run create     --objective <text> --agent-team-id <id> [--budget-usd <n>]
-                    [--previous <id>]
                     --member name:role:provider[/mode][:model][@paths]
 team-run start      --id <id> [--max-concurrency <n>] [--idle-timeout-s <n>]
-team-run add-member --id <id> --member <spec> [--initial-work <text>]
 team-run status     --id <id> [--dashboard-base <url>] [--json]
 team-run wait       --id <id> [--after-seq <n>] [--timeout-secs <n>] [--json]
 team-run host-inbox --surface <s> --thread-id <id> [--all] [--json]  (both required)
+team-run message send --team-run-id <id> --to-membership <membership-id> --body <md>
+                    --surface <s> --thread-id <id> [--work-id <id>] [--response-required]
 team-run events     --id <id> [--after-seq <n>] [--json]
 team-run board-summary --id <id>
-team-run recover    --id <id> [--json]
 team message send   (peer-Team only) --from-team <id> --from-member <id> --to-team <id>
                     [--to-member <id> | --to-membership <id>] --body <md>
-                    [--company <id> --to-node <id> --to-space <id>]
-  intra-Team: POST /v1/agentfirm/team-runs/{run}/messages/send
-              or firm member message send (Supervisor-bound member)
+  intra-Team: firm team-run message send (external Host) or firm member message send
 team message inbox  --team <id> [--all] [--json]
 team message claim  --team <id> --delivery-id <id> --membership-id <id>
 "#;
@@ -257,20 +254,17 @@ mission log show        --mission-id <id> [--tail <n>] [--json]
 pub(super) const CHEATSHEET_ALL: &str = r#"team-run create --objective <text> --agent-team-id <id>
   --member name:role:provider[/mode][:model][@paths]
 team-run start --id <id> [--max-concurrency <n>]
-team-run add-member --id <id> --member <spec>
-team-run list [--dashboard-base <url>] [--json]
 team-run status --id <id> [--dashboard-base <url>] [--json]
 team-run wait --id <id> [--after-seq <n>] [--timeout-secs <n>] [--json]
 team-run host-inbox --surface <s> --thread-id <id> [--all] [--json]  (both required)
+team-run message send --team-run-id <id> --to-membership <membership-id> --body <md>
+  --surface <s> --thread-id <id> [--work-id <id>] [--response-required]
 team-run events --id <id> [--json]
 team-run board-summary --id <id>
-team-run recover --id <id> [--json]
 
 work create --team-run-id <id> --title <text> --completion-criteria <text>
   [--claim-mode team_claim --eligible-member-id <id>]
   [--github-issue owner/repo#N]
-work replace-dependencies --team-id <id> --work-id <id> --expected-version <n>
-  [--prerequisite-work-id <id>] [--idempotency-key <key>]
 work list --team-run-id <id> [--brief] [--since <cursor>]
 work show --work-id <id>
 work assign --work-id <id> --expected-version <n> --membership-id <id>
@@ -279,17 +273,14 @@ work submit --team-run-id <id> --member-run-id <id> --work-id <id>
   --expected-version <n> --result <text> [--github-pr owner/repo#N]
 work accept --work-id <id> --expected-version <n>
 work request-changes --work-id <id> --expected-version <n> --reason <text>
-work poll-github-ci --team-run-id <id>
 
 team create --name <text> --description <text> --host-agent-id <id>
   --node-id <uuid> [--member <id>] [--legacy-mission-id <id>]
 team message send (peer-Team only) --from-team <id> --from-member <id>
   --to-team <id> --body <md>
-  intra-Team: POST /v1/agentfirm/team-runs/{run}/messages/send
-              or firm member message send (Supervisor-bound member)
+  intra-Team: firm team-run message send (external Host) or firm member message send
 team message inbox --team <id> [--all]
 mission list
-mission show --id <id>
 mission log show --mission-id <id> [--tail <n>]
   (read-only legacy Mission reads; writers retired by DOC-108)
 "#;
@@ -310,9 +301,13 @@ pub(super) fn print_help() {
   mission list|show (read-only legacy rows; Mission writers retired by DOC-108)
   mission log show --mission-id <id> [--tail <n>] (read-only legacy)
   legacy wave list|show|history (historical reads only)
-  team-run create|list|status|recover|host-inbox|bind-host|host-lease-status|renew-host-lease|release-host-lease|inbox|add-member|rename-member|interrupt-member|close-member|reopen-member|deactivate-member|start|answer-message|events|complete|cancel
+  team-run create|list|status|recover|host-inbox|message|bind-host|host-lease-status|renew-host-lease|release-host-lease|inbox|add-member|rename-member|interrupt-member|close-member|reopen-member|deactivate-member|start|answer-message|events|complete|cancel
   team-run host-inbox --surface <surface> --thread-id <id> [--all] [--json]
       Both --surface and --thread-id are required.
+  team-run message send --team-run-id <team-run-id> --to-membership <membership-id>
+      --body <markdown> --surface <surface> --thread-id <id>
+      [--work-id <id>] [--response-required] [--idempotency-key <key>]
+      Author an intra-Team Message as the exact external_interactive Host binding.
   team-run board-summary --id <team-run-id>
       <=500-char plain-text board digest: counts by status, assigned/unassigned,
       ready, and one idle|working|awaiting-review line per active member.
@@ -330,9 +325,11 @@ pub(super) fn print_help() {
                    --body <markdown> [--work-id <id>] [--correlation-id <id>] [--causation-id <id>]
                    [--company <id> --to-node <node> --to-space <id> [--to-subscription-revision <n>]]
       Peer-Team only; ordinary Message without WorkDelegation. For intra-team
-      messages, use POST /v1/agentfirm/team-runs/{{run}}/messages/send (the Host
-      Console composer) or firm member message send from a Supervisor-bound
-      member. A Team target lands in the shared Team Inbox without waking
+      messages, use firm team-run message send from the exact
+      external_interactive Host binding, POST
+      /v1/agentfirm/team-runs/{{run}}/messages/send (the Host Console composer),
+      or firm member message send from a Supervisor-bound member. A Team target
+      lands in the shared Team Inbox without waking
       Members; a Member target binds one exact TeamMembership. Remote route
       facts are all-or-nothing.
   team message inbox --team <id> [--all] [--json]
