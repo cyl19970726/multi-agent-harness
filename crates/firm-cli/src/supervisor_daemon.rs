@@ -38,8 +38,8 @@ pub(crate) use recovery::reconcile_team_run_start_postcondition;
 
 const SIGINT: i32 = 2;
 const SIGTERM: i32 = 15;
-const CONTROL_TRANSIENT_READ_RETRIES: usize = 2;
-const CONTROL_TRANSIENT_READ_BACKOFF: Duration = Duration::from_millis(25);
+pub(crate) const CONTROL_TRANSIENT_READ_RETRIES: usize = 2;
+pub(crate) const CONTROL_TRANSIENT_READ_BACKOFF: Duration = Duration::from_millis(25);
 type SigHandler = extern "C" fn(i32);
 extern "C" {
     fn signal(signum: i32, handler: SigHandler) -> usize;
@@ -971,7 +971,7 @@ fn runtime_command_via_socket_with_policy(
     serde_json::from_str(line.trim()).map_err(std::io::Error::other)
 }
 
-fn read_control_response_line(
+pub(crate) fn read_control_response_line(
     reader: &mut impl BufRead,
     line: &mut String,
     max_transient_retries: usize,
