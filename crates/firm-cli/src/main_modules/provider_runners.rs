@@ -398,49 +398,34 @@ pub(super) fn run_member_orchestration(
                     retry_authority,
                     harness_application::ProviderRetryAuthority::StopNoRetry
                 ) {
-                    let mut exhausted = ledger
-                        .latest_member_run(&latest.id)
-                        .ok()
-                        .flatten()
-                        .unwrap_or(latest);
-                    let expected = exhausted.clone();
-                    exhausted.status = MemberRunStatus::Blocked;
-                    exhausted.finished_at = None;
-                    exhausted.last_event_at = Some(now_string());
-                    let summary = if matches!(
-                        durable_process_outcome,
-                        harness_application::ProviderEffectOutcome::Accepted { .. }
-                    ) {
-                        format!(
-                            "PROVIDER_EFFECT_ACCEPTED_NO_REPLAY: the provider process effect was already accepted; explicit Host reconciliation is required; later error: {reason}"
-                        )
-                    } else if matches!(error, CliError::ProviderAdmissionRejected(_)) {
-                        format!(
-                            "PROVIDER_ADMISSION_REJECTED_NO_EFFECT: explicit Host correction or new intent is required; {reason}"
-                        )
-                    } else {
-                        format!(
-                            "PROVIDER_TRANSPORT_RETRY_EXHAUSTED: {transport_attempt} automatic attempts failed; explicit Host reconciliation is required; last error: {reason}"
-                        )
-                    };
-                    if ledger.save_member_run(&expected, &exhausted).is_ok() {
-                        let _ = ledger.append_action(
-                            &exhausted.id,
-                            "runtime_recovery_required",
-                            MemberActionStatus::Failed,
-                            "provider transport retries exhausted",
-                            &summary,
-                        );
-                        let _ = ledger.fold_event(
-                            TeamRunEventSourceKind::Member,
-                            Some(exhausted.id.clone()),
-                            "member_run",
-                            &exhausted.id,
-                            "recovery_required",
-                            &summary,
+                    // The DEV-171 drain fence refusing this attempt's resume
+                    // hop is a property of the attempt's ordering, never of the
+                    // member: one pass later the same lane is Idle and
+                    // startable. Journalling `Blocked` for it turns a transient
+                    // fence into a sticky lifecycle state the successor
+                    // generation reads as operator control and never retries
+                    // (#779). The classifier re-proves the lane is detached,
+                    // disarmed and free of any ambiguous RuntimeCommand first,
+                    // so an uncertain provider effect keeps its stronger
+                    // recovery-required diagnosis; the Disconnected row this
+                    // leaves behind is startable, so the next Supervisor pass
+                    // opens a fresh attempt with no Host verb.
+                    if provider_failure_awaits_drain_lane_resume(ledger, &latest, &error) {
+                        return journal_member_awaiting_drain_lane_resume(
+                            ledger,
+                            &latest,
+                            transport_attempt,
+                            &reason,
                         );
                     }
-                    return MemberOutcome::new(&exhausted, MemberRunStatus::Blocked, summary);
+                    return journal_provider_attempt_exhausted_block(
+                        ledger,
+                        &latest,
+                        &error,
+                        &durable_process_outcome,
+                        transport_attempt,
+                        &reason,
+                    );
                 }
                 accepted = ledger
                     .latest_member_run(&latest.id)

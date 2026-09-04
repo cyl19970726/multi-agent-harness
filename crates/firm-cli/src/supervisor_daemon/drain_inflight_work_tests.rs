@@ -19,7 +19,7 @@ use harness_core::agentfirm_api::{
 };
 use harness_core::{CurrentWorkDraft, Work, WorkClaimMode, WorkCommandContext, WorkPriority};
 
-fn assign_work(
+pub(super) fn assign_work(
     fixture: &DrainFixture,
     agent_member_id: &str,
     suffix: &str,

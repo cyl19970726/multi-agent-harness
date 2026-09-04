@@ -3,11 +3,12 @@
 //! Re-adopting a `Running` TeamRun is only worth doing when something a new
 //! Supervisor generation could act on has changed. This module derives that
 //! "something" from the coordination rows Harness actually owns — the TeamRun
-//! and MemberRun rows plus the three independent planes named by the
-//! execution-foundation contract: `Work`, `Message` and `RuntimeCommand`. It
-//! owns no state, writes nothing, and is never an authority of its own: it
-//! only lets the NodeDaemon say "this exact observed state already produced
-//! its outcome".
+//! and MemberRun rows, the three independent planes named by the
+//! execution-foundation contract (`Work`, `Message` and `RuntimeCommand`), and
+//! the AgentSession control state that decides whether a member's lane can be
+//! driven at all. It owns no state, writes nothing, and is never an authority
+//! of its own: it only lets the NodeDaemon say "this exact observed state
+//! already produced its outcome".
 //!
 //! Two exclusions carry the whole design, and both exist because a fingerprint
 //! that any failing adoption can move is worthless:
@@ -49,15 +50,16 @@ use crate::CliResult;
 pub(super) const CANONICAL_STATE_EVIDENCE_PREFIX: &str = "team-run-canonical-state:";
 
 // TODO(#726 follow-up): each call re-reads `member_runs`, `work_operations`,
-// `fabric_messages` and `runtime_commands` for the whole Store. A scan that
-// holds N runs therefore pays N whole-Store passes. That is already the
-// existing shape of `scan_and_adopt` (`team_run_has_active_member` reads the
-// same member-run collection per run), and the fingerprint is only computed
-// for runs that actually carry a hold, so it strictly replaces a far more
-// expensive Supervisor spawn. Hoisting all four collections to one read per
-// scan pass means threading a borrowed snapshot through `team_run_adoption_is_held`,
-// `drive_prepared_team_run` and the reap path, which is a wider change than
-// this review; recorded rather than half-done.
+// `fabric_messages`, `runtime_commands` and — since #779 — `fabric_agent_sessions`
+// for the whole Store. A scan that holds N runs therefore pays N whole-Store
+// passes. That is already the existing shape of `scan_and_adopt`
+// (`team_run_has_active_member` reads the same member-run collection per run),
+// and the fingerprint is only computed for runs that actually carry a hold, so
+// it strictly replaces a far more expensive Supervisor spawn. Hoisting all five
+// collections to one read per scan pass means threading a borrowed snapshot
+// through `team_run_adoption_is_held`, `drive_prepared_team_run` and the reap
+// path, which is a wider change than this review; recorded rather than
+// half-done.
 
 /// Fingerprint the canonical coordination state of one TeamRun.
 ///
@@ -71,9 +73,16 @@ pub(super) fn team_run_canonical_state_fingerprint(
     run_id: &str,
 ) -> CliResult<String> {
     let run = crate::latest_team_run(store, run_id)?;
-    let mut members = crate::latest_member_runs_in_append_order(store)?
+    let member_rows = crate::latest_member_runs_in_append_order(store)?
         .into_iter()
         .filter(|member| member.team_run_id == run_id)
+        .collect::<Vec<_>>();
+    let agent_member_ids = member_rows
+        .iter()
+        .map(|member| member.agent_member_id.clone())
+        .collect::<std::collections::BTreeSet<_>>();
+    let mut members = member_rows
+        .iter()
         .map(|member| {
             serde_json::json!({
                 "id": member.id,
@@ -104,7 +113,7 @@ pub(super) fn team_run_canonical_state_fingerprint(
         .iter()
         .filter_map(|member| member["id"].as_str().map(str::to_string))
         .collect::<std::collections::BTreeSet<_>>();
-    let (messages, runtime_commands) = match execution_space_id {
+    let (messages, runtime_commands, agent_session_lanes) = match execution_space_id {
         Some(space_id) => {
             let messages = store
                 .fabric_messages(space_id)?
@@ -130,9 +139,53 @@ pub(super) fn team_run_canonical_state_fingerprint(
                         .is_some_and(|member_run_id| member_run_ids.contains(member_run_id))
                 })
                 .count();
-            (Some(messages), Some(runtime_commands))
+            // Whether each member's lane can be driven at all is canonical
+            // state this hold must see. A lane a NodeDaemon drain left
+            // `Interrupted`, or one still carrying a dead runtime's attached
+            // residency, becomes resumable without any MemberRun, Work,
+            // Message or RuntimeCommand row changing — and a hold that could
+            // not observe that stood until a Host poked the run (#779). Only
+            // the fields that decide resumability are read: transcript truth
+            // stays with the provider (ADR 0032).
+            // Scoped twice on purpose. An AgentSession carries no TeamRun, so
+            // the run's own AgentMembers are the tightest scope available —
+            // without it a Space-wide read would hash a lane belonging to
+            // another run into this run's hold. `Closed` sessions are excluded
+            // because they are history: a member that has been closed and
+            // reopened would otherwise carry its retired lanes in every
+            // fingerprint forever, and none of them can ever change again.
+            let mut agent_session_lanes = store
+                .fabric_agent_sessions(space_id)?
+                .into_iter()
+                .filter(|session| {
+                    agent_member_ids.contains(&session.agent_member_id)
+                        && session.lifecycle
+                            != harness_core::agentfirm_api::AgentSessionStatus::Closed
+                })
+                .map(|session| {
+                    serde_json::json!({
+                        "id": session.id,
+                        "lifecycle": session.lifecycle,
+                        "runtime_generation": session.runtime_generation,
+                        "node_daemon_generation": session.node_daemon_generation,
+                        "runtime_residency": session.control_state.runtime_residency,
+                        "activity": session.control_state.activity,
+                        "continuation_activation": session.control_state.continuation.activation,
+                        "handoff_state": session.control_state.handoff_state,
+                        "in_turn": session.current_turn_id.is_some(),
+                        "queued_input_count": session.queued_input_count,
+                    })
+                })
+                .collect::<Vec<_>>();
+            agent_session_lanes
+                .sort_by(|left, right| left["id"].as_str().cmp(&right["id"].as_str()));
+            (
+                Some(messages),
+                Some(runtime_commands),
+                Some(agent_session_lanes),
+            )
         }
-        None => (None, None),
+        None => (None, None, None),
     };
 
     Ok(harness_store::canonical_json_fingerprint(
@@ -148,6 +201,7 @@ pub(super) fn team_run_canonical_state_fingerprint(
             "execution_space_id": execution_space_id,
             "messages": messages,
             "runtime_commands": runtime_commands,
+            "agent_session_lanes": agent_session_lanes,
         }),
     ))
 }

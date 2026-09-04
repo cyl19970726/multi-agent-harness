@@ -423,6 +423,15 @@ each Session to the new generation and resumes it
 time keep `Idle` and resume unchanged. The killed cycle's `RuntimeCommand`
 remains settled against the dead daemon generation and is never replayed.
 
+The `Interrupted -> Idle` hop happens at the adoption seam, immediately after
+each Session is reattached to the live NodeDaemon generation and before any
+provider effect is prepared. That is the only moment the lane still proves the
+killed runtime gone: once a member runner opens its provider handle the lane is
+Attached, and the fence below correctly refuses the hop the runner would then
+need. A lane that is not resumable at adoption is left `Interrupted` and the
+next Supervisor pass observes it again — the refusal is scoped to that attempt,
+so the member stays startable rather than being journalled `blocked`.
+
 Resuming the Session does not resume the killed turn, and the member does not
 pick up its in-flight Work where it left off. The drain settlement ends that
 Work's execution authority in the same write: a `WorkExecutionBinding` whose
@@ -453,6 +462,56 @@ provider handle or carries an ambiguous `RuntimeCommand`: reconcile that command
 through `runtime-commands/{id}/resolve` first. When the member should not come
 back at all, `team-run close-member` is the escape hatch and works on an
 `Interrupted` Session whose runtime is detached at a terminal turn boundary.
+
+### Recovering a member left `blocked` over a dead lane
+
+`harness team-run recover --id <run>` is the verb for a member blocked by a
+runtime fence — the drain refusal above is the case it exists for. It is not a
+general unblock: each of the other gates that writes `blocked` clears its own
+block (a successful capacity probe clears a capacity block, the provider review
+gate clears a compatibility block), and `recover` deliberately leaves those
+alone. Use it when `team-run status` shows a member as `blocked` and prints:
+
+```text
+blocked with a detached, idle AgentSession lane — return it to startable with:
+harness team-run recover --id <run>
+```
+
+It applies on two proofs, both required. The member's own AgentSession must
+prove no runtime can be driving it — detached residency, idle activity,
+disarmed continuation, no open turn, no queued native input and no ambiguous
+`RuntimeCommand` — and the block must carry no typed provenance: no
+`provider_compatibility_block_cause`, no known-unavailable
+`provider_capacity` snapshot, and no zero-output streak that has actually
+reached the wake loop's degradation threshold (a shorter streak is ordinary
+probation, not a verdict, and never withholds this repair). It then changes
+`MemberRun.status` to `idle` and nothing else: coordination status, runtime
+generation, native-session binding and the AgentSession itself are untouched, so
+the next Supervisor pass resumes the same provider-native session and never
+replays the killed cycle. It needs no live Supervisor, which is the point — a
+held adoption has none, so `team-run close-member` refuses with
+`RUNTIME_COMMAND_RECOVERY_REQUIRED`, `team-run reopen-member` answers
+`{"idempotent": true}`, and `team-run start` re-delegates into the same hold.
+The run report counts the repairs as `restarted_blocked_members`.
+
+When the lane is *not* provably dead, `team-run status` says so instead and
+`recover` deliberately leaves the block standing: reconcile the RuntimeCommand
+or close the member.
+
+A block that carries typed provenance is a live diagnosis owned by the gate that
+wrote it, and `recover` never clears it. It reports each one instead — counted
+as `blocked_by_typed_provenance`, listed in `blocked_members_not_restarted`, and
+printed as `blocked, not restarted — <reason>`:
+
+| provenance | who clears it |
+| --- | --- |
+| `provider_compatibility` | the provider review gate (`harness member providers --fail-on-review`), which clears the typed cause with the status |
+| `provider_capacity` | a successful capacity probe, through the preflight's own recovery |
+| `zero_output_degradation` | the Host, by messaging or steering the member (only once the streak reaches the degradation threshold) |
+
+Clearing one of those by hand would strand its evidence — and for a
+compatibility block the typed cause is bound to `blocked` by validation, so a
+bare status flip produces a row the Store refuses outright.
 
 Teams are created without any Mission (DOC-108); `--mission-id` survives only
 as optional legacy provenance. Omit ad-hoc `--member` overrides when starting
