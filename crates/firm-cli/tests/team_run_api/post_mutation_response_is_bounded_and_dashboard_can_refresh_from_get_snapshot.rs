@@ -1,8 +1,44 @@
 use super::*;
 
+/// Read the full request head (through `\r\n\r\n`) before a canned response is
+/// written. Closing a socket with unread request bytes sends RST on Linux,
+/// which can discard the buffered response at the client (#790); macOS
+/// delivers the buffered response first, which is why the flake was
+/// Linux-only. A single `read()` is not enough: the request can arrive in
+/// more than one segment, leaving the tail unread.
+fn read_request_head(stream: &mut std::net::TcpStream) {
+    use std::io::Read as _;
+
+    let mut head = Vec::new();
+    let mut chunk = [0_u8; 1024];
+    loop {
+        let read = stream.read(&mut chunk).expect("read fixture GET");
+        assert!(read > 0, "fixture client closed before the request head");
+        head.extend_from_slice(&chunk[..read]);
+        if head.windows(4).any(|window| window == b"\r\n\r\n") {
+            return;
+        }
+        assert!(
+            head.len() < 64 * 1024,
+            "fixture request head exceeded 64 KiB"
+        );
+    }
+}
+
+/// Finish a canned response so the client observes a clean end-of-response:
+/// flush, half-close the write side, then close.
+fn finish_response(stream: &mut std::net::TcpStream) {
+    use std::io::Write as _;
+
+    stream.flush().expect("flush fixture response");
+    stream
+        .shutdown(std::net::Shutdown::Write)
+        .expect("shutdown fixture response write side");
+}
+
 #[test]
 fn fixture_get_json_retries_an_empty_non_success_response() {
-    use std::io::{Read as _, Write as _};
+    use std::io::Write as _;
     use std::net::TcpListener;
 
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind fixture server");
@@ -13,11 +49,11 @@ fn fixture_get_json_retries_an_empty_non_success_response() {
             "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 11\r\nConnection: close\r\n\r\n{\"ok\":true}",
         ] {
             let (mut stream, _) = listener.accept().expect("accept fixture GET");
-            let mut request = [0_u8; 1024];
-            let _ = stream.read(&mut request).expect("read fixture GET");
+            read_request_head(&mut stream);
             stream
                 .write_all(response.as_bytes())
                 .expect("write fixture response");
+            finish_response(&mut stream);
         }
     });
 
@@ -29,20 +65,20 @@ fn fixture_get_json_retries_an_empty_non_success_response() {
 
 #[test]
 fn fixture_get_json_does_not_retry_a_malformed_success_body() {
-    use std::io::{Read as _, Write as _};
+    use std::io::Write as _;
     use std::net::TcpListener;
 
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind fixture server");
     let addr = listener.local_addr().expect("fixture server address");
     let server = std::thread::spawn(move || {
         let (mut stream, _) = listener.accept().expect("accept fixture GET");
-        let mut request = [0_u8; 1024];
-        let _ = stream.read(&mut request).expect("read fixture GET");
+        read_request_head(&mut stream);
         stream
             .write_all(
                 b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 8\r\nConnection: close\r\n\r\nnot-json",
             )
             .expect("write malformed success");
+        finish_response(&mut stream);
         drop(stream);
         listener
             .set_nonblocking(true)
@@ -65,6 +101,55 @@ fn fixture_get_json_does_not_retry_a_malformed_success_body() {
         .expect("panic message");
     assert!(message.contains("status line: \"HTTP/1.1 200 OK\""));
     assert!(message.contains("Content-Type: application/json"));
+}
+
+/// Regression for #790: a reset that arrives only AFTER a complete response is
+/// already buffered (here forced with an SO_LINGER=0 close) must be treated as
+/// end-of-response, never as a request failure.
+#[test]
+fn fixture_get_json_tolerates_a_reset_after_a_complete_response() {
+    use std::io::Write as _;
+    use std::net::TcpListener;
+    use std::os::unix::io::AsRawFd;
+
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind fixture server");
+    let addr = listener.local_addr().expect("fixture server address");
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("accept fixture GET");
+        read_request_head(&mut stream);
+        stream
+            .write_all(
+                b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 11\r\nConnection: close\r\n\r\n{\"ok\":true}",
+            )
+            .expect("write fixture response");
+        stream.flush().expect("flush fixture response");
+        // Let the loopback peer ACK the response before the abortive close:
+        // an RST discards the server's unsent send buffer, so without the
+        // settle the client could lose the response (the exact #790 race).
+        std::thread::sleep(Duration::from_millis(100));
+        // SO_LINGER {on, 0}: close sends RST instead of FIN. The response is
+        // already complete and acknowledged on the wire, so the client must
+        // tolerate the reset.
+        let linger = libc::linger {
+            l_onoff: 1,
+            l_linger: 0,
+        };
+        let result = unsafe {
+            libc::setsockopt(
+                stream.as_raw_fd(),
+                libc::SOL_SOCKET,
+                libc::SO_LINGER,
+                &linger as *const libc::linger as *const libc::c_void,
+                std::mem::size_of::<libc::linger>() as libc::socklen_t,
+            )
+        };
+        assert_eq!(result, 0, "arm SO_LINGER zero close");
+    });
+
+    let (status, body) = firm_env::get_json_at(&addr.to_string(), "/v1/snapshot");
+    server.join().expect("fixture server");
+    assert_eq!(status, 200);
+    assert_eq!(body, serde_json::json!({"ok": true}));
 }
 
 #[test]
