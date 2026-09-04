@@ -3,15 +3,15 @@
 Read [SKILL.md](../SKILL.md) Part I first — this reference assumes the shared
 mental model and only sequences the Member-side procedure.
 
-## Member Workbench projection
+## Your surface is the CLI
 
-
-For local product operation, read `GET
-/v1/views/member-workbench/{member_run_id}` using the authenticated
-AgentMember capability. A different actor must receive `NOT_AUTHORIZED`. The
-view contains outcome Work, messages/deliveries, Workspace/NativeSession health
-and Report/Finding/Failure/Gate history; private execution mechanics are not
-product Work.
+Everything you do as a Member goes through the exact `$FIRM_BIN` from your
+collaboration envelope: `member work …` for responsibility, `member message
+…` for conversation, `member inbox` for mail, `team-run work show|list` and
+`team-run board-summary` for reading the board. There is no Harness MCP
+server and no HTTP route for a bound Member; the CLI submits each request to
+the live Supervisor, which resolves your identity from the envelope. Provider
+subagents, plan features, and tool loops stay inside your native session.
 
 Own one shared-board Work end to end. This skill is a procedural capability, not
 product authority. You are a durable AgentMember participating through one
@@ -25,7 +25,7 @@ Use the exact `FIRM_BIN` and identifiers supplied by the collaboration
 envelope. Do not substitute another binary from `PATH` or infer identity from a
 display name.
 
-These hard invariants apply to every Host and Member. The full shared text lives in [`skills/shared-references/SKILL.md`](../shared-references/SKILL.md); when a rule appears in both skills, the shared copy is authoritative. The rules below are the Member-specific application.
+These hard invariants apply to every Host and Member. The full shared text lives in [`skills/shared-references/SKILL.md`](../../shared-references/SKILL.md); when a rule appears in both skills, the shared copy is authoritative. The rules below are the Member-specific application.
 
 ## Quick Start: First Turn
 
@@ -96,7 +96,7 @@ For a compact board overview when context is limited:
 "$FIRM_BIN" team-run work list --team-run-id "$FIRM_TEAM_RUN_ID" --since <cursor>
 ```
 
-`board-summary` prints a ≤500-character summary: open/in-progress/blocked/review/done/cancelled counts plus each Member's idle/working/awaiting-review state. `--brief` prints one plain-text line per Work. `--since` takes a monotonic cursor from a prior `list` response and returns only new or updated Works.
+`board-summary` prints a ≤500-character digest: `open= active= blocked= review= accepted= cancelled=` counts, `assigned= unassigned= ready=`, and each Member's `idle|working|awaiting-review` line. `--brief` prints one plain-text line per Work. `--since` takes a monotonic cursor from a prior JSON `list` response (`next_since`) and returns only new or updated Works.
 
 ## Claim Or Start Exactly One Work
 
@@ -132,9 +132,10 @@ receipt. Host request-changes returns Review → Open and requires the next
 monotonic binding/delivery generation. Compatible Workspace and native-session
 continuity may resume, but neither is Work ownership.
 
-V1 permits one active `in_progress` Work per Member unless a concrete capacity
-profile says otherwise. You may own several open Works but must not start two
-top-level cycles in one native session or writable Workspace.
+V1 permits one `Active` Work per Member (`MEMBER_BUSY` refuses a second Start)
+unless a concrete capacity profile says otherwise. You may own several Open
+Works but must not start two top-level cycles in one native session or
+writable Workspace.
 
 ## Own Your Internal Plan
 
@@ -154,18 +155,37 @@ Read actionable mail, or include history when needed:
 ```
 
 Legacy TeamRun send/ACK commands are retired because they let a caller select
-another Member's identity. Author or acknowledge through the authenticated
-Member Role Action (`send_message`, `reply_message`, or `request_decision`)
-exposed by the current server-built view. The server must
-resolve your stable AgentMember, exact current AgentSession generation,
-TeamMembership, Work/Team scope, NodeDaemon generation, and subscription
-cursor; never supply or override those facts from a prompt, browser, or shell.
+another Member's identity. Author through the authenticated Member Role Action
+of the server-built member view — the three `member message` commands. The
+server resolves your stable AgentMember, exact current AgentSession
+generation, TeamMembership, Work/Team scope, NodeDaemon generation, and
+subscription cursor from the envelope; never supply or override those facts
+from a prompt, browser, or shell.
 
-For a decision-shaped question, address the Host and include the exact Work id,
-decision needed, options, and recommendation. For peer coordination, address
-the peer AgentMember in the same Team without transferring Work. For a reply,
-preserve the server-returned correlation id and use the exact source Message id
-as causation. Acknowledge only the exact current recipient delivery/cursor.
+```bash
+# informational note to a peer or the Host (does not wake an idle recipient)
+"$FIRM_BIN" member message send --recipient-agent-id <agent-member-id> \
+  --body "<markdown>" [--work-id <discussed-work-id>] [--evidence-ref <ref>]
+
+# something that needs an answer or action (wakes an exact idle managed recipient)
+"$FIRM_BIN" member message send --recipient-agent-id <agent-member-id> \
+  --body "<requested action>" --response-required [--work-id <recipient-work-id>]
+
+# reply on the incoming correlation; causation = the exact message you answer
+"$FIRM_BIN" member message reply --recipient-agent-id <agent-member-id> \
+  --correlation-id <incoming-correlation-id> --causation-id <incoming-message-id> \
+  --body "<markdown>" [--work-id <incoming-work-id>] [--response-required]
+
+# decision-shaped question to the current Host, bound to your current Work
+"$FIRM_BIN" member message request-decision \
+  --body "<decision needed; options; recommendation>"
+```
+
+The incoming mail from `member inbox --json` carries the recipient, correlation
+and causation ids you must echo; the Supervisor also renders the exact reply
+command for each message. For peer coordination, address the peer AgentMember
+in the same Team without transferring Work. Reading mail does not acknowledge
+it semantically; only your reply or the work you do on it does.
 
 A Message may explain scope, a blocker, a result, or a review decision, but it never changes Work owner/status — see shared hard invariants §4. If conversation creates durable follow-up,
 create an eligible unassigned Work explicitly, then claim it through the
@@ -221,11 +241,12 @@ Work's acceptance criteria.
   --idempotency-key <stable-command-key>
 ```
 
-If ordering is required, submit the supported dependency proposal/action with
-the exact current Work revision. Until that action is available on the bound
-surface, send the Host one Work-linked proposal naming the peer nodes and
-directed edges. A Message does not change the graph. Do not act on the proposed
-Work until the server returns it as ready; failed or cancelled prerequisites
+If ordering is required, name the prerequisite at creation
+(`--prerequisite-work-id <work-id>`) when it is your own follow-up, or send the
+Host one Work-linked proposal naming the peer nodes and directed edges — only
+the Host's `team-run work replace-dependencies` edits an existing Work's
+edges. A Message does not change the graph. Do not act on the proposed Work
+until the server returns it as ready; failed or cancelled prerequisites
 require Host replan.
 
 If another Team should own a substantial result, report that finding to your
@@ -237,9 +258,9 @@ auto-completes the source Work — see shared hard invariants §7.
 When the runtime presents `SHARED WORK AVAILABLE`, treat it as a board-derived
 discovery hint, not ownership. Refresh the Work and claim it with the bound
 MemberRun before acting. A lost claim means another Member won; do not duplicate
-effects. A continuation prompt is valid only for your current `in_progress`
-Work; never keep executing a Work already in `review`, `blocked`, `done`, or
-`cancelled`.
+effects. A continuation prompt is valid only for your current `Active`
+Work; never keep executing a Work already in `Review`, `Blocked`, or
+`Closed` (accepted, cancelled, or failed).
 
 ## Submit Work, Not A Handoff Message
 

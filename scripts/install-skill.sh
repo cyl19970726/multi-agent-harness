@@ -27,6 +27,12 @@
 #
 # Run from a clone (copies the local skills) OR standalone via curl:
 #   curl -fsSL https://raw.githubusercontent.com/cyl19970726/multi-agent-harness/master/scripts/install-skill.sh | bash -s -- --agent both
+#
+# The copy is a snapshot: it does not track the repository. Re-run this script
+# after pulling, or prefer the plugin marketplace / the in-repo
+# .agents/skills symlinks, which always resolve to the current source. A copy
+# without a references/ directory beside SKILL.md predates the two-role
+# contract and shadows the current skill until refreshed.
 set -euo pipefail
 
 # Default shipped skills; --skill may select another current source directory.

@@ -1,6 +1,6 @@
 ---
 name: collaborate-as-agent-team-member
-description: The one Agent Team collaboration contract for BOTH roles — the Host who orchestrates a durable Team and the persistent Members who execute shared Work. Use whenever an agent creates or runs a Team, decomposes/assigns/reviews/accepts Work, or receives, claims, resumes, executes, blocks, submits Work; reads WorkDelivery or the message Inbox; coordinates Host↔Member or peer↔peer; uses provider-native subagents; or must survive review and runtime restart. The shared mental model in Part I is required reading for both roles — asymmetric mental models are the main way multi-agent collaboration fails.
+description: The one Agent Team collaboration contract for BOTH roles — the Host who orchestrates a durable Team and the persistent Members who execute shared Work. Use whenever an agent creates or runs a Team, decomposes/assigns/reviews/accepts Work, waits for member progress, or receives, claims, resumes, executes, blocks, submits Work; reads WorkDelivery or the message Inbox; coordinates Host↔Member or peer↔peer; uses provider-native subagents; or must survive review and runtime restart. The shared mental model in Part I is required reading for both roles — asymmetric mental models are the main way multi-agent collaboration fails.
 ---
 
 # Agent Team Collaboration — Host & Member Contract
@@ -8,10 +8,35 @@ description: The one Agent Team collaboration contract for BOTH roles — the Ho
 One skill, two roles, one mental model. The Host orchestrates; Members execute.
 Every collaboration failure we have observed in real runs came from the two
 sides holding different models of the same object — a Host assuming "assigned
-means understood", a Member assuming "provider finished means Work done". So
-Part I is identical required context for both roles; Parts II/III are the
-role-specific operating loops; Part IV is one worked example traced from both
-sides.
+means understood", a Member assuming "provider finished means Work done", a
+Host rebuilding a polling loop because it did not know the CLI could wait. So
+Part 0 pins the tools, Part I is identical required context for both roles,
+Parts II/III are the role-specific operating loops, and Part IV is one worked
+example traced from both sides.
+
+## Part 0 — Which binary, which Host mode, which copy of this skill
+
+- **The CLI is `firm`.** Some installs expose the same binary as
+  `~/.local/bin/harness`; the commands are identical. A bound Member never
+  picks a binary from `PATH` — it uses the exact `$FIRM_BIN` from its
+  collaboration envelope. A Host running in its own interactive session uses
+  whichever name is installed; examples below say `firm`.
+- **A Host runs in one of two modes (ADR 0057).** `managed`: the Host is an
+  ordinary MemberRun → AgentSession under the NodeDaemon and is woken by
+  deliveries like any member. `external_interactive`: the Host is a user's own
+  interactive provider session (a Claude Code, Codex, or Kimi window) bound
+  with `--host-surface <surface> --host-thread-id <id>`; Harness creates no
+  AgentSession for it and cannot wake it. An external Host learns about
+  progress only by asking — `firm team-run wait` inside a turn, and the plugin
+  hook's inbox push at session start / prompt / stop boundaries.
+- **Load the current copy.** The supported distribution is the repository
+  plugin marketplace (`claude plugin install star-harness@multi-agent-harness`,
+  `codex plugin add star-harness@multi-agent-harness`); inside this repository
+  `.agents/skills/collaborate-as-agent-team-member` links to the canonical
+  `skills/` source so Codex, Claude Code (`.claude/skills` → `.agents/skills`),
+  and Kimi (`--skills-dir .agents/skills`) members see the same file.
+  `scripts/install-skill.sh` copies a snapshot that goes stale; refresh or
+  remove such copies when a `references/` directory is missing beside them.
 
 ## Part I — Shared mental model (both roles hold this, verbatim)
 
@@ -28,11 +53,12 @@ AgentMember      durable identity   (Active | Paused | Retired)
 
 You are a durable `AgentMember` acting through exactly one active
 `TeamMembership`. Host is a **role on a membership**, not a different kind of
-being. Identity outlives every run; participation outlives every session;
-sessions outlive every provider turn. Never infer identity from a display
-name; the server resolves your identity — identity/runtime authority is
-server-built, never caller-selected. (`AgentIdentity` is a deprecated same-ID
-read-only compatibility projection of `AgentMember`.)
+being; a managed Host and a Member share one MemberRun → AgentSession →
+NodeDaemon path. Identity outlives every run; participation outlives every
+session; sessions outlive every provider turn. Never infer identity from a
+display name; the server resolves your identity — identity/runtime authority
+is server-built, never caller-selected. (`AgentIdentity` is a deprecated
+same-ID read-only compatibility projection of `AgentMember`.)
 
 ### 2. The Team: durable, flat, pinned to one machine
 
@@ -44,6 +70,9 @@ Host-coordinated `WorkDelegation`, never hierarchy. Lifecycle:
 membership. One machine-scoped NodeDaemon owns every local Team's sessions;
 each Team's live run is fenced by a Supervisor generation — whoever starts the
 run owns the provider transports, everyone else routes controls to the owner.
+Five persistent execution modes can be members: `codex_app_server`,
+`claude_agent_sdk`, `kimi_acp`, `pi_rpc`, `deepseek_sdk`. Bounded one-shot
+modes cannot.
 
 ### 3. Work: the only responsibility authority
 
@@ -59,25 +88,34 @@ resolution: Accepted | Cancelled | Failed       (exists only at Closed)
   history is the responsibility record, not chat.
 - One accountable Team per Work; zero or one assignee TeamMembership.
 - Assign/claim freezes stable responsibility while Work remains Open; only an
-  exact scheduler admission followed by Start moves it to Active.
+  exact scheduler admission (`WorkExecutionBinding` + `WorkDelivery` bound to
+  the member's current AgentSession generation) followed by Start moves it to
+  Active.
 - Claim/assign/start/submit are **atomic CAS operations with expected
   versions**. `VERSION_CONFLICT` means refresh and re-read; never retry with a
   guessed version. `CLAIM_LOST` means someone else owns it; do not perform its
   side effects.
 - `DELIVERY_NOT_DISPATCHED` is transient: wait for the next Supervisor pass and
-  retry instead of escalating immediately.
+  retry instead of escalating immediately. `MEMBER_BUSY` means you already hold
+  one active Work.
+- An Open, never-started Work whose delivery is frozen on a member generation
+  that no longer runs (typically after close-member + reopen-member) needs the
+  Host's `work redeliver`; nothing else revives it.
 - **Provider "completed" is not Work "done."** Submission moves Work to
-  `review`. Ordinary Member Work needs exact Host acceptance; Host-owned Work
+  `Review`. Ordinary Member Work needs exact Host acceptance; Host-owned Work
   needs one exact active non-owner Team peer in the same TeamRun because the
   Host cannot self-accept. A green fixture, delivery receipt, or provider
-  completion status alone is never acceptance.
+  completion status alone is never acceptance. Request-changes returns
+  Review → Open; the scheduler then admits the next exact
+  binding/delivery generation before the member can Start again.
 - **Assignment never travels by message.** Work assignment is a Work-module
   operation; a Message may explain, ask, or announce — it never changes Work
   owner or status.
 - **Work is a flat dependency DAG.** A Work is a peer responsibility node, not
   a container. Claim/start only when server-derived readiness says every hard
-  prerequisite is accepted. Messages may propose nodes or edges but never
-  mutate them; failed/cancelled prerequisites require Host replan.
+  prerequisite is accepted. Only the Host mutates edges
+  (`work replace-dependencies`); Members may propose nodes or edges in a
+  Message; failed/cancelled prerequisites require Host replan.
 
 ### 4. Messages: one authority, honest delivery states
 
@@ -103,8 +141,12 @@ Queued → Routed → Claimed → ProviderReceived → Acknowledged
 - `informational` intent does not start a provider round by itself; select
   `response-required` only when an answer or action is genuinely needed. This
   is what prevents two agents from bouncing acknowledgement mail forever.
+  A response-required Message wakes an exact idle **managed** recipient; it
+  cannot wake an external_interactive Host, which must read its inbox itself.
 - Transport `Acknowledged` is not a semantic answer. Provider-pausing
-  questions and their answers are correlated Messages with exact ids.
+  questions and their answers are correlated Messages with exact ids
+  (`ProviderInteractionRequest` / `ProviderInteractionResponse`); the Host
+  answers with `team-run answer-message`.
 
 ### 5. Truth boundaries (what lives where)
 
@@ -114,7 +156,7 @@ Queued → Routed → Claimed → ProviderReceived → Acknowledged
 | Conversation, decisions-as-text | Message → Subscription → Delivery |
 | Transcript, tool calls, thinking | provider-native session (never copied) |
 | Session/runtime state, recovery | NodeDaemon + Supervisor generations |
-| Inboxes, boards, views | projections — rebuildable, never authoritative |
+| Inboxes, boards, views, `team-run events` | projections — rebuildable, never authoritative |
 
 Fail closed on anything you cannot prove: an unacknowledged interrupt stays
 `RecoveryRequired`; an uncertain effect is reconciled, never blindly replayed;
@@ -126,7 +168,8 @@ Work ownership survives process exit.
 providers, which permission ceilings, which disjoint owned paths); bounded
 Works with observable completion criteria (a Work a Member cannot verify
 finished is a Work the Host cannot review); the board state (who is idle,
-working, awaiting review — from `board-summary`, not from memory); the review
+working, awaiting review — from `board-summary`, not from memory); **a way to
+wait that is not a sleep loop** (`team-run wait`, see Part III); the review
 discipline (evidence refs, not vibes); and the recovery model (close/reopen
 resumes the exact native session at a higher generation — a dead runtime is
 not lost work).
@@ -147,12 +190,12 @@ A member with no standing Work waits for an assigned Work instead of creating on
 Role-specific procedure lives in two references; read yours fully before the
 first action of a run:
 
-- Host loop: [references/host-loop.md](references/host-loop.md) — roster
-  design, Work decomposition, create/start, watch without polling, answer
-  correlated questions, review/accept, recovery, teardown.
+- Host loop: [references/host-loop.md](references/host-loop.md) — Host mode,
+  roster design, Work decomposition, create/start, wait without polling,
+  answer correlated questions, review/accept/redeliver, recovery, teardown.
 - Member loop: [references/member-loop.md](references/member-loop.md) — first
-  turn, claim/start, plan-first, converse, block honestly, submit with
-  evidence, survive restart.
+  turn, claim/start, plan-first, converse through the CLI, block honestly,
+  submit with evidence, survive restart.
 
 The gate-checked command shapes both roles share:
 
@@ -181,6 +224,25 @@ firm team-run work create \
   --idempotency-key <stable-command-key>
 ```
 
+**Waiting protocol (Host).** Never `sleep` + `status` in a loop. Block on the
+run's event stream and chain cursors:
+
+```bash
+# block until something happens on the run (or the timeout elapses):
+firm team-run wait --id <team-run-id> --after-seq <last-seq> --timeout-secs 600 --json
+# then read only what changed:
+firm team-run work list --team-run-id <team-run-id> --since <next_since>
+firm team-run board-summary --id <team-run-id>
+# external_interactive Host: your mail is not pushed mid-turn — read it:
+firm team-run host-inbox --surface <surface> --thread-id <id> --json
+```
+
+`wait` returns `timed_out`, `after_seq`, `next_after_seq`, and the new events;
+pass `next_after_seq` back as `--after-seq`. Omitting `--after-seq` means
+"wait for what happens next", not "replay history". If `wait` cannot express
+what you need, file the gap as a repository Issue **before** scripting around
+it; a bypass without an Issue hides a product defect.
+
 Member essentials (full sequence in the member loop reference):
 
 ```bash
@@ -195,26 +257,38 @@ Member essentials (full sequence in the member loop reference):
   --work-id "$FIRM_WORK_ID" \
   --expected-version <latest-version> \
   --result-summary "<RESULT/SUMMARY/COVERAGE/WORKTREE/ARTIFACTS template>" \
+  --artifact-ref <PR URL> --check-ref "<command and actual result>" \
   --idempotency-key <stable-command-key>
+
+# read mail, then converse through the authenticated Member Role Action:
+"$FIRM_BIN" member inbox --json
+"$FIRM_BIN" member message send --recipient-agent-id <agent-member-id> \
+  --body "<markdown>" [--work-id <discussed-work-id>] [--response-required]
+"$FIRM_BIN" member message reply --recipient-agent-id <agent-member-id> \
+  --correlation-id <incoming-correlation> --causation-id <incoming-message-id> \
+  --body "<markdown>" [--work-id <incoming-work-id>] [--response-required]
+"$FIRM_BIN" member message request-decision --body "<decision, options, recommendation>"
 ```
 
-To send message or reply as a managed Member, use the authenticated Member Role Action
-(`send_message`, `reply_message`, `request_decision`) of the current
-server-built view. An `external_interactive` Host may use `firm team-run message
-send --team-run-id <run> --to-membership <membership> --body <markdown>
---surface <surface> --thread-id <id>`; this exact native Host binding authors
-through the same application seam as the Host HTTP route. Legacy TeamRun
-send/ACK commands are retired because they let a caller select another
-identity. Do not use provider Plan Mode
-(EnterPlanMode/ExitPlanMode) in team context — Harness has no Plan Gate and it
-blocks headless members indefinitely (ADR 0039); plan-first means an ordinary
-Markdown plan message to the Host.
+These Member commands are the authenticated Member Role Action of the
+server-built member view: the server resolves your AgentMember, current
+AgentSession generation, TeamMembership, Work scope, and NodeDaemon generation
+from the envelope; you never supply them. An `external_interactive` Host
+authors intra-Team mail with `firm team-run message send --team-run-id <run>
+--to-membership <membership> --body <markdown> --surface <surface>
+--thread-id <id> [--work-id <id>] [--response-required]`, and answers a
+provider question with `firm team-run answer-message --id <run> --message-id
+<id> (--option-id <id> | --response-text <text>)`. Legacy TeamRun send/ACK
+commands are retired because they let a caller select another identity.
+Do NOT use provider Plan Mode (EnterPlanMode/ExitPlanMode) in team context —
+Harness has no Plan Gate and it blocks headless members indefinitely (ADR
+0039); plan-first means an ordinary Markdown plan message to the Host.
 
 ## Part IV — Worked example: one Work, both sides
 
-The scenario: Host `hana` (Codex app-server) runs Team `builders` with Member
-`kiwi` (Kimi ACP). The task: add a laundering-rejection check to the legacy
-exporter's `verify`.
+The scenario: Host `hana` (Codex app-server, managed) runs Team `builders`
+with Member `kiwi` (Kimi ACP). The task: add a laundering-rejection check to
+the legacy exporter's `verify`.
 
 ```
  HOST hana                                MEMBER kiwi
@@ -231,27 +305,27 @@ exporter's `verify`.
                                              work show → reads What/Boundary/
                                              Gates; work start --expected-
                                              version 3 → phase Active
-                                          3. plan-first: sends Host ONE
-                                             response-required Message:
+                                          3. plan-first: member message send
+                                             --response-required to hana:
                                              "plan: disjointness check in
                                              verify_archive + tamper test.
                                              OK?"  (work-linked, correlated)
- 4. inbox at safe boundary: reads plan,
-    replies on the SAME correlation id:
-    "proceed; keep names-only"
+ 4. team-run wait returns the delivery
+    event; reads plan, replies on the
+    SAME correlation id: "proceed"
         │                                 5. implements in own worktree
         │                                    (outside repo checkout); runs
         │                                    the test; commits; opens PR
         │                                 6. hits a doubt mid-way → does NOT
         │                                    go silent and does NOT block yet:
-        │                                    informational Message "heads-up:
+        │                                    informational message "heads-up:
         │                                    also found excluded-name overlap
         │                                    — created team_claim follow-up
         │                                    Work W-42, not assigning it"
  7. board-summary shows kiwi=working,
     one new open Work W-42. Host does
-    NOT poll in a loop — waits on
-    events/notifications.
+    NOT poll in a loop — blocks on
+    team-run wait --after-seq <cursor>.
                                           8. work submit --expected-version 5
                                              --result-summary "## RESULT done…
                                              ## WORKTREE …"
@@ -265,14 +339,14 @@ exporter's `verify`.
 10a. accept → phase Closed,
      resolution Accepted.            OR
 10b. request-changes with reasons →
-     phase back to Open; stable kiwi
+     Review → Open; stable kiwi
      responsibility remains. Scheduler
-     creates the next exact binding and
-     delivery generation before Start.
-     Compatible workspace/native-session
-     continuity may resume; it is not
-     runtime ownership.
-11. Run teardown: TeamRun completion
+     admits the next exact
+     binding/delivery generation before
+     Start. Compatible workspace and
+     native-session continuity may
+     resume; it is not runtime ownership.
+11. Run teardown: team-run complete
     atomically REJECTS any non-terminal
     Work — W-42 must be closed,
     reassigned, or cancelled first.
@@ -288,8 +362,13 @@ exact execution admission safely reused compatible native context.
 
 ## Anti-patterns (each observed in a real run)
 
-- **Polling loops.** `sleep 2` + status in a loop burns the Host's context and
-  budget; use board cursors, waits, and event notifications.
+- **Polling loops.** `sleep 15` + `events`/`work list` in a loop — in the
+  foreground or in a background watcher — burns the Host's context and budget
+  and hides whether `team-run wait` is sufficient. Block on `wait`, chain
+  `--after-seq` / `--since` cursors, read the inbox at boundaries.
+- **Silent bypass.** Scripting around a CLI capability without filing the gap
+  as an Issue; the dogfood signal is lost and the workaround becomes the
+  de facto product.
 - **Ack ping-pong.** Two agents bouncing acknowledgement-only mail; use
   informational intent.
 - **Assignment by message.** "Please take W-7" in chat changes nothing and
@@ -302,15 +381,20 @@ exact execution admission safely reused compatible native context.
   is not protected — disjoint owned paths, own worktrees, commit early.
 - **Second inbox.** Any private "unread list" ledger drifts from delivery
   truth; inboxes are projections of CanonicalMessageDelivery, full stop.
+- **Stale skill copy.** Reading an old snapshot of this skill (no
+  `references/` beside it) and following retired commands.
 
 ## Envelope and provenance
 
 The runtime injects the collaboration envelope (`FIRM_BIN`,
 `FIRM_TEAM_RUN_ID`, `FIRM_MEMBER_RUN_ID`, `FIRM_SPACE`,
-`FIRM_PROJECT`, `FIRM_PROJECT_ID`, and `FIRM_WORK_ID`/`_VERSION` when
-Work is delivered). These bind identity and scope; bound commands reject
+`FIRM_PROJECT`, `FIRM_PROJECT_ID`, and `FIRM_WORK_ID`/`FIRM_WORK_VERSION` when
+Work is delivered) plus the bearer capability `FIRM_MEMBER_ROLE_ACTION_TOKEN`
+that authenticates every Member Role Action against the exact live
+Supervisor. These bind identity and scope; bound commands reject
 caller-selected identity. Use the exact `FIRM_BIN` — never another binary
-from `PATH`.
+from `PATH`. Never print, log, copy, or forward the token; it expires with the
+Supervisor registration and is reissued on Close/Reopen.
 
 Shared hard invariants live in
 [`skills/shared-references/SKILL.md`](../shared-references/SKILL.md); when a
