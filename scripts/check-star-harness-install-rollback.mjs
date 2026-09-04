@@ -52,6 +52,7 @@ function createFixture() {
   const fakeBin = join(root, "fake-bin");
   const home = join(root, "home");
   const binLink = join(root, "published", "harness");
+  const firmLink = join(root, "published", "firm");
   mkdirSync(fakeBin, { recursive: true });
   mkdirSync(home, { recursive: true });
 
@@ -236,7 +237,7 @@ function createFixture() {
     true,
   );
 
-  return { root, repo, fakeBin, home, binLink };
+  return { root, repo, fakeBin, home, binLink, firmLink };
 }
 
 function runApply(fixture, extraEnv = {}) {
@@ -258,6 +259,7 @@ function applyEnvironment(fixture, extraEnv = {}) {
     HOME: fixture.home,
     PATH: extraEnv.PATH ?? `${fixture.fakeBin}:${process.env.PATH}`,
     STAR_HARNESS_BIN_LINK: fixture.binLink,
+    STAR_HARNESS_FIRM_LINK: fixture.firmLink,
     STAR_HARNESS_INSTALL_ROOT: join(fixture.root, "install"),
     STAR_HARNESS_STATE_ROOT: join(fixture.root, "state"),
     KIMI_CODE_HOME: join(fixture.root, "kimi"),
@@ -1026,5 +1028,59 @@ withFixture((fixture) => {
     rmSync(fixture.root, { recursive: true, force: true });
   }
 }
+
+withFixture((fixture) => {
+  const result = runApply(fixture);
+  assert.equal(result.status, 0, result.stderr);
+  const versionBin = join(fixture.root, "install", "fixture", "harness");
+  assert.equal(readlinkSync(fixture.binLink), versionBin);
+  assert.equal(
+    readlinkSync(fixture.firmLink),
+    versionBin,
+    "the firm alias link points at the same versioned binary as harness",
+  );
+});
+
+withFixture((fixture) => {
+  const result = runApply(fixture, { FAKE_FAIL_AFTER_PUBLICATION: "1" });
+  assert.notEqual(result.status, 0, "the injected post-publication failure must fail apply");
+  assert.equal(existsSync(fixture.binLink), false, "rollback removes the harness link it created");
+  assert.equal(
+    existsSync(fixture.firmLink),
+    false,
+    "rollback removes the firm alias link it created",
+  );
+});
+
+withFixture((fixture) => {
+  const previousTarget = join(fixture.root, "previous-firm");
+  write(previousTarget, "#!/bin/sh\nexit 0\n", true);
+  mkdirSync(dirname(fixture.firmLink), { recursive: true });
+  symlinkSync(previousTarget, fixture.firmLink);
+  const previousIdentity = lstatSync(fixture.firmLink);
+  const result = runApply(fixture, { FAKE_FAIL_AFTER_PUBLICATION: "1" });
+  assert.notEqual(result.status, 0, "the injected post-publication failure must fail apply");
+  assert.equal(
+    readlinkSync(fixture.firmLink),
+    previousTarget,
+    "rollback restores the exact previous firm alias link",
+  );
+  const restoredIdentity = lstatSync(fixture.firmLink);
+  assert.equal(restoredIdentity.dev, previousIdentity.dev);
+  assert.equal(restoredIdentity.ino, previousIdentity.ino);
+});
+
+withFixture((fixture) => {
+  const original = "#!/bin/sh\necho operator-owned firm\n";
+  write(fixture.firmLink, original, true);
+  const result = runApply(fixture);
+  assert.notEqual(result.status, 0, "a pre-existing regular firm binary must be refused");
+  assert.equal(readFileSync(fixture.firmLink, "utf8"), original);
+  assert.equal(
+    existsSync(fixture.binLink),
+    false,
+    "refusing the firm path aborts before the harness link is published",
+  );
+});
 
 console.log("star-harness installer rollback boundary: PASS");

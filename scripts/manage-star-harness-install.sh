@@ -16,6 +16,7 @@ PLUGIN_SELECTOR="star-harness@multi-agent-harness"
 MARKETPLACE_REPO="cyl19970726/multi-agent-harness"
 INSTALL_BASE="${STAR_HARNESS_INSTALL_ROOT:-${USER_HOME_DIR}/.local/lib/star-harness}"
 BIN_LINK="${STAR_HARNESS_BIN_LINK:-${USER_HOME_DIR}/.local/bin/harness}"
+FIRM_LINK="${STAR_HARNESS_FIRM_LINK:-${USER_HOME_DIR}/.local/bin/firm}"
 STATE_BASE="${STAR_HARNESS_STATE_ROOT:-${USER_HOME_DIR}/.local/state/star-harness}"
 APPLY_IN_PROGRESS="false"
 INSTALL_COMPLETED="false"
@@ -23,11 +24,19 @@ PREVIOUS_BIN=""
 PREVIOUS_BIN_PRESENT="false"
 PREVIOUS_BIN_IDENTITY=""
 PREVIOUS_BIN_OBJECT_IDENTITY=""
+PREVIOUS_FIRM=""
+PREVIOUS_FIRM_PRESENT="false"
+PREVIOUS_FIRM_IDENTITY=""
+PREVIOUS_FIRM_OBJECT_IDENTITY=""
 BIN_LINK_PUBLICATION_ARMED="false"
+FIRM_LINK_PUBLICATION_ARMED="false"
 PUBLICATION_OBSERVED_LIVE="false"
 PUBLISHED_BIN_TARGET=""
 PUBLISHED_BIN_IDENTITY=""
+PUBLISHED_FIRM_TARGET=""
+PUBLISHED_FIRM_IDENTITY=""
 ROLLBACK_BINARY_STATUS="failed_before_binary_publication"
+ROLLBACK_FIRM_STATUS="failed_before_binary_publication"
 STATE_FILE=""
 BIN_LINK_LOCK_DIR="${BIN_LINK}.star-harness-install.lock"
 BIN_LINK_TRANSACTION_DIR=""
@@ -36,6 +45,11 @@ PUBLISHED_BIN_STAGED=""
 PUBLISHED_BIN_WITNESS=""
 DISPLACED_BIN_ENTRY=""
 ROLLBACK_BIN_ENTRY=""
+PREVIOUS_FIRM_WITNESS=""
+PUBLISHED_FIRM_STAGED=""
+PUBLISHED_FIRM_WITNESS=""
+DISPLACED_FIRM_ENTRY=""
+ROLLBACK_FIRM_ENTRY=""
 INSTALL_FS_HELPER=""
 INSTALL_FS_HELPER_REAL=""
 INSTALL_FS_HELPER_SOURCE="${REPO_ROOT}/scripts/star-harness-install-fs.rs"
@@ -149,6 +163,11 @@ release_bin_link_lock() {
       "${PUBLISHED_BIN_WITNESS}" \
       "${DISPLACED_BIN_ENTRY}" \
       "${ROLLBACK_BIN_ENTRY}" \
+      "${PREVIOUS_FIRM_WITNESS}" \
+      "${PUBLISHED_FIRM_STAGED}" \
+      "${PUBLISHED_FIRM_WITNESS}" \
+      "${DISPLACED_FIRM_ENTRY}" \
+      "${ROLLBACK_FIRM_ENTRY}" \
       "${BIN_LINK_LOCK_STAGED}" \
       "${BIN_LINK_LOCK_RELEASE_ENTRY}" \
       "${BIN_LINK_STALE_LOCK_WITNESS}" \
@@ -232,6 +251,11 @@ initialize_bin_link_transaction_paths() {
   PUBLISHED_BIN_WITNESS="${BIN_LINK_TRANSACTION_DIR}/published-link-witness"
   DISPLACED_BIN_ENTRY="${BIN_LINK_TRANSACTION_DIR}/displaced-live-entry"
   ROLLBACK_BIN_ENTRY="${BIN_LINK_TRANSACTION_DIR}/rollback-live-entry"
+  PREVIOUS_FIRM_WITNESS="${BIN_LINK_TRANSACTION_DIR}/previous-firm-link-witness"
+  PUBLISHED_FIRM_STAGED="${BIN_LINK_TRANSACTION_DIR}/published-firm-link-staged"
+  PUBLISHED_FIRM_WITNESS="${BIN_LINK_TRANSACTION_DIR}/published-firm-link-witness"
+  DISPLACED_FIRM_ENTRY="${BIN_LINK_TRANSACTION_DIR}/displaced-firm-live-entry"
+  ROLLBACK_FIRM_ENTRY="${BIN_LINK_TRANSACTION_DIR}/rollback-firm-live-entry"
   INSTALL_FS_HELPER="${BIN_LINK_TRANSACTION_DIR}/install-fs-helper"
   INSTALL_FS_HELPER_REAL="${INSTALL_FS_HELPER}.real"
   BIN_LINK_LOCK_STAGED="${BIN_LINK_TRANSACTION_DIR}/lock-staged"
@@ -572,7 +596,219 @@ rollback_binary_after_error() {
   if [[ "${exit_status}" -eq 0 || "${APPLY_IN_PROGRESS}" != "true" ]]; then
     return 0
   fi
+  rollback_published_firm_link || true
   rollback_published_bin_link || true
+}
+
+# The firm alias follows the exact same publication discipline as the primary
+# harness link: same lock, same transaction, witness + staged links,
+# refuse-on-change, and exact previous-object restore on rollback.
+
+path_matches_previous_firm_snapshot() {
+  local path=$1
+  [[ "${PREVIOUS_FIRM_PRESENT}" == "true" && -L "${path}" ]] || return 1
+  [[ "$(bin_link_identity "${path}" 2>/dev/null || true)" == "${PREVIOUS_FIRM_IDENTITY}" ]] || return 1
+  [[ "$(readlink "${path}" 2>/dev/null || true)" == "${PREVIOUS_FIRM}" ]]
+}
+
+restore_previous_firm_without_overwrite() {
+  local restore_status=0
+  link_without_replace "${PREVIOUS_FIRM_WITNESS}" "${FIRM_LINK}" || restore_status=$?
+  if path_matches_object "${FIRM_LINK}" "${PREVIOUS_FIRM_OBJECT_IDENTITY}" "${PREVIOUS_FIRM}"; then
+    return 0
+  fi
+  if [[ "${restore_status}" -ne 0 ]]; then
+    return "${restore_status}"
+  fi
+  return 1
+}
+
+restore_quarantined_firm_entry() {
+  restore_quarantined_entry_to_path "$1" "${FIRM_LINK}"
+}
+
+prepare_firm_link_publication() {
+  if [[ -e "${FIRM_LINK}" || -L "${FIRM_LINK}" ]]; then
+    link_without_replace "${FIRM_LINK}" "${PREVIOUS_FIRM_WITNESS}"
+    if [[ ! -L "${PREVIOUS_FIRM_WITNESS}" ]]; then
+      echo "refusing to replace non-symlink ${FIRM_LINK}" >&2
+      return 1
+    fi
+    PREVIOUS_FIRM="$(readlink "${PREVIOUS_FIRM_WITNESS}")"
+    PREVIOUS_FIRM_IDENTITY="$(bin_link_identity "${PREVIOUS_FIRM_WITNESS}")"
+    PREVIOUS_FIRM_OBJECT_IDENTITY="$(bin_link_object_identity "${PREVIOUS_FIRM_WITNESS}")"
+    PREVIOUS_FIRM_PRESENT="true"
+  else
+    PREVIOUS_FIRM=""
+    PREVIOUS_FIRM_IDENTITY=""
+    PREVIOUS_FIRM_OBJECT_IDENTITY=""
+    PREVIOUS_FIRM_PRESENT="false"
+  fi
+}
+
+publish_firm_link() {
+  local target=$1
+  local displace_status=0
+  local publish_status=0
+  ln -s "${target}" "${PUBLISHED_FIRM_STAGED}"
+  link_without_replace "${PUBLISHED_FIRM_STAGED}" "${PUBLISHED_FIRM_WITNESS}"
+  PUBLISHED_FIRM_TARGET="${target}"
+  PUBLISHED_FIRM_IDENTITY="$(bin_link_object_identity "${PUBLISHED_FIRM_WITNESS}")"
+  FIRM_LINK_PUBLICATION_ARMED="true"
+
+  if [[ "${PREVIOUS_FIRM_PRESENT}" == "true" ]]; then
+    if ! path_matches_previous_firm_snapshot "${FIRM_LINK}"; then
+      echo "refusing to publish over changed Firm alias link ${FIRM_LINK}" >&2
+      return 1
+    fi
+    move_to_transaction_entry "${FIRM_LINK}" "${DISPLACED_FIRM_ENTRY}" || displace_status=$?
+    if path_matches_object "${DISPLACED_FIRM_ENTRY}" "${PREVIOUS_FIRM_OBJECT_IDENTITY}" "${PREVIOUS_FIRM}"; then
+      if [[ "${displace_status}" -ne 0 ]]; then
+        if ! restore_previous_firm_without_overwrite; then
+          PRESERVE_BIN_LINK_TRANSACTION="true"
+          echo "failed to reconcile uncertain Firm alias link displacement; ownership evidence is preserved in ${BIN_LINK_LOCK_DIR}" >&2
+        fi
+        return "${displace_status}"
+      fi
+    elif [[ -e "${DISPLACED_FIRM_ENTRY}" || -L "${DISPLACED_FIRM_ENTRY}" ]]; then
+      if ! restore_quarantined_firm_entry "${DISPLACED_FIRM_ENTRY}"; then
+        PRESERVE_BIN_LINK_TRANSACTION="true"
+        echo "failed to restore concurrently changed Firm alias path; ownership evidence is preserved in ${BIN_LINK_LOCK_DIR}" >&2
+      fi
+      echo "refusing to publish over concurrently changed Firm alias link ${FIRM_LINK}" >&2
+      if [[ "${displace_status}" -ne 0 ]]; then
+        return "${displace_status}"
+      fi
+      return 1
+    elif path_matches_previous_firm_snapshot "${FIRM_LINK}"; then
+      echo "failed to displace the previous Firm alias link" >&2
+      if [[ "${displace_status}" -ne 0 ]]; then
+        return "${displace_status}"
+      fi
+      return 1
+    elif [[ ! -e "${FIRM_LINK}" && ! -L "${FIRM_LINK}" ]]; then
+      if ! restore_previous_firm_without_overwrite; then
+        PRESERVE_BIN_LINK_TRANSACTION="true"
+        echo "failed to restore the previous Firm alias link after its uncertain displacement; ownership evidence is preserved in ${BIN_LINK_LOCK_DIR}" >&2
+      fi
+      if [[ "${displace_status}" -ne 0 ]]; then
+        return "${displace_status}"
+      fi
+      return 1
+    else
+      echo "refusing to publish after the Firm alias path changed concurrently" >&2
+      if [[ "${displace_status}" -ne 0 ]]; then
+        return "${displace_status}"
+      fi
+      return 1
+    fi
+  fi
+
+  link_without_replace "${PUBLISHED_FIRM_STAGED}" "${FIRM_LINK}" || publish_status=$?
+  if path_matches_object "${FIRM_LINK}" "${PUBLISHED_FIRM_IDENTITY}" "${PUBLISHED_FIRM_TARGET}"; then
+    if [[ "${publish_status}" -ne 0 ]]; then
+      return "${publish_status}"
+    fi
+    return 0
+  fi
+
+  if [[ "${PREVIOUS_FIRM_PRESENT}" == "true" ]] && ! restore_previous_firm_without_overwrite; then
+    PRESERVE_BIN_LINK_TRANSACTION="true"
+    echo "failed to restore the previous Firm alias link after publication refusal; ownership evidence is preserved in ${BIN_LINK_LOCK_DIR}" >&2
+  fi
+  echo "refusing to publish over occupied Firm alias path ${FIRM_LINK}" >&2
+  if [[ "${publish_status}" -ne 0 ]]; then
+    return "${publish_status}"
+  fi
+  return 1
+}
+
+rollback_published_firm_link() {
+  if [[ "${FIRM_LINK_PUBLICATION_ARMED}" != "true" ]]; then
+    ROLLBACK_FIRM_STATUS="failed_before_binary_publication"
+    return
+  fi
+  if ! path_matches_object "${FIRM_LINK}" "${PUBLISHED_FIRM_IDENTITY}" "${PUBLISHED_FIRM_TARGET}"; then
+    if [[ "${PREVIOUS_FIRM_PRESENT}" == "true" ]] && path_matches_object "${FIRM_LINK}" "${PREVIOUS_FIRM_OBJECT_IDENTITY}" "${PREVIOUS_FIRM}"; then
+      ROLLBACK_FIRM_STATUS="failed_before_binary_publication"
+      return
+    elif [[ "${PREVIOUS_FIRM_PRESENT}" == "true" ]] \
+      && path_matches_object "${DISPLACED_FIRM_ENTRY}" "${PREVIOUS_FIRM_OBJECT_IDENTITY}" "${PREVIOUS_FIRM}" \
+      && [[ ! -e "${FIRM_LINK}" && ! -L "${FIRM_LINK}" ]]; then
+      if restore_previous_firm_without_overwrite; then
+        ROLLBACK_FIRM_STATUS="failed_and_previous_binary_restored"
+        echo "restored Firm alias link to ${PREVIOUS_FIRM}" >&2
+        return
+      fi
+      ROLLBACK_FIRM_STATUS="failed_after_binary_publication_restore_failed"
+      PRESERVE_BIN_LINK_TRANSACTION="true"
+      echo "failed to restore Firm alias link ${FIRM_LINK}; ownership evidence remains residual" >&2
+      return 1
+    elif [[ "${PREVIOUS_FIRM_PRESENT}" != "true" && ! -e "${FIRM_LINK}" && ! -L "${FIRM_LINK}" ]]; then
+      ROLLBACK_FIRM_STATUS="failed_before_binary_publication"
+      return
+    fi
+    ROLLBACK_FIRM_STATUS="failed_after_binary_publication_link_changed"
+    echo "preserved changed Firm alias path ${FIRM_LINK}; it is no longer owned by this install" >&2
+    return
+  fi
+
+  move_to_transaction_entry "${FIRM_LINK}" "${ROLLBACK_FIRM_ENTRY}" || true
+  if path_matches_object "${ROLLBACK_FIRM_ENTRY}" "${PUBLISHED_FIRM_IDENTITY}" "${PUBLISHED_FIRM_TARGET}"; then
+    :
+  elif [[ -e "${ROLLBACK_FIRM_ENTRY}" || -L "${ROLLBACK_FIRM_ENTRY}" ]]; then
+    if ! restore_quarantined_firm_entry "${ROLLBACK_FIRM_ENTRY}"; then
+      PRESERVE_BIN_LINK_TRANSACTION="true"
+      echo "failed to restore concurrently changed Firm alias path; ownership evidence is preserved in ${BIN_LINK_LOCK_DIR}" >&2
+      ROLLBACK_FIRM_STATUS="failed_after_binary_publication_remove_failed"
+      return 1
+    fi
+    ROLLBACK_FIRM_STATUS="failed_after_binary_publication_link_changed"
+    echo "restored concurrently changed Firm alias path ${FIRM_LINK}" >&2
+    return
+  elif path_matches_object "${FIRM_LINK}" "${PUBLISHED_FIRM_IDENTITY}" "${PUBLISHED_FIRM_TARGET}"; then
+    ROLLBACK_FIRM_STATUS="failed_after_binary_publication_remove_failed"
+    PRESERVE_BIN_LINK_TRANSACTION="true"
+    echo "failed to quarantine published Firm alias link ${FIRM_LINK}; ownership evidence remains residual" >&2
+    return 1
+  elif [[ "${PREVIOUS_FIRM_PRESENT}" == "true" && ! -e "${FIRM_LINK}" && ! -L "${FIRM_LINK}" ]]; then
+    if restore_previous_firm_without_overwrite; then
+      ROLLBACK_FIRM_STATUS="failed_and_previous_binary_restored"
+      echo "restored Firm alias link to ${PREVIOUS_FIRM}" >&2
+      return
+    fi
+    ROLLBACK_FIRM_STATUS="failed_after_binary_publication_restore_failed"
+    PRESERVE_BIN_LINK_TRANSACTION="true"
+    echo "failed to restore Firm alias link ${FIRM_LINK}; ownership evidence remains residual" >&2
+    return 1
+  elif [[ "${PREVIOUS_FIRM_PRESENT}" != "true" && ! -e "${FIRM_LINK}" && ! -L "${FIRM_LINK}" ]]; then
+    ROLLBACK_FIRM_STATUS="failed_and_created_binary_link_removed"
+    echo "removed incomplete Firm alias link ${FIRM_LINK}" >&2
+    return
+  else
+    ROLLBACK_FIRM_STATUS="failed_after_binary_publication_link_changed"
+    echo "preserved concurrently changed Firm alias path ${FIRM_LINK}" >&2
+    return
+  fi
+
+  if [[ "${PREVIOUS_FIRM_PRESENT}" == "true" ]]; then
+    if ! restore_previous_firm_without_overwrite; then
+      ROLLBACK_FIRM_STATUS="failed_after_binary_publication_restore_failed"
+      PRESERVE_BIN_LINK_TRANSACTION="true"
+      echo "failed to restore Firm alias link ${FIRM_LINK}; published link remains residual" >&2
+      return 1
+    fi
+    ROLLBACK_FIRM_STATUS="failed_and_previous_binary_restored"
+    echo "restored Firm alias link to ${PREVIOUS_FIRM}" >&2
+  else
+    if [[ -e "${FIRM_LINK}" || -L "${FIRM_LINK}" ]]; then
+      ROLLBACK_FIRM_STATUS="failed_after_binary_publication_link_changed"
+      echo "preserved concurrently changed Firm alias path ${FIRM_LINK}" >&2
+    else
+      ROLLBACK_FIRM_STATUS="failed_and_created_binary_link_removed"
+      echo "removed incomplete Firm alias link ${FIRM_LINK}" >&2
+    fi
+  fi
 }
 
 write_failure_state() {
@@ -585,13 +821,14 @@ write_failure_state() {
     failure_status="failed_install_lock_release"
   fi
   if [[ -n "${STATE_FILE}" ]]; then
-    node - "${STATE_FILE}" "${VERSION:-unknown}" "${REPO_ROOT}" "${PREVIOUS_BIN}" "${failure_status}" "${ROLLBACK_BINARY_STATUS}" "${BIN_LINK_LOCK_STATUS}" "${original_exit_status}" "${final_exit_status}" <<'NODE' || true
+    node - "${STATE_FILE}" "${VERSION:-unknown}" "${REPO_ROOT}" "${PREVIOUS_BIN}" "${failure_status}" "${ROLLBACK_BINARY_STATUS}" "${ROLLBACK_FIRM_STATUS}" "${BIN_LINK_LOCK_STATUS}" "${original_exit_status}" "${final_exit_status}" <<'NODE' || true
 const fs = require("node:fs");
-const [path, version, sourceRoot, rollbackBinary, status, binaryRollbackStatus, installLockStatus, originalExitStatus, finalExitStatus] = process.argv.slice(2);
+const [path, version, sourceRoot, rollbackBinary, status, binaryRollbackStatus, firmRollbackStatus, installLockStatus, originalExitStatus, finalExitStatus] = process.argv.slice(2);
 fs.writeFileSync(path, `${JSON.stringify({
   schema_version: 1,
   status,
   binary_rollback_status: binaryRollbackStatus,
+  firm_rollback_status: firmRollbackStatus,
   install_lock_status: installLockStatus,
   original_exit_status: Number(originalExitStatus),
   final_exit_status: Number(finalExitStatus),
@@ -679,6 +916,26 @@ else
 fi
 
 echo
+echo "Firm alias link (same versioned binary as harness):"
+HARNESS_LINK_TARGET=""
+if [[ -L "${BIN_LINK}" ]]; then
+  HARNESS_LINK_TARGET="$(readlink "${BIN_LINK}")"
+fi
+if [[ -L "${FIRM_LINK}" ]]; then
+  ls -l "${FIRM_LINK}"
+  FIRM_LINK_TARGET="$(readlink "${FIRM_LINK}")"
+  if [[ -n "${HARNESS_LINK_TARGET}" && "${FIRM_LINK_TARGET}" == "${HARNESS_LINK_TARGET}" ]]; then
+    echo "ok: harness and firm links both resolve to ${FIRM_LINK_TARGET}"
+  else
+    echo "warning: firm resolves to ${FIRM_LINK_TARGET} but harness resolves to ${HARNESS_LINK_TARGET:-not installed}; run --apply to converge both links"
+  fi
+elif [[ -e "${FIRM_LINK}" ]]; then
+  echo "warning: ${FIRM_LINK} exists and is not a symlink; leaving it untouched"
+else
+  echo "not installed at ${FIRM_LINK} (run --apply to publish both links)"
+fi
+
+echo
 echo "Candidate Firm binary:"
 CANDIDATE_BIN="${REPO_ROOT}/target/debug/firm"
 if [[ -x "${CANDIDATE_BIN}" ]]; then
@@ -723,13 +980,14 @@ echo "Building Harness..."
   cargo build -p firm-cli
 )
 prepare_bin_link_publication
+prepare_firm_link_publication
 
 VERSION_DIR="${INSTALL_BASE}/${VERSION}"
 VERSION_BIN="${VERSION_DIR}/harness"
 MARKETPLACE_SNAPSHOT="${VERSION_DIR}/marketplace"
 CLAUDE_RUNNER_INSTALL="${VERSION_DIR}/apps/claude-member-runner"
 DEEPSEEK_RUNNER_INSTALL="${VERSION_DIR}/apps/deepseek-member-runner"
-mkdir -p "${VERSION_DIR}" "$(dirname "${BIN_LINK}")"
+mkdir -p "${VERSION_DIR}" "$(dirname "${BIN_LINK}")" "$(dirname "${FIRM_LINK}")"
 APPLY_IN_PROGRESS="true"
 install -m 0755 "${REPO_ROOT}/target/debug/firm" "${VERSION_BIN}"
 
@@ -782,6 +1040,7 @@ npm ci \
   --ignore-scripts
 
 publish_bin_link "${VERSION_BIN}"
+publish_firm_link "${VERSION_BIN}"
 
 echo
 echo "Refreshing Codex marketplace and installing one canonical owner..."
@@ -846,14 +1105,15 @@ fi
 	echo "  installed ${VERSION} to ${KIMI_MANAGED_DIR}"
 	echo "  Run /reload in Kimi Code to activate the plugin."
 
-node - "${STATE_FILE}" "${VERSION}" "${REPO_ROOT}" "${VERSION_BIN}" "${PREVIOUS_BIN}" "${INSTALLED_AT}" "${KIMI_MANAGED_DIR}" <<'NODE'
+node - "${STATE_FILE}" "${VERSION}" "${REPO_ROOT}" "${VERSION_BIN}" "${PREVIOUS_BIN}" "${INSTALLED_AT}" "${KIMI_MANAGED_DIR}" "${FIRM_LINK}" <<'NODE'
 const fs = require("node:fs");
-const [path, version, sourceRoot, binary, previousBinary, installedAt, kimiPlugin] = process.argv.slice(2);
+const [path, version, sourceRoot, binary, previousBinary, installedAt, kimiPlugin, firmLink] = process.argv.slice(2);
 fs.writeFileSync(path, `${JSON.stringify({
   schema_version: 1,
   version,
   source_root: sourceRoot,
   harness_binary: binary,
+  firm_binary_link: firmLink,
   rollback_harness_binary: previousBinary || null,
   codex_plugin: "star-harness@multi-agent-harness",
   claude_plugin: "star-harness@multi-agent-harness",
@@ -867,5 +1127,6 @@ ROLLBACK_BINARY_STATUS="not_attempted_install_completed"
 
 echo
 echo "Installed Star Harness ${VERSION}."
+echo "Binary links: ${BIN_LINK} (primary) and ${FIRM_LINK} (alias) -> ${VERSION_BIN}"
 echo "State: ${STATE_FILE}"
 echo "Start a new Codex task, a new Claude session, and run /reload in Kimi Code to activate."
