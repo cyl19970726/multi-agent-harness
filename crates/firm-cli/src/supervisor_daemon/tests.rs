@@ -467,6 +467,72 @@ fn control_response_is_one_complete_json_frame_under_backpressure() {
 }
 
 #[test]
+fn runtime_command_client_retries_a_transient_response_timeout_on_the_same_socket() {
+    let tree = TestTree::new("runtime-control-read-retry");
+    let firm_home = tree.0.join("home");
+    let node_id = "runtime-control-retry-node";
+    let socket_path = node_daemon_socket_path(&firm_home, node_id);
+    std::fs::create_dir_all(socket_path.parent().expect("control socket parent"))
+        .expect("create control socket parent");
+    let listener = UnixListener::bind(&socket_path).expect("bind control socket");
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("accept runtime command");
+        let mut request = String::new();
+        std::io::BufReader::new(&mut stream)
+            .read_line(&mut request)
+            .expect("read one runtime command");
+        assert_eq!(request.lines().count(), 1, "client writes the command once");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(request.trim())
+                .expect("runtime command JSON")["cmd"],
+            "runtime"
+        );
+        std::thread::sleep(Duration::from_millis(45));
+        stream
+            .write_all(b"{\"ok\":true,\"result\":{\"retried\":true}}\n")
+            .expect("write delayed runtime response");
+    });
+    let payload = serde_json::json!({});
+    let envelope = harness_core::agentfirm_api::ControlCommandEnvelope {
+        id: "runtime-command-read-retry".into(),
+        execution_space_id: "space-test".into(),
+        target_node_id: node_id.into(),
+        target_node_daemon_id: format!("node-daemon:{node_id}"),
+        target_node_daemon_generation: 1,
+        authenticated_actor: harness_core::agentfirm_api::ActorRef {
+            kind: harness_core::agentfirm_api::ActorKind::Service,
+            id: "test-client".into(),
+        },
+        command: harness_core::agentfirm_api::RuntimeCommandKind::AuthorMessage,
+        required_capability: "message.author".into(),
+        idempotency_key: "runtime-command-read-retry".into(),
+        expected_version: 0,
+        expires_unix_ms: current_unix_ms_u64().saturating_add(30_000),
+        binding: Default::default(),
+        precondition: Default::default(),
+        postcondition: Default::default(),
+        payload_fingerprint: harness_store::canonical_json_fingerprint(&payload),
+        payload,
+        issued_at: format!("unix-ms:{}", current_unix_ms_u64()),
+    };
+
+    let response = runtime_command_via_socket_with_policy(
+        &firm_home,
+        node_id,
+        &envelope,
+        ControlSocketReadPolicy {
+            timeout: Duration::from_millis(20),
+            transient_retries: 3,
+            retry_backoff: Duration::from_millis(2),
+        },
+    )
+    .expect("same-socket retry receives delayed response");
+
+    assert_eq!(response["result"]["retried"], true);
+    server.join().expect("control server");
+}
+
+#[test]
 fn status_remains_responsive_while_execution_space_scan_is_blocked() {
     use std::ffi::CString;
     use std::fs::OpenOptions;
