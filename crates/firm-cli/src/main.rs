@@ -168,6 +168,9 @@ use member_lifecycle::*;
 #[path = "main_modules/member_orchestration.rs"]
 mod member_orchestration;
 use member_orchestration::*;
+#[path = "main_modules/member_start_fabric.rs"]
+mod member_start_fabric;
+use member_start_fabric::*;
 #[path = "main_modules/team_run_canonical_state.rs"]
 mod team_run_canonical_state;
 use team_run_canonical_state::*;

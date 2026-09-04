@@ -137,7 +137,7 @@ fn leading_error_code(message: &str) -> Option<&str> {
 /// the error's own leading code token: matching a substring anywhere in the
 /// chain let an ordinary CAS conflict — or any error that merely mentioned a
 /// fenced code — decide the outcome for a whole TeamRun.
-fn start_failure_is_transient(error: &CliError) -> bool {
+pub(crate) fn start_failure_is_transient(error: &CliError) -> bool {
     match error {
         // Store contention, provider-admission contention and a lost
         // machine/Supervisor authority are properties of this attempt, never

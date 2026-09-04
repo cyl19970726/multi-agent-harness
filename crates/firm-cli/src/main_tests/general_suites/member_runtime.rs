@@ -36,6 +36,8 @@ mod host_owned_work_requires_exact_peer_reviewer;
 mod idle_wake_loop_sleeps_on_every_mispredicted_arm;
 #[path = "../general/initial_member_admission_rejects_foreign_only_identity_without_any_durable_write.rs"]
 mod initial_member_admission_rejects_foreign_only_identity_without_any_durable_write;
+#[path = "../general/joined_member_runtime_fabric_is_provisioned_once_under_the_live_supervisor.rs"]
+mod joined_member_runtime_fabric_is_provisioned_once_under_the_live_supervisor;
 #[path = "../general/kimi_full_access_receipt_ignores_unrelated_provider_control_rows.rs"]
 mod kimi_full_access_receipt_ignores_unrelated_provider_control_rows;
 #[path = "../general/kimi_safe_approval_atomic_receipt_loses_to_concurrent_close.rs"]
