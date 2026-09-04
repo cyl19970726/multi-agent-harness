@@ -131,6 +131,30 @@ fn team_work_cli_redelivers_and_derives_release_team_run() {
     .expect_err("an unassigned Work has nothing to redeliver");
     assert!(error.to_string().contains("WORK_NOT_ASSIGNED"), "{error}");
 
+    let mismatch = team_run_work_command(
+        &store,
+        &resolved,
+        &[
+            "redeliver".into(),
+            "--team-run-id".into(),
+            "another-team-run".into(),
+            "--work-id".into(),
+            unassigned.id.clone(),
+            "--expected-version".into(),
+            unassigned.version.to_string(),
+            "--idempotency-key".into(),
+            "cli-redeliver-mismatched-run".into(),
+        ],
+    )
+    .expect_err("an explicit --team-run-id must identify the Work's TeamRun");
+    assert!(
+        mismatch.to_string().contains(&format!(
+            "--team-run-id another-team-run does not match Work {}'s TeamRun {}",
+            unassigned.id, created.team_run.id
+        )),
+        "{mismatch}"
+    );
+
     // With a live WorkExecutionBinding the delivery is not stale, and the
     // refusal proves the verb reads the selected space's binding fabric.
     let live_work = create_work("work-cli-redeliver-live");

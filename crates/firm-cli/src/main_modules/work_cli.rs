@@ -587,12 +587,20 @@ pub(super) fn team_run_work_command(
                     )
                 })?;
             let work_id = required(args, "--work-id")?;
+            let team_run_id = team_run_id_for_work(store, &work_id)?;
+            if let Some(supplied_team_run_id) = value(args, "--team-run-id") {
+                if supplied_team_run_id != team_run_id {
+                    return Err(CliError::Usage(format!(
+                        "--team-run-id {supplied_team_run_id} does not match Work {work_id}'s TeamRun {team_run_id}"
+                    )));
+                }
+            }
             let reason = value(args, "--reason");
             let work = execute_work_action(
                 store,
                 harness_application::WorkAction::Redeliver {
                     expected_version: required_work_version(args)?,
-                    context: host_work_context_for_work(store, &work_id, args)?,
+                    context: host_work_context(store, &team_run_id, args)?,
                     work_id,
                     execution_space_id: space_id,
                     reason: reason.clone(),

@@ -317,8 +317,9 @@ pub(super) fn print_help() {
       generation the member no longer runs (typically after close-member +
       reopen-member). Records which deliveries it supersedes, advances the Work
       revision, and lets the ordinary delivery path bind and wake the member's
-      current generation. Refuses a terminal Work, a Work already started, and
-      a delivery that is still live on an execution binding.
+      current generation. Refusal codes: WORK_TERMINAL_NOT_REDELIVERABLE,
+      WORK_ALREADY_STARTED, WORK_NOT_ASSIGNED, WORK_HAS_NO_UNSTARTED_DELIVERY,
+      WORK_DELIVERY_LIVE.
   team-run work release --work-id <id> --expected-version <n> [--member-run-id <id>]
       --team-run-id is optional; the TeamRun is derived from the Work.
   team-run work list [--brief] [--since <cursor>] --team-run-id <id> [--status <status>] [--member-run-id <id>]

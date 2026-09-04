@@ -274,6 +274,22 @@ fn host_redelivers_open_work_after_member_close_and_reopen() {
     let binding = deliver_to_provider(&fixture, &work, "redeliver");
     assert_eq!(work.phase, firm_core::WorkPhase::Open);
 
+    let wrong_space = store
+        .redeliver_work_to_current_session(
+            &work.id,
+            work.version,
+            "foreign-space",
+            Some("wrong scope must not hide the live binding"),
+            host_context(store, "redeliver-wrong-space", "redeliver-wrong-space"),
+        )
+        .expect_err("caller scope must match the Work's canonical TeamRun scope");
+    assert!(
+        wrong_space
+            .to_string()
+            .contains("EXECUTION_SPACE_SCOPE_MISMATCH"),
+        "{wrong_space}"
+    );
+
     // A live execution binding is not a redelivery case: the delivery can
     // still reach the provider on this exact generation.
     let live = store
@@ -285,7 +301,14 @@ fn host_redelivers_open_work_after_member_close_and_reopen() {
             host_context(store, "redeliver-live", "redeliver-live"),
         )
         .expect_err("a live execution binding is not a stale delivery");
-    assert!(live.to_string().contains("WORK_DELIVERY_LIVE"), "{live}");
+    let live = live.to_string();
+    assert!(live.contains("WORK_DELIVERY_LIVE"), "{live}");
+    assert!(live.contains(&binding.id), "{live}");
+    assert!(
+        live.contains(&format!("generation {}", binding.binding_generation)),
+        "{live}"
+    );
+    assert!(live.contains("GitHub #734"), "{live}");
 
     close_and_reopen_member(&fixture, &binding, "redeliver");
 
@@ -426,6 +449,48 @@ fn host_redelivers_open_work_after_member_close_and_reopen() {
         )
         .expect("the exact retry is idempotent");
     assert_eq!(replay, redelivered);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn delivery_staleness_emits_only_the_reachable_token_set() {
+    let (fixture, root) = reopened_member_fixture("staleness-tokens");
+    let work = assign_responsibility(
+        &fixture.store,
+        "work-staleness-tokens",
+        &fixture.membership.id,
+    );
+    let binding = execution_binding(
+        &work,
+        &fixture.membership,
+        &fixture.session,
+        "binding-staleness-tokens",
+    );
+    let cases = [
+        (None, "work_execution_binding_missing"),
+        (
+            Some(WorkExecutionBindingStatus::Released),
+            "work_execution_binding_released",
+        ),
+        (
+            Some(WorkExecutionBindingStatus::Completed),
+            "work_execution_binding_completed",
+        ),
+        (
+            Some(WorkExecutionBindingStatus::Invalidated),
+            "work_execution_binding_invalidated",
+        ),
+    ];
+    for (status, expected) in cases {
+        let candidate = status.map(|status| WorkExecutionBinding {
+            status,
+            ..binding.clone()
+        });
+        assert_eq!(
+            crate::store_work_redelivery::delivery_staleness(candidate.as_ref()),
+            expected
+        );
+    }
     std::fs::remove_dir_all(root).unwrap();
 }
 
