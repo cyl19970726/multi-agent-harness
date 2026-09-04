@@ -137,6 +137,9 @@ use host_binding::*;
 #[path = "main_modules/team_run_cli.rs"]
 mod team_run_cli;
 use team_run_cli::*;
+#[path = "main_modules/team_run_host_message.rs"]
+mod team_run_host_message;
+use team_run_host_message::*;
 #[path = "main_modules/provider_process_recovery.rs"]
 mod provider_process_recovery;
 use provider_process_recovery::*;
