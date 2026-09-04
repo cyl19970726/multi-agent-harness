@@ -230,6 +230,61 @@ pub fn seed_historical_mission(home: &TempHome, space_id: &str, id: &str, title:
     .expect("append historical mission");
 }
 
+/// Read a store JSONL ledger while a daemon may still be appending to it.
+///
+/// Mirrors the store's own reader contract: a row counts only once its
+/// trailing newline is visible, so a final segment without one is a torn
+/// in-flight append, never a parse error (#775). The whole read is retried a
+/// bounded number of times before failing with the path and the torn
+/// segment's length. Rows are last-writer-wins by `id` (or `delivery_id`),
+/// preserving append order of the final version.
+pub fn store_jsonl_rows(home: &TempHome, project_id: &str, file: &str) -> Vec<serde_json::Value> {
+    let path = home.spaces_dir().join(project_id).join(file);
+    const ATTEMPTS: u32 = 5;
+    const RETRY: std::time::Duration = std::time::Duration::from_millis(50);
+    for attempt in 1..=ATTEMPTS {
+        let text = match std::fs::read_to_string(&path) {
+            Ok(text) => text,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
+            Err(error) => panic!("read {}: {error}", path.display()),
+        };
+        if !text.is_empty() && !text.ends_with('\n') {
+            let torn = text.rsplit('\n').next().unwrap_or("").len();
+            assert!(
+                attempt < ATTEMPTS,
+                "{}: trailing partial line after {ATTEMPTS} reads (torn segment {torn} bytes)",
+                path.display()
+            );
+            std::thread::sleep(RETRY);
+            continue;
+        }
+        let mut ids: Vec<String> = Vec::new();
+        let mut by_id: std::collections::HashMap<String, serde_json::Value> =
+            std::collections::HashMap::new();
+        for line in text.lines() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            let row: serde_json::Value = serde_json::from_str(trimmed)
+                .unwrap_or_else(|e| panic!("{} row not JSON: {e}", path.display()));
+            let id = row["id"]
+                .as_str()
+                .or_else(|| row["delivery_id"].as_str())
+                .expect("row id or delivery_id")
+                .to_string();
+            ids.retain(|known| known != &id);
+            ids.push(id.clone());
+            by_id.insert(id, row);
+        }
+        return ids
+            .into_iter()
+            .map(|id| by_id.remove(&id).unwrap())
+            .collect();
+    }
+    unreachable!("the final attempt either parses or panics")
+}
+
 pub fn latest_works(home: &TempHome, project_id: &str) -> Vec<serde_json::Value> {
     let operations = std::fs::read_to_string(
         home.spaces_dir()

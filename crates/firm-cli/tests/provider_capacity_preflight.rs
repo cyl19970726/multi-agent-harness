@@ -11,7 +11,9 @@ use std::path::Path;
 mod fake_provider;
 mod firm_env;
 
-use firm_env::{create_canonical_agent_member, current_project_id, run_firm, TempHome};
+use firm_env::{
+    create_canonical_agent_member, current_project_id, run_firm, store_jsonl_rows, TempHome,
+};
 use harness_store::HarnessStore;
 
 fn canonical_work_deliveries(home: &TempHome, execution_space_id: &str) -> Vec<serde_json::Value> {
@@ -254,7 +256,7 @@ fn is_honest_unknown_effect_fence(home: &TempHome, project_id: &str, receipt: &s
         .split_once("RuntimeCommand ")
         .and_then(|(_, suffix)| suffix.split_whitespace().next())
         .expect("unknown-effect fence must name its unsettled RuntimeCommand");
-    let commands = store_rows(home, project_id, "runtime_commands.jsonl");
+    let commands = store_jsonl_rows(home, project_id, "runtime_commands.jsonl");
     let command = commands
         .iter()
         .find(|command| command["id"].as_str() == Some(command_id))
@@ -326,33 +328,8 @@ fn stop_node_authority_expecting_release(home: &TempHome, child: &mut std::proce
     );
 }
 
-fn store_rows(home: &TempHome, project_id: &str, file: &str) -> Vec<serde_json::Value> {
-    let path = home.spaces_dir().join(project_id).join(file);
-    let Ok(text) = std::fs::read_to_string(&path) else {
-        return Vec::new();
-    };
-    let mut ids: Vec<String> = Vec::new();
-    let mut by_id: std::collections::HashMap<String, serde_json::Value> =
-        std::collections::HashMap::new();
-    for line in text.lines() {
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        let row: serde_json::Value =
-            serde_json::from_str(trimmed).unwrap_or_else(|e| panic!("{file} row not JSON: {e}"));
-        let id = row["id"].as_str().expect("row id").to_string();
-        ids.retain(|known| known != &id);
-        ids.push(id.clone());
-        by_id.insert(id, row);
-    }
-    ids.into_iter()
-        .map(|id| by_id.remove(&id).unwrap())
-        .collect()
-}
-
 fn worker_member_run(home: &TempHome, project_id: &str) -> Option<serde_json::Value> {
-    store_rows(home, project_id, "member_runs.jsonl")
+    store_jsonl_rows(home, project_id, "member_runs.jsonl")
         .into_iter()
         .find(|member| member["agent_member_id"] == "codex-worker")
 }
@@ -836,7 +813,7 @@ fn fresh_exhausted_capacity_blocks_start_and_leaves_work_queued() {
     wait_for_runtime_projection("exhausted capacity refusal", || {
         worker_member_run(&home, &project_id)
             .is_some_and(|member| member["provider_capacity"]["state"] == "exhausted")
-            && store_rows(&home, &project_id, "member_actions.jsonl")
+            && store_jsonl_rows(&home, &project_id, "member_actions.jsonl")
                 .iter()
                 .any(|action| action["action_type"] == "provider_unavailable")
     });
@@ -890,7 +867,7 @@ fn fresh_exhausted_capacity_blocks_start_and_leaves_work_queued() {
     );
 
     // 2. `provider_unavailable` is recorded, with the observed evidence.
-    let actions = store_rows(&home, &project_id, "member_actions.jsonl");
+    let actions = store_jsonl_rows(&home, &project_id, "member_actions.jsonl");
     let unavailable = actions
         .iter()
         .find(|action| action["action_type"].as_str() == Some("provider_unavailable"))
@@ -1030,7 +1007,7 @@ fn unknown_capacity_still_starts_the_member_and_delivers_work() {
         "unknown must be recorded honestly, not upgraded"
     );
     assert_ne!(member["status"], serde_json::json!("blocked"));
-    let actions = store_rows(&home, &project_id, "member_actions.jsonl");
+    let actions = store_jsonl_rows(&home, &project_id, "member_actions.jsonl");
     assert!(
         !actions
             .iter()
