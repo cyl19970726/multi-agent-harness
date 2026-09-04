@@ -98,7 +98,7 @@ impl HarnessStore {
         if lanes.is_empty() {
             return Ok(Vec::new());
         }
-        let deliveries = self.canonical_fabric_work_deliveries_unlocked(execution_space_id)?;
+        let mut deliveries = self.canonical_fabric_work_deliveries_unlocked(execution_space_id)?;
         let mut invalidated = Vec::new();
         for binding in self
             .fabric_work_execution_bindings(execution_space_id)?
@@ -111,15 +111,13 @@ impl HarnessStore {
                 })
             })
         {
-            let in_flight = deliveries
-                .get(&binding.delivery_id)
-                .is_some_and(|delivery| {
-                    matches!(
-                        delivery.status,
-                        WorkDeliveryStatus::Claimed | WorkDeliveryStatus::ProviderReceived
-                    )
-                });
-            if !in_flight {
+            let Some(delivery) = deliveries.remove(&binding.delivery_id) else {
+                continue;
+            };
+            if !matches!(
+                delivery.status,
+                WorkDeliveryStatus::Claimed | WorkDeliveryStatus::ProviderReceived
+            ) {
                 continue;
             }
             let mut binding_context = context.clone();
@@ -139,6 +137,7 @@ impl HarnessStore {
             let (_, observed) = self.supersede_lost_generation_work_execution_unlocked(
                 &binding_context,
                 &binding,
+                delivery,
                 cause,
                 evidence,
                 ended_at,
@@ -155,6 +154,7 @@ impl HarnessStore {
         &self,
         context: &MutationContext,
         binding: &WorkExecutionBinding,
+        mut delivery: CanonicalWorkDelivery,
         cause: LostRuntimeGenerationCause,
         evidence: &Value,
         ended_at: &str,
@@ -162,18 +162,6 @@ impl HarnessStore {
         CanonicalMutationResult<WorkExecutionBinding>,
         InvalidatedWorkExecution,
     )> {
-        let mut delivery = self
-            .canonical_fabric_work_deliveries_unlocked(&context.execution_space_id)?
-            .remove(&binding.delivery_id)
-            .ok_or_else(|| {
-                trust_error(
-                    TrustErrorCode::InvalidStateTransition,
-                    "lost-generation WorkExecutionBinding invalidation requires its exact canonical WorkDelivery",
-                    "work_execution_binding",
-                    &binding.id,
-                    Some(binding.version),
-                )
-            })?;
         if delivery.work_execution_binding_id != binding.id
             || delivery.work_id != binding.work_id
             || delivery.work_revision != binding.work_revision

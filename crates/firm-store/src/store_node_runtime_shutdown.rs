@@ -163,7 +163,7 @@ impl HarnessStore {
                         "daemon_id": daemon_id,
                         "generation": generation,
                         "instance_id": instance_id,
-                        "provider_process_groups_terminated": true,
+                        "provider_process_groups_terminated": provider_process_groups_terminated,
                     }),
                     &session,
                     Vec::new(),
@@ -186,7 +186,7 @@ impl HarnessStore {
                     "daemon_id": daemon_id,
                     "node_daemon_generation": generation,
                     "instance_id": instance_id,
-                    "provider_process_groups_terminated": true,
+                    "provider_process_groups_terminated": provider_process_groups_terminated,
                 }),
                 updated_at,
             )?;
