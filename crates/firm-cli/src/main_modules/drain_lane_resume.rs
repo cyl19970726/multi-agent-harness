@@ -335,7 +335,9 @@ pub(super) enum BlockedMemberProvenance {
     /// status a flip would erase.
     ProviderCapacity,
     /// The wake loop stopped a zero-output spiral. Its evidence is the member's
-    /// own `zero_output_streak` and the Host is the intended intervention.
+    /// own `zero_output_streak`, and only once that streak has actually reached
+    /// the degradation threshold: below it the streak is ordinary bounded
+    /// probation, not a verdict.
     ZeroOutputDegradation,
     /// No typed provenance: the class a runtime fence leaves behind, including
     /// the NodeDaemon drain refusal this module exists for.
@@ -379,10 +381,30 @@ pub(super) fn blocked_member_provenance(
     {
         return BlockedMemberProvenance::ProviderCapacity;
     }
-    if member.zero_output_streak > 0 {
+    // The threshold, never a bare non-zero streak. `decide_wake` degrades only
+    // at `>= zero_output_degradation_threshold` and deliberately keeps waking a
+    // member below it (its probation predicate exists so the threshold can be
+    // reached at all), so a streak of 1 or 2 is a normal working state. Reading
+    // it as a degradation verdict would recreate this module's own bug for
+    // exactly the members it exists to repair: a drain-fenced member with a
+    // streak of 1 would be refused by recover, told a degradation owns its
+    // block, refused by the start claim for being Blocked — and its streak
+    // could never reset, because only a productive round resets it and the
+    // member can never run. The value is read from the same policy the wake
+    // loop uses so the two cannot drift.
+    if member.zero_output_streak >= zero_output_degradation_threshold() {
         return BlockedMemberProvenance::ZeroOutputDegradation;
     }
     BlockedMemberProvenance::Untyped
+}
+
+/// The streak at which the wake loop actually degrades a member.
+///
+/// One source: `WakePolicy::default()` is what `run_team_member_with_adapter`
+/// constructs for every managed member, so this cannot disagree with the gate
+/// it defers to.
+fn zero_output_degradation_threshold() -> u32 {
+    crate::supervisor_wake::WakePolicy::default().zero_output_degradation_threshold
 }
 
 /// Return one `Blocked` member to a startable status, on the proof that its own

@@ -13,6 +13,7 @@ pub(super) enum MemberRecoveryPath {
     RestartBlockedDetachedLane,
     /// The member is Blocked by a gate that owns its own recovery. Reported
     /// with the reason, never restarted here.
+    ///
     BlockedByTypedProvenance { provenance: BlockedMemberProvenance },
     /// Native session exists and supports resume — reopen the member.
     ResumeCompatible,
@@ -20,6 +21,27 @@ pub(super) enum MemberRecoveryPath {
     RebindIncompatible { reason: String },
     /// Member is in a terminal state (retired/completed/failed).
     Terminal { reason: String },
+}
+
+impl MemberRecoveryPath {
+    /// The stable snake label an operator reads on the orientation line.
+    ///
+    /// `serde_snake_label` answers "unknown" for any variant carrying data,
+    /// because those serialize to an object rather than a string — so the two
+    /// pre-existing data-carrying variants already rendered as
+    /// `recovery=unknown`, and the provenance variant would have joined them.
+    /// The reason each one carries is reported separately; this is only the
+    /// name of the decision.
+    pub(super) fn label(&self) -> &'static str {
+        match self {
+            Self::AlreadyActive => "already_active",
+            Self::RestartBlockedDetachedLane => "restart_blocked_detached_lane",
+            Self::BlockedByTypedProvenance { .. } => "blocked_by_typed_provenance",
+            Self::ResumeCompatible => "resume_compatible",
+            Self::RebindIncompatible { .. } => "rebind_incompatible",
+            Self::Terminal { .. } => "terminal",
+        }
+    }
 }
 
 /// Pure function: classify a member's recovery path. Does not perform I/O or
@@ -302,7 +324,7 @@ pub(super) fn team_run_recover(
                 member.provider,
                 serde_snake_label(&member.status),
                 serde_snake_label(&member.coordination_status),
-                serde_snake_label(&path),
+                path.label(),
                 member_works.len()
             );
         }
@@ -376,6 +398,7 @@ pub(super) fn team_run_recover(
     let rebound = 0u64;
     let mut skipped = 0u64;
     let mut restarted = 0u64;
+    let mut blocked_by_typed_provenance = 0u64;
     let mut blocked_by_provenance: Vec<serde_json::Value> = Vec::new();
     let ledger = TeamRunLedger::without_supervisor(store, team_run_id);
     for (member, path) in &recovery_plan {
@@ -386,7 +409,7 @@ pub(super) fn team_run_recover(
             // Reported, never repaired: the gate that wrote this block owns
             // clearing it, and its evidence must survive this run intact.
             MemberRecoveryPath::BlockedByTypedProvenance { provenance } => {
-                skipped += 1;
+                blocked_by_typed_provenance += 1;
                 blocked_by_provenance.push(serde_json::json!({
                     "member_run_id": member.id,
                     "name": member.name,
@@ -536,13 +559,14 @@ pub(super) fn team_run_recover(
         "reopened": reopened,
         "rebound_works": rebound,
         "restarted_blocked_members": restarted,
+        "blocked_by_typed_provenance": blocked_by_typed_provenance,
         "blocked_members_not_restarted": blocked_by_provenance,
         "skipped": skipped,
     });
     if !json {
         println!(
-            "recovery complete: reopened={} rebound_works={} restarted_blocked_members={} reconciled_deliveries={} skipped={}",
-            reopened, rebound, restarted, reconciled, skipped
+            "recovery complete: reopened={} rebound_works={} restarted_blocked_members={} blocked_by_typed_provenance={} reconciled_deliveries={} skipped={}",
+            reopened, rebound, restarted, blocked_by_typed_provenance, reconciled, skipped
         );
     }
     Ok(report)

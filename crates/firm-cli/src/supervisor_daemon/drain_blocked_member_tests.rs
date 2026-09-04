@@ -521,6 +521,16 @@ fn recover_reports_a_typed_block_and_still_repairs_the_drain_blocked_member() {
         .expect("a typed block is reported, never an aborted recovery run");
 
     assert_eq!(report["restarted_blocked_members"], serde_json::json!(1));
+    assert_eq!(
+        report["blocked_by_typed_provenance"],
+        serde_json::json!(1),
+        "a reported block gets its own counter, not a second meaning for `skipped`"
+    );
+    assert_eq!(
+        report["skipped"],
+        serde_json::json!(1),
+        "`skipped` counts only the Host member recovery had no work for — the reported block is no longer double-counted there"
+    );
     let reported = report["blocked_members_not_restarted"]
         .as_array()
         .expect("the report names every block it did not clear");

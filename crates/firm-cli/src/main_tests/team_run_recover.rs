@@ -304,9 +304,36 @@ fn block_provenance_names_the_gate_that_owns_each_block() {
         BlockedMemberProvenance::Untyped,
         "only a known-unavailable capacity snapshot is a capacity-authored block"
     );
+    // The wake loop degrades at the threshold, and deliberately keeps waking a
+    // member below it, so a streak under it is ordinary bounded probation. If
+    // that read as a degradation verdict, a drain-fenced member with a streak
+    // of 1 would be refused by recover, refused by the start claim for being
+    // Blocked, and could never reset its streak — #779's wedge, recreated for
+    // exactly the members recover exists to repair.
+    let threshold = supervisor_wake::WakePolicy::default().zero_output_degradation_threshold;
+    assert!(
+        threshold > 1,
+        "a threshold of 1 would make the probation window untestable"
+    );
+    for streak in 1..threshold {
+        assert_eq!(
+            blocked_member_provenance(&blocked_member_with(|member| {
+                member.zero_output_streak = streak;
+            })),
+            BlockedMemberProvenance::Untyped,
+            "a streak of {streak} is bounded probation, below the degradation threshold {threshold}"
+        );
+    }
     assert_eq!(
         blocked_member_provenance(&blocked_member_with(|member| {
-            member.zero_output_streak = 3;
+            member.zero_output_streak = threshold;
+        })),
+        BlockedMemberProvenance::ZeroOutputDegradation,
+        "the degradation verdict starts exactly at the wake loop's own threshold"
+    );
+    assert_eq!(
+        blocked_member_provenance(&blocked_member_with(|member| {
+            member.zero_output_streak = threshold + 1;
         })),
         BlockedMemberProvenance::ZeroOutputDegradation
     );
@@ -316,7 +343,7 @@ fn block_provenance_names_the_gate_that_owns_each_block() {
             member.provider_capacity = Some(capacity_snapshot(
                 harness_core::ProviderCapacityState::Exhausted,
             ));
-            member.zero_output_streak = 3;
+            member.zero_output_streak = threshold;
         })),
         BlockedMemberProvenance::ProviderCompatibility,
         "the typed cause validation binds to Blocked decides when several apply"
@@ -347,7 +374,8 @@ fn a_block_with_typed_provenance_is_reported_and_never_restarted() {
         (
             "zero-output degradation",
             blocked_member_with(|member| {
-                member.zero_output_streak = 4;
+                member.zero_output_streak =
+                    supervisor_wake::WakePolicy::default().zero_output_degradation_threshold;
             }),
         ),
     ] {

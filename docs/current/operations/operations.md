@@ -475,8 +475,9 @@ prove no runtime can be driving it — detached residency, idle activity,
 disarmed continuation, no open turn, no queued native input and no ambiguous
 `RuntimeCommand` — and the block must carry no typed provenance: no
 `provider_compatibility_block_cause`, no known-unavailable
-`provider_capacity` snapshot, and no zero-output degradation streak. It then
-changes
+`provider_capacity` snapshot, and no zero-output streak that has actually
+reached the wake loop's degradation threshold (a shorter streak is ordinary
+probation, not a verdict, and never withholds this repair). It then changes
 `MemberRun.status` to `idle` and nothing else: coordination status, runtime
 generation, native-session binding and the AgentSession itself are untouched, so
 the next Supervisor pass resumes the same provider-native session and never
@@ -491,14 +492,15 @@ When the lane is *not* provably dead, `team-run status` says so instead and
 or close the member.
 
 A block that carries typed provenance is a live diagnosis owned by the gate that
-wrote it, and `recover` never clears it. It reports each one instead — in
-`blocked_members_not_restarted`, and on stdout as `blocked, not restarted — <reason>`:
+wrote it, and `recover` never clears it. It reports each one instead — counted
+as `blocked_by_typed_provenance`, listed in `blocked_members_not_restarted`, and
+printed as `blocked, not restarted — <reason>`:
 
 | provenance | who clears it |
 | --- | --- |
 | `provider_compatibility` | the provider review gate (`harness member providers --fail-on-review`), which clears the typed cause with the status |
 | `provider_capacity` | a successful capacity probe, through the preflight's own recovery |
-| `zero_output_degradation` | the Host, by messaging or steering the member |
+| `zero_output_degradation` | the Host, by messaging or steering the member (only once the streak reaches the degradation threshold) |
 
 Clearing one of those by hand would strand its evidence — and for a
 compatibility block the typed cause is bound to `blocked` by validation, so a
