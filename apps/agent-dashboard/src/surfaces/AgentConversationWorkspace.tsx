@@ -1,12 +1,11 @@
 import * as ScrollArea from "@radix-ui/react-scroll-area";
-import * as Tabs from "@radix-ui/react-tabs";
 import * as Tooltip from "@radix-ui/react-tooltip";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import {
   Activity, AlertTriangle, ArrowLeft, ChevronDown, ChevronRight,
   History, Inbox, Info, KeyRound, MessageSquare,
-  PanelRight, Search, ShieldCheck, SlidersHorizontal, Sparkles,
+  Search, ShieldCheck, SlidersHorizontal, Sparkles,
   UserRound, Users, Wrench, X,
 } from "lucide-react";
 
@@ -22,6 +21,7 @@ import {
   WorkspaceState,
 } from "@/components/workbench/agent/AgentWorkspacePrimitives";
 import { AgentMessageCommandComposer } from "@/components/workbench/agent/AgentMessageCommandComposer";
+import { DockShell, useAgentDockController } from "@/components/workbench/agent/dock";
 import { OperationalFactRow } from "@/components/workbench/agent/AgentStreamPrimitives";
 import { ToolEpisodeDetails, ToolEpisodeRow } from "@/components/workbench/agent/ProviderEventTimeline";
 import type { SelectionState } from "../app/selection";
@@ -43,13 +43,13 @@ import { RoleActionPanel } from "./RoleActionPanel";
 import { ViewProvenance, ViewState } from "./RoleViewPrimitives";
 import "./agent-workspace.css";
 
-type WorkspaceMode = "session" | "messages" | "work";
 type ContextSelection =
   | {kind:"event"; record:ProviderNativeEventRecord; fragment:ProviderEventFragment}
   | {kind:"tool"; episode:ToolEpisode}
   | {kind:"message"; message:MessageSummary}
   | {kind:"work"; work:WorkSummary}
   | null;
+type WorkspaceMode = "session" | "messages" | "work";
 
 export function AgentConversationWorkspace({
   apiUrl,space,project,company,routeIdentity,selection,refreshKey,onAction,onSelectionChange,
@@ -67,7 +67,7 @@ export function AgentConversationWorkspace({
   const [contextSelection,setContextSelection]=useState<ContextSelection>(null);
   const [profileOpen,setProfileOpen]=useState(false);
   const [rosterOpen,setRosterOpen]=useState(false);
-  const [contextOpen,setContextOpen]=useState(false);
+  const dockTriggerRef=useRef<HTMLButtonElement>(null);
   const profileTriggerRef=useRef<HTMLButtonElement>(null);
   const profileCloseRef=useRef<HTMLButtonElement>(null);
   const workspaceRef=useRef<HTMLElement>(null);
@@ -76,8 +76,11 @@ export function AgentConversationWorkspace({
   // only applies while no view exists for the current request path; background
   // refetches revalidate silently against the committed view.
   const committedPathRef=useRef<string|null>(null);
-  const mode:WorkspaceMode=selection.agentWorkspaceMode ?? "session";
   const agentId=selection.teamConversation && selection.teamConversation !== "host" ? selection.teamConversation : undefined;
+  const dock=useAgentDockController({preferenceKey:`agent-workspace-dock:${routeIdentity}:${agentId??"host"}`});
+  const compactDock=useCompactAgentDock();
+  const requestedDockModule=selection.agentWorkspaceMode === "messages" || selection.agentWorkspaceMode === "work" ? selection.agentWorkspaceMode : null;
+  const dockState=requestedDockModule?{...dock.state,open:true,module:requestedDockModule}:dock.state;
   const requestQuery=new URLSearchParams();
   if(agentId)requestQuery.set("agent_id",agentId);
   const requestPath=`/v1/views/agent-workspace/${encodeURIComponent(routeIdentity)}${requestQuery.size?`?${requestQuery.toString()}`:""}`;
@@ -112,13 +115,7 @@ export function AgentConversationWorkspace({
     const timer=window.setTimeout(()=>setRefresh(value=>value+1),500);
     return()=>window.clearTimeout(timer);
   },[refreshKey]);
-  useEffect(()=>{
-    const frame=window.requestAnimationFrame(()=>{
-      const root=workspaceRef.current;
-      root?.querySelector<HTMLElement>('[role="tabpanel"][data-state="active"] [data-radix-scroll-area-viewport]')?.scrollTo({top:0,left:0,behavior:"auto"});
-    });
-    return()=>window.cancelAnimationFrame(frame);
-  },[mode,selection.teamConversation]);
+  useEffect(()=>{if(requestedDockModule)dock.open(requestedDockModule);},[requestedDockModule,dock.open]);
 
   const currentView=viewRequestPath===requestIdentity?view:null;
   const privateData=currentView?.data??null;
@@ -157,7 +154,6 @@ export function AgentConversationWorkspace({
       persistedSessionStream.mergeOlder(older.data.persisted_session_projection);
     }catch(reason){if(expectedIdentityRef.current===requestedIdentity)setError(String(reason));}finally{setLoadingOlder(false);}
   };
-  const currentWork=data.works.find(work=>work.work_id===(contextSelection?.kind==="work"?contextSelection.work.work_id:data.context_summary.current_work_id));
   const selectAgent=(agent:AgentWorkspaceRosterItem)=>{
     onSelectionChange({
       teamConversation:agent.is_host ? "host" : agent.agent_member_ref.id,
@@ -169,11 +165,11 @@ export function AgentConversationWorkspace({
     setRosterOpen(false);
   };
   const closeWorkspace=()=>onSelectionChange({teamConversation:undefined,memberRunId:undefined,agentWorkspaceMode:undefined,agentSessionId:undefined,teamWorkId:undefined});
-  const context=<AgentContextRail view={currentView} data={data} mode={mode} selected={contextSelection} currentWork={currentWork} actions={currentView.allowed_actions} onOpenWork={(work)=>{if(work){setContextSelection({kind:"work",work});onSelectionChange({agentWorkspaceMode:"work",teamWorkId:work.work_id});}else{setContextSelection(null);onSelectionChange({agentWorkspaceMode:"work"});}}}/>;
+  const openDock=(module:"work"|"messages")=>dock.open(module);
 
   return <Tooltip.Provider delayDuration={350}>
     <main ref={workspaceRef} className="agent-team-surface agent-workspace h-full min-h-0 flex-1 overflow-hidden" data-testid="agent-workspace">
-      <div className="agent-workspace-layout grid h-full min-h-0 grid-cols-1 lg:grid-cols-[15.25rem_minmax(0,1fr)_23rem]" data-host={selected.is_host||undefined}>
+      <div className="agent-workspace-layout grid h-full min-h-0 grid-cols-1" data-host={selected.is_host||undefined} data-dock-open={dockState.open||undefined} style={{"--agent-dock-width":`${dockState.width}px`} as React.CSSProperties}>
         <aside className="agent-workspace-roster hidden min-h-0 border-r border-border lg:flex lg:flex-col" aria-label="Agent roster">
           <AgentRoster data={data} selectedId={selected.agent_member_ref.id} onBack={closeWorkspace} onSelect={selectAgent}/>
         </aside>
@@ -189,42 +185,32 @@ export function AgentConversationWorkspace({
               </span>
             </button>
             <div className="hidden items-center gap-1 md:flex">{currentSession?.native_session_open_target&&<Button asChild size="sm" variant="outline"><a href={currentSession.native_session_open_target.uri} title={`Open exact ${humanizeToken(currentSession.provider)} native Session`}>Open native chat</a></Button>}<Button size="icon" variant="ghost" className="text-muted-foreground" aria-label="Agent Session details" title="Agent Session details" onClick={()=>setProfileOpen(true)}><Info className="size-4"/></Button><Button size="icon" variant="ghost" className="text-muted-foreground" aria-label="Agent Session history" title="Provider-native history"><History className="size-4"/></Button></div>
+            <Button ref={dockTriggerRef} size="sm" variant={dockState.open&&dockState.module==="work"?"secondary":"ghost"} onClick={()=>openDock("work")} aria-label="Open Work dock">Work <span className="ml-1 text-[10px] text-muted-foreground">{data.works.length}</span></Button>
+            <Button size="sm" variant={dockState.open&&dockState.module==="messages"?"secondary":"ghost"} onClick={()=>openDock("messages")} aria-label="Open Messages dock"><MessageSquare className="mr-1 size-4"/>Messages <span className="ml-1 text-[10px] text-muted-foreground">{data.messages.length}</span></Button>
             <Button size="icon" variant="secondary" className="lg:hidden" onClick={()=>setRosterOpen(true)} aria-label="Open Agent roster"><Users className="size-4"/></Button>
-            <Button size="icon" variant="secondary" className="lg:hidden" onClick={()=>setContextOpen(true)} aria-label="Open Agent context"><PanelRight className="size-4"/></Button>
           </header>
 
           {error&&<div role="alert" className="flex items-center gap-3 border-b border-status-warn/25 bg-status-warn/5 px-6 py-2 text-[11px]"><span className="min-w-0 flex-1">Refresh failed; writes are disabled until the authoritative view returns. {error}</span><Button size="sm" variant="secondary" onClick={()=>setRefresh(value=>value+1)}>Retry authenticated view</Button></div>}
-          <Tabs.Root value={mode} onValueChange={value=>{setContextSelection(null);onSelectionChange({agentWorkspaceMode:value as WorkspaceMode});}} className="flex min-h-0 flex-1 flex-col">
-            <div data-testid="agent-workspace-modebar" className="aw-modebar flex min-h-12 shrink-0 items-end border-b border-border px-4 sm:px-7">
-              <Tabs.List aria-label="Agent Workspace modes" className="agent-workspace-tabs flex h-full items-end gap-7">
-                <WorkspaceTab value="session" label="Session" count={sessionProjection?.available?sessionProjection.records.reduce((count,record)=>count+record.fragments.length,0):0}/>
-                <WorkspaceTab value="messages" label="Messages" count={data.context_summary.unread_count}/>
-                <WorkspaceTab value="work" label="Work" count={data.works.length}/>
-              </Tabs.List>
+          <div className="flex min-h-0 flex-1 flex-col">
+            <div data-testid="agent-workspace-sessionbar" className="aw-modebar flex min-h-12 shrink-0 items-end border-b border-border px-4 sm:px-7">
+              <div className="flex h-11 items-center gap-2 text-[12px] font-semibold"><Activity className="size-4 text-primary"/>Session <span className="text-[9px] font-medium text-muted-foreground">{sessionProjection?.available?sessionProjection.records.reduce((count,record)=>count+record.fragments.length,0):0}</span></div>
               <RuntimeTruthStrip truth={data.runtime_truth}/>
               <div className="hidden h-full items-center gap-3 text-[10px] text-muted-foreground xl:flex"><span className="flex items-center gap-1.5"><ShieldCheck className="size-3.5"/>{sessionProjection?.available?"Persisted provider-native Session":"Native Session unavailable"}</span></div>
             </div>
-            <Tabs.Content value="session" className="min-h-0 flex-1 outline-none"><SessionCanvas data={data} projection={sessionProjection} connectionState={persistedSessionStream.connectionState} selectedMessageId={contextSelection?.kind==="message"?contextSelection.message.message_id:null} onSelect={setContextSelection} loadingOlder={loadingOlder} onLoadOlder={loadOlderSessionEvents}/></Tabs.Content>
-            <Tabs.Content value="messages" className="min-h-0 flex-1 outline-none"><MessagesCanvas data={data} onSelect={setContextSelection}/></Tabs.Content>
-            <Tabs.Content value="work" className="min-h-0 flex-1 outline-none"><WorkCanvas data={data} onSelect={(work)=>{setContextSelection({kind:"work",work});onSelectionChange({teamWorkId:work.work_id});}}/></Tabs.Content>
-          </Tabs.Root>
+            <div className="min-h-0 flex-1 outline-none"><SessionCanvas data={data} projection={sessionProjection} connectionState={persistedSessionStream.connectionState} selectedMessageId={contextSelection?.kind==="message"?contextSelection.message.message_id:null} onSelect={setContextSelection} onOpenMessage={(message)=>{setContextSelection({kind:"message",message});openDock("messages");}} loadingOlder={loadingOlder} onLoadOlder={loadOlderSessionEvents}/></div>
+          </div>
 
           {selected.is_host&&currentSession?.native_session_open_target&&<div className="shrink-0 border-t border-border bg-primary/[0.035] px-4 py-2 text-[11px] text-muted-foreground sm:px-7"><span>Direct conversation stays in the provider-native transcript. </span><a className="font-semibold text-primary hover:underline" href={currentSession.native_session_open_target.uri}>Continue this exact Host Session in Codex Desktop</a><span>. Message authoring in Agent Workspace is intentionally deferred.</span></div>}
           <AgentComposer data={data} actions={currentView.allowed_actions} actionsCurrent={!error&&actionsCurrent&&currentView.freshness==="current"} selectedRunId={selectedRunId} onAction={onAction} onCompleted={()=>setRefresh(value=>value+1)}/>
         </section>
 
-        <aside className="agent-workspace-context hidden min-h-0 min-w-0 overflow-hidden border-l border-border lg:block" aria-label="Agent context">{context}</aside>
+        <DockShell state={dockState} onStateChange={(next)=>{dock.setState(next);if(requestedDockModule&&!next.open)onSelectionChange({agentWorkspaceMode:undefined});}} displayMode={compactDock?"overlay":"inline"} works={data.works} messages={data.messages} roster={data.roster} selectedAgentId={selected.agent_member_ref.id} currentWorkId={data.context_summary.current_work_id} allowedActions={currentView.allowed_actions} initialWorkId={selection.teamWorkId} initialMessageId={contextSelection?.kind==="message"?contextSelection.message.message_id:undefined} openerRef={dockTriggerRef} renderAuthorizedActions={(actions)=><RoleActionPanel actions={actions} context={{teamId:data.team.team_id,teamRunId:data.team.latest_run_id??undefined}} actionsCurrent={actionsCurrent} onAction={onAction} onCompleted={()=>setRefresh(value=>value+1)} compact/>} onSelectWork={(work)=>{setContextSelection({kind:"work",work});onSelectionChange({teamWorkId:work.work_id});}} onSelectMessage={(message)=>setContextSelection({kind:"message",message})}/>
       </div>
 
       {rosterOpen&&<MobileSheet title="Agent roster" onClose={()=>setRosterOpen(false)}><AgentRoster data={data} selectedId={selected.agent_member_ref.id} onBack={closeWorkspace} onSelect={selectAgent}/></MobileSheet>}
-      {contextOpen&&<MobileSheet title="Agent context" onClose={()=>setContextOpen(false)}>{context}</MobileSheet>}
       {profileOpen&&<ProfileDialog data={data} closeRef={profileCloseRef} openerRef={profileTriggerRef} onClose={()=>setProfileOpen(false)}/>}
     </main>
   </Tooltip.Provider>;
-}
-
-function WorkspaceTab({value,label,count}:{value:WorkspaceMode;label:string;count:number}){
-  return <Tabs.Trigger value={value} className="relative flex h-11 items-center gap-2 text-[12px] font-semibold text-muted-foreground outline-none data-[state=active]:text-foreground">{label}{count>0&&<span className="text-[9px] font-medium text-[color:var(--aw-faint)]">{count}</span>}<span className="absolute inset-x-0 bottom-0 h-0.5 origin-center scale-x-0 bg-primary transition-transform data-[state=active]:scale-x-100"/></Tabs.Trigger>;
 }
 
 function RuntimeTruthStrip({truth}:{truth:AgentWorkspaceData["runtime_truth"]}){
@@ -263,7 +249,7 @@ function AgentRoster({data,selectedId,onBack,onSelect}:{data:AgentWorkspaceData;
 }
 
 type PersistedSessionConnectionState="inactive"|"connecting"|"connected"|"disconnected";
-function SessionCanvas({data,projection,connectionState,selectedMessageId,onSelect,loadingOlder,onLoadOlder}:{data:AgentWorkspaceData;projection:PersistedSessionProjection|null;connectionState:PersistedSessionConnectionState;selectedMessageId:string|null;onSelect:(next:ContextSelection)=>void;loadingOlder:boolean;onLoadOlder:()=>void}){
+function SessionCanvas({data,projection,connectionState,selectedMessageId,onSelect,onOpenMessage,loadingOlder,onLoadOlder}:{data:AgentWorkspaceData;projection:PersistedSessionProjection|null;connectionState:PersistedSessionConnectionState;selectedMessageId:string|null;onSelect:(next:ContextSelection)=>void;onOpenMessage:(message:MessageSummary)=>void;loadingOlder:boolean;onLoadOlder:()=>void}){
   const [selectedTimelineId,setSelectedTimelineId]=useState<string|null>(null);
   const viewportRef=useRef<HTMLDivElement>(null);
   const chronologyRef=useRef<HTMLDivElement>(null);
@@ -302,7 +288,7 @@ function SessionCanvas({data,projection,connectionState,selectedMessageId,onSele
     {rows.length
       ? <div ref={chronologyRef} className="aw-session-chronology relative" style={{height:virtualizer.getTotalSize()}} aria-label="Harness Messages and persisted provider-native records in their honest partial order">{virtualizer.getVirtualItems().map(item=>{const row=rows[item.index]!;const providerId=row.kind==="provider"?providerTimelineId(row.item):null;const rowKey=row.kind==="message"?`message:${row.message.message_id}`:row.kind==="control_boundary"?`control-boundary:${row.at}`:providerId!;return <div key={rowKey} data-index={item.index} data-session-row-kind={row.kind} ref={virtualizer.measureElement} className="absolute left-0 top-0 w-full" style={{transform:`translateY(${item.start-virtualizer.options.scrollMargin}px)`}}>{(()=>{
         if(row.kind==="message"){
-          return <AuthoredTurn data={data} message={row.message} selectedAgentId={data.selected_agent.agent_member_ref.id} selected={selectedMessageId===row.message.message_id} continuation={row.continuation} onSelect={()=>onSelect({kind:"message",message:row.message})}/>;
+          return <AuthoredTurn data={data} message={row.message} selectedAgentId={data.selected_agent.agent_member_ref.id} selected={selectedMessageId===row.message.message_id} continuation={row.continuation} onSelect={()=>onOpenMessage(row.message)}/>;
         }
         if(row.kind==="control_boundary")return <RuntimeControlBoundary truth={data.runtime_truth}/>;
         return <ProviderTimelineRecord item={row.item} actorName={data.selected_agent.display_name} selected={selectedTimelineId===providerId} onToggle={()=>{const next=selectedTimelineId===providerId?null:providerId;setSelectedTimelineId(next);onSelect(next?(row.item.kind==="tool_episode"?{kind:"tool",episode:row.item}:{kind:"event",record:row.item.record,fragment:row.item.fragment}):null);}}/>;
@@ -618,6 +604,11 @@ function rosterStateLabel(agent:AgentWorkspaceRosterItem){const state=agent.runt
 function selectedRosterStateLabel(data:AgentWorkspaceData){const control=data.runtime_truth.harness_control.state;const native=data.runtime_truth.provider_native_activity.state;return{word:`Harness ${humanizeToken(control)} · native ${humanizeToken(native)}`,tone:control==="running"||control==="ready"?"text-status-good":control==="blocked"||control==="recovery_required"?"text-status-warn":"text-muted-foreground"};}
 function selectedAvatarTone(data:AgentWorkspaceData){const control=data.runtime_truth.harness_control.state;return control==="running"?"running":control==="ready"?"good":"idle";}
 function timestampKey(value:string|null|undefined){if(!value)return 0;if(value.startsWith("unix-ms:")){const parsed=Number(value.slice(8));return Number.isFinite(parsed)?parsed:0;}const parsed=Date.parse(value);return Number.isFinite(parsed)?parsed:0}
+function useCompactAgentDock(){
+  const [compact,setCompact]=useState(()=>typeof window!=="undefined"&&window.matchMedia("(max-width: 1199px)").matches);
+  useEffect(()=>{const query=window.matchMedia("(max-width: 1199px)");const update=()=>setCompact(query.matches);update();query.addEventListener("change",update);return()=>query.removeEventListener("change",update);},[]);
+  return compact;
+}
 function recordTime(record:ProviderNativeEventRecord){const value=record.occurred_at;if(!value)return null;if(value.startsWith("unix-ms:")){const parsed=Number(value.slice(8));return Number.isFinite(parsed)?value:null;}if(!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(value))return null;return Number.isFinite(Date.parse(value))?value:null}
 function compareOrderingKey(left:ProviderNativeEventRecord["ordering_key"],right:ProviderNativeEventRecord["ordering_key"]){return left.kind===right.kind?left.value-right.value:left.kind.localeCompare(right.kind)}
 function fragmentPresentationKind(fragment:ProviderEventFragment){if(fragment.semantic_kind==="reasoning")return "thinking";if(fragment.semantic_kind.startsWith("tool_call_"))return "tool";if(fragment.semantic_kind==="assistant_response")return "message";if(fragment.semantic_kind==="artifact_created")return "artifact";return "runtime"}

@@ -212,9 +212,8 @@ try{
     const eventRow=page.locator('[data-tool-call-id="call-1"] .aw-stream-fact__trigger');
     await eventRow.click();assert.equal(await eventRow.getAttribute("aria-expanded"),"true","clicking an individual event row expands it in place");
     await page.getByText(/Canonical operating rules loaded\./).first().waitFor();
-    await page.getByText("Tool call in focus",{exact:true}).waitFor();
     assert.equal(await page.getByText("Read",{exact:true}).count()>0,true,"collapsed tool name is unavailable");
-    assert.equal(await page.getByText("AGENTS.md",{exact:true}).count()>0,true,"collapsed primary target is unavailable");
+    assert.equal(await page.getByText(/AGENTS\.md/).count()>0,true,"collapsed primary target is unavailable");
     assert.equal(await page.getByText("Arguments",{exact:true}).count()>0,true,"structured arguments are unavailable");
     assert.equal(await page.getByText("Original provider-native records (2)",{exact:true}).count()>0,true,"raw evidence trail is unavailable");
     assert.equal(await page.locator('[data-tool-call-id="call-1"]').count(),1,"exact call id did not collapse request and completion into one episode");
@@ -227,57 +226,42 @@ try{
     await page.getByLabel("Harness Messages and persisted provider-native records in their honest partial order").getByText("Provider omitted pairing discriminator",{exact:true}).waitFor();
     assert.equal(await page.locator('[data-tool-call-id="orphan-call"] .aw-stream-fact__trigger').getByText("Unknown tool",{exact:true}).count(),1,"unpaired tool evidence is not labeled honestly");
     const authoredMessage=page.getByRole("button",{name:/Open authored Message from Marcus Allen/}).first();
-    await authoredMessage.focus();await page.keyboard.press("Enter");await page.getByText("Message in focus",{exact:true}).waitFor();
-    await page.getByText("Harness Message delivery",{exact:true}).waitFor();
-    await page.getByText("Provider receipt",{exact:true}).waitFor();
-    await page.getByText("Work context only",{exact:true}).waitFor();
-    await page.getByText(/does not mutate Work or prove a Member Result or Host acceptance/).waitFor();
+    await authoredMessage.click();const sessionDock=page.locator(".agent-dock-shell");await sessionDock.waitFor({state:"attached"});assert.ok((await sessionDock.boundingBox())?.width,"Session Message opened a zero-width dock");
+    await page.getByText("Delivery",{exact:true}).waitFor();
+    await page.getByText("Work context",{exact:true}).waitFor();
+    await page.getByText(/does not mutate Work, prove a Result, or grant acceptance/).waitFor();
     const toolRow=page.locator('[data-tool-call-id="call-1"] .aw-stream-fact__trigger');await toolRow.focus();await page.keyboard.press("Space");assert.equal(await toolRow.getAttribute("aria-expanded"),"true","tool episode keyboard selection");
     assert.equal(await toolRow.locator('xpath=ancestor::article').getAttribute("data-selected"),"true","selected event does not retain a stable center-row state");
-    assert.equal(await page.getByText("Tool call in focus",{exact:true}).count(),1,"selected tool detail is not delegated to the context rail");
     await executeFixtureAction(page);
     await page.getByText("Completed assign_work. Refetching canonical RoleView.",{exact:true}).waitFor();
     await page.waitForLoadState("networkidle");
-    assert.equal(await page.getByText("Tool call in focus",{exact:true}).count(),1,"background revalidate dropped the selected tool episode");
     assert.equal(await toolRow.locator('xpath=ancestor::article').getAttribute("data-selected"),"true","background revalidate dropped the selected stream row state");
     await page.screenshot({path:join(evidenceDir,`member-event-detail--1440x1000--${capturedSourceSha}.png`),animations:"disabled"});
   }
-  await page.getByRole("tab",{name:/Messages/}).click();await page.getByRole("button",{name:"inbox",exact:true}).waitFor();
-  if(!liveConfig){assert.ok(await page.locator('[data-message-fact="work-context"]').count()>0,"Messages view does not label Work as context-only");assert.ok(await page.locator('[data-message-fact="delivery"]').count()>0,"Messages view omits Harness delivery state");assert.ok(await page.locator('[data-message-fact="provider-receipt"]').count()>0,"Messages view omits provider-receipt state");assert.equal(await page.getByRole("region",{name:"Conversation about Work context · work-outside-view"}).count(),1,"linked Message without a projected Work record was mislabeled as unlinked coordination");assert.equal(await page.getByRole("heading",{name:"General coordination",exact:true}).count(),1,"truly unlinked Message did not remain under General coordination");}
+  await page.getByRole("button",{name:"Open Messages dock",exact:true}).click();
+  const workspaceDock=page.locator(".agent-dock-shell");await workspaceDock.waitFor();
+  await workspaceDock.getByRole("button",{name:"all",exact:true}).click();
+  if(!liveConfig){assert.ok(await workspaceDock.getByText(/Work context/).count()>0,"Messages dock does not label Work as context-only");assert.ok(await workspaceDock.getByText("Delivery",{exact:true}).count()>0,"Messages dock omits Harness delivery state");}
   await waitForStableWriteSurface(page);
   const visibleTogether=await page.evaluate(()=>{
-    const selectors=['[data-testid="agent-workspace-identity"]','[data-testid="agent-workspace-modebar"]','[role="tabpanel"][data-state="active"]','[data-testid="agent-workspace-composer"]'];
+    const selectors=['[data-testid="agent-workspace-identity"]','[data-testid="agent-workspace-sessionbar"]','[data-testid="agent-workspace-composer"]'];
     return selectors.map(selector=>{const node=document.querySelector(selector);const rect=node?.getBoundingClientRect();return {selector,visible:Boolean(rect&&rect.top>=0&&rect.bottom<=window.innerHeight&&rect.width>0&&rect.height>0)};});
   });
-  assert.deepEqual(visibleTogether.filter(item=>!item.visible),[],`Messages mode lost normative first viewport after event expansion: ${JSON.stringify(visibleTogether)}`);
-  assert.equal(await page.locator('[role="tabpanel"][data-state="active"] [data-radix-scroll-area-viewport]').evaluate(node=>node.scrollTop),0,"Messages canvas did not reset to top after mode change");
-  if(!liveConfig){
-    const recordKind=page.locator(".aw-record-kind").first();
-    const recordStyle=await recordKind.evaluate(node=>{const style=getComputedStyle(node);return {size:parseFloat(style.fontSize),weight:Number(style.fontWeight),color:style.color,clipped:node.scrollWidth>node.clientWidth};});
-    const actorStyle=await page.locator(".agent-message-row b").first().evaluate(node=>{const style=getComputedStyle(node);return {size:parseFloat(style.fontSize),weight:Number(style.fontWeight),color:style.color};});
-    assert.ok(recordStyle.size<actorStyle.size&&recordStyle.weight<actorStyle.weight,"Message route metadata competes with the authored actor");
-    assert.equal(recordStyle.clipped,false,"Message route metadata is clipped");
-  }
+  assert.deepEqual(visibleTogether.filter(item=>!item.visible),[],`Messages dock obscured the stable Session shell: ${JSON.stringify(visibleTogether)}`);
+  assert.equal(await page.getByTestId("agent-workspace-sessionbar").count(),1,"opening Messages replaced the Session center");
   await page.screenshot({path:join(evidenceDir,`member-messages--1440x1000--${capturedSourceSha}.png`),animations:"disabled"});
-  await page.getByRole("tab",{name:/Work/}).click();
-  if(!liveConfig)await page.getByRole("button",{name:/Restore authored conversation dominance/}).waitFor();
-  else await page.locator(".agent-work-row").first().waitFor();
+  await workspaceDock.getByRole("tab",{name:/Work/}).click();
+  if(!liveConfig)await workspaceDock.getByRole("button",{name:/Restore authored conversation dominance/}).waitFor();
+  else await workspaceDock.locator('[data-testid="work-dock-list"] button').first().waitFor();
   await waitForStableWriteSurface(page);
-  if(!liveConfig)assert.equal(await page.locator('.agent-work-row[data-current="true"]').first().getByText("Restore authored conversation dominance",{exact:true}).count(),1,"Current Work emphasis does not follow context_summary.current_work_id");
   if(!liveConfig){
-    await page.locator('.agent-work-row[data-current="true"]').first().click();
-    await page.getByText("Work in focus",{exact:true}).waitFor();
-    assert.ok(await page.locator('.aw-context-selection-inset').getByText(/rev 4 \(latest\)/).count()===1,"selected Work detail does not expose its canonical revision");
-    assert.equal(await page.locator('.aw-context-selection-inset .aw-fact-row').filter({hasText:"Gates"}).filter({hasText:"1/2"}).count(),1,"selected Work detail does not expose gate progress");
-    await page.locator('.aw-context-selection-inset').getByText("Member Result",{exact:true}).waitFor();
-    await page.locator('.aw-context-selection-inset').getByText("Host acceptance",{exact:true}).waitFor();
-    await page.locator('.aw-context-selection-inset').getByText("Not accepted",{exact:true}).waitFor();
-  }
-  if(!liveConfig){
-    const clippedWorkRows=await page.locator('.agent-work-row').evaluateAll(rows=>rows.filter(row=>{const rect=row.getBoundingClientRect();return rect.top<window.innerHeight&&rect.bottom>window.innerHeight;}).map(row=>row.textContent?.trim().slice(0,80)));
-    assert.deepEqual(clippedWorkRows,[],`Work first viewport ends on a partially obscured responsibility: ${JSON.stringify(clippedWorkRows)}`);
+    await workspaceDock.getByRole("button",{name:/Restore authored conversation dominance/}).click();
+    await workspaceDock.getByText(/revision 4/).waitFor();
+    await workspaceDock.getByText("Result",{exact:true}).waitFor();
+    await workspaceDock.getByRole("heading",{name:"Review",exact:true}).waitFor();
   }
   await page.screenshot({path:join(evidenceDir,`member-work--1440x1000--${capturedSourceSha}.png`),animations:"disabled"});
+  await workspaceDock.getByRole("button",{name:"Close Work and Messages dock"}).click();
   const profileOpener=page.getByRole("button",{name:/Open .* configuration/});
   await profileOpener.click();await page.getByRole("dialog").waitFor();
   assert.equal(await page.getByRole("dialog").getByText(/\b(?:none|null|not_model(?:ed)?|not modeled)\b/i).count(),0,"Configuration exposes raw empty-model tokens as primary UI");
@@ -318,12 +302,11 @@ try{
   if(liveConfig&&(await hostPage.locator(".agent-authored-turn").count())>0)await hostPage.locator(".agent-authored-turn").first().waitFor();
   await waitForStableWriteSurface(hostPage);
   assert.equal(await hostPage.locator('textarea[aria-label="Message"]').count(),0,"selected Host self-view exposed a Host-to-self composer");
-  if(!liveConfig){assert.equal(await hostPage.getByText("AGENTS.md",{exact:true}).count(),0,"Host Session incorrectly showed a non-selected Member event");const hostToolEvent=hostPage.locator('[data-tool-call-id="host-call-1"] .aw-stream-fact__trigger');await hostToolEvent.click();await hostPage.getByText("Tool call in focus",{exact:true}).waitFor();}
+  if(!liveConfig){assert.equal(await hostPage.getByText("AGENTS.md",{exact:true}).count(),0,"Host Session incorrectly showed a non-selected Member event");const hostToolEvent=hostPage.locator('[data-tool-call-id="host-call-1"] .aw-stream-fact__trigger');await hostToolEvent.click();assert.equal(await hostToolEvent.getAttribute("aria-expanded"),"true","Host tool event did not expand inline");}
   if(!liveConfig){
-    await hostPage.getByText("Current decision",{exact:true}).waitFor();
-    await hostPage.getByText("Team Inbox",{exact:true}).waitFor();
-    await hostPage.getByText("Current Session",{exact:true}).waitFor();
-    await hostPage.getByText("Decision actions",{exact:true}).waitFor();
+    await hostPage.getByRole("button",{name:"Open Work dock",exact:true}).click();
+    await hostPage.locator(".agent-dock-shell").waitFor();
+    await hostPage.getByText("Current outcome",{exact:true}).waitFor();
     assert.equal(await hostPage.getByText(/agent-mira/).count(),0,"Host decision rail exposes a raw AgentMember id instead of the canonical display identity");
     assert.ok(await hostPage.locator('[data-testid="agent-workspace-identity"] .aw-header-chip',{hasText:"External · unmanaged"}).count()>=1,"external-interactive Host header is missing the unmanaged chip");
   }
@@ -339,7 +322,7 @@ try{
     assert.equal(await hostPage.getByLabel("Composer action").count(),0,"identity switch retained an action selector while projection was pending");
     releasePublicProjection();hostMemberProjectionGate=null;
   }
-  await hostPage.getByText("Current Session",{exact:true}).waitFor();
+  await hostPage.getByTestId("agent-workspace-identity").getByText(/Session .*gen/).waitFor();
   if(liveConfig&&(await hostPage.locator(".agent-authored-turn").count())>0)await hostPage.locator(".agent-authored-turn").first().waitFor();
   await waitForStableWriteSurface(hostPage);
   const hostComposer=hostPage.getByTestId("agent-workspace-composer");
@@ -425,12 +408,10 @@ try{
     assert.equal(new URL(routePage.url()).searchParams.get("team"),team.team_id,"reload restored the stale Team route");
     await routePage.evaluate((url)=>{history.pushState(null,"",url);dispatchEvent(new PopStateEvent("popstate"));},staleUrl);
     await routePage.waitForURL((url)=>url.searchParams.get("team")===team.team_id&&url.searchParams.get("conversation")==="agent-mira");
-    await routePage.getByRole("tab",{name:/Messages/}).click();
-    await routePage.waitForURL((url)=>url.searchParams.get("agentMode")==="messages");
-    await routePage.goBack();
-    await routePage.waitForURL((url)=>url.searchParams.get("team")===team.team_id&&url.searchParams.get("agentMode")===null);
-    await routePage.goForward();
-    await routePage.waitForURL((url)=>url.searchParams.get("team")===team.team_id&&url.searchParams.get("agentMode")==="messages");
+    await routePage.getByRole("button",{name:"Open Messages dock",exact:true}).click();
+    await routePage.locator(".agent-dock-shell").waitFor();
+    assert.equal(new URL(routePage.url()).searchParams.get("agentMode"),null,"local Dock inspection polluted the canonical Agent route");
+    assert.equal(await routePage.getByTestId("agent-workspace-sessionbar").count(),1,"opening the Dock replaced the Session center");
     const chooserPage=await makePage("fixture-multi-token");
     await chooserPage.goto(staleUrl,{waitUntil:"domcontentloaded"});
     await chooserPage.getByRole("heading",{name:"Choose the Agent Team to open"}).waitFor();
@@ -530,10 +511,11 @@ try{
       await page.getByRole("dialog",{name:"Agent roster"}).waitFor();
       assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=document.documentElement.clientWidth),true,"390px roster sheet overflow");
       await page.getByRole("button",{name:"Close Agent roster"}).click();
-      await page.getByRole("button",{name:"Open Agent context"}).click();
-      await page.getByRole("dialog",{name:"Agent context"}).waitFor();
-      assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=document.documentElement.clientWidth),true,"390px context sheet overflow");
-      await page.getByRole("button",{name:"Close Agent context"}).click();
+      await page.getByRole("button",{name:"Open Work dock",exact:true}).click();
+      const compactDock=page.getByRole("complementary",{name:"Work and Messages dock"});await compactDock.waitFor();
+      assert.equal(await compactDock.evaluate(node=>getComputedStyle(node).position),"fixed","390px Work dock is not an overlay");
+      assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=document.documentElement.clientWidth),true,"390px Work dock overflow");
+      await compactDock.getByRole("button",{name:"Close Work and Messages dock"}).click();
     }
     if(!liveConfig&&viewport.width<=390){
       await hostPage.setViewportSize(viewport);
