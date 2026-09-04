@@ -62,6 +62,10 @@ Record mismatches in the Implementation Crosswalk and one Development Task.
 | Integrate a provider | [Integration index](current/integration/README.md) |
 | Interpret an old decision | The relevant ADR, verified native export, or Git history. |
 
+The shipped CLI installs under two names — `harness` (primary) and `firm`
+(alias) — both pointing at the same versioned binary, and command examples in
+these docs use `firm` (see [Operations](current/operations/operations.md)).
+
 ## Documentation modules
 
 | Module | Entry points |

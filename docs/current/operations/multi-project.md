@@ -19,7 +19,7 @@ legacy Mission/Wave (read-only)    Git / worktree / permission boundary
 The retired Company Store was a third, independent identity for the legacy
 Docs/Organization/Finance layer (DOC-108). Its writers and reads are closed;
 its stores remain only as export/verify sources for
-`harness legacy-company-os export|verify`.
+`firm legacy-company-os export|verify`.
 
 ## Core invariants
 

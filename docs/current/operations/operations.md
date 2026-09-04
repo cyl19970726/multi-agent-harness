@@ -220,8 +220,10 @@ marketplace, install it with:
 pnpm star-harness:install
 ```
 
-This builds a versioned Harness binary, updates the stable binary link,
-converges Codex and Claude on the Git marketplace copy, removes the duplicate
+This builds a versioned Harness binary, updates the stable binary links —
+`harness` (primary) and `firm` (alias) both point at the same versioned
+binary, and the command examples in these docs use `firm` — converges Codex
+and Claude on the Git marketplace copy, removes the duplicate
 Codex personal copy, and records the installation under
 `~/.local/state/star-harness/installations/`. Start new Codex and Claude
 sessions after applying it. Existing sessions keep the Plugin and Provider
