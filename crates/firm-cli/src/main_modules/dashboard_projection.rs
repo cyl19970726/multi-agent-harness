@@ -1,33 +1,112 @@
 use super::*;
 
 pub(super) fn dashboard_snapshot(store: &HarnessStore) -> CliResult<serde_json::Value> {
-    let members = latest_members(store)?;
-    let teams = latest_teams(store)?;
-    let runtimes = latest_runtimes(store)?;
-    let messages = latest_messages_in_append_order(store)?;
-    let evidence = store.evidence()?;
-    let provider_child_threads = store.provider_child_threads()?;
-    let missions = store.latest_missions()?;
-    let legacy_waves = store.latest_legacy_waves()?;
+    dashboard_snapshot_with_team_run(store, None)
+}
+
+pub(super) fn dashboard_snapshot_with_team_run(
+    store: &HarnessStore,
+    team_run_id: Option<&str>,
+) -> CliResult<serde_json::Value> {
+    let mut team_runs = latest_team_runs_in_append_order(store)?;
+    let selected_run = match team_run_id {
+        Some(team_run_id) => Some(
+            team_runs
+                .iter()
+                .find(|run| run.id == team_run_id)
+                .cloned()
+                .ok_or_else(|| CliError::Usage(format!("TeamRun not found: {team_run_id}")))?,
+        ),
+        None => None,
+    };
+    if let Some(selected) = &selected_run {
+        team_runs.retain(|run| run.id == selected.id);
+    }
+    let mut member_runs = latest_member_runs_in_append_order(store)?;
+    if let Some(selected) = &selected_run {
+        member_runs.retain(|run| run.team_run_id == selected.id);
+    }
+    let agent_member_ids = member_runs
+        .iter()
+        .map(|run| run.agent_member_id.clone())
+        .collect::<HashSet<_>>();
+    let member_run_ids = member_runs
+        .iter()
+        .map(|run| run.id.clone())
+        .collect::<HashSet<_>>();
+
+    let mut members = latest_members(store)?;
+    let mut teams = latest_teams(store)?;
+    if let Some(selected) = &selected_run {
+        members.retain(|id, _| agent_member_ids.contains(id));
+        teams.retain(|id, _| id == &selected.agent_team_id);
+    }
+    let runtimes = if selected_run.is_some() {
+        BTreeMap::new()
+    } else {
+        latest_runtimes(store)?
+    };
+    let messages = if selected_run.is_some() {
+        Vec::new()
+    } else {
+        latest_messages_in_append_order(store)?
+    };
+    let evidence = if selected_run.is_some() {
+        Vec::new()
+    } else {
+        store.evidence()?
+    };
+    let provider_child_threads = if selected_run.is_some() {
+        Vec::new()
+    } else {
+        store.provider_child_threads()?
+    };
+    let missions = if selected_run.is_some() {
+        Vec::new()
+    } else {
+        store.latest_missions()?
+    };
+    let legacy_waves = if selected_run.is_some() {
+        Vec::new()
+    } else {
+        store.latest_legacy_waves()?
+    };
     // Unlike Mission, a MissionLogEntry is never revised in place — every
     // row is a permanent entry, so the whole-snapshot projection reads the raw
     // append-order ledger (`mission_log()`), not a latest-wins fold.
-    let mission_log = store.mission_log()?;
+    let mission_log = if selected_run.is_some() {
+        Vec::new()
+    } else {
+        store.mission_log()?
+    };
     // Agent Team v0 ledger projections (append-only, latest-wins). The folded
     // event log is capped per run so a chatty run cannot bloat the snapshot.
-    let team_runs = latest_team_runs_in_append_order(store)?;
-    let member_runs = latest_member_runs_in_append_order(store)?;
+    // AgentTeamRun no longer owns Mission identity (DOC-108), so the existing
+    // scoped response projects no legacy Mission context and does not read the
+    // retired ledgers.
     // Current inbox truth is projected only from the Wave 4C canonical
     // Message + per-recipient MessageDelivery plane. Retired
     // team_messages/provider_dispatch ledgers remain export-only history and
     // are never folded into a current Dashboard snapshot.
     let mut trust_scopes = BTreeSet::new();
-    for member_run in &member_runs {
-        if let Some(scope) = store.trust_member_run_scope(&member_run.id)? {
-            trust_scopes.insert(scope);
+    if let Some(selected) = &selected_run {
+        trust_scopes.insert(team_run_execution_space_id(store, selected)?);
+    } else {
+        for member_run in &member_runs {
+            if let Some(scope) = store.trust_member_run_scope(&member_run.id)? {
+                trust_scopes.insert(scope);
+            }
         }
+        trust_scopes.extend(store.canonical_execution_space_ids()?);
     }
-    trust_scopes.extend(store.canonical_execution_space_ids()?);
+    let mut works = store.latest_works()?;
+    if let Some(selected) = &selected_run {
+        works.retain(|work| work.team_run_id == selected.id);
+    }
+    let work_ids = works
+        .iter()
+        .map(|work| work.id.clone())
+        .collect::<HashSet<_>>();
     let mut agent_identities = Vec::new();
     let mut agent_sessions = Vec::new();
     let mut team_memberships = Vec::new();
@@ -40,11 +119,28 @@ pub(super) fn dashboard_snapshot(store: &HarnessStore) -> CliResult<serde_json::
         agent_sessions.extend(store.fabric_agent_sessions(&execution_space_id)?);
         team_memberships.extend(store.fabric_team_memberships(&execution_space_id)?);
         work_execution_bindings.extend(store.fabric_work_execution_bindings(&execution_space_id)?);
-        work_deliveries.extend(store.current_work_deliveries(&execution_space_id)?);
+        if selected_run.is_none() {
+            work_deliveries.extend(store.current_work_deliveries(&execution_space_id)?);
+        }
         let space_messages = store.fabric_messages(&execution_space_id)?;
         let deliveries = store.fabric_message_deliveries(&execution_space_id)?;
         canonical_messages.extend(space_messages.iter().cloned());
         canonical_message_deliveries.extend(deliveries.iter().cloned());
+    }
+    if let Some(selected) = &selected_run {
+        work_deliveries = store.current_work_deliveries_for_team_run(&selected.id)?;
+        agent_identities.retain(|identity| agent_member_ids.contains(&identity.id));
+        agent_sessions.retain(|session| agent_member_ids.contains(&session.agent_member_id));
+        team_memberships.retain(|membership| membership.team_id == selected.agent_team_id);
+        work_execution_bindings.retain(|binding| work_ids.contains(&binding.work_id));
+        work_deliveries.retain(|delivery| delivery.team_run_id == selected.id);
+        canonical_messages
+            .retain(|message| message.team_run_id.as_deref() == Some(selected.id.as_str()));
+        let message_ids = canonical_messages
+            .iter()
+            .map(|message| message.id.clone())
+            .collect::<HashSet<_>>();
+        canonical_message_deliveries.retain(|delivery| message_ids.contains(&delivery.message_id));
     }
     let mut team_messages = Vec::new();
     for run in &team_runs {
@@ -55,20 +151,42 @@ pub(super) fn dashboard_snapshot(store: &HarnessStore) -> CliResult<serde_json::
             .cmp(&right.created_at)
             .then_with(|| left.id.cmp(&right.id))
     });
-    let works = store.latest_works()?;
-    let work_events = store.work_events()?;
-    let work_delegations = store.latest_work_delegations()?;
-    let work_delegation_events = store.work_delegation_events()?;
-    let execution_nodes = store.latest_execution_nodes()?;
-    let node_project_registrations = store.latest_node_project_registrations()?;
-    let node_daemon_leases = store.latest_node_daemon_leases()?;
-    let team_supervisor_leases = latest_team_supervisor_leases_in_append_order(store)?;
-    let team_member_close_requests = latest_team_member_close_requests_in_append_order(store)?;
+    let mut work_events = store.work_events()?;
+    let mut work_delegations = store.latest_work_delegations()?;
+    let mut work_delegation_events = store.work_delegation_events()?;
+    let mut execution_nodes = store.latest_execution_nodes()?;
+    let mut node_project_registrations = store.latest_node_project_registrations()?;
+    let mut node_daemon_leases = store.latest_node_daemon_leases()?;
+    let mut team_supervisor_leases = latest_team_supervisor_leases_in_append_order(store)?;
+    let mut team_member_close_requests = latest_team_member_close_requests_in_append_order(store)?;
     // Old ledgers can contain v0 `thinking` rows. Keep the JSONL history
     // intact for migration/audit, but never project those rows into a new
     // snapshot: thinking is not product state or evidence.
-    let member_actions = visible_member_actions_in_append_order(store)?;
-    let delegation_runs = latest_delegation_runs_in_append_order(store)?;
+    let mut member_actions = visible_member_actions_in_append_order(store)?;
+    let mut delegation_runs = latest_delegation_runs_in_append_order(store)?;
+    if let Some(selected) = &selected_run {
+        work_events.retain(|event| work_ids.contains(&event.work_id));
+        work_delegations.retain(|delegation| {
+            delegation.source_work_ref.team_run_id == selected.id
+                || delegation.target_work_ref.team_run_id == selected.id
+        });
+        let delegation_ids = work_delegations
+            .iter()
+            .map(|delegation| delegation.id.clone())
+            .collect::<HashSet<_>>();
+        work_delegation_events.retain(|event| delegation_ids.contains(&event.delegation_id));
+        execution_nodes.retain(|node| node.id == selected.execution_node_id);
+        node_project_registrations.retain(|registration| {
+            registration.node_id == selected.execution_node_id
+                && registration.project_binding_id == selected.project_binding_id
+        });
+        node_daemon_leases.retain(|lease| lease.node_id == selected.execution_node_id);
+        team_supervisor_leases.retain(|lease| lease.team_run_id == selected.id);
+        team_member_close_requests
+            .retain(|request| member_run_ids.contains(&request.member_run_id));
+        member_actions.retain(|action| action.team_run_id == selected.id);
+        delegation_runs.retain(|run| run.team_run_id == selected.id);
+    }
     let team_run_events = recent_current_team_run_events_in_append_order(store, &team_runs, 500)?;
     let member_cards: Vec<_> = members
         .values()
@@ -220,7 +338,7 @@ pub(super) fn dashboard_snapshot(store: &HarnessStore) -> CliResult<serde_json::
             }
         }
     }
-    Ok(serde_json::json!({
+    let mut snapshot = serde_json::json!({
         "generated_at": now_string(),
         "teams": team_values,
         "members": member_cards,
@@ -253,7 +371,14 @@ pub(super) fn dashboard_snapshot(store: &HarnessStore) -> CliResult<serde_json::
         "delegation_runs": delegation_runs,
         "team_run_events": team_run_events,
         "integrity_annotations": integrity_annotations
-    }))
+    });
+    if selected_run.is_some() {
+        snapshot
+            .as_object_mut()
+            .expect("Dashboard snapshot is an object")
+            .insert("company_os".to_string(), serde_json::json!({}));
+    }
+    Ok(snapshot)
 }
 
 /// `GET /v1/meta` — server build/data provenance (issue #307, 2nd occurrence of
@@ -294,115 +419,6 @@ pub(super) fn dashboard_meta(store: &HarnessStore) -> CliResult<serde_json::Valu
         "action_manifest_version": "agentfirm.role_actions.v1",
         "capability_auth": "x-agentfirm-token",
     }))
-}
-
-/// A bounded canonical projection for a Team deep link. It contains only
-/// Harness coordination state belonging to the selected TeamRun plus its
-/// Mission, Mission Log, Team, members, and Legacy Wave history. Provider-native transcript/activity is
-/// deliberately absent and remains available only through native-session
-/// projection routes.
-pub(super) fn dashboard_team_run_snapshot(
-    store: &HarnessStore,
-    team_run_id: &str,
-) -> CliResult<serde_json::Value> {
-    let mut snapshot = dashboard_snapshot(store)?;
-    let selected = snapshot["team_runs"]
-        .as_array()
-        .and_then(|runs| {
-            runs.iter()
-                .find(|run| run.get("id").and_then(|value| value.as_str()) == Some(team_run_id))
-        })
-        .cloned()
-        .ok_or_else(|| CliError::Usage(format!("TeamRun not found: {team_run_id}")))?;
-    let mission_id = selected
-        .get("mission_id")
-        .and_then(|value| value.as_str())
-        .map(str::to_owned);
-    let team_id = selected
-        .get("agent_team_id")
-        .and_then(|value| value.as_str())
-        .map(str::to_owned);
-
-    let agent_member_ids = snapshot["member_runs"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter(|row| json_field_eq(row, "team_run_id", team_run_id))
-        .filter_map(|row| {
-            row.get("agent_member_id")
-                .and_then(|value| value.as_str())
-                .map(str::to_owned)
-        })
-        .collect::<HashSet<_>>();
-
-    retain_json_rows(&mut snapshot, "team_runs", |row| {
-        json_field_eq(row, "id", team_run_id)
-    });
-    for key in [
-        "member_runs",
-        "team_messages",
-        "works",
-        "work_events",
-        "work_deliveries",
-        "team_supervisor_leases",
-        "team_member_close_requests",
-        "member_actions",
-        "delegation_runs",
-        "team_run_events",
-    ] {
-        retain_json_rows(&mut snapshot, key, |row| {
-            json_field_eq(row, "team_run_id", team_run_id)
-        });
-    }
-    retain_json_rows(&mut snapshot, "members", |row| {
-        row.get("id")
-            .and_then(|value| value.as_str())
-            .is_some_and(|id| agent_member_ids.contains(id))
-    });
-    retain_json_rows(&mut snapshot, "teams", |row| {
-        team_id
-            .as_deref()
-            .is_some_and(|id| json_field_eq(row, "id", id))
-    });
-    retain_json_rows(&mut snapshot, "missions", |row| {
-        mission_id
-            .as_deref()
-            .is_some_and(|id| json_field_eq(row, "id", id))
-    });
-    retain_json_rows(&mut snapshot, "legacy_waves", |row| {
-        mission_id
-            .as_deref()
-            .is_some_and(|id| json_field_eq(row, "mission_id", id))
-    });
-    retain_json_rows(&mut snapshot, "mission_log", |row| {
-        mission_id
-            .as_deref()
-            .is_some_and(|id| json_field_eq(row, "mission_id", id))
-    });
-    for key in ["messages", "events", "evidence", "provider_child_threads"] {
-        retain_json_rows(&mut snapshot, key, |_| false);
-    }
-    if let Some(object) = snapshot.as_object_mut() {
-        object.insert("company_os".to_string(), serde_json::json!({}));
-    }
-    Ok(snapshot)
-}
-
-pub(super) fn json_field_eq(row: &serde_json::Value, field: &str, expected: &str) -> bool {
-    row.get(field).and_then(|value| value.as_str()) == Some(expected)
-}
-
-pub(super) fn retain_json_rows(
-    snapshot: &mut serde_json::Value,
-    key: &str,
-    mut keep: impl FnMut(&serde_json::Value) -> bool,
-) {
-    if let Some(rows) = snapshot
-        .get_mut(key)
-        .and_then(serde_json::Value::as_array_mut)
-    {
-        rows.retain(|row| keep(row));
-    }
 }
 
 pub(super) fn latest_member(
