@@ -394,6 +394,25 @@ pub(crate) fn ensure_team_message_fabric(
 /// Validate the team run, filter active members, check provider compat, and
 /// return the raw run + members WITHOUT reserving a supervisor or creating a
 /// ledger. The caller (in-process path or daemon) builds the rest.
+/// Write back a MemberRun whose provider profile was refreshed during start
+/// preparation, keeping the Store's typed error.
+///
+/// This mapping lives in one named function so a test can pin it: a concurrent
+/// Host write loses this CAS routinely, and flattening that Conflict into
+/// `CliError::Usage` hides it from the adoption-hold classifier, which would
+/// read an ordinary lost race as structural and wedge a healthy TeamRun
+/// (DEV-149-REVIEW-02).
+pub(crate) fn persist_refreshed_member_profile(
+    store: &HarnessStore,
+    expected: &ProviderRuntimeProjection,
+    member: &ProviderRuntimeProjection,
+) -> CliResult<()> {
+    store
+        .compare_and_append_member_run(expected, member)
+        .map_err(CliError::Store)?;
+    Ok(())
+}
+
 pub(crate) fn prepare_team_run_start_body(
     store: &HarnessStore,
     run_id: &str,
@@ -455,14 +474,7 @@ pub(crate) fn prepare_team_run_start_body(
             "start or resume persistent Agent Team execution",
         );
         if apply_refreshed_provider_profile(member, profile) {
-            // Keep the typed Store error on the adoption/start path. A
-            // concurrent Host write loses this CAS routinely, and flattening
-            // that Conflict into `CliError::Usage` hides it from the
-            // adoption-hold classifier, which would read an ordinary lost race
-            // as structural and wedge a healthy TeamRun (DEV-149-REVIEW-02).
-            store
-                .compare_and_append_member_run(&expected, member)
-                .map_err(CliError::Store)?;
+            persist_refreshed_member_profile(store, &expected, member)?;
         }
         if let Some(refusal) = refusal {
             return Err(CliError::Usage(refusal));

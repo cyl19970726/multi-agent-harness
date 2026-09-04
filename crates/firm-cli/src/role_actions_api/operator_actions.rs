@@ -587,12 +587,32 @@ pub(super) fn execute_operator_action(
                     } else {
                         "SUPERVISOR_GENERATION_FENCED"
                     };
+                    // A partial release is a real outcome, so name the
+                    // Execution Space leases on both sides rather than leaving
+                    // the operator to guess (DEV-149-REVIEW-04).
+                    let space_ids = |key: &str| {
+                        control[key]
+                            .as_array()
+                            .map(|ids| {
+                                ids.iter()
+                                    .filter_map(|id| id.as_str())
+                                    .collect::<Vec<_>>()
+                                    .join(", ")
+                            })
+                            .filter(|joined| !joined.is_empty())
+                            .unwrap_or_else(|| "none".to_string())
+                    };
+                    let detail = match control["failed_phase"].as_str() {
+                        Some(phase) => format!(
+                            "{message} (failed phase: {phase}; Execution Space leases already released: {}; release failed: {})",
+                            space_ids("released_execution_space_ids"),
+                            space_ids("release_failed_execution_space_ids"),
+                        ),
+                        None => message.to_string(),
+                    };
                     return Err(encoded_error(
                         code,
-                        match control["failed_phase"].as_str() {
-                            Some(phase) => format!("{message} (failed phase: {phase})"),
-                            None => message.to_string(),
-                        },
+                        detail,
                         "node_daemon_lease",
                         node_id,
                         Some(daemon_generation),

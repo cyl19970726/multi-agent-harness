@@ -263,37 +263,17 @@ fn a_settling_run_is_not_adopted_while_its_dead_generation_writes_its_outcome() 
 /// Every Store `Conflict` reachable from `start_supervising` must arrive at
 /// `start_failure_is_transient` typed, and must therefore leave no durable
 /// adoption hold. Three sites on that path can produce one; this drives the
-/// real Store method behind each and asserts the same end-to-end property, so
-/// the class is covered rather than one site at a time (DEV-149-REVIEW-03).
+/// real production function that owns each mapping — not the store call under
+/// it and not a hand-built error — so reverting any one of them to
+/// `store_conflict_as_usage` fails this test (DEV-149-REVIEW-03/04).
 #[test]
 fn every_start_path_store_conflict_is_typed_and_records_no_hold() {
     let fixture = adoption_fixture("start-path-conflicts");
     let run = crate::latest_team_run(&fixture.store, &fixture.run_id).expect("read TeamRun");
 
-    // Site 1 — TeamRun scope resolution. A Host appends an AgentTeamRun row
-    // between the caller's read and the resolver's comparison, so the resolver
-    // returns `TEAM_RUN_CHANGED`. Driving the real resolver with the run value
-    // the caller already held is exactly that observation.
-    let mut advanced = run.clone();
-    advanced.status = harness_core::TeamRunStatus::Running;
-    advanced.updated_at = crate::now_string();
-    fixture
-        .store
-        .compare_and_append_team_run_lifecycle(&run, &advanced)
-        .expect("the concurrent Host lifecycle append lands first");
-    let scope_conflict = crate::team_run_execution_space_id_for_start(&fixture.store, &run)
-        .expect_err("a stale TeamRun value must not resolve scope");
-    assert!(
-        matches!(
-            scope_conflict,
-            CliError::Store(harness_store::StoreError::Conflict(ref message))
-                if message.starts_with("TEAM_RUN_CHANGED:")
-        ),
-        "scope resolution must surface a typed Store conflict: {scope_conflict}"
-    );
-
-    // Site 2 — the MemberRun CAS `prepare_team_run_start_body` performs when a
-    // refreshed provider profile has to be written back.
+    // Site 1 — the MemberRun write-back `prepare_team_run_start_body` performs
+    // for a refreshed provider profile, driven through the named production
+    // function that owns the mapping.
     let mut member = crate::latest_member_runs_in_append_order(&fixture.store)
         .expect("read canonical MemberRuns")
         .into_iter()
@@ -307,56 +287,94 @@ fn every_start_path_store_conflict_is_typed_and_records_no_hold() {
         .expect("the concurrent Host write lands first");
     let mut losing = stale_member.clone();
     losing.provider_cwd_hint = Some("/tmp/losing-adoption".into());
-    let member_conflict = fixture
-        .store
-        .compare_and_append_member_run(&stale_member, &losing)
-        .map_err(CliError::Store)
-        .expect_err("the adoption's CAS must lose against the newer row");
+    let member_conflict =
+        crate::persist_refreshed_member_profile(&fixture.store, &stale_member, &losing)
+            .expect_err("the adoption's CAS must lose against the newer row");
     assert!(
         matches!(
             member_conflict,
             CliError::Store(harness_store::StoreError::Conflict(_))
         ),
-        "the MemberRun CAS must surface a typed Store conflict: {member_conflict}"
+        "the MemberRun write-back must surface a typed Store conflict: {member_conflict}"
     );
 
-    // Site 3 — the Supervisor lease `TeamSupervisorRegistration::start`
-    // acquires. A live lease held by another owner makes the acquisition lose.
+    // Site 2 — the Supervisor lease, driven through the real
+    // `TeamSupervisorRegistration::start`. A live incumbent lease makes the
+    // acquisition lose before any thread is spawned.
     let node_lease = fixture
         .store
         .acquire_node_daemon_lease(
             &run.execution_node_id,
-            "node-daemon:conflict-test",
+            &format!("node-daemon:{}", run.execution_node_id),
             "conflict-test-instance",
             current_unix_ms_u64(),
             600_000,
         )
         .expect("acquire the parent NodeDaemon lease");
-    let acquire_supervisor = |supervisor_id: &str| {
-        fixture.store.acquire_team_supervisor_under_node_lease(
+    fixture
+        .store
+        .acquire_team_supervisor_under_node_lease(
             &fixture.run_id,
             &run.execution_node_id,
             &node_lease.daemon_id,
             node_lease.generation,
             &fixture.execution_space_id,
             &run.project_binding_id,
-            supervisor_id,
+            "incumbent-supervisor",
             std::process::id(),
             "test://incumbent-supervisor",
             current_unix_ms_u64(),
             600_000,
         )
-    };
-    acquire_supervisor("incumbent-supervisor").expect("the incumbent Supervisor holds the lease");
-    let lease_conflict = acquire_supervisor("adopting-supervisor")
-        .map_err(CliError::Store)
-        .expect_err("a live incumbent lease must deny a second Supervisor");
+        .expect("the incumbent Supervisor holds the lease");
+    let lease_conflict = crate::TeamSupervisorRegistration::start(
+        &fixture.store,
+        &fixture.run_id,
+        Some(&fixture.execution_space_id),
+    )
+    .err()
+    .expect("a live incumbent lease must deny a second Supervisor registration");
     assert!(
         matches!(
             lease_conflict,
             CliError::Store(harness_store::StoreError::Conflict(_))
         ),
-        "the Supervisor lease acquisition must surface a typed Store conflict: {lease_conflict}"
+        "TeamSupervisorRegistration::start must surface a typed Store conflict: {lease_conflict}"
+    );
+
+    // Site 3 — TeamRun scope resolution, driven through the real
+    // `prepare_team_run_start_body`. Declaring a MemberRun id that has no
+    // canonical projection makes the resolver report incomplete
+    // materialization, which is the same resolver Conflict a concurrent Host
+    // append produces as `TEAM_RUN_CHANGED`. It is exercised last because the
+    // appended row deliberately leaves the Store unresolvable.
+    let mut partial = run.clone();
+    partial
+        .member_run_ids
+        .push("member-run-never-materialized".to_string());
+    partial.updated_at = crate::now_string();
+    let mut team_runs = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(fixture.store.root().join("team_runs.jsonl"))
+        .expect("open TeamRun ledger");
+    writeln!(
+        team_runs,
+        "{}",
+        serde_json::to_string(&partial).expect("serialize partial TeamRun")
+    )
+    .expect("append the partially materialized TeamRun row");
+    drop(team_runs);
+
+    let scope_conflict = crate::prepare_team_run_start_body(&fixture.store, &fixture.run_id, 1)
+        .err()
+        .expect("start preparation must reject an unresolvable TeamRun scope");
+    assert!(
+        matches!(
+            scope_conflict,
+            CliError::Store(harness_store::StoreError::Conflict(_))
+        ),
+        "prepare_team_run_start_body must propagate the resolver's typed Store conflict: {scope_conflict}"
     );
 
     // The property under test: none of the three records a durable hold.

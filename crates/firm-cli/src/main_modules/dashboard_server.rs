@@ -1435,7 +1435,20 @@ pub(super) fn daemon_command(args: &[String]) -> CliResult<()> {
             let receipt = serde_json::from_str::<serde_json::Value>(&response)
                 .map_err(|error| CliError::Usage(format!("invalid stop receipt: {error}")))?;
             if receipt["ok"] != true {
-                // Release continues past a per-Space failure, so a failed stop
+                // A refused stop (generation fence, malformed request) never
+                // reached a drain: its receipt carries only {ok, error}, so
+                // the partial-release wording would invent phases and Space
+                // lists that do not exist. `drained` is the field that marks a
+                // receipt as a drain result (DEV-149-REVIEW-04).
+                if !receipt["drained"].is_boolean() {
+                    return Err(CliError::Usage(format!(
+                        "{}: NodeDaemon {node_id} retains machine authority; the stop had no effect",
+                        receipt["error"]
+                            .as_str()
+                            .unwrap_or("NODE_DAEMON_STOP_REFUSED"),
+                    )));
+                }
+                // Release continues past a per-Space failure, so a failed drain
                 // does not mean nothing was released. Say "not wholly
                 // released" and name the Spaces rather than asserting the
                 // daemon still holds everything (DEV-149-REVIEW-03).
