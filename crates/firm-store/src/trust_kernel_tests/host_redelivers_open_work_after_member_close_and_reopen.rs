@@ -495,6 +495,28 @@ fn delivery_staleness_emits_only_the_reachable_token_set() {
 }
 
 #[test]
+fn delivery_staleness_is_non_panicking_for_an_unexpected_live_binding() {
+    let (fixture, root) = reopened_member_fixture("staleness-live-fallback");
+    let work = assign_responsibility(
+        &fixture.store,
+        "work-staleness-live-fallback",
+        &fixture.membership.id,
+    );
+    let binding = execution_binding(
+        &work,
+        &fixture.membership,
+        &fixture.session,
+        "binding-staleness-live-fallback",
+    );
+
+    assert_eq!(
+        crate::store_work_redelivery::delivery_staleness(Some(&binding)),
+        "work_execution_binding_live_unexpected"
+    );
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn redeliver_refuses_started_and_terminal_work() {
     let (fixture, root) = reopened_member_fixture("guard");
     let store = &fixture.store;

@@ -208,7 +208,8 @@ execution (`WORK_ALREADY_STARTED`), a Work with no assignee
 delivery to supersede (`WORK_HAS_NO_UNSTARTED_DELIVERY`), and a Work whose
 execution binding can still reach the provider (`WORK_DELIVERY_LIVE` — not a
 stale delivery; close the member runtime, or use `work release` / `work
-assign`).
+assign`). It also rejects a caller-supplied Execution Space that differs from
+the Work's TeamRun space (`EXECUTION_SPACE_SCOPE_MISMATCH`) with zero writes.
 
 Ordinary message visibility is an explicit execution-mode capability, not a
 uniform mailbox promise:

@@ -191,7 +191,8 @@ impl HarnessStore {
 /// snake_case token rather than prose.
 pub(crate) fn delivery_staleness(binding: Option<&WorkExecutionBinding>) -> &'static str {
     // WORK_DELIVERY_LIVE rejects Offered, Accepted, and Active before this
-    // projection. Only these four stale tokens are reachable here.
+    // projection, so the live fallback is unreachable in ordinary operation.
+    // Keep it non-panicking because this function runs on a store write path.
     let Some(binding) = binding else {
         return "work_execution_binding_missing";
     };
@@ -201,8 +202,6 @@ pub(crate) fn delivery_staleness(binding: Option<&WorkExecutionBinding>) -> &'st
         WorkExecutionBindingStatus::Invalidated => "work_execution_binding_invalidated",
         WorkExecutionBindingStatus::Offered
         | WorkExecutionBindingStatus::Accepted
-        | WorkExecutionBindingStatus::Active => {
-            unreachable!("live execution bindings are rejected before staleness projection")
-        }
+        | WorkExecutionBindingStatus::Active => "work_execution_binding_live_unexpected",
     }
 }
