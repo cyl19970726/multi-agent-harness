@@ -229,6 +229,11 @@ async function installCommonRoutes(page, snapshotHandler, writes) {
 
 async function executeInterrupt(page, label) {
   const action = page.getByRole("button", { name: "interrupt member run" });
+  if (!(await action.isVisible())) {
+    await page
+      .getByText("Interrupt current turn and other authorized actions", { exact: true })
+      .click();
+  }
   await action.waitFor({ timeout: 8_000 });
   assert.equal(await action.isEnabled(), true, `${label} RoleView action was disabled by ambient snapshot latency`);
   await action.click();
