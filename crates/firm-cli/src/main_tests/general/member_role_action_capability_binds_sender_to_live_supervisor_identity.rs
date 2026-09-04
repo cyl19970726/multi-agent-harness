@@ -1,6 +1,108 @@
 use super::*;
 
 #[test]
+fn member_work_start_reports_assigned_undispatched_as_retryable() {
+    let (store, _root) = temp_store("member-start-assigned-undispatched");
+    let created = create_two_member_team_run(&store);
+    let member = created.member_runs[0].clone();
+    let lease = store
+        .acquire_test_supervisor_lease(
+            &created.team_run.id,
+            "supervisor-member-start-undispatched",
+            std::process::id(),
+            "test://member-start-undispatched",
+            current_unix_ms_u64(),
+            60_000,
+        )
+        .expect("acquire Supervisor lease");
+    ensure_test_runtime_fabric(&store, &created, &lease);
+    let ledger = TeamRunLedger::new(
+        &store,
+        &created.team_run.id,
+        &lease.supervisor_id,
+        lease.generation,
+        Arc::new(AtomicBool::new(true)),
+    );
+    transition_provider_session_for_member(
+        &ledger,
+        &member,
+        harness_core::agentfirm_api::AgentSessionStatus::Active,
+    )
+    .expect("activate exact sender session");
+    let token = "d".repeat(64);
+    let capability = test_collaboration_capability(&store, &lease, &member, &token);
+    let (_control, _registration) = register_live_member_control(&member, &capability, 1);
+
+    let work = harness_application::WorkApplication::new(&store)
+        .create(harness_application::CreateWorkCommand {
+            work_id: "member-start-assigned-undispatched".into(),
+            team_run_id: created.team_run.id.clone(),
+            accountable_team_id: created.team_run.agent_team_id.clone(),
+            title: "Wait for Supervisor dispatch".into(),
+            context_markdown: String::new(),
+            completion_criteria_markdown: "Start returns a retryable typed rejection".into(),
+            claim_mode: WorkClaimMode::HostAssign,
+            eligible_member_ids: Vec::new(),
+            prerequisite_work_ids: Vec::new(),
+            priority: WorkPriority::Normal,
+            artifact_refs: Vec::new(),
+            check_refs: Vec::new(),
+            github_links: Vec::new(),
+            expected_version: 0,
+            context: WorkCommandContext {
+                event_id: "member-start-assigned-undispatched-created".into(),
+                performed_by_actor: created
+                    .team_run
+                    .host_actor
+                    .clone()
+                    .expect("exact TeamRun Host"),
+                authority_actor: None,
+                causation_ref: None,
+                idempotency_key: "member-start-assigned-undispatched-created".into(),
+                created_at: now_string(),
+                duplicate_ok: false,
+            },
+        })
+        .expect("create Work");
+    let work =
+        assign_test_work_to_member(&store, &lease.execution_space_id, &created, &member, &work);
+    let before = durable_store_file_bytes(&store);
+    let supervisor_valid = AtomicBool::new(true);
+    let authority_gate = Mutex::new(());
+    let error = dispatch_local_live_member_control(
+        &store,
+        &lease.supervisor_id,
+        lease.generation,
+        &supervisor_valid,
+        &authority_gate,
+        LiveMemberControlRequest::RoleAction {
+            team_run_id: created.team_run.id.clone(),
+            member_run_id: member.id.clone(),
+            capability_token: token,
+            path: format!(
+                "/v1/agentfirm/team-runs/{}/works/{}/start",
+                created.team_run.id, work.id
+            ),
+            expected_version: work.version,
+            idempotency_key: "member-start-assigned-undispatched".into(),
+            body: serde_json::json!({"action": "start_work"}),
+            confirmed_action: None,
+        },
+    )
+    .expect_err("member Role Action waits for Supervisor dispatch");
+    let trust = serde_json::from_str::<harness_core::agentfirm_api::TrustError>(&error.to_string())
+        .expect("CLI preserves the typed trust rejection JSON");
+    assert_eq!(
+        trust.code,
+        harness_core::agentfirm_api::TrustErrorCode::DeliveryNotDispatched
+    );
+    assert!(trust.retryable);
+    assert_eq!(trust.resource_kind, "work");
+    assert_eq!(trust.resource_id, work.id);
+    assert_eq!(durable_store_file_bytes(&store), before);
+}
+
+#[test]
 fn member_role_action_capability_binds_sender_to_live_supervisor_identity() {
     let (store, root) = temp_store("member-role-action-capability");
     let created = create_two_member_team_run(&store);

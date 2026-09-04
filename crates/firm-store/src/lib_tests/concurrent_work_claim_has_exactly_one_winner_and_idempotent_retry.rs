@@ -91,9 +91,12 @@ fn concurrent_work_claim_has_exactly_one_winner_and_idempotent_retry() {
             ),
         )
         .expect_err("claim alone must not authorize Start");
-    assert!(start_error
-        .to_string()
-        .contains("does not hold responsibility"));
+    let trust = start_error.trust_error().expect("typed trust rejection");
+    assert_eq!(
+        trust.code,
+        firm_core::agentfirm_api::TrustErrorCode::DeliveryNotDispatched
+    );
+    assert!(trust.retryable);
     let unbound_report = result_report_for_test(
         &winner,
         contenders

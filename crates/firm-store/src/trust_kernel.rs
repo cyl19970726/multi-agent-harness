@@ -285,7 +285,7 @@ fn trust_error(
 /// A typed rejection for a certain, transient state that resolves without any
 /// operator reconciliation. The caller may repeat the same command unchanged
 /// once the awaited transition happens.
-fn retryable_trust_error(
+pub(super) fn retryable_trust_error(
     code: TrustErrorCode,
     message: impl Into<String>,
     resource_kind: &str,

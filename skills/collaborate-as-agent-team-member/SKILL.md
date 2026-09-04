@@ -64,6 +64,8 @@ resolution: Accepted | Cancelled | Failed       (exists only at Closed)
   versions**. `VERSION_CONFLICT` means refresh and re-read; never retry with a
   guessed version. `CLAIM_LOST` means someone else owns it; do not perform its
   side effects.
+- `DELIVERY_NOT_DISPATCHED` is transient: wait for the next Supervisor pass and
+  retry instead of escalating immediately.
 - **Provider "completed" is not Work "done."** Submission moves Work to
   `review`. Ordinary Member Work needs exact Host acceptance; Host-owned Work
   needs one exact active non-owner Team peer in the same TeamRun because the
