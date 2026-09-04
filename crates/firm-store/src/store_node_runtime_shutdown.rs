@@ -93,6 +93,23 @@ impl HarnessStore {
                     command.id, command.phase, command.effect_certainty
                 )));
             }
+            // Every lane this generation owned, mid-turn or not: the drain
+            // killed the provider process groups behind all of them, so no
+            // claim or provider receipt admitted here can ever be settled by
+            // this generation again.
+            let lanes = self
+                .fabric_agent_sessions(&execution_space_id)?
+                .into_iter()
+                .filter(|session| {
+                    session.node_id == node_id
+                        && session.node_daemon_id == daemon_id
+                        && session.node_daemon_generation == generation
+                })
+                .map(|session| crate::LostRuntimeLane {
+                    agent_session_id: session.id.clone(),
+                    agent_session_generation: session.runtime_generation,
+                })
+                .collect::<Vec<_>>();
             for mut session in self
                 .fabric_agent_sessions(&execution_space_id)?
                 .into_iter()
@@ -153,6 +170,26 @@ impl HarnessStore {
                     Vec::new(),
                 )?;
             }
+            // The killed turn is never replayed. Its in-flight Work is instead
+            // handed back to the ordinary dispatch path: the binding is
+            // invalidated with the drain as its recorded cause, and the
+            // claimed/provider-received delivery is superseded with an
+            // explicit failure code, so the successor generation mints a fresh
+            // binding generation and a fresh delivery (#756).
+            self.invalidate_lost_generation_work_bindings_unlocked(
+                context,
+                &execution_space_id,
+                &lanes,
+                crate::LostRuntimeGenerationCause::NodeDaemonDrain,
+                &serde_json::json!({
+                    "node_id": node_id,
+                    "daemon_id": daemon_id,
+                    "node_daemon_generation": generation,
+                    "instance_id": instance_id,
+                    "provider_process_groups_terminated": true,
+                }),
+                updated_at,
+            )?;
         }
         Ok(())
     }

@@ -1,4 +1,6 @@
-use firm_core::agentfirm_api::{CanonicalWorkDelivery, WorkDeliveryStatus};
+use firm_core::agentfirm_api::{
+    is_lost_runtime_generation_delivery_failure_code, CanonicalWorkDelivery, WorkDeliveryStatus,
+};
 use firm_core::{HostAttention, HostAttentionStatus, Validate};
 use std::fmt;
 
@@ -202,6 +204,27 @@ fn valid_work_delivery_transition(
                     .failure_code
                     .as_ref()
                     .is_some_and(|value| !value.is_empty())
+        }
+        // A delivery the provider already received can only be superseded,
+        // never completed, by a settlement writer: the exact runtime
+        // generation that received it is provably gone (a NodeDaemon drain or
+        // an Operator predecessor recovery, both of which prove the owned
+        // provider process groups terminated), so no provider outcome can ever
+        // arrive for it any more. The immutable provider
+        // receipt stays on the row as evidence of what did cross the provider
+        // boundary, and only the named lost-generation codes may claim this
+        // transition, so nothing can record it as a semantic turn result.
+        (WorkDeliveryStatus::ProviderReceived, WorkDeliveryStatus::Failed) => {
+            same_work_delivery_claim(current, next)
+                && next.provider_receipt_id == current.provider_receipt_id
+                && next
+                    .provider_receipt_id
+                    .as_ref()
+                    .is_some_and(|value| !value.is_empty())
+                && next
+                    .failure_code
+                    .as_deref()
+                    .is_some_and(is_lost_runtime_generation_delivery_failure_code)
         }
         _ => false,
     }

@@ -393,6 +393,31 @@ pub enum WorkDeliveryStatus {
     Failed,
 }
 
+/// One in-flight `CanonicalWorkDelivery` superseded because the exact runtime
+/// generation that received it was terminated by a NodeDaemon drain.
+pub const WORK_DELIVERY_SUPERSEDED_BY_NODE_DAEMON_DRAIN: &str =
+    "WORK_DELIVERY_SUPERSEDED_BY_NODE_DAEMON_DRAIN";
+/// The same supersession proved by the Operator's predecessor-recovery
+/// process/process-group termination evidence instead of an in-process drain.
+pub const WORK_DELIVERY_SUPERSEDED_BY_NODE_DAEMON_PREDECESSOR_RECOVERY: &str =
+    "WORK_DELIVERY_SUPERSEDED_BY_NODE_DAEMON_PREDECESSOR_RECOVERY";
+
+/// Every failure code that records an in-flight delivery invalidated because
+/// its exact runtime generation is provably gone. None of them asserts a
+/// provider turn outcome: they say the attempt can never be settled by that
+/// generation, never that the killed turn completed or failed semantically.
+/// The delivery fold and the writers that emit them read this one list, so
+/// they cannot drift apart, and no code enters it before a writer emits it.
+pub const LOST_RUNTIME_GENERATION_DELIVERY_FAILURE_CODES: [&str; 2] = [
+    WORK_DELIVERY_SUPERSEDED_BY_NODE_DAEMON_DRAIN,
+    WORK_DELIVERY_SUPERSEDED_BY_NODE_DAEMON_PREDECESSOR_RECOVERY,
+];
+
+/// True when `code` is one of [`LOST_RUNTIME_GENERATION_DELIVERY_FAILURE_CODES`].
+pub fn is_lost_runtime_generation_delivery_failure_code(code: &str) -> bool {
+    LOST_RUNTIME_GENERATION_DELIVERY_FAILURE_CODES.contains(&code)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DeliveryClaim {
