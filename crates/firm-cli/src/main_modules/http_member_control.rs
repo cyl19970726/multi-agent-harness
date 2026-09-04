@@ -324,6 +324,26 @@ pub(super) fn close_team_member_value(
     }))
 }
 
+/// Whether this Session sits at a terminal turn boundary: no cycle activity and
+/// no turn in flight.
+///
+/// `Interrupted` counts alongside `Idle` here. It records only that the cycle
+/// never reached its own end — typically because a NodeDaemon drain killed the
+/// owned provider process group — and the caller has already proven the runtime
+/// residency is `Detached`, so no live handle can be executing either way.
+/// Fencing the Host's Close on the lifecycle label alone would leave a member
+/// whose runtime is provably dead with no exit at all.
+pub(super) fn session_is_at_terminal_turn_boundary(
+    session: &harness_core::agentfirm_api::AgentSession,
+) -> bool {
+    use harness_core::agentfirm_api::{AgentSessionStatus, RuntimeActivity};
+    matches!(
+        session.lifecycle,
+        AgentSessionStatus::Idle | AgentSessionStatus::Interrupted
+    ) && session.control_state.activity == RuntimeActivity::Idle
+        && session.current_turn_id.is_none()
+}
+
 pub(super) fn close_detached_blocked_member_for_recovery(
     store: &HarnessStore,
     team_run_id: &str,
@@ -376,9 +396,8 @@ pub(super) fn close_detached_blocked_member_for_recovery_with_hooks(
     mut after_terminal_cas: impl FnMut(&ProviderRuntimeProjection) -> CliResult<()>,
 ) -> CliResult<Option<serde_json::Value>> {
     use harness_core::agentfirm_api::{
-        AgentSessionStatus, NativeSessionAvailability as AgentNativeSessionAvailability,
-        RuntimeActivity, RuntimeCommandStatus, RuntimeDriverRef, RuntimeEffectCertainty,
-        RuntimeResidency, WorkDeliveryStatus,
+        NativeSessionAvailability as AgentNativeSessionAvailability, RuntimeCommandStatus,
+        RuntimeDriverRef, RuntimeEffectCertainty, RuntimeResidency, WorkDeliveryStatus,
     };
 
     let ledger = TeamRunLedger::without_supervisor(store, team_run_id);
@@ -386,10 +405,7 @@ pub(super) fn close_detached_blocked_member_for_recovery_with_hooks(
     if session.control_state.runtime_residency != RuntimeResidency::Detached {
         return Ok(None);
     }
-    if session.lifecycle != AgentSessionStatus::Idle
-        || session.control_state.activity != RuntimeActivity::Idle
-        || session.current_turn_id.is_some()
-    {
+    if !session_is_at_terminal_turn_boundary(&session) {
         return Err(CliError::RuntimeRecoveryRequired(format!(
             "DETACHED_MEMBER_RECOVERY_FENCED: member {} session {} is not detached+idle at a terminal turn boundary",
             member.id, session.id
@@ -589,10 +605,9 @@ pub(super) fn close_detached_blocked_member_for_recovery_with_hooks(
             }
             let (_, current_session) = provider_session_for_member(&ledger, &latest)?;
             if current_session.version != session.version
+                || current_session.lifecycle != session.lifecycle
                 || current_session.control_state.runtime_residency != RuntimeResidency::Detached
-                || current_session.control_state.activity != RuntimeActivity::Idle
-                || current_session.lifecycle != AgentSessionStatus::Idle
-                || current_session.current_turn_id.is_some()
+                || !session_is_at_terminal_turn_boundary(&current_session)
             {
                 return Err(CliError::RuntimeRecoveryRequired(format!(
                     "DETACHED_MEMBER_RECOVERY_FENCED: AgentSession {} changed after recovery admission",

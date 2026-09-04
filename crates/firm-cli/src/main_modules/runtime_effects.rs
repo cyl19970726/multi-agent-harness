@@ -261,6 +261,12 @@ pub(super) fn transition_provider_session_for_member(
         (AgentSessionStatus::Cold, AgentSessionStatus::Active) => {
             vec![AgentSessionStatus::Idle, AgentSessionStatus::Active]
         }
+        // A Session left `Interrupted` by a NodeDaemon drain re-enters the lane
+        // through `Idle`; the Store admits that hop only while the killed
+        // runtime is still provably gone, so this never resumes a live cycle.
+        (AgentSessionStatus::Interrupted, AgentSessionStatus::Active) => {
+            vec![AgentSessionStatus::Idle, AgentSessionStatus::Active]
+        }
         (AgentSessionStatus::Waiting, AgentSessionStatus::Active) => {
             vec![AgentSessionStatus::Active]
         }

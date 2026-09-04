@@ -393,6 +393,21 @@ RuntimeCommand effect, and must release the complete per-Space authority bundle
 before a new daemon may start. Never delete lease rows or retry Start to bypass
 this settlement boundary.
 
+A drain leaves every member that was mid-turn with an `Interrupted`
+AgentSession. That is recoverable, not wedged: after the predecessor lease is
+Released, `harness daemon start` plus `harness team-run start` re-adopts the
+TeamRun, reattaches each Session to the new generation and resumes it
+(`Interrupted -> Idle`, then a fresh cycle). Members that were idle at drain
+time keep `Idle` and resume unchanged. The killed cycle's `RuntimeCommand`
+remains settled against the dead daemon generation and is never replayed.
+
+If a resume is refused with `AgentSession interrupted by a NodeDaemon drain may
+resume only from a detached, disarmed lane…`, the lane still claims a live
+provider handle or carries an ambiguous `RuntimeCommand`: reconcile that command
+through `runtime-commands/{id}/resolve` first. When the member should not come
+back at all, `team-run close-member` is the escape hatch and works on an
+`Interrupted` Session whose runtime is detached at a terminal turn boundary.
+
 Teams are created without any Mission (DOC-108); `--mission-id` survives only
 as optional legacy provenance. Omit ad-hoc `--member` overrides when starting
 from a durable AgentTeam definition. That path preserves each registered

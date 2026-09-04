@@ -764,6 +764,44 @@ impl HarnessStore {
                     && command.status == RuntimeCommandStatus::Accepted
                     && command.effect_certainty == RuntimeEffectCertainty::Unknown
             });
+        let ambiguous_effect_for_session = runtime_commands.iter().any(|command| {
+            command.target_session_id.as_deref() == Some(session.id.as_str())
+                && command.target_session_generation == Some(session.runtime_generation)
+                && matches!(
+                    command.status,
+                    RuntimeCommandStatus::Accepted
+                        | RuntimeCommandStatus::Quiesced
+                        | RuntimeCommandStatus::RecoveryRequired
+                )
+                && command.effect_certainty == RuntimeEffectCertainty::Unknown
+        });
+        // A NodeDaemon drain or hard-crash recovery kills the owned provider
+        // process groups and settles every mid-turn Session as `Interrupted`.
+        // That is an honest record of a cycle that never reached its own end,
+        // not a terminal state: the successor generation must be able to open a
+        // fresh cycle on the same provider-native session. This is the one exit
+        // from `Interrupted` back into the ordinary lane, and it is admitted
+        // only while the lane still proves the killed runtime is gone — no live
+        // handle, no cycle, no turn, continuation disarmed, no queued native
+        // input, and no ambiguous RuntimeCommand that a resume could replay.
+        // The exact-current-NodeDaemon fence above is the other half of the
+        // proof: a drained Session still carries its dead daemon generation and
+        // can only reach the live one through `reattach_agent_session_to_node_daemon`,
+        // which itself requires the predecessor lease to be explicitly Released.
+        let interrupted_runtime_is_terminated = session.control_state.runtime_residency
+            == RuntimeResidency::Detached
+            && session.control_state.activity == RuntimeActivity::Idle
+            && session.control_state.handoff_state
+                == firm_core::agentfirm_api::DriverHandoffState::None
+            && session.control_state.continuation.activation
+                == NativeContinuationActivation::Disarmed
+            && session.current_turn_id.is_none()
+            && session.queued_input_count == 0
+            && !ambiguous_effect_for_session;
+        let resumes_terminated_interrupted_lane = session.lifecycle
+            == AgentSessionStatus::Interrupted
+            && next_status == AgentSessionStatus::Idle
+            && interrupted_runtime_is_terminated;
         let allowed = matches!(
             (session.lifecycle, next_status),
             (AgentSessionStatus::Cold, AgentSessionStatus::Idle)
@@ -789,14 +827,24 @@ impl HarnessStore {
             session.lifecycle,
             AgentSessionStatus::Cold | AgentSessionStatus::Active
         ) && next_status == AgentSessionStatus::Closed
-            && authorized_stop);
+            && authorized_stop)
+            || resumes_terminated_interrupted_lane;
         if !allowed {
-            return Err(trust_error(
-                TrustErrorCode::InvalidStateTransition,
+            // Name the exact fence for the drain-recovery case so an operator
+            // reads "the lane is not proven dead yet", not a bare table miss.
+            let message = if session.lifecycle == AgentSessionStatus::Interrupted
+                && next_status == AgentSessionStatus::Idle
+            {
+                "AgentSession interrupted by a NodeDaemon drain may resume only from a detached, disarmed lane at a terminal turn boundary with no ambiguous RuntimeCommand; reconcile the runtime first".to_string()
+            } else {
                 format!(
                     "invalid AgentSession transition {:?}->{next_status:?}",
                     session.lifecycle
-                ),
+                )
+            };
+            return Err(trust_error(
+                TrustErrorCode::InvalidStateTransition,
+                message,
                 "agent_session",
                 session_id,
                 Some(session.version),
