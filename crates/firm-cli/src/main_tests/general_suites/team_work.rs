@@ -8,5 +8,7 @@ mod create_team_value_missing_required_field_is_usage_error;
 mod partial_legacy_team_run_is_diagnostic_only_until_canonical_completeness_is_restored;
 #[path = "../general/provider_profiles_make_codex_app_server_the_team_default.rs"]
 mod provider_profiles_make_codex_app_server_the_team_default;
+#[path = "../general/team_work_cli_redelivers_and_derives_release_team_run.rs"]
+mod team_work_cli_redelivers_and_derives_release_team_run;
 #[path = "../general/team_work_cli_replaces_dependencies_through_application.rs"]
 mod team_work_cli_replaces_dependencies_through_application;

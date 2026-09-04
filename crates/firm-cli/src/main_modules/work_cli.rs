@@ -91,7 +91,7 @@ pub(super) fn team_run_work_command(
 ) -> CliResult<()> {
     require_subcommand(
         args,
-        "team-run work list|show|create|replace-dependencies|delegate|delegation|assign|claim|start|block|resume|release|submit|request-changes|accept|cancel|retarget|reconcile-projection|migrate-responsibility|poll-github-ci",
+        "team-run work list|show|create|replace-dependencies|delegate|delegation|assign|redeliver|claim|start|block|resume|release|submit|request-changes|accept|cancel|retarget|reconcile-projection|migrate-responsibility|poll-github-ci",
     )?;
     if matches!(args[0].as_str(), "delegate" | "delegation") {
         return Err(CliError::Usage(
@@ -563,6 +563,54 @@ pub(super) fn team_run_work_command(
             )?;
             print_json(&work)
         }
+        "redeliver" => {
+            reject_unknown_work_options(
+                args,
+                &[
+                    "--work-id",
+                    "--expected-version",
+                    "--reason",
+                    "--event-id",
+                    "--idempotency-key",
+                    "--caused-by-message-id",
+                    "--team-run-id",
+                ],
+                &["--duplicate-ok", "--json"],
+            )?;
+            let space_id = resolved
+                .execution_space_context
+                .as_ref()
+                .map(|space| space.id.clone())
+                .ok_or_else(|| {
+                    CliError::Usage(
+                        "Work redelivery requires an explicitly selected --space".to_string(),
+                    )
+                })?;
+            let work_id = required(args, "--work-id")?;
+            let reason = value(args, "--reason");
+            let work = execute_work_action(
+                store,
+                harness_application::WorkAction::Redeliver {
+                    expected_version: required_work_version(args)?,
+                    context: host_work_context_for_work(store, &work_id, args)?,
+                    work_id,
+                    execution_space_id: space_id,
+                    reason: reason.clone(),
+                },
+            )?;
+            append_work_event(
+                store,
+                &work,
+                TeamRunEventSourceKind::Host,
+                None,
+                "redelivered",
+                &match reason {
+                    Some(reason) => format!("Work redelivered by host: {reason}"),
+                    None => "Work redelivered by host".to_string(),
+                },
+            )?;
+            print_json(&work)
+        }
         "migrate-responsibility" => {
             let space_id = resolved
                 .execution_space_context
@@ -719,9 +767,14 @@ pub(super) fn team_run_work_command(
             }
         }
         "release" => {
-            let team_run_id = required(args, "--team-run-id")?;
             let work_id = required(args, "--work-id")?;
             let expected_version = required_work_version(args)?;
+            // `--team-run-id` stays accepted for compatibility, but every other
+            // `team-run work` verb derives the TeamRun from the Work itself.
+            let team_run_id = match value(args, "--team-run-id") {
+                Some(team_run_id) => team_run_id,
+                None => team_run_id_for_work(store, &work_id)?,
+            };
             if let Some(member_run_id) = value(args, "--member-run-id") {
                 let work = execute_work_action(
                     store,

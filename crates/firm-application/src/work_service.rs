@@ -34,6 +34,14 @@ pub trait WorkPersistence {
         execution_space_id: &str,
         context: WorkCommandContext,
     ) -> Result<Work, Self::Error>;
+    fn redeliver_work_to_current_session(
+        &self,
+        work_id: &str,
+        expected_version: u64,
+        execution_space_id: &str,
+        reason: Option<&str>,
+        context: WorkCommandContext,
+    ) -> Result<Work, Self::Error>;
     fn release_work_as_host(
         &self,
         work_id: &str,
@@ -143,6 +151,7 @@ pub enum WorkActionKind {
     Create,
     ReplaceDependencies,
     AssignMembership,
+    Redeliver,
     ReleaseHost,
     ReleaseMember,
     Claim,
@@ -164,6 +173,15 @@ pub enum WorkAction {
         expected_version: u64,
         membership_id: String,
         execution_space_id: String,
+        context: WorkCommandContext,
+    },
+    /// Host re-authorization of an open, never-started Work whose delivery is
+    /// frozen on an AgentSession generation the member no longer runs.
+    Redeliver {
+        work_id: String,
+        expected_version: u64,
+        execution_space_id: String,
+        reason: Option<String>,
         context: WorkCommandContext,
     },
     ReleaseHost {
@@ -235,6 +253,7 @@ impl WorkAction {
             Self::Create(_) => WorkActionKind::Create,
             Self::ReplaceDependencies(_) => WorkActionKind::ReplaceDependencies,
             Self::AssignMembership { .. } => WorkActionKind::AssignMembership,
+            Self::Redeliver { .. } => WorkActionKind::Redeliver,
             Self::ReleaseHost { .. } => WorkActionKind::ReleaseHost,
             Self::ReleaseMember { .. } => WorkActionKind::ReleaseMember,
             Self::Claim { .. } => WorkActionKind::Claim,
@@ -253,6 +272,7 @@ impl WorkAction {
             Self::Create(command) => &command.context,
             Self::ReplaceDependencies(command) => &command.context,
             Self::AssignMembership { context, .. }
+            | Self::Redeliver { context, .. }
             | Self::ReleaseHost { context, .. }
             | Self::ReleaseMember { context, .. }
             | Self::Claim { context, .. }
@@ -300,6 +320,19 @@ impl<'a, P: WorkPersistence + ?Sized> WorkApplication<'a, P> {
                 expected_version,
                 &membership_id,
                 &execution_space_id,
+                context,
+            )?,
+            WorkAction::Redeliver {
+                work_id,
+                expected_version,
+                execution_space_id,
+                reason,
+                context,
+            } => self.redeliver(
+                &work_id,
+                expected_version,
+                &execution_space_id,
+                reason.as_deref(),
                 context,
             )?,
             WorkAction::ReleaseHost {
@@ -436,6 +469,27 @@ impl<'a, P: WorkPersistence + ?Sized> WorkApplication<'a, P> {
             expected_version,
             membership_id,
             execution_space_id,
+            context,
+        )
+    }
+
+    /// Supersede the stale delivery of an open Work and re-authorize it for the
+    /// member's current AgentSession generation. Responsibility, phase, and
+    /// condition are unchanged; only the Work revision advances so the ordinary
+    /// delivery path can bind and wake again.
+    pub fn redeliver(
+        &self,
+        work_id: &str,
+        expected_version: u64,
+        execution_space_id: &str,
+        reason: Option<&str>,
+        context: WorkCommandContext,
+    ) -> Result<Work, P::Error> {
+        self.port.redeliver_work_to_current_session(
+            work_id,
+            expected_version,
+            execution_space_id,
+            reason,
             context,
         )
     }
@@ -620,6 +674,13 @@ mod tests {
                 execution_space_id: "space-1".into(),
                 context: context(),
             },
+            WorkAction::Redeliver {
+                work_id: "work-1".into(),
+                expected_version: 1,
+                execution_space_id: "space-1".into(),
+                reason: Some("member reopened".into()),
+                context: context(),
+            },
             WorkAction::ReleaseHost {
                 work_id: "work-1".into(),
                 expected_version: 1,
@@ -689,6 +750,7 @@ mod tests {
                 WorkActionKind::Create,
                 WorkActionKind::ReplaceDependencies,
                 WorkActionKind::AssignMembership,
+                WorkActionKind::Redeliver,
                 WorkActionKind::ReleaseHost,
                 WorkActionKind::ReleaseMember,
                 WorkActionKind::Claim,

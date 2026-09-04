@@ -385,6 +385,7 @@ mod store_work_application;
 mod store_work_graph;
 mod store_work_mutations;
 mod store_work_projection;
+mod store_work_redelivery;
 mod store_work_state;
 
 fn latest_by_id<T>(

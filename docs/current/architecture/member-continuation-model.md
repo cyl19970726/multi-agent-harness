@@ -183,6 +183,33 @@ at the terminal observation; it never
 fabricates a provider receipt and never replays previously provider-received
 Work.
 
+### Work Delivery After Reopen
+
+Reopen unfreezes the mailbox; it does not resume Work delivery. Message
+delivery and Work delivery are separate planes, and a `WorkDelivery` freezes
+the exact AgentSession generation it was bound to. Close releases that
+`WorkExecutionBinding`, and a delivery that already reached the provider stays
+`provider_received` as immutable evidence: the reopened generation must never
+replay it, so the ordinary binding path waits for explicit new Host authority.
+
+`firm team-run work redeliver --work-id <id> --expected-version <n>
+[--reason <text>]` is that authority for an open Work the member never started.
+It appends one Host `Rebound` WorkOperation naming the exact deliveries it
+supersedes, leaves those rows untouched, and advances the Work revision.
+Responsibility, phase and condition are unchanged; the ordinary NodeDaemon path
+then binds the new revision to the member's current generation and produces the
+new delivery, exactly as it does after `work assign`. Redelivery creates no
+binding and no RuntimeCommand of its own.
+
+It refuses, with zero writes, a Work that is terminal
+(`WORK_TERMINAL_NOT_REDELIVERABLE`), a Work whose delivery already began
+execution (`WORK_ALREADY_STARTED`), a Work with no assignee
+(`WORK_NOT_ASSIGNED`), a Work with no queued, claimed or provider-received
+delivery to supersede (`WORK_HAS_NO_UNSTARTED_DELIVERY`), and a Work whose
+execution binding can still reach the provider (`WORK_DELIVERY_LIVE` — not a
+stale delivery; close the member runtime, or use `work release` / `work
+assign`).
+
 Ordinary message visibility is an explicit execution-mode capability, not a
 uniform mailbox promise:
 

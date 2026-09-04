@@ -311,7 +311,16 @@ pub(super) fn print_help() {
   team-run board-summary --id <team-run-id>
       <=500-char plain-text board digest: counts by status, assigned/unassigned,
       ready, and one idle|working|awaiting-review line per active member.
-  team-run work list|show|create|assign|claim|start|block|resume|release|submit|review|request-changes|accept|cancel
+  team-run work list|show|create|assign|redeliver|claim|start|block|resume|release|submit|review|request-changes|accept|cancel
+  team-run work redeliver --work-id <id> --expected-version <n> [--reason <text>]
+      Re-authorize an open Work whose delivery is frozen on an AgentSession
+      generation the member no longer runs (typically after close-member +
+      reopen-member). Records which deliveries it supersedes, advances the Work
+      revision, and lets the ordinary delivery path bind and wake the member's
+      current generation. Refuses a terminal Work, a Work already started, and
+      a delivery that is still live on an execution binding.
+  team-run work release --work-id <id> --expected-version <n> [--member-run-id <id>]
+      --team-run-id is optional; the TeamRun is derived from the Work.
   team-run work list [--brief] [--since <cursor>] --team-run-id <id> [--status <status>] [--member-run-id <id>]
       --brief: one plain-text line per Work, no JSON wrapper.
       --since <cursor>: only Works whose latest WorkOperation postdates the

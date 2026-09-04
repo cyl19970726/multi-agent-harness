@@ -673,12 +673,19 @@ pub(super) fn host_work_context_for_work(
     work_id: &str,
     args: &[String],
 ) -> CliResult<WorkCommandContext> {
-    let work = store
+    let team_run_id = team_run_id_for_work(store, work_id)?;
+    host_work_context(store, &team_run_id, args)
+}
+
+/// The authoritative TeamRun of one Work. Work verbs derive it instead of
+/// making the Host repeat a run id the Work already carries.
+pub(super) fn team_run_id_for_work(store: &HarnessStore, work_id: &str) -> CliResult<String> {
+    store
         .latest_works()?
         .into_iter()
         .find(|work| work.id == work_id)
-        .ok_or_else(|| CliError::Usage(format!("Work not found: {work_id}")))?;
-    host_work_context(store, &work.team_run_id, args)
+        .map(|work| work.team_run_id)
+        .ok_or_else(|| CliError::Usage(format!("Work not found: {work_id}")))
 }
 
 pub(super) fn migration_host_work_context(args: &[String]) -> WorkCommandContext {
