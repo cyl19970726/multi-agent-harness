@@ -32,7 +32,7 @@ import { ProvenanceFooter } from "@/components/workbench/ProvenanceFooter";
 
 import type { WorkbenchModel } from "../model/readModel";
 import type { RoleActionExecutor } from "../model/roleViews";
-import type { ExecutionSpace, Project } from "../types";
+import type { DashboardSnapshot, ExecutionSpace, Project } from "../types";
 import {
   AgentDetail,
   AgentsList,
@@ -805,6 +805,15 @@ function ContextTreeButton({
   );
 }
 
+export function snapshotContentRevision(snapshot: DashboardSnapshot): string {
+  const content: Record<string, unknown> = { ...snapshot };
+  delete content.generated_at;
+  delete content.node_daemon_leases;
+  delete content.team_supervisor_leases;
+  delete content.live_member_activity;
+  return JSON.stringify(content);
+}
+
 function SurfaceSwitch({
   model,
   selection,
@@ -838,17 +847,14 @@ function SurfaceSwitch({
   projects: Project[];
   isLoading: boolean;
 }) {
-  // Content-derived snapshot revision: generated_at, ambient Supervisor lease
-  // heartbeat rows and volatile live previews are excluded so a heartbeat
-  // commit never forces a surface revalidate, while any durable projection
-  // change still does.
-  const snapshotContentRevision = useMemo(() => {
-    const content: Record<string, unknown> = { ...model.snapshot };
-    delete content.generated_at;
-    delete content.team_supervisor_leases;
-    delete content.live_member_activity;
-    return JSON.stringify(content);
-  }, [model.snapshot]);
+  // Content-derived snapshot revision excludes response generation time,
+  // heartbeat-only NodeDaemon/Supervisor leases, and client-only live previews.
+  // Those rows can advance without latest_op_seq or durable projection truth;
+  // Work, Message, binding, session, registration, and action rows remain.
+  const contentRevision = useMemo(
+    () => snapshotContentRevision(model.snapshot),
+    [model.snapshot],
+  );
   const shared = {
     model,
     onSelectionChange,
@@ -859,14 +865,14 @@ function SurfaceSwitch({
     executionSpaceId,
   };
   if (selection.surface === "work") {
-    return <GlobalWorkIndex apiUrl={apiUrl} space={executionSpaceId} project={projectBindingId} refreshKey={snapshotContentRevision} selection={selection} onSelectionChange={onSelectionChange} teams={model.snapshot.teams ?? []} />;
+    return <GlobalWorkIndex apiUrl={apiUrl} space={executionSpaceId} project={projectBindingId} refreshKey={contentRevision} selection={selection} onSelectionChange={onSelectionChange} teams={model.snapshot.teams ?? []} />;
   }
   switch (selection.surface) {
     case "team":
       return selection.teamId ? (
-        <TeamWorkspace apiUrl={apiUrl} space={executionSpaceId} project={projectBindingId} company={companyId} teamId={selection.teamId} refreshKey={snapshotContentRevision} selection={selection} onAction={onRoleAction} onSelectionChange={onSelectionChange} onSelectionReplace={onSelectionReplace} />
+        <TeamWorkspace apiUrl={apiUrl} space={executionSpaceId} project={projectBindingId} company={companyId} teamId={selection.teamId} refreshKey={contentRevision} selection={selection} onAction={onRoleAction} onSelectionChange={onSelectionChange} onSelectionReplace={onSelectionReplace} />
       ) : selection.memberRunId ? (
-        <AgentConversationWorkspace apiUrl={apiUrl} space={executionSpaceId} project={projectBindingId} company={companyId} routeIdentity={selection.memberRunId} selection={selection} refreshKey={snapshotContentRevision} onAction={onRoleAction} onSelectionChange={onSelectionChange}/>
+        <AgentConversationWorkspace apiUrl={apiUrl} space={executionSpaceId} project={projectBindingId} company={companyId} routeIdentity={selection.memberRunId} selection={selection} refreshKey={contentRevision} onAction={onRoleAction} onSelectionChange={onSelectionChange}/>
       ) : (
         <AgentTeamsHome {...shared} loading={isLoading} />
       );
