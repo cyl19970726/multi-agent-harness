@@ -3,6 +3,170 @@ use firm_core::agentfirm_api::{
     Confidence, PrimaryCauseStatus, RetrySafety, TrustErrorCode, WorkFindingKind,
 };
 
+fn start_context(member_run_id: &str, suffix: &str) -> firm_core::WorkCommandContext {
+    firm_core::WorkCommandContext {
+        event_id: format!("event-start-{suffix}"),
+        performed_by_actor: firm_core::TeamActorRef {
+            kind: firm_core::TeamActorKind::ProviderRuntimeProjection,
+            id: member_run_id.into(),
+            display_name: None,
+            authn_source: Some("test".into()),
+        },
+        authority_actor: None,
+        causation_ref: None,
+        idempotency_key: format!("command-start-{suffix}"),
+        created_at: format!("t-start-{suffix}"),
+        duplicate_ok: false,
+    }
+}
+
+#[test]
+fn start_distinguishes_assigned_undispatched_foreign_and_dispatched_work() {
+    let (store, _root) = fabric_store();
+    append_runtime_team(&store, "team-admission", "run-admission");
+    for agent_member_id in ["worker-start", "other-start"] {
+        store
+            .migrate_legacy_agent_identity_same_id(
+                &context(
+                    "operator",
+                    "identity.create",
+                    &format!("identity-{agent_member_id}"),
+                    0,
+                ),
+                identity(agent_member_id),
+            )
+            .unwrap();
+    }
+    let membership = join_runtime_membership(
+        &store,
+        "membership-worker-start",
+        "team-admission",
+        "worker-start",
+        TeamMembershipRole::Member,
+    );
+    let other_membership = join_runtime_membership(
+        &store,
+        "membership-other-start",
+        "team-admission",
+        "other-start",
+        TeamMembershipRole::Member,
+    );
+    let target = session("session-worker-start", "worker-start");
+    store
+        .create_agent_session(
+            &service_context("session.create", &target.id, 0),
+            target.clone(),
+        )
+        .unwrap();
+    admit_member_run(
+        &store,
+        canonical_member_run("member-run-worker-start", "worker-start", "run-admission"),
+    );
+
+    let undispatched = assign_responsibility(&store, "work-undispatched", &membership.id);
+    let operations_before_undispatched = store.canonical_operations().unwrap();
+    let error = store
+        .start_work(
+            &undispatched.id,
+            undispatched.version,
+            "member-run-worker-start",
+            start_context("member-run-worker-start", "undispatched"),
+        )
+        .expect_err("assigned Work without an Active binding is transiently undispatched");
+    let trust = error.trust_error().expect("typed trust rejection");
+    assert_eq!(trust.code, TrustErrorCode::DeliveryNotDispatched);
+    assert!(trust.retryable);
+    assert_eq!(trust.resource_kind, "work");
+    assert_eq!(trust.resource_id, undispatched.id);
+    assert_eq!(trust.current_version, Some(undispatched.version));
+    assert_eq!(
+        trust.message,
+        "Work is assigned to you but not yet dispatched by the Supervisor; wait for the next pass and retry"
+    );
+    assert_eq!(
+        store.canonical_operations().unwrap(),
+        operations_before_undispatched
+    );
+
+    let foreign = assign_responsibility(&store, "work-foreign", &other_membership.id);
+    let operations_before_foreign = store.canonical_operations().unwrap();
+    let error = store
+        .start_work(
+            &foreign.id,
+            foreign.version,
+            "member-run-worker-start",
+            start_context("member-run-worker-start", "foreign"),
+        )
+        .expect_err("Work assigned to another member remains a responsibility conflict");
+    assert!(
+        error.trust_error().is_none(),
+        "foreign Work is not a delivery wait"
+    );
+    assert!(
+        error
+            .to_string()
+            .contains("does not hold responsibility for open Work"),
+        "{error}"
+    );
+    assert_eq!(
+        store.canonical_operations().unwrap(),
+        operations_before_foreign
+    );
+
+    let dispatched = assign_responsibility(&store, "work-dispatched", &membership.id);
+    let mut runtime_binding = runtime_command_fixture(
+        "runtime-worker-start",
+        RuntimeCommandKind::StartCycle,
+        &target,
+        "start_cycle",
+    )
+    .0
+    .binding;
+    runtime_binding.target_member_run_id = Some("member-run-worker-start".into());
+    runtime_binding.target_member_run_generation = Some(1);
+    let binding = execution_binding(&dispatched, &membership, &target, "binding-worker-start");
+    store
+        .bind_responsible_work_execution(
+            &service_context("work.bind", &binding.id, 0),
+            &runtime_binding,
+            binding.clone(),
+        )
+        .unwrap();
+    store
+        .claim_work_for_provider(
+            &service_context("work.claim", "claim-worker-start", 0),
+            &binding.delivery_id,
+            &target.node_id,
+            &target.node_daemon_id,
+            target.node_daemon_generation,
+            "claim-worker-start",
+            firm_core::agentfirm_api::RuntimeDispatchMode::QueueOnly,
+            "t-claim-worker-start",
+        )
+        .unwrap();
+    store
+        .record_work_provider_receipt(
+            &service_context("work.receipt", "receipt-worker-start", 0),
+            &binding.delivery_id,
+            &target.node_id,
+            &target.node_daemon_id,
+            target.node_daemon_generation,
+            "claim-worker-start",
+            "provider-receipt-worker-start",
+            "t-receipt-worker-start",
+        )
+        .unwrap();
+    let started = store
+        .start_work(
+            &dispatched.id,
+            dispatched.version,
+            "member-run-worker-start",
+            start_context("member-run-worker-start", "dispatched"),
+        )
+        .expect("dispatched, claimed, provider-received Work starts");
+    assert_eq!(started.phase, firm_core::WorkPhase::Active);
+}
+
 #[test]
 fn start_requires_provider_received_delivery() {
     for claimed in [false, true] {

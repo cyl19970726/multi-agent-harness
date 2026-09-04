@@ -251,12 +251,13 @@ history unchanged. An unsettled `Claimed` delivery remains uncertain and
 fences cancellation until it is reconciled. Cancellation never fabricates a
 provider effect, delivery failure, binding release, or semantic Work start.
 
-Only an unsettled `Claimed` delivery is uncertain. A `Queued` delivery that was
-never claimed and never produced a provider receipt is a certain, transient
-state, so a member Start or semantic Work report against it returns the
-retryable `DELIVERY_NOT_DISPATCHED` rather than `DELIVERY_RECOVERY_UNCERTAIN`:
-the member simply waits for the Supervisor wake and repeats the same command.
-A member that already holds one active Work is answered `MEMBER_BUSY` before
+Only an unsettled `Claimed` delivery is uncertain. A member Start against Work
+assigned to that member but not yet bound by the Supervisor, or a member Start
+or semantic Work report against a `Queued` delivery that was never claimed and
+never produced a provider receipt, returns the retryable
+`DELIVERY_NOT_DISPATCHED` rather than `DELIVERY_RECOVERY_UNCERTAIN`: the member
+simply waits for the next Supervisor pass and repeats the same command. A
+member that already holds one active Work is answered `MEMBER_BUSY` before
 either delivery check runs.
 
 `HostAttention` uses the same boundary with different storage ownership. The

@@ -1,6 +1,50 @@
 use super::*;
 
 impl HarnessStore {
+    fn work_is_assigned_to_member_without_active_binding_unlocked(
+        &self,
+        work: &Work,
+        member: &ProviderRuntimeProjection,
+    ) -> StoreResult<bool> {
+        if work.owner_member_id.as_deref() != Some(member.agent_member_id.as_str()) {
+            return Ok(false);
+        }
+        let (Some(membership_id), Some(team_id)) = (
+            work.assignee_membership_id.as_deref(),
+            work.accountable_team_id.as_deref(),
+        ) else {
+            return Ok(false);
+        };
+        let mut matches = Vec::new();
+        for space_id in self.canonical_execution_space_ids()? {
+            matches.extend(
+                self.fabric_team_memberships(&space_id)?
+                    .into_iter()
+                    .filter(|membership| membership.id == membership_id)
+                    .map(|membership| (space_id.clone(), membership)),
+            );
+        }
+        let [(space_id, membership)] = matches.as_slice() else {
+            return Ok(false);
+        };
+        if membership.team_id != team_id
+            || membership.agent_member_id != member.agent_member_id
+            || membership.state != firm_core::agentfirm_api::TeamMembershipStatus::Active
+        {
+            return Ok(false);
+        }
+        Ok(!self
+            .fabric_work_execution_bindings(space_id)?
+            .into_iter()
+            .any(|binding| {
+                binding.work_id == work.id
+                    && binding.team_membership_id == membership.id
+                    && binding.agent_member_id == member.agent_member_id
+                    && binding.status
+                        == firm_core::agentfirm_api::WorkExecutionBindingStatus::Active
+            }))
+    }
+
     fn require_unassigned_work_creation(work: &Work) -> StoreResult<()> {
         if work.active_member_run_id.is_some() {
             return Err(StoreError::Conflict(
@@ -823,6 +867,18 @@ impl HarnessStore {
             return Err(StoreError::Conflict(format!(
                 "MEMBER_BUSY: ProviderRuntimeProjection {member_run_id} already has active Work"
             )));
+        }
+        if current.phase == WorkPhase::Open
+            && current.condition == WorkCondition::Normal
+            && self.work_is_assigned_to_member_without_active_binding_unlocked(&current, &member)?
+        {
+            return Err(super::trust_kernel::retryable_trust_error(
+                firm_core::agentfirm_api::TrustErrorCode::DeliveryNotDispatched,
+                "Work is assigned to you but not yet dispatched by the Supervisor; wait for the next pass and retry",
+                "work",
+                work_id,
+                Some(current.version),
+            ));
         }
         if current.phase != WorkPhase::Open
             || current.condition != WorkCondition::Normal
