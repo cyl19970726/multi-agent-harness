@@ -195,6 +195,29 @@ pub(crate) fn ensure_team_runtime_fabric(
                     &timestamp,
                 )?;
             }
+            // A lane a NodeDaemon drain left `Interrupted` re-enters the
+            // ordinary lane here, on the exact generation that just adopted it
+            // and before any provider effect is prepared. Doing it later is
+            // what wedged #779: the member runner publishes an Attached
+            // residency before its first cycle projects the Session Active, so
+            // by then the DEV-171 fence — which requires a detached, disarmed
+            // lane — can no longer admit the hop the runner needs.
+            if session.lifecycle == AgentSessionStatus::Interrupted {
+                let reattached = current_agent_session(store, execution_space_id, &session.id)?;
+                if resume_drained_lane_for_adoption(
+                    store,
+                    execution_space_id,
+                    daemon_id,
+                    &reattached,
+                    &timestamp,
+                )? == DrainedLaneResume::NotYetResumable
+                {
+                    eprintln!(
+                        "[node-daemon] AgentSession {} stays interrupted: its lane does not yet prove the drained runtime is gone; the next adoption pass retries",
+                        reattached.id
+                    );
+                }
+            }
         } else {
             let native_session_ref = expected_agentfirm_native_session_ref(member);
             store.create_agent_session(

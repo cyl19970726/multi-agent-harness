@@ -105,7 +105,7 @@ fn active_with_supervisor_returns_already_active() {
         false,
     );
     assert_eq!(
-        classify_member_recovery_path(&member, true),
+        classify_member_recovery_path(&member, true, false),
         MemberRecoveryPath::AlreadyActive
     );
 }
@@ -121,7 +121,7 @@ fn compatible_session_returns_resume() {
         false,
     );
     assert_eq!(
-        classify_member_recovery_path(&member, false),
+        classify_member_recovery_path(&member, false, false),
         MemberRecoveryPath::ResumeCompatible
     );
 }
@@ -136,7 +136,7 @@ fn incompatible_session_returns_rebind() {
         NativeSessionAvailability::Incompatible,
         false,
     );
-    let result = classify_member_recovery_path(&member, false);
+    let result = classify_member_recovery_path(&member, false, false);
     assert!(
         matches!(result, MemberRecoveryPath::RebindIncompatible { .. }),
         "expected RebindIncompatible, got {:?}",
@@ -154,7 +154,7 @@ fn missing_session_returns_rebind() {
         NativeSessionAvailability::Missing,
         false,
     );
-    let result = classify_member_recovery_path(&member, false);
+    let result = classify_member_recovery_path(&member, false, false);
     assert!(
         matches!(result, MemberRecoveryPath::RebindIncompatible { .. }),
         "expected RebindIncompatible, got {:?}",
@@ -172,7 +172,7 @@ fn retired_member_returns_terminal() {
         NativeSessionAvailability::Available,
         false,
     );
-    let result = classify_member_recovery_path(&member, false);
+    let result = classify_member_recovery_path(&member, false, false);
     assert!(
         matches!(result, MemberRecoveryPath::Terminal { .. }),
         "expected Terminal, got {:?}",
@@ -191,7 +191,7 @@ fn external_interactive_always_resume() {
         true, // external interactive
     );
     assert_eq!(
-        classify_member_recovery_path(&member, false),
+        classify_member_recovery_path(&member, false, false),
         MemberRecoveryPath::ResumeCompatible
     );
 }
@@ -208,8 +208,64 @@ fn already_active_member_no_supervisor_remains_already_active() {
         false,
     );
     assert_eq!(
-        classify_member_recovery_path(&member, false),
+        classify_member_recovery_path(&member, false, false),
         MemberRecoveryPath::AlreadyActive
+    );
+}
+
+/// #779: a Blocked member whose lane already proves the runtime is gone is the
+/// one case `recover` must act on rather than skip — and only that case.
+#[test]
+fn blocked_member_on_a_dead_lane_is_restarted_and_nothing_else_is() {
+    let blocked = make_member(
+        MemberRunStatus::Blocked,
+        MemberCoordinationStatus::Active,
+        true,
+        true,
+        NativeSessionAvailability::Available,
+        false,
+    );
+    assert_eq!(
+        classify_member_recovery_path(&blocked, false, true),
+        MemberRecoveryPath::RestartBlockedDetachedLane
+    );
+    assert_eq!(
+        classify_member_recovery_path(&blocked, true, true),
+        MemberRecoveryPath::RestartBlockedDetachedLane,
+        "the lane's own state is the proof; a live Supervisor lease is not required"
+    );
+    assert_eq!(
+        classify_member_recovery_path(&blocked, false, false),
+        MemberRecoveryPath::AlreadyActive,
+        "a lane that does not prove the runtime gone keeps its block"
+    );
+
+    let running = make_member(
+        MemberRunStatus::Running,
+        MemberCoordinationStatus::Active,
+        true,
+        true,
+        NativeSessionAvailability::Available,
+        false,
+    );
+    assert_eq!(
+        classify_member_recovery_path(&running, false, true),
+        MemberRecoveryPath::AlreadyActive,
+        "only a Blocked member is restarted; recover never re-labels healthy work"
+    );
+
+    let external = make_member(
+        MemberRunStatus::Blocked,
+        MemberCoordinationStatus::Active,
+        false,
+        false,
+        NativeSessionAvailability::Missing,
+        true,
+    );
+    assert_eq!(
+        classify_member_recovery_path(&external, false, true),
+        MemberRecoveryPath::AlreadyActive,
+        "an external interactive member owns no Harness-driven lane to restart"
     );
 }
 
@@ -223,7 +279,7 @@ fn completed_member_no_supervisor_returns_terminal() {
         NativeSessionAvailability::Available,
         false,
     );
-    let result = classify_member_recovery_path(&member, false);
+    let result = classify_member_recovery_path(&member, false, false);
     assert!(
         matches!(result, MemberRecoveryPath::Terminal { .. }),
         "expected Terminal, got {:?}",

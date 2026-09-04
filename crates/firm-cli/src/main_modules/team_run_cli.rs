@@ -391,6 +391,10 @@ pub(super) fn team_run_command(
                     .max_by_key(|action| action.seq)
             };
             let unacked_messages = team_run_unacknowledged_message_count(store, &id)?;
+            // Status is a read-only orientation command and must keep working
+            // for a run whose Execution Space cannot be resolved; without one
+            // no lane can be read, so the blocked-member hint is simply omitted.
+            let execution_space_id = team_run_execution_space_id(store, &run).ok();
             let supervisor = store.latest_team_supervisor_lease(&id)?;
             let supervisor_current = supervisor.as_ref().is_some_and(is_supervisor_current);
             let dashboard_base = dashboard_base(args);
@@ -476,6 +480,27 @@ pub(super) fn team_run_command(
                         serde_snake_label(&member.status),
                         last
                     );
+                    // A Blocked member used to name no operator path at all:
+                    // start refuses the status, close needs provider-loop
+                    // authority no held adoption has, and reopen is idempotent
+                    // (#779). Name the one verb that applies, and say plainly
+                    // when the block is not the kind recover can clear.
+                    if member.status == MemberRunStatus::Blocked && member.coordination_is_active()
+                    {
+                        if execution_space_id.as_deref().is_some_and(|space_id| {
+                            member_lane_proves_runtime_gone(store, space_id, member)
+                        }) {
+                            println!(
+                                "    blocked with a detached, idle AgentSession lane — return it to startable with: harness team-run recover --id {}",
+                                run.id
+                            );
+                        } else {
+                            println!(
+                                "    blocked while its AgentSession lane is still live or uncertain — reconcile the runtime first; `harness team-run recover --id {}` will not clear this block",
+                                run.id
+                            );
+                        }
+                    }
                 }
                 println!("unacked_messages (canonical Host deliveries): {unacked_messages}");
                 if unacked_messages > 0

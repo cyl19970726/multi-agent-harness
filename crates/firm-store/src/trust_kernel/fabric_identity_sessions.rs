@@ -835,7 +835,7 @@ impl HarnessStore {
             let message = if session.lifecycle == AgentSessionStatus::Interrupted
                 && next_status == AgentSessionStatus::Idle
             {
-                "AgentSession interrupted by a NodeDaemon drain may resume only from a detached, disarmed lane at a terminal turn boundary with no ambiguous RuntimeCommand; reconcile the runtime first".to_string()
+                firm_core::agentfirm_api::AGENT_SESSION_DRAIN_RESUME_NOT_YET_RESUMABLE.to_string()
             } else {
                 format!(
                     "invalid AgentSession transition {:?}->{next_status:?}",

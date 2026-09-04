@@ -5,6 +5,12 @@ use super::*;
 pub(super) enum MemberRecoveryPath {
     /// Member is already active with a current supervisor lease.
     AlreadyActive,
+    /// The member is Blocked while its AgentSession lane already proves the
+    /// runtime that blocked it is gone — detached, disarmed, at a terminal turn
+    /// boundary, with no ambiguous RuntimeCommand. Return it to a startable
+    /// status in place; the lane, its native-session identity and the runtime
+    /// generation are untouched.
+    RestartBlockedDetachedLane,
     /// Native session exists and supports resume — reopen the member.
     ResumeCompatible,
     /// Session is incompatible or missing — rebind Works to a new generation.
@@ -15,15 +21,36 @@ pub(super) enum MemberRecoveryPath {
 
 /// Pure function: classify a member's recovery path. Does not perform I/O or
 /// mutation. Unit-testable across every edge case without a store.
+///
+/// `lane_proves_runtime_gone` is the caller's read of this member's AgentSession
+/// control state: the lane is detached, disarmed, at a terminal turn boundary
+/// and free of any ambiguous RuntimeCommand. It is supplied rather than derived
+/// so this function stays pure and so the proof always comes from the Store's
+/// own predicate rather than a second definition of "dead runtime".
 pub(super) fn classify_member_recovery_path(
     member: &ProviderRuntimeProjection,
     supervisor_current: bool,
+    lane_proves_runtime_gone: bool,
 ) -> MemberRecoveryPath {
     // Retired members are permanently dead.
     if member.coordination_is_retired() {
         return MemberRecoveryPath::Terminal {
             reason: "member is retired".to_string(),
         };
+    }
+    // A member journalled Blocked by a failed provider attempt keeps active
+    // coordination, so it used to fall straight into AlreadyActive and be
+    // skipped — leaving no Host verb at all for the state #779 observed:
+    // Blocked MemberRun, Idle detached lane, every RuntimeCommand settled.
+    // Restarting it is a coordination-only correction, admitted exactly while
+    // the lane itself proves no runtime can be driving it, so it can never
+    // race a live generation or replay a killed cycle.
+    if member.coordination_is_active()
+        && member.status == MemberRunStatus::Blocked
+        && lane_proves_runtime_gone
+        && !member.is_external_interactive()
+    {
+        return MemberRecoveryPath::RestartBlockedDetachedLane;
     }
     // Already active — running coordination, regardless of supervisor.
     if member.coordination_is_active() {
@@ -119,6 +146,22 @@ pub(super) fn team_run_recover(
     let deliveries = store.current_work_deliveries_for_team_run(team_run_id)?;
     let supervisor = store.latest_team_supervisor_lease(team_run_id)?;
     let supervisor_current = supervisor.as_ref().is_some_and(is_supervisor_current);
+    // Read each member's lane once, from the Store's own resumability
+    // predicate, and reuse that one observation for every classification below.
+    // A run whose Execution Space cannot be resolved proves nothing about any
+    // lane, so recovery keeps exactly its previous behaviour there.
+    let execution_space_id = team_run_execution_space_id(store, &run).ok();
+    let lanes_proving_runtime_gone = members
+        .iter()
+        .filter(|member| {
+            execution_space_id
+                .as_deref()
+                .is_some_and(|space_id| member_lane_proves_runtime_gone(store, space_id, member))
+        })
+        .map(|member| member.id.clone())
+        .collect::<std::collections::BTreeSet<_>>();
+    let lane_proves_runtime_gone =
+        |member: &ProviderRuntimeProjection| lanes_proving_runtime_gone.contains(&member.id);
 
     // Legacy reader: Mission Log tail (ADR 0051). Printed only when the
     // Team carries legacy Mission provenance; post-DEV-35 mission-less Teams
@@ -235,7 +278,11 @@ pub(super) fn team_run_recover(
                 .iter()
                 .filter(|w| w.owner_member_id.as_deref() == Some(member.agent_member_id.as_str()))
                 .collect();
-            let path = classify_member_recovery_path(member, supervisor_current);
+            let path = classify_member_recovery_path(
+                member,
+                supervisor_current,
+                lane_proves_runtime_gone(member),
+            );
             println!(
                 "  {} ({}): status={} coordination={} recovery={} works={}",
                 member.name,
@@ -254,7 +301,11 @@ pub(super) fn team_run_recover(
         .map(|member| {
             (
                 member,
-                classify_member_recovery_path(member, supervisor_current),
+                classify_member_recovery_path(
+                    member,
+                    supervisor_current,
+                    lane_proves_runtime_gone(member),
+                ),
             )
         })
         .collect();
@@ -311,11 +362,57 @@ pub(super) fn team_run_recover(
     let mut reopened = 0u64;
     let rebound = 0u64;
     let mut skipped = 0u64;
+    let mut restarted = 0u64;
     let ledger = TeamRunLedger::without_supervisor(store, team_run_id);
     for (member, path) in &recovery_plan {
         match path {
             MemberRecoveryPath::AlreadyActive => {
                 skipped += 1;
+            }
+            // The one Host verb that returns a Blocked member to a startable
+            // status. Only `status` moves: coordination, runtime generation,
+            // native-session binding and the AgentSession itself are untouched,
+            // so the next Supervisor pass resumes the same provider-native
+            // session instead of opening a second one. No supervisor lease is
+            // required — the lane's own detached, disarmed, unambiguous state
+            // is the proof that nothing is driving it.
+            MemberRecoveryPath::RestartBlockedDetachedLane => {
+                let expected = (*member).clone();
+                let mut restarted_member = expected.clone();
+                restarted_member.status = MemberRunStatus::Idle;
+                restarted_member.finished_at = None;
+                restarted_member.last_event_at = Some(now_str.clone());
+                store_conflict_as_usage(
+                    store.compare_and_append_member_run(&expected, &restarted_member),
+                )?;
+                ledger.append_action(
+                    &member.id,
+                    "recovered",
+                    MemberActionStatus::Succeeded,
+                    "blocked member returned to a startable status",
+                    &format!(
+                        "host: the AgentSession lane is detached and idle with no ambiguous RuntimeCommand, so runtime generation {} is startable again",
+                        member.runtime_generation
+                    ),
+                )?;
+                ledger.fold_event(
+                    TeamRunEventSourceKind::Host,
+                    Some(member.id.clone()),
+                    "member_run",
+                    &member.id,
+                    "recovered",
+                    &format!(
+                        "member {} returned from blocked to idle on a detached, idle AgentSession lane",
+                        member.name
+                    ),
+                )?;
+                if !json {
+                    println!(
+                        "  {} ({}): blocked member returned to idle; its lane is detached and idle",
+                        member.name, member.provider
+                    );
+                }
+                restarted += 1;
             }
             MemberRecoveryPath::ResumeCompatible => {
                 // Reopen the member using the existing reopen path.
@@ -433,12 +530,13 @@ pub(super) fn team_run_recover(
         "canonical_provider_received_deliveries": canonical_provider_received_deliveries,
         "reopened": reopened,
         "rebound_works": rebound,
+        "restarted_blocked_members": restarted,
         "skipped": skipped,
     });
     if !json {
         println!(
-            "recovery complete: reopened={} rebound_works={} reconciled_deliveries={} skipped={}",
-            reopened, rebound, reconciled, skipped
+            "recovery complete: reopened={} rebound_works={} restarted_blocked_members={} reconciled_deliveries={} skipped={}",
+            reopened, rebound, restarted, reconciled, skipped
         );
     }
     Ok(report)

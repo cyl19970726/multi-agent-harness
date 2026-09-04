@@ -402,6 +402,18 @@ pub const WORK_DELIVERY_SUPERSEDED_BY_NODE_DAEMON_DRAIN: &str =
 pub const WORK_DELIVERY_SUPERSEDED_BY_NODE_DAEMON_PREDECESSOR_RECOVERY: &str =
     "WORK_DELIVERY_SUPERSEDED_BY_NODE_DAEMON_PREDECESSOR_RECOVERY";
 
+/// The exact refusal the Store returns when a Session interrupted by a
+/// NodeDaemon drain is asked to re-enter the ordinary lane before its killed
+/// runtime is provably gone.
+///
+/// The fence itself and every reader that must recognize the refusal share
+/// this one string so they cannot drift apart. Recognizing it is never
+/// permission to bypass it: the refusal says the lane is not resumable *yet*,
+/// so the only admitted response is to leave the member startable and let a
+/// later pass retry once the lane settles.
+pub const AGENT_SESSION_DRAIN_RESUME_NOT_YET_RESUMABLE: &str =
+    "AgentSession interrupted by a NodeDaemon drain may resume only from a detached, disarmed lane at a terminal turn boundary with no ambiguous RuntimeCommand; reconcile the runtime first";
+
 /// Every failure code that records an in-flight delivery invalidated because
 /// its exact runtime generation is provably gone. None of them asserts a
 /// provider turn outcome: they say the attempt can never be settled by that
