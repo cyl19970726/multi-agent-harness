@@ -31,9 +31,40 @@ export interface ToolEpisodeContentReference {
   reference:ProviderEventContentReference;
 }
 
+/**
+ * A run of adjacent provider envelope/bookkeeping frames the provider adapter
+ * could not classify into an operator-level fact (Claude `queue-operation`,
+ * `user`, `attachment`, `last-prompt`, …). They are never discarded: the group
+ * keeps every occurrence in provider source order so the row can expand back
+ * into the exact original records.
+ */
+export interface EnvelopeGroup {
+  kind:"envelope_group";
+  group_id:string;
+  provider:ProviderNativeEventRecord["provider"];
+  occurrences:ProviderEventOccurrence[];
+}
+
 export type ProviderTimelineItem =
   | ToolEpisode
+  | EnvelopeGroup
   | ({kind:"native"}&ProviderEventOccurrence);
+
+/**
+ * Envelope classification is structural, not a per-provider allow list: a
+ * fragment is envelope exactly when the adapter projected no operator-level
+ * payload for it. Tool, reasoning, assistant, usage, turn, artifact, session
+ * metadata and malformed fragments stay first-class rows.
+ */
+export function isEnvelopeFragment(fragment:ProviderEventFragment):boolean {
+  return fragment.payload.type==="native";
+}
+
+export function envelopeFrameLabel(occurrence:ProviderEventOccurrence):string {
+  const payload=occurrence.fragment.payload;
+  if(payload.type!=="native")return occurrence.fragment.semantic_kind;
+  return [payload.event_type??"unknown native event",payload.event_subtype].filter(Boolean).join(" · ");
+}
 
 function compareRecords(left:ProviderNativeEventRecord,right:ProviderNativeEventRecord) {
   return left.ordering_key.kind===right.ordering_key.kind
@@ -91,6 +122,11 @@ function buildEpisode(episodeId:string,callId:string|null,occurrences:ProviderEv
  * Tool fragments are paired only by their exact response-local call id and
  * provider/session/source generation. Missing call ids become structured,
  * standalone episodes and are never paired by adjacency.
+ *
+ * Adjacent envelope frames additionally collapse into one low-priority
+ * `envelope_group` row. Grouping is adjacency-only in the already-ordered
+ * timeline, so it never reorders records and never merges frames across an
+ * intervening semantic row.
  */
 export function projectProviderTimeline(records:ProviderNativeEventRecord[]):ProviderTimelineItem[] {
   const occurrences=records
@@ -108,6 +144,17 @@ export function projectProviderTimeline(records:ProviderNativeEventRecord[]):Pro
   const timeline:ProviderTimelineItem[]=[];
   for(const occurrence of occurrences){
     const payload=occurrence.fragment.payload;
+    if(isEnvelopeFragment(occurrence.fragment)){
+      const previous=timeline[timeline.length-1];
+      if(previous&&previous.kind==="envelope_group"){previous.occurrences.push(occurrence);continue;}
+      timeline.push({
+        kind:"envelope_group",
+        group_id:`envelope:${occurrence.record.record_id}:${occurrence.fragment.fragment_id}`,
+        provider:occurrence.record.provider,
+        occurrences:[occurrence],
+      });
+      continue;
+    }
     if(payload.type!=="tool"){timeline.push({kind:"native",...occurrence});continue;}
     if(!payload.call_id){
       timeline.push(buildEpisode(`tool:${occurrence.record.record_id}:${occurrence.fragment.fragment_id}`,null,[occurrence]));

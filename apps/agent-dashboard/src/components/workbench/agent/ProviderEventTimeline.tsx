@@ -1,6 +1,10 @@
+import { useState } from "react";
+
 import { OperationalFactRow } from "./AgentStreamPrimitives";
 import {
+  envelopeFrameLabel,
   resolveContentReference,
+  type EnvelopeGroup,
   type ToolEpisode,
   type ToolEpisodeContentReference,
 } from "../../../model/providerEventTimeline";
@@ -57,6 +61,46 @@ export function ToolEpisodeDetails({episode,context=false}:{episode:ToolEpisode;
     </div>
     <EpisodeFacts episode={episode}/>
     <RawEvidence episode={episode}/>
+  </div>;
+}
+
+/**
+ * One collapsed run of provider envelope frames. The primary timeline shows a
+ * single countable row; expanding keeps every original record inspectable, so
+ * nothing the provider persisted is discarded by this presentation choice.
+ */
+export function EnvelopeGroupRow({group,timestamp,onSelectFrame}:{
+  group:EnvelopeGroup;
+  timestamp?:string;
+  onSelectFrame?:(occurrence:EnvelopeGroup["occurrences"][number])=>void;
+}) {
+  const [expanded,setExpanded]=useState(false);
+  const count=group.occurrences.length;
+  const kinds=[...new Set(group.occurrences.map(occurrence=>{
+    const payload=occurrence.fragment.payload;
+    return payload.type==="native"?payload.event_type??"unknown native event":occurrence.fragment.semantic_kind;
+  }))];
+  return <div className="aw-native-facts-trail aw-envelope-group" data-envelope-frames={count}>
+    <OperationalFactRow
+      kind="runtime"
+      status="envelope"
+      title={`${count} envelope ${count===1?"frame":"frames"}`}
+      summary={`Provider bookkeeping · ${kinds.join(", ")}`}
+      timestamp={timestamp}
+      expanded={expanded}
+      onToggle={()=>setExpanded(value=>!value)}
+    >
+      <div className="aw-envelope-group__frames">
+        <p className="aw-envelope-group__note">No operator-level fact was projected for these records. They stay here as raw provider evidence in source order.</p>
+        {group.occurrences.map(occurrence=><section key={`${occurrence.record.record_id}:${occurrence.fragment.fragment_id}`} data-envelope-frame={envelopeFrameLabel(occurrence)}>
+          <p>
+            {readable(envelopeFrameLabel(occurrence))} · {occurrence.record.ordering_key.kind}:{occurrence.record.ordering_key.value}
+            {onSelectFrame&&<> · <button type="button" onClick={()=>onSelectFrame(occurrence)}>Open in context</button></>}
+          </p>
+          <pre className="aw-native-event-body">{displayValue(occurrence.record.native_event)}</pre>
+        </section>)}
+      </div>
+    </OperationalFactRow>
   </div>;
 }
 
