@@ -487,9 +487,13 @@ pub(super) fn team_run_command(
                     // when the block is not the kind recover can clear.
                     if member.status == MemberRunStatus::Blocked && member.coordination_is_active()
                     {
-                        if execution_space_id.as_deref().is_some_and(|space_id| {
+                        let provenance = blocked_member_provenance(member);
+                        let lane_is_dead = execution_space_id.as_deref().is_some_and(|space_id| {
                             member_lane_proves_runtime_gone(store, space_id, member)
-                        }) {
+                        });
+                        if provenance != BlockedMemberProvenance::Untyped {
+                            println!("    blocked — {}", provenance.reason());
+                        } else if lane_is_dead {
                             println!(
                                 "    blocked with a detached, idle AgentSession lane — return it to startable with: harness team-run recover --id {}",
                                 run.id

@@ -458,18 +458,25 @@ back at all, `team-run close-member` is the escape hatch and works on an
 
 ### Recovering a member left `blocked` over a dead lane
 
-`harness team-run recover --id <run>` is the one verb that returns a `blocked`
-member to a startable status. Use it when `team-run status` shows a member as
-`blocked` and prints:
+`harness team-run recover --id <run>` is the verb for a member blocked by a
+runtime fence — the drain refusal above is the case it exists for. It is not a
+general unblock: each of the other gates that writes `blocked` clears its own
+block (a successful capacity probe clears a capacity block, the provider review
+gate clears a compatibility block), and `recover` deliberately leaves those
+alone. Use it when `team-run status` shows a member as `blocked` and prints:
 
 ```text
 blocked with a detached, idle AgentSession lane — return it to startable with:
 harness team-run recover --id <run>
 ```
 
-It applies only while that member's own AgentSession proves no runtime can be
-driving it — detached residency, idle activity, disarmed continuation, no open
-turn, no queued native input and no ambiguous `RuntimeCommand`. It then changes
+It applies on two proofs, both required. The member's own AgentSession must
+prove no runtime can be driving it — detached residency, idle activity,
+disarmed continuation, no open turn, no queued native input and no ambiguous
+`RuntimeCommand` — and the block must carry no typed provenance: no
+`provider_compatibility_block_cause`, no known-unavailable
+`provider_capacity` snapshot, and no zero-output degradation streak. It then
+changes
 `MemberRun.status` to `idle` and nothing else: coordination status, runtime
 generation, native-session binding and the AgentSession itself are untouched, so
 the next Supervisor pass resumes the same provider-native session and never
@@ -481,8 +488,21 @@ The run report counts the repairs as `restarted_blocked_members`.
 
 When the lane is *not* provably dead, `team-run status` says so instead and
 `recover` deliberately leaves the block standing: reconcile the RuntimeCommand
-or close the member. A block a provider-compatibility gate or an uncertain
-provider effect wrote is a real diagnosis and is never cleared this way.
+or close the member.
+
+A block that carries typed provenance is a live diagnosis owned by the gate that
+wrote it, and `recover` never clears it. It reports each one instead — in
+`blocked_members_not_restarted`, and on stdout as `blocked, not restarted — <reason>`:
+
+| provenance | who clears it |
+| --- | --- |
+| `provider_compatibility` | the provider review gate (`harness member providers --fail-on-review`), which clears the typed cause with the status |
+| `provider_capacity` | a successful capacity probe, through the preflight's own recovery |
+| `zero_output_degradation` | the Host, by messaging or steering the member |
+
+Clearing one of those by hand would strand its evidence — and for a
+compatibility block the typed cause is bound to `blocked` by validation, so a
+bare status flip produces a row the Store refuses outright.
 
 Teams are created without any Mission (DOC-108); `--mission-id` survives only
 as optional legacy provenance. Omit ad-hoc `--member` overrides when starting

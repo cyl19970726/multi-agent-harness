@@ -50,15 +50,16 @@ use crate::CliResult;
 pub(super) const CANONICAL_STATE_EVIDENCE_PREFIX: &str = "team-run-canonical-state:";
 
 // TODO(#726 follow-up): each call re-reads `member_runs`, `work_operations`,
-// `fabric_messages` and `runtime_commands` for the whole Store. A scan that
-// holds N runs therefore pays N whole-Store passes. That is already the
-// existing shape of `scan_and_adopt` (`team_run_has_active_member` reads the
-// same member-run collection per run), and the fingerprint is only computed
-// for runs that actually carry a hold, so it strictly replaces a far more
-// expensive Supervisor spawn. Hoisting all four collections to one read per
-// scan pass means threading a borrowed snapshot through `team_run_adoption_is_held`,
-// `drive_prepared_team_run` and the reap path, which is a wider change than
-// this review; recorded rather than half-done.
+// `fabric_messages`, `runtime_commands` and — since #779 — `fabric_agent_sessions`
+// for the whole Store. A scan that holds N runs therefore pays N whole-Store
+// passes. That is already the existing shape of `scan_and_adopt`
+// (`team_run_has_active_member` reads the same member-run collection per run),
+// and the fingerprint is only computed for runs that actually carry a hold, so
+// it strictly replaces a far more expensive Supervisor spawn. Hoisting all five
+// collections to one read per scan pass means threading a borrowed snapshot
+// through `team_run_adoption_is_held`, `drive_prepared_team_run` and the reap
+// path, which is a wider change than this review; recorded rather than
+// half-done.
 
 /// Fingerprint the canonical coordination state of one TeamRun.
 ///
@@ -146,10 +147,21 @@ pub(super) fn team_run_canonical_state_fingerprint(
             // not observe that stood until a Host poked the run (#779). Only
             // the fields that decide resumability are read: transcript truth
             // stays with the provider (ADR 0032).
+            // Scoped twice on purpose. An AgentSession carries no TeamRun, so
+            // the run's own AgentMembers are the tightest scope available —
+            // without it a Space-wide read would hash a lane belonging to
+            // another run into this run's hold. `Closed` sessions are excluded
+            // because they are history: a member that has been closed and
+            // reopened would otherwise carry its retired lanes in every
+            // fingerprint forever, and none of them can ever change again.
             let mut agent_session_lanes = store
                 .fabric_agent_sessions(space_id)?
                 .into_iter()
-                .filter(|session| agent_member_ids.contains(&session.agent_member_id))
+                .filter(|session| {
+                    agent_member_ids.contains(&session.agent_member_id)
+                        && session.lifecycle
+                            != harness_core::agentfirm_api::AgentSessionStatus::Closed
+                })
                 .map(|session| {
                     serde_json::json!({
                         "id": session.id,

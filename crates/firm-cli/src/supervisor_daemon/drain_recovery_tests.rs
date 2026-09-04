@@ -225,6 +225,16 @@ pub(super) fn drain_fixture(label: &str) -> DrainFixture {
 }
 
 impl DrainFixture {
+    /// This machine's one NodeDaemon identity, for a test that needs to take a
+    /// successor generation itself instead of going through `readopt`.
+    pub(super) fn daemon_id(&self) -> &str {
+        &self.daemon.daemon_id
+    }
+
+    pub(super) fn node_id(&self) -> &str {
+        &self.node_id
+    }
+
     pub(super) fn supervise(
         &self,
         supervisor_id: &str,
@@ -415,11 +425,20 @@ fn drained_mid_turn_member_resumes_under_the_next_supervisor_generation() {
         "a member idle at drain time is unaffected"
     );
 
-    let successor_generation = fixture.readopt();
+    // The exact hop the r5 run could not make. Since #779 the adoption seam
+    // performs it, so asserting it after `readopt` would assert nothing: take
+    // the successor generation and reattach the lane WITHOUT resuming it, then
+    // make the call on a lane that is still `Interrupted`. That is the state
+    // DEV-171 is about, and the only way this regression stays honest.
+    let successor_generation =
+        super::drain_blocked_member_tests::reattach_without_resuming(&fixture);
+    assert_eq!(
+        agent_session(&fixture.store, MID_TURN_MEMBER).lifecycle,
+        AgentSessionStatus::Interrupted,
+        "the fence must be exercised on an interrupted lane, not an already-resumed one"
+    );
     let ledger = fixture.supervise("supervisor-drain-2", successor_generation);
     let mid_turn = member_named(&fixture.store, &fixture.run_id, MID_TURN_MEMBER);
-    // The exact call the r5 run could not make: the re-adopted member re-enters
-    // its wake loop, which idles the Session first.
     crate::transition_provider_session_for_member(&ledger, &mid_turn, AgentSessionStatus::Idle)
         .expect("a drained member must resume without INVALID_STATE_TRANSITION");
     let resumed = agent_session(&fixture.store, MID_TURN_MEMBER);

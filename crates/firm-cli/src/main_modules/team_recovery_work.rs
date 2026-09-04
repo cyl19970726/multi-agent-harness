@@ -5,12 +5,15 @@ use super::*;
 pub(super) enum MemberRecoveryPath {
     /// Member is already active with a current supervisor lease.
     AlreadyActive,
-    /// The member is Blocked while its AgentSession lane already proves the
-    /// runtime that blocked it is gone — detached, disarmed, at a terminal turn
-    /// boundary, with no ambiguous RuntimeCommand. Return it to a startable
-    /// status in place; the lane, its native-session identity and the runtime
-    /// generation are untouched.
+    /// The member is Blocked with no typed provenance, while its AgentSession
+    /// lane already proves the runtime that blocked it is gone — detached,
+    /// disarmed, at a terminal turn boundary, with no ambiguous RuntimeCommand.
+    /// Return it to a startable status in place; the lane, its native-session
+    /// identity and the runtime generation are untouched.
     RestartBlockedDetachedLane,
+    /// The member is Blocked by a gate that owns its own recovery. Reported
+    /// with the reason, never restarted here.
+    BlockedByTypedProvenance { provenance: BlockedMemberProvenance },
     /// Native session exists and supports resume — reopen the member.
     ResumeCompatible,
     /// Session is incompatible or missing — rebind Works to a new generation.
@@ -42,15 +45,25 @@ pub(super) fn classify_member_recovery_path(
     // coordination, so it used to fall straight into AlreadyActive and be
     // skipped — leaving no Host verb at all for the state #779 observed:
     // Blocked MemberRun, Idle detached lane, every RuntimeCommand settled.
-    // Restarting it is a coordination-only correction, admitted exactly while
-    // the lane itself proves no runtime can be driving it, so it can never
-    // race a live generation or replay a killed cycle.
+    // Restarting it is a coordination-only correction, admitted on two proofs
+    // that must both hold: the lane proves no runtime can be driving it, and
+    // the block carries no typed provenance whose own gate owns its recovery.
+    // The status alone proves neither — a compatibility-blocked member sits on
+    // a Cold, detached, disarmed lane and would otherwise pass the first test,
+    // and its typed cause is bound to `Blocked` by validation, so flipping the
+    // status would make the row unappendable and abort the whole recovery run
+    // before later members were repaired.
     if member.coordination_is_active()
         && member.status == MemberRunStatus::Blocked
-        && lane_proves_runtime_gone
         && !member.is_external_interactive()
     {
-        return MemberRecoveryPath::RestartBlockedDetachedLane;
+        let provenance = blocked_member_provenance(member);
+        if provenance != BlockedMemberProvenance::Untyped {
+            return MemberRecoveryPath::BlockedByTypedProvenance { provenance };
+        }
+        if lane_proves_runtime_gone {
+            return MemberRecoveryPath::RestartBlockedDetachedLane;
+        }
     }
     // Already active — running coordination, regardless of supervisor.
     if member.coordination_is_active() {
@@ -363,11 +376,31 @@ pub(super) fn team_run_recover(
     let rebound = 0u64;
     let mut skipped = 0u64;
     let mut restarted = 0u64;
+    let mut blocked_by_provenance: Vec<serde_json::Value> = Vec::new();
     let ledger = TeamRunLedger::without_supervisor(store, team_run_id);
     for (member, path) in &recovery_plan {
         match path {
             MemberRecoveryPath::AlreadyActive => {
                 skipped += 1;
+            }
+            // Reported, never repaired: the gate that wrote this block owns
+            // clearing it, and its evidence must survive this run intact.
+            MemberRecoveryPath::BlockedByTypedProvenance { provenance } => {
+                skipped += 1;
+                blocked_by_provenance.push(serde_json::json!({
+                    "member_run_id": member.id,
+                    "name": member.name,
+                    "provenance": provenance,
+                    "reason": provenance.reason(),
+                }));
+                if !json {
+                    println!(
+                        "  {} ({}): blocked, not restarted — {}",
+                        member.name,
+                        member.provider,
+                        provenance.reason()
+                    );
+                }
             }
             // The one Host verb that returns a Blocked member to a startable
             // status. Only `status` moves: coordination, runtime generation,
@@ -377,35 +410,7 @@ pub(super) fn team_run_recover(
             // required — the lane's own detached, disarmed, unambiguous state
             // is the proof that nothing is driving it.
             MemberRecoveryPath::RestartBlockedDetachedLane => {
-                let expected = (*member).clone();
-                let mut restarted_member = expected.clone();
-                restarted_member.status = MemberRunStatus::Idle;
-                restarted_member.finished_at = None;
-                restarted_member.last_event_at = Some(now_str.clone());
-                store_conflict_as_usage(
-                    store.compare_and_append_member_run(&expected, &restarted_member),
-                )?;
-                ledger.append_action(
-                    &member.id,
-                    "recovered",
-                    MemberActionStatus::Succeeded,
-                    "blocked member returned to a startable status",
-                    &format!(
-                        "host: the AgentSession lane is detached and idle with no ambiguous RuntimeCommand, so runtime generation {} is startable again",
-                        member.runtime_generation
-                    ),
-                )?;
-                ledger.fold_event(
-                    TeamRunEventSourceKind::Host,
-                    Some(member.id.clone()),
-                    "member_run",
-                    &member.id,
-                    "recovered",
-                    &format!(
-                        "member {} returned from blocked to idle on a detached, idle AgentSession lane",
-                        member.name
-                    ),
-                )?;
+                restart_blocked_member_on_dead_lane(store, &ledger, member, &now_str)?;
                 if !json {
                     println!(
                         "  {} ({}): blocked member returned to idle; its lane is detached and idle",
@@ -531,6 +536,7 @@ pub(super) fn team_run_recover(
         "reopened": reopened,
         "rebound_works": rebound,
         "restarted_blocked_members": restarted,
+        "blocked_members_not_restarted": blocked_by_provenance,
         "skipped": skipped,
     });
     if !json {

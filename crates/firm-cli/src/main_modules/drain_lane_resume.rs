@@ -268,10 +268,17 @@ pub(super) fn journal_member_awaiting_drain_lane_resume(
         .ok()
         .flatten()
         .unwrap_or_else(|| member.clone());
-    // Only a row this attempt itself left non-startable is corrected. A Close,
-    // a Stop or any other lifecycle decision that landed meanwhile is
-    // authoritative and is never overwritten by a retry note.
-    if latest.coordination_is_active()
+    // Only a row this attempt itself left non-startable is corrected, and only
+    // while no operator lifecycle decision is standing over it: a durable Close
+    // latch outranks a retry note, and the ordinary control path — not this
+    // function — is what applies it. A closed or retired coordination status is
+    // the same rule after the fact.
+    let close_latched = pending_member_close(&ledger.store, &latest.id)
+        .ok()
+        .flatten()
+        .is_some();
+    if !close_latched
+        && latest.coordination_is_active()
         && !matches!(
             latest.status,
             MemberRunStatus::Queued | MemberRunStatus::Idle | MemberRunStatus::Disconnected
@@ -301,6 +308,131 @@ pub(super) fn journal_member_awaiting_drain_lane_resume(
         &summary,
     );
     MemberOutcome::new(&latest, latest.status, summary)
+}
+
+/// Why a `Blocked` MemberRun is blocked, as far as its own typed provenance
+/// says.
+///
+/// `MemberRunStatus::Blocked` is written by four different authorities and the
+/// row itself does not name which one. Three of them leave typed provenance
+/// behind and own their own recovery; only the fourth — a provider attempt that
+/// met a runtime fence — leaves none. A repair verb that reads the status alone
+/// therefore cannot tell "the drained lane is startable again" from "this
+/// provider is on an unreviewed version": the first is a coordination
+/// correction, the others are live diagnoses whose clearing belongs to the gate
+/// that wrote them, and whose evidence a bare status flip would strand.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum BlockedMemberProvenance {
+    /// `store_team_admission` wrote a typed `provider_compatibility_block_cause`.
+    /// `ProviderRuntimeProjection::validate` binds that cause to `Blocked`, so
+    /// moving the status without clearing the cause produces a row the Store
+    /// refuses outright — which would abort the whole recovery run.
+    ProviderCompatibility,
+    /// The capacity preflight blocked on a known-unavailable account. Only a
+    /// successful capacity probe may clear it, through
+    /// `recover_capacity_origin_block`, which itself keys on the `Blocked`
+    /// status a flip would erase.
+    ProviderCapacity,
+    /// The wake loop stopped a zero-output spiral. Its evidence is the member's
+    /// own `zero_output_streak` and the Host is the intended intervention.
+    ZeroOutputDegradation,
+    /// No typed provenance: the class a runtime fence leaves behind, including
+    /// the NodeDaemon drain refusal this module exists for.
+    Untyped,
+}
+
+impl BlockedMemberProvenance {
+    /// Why this block must not be cleared by a coordination-only repair.
+    pub(super) fn reason(self) -> &'static str {
+        match self {
+            Self::ProviderCompatibility => {
+                "a typed provider-compatibility cause owns this block; clear it through the provider review gate"
+            }
+            Self::ProviderCapacity => {
+                "the capacity preflight owns this block; it clears on a successful capacity probe"
+            }
+            Self::ZeroOutputDegradation => {
+                "a zero-output degradation owns this block; the Host must intervene"
+            }
+            Self::Untyped => "no typed provenance owns this block",
+        }
+    }
+}
+
+/// Read a member's block provenance from the member row alone.
+///
+/// Pure and total: it answers for any member, blocked or not, and the caller
+/// decides what the answer authorizes. Ordering is by strength — a member
+/// carrying more than one piece of provenance keeps the strongest, because that
+/// is the gate whose own recovery must clear it.
+pub(super) fn blocked_member_provenance(
+    member: &ProviderRuntimeProjection,
+) -> BlockedMemberProvenance {
+    if member.provider_compatibility_block_cause.is_some() {
+        return BlockedMemberProvenance::ProviderCompatibility;
+    }
+    if member
+        .provider_capacity
+        .as_ref()
+        .is_some_and(|capacity| capacity.state.is_known_unavailable())
+    {
+        return BlockedMemberProvenance::ProviderCapacity;
+    }
+    if member.zero_output_streak > 0 {
+        return BlockedMemberProvenance::ZeroOutputDegradation;
+    }
+    BlockedMemberProvenance::Untyped
+}
+
+/// Return one `Blocked` member to a startable status, on the proof that its own
+/// lane is dead and its block carries no typed provenance.
+///
+/// Only `status` moves. Coordination status, runtime generation,
+/// native-session binding and the AgentSession itself are untouched, so the
+/// next Supervisor pass resumes the same provider-native session rather than
+/// opening a second one, and no killed cycle can be replayed. It needs no
+/// Supervisor lease: the lane's own detached, disarmed, unambiguous state is
+/// the proof that nothing is driving the member, and the Store's compare-and-
+/// append still refuses a row that changed underneath.
+///
+/// It lives here, next to the two proofs that authorize it, rather than in the
+/// recovery command: the authority is the drain-lane reasoning, not the shape
+/// of the CLI verb that happens to expose it.
+pub(super) fn restart_blocked_member_on_dead_lane(
+    store: &HarnessStore,
+    ledger: &TeamRunLedger,
+    member: &ProviderRuntimeProjection,
+    now: &str,
+) -> CliResult<()> {
+    let expected = member.clone();
+    let mut restarted = expected.clone();
+    restarted.status = MemberRunStatus::Idle;
+    restarted.finished_at = None;
+    restarted.last_event_at = Some(now.to_string());
+    store_conflict_as_usage(store.compare_and_append_member_run(&expected, &restarted))?;
+    ledger.append_action(
+        &member.id,
+        "recovered",
+        MemberActionStatus::Succeeded,
+        "blocked member returned to a startable status",
+        &format!(
+            "host: the AgentSession lane is detached and idle with no ambiguous RuntimeCommand and the block carries no typed provenance, so runtime generation {} is startable again",
+            member.runtime_generation
+        ),
+    )?;
+    ledger.fold_event(
+        TeamRunEventSourceKind::Host,
+        Some(member.id.clone()),
+        "member_run",
+        &member.id,
+        "recovered",
+        &format!(
+            "member {} returned from blocked to idle on a detached, idle AgentSession lane",
+            member.name
+        ),
+    )?;
+    Ok(())
 }
 
 /// Journal the terminal `Blocked` verdict for a provider attempt this
@@ -385,6 +517,11 @@ mod tests {
             current_version: Some(7),
         }
     }
+
+    // `blocked_member_provenance` is exercised in
+    // `crate::main_tests::team_run_recover`, next to the recovery-path
+    // decisions it feeds and on that module's existing MemberRun fixture,
+    // rather than duplicating a thirty-field projection literal here.
 
     #[test]
     fn only_the_exact_drain_fence_refusal_is_attempt_scoped() {

@@ -213,11 +213,13 @@ fn already_active_member_no_supervisor_remains_already_active() {
     );
 }
 
-/// #779: a Blocked member whose lane already proves the runtime is gone is the
-/// one case `recover` must act on rather than skip — and only that case.
-#[test]
-fn blocked_member_on_a_dead_lane_is_restarted_and_nothing_else_is() {
-    let blocked = make_member(
+/// A Blocked, actively-coordinated member with an available native session —
+/// the shape every #779 recovery decision is made on — with one piece of typed
+/// block provenance applied.
+fn blocked_member_with(
+    mutate: impl FnOnce(&mut ProviderRuntimeProjection),
+) -> ProviderRuntimeProjection {
+    let mut member = make_member(
         MemberRunStatus::Blocked,
         MemberCoordinationStatus::Active,
         true,
@@ -225,6 +227,152 @@ fn blocked_member_on_a_dead_lane_is_restarted_and_nothing_else_is() {
         NativeSessionAvailability::Available,
         false,
     );
+    mutate(&mut member);
+    member
+}
+
+fn capacity_snapshot(state: harness_core::ProviderCapacityState) -> ProviderCapacitySnapshot {
+    let mut snapshot = ProviderCapacitySnapshot::unknown(
+        "codex",
+        "codex_app_server",
+        "unix-ms:1",
+        1,
+        harness_core::ProviderCapacityEvidence::ProviderError,
+        "test capacity observation",
+    );
+    snapshot.state = state;
+    snapshot
+}
+
+fn compatibility_cause() -> harness_core::ProviderCompatibilityBlockCause {
+    harness_core::ProviderCompatibilityBlockCause {
+        schema_version: 1,
+        id: "provider-compatibility-block:mr-test:1".into(),
+        member_run_id: "mr-test".into(),
+        provider: "codex".into(),
+        execution_mode: "codex_app_server".into(),
+        provider_version: "0.0.0-test".into(),
+        adapter_contract_version: "1.0".into(),
+        boundary: ProviderCompatibilityBlockBoundary::StartPersistentExecution,
+        compatibility_status: ProviderCompatibilityStatus::ReviewRequired,
+        source: harness_core::ProviderCompatibilityBlockSource::AdapterCompatibility,
+        probe_error: None,
+        caused_at: "unix-ms:1".into(),
+    }
+}
+
+/// #779 review P1-1: `Blocked` alone names no authority. Three gates write it
+/// and leave typed evidence that owns their own recovery; only a runtime fence
+/// leaves none. Reading the status alone would let `recover` clear a live
+/// diagnosis — and, for the compatibility class, produce a row
+/// `ProviderRuntimeProjection::validate` refuses, aborting the whole run.
+#[test]
+fn block_provenance_names_the_gate_that_owns_each_block() {
+    assert_eq!(
+        blocked_member_provenance(&blocked_member_with(|_| {})),
+        BlockedMemberProvenance::Untyped,
+        "a member a runtime fence blocked carries no typed provenance"
+    );
+    assert_eq!(
+        blocked_member_provenance(&blocked_member_with(|member| {
+            member.provider_compatibility_block_cause = Some(compatibility_cause());
+        })),
+        BlockedMemberProvenance::ProviderCompatibility
+    );
+    assert_eq!(
+        blocked_member_provenance(&blocked_member_with(|member| {
+            member.provider_capacity = Some(capacity_snapshot(
+                harness_core::ProviderCapacityState::Exhausted,
+            ));
+        })),
+        BlockedMemberProvenance::ProviderCapacity
+    );
+    assert_eq!(
+        blocked_member_provenance(&blocked_member_with(|member| {
+            member.provider_capacity = Some(capacity_snapshot(
+                harness_core::ProviderCapacityState::Unauthorized,
+            ));
+        })),
+        BlockedMemberProvenance::ProviderCapacity
+    );
+    assert_eq!(
+        blocked_member_provenance(&blocked_member_with(|member| {
+            member.provider_capacity = Some(capacity_snapshot(
+                harness_core::ProviderCapacityState::Available,
+            ));
+        })),
+        BlockedMemberProvenance::Untyped,
+        "only a known-unavailable capacity snapshot is a capacity-authored block"
+    );
+    assert_eq!(
+        blocked_member_provenance(&blocked_member_with(|member| {
+            member.zero_output_streak = 3;
+        })),
+        BlockedMemberProvenance::ZeroOutputDegradation
+    );
+    assert_eq!(
+        blocked_member_provenance(&blocked_member_with(|member| {
+            member.provider_compatibility_block_cause = Some(compatibility_cause());
+            member.provider_capacity = Some(capacity_snapshot(
+                harness_core::ProviderCapacityState::Exhausted,
+            ));
+            member.zero_output_streak = 3;
+        })),
+        BlockedMemberProvenance::ProviderCompatibility,
+        "the typed cause validation binds to Blocked decides when several apply"
+    );
+}
+
+/// Each excluded class is reported, never restarted — even on a lane that
+/// proves the runtime gone, which is exactly the state a compatibility block
+/// leaves behind (it is written from Idle|Queued|Disconnected, so the Session
+/// is Cold, detached and disarmed).
+#[test]
+fn a_block_with_typed_provenance_is_reported_and_never_restarted() {
+    for (label, member) in [
+        (
+            "provider compatibility",
+            blocked_member_with(|member| {
+                member.provider_compatibility_block_cause = Some(compatibility_cause());
+            }),
+        ),
+        (
+            "provider capacity",
+            blocked_member_with(|member| {
+                member.provider_capacity = Some(capacity_snapshot(
+                    harness_core::ProviderCapacityState::Exhausted,
+                ));
+            }),
+        ),
+        (
+            "zero-output degradation",
+            blocked_member_with(|member| {
+                member.zero_output_streak = 4;
+            }),
+        ),
+    ] {
+        let path = classify_member_recovery_path(&member, false, true);
+        let MemberRecoveryPath::BlockedByTypedProvenance { provenance } = path else {
+            panic!("{label} must be reported, not restarted; got {path:?}");
+        };
+        assert_ne!(provenance, BlockedMemberProvenance::Untyped);
+        assert!(
+            !provenance.reason().is_empty(),
+            "{label} must name why it was not restarted"
+        );
+        assert_eq!(
+            classify_member_recovery_path(&member, false, false),
+            MemberRecoveryPath::BlockedByTypedProvenance { provenance },
+            "{label} is decided by its provenance, not by the lane"
+        );
+    }
+}
+
+/// #779: a Blocked member whose lane already proves the runtime is gone is the
+/// one case `recover` must act on rather than skip — and only that case.
+#[test]
+fn blocked_member_on_a_dead_lane_is_restarted_and_nothing_else_is() {
+    let blocked = blocked_member_with(|_| {});
     assert_eq!(
         classify_member_recovery_path(&blocked, false, true),
         MemberRecoveryPath::RestartBlockedDetachedLane
