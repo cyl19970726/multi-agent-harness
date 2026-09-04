@@ -38,15 +38,15 @@ Decide, explicitly and durably, before `team-run start`:
 Create the durable Team once; it persists across runs:
 
 ```bash
-firm team create --name <team> --host-agent-id <agent-member-id> --node-id <node> \
-  --member <agent-member-id> ...
+firm team create --name <team> --description "<why this Team exists>" \
+  --host-agent-id <agent-member-id> --node-id <node> --member <agent-member-id> ...
 ```
 
 Create a TeamRun per engagement. The Project Binding is frozen on the run and
 the returned execution/member roots are the members' worlds:
 
 ```bash
-firm team-run create --agent-team-id <team-id> \
+firm team-run create --agent-team-id <team-id> --objective "<one-sentence run objective>" \
   --member <name>:<provider>:<execution_mode> ... \
   [--member-worktree <name>:<path>] [--member-owned-path <name>:<path>] \
   [--resume-member <name>:<native-session-id>] \
@@ -59,8 +59,8 @@ firm team-run start --id <team-run-id>
 bootstrap Work so your explicit assignment can follow. Assign Works **after**
 `team-run start`: a Work bound before the first provider Open is frozen against
 runtime facts the member's first round invalidates. `team-run add-member --id
-<run> --member <name>:<provider>:<mode> [--initial-work]` joins a member to a
-running run and provisions its AgentSession (#749).
+<run> --member <name>:<provider>:<mode> [--initial-work "<brief>"]` joins a
+member to a running run and provisions its AgentSession (#749).
 
 ## 2. Decompose into bounded Works
 
@@ -82,8 +82,8 @@ cannot execute before the prerequisite is accepted:
 
 ```bash
 firm team-run work create ... --prerequisite-work-id <work-id>      # at creation
-firm team-run work replace-dependencies --work-id <work-id> \
-  --expected-version <n> --prerequisite-work-id <work-id> ... \
+firm team-run work replace-dependencies --team-id <accountable-team-id> \
+  --work-id <work-id> --expected-version <n> --prerequisite-work-id <work-id> ... \
   --idempotency-key <stable-command-key>                             # Host-only edit
 ```
 
@@ -182,12 +182,14 @@ or read the named check refs, and walk the completion criteria line by line.
 
 ```bash
 firm team-run work show --work-id <work-id> --json        # report, artifact/check refs, deliveries
-firm team-run work accept --work-id <work-id>              # → Closed / Accepted
-firm team-run work request-changes --work-id <work-id> --reason "<what and why>"
+firm team-run work accept --work-id <work-id> --expected-version <n>      # → Closed / Accepted
+firm team-run work request-changes --work-id <work-id> --expected-version <n> \
+  --reason "<what and why>"                                               # → Open
 ```
 
-- **Accept** → Work closes with resolution `Accepted`. `--skip-gates` exists
-  for declared gates you have verified out of band; say so in the reason.
+- **Accept** → Work closes with resolution `Accepted`. Declared Work gates are
+  a Store invariant; there is no bypass flag, so unmet gates mean
+  request-changes, not a workaround.
 - **Request changes** → Work returns Review → Open with your reasons recorded
   in WorkEvent history. Stable AgentMember/TeamMembership responsibility
   remains; the scheduler must create the next exact `WorkExecutionBinding`
@@ -233,7 +235,7 @@ A dead member runtime is not lost work. The lifecycle controls:
 firm team-run interrupt-member --id <run> --member-run-id <id> --reason <text>   # stop one turn
 firm team-run close-member     --id <run> --member-run-id <id> --reason <text>   # release runtime, keep session
 firm team-run reopen-member    --id <run> --member-run-id <id>                   # resume exact native session, new generation
-firm team-run deactivate-member --id <run> --member-run-id <id>                  # permanent; reassign/cancel Work first
+firm team-run deactivate-member --id <run> --member-run-id <id> --reason <text>  # permanent; reassign/cancel Work first
 firm team-run recover --id <run>                                                 # claim/receipt diagnostics after a crash
 ```
 
@@ -256,11 +258,14 @@ firm team-run recover --id <run>                                                
 ## 7. Tear down honestly
 
 ```bash
-firm team-run complete --id <run> [--reason <text>] [--confirm-provider-stopped]
-firm team-run cancel   --id <run> --reason <text> [--cancelled-by <actor>]
+firm team-run complete --id <run>
+firm team-run cancel   --id <run> --reason <text> [--cancelled-by <actor>] [--confirm-provider-stopped]
 ```
 
 TeamRun completion atomically rejects every non-terminal Work — close,
-reassign, or cancel them first. A completed TeamRun does not close members;
+reassign, or cancel them first. `cancel` on a run that is still executing
+requires `--confirm-provider-stopped`: it routes through interrupted-run
+recovery instead of the ordinary planning/waiting/reviewing → cancelled
+transition, and you are asserting that the provider processes are gone. A completed TeamRun does not close members;
 the durable Team, its members, and their sessions outlive the run and carry
 into the next one.

@@ -96,7 +96,7 @@ For a compact board overview when context is limited:
 "$FIRM_BIN" team-run work list --team-run-id "$FIRM_TEAM_RUN_ID" --since <cursor>
 ```
 
-`board-summary` prints a ≤500-character digest: `open= active= blocked= review= accepted= cancelled=` counts, `assigned= unassigned= ready=`, and each Member's `idle|working|awaiting-review` line. `--brief` prints one plain-text line per Work. `--since` takes a monotonic cursor from a prior JSON `list` response (`next_since`) and returns only new or updated Works.
+`board-summary` prints a ≤500-character digest: `open= active= blocked= review= accepted= cancelled=` counts, `assigned= unassigned= ready=`, each Member's `idle|working|awaiting-review` line, and the supervisor generation/heartbeat line (or a `[WARNING] no live supervisor` line when the run has none). `--brief` prints one plain-text line per Work. `--since` takes a monotonic cursor from a prior JSON `list` response (`next_since`) and returns only new or updated Works.
 
 ## Claim Or Start Exactly One Work
 

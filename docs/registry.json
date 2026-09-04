@@ -1122,7 +1122,7 @@
         "check-doc-links",
         "check-doc-governance"
       ],
-      "reviewAfter": "2026-10-04",
+      "reviewAfter": "2026-08-26",
       "lastVerifiedWith": [
         "npx pnpm@9.15.4 check",
         "cargo clippy --all-targets -- -D warnings"

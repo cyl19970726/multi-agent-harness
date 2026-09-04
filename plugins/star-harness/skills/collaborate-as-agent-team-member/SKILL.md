@@ -214,7 +214,8 @@ firm team-run work assign \
   --membership-id <team-membership-id> \
   --idempotency-key <stable-command-key>
 
-# Either role creates an open Work for eligible claim:
+# Either role creates an open Work for eligible claim
+# (a Member adds --as-member-run-id "$FIRM_MEMBER_RUN_ID" so provenance is its own):
 firm team-run work create \
   --team-run-id <team-run-id> \
   --title "<follow-up responsibility>" \
@@ -230,7 +231,7 @@ run's event stream and chain cursors:
 ```bash
 # block until something happens on the run (or the timeout elapses):
 firm team-run wait --id <team-run-id> --after-seq <last-seq> --timeout-secs 600 --json
-# then read only what changed:
+# then read only what changed (next_since comes from the previous JSON `work list` response):
 firm team-run work list --team-run-id <team-run-id> --since <next_since>
 firm team-run board-summary --id <team-run-id>
 # external_interactive Host: your mail is not pushed mid-turn — read it:
@@ -257,6 +258,7 @@ Member essentials (full sequence in the member loop reference):
   --work-id "$FIRM_WORK_ID" \
   --expected-version <latest-version> \
   --result-summary "<RESULT/SUMMARY/COVERAGE/WORKTREE/ARTIFACTS template>" \
+  --candidate-revision <exact-commit-sha> \
   --artifact-ref <PR URL> --check-ref "<command and actual result>" \
   --idempotency-key <stable-command-key>
 
@@ -329,6 +331,7 @@ the legacy exporter's `verify`.
                                           8. work submit --expected-version 5
                                              --result-summary "## RESULT done…
                                              ## WORKTREE …"
+                                             --candidate-revision <commit sha>
                                              --artifact-ref <PR URL>
                                              --check-ref "cargo test -p
                                              firm-cli --test legacy… exit 0"
