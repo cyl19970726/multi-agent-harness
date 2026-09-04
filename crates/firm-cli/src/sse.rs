@@ -2,7 +2,6 @@
 use std::collections::HashMap;
 use std::fs;
 use std::io::{Read, Seek, SeekFrom, Write};
-use std::net::TcpStream;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -908,7 +907,7 @@ fn check_and_broadcast_appends<F>(
 }
 
 /// Write an SSE response header
-pub fn write_sse_header(stream: &mut TcpStream) -> std::io::Result<()> {
+pub fn write_sse_header<W: Write>(stream: &mut W) -> std::io::Result<()> {
     let response = "HTTP/1.1 200 OK\r\n\
                     Content-Type: text/event-stream\r\n\
                     Cache-Control: no-cache\r\n\
@@ -920,8 +919,8 @@ pub fn write_sse_header(stream: &mut TcpStream) -> std::io::Result<()> {
 }
 
 /// Write a single SSE frame to the client
-pub fn write_sse_frame(
-    stream: &mut TcpStream,
+pub fn write_sse_frame<W: Write>(
+    stream: &mut W,
     event_kind: &str,
     data: &serde_json::Value,
 ) -> std::io::Result<()> {
@@ -932,7 +931,7 @@ pub fn write_sse_frame(
 }
 
 /// Write a keepalive comment to keep the connection alive
-pub fn write_sse_keepalive(stream: &mut TcpStream) -> std::io::Result<()> {
+pub fn write_sse_keepalive<W: Write>(stream: &mut W) -> std::io::Result<()> {
     stream.write_all(b": keepalive\n\n")?;
     stream.flush()?;
     Ok(())

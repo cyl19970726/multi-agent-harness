@@ -1,5 +1,52 @@
 use super::*;
 
+pub(super) struct HttpResponseWriter<W> {
+    inner: W,
+    bytes_written: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl<W> HttpResponseWriter<W> {
+    pub(super) fn new(inner: W) -> Self {
+        Self {
+            inner,
+            bytes_written: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        }
+    }
+
+    pub(super) fn bytes_written(&self) -> usize {
+        self.bytes_written.load(Ordering::Relaxed)
+    }
+}
+
+impl<W: Write> Write for HttpResponseWriter<W> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let written = self.inner.write(buf)?;
+        self.bytes_written.fetch_add(written, Ordering::Relaxed);
+        Ok(written)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.inner.flush()
+    }
+}
+
+impl HttpResponseWriter<TcpStream> {
+    pub(super) fn local_addr(&self) -> std::io::Result<std::net::SocketAddr> {
+        self.inner.local_addr()
+    }
+
+    pub(super) fn peer_addr(&self) -> std::io::Result<std::net::SocketAddr> {
+        self.inner.peer_addr()
+    }
+
+    pub(super) fn try_clone(&self) -> std::io::Result<Self> {
+        Ok(Self {
+            inner: self.inner.try_clone()?,
+            bytes_written: Arc::clone(&self.bytes_written),
+        })
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum AllowedDocPathKind {
     DocsTree,
@@ -65,8 +112,8 @@ pub(super) fn read_allowed_doc(request_target: &str) -> Result<(String, String),
     Ok((decoded, content))
 }
 
-pub(super) fn write_http_json<T: serde::Serialize>(
-    stream: &mut TcpStream,
+pub(super) fn write_http_json<T: serde::Serialize, W: Write>(
+    stream: &mut W,
     status: &str,
     value: &T,
 ) -> CliResult<()> {
@@ -74,8 +121,8 @@ pub(super) fn write_http_json<T: serde::Serialize>(
     write_http_response(stream, status, "application/json", &body)
 }
 
-pub(super) fn write_http_response(
-    stream: &mut TcpStream,
+pub(super) fn write_http_response<W: Write>(
+    stream: &mut W,
     status: &str,
     content_type: &str,
     body: &[u8],
@@ -87,4 +134,35 @@ pub(super) fn write_http_response(
     )?;
     stream.write_all(body)?;
     Ok(())
+}
+
+pub(super) fn write_http_error_if_unstarted<W: Write>(
+    stream: &mut HttpResponseWriter<W>,
+    error: &CliError,
+) -> CliResult<bool> {
+    if stream.bytes_written() != 0 {
+        return Ok(false);
+    }
+    let (status, body) = http_action_error_response(error);
+    write_http_json(stream, status, &body)?;
+    Ok(true)
+}
+
+#[cfg(test)]
+mod tests_http_response_writer {
+    use super::*;
+
+    #[test]
+    fn handler_error_after_response_started_does_not_write_a_second_status_line() {
+        let mut stream = HttpResponseWriter::new(Vec::new());
+        stream
+            .write_all(b"HTTP/1.1 200 OK\r\n")
+            .expect("write partial response");
+
+        let error = CliError::Store(StoreError::LockTimeout("/tmp/store/.store.lock".into()));
+        let answered = write_http_error_if_unstarted(&mut stream, &error).expect("guard response");
+
+        assert!(!answered);
+        assert_eq!(stream.inner, b"HTTP/1.1 200 OK\r\n");
+    }
 }

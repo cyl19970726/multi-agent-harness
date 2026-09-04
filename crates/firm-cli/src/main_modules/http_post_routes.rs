@@ -387,7 +387,7 @@ impl HttpExchange<'_> {
                 &serde_json::json!({"ok": true, "result": response}),
             )?,
             Err(error) => {
-                let (status, body) = http_action_error_response(error);
+                let (status, body) = http_action_error_response(&error);
                 write_http_json(stream, status, &body)?;
             }
         }

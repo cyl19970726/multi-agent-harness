@@ -33,11 +33,9 @@ const NATIVE_SELECTOR_CLEAN_ENV: &[(&str, &str)] = &[
     ("HARNESS_WORK_VERSION", ""),
     ("HARNESS_HOME", ""),
 ];
-
 const FIXTURE_TEAM_ID: &str = "team-runtime-fixture";
 const FIXTURE_MISSION_ID: &str = "mission-runtime-fixture";
 const FIXTURE_HOST_ID: &str = "agent-runtime-host";
-
 #[path = "team_run_api/fixtures.rs"]
 mod fixtures;
 use fixtures::{assert_trust_native_binding_synced, wait_for_file};
@@ -1466,6 +1464,8 @@ mod retry_lineage_is_scoped_by_agent_team_not_retired_wave_identity;
 mod review_required_kimi_033_blocks_initial_start_and_http_work_rebind_before_acp;
 #[path = "team_run_api/reviewed_recovery_redelivers_same_stable_member_without_duplicate_work_or_session.rs"]
 mod reviewed_recovery_redelivers_same_stable_member_without_duplicate_work_or_session;
+#[path = "team_run_api/serve_handler_errors_are_json.rs"]
+mod serve_handler_errors_are_json;
 #[path = "team_run_api/sse_invalidates_team_run_projection_and_snapshot_converges.rs"]
 mod sse_invalidates_team_run_projection_and_snapshot_converges;
 #[cfg(any())]

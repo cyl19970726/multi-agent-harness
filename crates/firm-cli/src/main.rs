@@ -674,13 +674,14 @@ fn handle_http_connection(
         reader.read_exact(&mut body)?;
     }
 
+    let mut response = HttpResponseWriter::new(stream);
     if method == "OPTIONS" {
-        write_http_response(&mut stream, "204 No Content", "application/json", b"{}")?;
+        write_http_response(&mut response, "204 No Content", "application/json", b"{}")?;
         return Ok(());
     }
     if method != "GET" && method != "POST" {
         write_http_json(
-            &mut stream,
+            &mut response,
             "405 Method Not Allowed",
             &serde_json::json!({"error": "method_not_allowed"}),
         )?;
@@ -688,7 +689,7 @@ fn handle_http_connection(
     }
     let mut exchange = HttpExchange {
         projects,
-        stream: &mut stream,
+        stream: &mut response,
         sse_manager,
         method: method.to_string(),
         path,
@@ -705,11 +706,22 @@ fn handle_http_connection(
         trust_identity_override_header,
         native_session_wake_token,
     };
-    if exchange.handle_trust_routes()?
-        || exchange.handle_get_routes()?
-        || exchange.handle_dashboard_post()?
-    {
-        return Ok(());
+    let route_result = (|| -> CliResult<()> {
+        if exchange.handle_trust_routes()?
+            || exchange.handle_get_routes()?
+            || exchange.handle_dashboard_post()?
+        {
+            return Ok(());
+        }
+        Ok(())
+    })();
+    drop(exchange);
+    if let Err(error) = route_result {
+        if write_http_error_if_unstarted(&mut response, &error)? {
+            eprintln!("serve: connection handler error answered as HTTP JSON: {error}");
+            return Ok(());
+        }
+        return Err(error);
     }
     Ok(())
 }

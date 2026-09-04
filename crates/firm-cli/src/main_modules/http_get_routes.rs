@@ -347,7 +347,7 @@ impl HttpExchange<'_> {
                     {
                         Ok(snapshot) => write_http_json(stream, "200 OK", &snapshot)?,
                         Err(error) => {
-                            let (status, body) = http_action_error_response(error);
+                            let (status, body) = http_action_error_response(&error);
                             write_http_json(stream, status, &body)?
                         }
                     }

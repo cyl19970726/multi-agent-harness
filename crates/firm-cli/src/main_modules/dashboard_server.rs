@@ -447,7 +447,7 @@ pub(super) fn handle_sse_stream(
     store: &HarnessStore,
     execution_space_id: &str,
     selection: SseSelection<'_>,
-    mut stream: TcpStream,
+    mut stream: HttpResponseWriter<TcpStream>,
     sse_manager: sse::SseManager,
 ) -> CliResult<()> {
     use std::time::Duration;
@@ -671,7 +671,7 @@ fn initialize_persisted_session_read(
     project_binding_id: &str,
     team_id: &str,
     agent_member_id: &str,
-    stream: &mut TcpStream,
+    stream: &mut HttpResponseWriter<TcpStream>,
 ) -> CliResult<Option<provider_event_api::PersistedSessionReadRequest>> {
     let Ok(mut request) = provider_event_api::local_operator_session_read_request(
         store,
@@ -708,7 +708,7 @@ fn initialize_persisted_session_read(
 }
 
 fn emit_persisted_session_advance(
-    stream: &mut TcpStream,
+    stream: &mut HttpResponseWriter<TcpStream>,
     request: Option<&mut provider_event_api::PersistedSessionReadRequest>,
 ) -> CliResult<()> {
     let Some(request) = request else {
