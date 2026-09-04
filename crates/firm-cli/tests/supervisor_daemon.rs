@@ -116,6 +116,53 @@ fn daemon_status_names_draining_predecessor_and_recovery_action() {
 }
 
 #[test]
+fn daemon_status_degrades_one_unreadable_space_and_keeps_predecessor_recovery() {
+    let home = TempHome::new("node-daemon-degraded-status");
+    let node_id = init_registered_node(&home);
+    let healthy_space_id = current_space_id(&home);
+    seed_draining_predecessor(&home, &node_id);
+    let project_id = current_project_id(&home);
+    let unreadable_space_id = "unreadable-daemon-lease-space";
+    let initialized = run_firm(
+        &home,
+        home.base(),
+        &[
+            "space",
+            "init",
+            "--id",
+            unreadable_space_id,
+            "--name",
+            "Unreadable daemon lease Space",
+            "--project-binding",
+            &project_id,
+        ],
+    );
+    assert!(
+        initialized.status.success(),
+        "space init failed: {initialized:?}"
+    );
+    std::fs::write(
+        home.spaces_dir()
+            .join(unreadable_space_id)
+            .join("node_daemon_leases.jsonl"),
+        "not valid JSON\n",
+    )
+    .expect("poison sibling lease store");
+
+    let output = run_firm(&home, home.base(), &["daemon", "status"]);
+    assert!(
+        output.status.success(),
+        "degraded daemon status failed: {output:?}"
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains(&healthy_space_id), "{stdout}");
+    assert!(stdout.contains("draining"), "{stdout}");
+    assert!(stdout.contains(unreadable_space_id), "{stdout}");
+    assert!(stdout.contains("unreadable NodeDaemonLease"), "{stdout}");
+    assert!(stdout.contains("daemon-recover-predecessor"), "{stdout}");
+}
+
+#[test]
 fn daemon_start_failure_surfaces_detached_log_tail() {
     let home = TempHome::new("node-daemon-start-log-tail");
     let node_id = init_registered_node(&home);
