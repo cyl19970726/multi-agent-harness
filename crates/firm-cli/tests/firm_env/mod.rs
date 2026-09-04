@@ -166,6 +166,7 @@ pub const INHERITED_NATIVE_FIRM_ENV: &[&str] = &[
     "FIRM_MEMBER_RUN_ID",
     "FIRM_AGENT_MEMBER_ID",
     "FIRM_WORK_ID",
+    "FIRM_DASHBOARD_BASE",
     // Backward compat: old HARNESS_ env vars
     "HARNESS_ROOT",
     "HARNESS_PROJECT",

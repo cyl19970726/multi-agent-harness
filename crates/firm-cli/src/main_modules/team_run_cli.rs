@@ -23,6 +23,15 @@ pub(super) fn admitted_ambient_host_binding(
     }
 }
 
+fn dashboard_base(args: &[String]) -> Option<String> {
+    value(args, "--dashboard-base")
+        .or_else(|| std::env::var("FIRM_DASHBOARD_BASE").ok())
+        .and_then(|base| {
+            let base = base.trim();
+            (!base.is_empty()).then(|| base.to_string())
+        })
+}
+
 pub(super) fn team_run_command(
     store: &HarnessStore,
     resolved: &ResolvedStore,
@@ -338,9 +347,10 @@ pub(super) fn team_run_command(
                 })
                 .collect();
             if json {
+                let dashboard_base = dashboard_base(args);
                 let display = runs
                     .iter()
-                    .map(|run| team_run_display_json(store, run))
+                    .map(|run| team_run_display_json(store, run, dashboard_base.as_deref()))
                     .collect::<CliResult<Vec<_>>>()?;
                 print_json(&display)?;
             } else {
@@ -381,6 +391,9 @@ pub(super) fn team_run_command(
             let unacked_messages = team_run_unacknowledged_message_count(store, &id)?;
             let supervisor = store.latest_team_supervisor_lease(&id)?;
             let supervisor_current = supervisor.as_ref().is_some_and(is_supervisor_current);
+            let dashboard_base = dashboard_base(args);
+            let dashboard_url =
+                team_run_dashboard_url(store, &run, dashboard_base.as_deref(), None)?;
             #[cfg(unix)]
             let node_daemon = execution_space::firm_home()
                 .ok()
@@ -393,15 +406,22 @@ pub(super) fn team_run_command(
             if json {
                 let members: Vec<serde_json::Value> = member_runs
                     .iter()
-                    .map(|member| {
-                        serde_json::json!({
+                    .map(|member| -> CliResult<serde_json::Value> {
+                        Ok(serde_json::json!({
                             "member_run": member,
                             "latest_action": latest_action_of(&member.id),
-                        })
+                            "dashboard_url": team_run_dashboard_url(
+                                store,
+                                &run,
+                                dashboard_base.as_deref(),
+                                Some(&member.id),
+                            )?,
+                        }))
                     })
-                    .collect();
+                    .collect::<CliResult<Vec<_>>>()?;
                 print_json(&serde_json::json!({
                     "team_run": run,
+                    "dashboard_url": dashboard_url,
                     "members": members,
                     "unacked_messages": unacked_messages,
                     "supervisor": {
