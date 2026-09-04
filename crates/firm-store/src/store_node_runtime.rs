@@ -66,7 +66,14 @@ impl HarnessStore {
             && session.control_state.driver_generation == fence.agent_session_driver_generation
             && session.node_daemon_id == fence.node_daemon_id
             && session.node_daemon_generation == fence.node_daemon_generation
-            && session.lifecycle == AgentSessionStatus::Idle
+            // `Interrupted` counts alongside `Idle`: it records only that a
+            // drain cut the cycle before its own end, while the residency,
+            // activity and turn checks below still prove no live runtime owns
+            // this lane. Close must not be fenced on the label alone.
+            && matches!(
+                session.lifecycle,
+                AgentSessionStatus::Idle | AgentSessionStatus::Interrupted
+            )
             && session.control_state.runtime_residency == RuntimeResidency::Detached
             && session.control_state.activity == RuntimeActivity::Idle
             && session.current_turn_id.is_none()

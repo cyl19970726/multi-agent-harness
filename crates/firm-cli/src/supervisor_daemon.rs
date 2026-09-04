@@ -1113,6 +1113,8 @@ pub(crate) fn daemon_stop_via_socket(
 #[cfg(test)]
 mod adoption_tests;
 #[cfg(test)]
+mod drain_recovery_tests;
+#[cfg(test)]
 mod drive_outcome_tests;
 #[cfg(test)]
 mod stop_drain_tests;

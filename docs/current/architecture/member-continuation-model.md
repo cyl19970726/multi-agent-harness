@@ -123,6 +123,30 @@ Provider-internal read-only parallelism and native subagents remain internal to
 the lease holder. Concurrent writable lanes require separate worktrees or an
 explicit integration boundary.
 
+### A Drained Lane Is Interrupted, Not Terminal
+
+A NodeDaemon drain (graceful shutdown or hard-crash recovery) kills this
+daemon's owned provider process groups and then settles every Session it owned:
+residency `Detached`, activity `Idle`, continuation disarmed, no turn and no
+queued native input. A Session that was mid-turn keeps the honest record that
+its cycle never reached its own end and becomes `Interrupted`; a Session that
+was already idle keeps `Idle`.
+
+`Interrupted` is a recoverable state, not a terminal one. The next NodeDaemon
+generation reattaches the Session — which requires the predecessor lease to be
+explicitly `Released`, so lease expiry alone never counts — and may then move it
+`Interrupted -> Idle` and open a fresh cycle. The Store admits that one hop only
+while the lane still proves the killed runtime is gone: detached, disarmed, no
+turn, no queued input, and no ambiguous `RuntimeCommand`. The killed cycle's own
+`RuntimeCommand` stays settled against the dead daemon generation and is never
+replayed; the resume opens a new cycle on the same provider-native session.
+
+`Close` follows the same rule. An `Interrupted` Session whose residency is
+`Detached` with no cycle activity and no turn is at a terminal turn boundary,
+so the Host's Close and the detached-recovery Close both apply to it. Fencing
+Close on the lifecycle label alone would leave a member whose runtime is
+provably dead with no exit at all.
+
 ## Continuation State Is A Projection
 
 Harness must not create a generic persisted Goal object. The Adapter exposes a
