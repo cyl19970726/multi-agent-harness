@@ -1,4 +1,3 @@
-//! Agent Team CLI, HTTP, Dashboard snapshot, and SSE integration coverage.
 use harness_core::agentfirm_api::CanonicalMessageDeliveryStatus;
 use harness_store::HarnessStore;
 use std::time::Duration;
@@ -21,7 +20,6 @@ const NATIVE_SELECTOR_CLEAN_ENV: &[(&str, &str)] = &[
     ("FIRM_MEMBER_RUN_ID", ""),
     ("FIRM_WORK_ID", ""),
     ("FIRM_WORK_VERSION", ""),
-    // Backward compat: old HARNESS_ env vars
     ("HARNESS_ROOT", ""),
     ("HARNESS_PROJECT", ""),
     ("HARNESS_PROJECT_ID", ""),
@@ -1485,6 +1483,8 @@ mod team_run_cli_create_list_status_send_events;
 mod team_run_cli_message_reuses_conversation_lineage_only_within_its_run;
 #[path = "team_run_api/team_run_dashboard_urls.rs"]
 mod team_run_dashboard_urls;
+#[path = "team_run_api/team_run_host_message_revision.rs"]
+mod team_run_host_message_revision;
 #[path = "team_run_api/team_run_host_message_send.rs"]
 mod team_run_host_message_send;
 #[path = "team_run_api/team_run_recover_prints_mission_log_tail_before_the_report.rs"]

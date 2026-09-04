@@ -1021,9 +1021,7 @@ pub(crate) fn host_inbox_for_native_thread(
         .collect();
     let mut entries = Vec::new();
     for run in latest_team_runs_in_append_order(store)? {
-        if canonical_surface(&run.host_surface) != canonical_surface(host_surface)
-            || run.host_thread_id.as_deref() != Some(host_thread_id)
-        {
+        if require_external_interactive_host_binding(&run, host_surface, host_thread_id).is_err() {
             continue;
         }
         let host_member_run_id = store_conflict_as_usage(store.host_member_binding(&run.id))?

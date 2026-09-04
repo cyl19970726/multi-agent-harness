@@ -9,6 +9,7 @@ fn host_inbox_shows_work_attention_after_submit() {
     let mut bound = current.clone();
     bound.host_surface = "codex-app".into();
     bound.host_thread_id = Some("codex-thread-a".into());
+    bound.host_control_mode = HostControlMode::ExternalInteractive;
     bound.updated_at = "unix-ms:host-bound".into();
     store
         .compare_and_append_team_run(&current, &bound)

@@ -4,6 +4,23 @@ pub(super) const HOST_BINDING_LEASE_DEFAULT_TTL_MS: u64 = 30_000;
 pub(super) const HOST_BINDING_LEASE_MIN_TTL_MS: u64 = 5_000;
 pub(super) const HOST_BINDING_LEASE_MAX_TTL_MS: u64 = 300_000;
 
+pub(super) fn require_external_interactive_host_binding(
+    run: &AgentTeamRun,
+    surface: &str,
+    thread_id: &str,
+) -> CliResult<()> {
+    if run.host_control_mode != HostControlMode::ExternalInteractive
+        || canonical_surface(&run.host_surface) != canonical_surface(surface)
+        || run.host_thread_id.as_deref() != Some(thread_id)
+    {
+        return Err(CliError::Usage(format!(
+            "UNAUTHORIZED_ACTOR: --surface and --thread-id must identify the exact external_interactive Host binding for TeamRun {}",
+            run.id
+        )));
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct HostSessionValidationRequest<'a> {
     pub(super) host_surface: &'a str,
