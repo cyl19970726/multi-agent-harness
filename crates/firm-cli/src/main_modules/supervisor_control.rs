@@ -1007,24 +1007,45 @@ pub(super) fn dispatch_live_member_control(
         })?
         .parse::<std::net::SocketAddr>()
         .map_err(|error| CliError::Usage(format!("invalid Supervisor locator: {error}")))?;
-    let mut stream =
-        TcpStream::connect_timeout(&address, Duration::from_secs(3)).map_err(|error| {
-            CliError::Usage(format!(
-                "cannot reach team run {team_run_id} Supervisor at {}: {error}",
-                lease.owner_locator
-            ))
-        })?;
+    let stream = TcpStream::connect_timeout(&address, Duration::from_secs(3)).map_err(|error| {
+        CliError::Usage(format!(
+            "cannot reach team run {team_run_id} Supervisor at {}: {error}",
+            lease.owner_locator
+        ))
+    })?;
+    send_live_member_control_request(
+        stream,
+        &request,
+        Duration::from_secs(40),
+        supervisor_daemon::CONTROL_TRANSIENT_READ_RETRIES,
+        supervisor_daemon::CONTROL_TRANSIENT_READ_BACKOFF,
+    )
+}
+
+fn send_live_member_control_request(
+    mut stream: TcpStream,
+    request: &LiveMemberControlRequest,
+    read_timeout: Duration,
+    transient_read_retries: usize,
+    transient_read_backoff: Duration,
+) -> CliResult<serde_json::Value> {
     // The owning Supervisor allows one complete idle poll plus provider
     // quiesce/release (30s). The routing client must not time out first and
     // turn a later truthful acknowledgement into a false recovery response.
-    stream.set_read_timeout(Some(Duration::from_secs(40)))?;
+    stream.set_read_timeout(Some(read_timeout))?;
     stream.set_write_timeout(Some(Duration::from_secs(5)))?;
-    let mut payload = serde_json::to_vec(&request)?;
+    let mut payload = serde_json::to_vec(request)?;
     payload.push(b'\n');
     stream.write_all(&payload)?;
     stream.flush()?;
     let mut line = String::new();
-    BufReader::new(stream).take(262_145).read_line(&mut line)?;
+    let mut reader = BufReader::new(stream).take(262_145);
+    supervisor_daemon::read_control_response_line(
+        &mut reader,
+        &mut line,
+        transient_read_retries,
+        transient_read_backoff,
+    )?;
     if line.len() > 262_144 {
         return Err(CliError::Usage(
             "Supervisor control response exceeds 256 KiB".to_string(),
@@ -1294,3 +1315,7 @@ pub(super) fn await_managed_member_runtime_close_settled(
     }
     Ok(false)
 }
+
+#[cfg(test)]
+#[path = "supervisor_control/tests.rs"]
+mod tests;
