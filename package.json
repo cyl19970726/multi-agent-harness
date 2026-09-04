@@ -46,6 +46,7 @@
     "visual:capture:workbench": "node scripts/capture-workbench-layout-v2.mjs",
     "dashboard:dev": "vite --config apps/agent-dashboard/vite.config.ts --host 127.0.0.1",
     "dashboard:build": "vite build --config apps/agent-dashboard/vite.config.ts",
+    "test:dashboard": "vitest run --config apps/agent-dashboard/vite.config.ts",
     "acceptance:skill-install": "bash scripts/acceptance-skill-install.sh",
     "test:multi-project": "cargo test -p firm-core project -- --nocapture && cargo test -p firm-cli --test execution_space_cli --test project_registry --test project_resolution --test init_project --test delivery_project_context --test codex_delivery_cwd --test claude_delivery_cwd --test serve_projects_api --test serve_sse_projects --test project_convergence --test project_cli --test project_migrate --test store_source",
     "acceptance:multi-project": "bash scripts/verify-fixes.sh",
@@ -63,7 +64,8 @@
     "playwright": "^1.61.1",
     "tailwindcss": "^4.3.0",
     "typescript": "^5.7.3",
-    "vite": "^5.4.21"
+    "vite": "^5.4.21",
+    "vitest": "^2.1.9"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.3.220",
