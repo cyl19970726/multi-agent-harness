@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Inbox, MailQuestion } from "lucide-react";
 
 import { AgentFirmApiError } from "@/api";
@@ -90,23 +90,38 @@ function InboxRow({ item, teamId, onOpenWork }: { item: TeamInboxItem; teamId: s
  * Team-subject canonical delivery each — no member fan-out. This panel is a
  * read projection: claim/dispatch remain authenticated mutations, not reads.
  */
-export function TeamInboxPanel({ apiUrl, space, project, teamId, refreshKey, onOpenWork }: {
-  apiUrl: string; space: string; project: string; teamId: string; refreshKey?: string;
+export function TeamInboxPanel({ apiUrl, space, project, teamId, viewerIdentity, refreshKey, onOpenWork }: {
+  apiUrl: string; space: string; project: string; teamId: string; viewerIdentity: string; refreshKey?: string;
   onOpenWork?: (workId: string) => void;
 }) {
   const [view, setView] = useState<RoleView<TeamInboxData> | null>(null);
   const [error, setError] = useState<unknown>(null);
   const [loading, setLoading] = useState(true);
+  const committedIdentityRef = useRef<string | null>(null);
+  const identityRequiredRef = useRef<string | null>(null);
+  const requestIdentity = `${apiUrl}\u0000${space}\u0000${project}\u0000${teamId}\u0000${viewerIdentity}`;
   useEffect(() => {
+    if (identityRequiredRef.current === requestIdentity) return;
     let live = true;
-    setLoading(true);
+    const identityChanged = committedIdentityRef.current !== requestIdentity;
+    setLoading(identityChanged);
+    if (identityChanged) setView(null);
     setError(null);
     fetchRoleView<TeamInboxData>(apiUrl, `/v1/views/team-inbox/${encodeURIComponent(teamId)}`, { space, project })
-      .then((value) => { if (live) setView(value); })
-      .catch((reason) => { if (live) setError(reason); })
+      .then((value) => {
+        if (!live) return;
+        committedIdentityRef.current = requestIdentity;
+        identityRequiredRef.current = null;
+        setView(value);
+      })
+      .catch((reason) => {
+        if (!live) return;
+        if (isTeamInboxIdentityRequiredError(reason)) identityRequiredRef.current = requestIdentity;
+        setError(reason);
+      })
       .finally(() => { if (live) setLoading(false); });
     return () => { live = false; };
-  }, [apiUrl, space, project, teamId, refreshKey]);
+  }, [apiUrl, space, project, teamId, viewerIdentity, requestIdentity, refreshKey]);
 
   return (
     <section aria-label="Shared Team Inbox" className="space-y-2" data-testid="team-inbox-panel">

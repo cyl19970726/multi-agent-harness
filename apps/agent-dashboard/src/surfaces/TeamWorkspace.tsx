@@ -27,6 +27,7 @@ export function TeamWorkspace({apiUrl,space,project,company,teamId,teamRunId,ref
   const [replyTo,setReplyTo] = useState<MessageSummary|null>(null);
   const workspaceScrollRef = useRef<HTMLElement>(null);
   const committedIdentityRef = useRef<string|null>(null);
+  const committedViewerIdentityRef = useRef<string|null>(null);
   const observedRefreshKeyRef = useRef(refreshKey);
   const requestIdentity = `${apiUrl}\u0000${space}\u0000${project}\u0000${company??""}\u0000${teamId}`;
   const tab:TeamTab = selection.teamTab ?? "works";
@@ -47,13 +48,19 @@ export function TeamWorkspace({apiUrl,space,project,company,teamId,teamRunId,ref
   useEffect(() => {
     let live=true;
     const identityChanged=committedIdentityRef.current!==requestIdentity;
-    setLoading(true);
+    setLoading(identityChanged);
     if(identityChanged){setView(null);setViewerContext(null);}
     setError(null);
     fetchRoleView<ViewerContextData>(apiUrl,"/v1/views/viewer-context",{space,project,company}).then(async (context) => {
       if(!live)return;
-      setViewerContext(context);
       const authorized=context.data.teams.find((team)=>team.team_id===teamId||team.team_run_ids.includes(teamId));
+      const nextViewerIdentity=viewerIdentityKey(context.data,authorized);
+      if(committedViewerIdentityRef.current!==null&&committedViewerIdentityRef.current!==nextViewerIdentity){
+        committedIdentityRef.current=null;
+        setLoading(true);
+        setView(null);
+      }
+      setViewerContext(context);
       if(!authorized){
         if(context.data.teams.length===1){
           const target=context.data.teams[0];
@@ -63,7 +70,7 @@ export function TeamWorkspace({apiUrl,space,project,company,teamId,teamRunId,ref
         return;
       }
       const value=await fetchRoleView<TeamWorkspaceData>(apiUrl,`/v1/views/team-workspace/${encodeURIComponent(teamId)}`,{space,project,company});
-      if(live){committedIdentityRef.current=requestIdentity;setView(value);setError(null);}
+      if(live){committedIdentityRef.current=requestIdentity;committedViewerIdentityRef.current=nextViewerIdentity;setView(value);setError(null);}
     }).catch((reason) => { if(live)setError(String(reason)); }).finally(() => { if(live)setLoading(false); });
     return () => { live=false; };
   },[apiUrl,space,project,company,teamId,requestIdentity,refetch]);
@@ -78,6 +85,7 @@ export function TeamWorkspace({apiUrl,space,project,company,teamId,teamRunId,ref
     return()=>window.clearTimeout(timer);
   },[refreshKey]);
   const authority=viewerContext?.data.teams.find((team)=>team.team_id===teamId||team.team_run_ids.includes(teamId));
+  const viewerIdentity=viewerContext?viewerIdentityKey(viewerContext.data,authority):"";
   const canonicalSelection=view&&authority&&view.data.team.team_id===authority.team_id?canonicalConversationSelection(selection,view.data,authority):null;
   useEffect(() => { if(canonicalSelection)onSelectionReplace(canonicalSelection); },[canonicalSelection?.teamConversation,canonicalSelection?.memberRunId]);
   if(viewerContext&&!authority&&viewerContext.data.teams.length>1)return <AuthorizedTeamChooser teams={viewerContext.data.teams} onChoose={(team)=>onSelectionReplace({teamId:team.team_id,teamConversation:undefined,memberRunId:undefined,teamWorkId:undefined,agentSessionId:undefined})}/>;
@@ -103,10 +111,14 @@ export function TeamWorkspace({apiUrl,space,project,company,teamId,teamRunId,ref
     <div className="min-w-0">
     <AgentTeamTabs value={tab} onValueChange={selectTab} label="Team Workspace sections">{TABS.map(({id,label,icon:Icon}) => <AgentTeamTab key={id} id={`team-workspace-tab-${id}`} value={id} aria-controls={`team-workspace-panel-${id}`}><Icon className="size-3.5"/>{label}{id === "activity" && view.data.messages.length > 0 && <span className="rounded-full bg-primary/10 px-1.5 text-[9px] text-primary">{view.data.messages.length}</span>}</AgentTeamTab>)}</AgentTeamTabs>
     {tab === "works" && <div role="tabpanel" id="team-workspace-panel-works" aria-labelledby="team-workspace-tab-works"><TeamWorksBoard works={view.data.works} graph={view.data.work_graph ?? {nodes:view.data.works,edges:[],ready_work_ids:[],attention_work_ids:[]}} members={view.data.members} allowedActions={view.allowed_actions} teamId={team.team_id} actionsCurrent={!error && view.freshness === "current"} onAction={onAction} onCompleted={retry} viewMode={selection.teamWorkView ?? "graph"} onViewModeChange={(teamWorkView) => onSelectionChange({teamWorkView})} selectedWorkId={selection.teamWorkId} onSelectWork={(teamWorkId) => onSelectionChange({teamWorkId})} onOpenMember={(memberRunId) => { const member=view.data.members.find((candidate) => candidate.current_member_run_ref === memberRunId); onSelectionChange({teamMode:"workspace",teamConversation:member?.agent_member_ref.id,memberRunId,teamTab:"members"}); }} onOpenHost={team.viewer_role === "host" ? (teamWorkId) => openHostTools(teamWorkId) : undefined} onOpenHostTools={team.viewer_role === "host" ? () => openHostTools() : undefined} ownerFilter={selection.teamOwner ?? "all"} attentionFilter={selection.teamAttention ?? "all"} queryFilter={selection.teamQuery ?? ""} onFiltersChange={({owner,attention,query}) => onSelectionChange({teamOwner:owner === "all" ? undefined : owner,teamAttention:attention === "all" ? undefined : attention,teamQuery:query || undefined})}/></div>}
-    {tab === "activity" && <div role="tabpanel" id="team-workspace-panel-activity" aria-labelledby="team-workspace-tab-activity" className="space-y-4"><ActivityPressureSummary review={view.data.pressure_summary.review_work} blocked={view.data.pressure_summary.blocked_work} responses={view.data.messages.filter((message) => message.reply_eligible).length}/><TeamInboxPanel apiUrl={apiUrl} space={space} project={project} teamId={teamId} refreshKey={refreshKey} onOpenWork={(teamWorkId) => onSelectionChange({teamTab:"works",teamWorkId})}/>{team.viewer_role === "host" && resolvedTeamRunId && <HostActivityLeadInbox apiUrl={apiUrl} space={space} project={project} routeIdentity={teamId} refreshKey={refreshKey} onReply={setReplyTo} onOpenWork={(teamWorkId) => onSelectionChange({teamTab:"works",teamWorkId})}/>}<TeamConversationStream activity={view.data.activity} messages={view.data.messages} members={view.data.members} truncated={view.data.activity_truncated} onOpenWork={(teamWorkId) => onSelectionChange({teamTab:"works",teamWorkId})} onReply={team.viewer_role === "host" ? setReplyTo : undefined}/>{team.viewer_role === "host" && resolvedTeamRunId && <details className="group border-y border-border" open={Boolean(replyTo)}><summary role="button" aria-label="Compose team message" className="flex min-h-12 cursor-pointer list-none items-center gap-2 px-1"><MessageSquare className="size-4 text-primary"/><h2 className="text-sm font-semibold group-open:hidden">Team message</h2><span className="text-[10px] text-muted-foreground group-open:hidden">Compose</span><span className="ml-auto text-[10px] text-muted-foreground">ordinary Message · not Steer</span></summary><div className="border-t border-border py-3"><HostActivityComposer apiUrl={apiUrl} space={space} project={project} routeIdentity={teamId} teamRunId={resolvedTeamRunId} replyTo={replyTo} refreshKey={refreshKey} onAction={onAction} onClearReply={() => setReplyTo(null)} collapsibleOnMobile={false}/></div></details>}</div>}
+    {tab === "activity" && <div role="tabpanel" id="team-workspace-panel-activity" aria-labelledby="team-workspace-tab-activity" className="space-y-4"><ActivityPressureSummary review={view.data.pressure_summary.review_work} blocked={view.data.pressure_summary.blocked_work} responses={view.data.messages.filter((message) => message.reply_eligible).length}/><TeamInboxPanel apiUrl={apiUrl} space={space} project={project} teamId={teamId} viewerIdentity={viewerIdentity} refreshKey={refreshKey} onOpenWork={(teamWorkId) => onSelectionChange({teamTab:"works",teamWorkId})}/>{team.viewer_role === "host" && resolvedTeamRunId && <HostActivityLeadInbox apiUrl={apiUrl} space={space} project={project} routeIdentity={teamId} refreshKey={refreshKey} onReply={setReplyTo} onOpenWork={(teamWorkId) => onSelectionChange({teamTab:"works",teamWorkId})}/>}<TeamConversationStream activity={view.data.activity} messages={view.data.messages} members={view.data.members} truncated={view.data.activity_truncated} onOpenWork={(teamWorkId) => onSelectionChange({teamTab:"works",teamWorkId})} onReply={team.viewer_role === "host" ? setReplyTo : undefined}/>{team.viewer_role === "host" && resolvedTeamRunId && <details className="group border-y border-border" open={Boolean(replyTo)}><summary role="button" aria-label="Compose team message" className="flex min-h-12 cursor-pointer list-none items-center gap-2 px-1"><MessageSquare className="size-4 text-primary"/><h2 className="text-sm font-semibold group-open:hidden">Team message</h2><span className="text-[10px] text-muted-foreground group-open:hidden">Compose</span><span className="ml-auto text-[10px] text-muted-foreground">ordinary Message · not Steer</span></summary><div className="border-t border-border py-3"><HostActivityComposer apiUrl={apiUrl} space={space} project={project} routeIdentity={teamId} teamRunId={resolvedTeamRunId} replyTo={replyTo} refreshKey={refreshKey} onAction={onAction} onClearReply={() => setReplyTo(null)} collapsibleOnMobile={false}/></div></details>}</div>}
     {tab === "members" && <div role="tabpanel" id="team-workspace-panel-members" aria-labelledby="team-workspace-tab-members"><TeamMembersCapacity members={view.data.members} summary={view.data.pressure_summary} selectedMemberRunId={selection.memberRunId} onOpenMember={(memberRunId) => { const member=view.data.members.find((candidate) => candidate.current_member_run_ref === memberRunId); onSelectionChange({teamMode:"workspace",teamConversation:member?.agent_member_ref.id,memberRunId}); }}/></div>}
     </div>
   </div></main>;
+}
+
+function viewerIdentityKey(context:ViewerContextData,authority?:ViewerContextTeam):string {
+  return `${context.viewer_actor_ref.kind}\u0000${context.viewer_actor_ref.id}\u0000${authority?.viewer_agent_member_id??""}`;
 }
 
 function canonicalConversationSelection(selection:SelectionState,data:TeamWorkspaceData,authority:ViewerContextTeam):Partial<SelectionState>|null {
