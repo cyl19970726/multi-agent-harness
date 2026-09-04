@@ -298,7 +298,17 @@ pub(super) fn team_command(
             let team = latest_teams(store)?
                 .remove(&id)
                 .ok_or_else(|| CliError::Usage(format!("team not found: {id}")))?;
-            print_json(&team)?;
+            let memberships = store
+                .fabric_team_memberships(&execution_space_id)?
+                .into_iter()
+                .filter(|membership| membership.team_id == team.id)
+                .collect::<Vec<_>>();
+            let mut projection = serde_json::to_value(&team)?;
+            projection
+                .as_object_mut()
+                .expect("AgentTeam serializes as a JSON object")
+                .insert("memberships".into(), serde_json::to_value(memberships)?);
+            print_json(&projection)?;
         }
         "rename" => {
             let id = required(args, "--id")?;
