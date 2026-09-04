@@ -1,3 +1,5 @@
+import { AgentFirmApiError } from "../api";
+
 export const ROLE_VIEW_SCHEMA = "agentfirm.role_views.v1" as const;
 
 export type RoleViewFreshness = "current" | "stale" | "unavailable" | "unknown";
@@ -501,7 +503,14 @@ export async function fetchRoleView<T>(apiUrl:string,path:string,scope:{project?
   const token=window.__AGENTFIRM_BOOTSTRAP__?.capabilityToken;
   const response=await fetch(url.toString(),{headers:{Accept:"application/json",...(token?{"X-AgentFirm-Token":token}:{})}});
   const body=await response.json().catch(()=>({}));
-  if(!response.ok)throw new Error(body?.error?.message??`RoleView request failed (${response.status})`);
+  if(!response.ok){
+    const apiError=body?.error;
+    throw new AgentFirmApiError(
+      response.status,
+      typeof apiError?.code==="string"?apiError.code:"ROLE_VIEW_REQUEST_FAILED",
+      typeof apiError?.message==="string"?apiError.message:`RoleView request failed (${response.status})`,
+    );
+  }
   if(body.schema_version!==ROLE_VIEW_SCHEMA)throw new Error(`Unsupported RoleView schema: ${String(body.schema_version)}`);
   const expectedKind=path.includes("global-work")?"global_work":path.includes("viewer-context")?"viewer_context":path.includes("team-workspace")?"team_workspace":path.includes("team-inbox")?"team_inbox":path.includes("host-console")?"host_console":path.includes("agent-workspace")?"agent_workspace":path.includes("member-workbench")?"member_workbench":path.includes("operator")?"operator":null;
   if(!expectedKind||body.view_kind!==expectedKind)throw new Error(`RoleView kind mismatch: expected ${String(expectedKind)}, received ${String(body.view_kind)}`);

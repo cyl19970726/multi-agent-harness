@@ -34,7 +34,7 @@
     "check:star-harness-install": "node scripts/check-star-harness-install-rollback.mjs",
     "star-harness:install:check": "bash scripts/manage-star-harness-install.sh --check",
     "star-harness:install": "bash scripts/manage-star-harness-install.sh --apply",
-    "check:dashboard": "tsc -p apps/agent-dashboard/tsconfig.json --noEmit && node apps/agent-dashboard/tests/dashboard-build-provenance-check.mjs && node apps/agent-dashboard/tests/mission-wave-live-merge-check.mjs && node apps/agent-dashboard/tests/domain-freshness-check.mjs && node apps/agent-dashboard/tests/dashboard-self-heal-browser-check.mjs && node apps/agent-dashboard/tests/dashboard-slow-snapshot-browser-check.mjs && pnpm check:role-views && vite build --config apps/agent-dashboard/vite.config.ts",
+    "check:dashboard": "tsc -p apps/agent-dashboard/tsconfig.json --noEmit && pnpm test:dashboard && node apps/agent-dashboard/tests/dashboard-build-provenance-check.mjs && node apps/agent-dashboard/tests/mission-wave-live-merge-check.mjs && node apps/agent-dashboard/tests/domain-freshness-check.mjs && node apps/agent-dashboard/tests/dashboard-self-heal-browser-check.mjs && node apps/agent-dashboard/tests/dashboard-slow-snapshot-browser-check.mjs && pnpm check:role-views && vite build --config apps/agent-dashboard/vite.config.ts",
     "check:dashboard:quick": "tsc -p apps/agent-dashboard/tsconfig.json --noEmit && node apps/agent-dashboard/tests/mission-wave-live-merge-check.mjs && node apps/agent-dashboard/tests/domain-freshness-check.mjs && pnpm check:role-views",
     "check:dashboard:runtime-e2e": "node apps/agent-dashboard/tests/dashboard-runtime-live-browser-check.mjs",
     "check:dashboard:snapshot-retry": "node apps/agent-dashboard/tests/dashboard-slow-snapshot-browser-check.mjs",
@@ -46,12 +46,13 @@
     "visual:capture:workbench": "node scripts/capture-workbench-layout-v2.mjs",
     "dashboard:dev": "vite --config apps/agent-dashboard/vite.config.ts --host 127.0.0.1",
     "dashboard:build": "vite build --config apps/agent-dashboard/vite.config.ts",
+    "test:dashboard": "vitest run --config apps/agent-dashboard/vite.config.ts",
     "acceptance:skill-install": "bash scripts/acceptance-skill-install.sh",
     "test:multi-project": "cargo test -p firm-core project -- --nocapture && cargo test -p firm-cli --test execution_space_cli --test project_registry --test project_resolution --test init_project --test delivery_project_context --test codex_delivery_cwd --test claude_delivery_cwd --test serve_projects_api --test serve_sse_projects --test project_convergence --test project_cli --test project_migrate --test store_source",
     "acceptance:multi-project": "bash scripts/verify-fixes.sh",
     "acceptance:legacy-retirement": "cargo test -p firm-cli --test mission_wave_api --test team_run_api --test team_run_daemon -- --test-threads=1 && pnpm check:dashboard",
     "check:fast": "pnpm check:dynamic-workflow-retirement && pnpm check:harness-mcp-retirement && pnpm check:deepseek-runner && pnpm check:provider-runtime-packages && pnpm check:work-kernel-boundaries && pnpm check:runtime-composition-boundaries && pnpm check:agent-team-dogfood && pnpm validate:json && pnpm check:schema-fixtures && pnpm check:provider-events && pnpm check:collaboration-foundation && pnpm check:member-execution-trust && pnpm check:runtime-message-fabric && pnpm check:tool-descriptors && pnpm check:native-session-boundary && pnpm check:star-harness-plugin && pnpm check:agent-config && pnpm check:star-harness-install && node scripts/check-cross-layer-consistency.mjs && pnpm check:frontend-fast",
-    "check:frontend-fast": "tsc -p apps/agent-dashboard/tsconfig.json --noEmit && node apps/agent-dashboard/tests/dashboard-build-provenance-check.mjs && node apps/agent-dashboard/tests/mission-wave-live-merge-check.mjs && node apps/agent-dashboard/tests/domain-freshness-check.mjs && node apps/agent-dashboard/tests/role-view-contract-check.mjs && node apps/agent-dashboard/tests/local-agentfirm-product-loop.mjs && node apps/agent-dashboard/tests/desktop-handoff-check.mjs && vite build --config apps/agent-dashboard/vite.config.ts",
+    "check:frontend-fast": "tsc -p apps/agent-dashboard/tsconfig.json --noEmit && pnpm test:dashboard && node apps/agent-dashboard/tests/dashboard-build-provenance-check.mjs && node apps/agent-dashboard/tests/mission-wave-live-merge-check.mjs && node apps/agent-dashboard/tests/domain-freshness-check.mjs && node apps/agent-dashboard/tests/role-view-contract-check.mjs && node apps/agent-dashboard/tests/local-agentfirm-product-loop.mjs && node apps/agent-dashboard/tests/desktop-handoff-check.mjs && vite build --config apps/agent-dashboard/vite.config.ts",
     "check:agent-config": "node scripts/check-agent-config-sync.mjs"
   },
   "devDependencies": {
@@ -63,7 +64,8 @@
     "playwright": "^1.61.1",
     "tailwindcss": "^4.3.0",
     "typescript": "^5.7.3",
-    "vite": "^5.4.21"
+    "vite": "^5.4.21",
+    "vitest": "^2.1.9"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.3.220",

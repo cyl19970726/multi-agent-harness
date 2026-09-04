@@ -1,6 +1,7 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { Inbox, MailQuestion } from "lucide-react";
 
+import { AgentFirmApiError } from "@/api";
 import { Badge } from "@/components/ui/badge";
 import { formatDate, formatAbsolute, isoTime } from "@/components/workbench/team/teamFormat";
 import {
@@ -10,6 +11,32 @@ import {
   type TeamInboxItem,
 } from "../../../model/roleViews";
 import { ViewProvenance, ViewState } from "../../../surfaces/RoleViewPrimitives";
+
+export function isTeamInboxIdentityRequiredError(error: unknown): boolean {
+  return error instanceof AgentFirmApiError
+    && error.status === 403
+    && error.code === "NOT_AUTHORIZED";
+}
+
+export function TeamInboxLoadState({ loading, error, children }: {
+  loading: boolean;
+  error: unknown;
+  children: ReactNode;
+}) {
+  if (isTeamInboxIdentityRequiredError(error)) {
+    return (
+      <p className="rounded-lg border border-dashed border-border px-4 py-5 text-center text-xs text-muted-foreground">
+        <MailQuestion className="mx-auto mb-1.5 size-4" />
+        Sign in as the Team Host to read the Team Inbox
+      </p>
+    );
+  }
+  return (
+    <ViewState loading={loading} error={error == null ? null : String(error)} identityLabel="Team Inbox">
+      {children}
+    </ViewState>
+  );
+}
 
 function deliveryTone(status: string): "good" | "warn" | "bad" | "muted" {
   if (status === "queued" || status === "routed") return "warn";
@@ -68,7 +95,7 @@ export function TeamInboxPanel({ apiUrl, space, project, teamId, refreshKey, onO
   onOpenWork?: (workId: string) => void;
 }) {
   const [view, setView] = useState<RoleView<TeamInboxData> | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<unknown>(null);
   const [loading, setLoading] = useState(true);
   useEffect(() => {
     let live = true;
@@ -76,7 +103,7 @@ export function TeamInboxPanel({ apiUrl, space, project, teamId, refreshKey, onO
     setError(null);
     fetchRoleView<TeamInboxData>(apiUrl, `/v1/views/team-inbox/${encodeURIComponent(teamId)}`, { space, project })
       .then((value) => { if (live) setView(value); })
-      .catch((reason) => { if (live) setError(String(reason)); })
+      .catch((reason) => { if (live) setError(reason); })
       .finally(() => { if (live) setLoading(false); });
     return () => { live = false; };
   }, [apiUrl, space, project, teamId, refreshKey]);
@@ -90,7 +117,7 @@ export function TeamInboxPanel({ apiUrl, space, project, teamId, refreshKey, onO
         </h2>
         {view && <ViewProvenance view={view} />}
       </div>
-      <ViewState loading={loading} error={error} identityLabel="Team Inbox">
+      <TeamInboxLoadState loading={loading} error={error}>
         {view && (
           view.data.items.length === 0 ? (
             <p className="rounded-lg border border-dashed border-border px-4 py-5 text-center text-xs text-muted-foreground">
@@ -105,7 +132,7 @@ export function TeamInboxPanel({ apiUrl, space, project, teamId, refreshKey, onO
             </div>
           )
         )}
-      </ViewState>
+      </TeamInboxLoadState>
     </section>
   );
 }
