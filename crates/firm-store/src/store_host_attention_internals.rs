@@ -540,11 +540,23 @@ impl HarnessStore {
         include_all: bool,
     ) -> StoreResult<HostAttentionInbox> {
         let run = self.require_team_run_unlocked(team_run_id)?;
+        let works = self.latest_works_unlocked()?;
         let attentions = self
             .latest_host_attentions_unlocked()?
             .into_values()
             .filter(|attention| attention.team_run_id == team_run_id)
-            .filter(|attention| include_all || attention.needs_host_action())
+            .filter(|attention| {
+                // A terminal Work has no remaining Host decision. Derive that
+                // from canonical Work instead of forging an Acknowledged
+                // transport receipt; `include_all` keeps the source fact and
+                // its real lifecycle state readable as history.
+                include_all
+                    || (attention.needs_host_action()
+                        && works
+                            .get(&attention.work_id)
+                            .map(|work| !work.is_terminal())
+                            .unwrap_or(true))
+            })
             .collect::<Vec<_>>();
         let host_binding = self.host_member_binding(team_run_id)?;
         let warning = (host_binding.mode == firm_core::HostControlMode::ExternalInteractive

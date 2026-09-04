@@ -96,8 +96,12 @@ fn host_inbox_shows_work_attention_after_submit() {
         kind: harness_core::agentfirm_api::CandidateKind::GitCommit,
         value: "host-attention-candidate".into(),
     };
+    let candidate_fingerprint = harness_store::canonical_json_fingerprint(
+        &serde_json::to_value(&candidate).expect("candidate JSON"),
+    );
+    let report_id = generated_id("work-report-submit");
     let report = harness_core::agentfirm_api::WorkReport {
-        id: generated_id("work-report-submit"),
+        id: report_id.clone(),
         work_id: work.id.clone(),
         work_revision: work.version + 1,
         report_revision: 1,
@@ -108,9 +112,7 @@ fn host_inbox_shows_work_attention_after_submit() {
         },
         summary: "All tasks complete".into(),
         base_revision: None,
-        candidate_fingerprint: Some(harness_store::canonical_json_fingerprint(
-            &serde_json::to_value(&candidate).expect("candidate JSON"),
-        )),
+        candidate_fingerprint: Some(candidate_fingerprint.clone()),
         candidate: Some(candidate),
         finding_refs: Vec::new(),
         failure_analysis_ref: None,
@@ -169,14 +171,60 @@ fn host_inbox_shows_work_attention_after_submit() {
             .is_some_and(|v| !v.is_empty()),
         "attention must reference the submitting member"
     );
+    let attention_id = attn["id"].as_str().expect("attention id").to_string();
+
+    let accepted = store
+        .accept_trust_work(
+            &harness_core::agentfirm_api::MutationContext {
+                execution_space_id: lease.execution_space_id.clone(),
+                authenticated_actor: harness_core::agentfirm_api::ActorRef {
+                    kind: harness_core::agentfirm_api::ActorKind::AgentMember,
+                    id: "host".into(),
+                },
+                authority_actor: None,
+                command_name: "work.accept".into(),
+                idempotency_key: generated_id("work-accept"),
+                expected_version: work.version,
+                request_fingerprint: None,
+            },
+            &created.team_run.agent_team_id,
+            &work.id,
+            &report_id,
+            &candidate_fingerprint,
+            "unix-ms:40",
+        )
+        .expect("Host accepts submitted Work");
+    assert!(accepted.projection.is_terminal());
+
+    assert!(
+        host_inbox_for_native_thread(&store, "codex-app", "codex-thread-a", false)
+            .expect("actionable Host inbox after acceptance")
+            .is_empty(),
+        "terminal Work attentions are no longer actionable"
+    );
+
+    let historical = host_inbox_for_native_thread(&store, "codex-app", "codex-thread-a", true)
+        .expect("historical Host inbox after acceptance");
+    let historical_attention = historical[0]["attentions"]
+        .as_array()
+        .expect("historical attentions")
+        .iter()
+        .find(|attention| attention["id"] == attention_id)
+        .expect("review request remains readable with --all");
+    assert_eq!(historical_attention["kind"], "work_review_requested");
+    assert_eq!(historical_attention["source_event_ref"], report_id);
 
     let after_release = host_inbox_for_native_thread(&store, "codex-app", "codex-thread-a", false)
         .expect("Host inbox after binding release");
-    let persisted = after_release[0]["attentions"]
+    assert!(after_release.is_empty());
+    let after_release_all =
+        host_inbox_for_native_thread(&store, "codex-app", "codex-thread-a", true)
+            .expect("historical Host inbox after binding release");
+    let persisted = after_release_all[0]["attentions"]
         .as_array()
         .expect("persisted attentions")
         .iter()
-        .find(|attention| attention["id"] == attn["id"])
+        .find(|attention| attention["id"] == attention_id)
         .expect("submitted attention persists after binding release");
     assert_eq!(
         persisted["member_run_id"], attn["member_run_id"],
@@ -191,7 +239,7 @@ fn host_inbox_shows_work_attention_after_submit() {
         "different thread gets no entries"
     );
 
-    // --all shows the attention too
+    // --all continues to show the historical attention.
     let all = host_inbox_for_native_thread(&store, "codex-app", "codex-thread-a", true)
         .expect("all inbox");
     assert_eq!(all.len(), 1);
