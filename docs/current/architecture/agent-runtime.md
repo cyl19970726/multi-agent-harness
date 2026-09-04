@@ -253,13 +253,19 @@ delivery authority and cannot synthesize a WorkDelivery. See ADR 0060.
 Start, resume, turn, queued input, interrupt, and stop all use the same durable
 RuntimeCommand protocol:
 
-Provider adapters do not impose a hidden wall-clock limit on an accepted
-cycle. A long reasoning turn or silent provider tool remains live while the
-owned runner process and transport remain intact, and Interrupt/Close continue
-to poll through that interval. A configured delivery timeout fences only the
-provider input-acceptance boundary before an exact receipt; child exit, stdout
-disconnect, runner error, and unsettled durable effects remain explicit
-fail-closed recovery conditions.
+Today, only the Claude adapter imposes no hidden wall-clock limit after a cycle
+is accepted: a long reasoning turn or silent provider tool remains live while
+the owned runner process and transport remain intact, and Interrupt/Close keep
+polling (`crates/firm-provider-claude/src/lib.rs:539-556`). DeepSeek and Codex
+do not yet honor that guarantee. DeepSeek converts total elapsed time at
+`idle_timeout` into cycle failure
+(`crates/firm-provider-deepseek/src/lib.rs:575-580`), while Codex converts a
+silent interval at `idle_timeout` into a native turn interrupt
+(`crates/firm-provider-codex/src/team_runtime.rs:996-1014`). Track adapter
+convergence in [GitHub issue #708](https://github.com/cyl19970726/multi-agent-harness/issues/708).
+A configured Claude delivery timeout fences only the provider input-acceptance
+boundary before an exact receipt; child exit, stdout disconnect, runner error,
+and unsettled durable effects remain explicit fail-closed recovery conditions.
 
 ```text
 authenticate and resolve authority
