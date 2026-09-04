@@ -2,7 +2,7 @@ use super::*;
 
 pub(super) struct HttpExchange<'a> {
     pub(super) projects: &'a ServeProjects,
-    pub(super) stream: &'a mut TcpStream,
+    pub(super) stream: &'a mut HttpResponseWriter<TcpStream>,
     pub(super) sse_manager: sse::SseManager,
     pub(super) method: String,
     pub(super) path: String,

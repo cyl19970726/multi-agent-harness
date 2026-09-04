@@ -1,6 +1,6 @@
 use super::*;
 
-pub(super) fn http_action_error_response(error: CliError) -> (&'static str, serde_json::Value) {
+pub(super) fn http_action_error_response(error: &CliError) -> (&'static str, serde_json::Value) {
     match error {
         CliError::Store(StoreError::LockTimeout(detail)) => (
             "503 Service Unavailable",
@@ -320,9 +320,8 @@ mod tests_http_action_error_response {
 
     #[test]
     fn exhausted_store_contention_is_retryable_http_503() {
-        let (status, body) = http_action_error_response(CliError::Store(StoreError::LockTimeout(
-            "/tmp/store/.store.lock".into(),
-        )));
+        let error = CliError::Store(StoreError::LockTimeout("/tmp/store/.store.lock".into()));
+        let (status, body) = http_action_error_response(&error);
         assert_eq!(status, "503 Service Unavailable");
         assert_eq!(body["ok"], false);
         assert_eq!(body["error"], "store_busy");
@@ -334,7 +333,8 @@ mod tests_http_action_error_response {
 
     #[test]
     fn non_contention_action_errors_remain_non_retryable_client_errors() {
-        let (status, body) = http_action_error_response(CliError::Usage("invalid request".into()));
+        let error = CliError::Usage("invalid request".into());
+        let (status, body) = http_action_error_response(&error);
         assert_eq!(status, "400 Bad Request");
         assert_eq!(body["ok"], false);
         assert_eq!(body["error"], "invalid request");
