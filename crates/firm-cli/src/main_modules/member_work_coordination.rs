@@ -229,10 +229,34 @@ pub(super) fn claim_canonical_work_for_member(
     bindings = ledger
         .store
         .fabric_work_execution_bindings(&execution_space_id)?;
-    for work in works
+    let mut queued_by_binding = ledger
+        .store
+        .fabric_work_deliveries(&execution_space_id)?
+        .into_iter()
+        .filter(|delivery| {
+            delivery.status == harness_core::agentfirm_api::WorkDeliveryStatus::Queued
+        })
+        .map(|delivery| (delivery.work_execution_binding_id.clone(), delivery))
+        .collect::<BTreeMap<_, _>>();
+    // One pass dispatches at most one Work, so it may bind at most one Work.
+    // A binding minted for a Work this pass will not claim leaves a `queued`
+    // WorkDelivery frozen against runtime facts that the member's next
+    // provider round invalidates: the member sees DELIVERY_NOT_DISPATCHED,
+    // and the delivery is only released
+    // (WORK_EXECUTION_BINDING_RELEASED_BEFORE_CLAIM) and re-minted at the next
+    // round boundary (#729). Bind exactly what is dispatched now, walking the
+    // candidates in the dispatch order the claim itself uses.
+    let mut candidates = works
         .values()
         .filter(|work| harness_core::work_readiness(work, &all_works).ready)
-    {
+        .collect::<Vec<_>>();
+    candidates.sort_by(|left, right| {
+        work_priority_rank(right.priority)
+            .cmp(&work_priority_rank(left.priority))
+            .then_with(|| left.created_at.cmp(&right.created_at))
+            .then_with(|| left.id.cmp(&right.id))
+    });
+    for work in candidates {
         // ProviderReceived is immutable evidence that this exact Work
         // revision already crossed the provider boundary. Reopen may create a
         // new runtime generation, but it must not replay that provider effect;
@@ -247,91 +271,86 @@ pub(super) fn claim_canonical_work_for_member(
         {
             continue;
         }
-        if !bindings.iter().any(|binding| {
+        let active_binding = bindings.iter().find(|binding| {
             binding.work_id == work.id
                 && binding.status == harness_core::agentfirm_api::WorkExecutionBindingStatus::Active
-        }) {
-            let binding_generation = bindings
-                .iter()
-                .filter(|binding| binding.work_id == work.id)
-                .map(|binding| binding.binding_generation)
-                .max()
-                .unwrap_or(0)
-                .saturating_add(1);
-            let binding_id = format!(
-                "work-binding:{}:{}:{}:{}",
-                work.id, work.version, session.runtime_generation, binding_generation
-            );
-            let runtime_binding =
-                runtime_command_binding_for_member_session(current_member_run, &session);
-            ledger.store.bind_responsible_work_execution(
-                &canonical_delivery_context(
-                    &execution_space_id,
-                    &daemon.daemon_id,
-                    "node_daemon.work_execution_binding.bind",
-                    binding_id.clone(),
-                    0,
-                ),
-                &runtime_binding,
-                harness_core::agentfirm_api::WorkExecutionBinding {
-                    id: binding_id.clone(),
-                    work_id: work.id.clone(),
-                    work_revision: work.version,
-                    team_id: run.agent_team_id.clone(),
-                    team_membership_id: membership.id.clone(),
-                    agent_member_id: member.agent_member_id.clone(),
-                    agent_session_id: session.id.clone(),
-                    agent_session_generation: session.runtime_generation,
-                    delivery_id: format!("work-delivery:{}:{binding_generation}", work.id),
-                    binding_generation,
-                    status: harness_core::agentfirm_api::WorkExecutionBindingStatus::Active,
-                    version: 1,
-                    created_by: harness_core::agentfirm_api::ActorRef {
-                        kind: harness_core::agentfirm_api::ActorKind::Service,
-                        id: daemon.daemon_id.clone(),
+        });
+        let delivery = match active_binding {
+            Some(binding) => {
+                // An Active binding this exact session generation does not own
+                // is another authority's; never dispatch across it, and never
+                // open a second Active binding for the same Work.
+                if binding.agent_member_id != member.agent_member_id
+                    || binding.agent_session_id != session.id
+                    || binding.agent_session_generation != session.runtime_generation
+                {
+                    continue;
+                }
+                let Some(delivery) = queued_by_binding.remove(&binding.id) else {
+                    continue;
+                };
+                delivery
+            }
+            None => {
+                let binding_generation = bindings
+                    .iter()
+                    .filter(|binding| binding.work_id == work.id)
+                    .map(|binding| binding.binding_generation)
+                    .max()
+                    .unwrap_or(0)
+                    .saturating_add(1);
+                let binding_id = format!(
+                    "work-binding:{}:{}:{}:{}",
+                    work.id, work.version, session.runtime_generation, binding_generation
+                );
+                let delivery_id = format!("work-delivery:{}:{binding_generation}", work.id);
+                let runtime_binding =
+                    runtime_command_binding_for_member_session(current_member_run, &session);
+                ledger.store.bind_responsible_work_execution(
+                    &canonical_delivery_context(
+                        &execution_space_id,
+                        &daemon.daemon_id,
+                        "node_daemon.work_execution_binding.bind",
+                        binding_id.clone(),
+                        0,
+                    ),
+                    &runtime_binding,
+                    harness_core::agentfirm_api::WorkExecutionBinding {
+                        id: binding_id.clone(),
+                        work_id: work.id.clone(),
+                        work_revision: work.version,
+                        team_id: run.agent_team_id.clone(),
+                        team_membership_id: membership.id.clone(),
+                        agent_member_id: member.agent_member_id.clone(),
+                        agent_session_id: session.id.clone(),
+                        agent_session_generation: session.runtime_generation,
+                        delivery_id: delivery_id.clone(),
+                        binding_generation,
+                        status: harness_core::agentfirm_api::WorkExecutionBindingStatus::Active,
+                        version: 1,
+                        created_by: harness_core::agentfirm_api::ActorRef {
+                            kind: harness_core::agentfirm_api::ActorKind::Service,
+                            id: daemon.daemon_id.clone(),
+                        },
+                        bound_at: now_string(),
+                        ended_at: None,
                     },
-                    bound_at: now_string(),
-                    ended_at: None,
-                },
-            )?;
-        }
-    }
-    bindings = ledger
-        .store
-        .fabric_work_execution_bindings(&execution_space_id)?;
-    let active_binding_ids = bindings
-        .into_iter()
-        .filter(|binding| {
-            binding.agent_member_id == member.agent_member_id
-                && binding.agent_session_id == session.id
-                && binding.agent_session_generation == session.runtime_generation
-                && binding.status == harness_core::agentfirm_api::WorkExecutionBindingStatus::Active
-        })
-        .map(|binding| binding.id)
-        .collect::<BTreeSet<_>>();
-    let mut queued = ledger
-        .store
-        .fabric_work_deliveries(&execution_space_id)?
-        .into_iter()
-        .filter(|delivery| {
-            active_binding_ids.contains(&delivery.work_execution_binding_id)
-                && delivery.status == harness_core::agentfirm_api::WorkDeliveryStatus::Queued
-        })
-        .collect::<Vec<_>>();
-    queued.sort_by(|left, right| {
-        let left_work = works.get(&left.work_id);
-        let right_work = works.get(&right.work_id);
-        match (left_work, right_work) {
-            (Some(left_work), Some(right_work)) => work_priority_rank(right_work.priority)
-                .cmp(&work_priority_rank(left_work.priority))
-                .then_with(|| left_work.created_at.cmp(&right_work.created_at))
-                .then_with(|| left_work.id.cmp(&right_work.id)),
-            _ => left.id.cmp(&right.id),
-        }
-    });
-    for delivery in queued {
-        let Some(work) = works.get(&delivery.work_id) else {
-            continue;
+                )?;
+                ledger
+                    .store
+                    .fabric_work_deliveries(&execution_space_id)?
+                    .into_iter()
+                    .find(|candidate| {
+                        candidate.id == delivery_id
+                            && candidate.status
+                                == harness_core::agentfirm_api::WorkDeliveryStatus::Queued
+                    })
+                    .ok_or_else(|| {
+                        CliError::Usage(format!(
+                            "WORK_EXECUTION_BINDING_WITHOUT_QUEUED_DELIVERY: {binding_id}"
+                        ))
+                    })?
+            }
         };
         if work.version != delivery.work_revision
             || work.owner_member_id.as_deref() != Some(member.agent_member_id.as_str())

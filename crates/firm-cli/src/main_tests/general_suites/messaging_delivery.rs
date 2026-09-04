@@ -55,6 +55,8 @@ mod running_delivery_is_acknowledged_not_delivered;
 mod stale_failed_delivery_attempt_marks_message_failed_and_clears_member;
 #[path = "../general/stale_unknown_delivery_attempt_blocks_more_delivery.rs"]
 mod stale_unknown_delivery_attempt_blocks_more_delivery;
+#[path = "../general/supervisor_binds_only_the_work_it_dispatches_in_one_pass.rs"]
+mod supervisor_binds_only_the_work_it_dispatches_in_one_pass;
 #[path = "../general/supervisor_claims_and_acknowledges_canonical_message_delivery_in_one_ledger.rs"]
 mod supervisor_claims_and_acknowledges_canonical_message_delivery_in_one_ledger;
 #[path = "../general/supervisor_claims_and_records_provider_receipt_for_canonical_work_delivery.rs"]
