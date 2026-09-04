@@ -466,10 +466,19 @@ pub(crate) fn team_run_start(
     {
         let _ = idle_timeout;
         let delegated = delegate_team_run_to_node_daemon(store, resolved, run_id, max_concurrency)?;
-        println!(
-            "team run {run_id}\tdelegated to NodeDaemon {}",
-            delegated["node_id"].as_str().unwrap_or("unknown")
-        );
+        let node_id = delegated["node_id"].as_str().unwrap_or("unknown");
+        let daemon_response = &delegated["daemon_response"];
+        if daemon_response["already_managed"].as_bool() == Some(true) {
+            let generation = daemon_response["daemon_generation"]
+                .as_u64()
+                .map(|generation| generation.to_string())
+                .unwrap_or_else(|| "unknown".to_string());
+            println!(
+                "team run {run_id}\talready managed by NodeDaemon {node_id} (gen {generation})"
+            );
+        } else {
+            println!("team run {run_id}\tdelegated to NodeDaemon {node_id}");
+        }
         Ok(())
     }
 

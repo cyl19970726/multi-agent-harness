@@ -401,14 +401,100 @@ fn team_run_start_delegates_to_node_daemon_and_is_idempotent() {
     let managed = status["runs"].as_array().unwrap();
     assert_eq!(managed.len(), 1);
     assert_eq!(managed[0]["project_binding_id"], fixture.project_id);
+    let daemon_generation = managed[0]["daemon_generation"]
+        .as_u64()
+        .expect("managed daemon generation");
+    let supervisor_id = managed[0]["supervisor_id"]
+        .as_str()
+        .expect("managed Supervisor id")
+        .to_string();
+    let supervisor_generation = managed[0]["supervisor_generation"]
+        .as_u64()
+        .expect("managed Supervisor generation");
+    let store = HarnessStore::new(home.spaces_dir().join(&fixture.execution_space_id));
+    let member_runtime_generations = || {
+        let mut sessions = store
+            .fabric_agent_sessions(&fixture.execution_space_id)
+            .expect("managed AgentSessions")
+            .into_iter()
+            .map(|session| {
+                (
+                    session.agent_member_id,
+                    session.id,
+                    session.node_daemon_generation,
+                    session.runtime_generation,
+                )
+            })
+            .collect::<Vec<_>>();
+        sessions.sort();
+        sessions
+    };
+    let session_deadline = Instant::now() + Duration::from_secs(5);
+    let mut previous_sessions = member_runtime_generations();
+    let sessions_before_duplicate = loop {
+        std::thread::sleep(Duration::from_millis(25));
+        let current_sessions = member_runtime_generations();
+        if !current_sessions.is_empty() && current_sessions == previous_sessions {
+            break current_sessions;
+        }
+        assert!(
+            Instant::now() < session_deadline,
+            "member runtime authority did not stabilize before duplicate start"
+        );
+        previous_sessions = current_sessions;
+    };
+
+    let duplicate = socket_request(
+        &socket,
+        &serde_json::json!({
+            "cmd": "start",
+            "execution_space_id": fixture.execution_space_id,
+            "run_id": run_id,
+        })
+        .to_string(),
+    );
+    assert_eq!(duplicate["ok"], true, "duplicate start: {duplicate}");
+    assert_eq!(duplicate["already_managed"], true);
+    assert_eq!(duplicate["reused"], true);
+    assert_eq!(
+        duplicate["daemon_id"],
+        format!("node-daemon:{}", fixture.node_id)
+    );
+    assert_eq!(duplicate["daemon_generation"], daemon_generation);
+    assert_eq!(duplicate["supervisor_id"], supervisor_id);
+    assert_eq!(duplicate["supervisor_generation"], supervisor_generation);
+
+    let duplicate_status = wait_for_run(&socket, &fixture.execution_space_id, &run_id);
+    assert_eq!(duplicate_status["runs"].as_array().map(Vec::len), Some(1));
+    assert_eq!(
+        duplicate_status["runs"][0]["daemon_generation"],
+        daemon_generation
+    );
+    assert_eq!(duplicate_status["runs"][0]["supervisor_id"], supervisor_id);
+    assert_eq!(
+        duplicate_status["runs"][0]["supervisor_generation"],
+        supervisor_generation
+    );
+    assert_eq!(
+        member_runtime_generations(),
+        sessions_before_duplicate,
+        "an idempotent start must not restart any member runtime"
+    );
 
     let replay = run_firm_with_env(&home, &fixture.project_root, &start_args, &provider_env);
-    success(&replay, "idempotent team-run start");
+    success(&replay, "idempotent CLI team-run start");
+    assert!(
+        String::from_utf8_lossy(&replay.stdout).contains(&format!(
+            "already managed by NodeDaemon {} (gen {daemon_generation})",
+            fixture.node_id
+        )),
+        "CLI omitted the idempotent start result: {}",
+        String::from_utf8_lossy(&replay.stdout)
+    );
     let replay_status = wait_for_run(&socket, &fixture.execution_space_id, &run_id);
     assert_eq!(replay_status["runs"].as_array().map(Vec::len), Some(1));
 
     stop_daemon(&home, &fixture, &mut daemon, &socket);
-    let store = HarnessStore::new(home.spaces_dir().join(&fixture.execution_space_id));
     let lease = store
         .latest_team_supervisor_lease(&run_id)
         .expect("lease read")

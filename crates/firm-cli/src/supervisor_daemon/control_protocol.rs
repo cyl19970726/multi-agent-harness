@@ -199,6 +199,52 @@ impl MultiTeamDaemon {
         Ok(())
     }
 
+    fn managed_team_run_authority(
+        &self,
+        execution_space_id: &str,
+        run_id: &str,
+    ) -> CliResult<Option<(u64, String, u64)>> {
+        Ok(self
+            .contexts
+            .lock()
+            .map_err(|error| CliError::Usage(format!("context lock poisoned: {error}")))?
+            .iter()
+            .find(|context| {
+                context.execution_space_id == execution_space_id && context.run_id == run_id
+            })
+            .map(|context| {
+                (
+                    context.daemon_generation,
+                    context.supervisor_id.clone(),
+                    context.supervisor_generation,
+                )
+            }))
+    }
+
+    fn already_managed_start_response(
+        &self,
+        execution_space_id: &str,
+        run_id: &str,
+    ) -> CliResult<Option<serde_json::Value>> {
+        Ok(self
+            .managed_team_run_authority(execution_space_id, run_id)?
+            .map(
+                |(daemon_generation, supervisor_id, supervisor_generation)| {
+                    serde_json::json!({
+                        "ok": true,
+                        "already_managed": true,
+                        "reused": true,
+                        "daemon_id": self.daemon_id,
+                        "daemon_generation": daemon_generation,
+                        "execution_space_id": execution_space_id,
+                        "run_id": run_id,
+                        "supervisor_id": supervisor_id,
+                        "supervisor_generation": supervisor_generation,
+                    })
+                },
+            ))
+    }
+
     /// Handle a single control socket command.
     pub(super) fn handle_control_command(
         &self,
@@ -925,21 +971,9 @@ impl MultiTeamDaemon {
                     Self::write_control_response(stream, &response)?;
                     return Ok(());
                 }
-                let already_managed = self
-                    .contexts
-                    .lock()
-                    .map_err(|e| CliError::Usage(format!("context lock poisoned: {e}")))?
-                    .iter()
-                    .any(|context| {
-                        context.execution_space_id == execution_space_id && context.run_id == run_id
-                    });
-                if already_managed {
-                    let response = serde_json::json!({
-                        "ok": true,
-                        "execution_space_id": execution_space_id,
-                        "run_id": run_id,
-                        "reused": true
-                    });
+                if let Some(response) =
+                    self.already_managed_start_response(execution_space_id, run_id)?
+                {
                     Self::write_control_response(stream, &response)?;
                     return Ok(());
                 }
@@ -958,38 +992,37 @@ impl MultiTeamDaemon {
                 let store = HarnessStore::new(space.store_root.clone());
                 match self.start_supervising(space, store.clone(), run_id) {
                     Ok(()) => {
-                        let authority = self
-                            .contexts
-                            .lock()
-                            .map_err(|error| {
-                                CliError::Usage(format!("context lock poisoned: {error}"))
-                            })?
-                            .iter()
-                            .find(|context| {
-                                context.execution_space_id == execution_space_id
-                                    && context.run_id == run_id
-                            })
-                            .map(|context| {
-                                (context.supervisor_id.clone(), context.supervisor_generation)
-                            });
-                        if let Some((supervisor_id, supervisor_generation)) = authority {
+                        let authority =
+                            self.managed_team_run_authority(execution_space_id, run_id)?;
+                        if let Some((_, supervisor_id, supervisor_generation)) = &authority {
                             if let Err(error) = self.clear_team_run_supervisor_recovery(
                                 execution_space_id,
                                 &store,
                                 run_id,
-                                &supervisor_id,
-                                supervisor_generation,
+                                supervisor_id,
+                                *supervisor_generation,
                             ) {
                                 eprintln!(
                                     "[node-daemon] Supervisor recovery marker settlement deferred for {execution_space_id}/{run_id}: {error}"
                                 );
                             }
                         }
+                        let (daemon_generation, supervisor_id, supervisor_generation) =
+                            authority.ok_or_else(|| {
+                                CliError::Usage(format!(
+                                    "TEAM_RUN_START_RESULT_UNKNOWN: NodeDaemon started {execution_space_id}/{run_id} without registering its managed authority"
+                                ))
+                            })?;
                         let response = serde_json::json!({
                             "ok": true,
+                            "already_managed": false,
+                            "reused": false,
+                            "daemon_id": self.daemon_id,
+                            "daemon_generation": daemon_generation,
                             "execution_space_id": execution_space_id,
                             "run_id": run_id,
-                            "reused": false,
+                            "supervisor_id": supervisor_id,
+                            "supervisor_generation": supervisor_generation,
                         });
                         Self::write_control_response(stream, &response)?;
                     }
@@ -1002,24 +1035,9 @@ impl MultiTeamDaemon {
                         // already true under this daemon generation, so report
                         // an idempotent reuse instead of turning a successful
                         // recovery into a client-visible rejection.
-                        let concurrently_managed = self
-                            .contexts
-                            .lock()
-                            .map_err(|error| {
-                                CliError::Usage(format!("context lock poisoned: {error}"))
-                            })?
-                            .iter()
-                            .any(|context| {
-                                context.execution_space_id == execution_space_id
-                                    && context.run_id == run_id
-                            });
-                        if concurrently_managed {
-                            let response = serde_json::json!({
-                                "ok": true,
-                                "execution_space_id": execution_space_id,
-                                "run_id": run_id,
-                                "reused": true,
-                            });
+                        if let Some(response) =
+                            self.already_managed_start_response(execution_space_id, run_id)?
+                        {
                             Self::write_control_response(stream, &response)?;
                             return Ok(());
                         }
