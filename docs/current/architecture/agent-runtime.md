@@ -167,6 +167,17 @@ runtime authority fails before delivery. `Work.active_member_run_id` is legacy
 compatibility evidence only; current assignment and execution never require or
 populate it.
 
+One scheduling pass dispatches at most one Work to a member, so it creates at
+most one `WorkExecutionBinding`: the exact one it claims in that same pass. A
+`CanonicalWorkDelivery` is therefore only ever `queued` for the dispatch the
+Supervisor is performing now. Binding a member's other ready Works ahead of
+time froze them against runtime facts that the member's next provider round
+invalidates; those deliveries could never be claimed, answered
+`DELIVERY_NOT_DISPATCHED` to the member, and were released
+(`WORK_EXECUTION_BINDING_RELEASED_BEFORE_CLAIM`) and re-minted only at a later
+round boundary. A member's remaining ready Works stay unbound until the pass
+that dispatches them, and that pass needs no Host message.
+
 Member-authored WorkReport, Finding, and FailureAnalysis operations resolve the
 same unique active `WorkExecutionBinding` under the Store writer lock. The
 binding must still match the current stable responsibility, active membership,
