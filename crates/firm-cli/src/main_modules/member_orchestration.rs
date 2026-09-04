@@ -862,6 +862,7 @@ pub(crate) fn drive_prepared_team_run(
         .map(|context| context.project_root.to_string_lossy().into_owned());
     let mut seen_runtime_generations = HashMap::<String, u64>::new();
     let mut member_retry_not_before = HashMap::<String, Instant>::new();
+    let mut member_fabric_attempts = HashMap::<String, u32>::new();
     let mut pending_members = members;
     let mut handles = HashMap::new();
     let mut outcomes = Vec::new();
@@ -975,8 +976,11 @@ pub(crate) fn drive_prepared_team_run(
                 // it here before any provider effect is prepared (#749). An
                 // original member already has its session and is untouched.
                 match ensure_joined_member_runtime_fabric(&member_ledger, &mut member) {
-                    Ok(JoinedMemberRuntimeFabric::AlreadyProvisioned) => {}
+                    Ok(JoinedMemberRuntimeFabric::AlreadyProvisioned) => {
+                        member_fabric_attempts.remove(&member.id);
+                    }
                     Ok(JoinedMemberRuntimeFabric::Provisioned { session_id }) => {
+                        member_fabric_attempts.remove(&member.id);
                         member_ledger.fold_event(
                             TeamRunEventSourceKind::Host,
                             Some(member.id.clone()),
@@ -990,11 +994,40 @@ pub(crate) fn drive_prepared_team_run(
                         )?;
                     }
                     Err(error) => {
-                        // Nothing reached a provider, so this is an ordinary
-                        // failure the Host can read and fix — never a recovery
-                        // claim about an ambiguous provider effect.
-                        let reason =
-                            format!("AgentSession provisioning failed before start: {error}");
+                        let failure = classify_member_fabric_failure(&error);
+                        if matches!(failure, MemberFabricFailure::LeaseLost) {
+                            // Identical to this loop's own lease check above:
+                            // quiesce the generation and leave every member
+                            // exactly as the successor will find it.
+                            lease_lost = true;
+                            pending_members.clear();
+                            break;
+                        }
+                        if matches!(failure, MemberFabricFailure::Transient) {
+                            let attempts = {
+                                let counter = member_fabric_attempts
+                                    .entry(member.id.clone())
+                                    .or_insert(0u32);
+                                *counter += 1;
+                                *counter
+                            };
+                            if attempts < MEMBER_FABRIC_PROVISION_ATTEMPTS {
+                                member_retry_not_before.insert(
+                                    member.id.clone(),
+                                    Instant::now() + Duration::from_millis(50),
+                                );
+                                pending_members.push(member);
+                                continue;
+                            }
+                        }
+                        // A durable refusal about this member, or an
+                        // attempt-scoped race that never cleared. Nothing
+                        // reached a provider, so this is an ordinary failure
+                        // the Host can read — never a recovery claim about an
+                        // ambiguous effect. The error is journalled unchanged
+                        // so its own leading code token survives for the
+                        // adoption classifier.
+                        let reason = error.to_string();
                         journal_member_failure(&member_ledger, &member, &reason);
                         outcomes.push(MemberOutcome::new(&member, MemberRunStatus::Failed, reason));
                         continue;

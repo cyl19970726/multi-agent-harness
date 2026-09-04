@@ -124,7 +124,19 @@ fn bootstrap(home: &TempHome) -> Fixture {
     }
 }
 
-fn spawn_daemon(home: &TempHome, env: &[(&str, &str)]) -> std::process::Child {
+/// Owns the NodeDaemon child for the whole test. Every exit path — including a
+/// panic in the readiness loop or in any assertion below — reaps it, so a
+/// failing run never leaves a daemon holding the machine lease.
+struct DaemonGuard(std::process::Child);
+
+impl Drop for DaemonGuard {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+fn spawn_daemon(home: &TempHome, env: &[(&str, &str)]) -> DaemonGuard {
     let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_firm"));
     command
         .args([
@@ -147,15 +159,17 @@ fn spawn_daemon(home: &TempHome, env: &[(&str, &str)]) -> std::process::Child {
     for (key, value) in env {
         command.env(key, value);
     }
-    let mut child = command.spawn().expect("spawn NodeDaemon");
+    // Guarded from the first instant it exists: the readiness loop below can
+    // panic, and an unguarded child would outlive the test.
+    let mut guard = DaemonGuard(command.spawn().expect("spawn NodeDaemon"));
     let deadline = Instant::now() + Duration::from_secs(20);
     loop {
         let status = run_firm(home, home.base(), &["daemon", "status"]);
         if status.status.success() && !String::from_utf8_lossy(&status.stdout).contains("absent") {
-            return child;
+            return guard;
         }
         assert!(
-            child.try_wait().expect("inspect NodeDaemon").is_none(),
+            guard.0.try_wait().expect("inspect NodeDaemon").is_none(),
             "NodeDaemon exited before becoming ready"
         );
         assert!(Instant::now() < deadline, "NodeDaemon readiness timeout");
@@ -280,7 +294,8 @@ fn member_joined_to_a_running_team_run_starts_with_its_own_agent_session() {
     ok(&create, "team-run create");
     let run_id = String::from_utf8_lossy(&create.stdout).trim().to_string();
 
-    let mut daemon = spawn_daemon(&home, &env);
+    // Reaped on every exit path, including a panic in the assertions below.
+    let _daemon = spawn_daemon(&home, &env);
     let started = run_firm_with_env(
         &home,
         home.base(),
@@ -377,8 +392,6 @@ fn member_joined_to_a_running_team_run_starts_with_its_own_agent_session() {
     }
     let report = member_run_report(&home, &fixture, &run_id);
     let journal = member_journal(&home, &fixture.space_id, &run_id, &joined_member_run_id);
-    let _ = daemon.kill();
-    let _ = daemon.wait();
 
     let joined_report = report["members"]
         .as_array()

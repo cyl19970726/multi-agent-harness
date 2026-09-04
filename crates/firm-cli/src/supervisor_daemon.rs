@@ -28,7 +28,7 @@ use crate::{
 
 mod control_protocol;
 mod machine_authority;
-mod recovery;
+pub(crate) mod recovery;
 mod shutdown;
 mod team_supervision;
 use machine_authority::{
