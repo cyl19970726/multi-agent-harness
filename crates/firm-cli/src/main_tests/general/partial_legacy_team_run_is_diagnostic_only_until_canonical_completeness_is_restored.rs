@@ -143,7 +143,7 @@ fn partial_legacy_team_run_is_diagnostic_only_until_canonical_completeness_is_re
     );
     let partial = latest_team_run(&store, &created.team_run.id).expect("partial TeamRun");
     expect_incomplete(
-        team_run_display_json(&store, &partial)
+        team_run_display_json(&store, &partial, None)
             .expect_err("current status must fail closed for partial TeamRun"),
     );
     expect_incomplete(

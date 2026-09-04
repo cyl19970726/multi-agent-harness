@@ -1486,6 +1486,8 @@ mod team_run_cli_create_list_status_send_events;
 #[cfg(any())]
 #[path = "team_run_api/team_run_cli_message_reuses_conversation_lineage_only_within_its_run.rs"]
 mod team_run_cli_message_reuses_conversation_lineage_only_within_its_run;
+#[path = "team_run_api/team_run_dashboard_urls.rs"]
+mod team_run_dashboard_urls;
 #[path = "team_run_api/team_run_recover_prints_mission_log_tail_before_the_report.rs"]
 mod team_run_recover_prints_mission_log_tail_before_the_report;
 #[path = "team_run_api/two_peer_ack_only_mail_converges_without_extra_rounds_and_batches_on_next_trigger.rs"]

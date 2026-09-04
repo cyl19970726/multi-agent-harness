@@ -1134,11 +1134,59 @@ pub(crate) fn team_run_mission_id(
 pub(super) fn team_run_display_json(
     store: &HarnessStore,
     run: &AgentTeamRun,
+    dashboard_base: Option<&str>,
 ) -> CliResult<serde_json::Value> {
     // A current status projection is also an authority decision: never show a
     // partially materialized Legacy TeamRun as controllable current state.
-    team_run_execution_space_id(store, run)?;
-    Ok(serde_json::to_value(run)?)
+    let mut display = serde_json::to_value(run)?;
+    display
+        .as_object_mut()
+        .expect("AgentTeamRun serializes as a JSON object")
+        .insert(
+            "dashboard_url".into(),
+            serde_json::to_value(team_run_dashboard_url(store, run, dashboard_base, None)?)?,
+        );
+    Ok(display)
+}
+
+fn dashboard_query_value(value: &str) -> String {
+    let mut encoded = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
+            encoded.push(char::from(byte));
+        } else {
+            encoded.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    encoded
+}
+
+pub(super) fn team_run_dashboard_url(
+    store: &HarnessStore,
+    run: &AgentTeamRun,
+    dashboard_base: Option<&str>,
+    member_run_id: Option<&str>,
+) -> CliResult<Option<String>> {
+    let execution_space_id = team_run_execution_space_id(store, run)?;
+    let Some(base) = dashboard_base else {
+        return Ok(None);
+    };
+    let base = base.trim_end_matches('/');
+    let mut query = vec![
+        ("space", execution_space_id.as_str()),
+        ("project", run.project_binding_id.as_str()),
+        ("surface", "team"),
+        ("team", run.agent_team_id.as_str()),
+    ];
+    if let Some(member_run_id) = member_run_id {
+        query.push(("memberRun", member_run_id));
+    }
+    let query = query
+        .into_iter()
+        .map(|(key, value)| format!("{key}={}", dashboard_query_value(value)))
+        .collect::<Vec<_>>()
+        .join("&");
+    Ok(Some(format!("{base}/?{query}")))
 }
 
 /// Parse a team run status from its snake_case wire name.

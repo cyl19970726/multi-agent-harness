@@ -216,7 +216,7 @@ pub(super) const CHEATSHEET_TEAM: &str = r#"team-run create     --objective <tex
                     --member name:role:provider[/mode][:model][@paths]
 team-run start      --id <id> [--max-concurrency <n>] [--idle-timeout-s <n>]
 team-run add-member --id <id> --member <spec> [--initial-work <text>]
-team-run status     --id <id> [--json]
+team-run status     --id <id> [--dashboard-base <url>] [--json]
 team-run wait       --id <id> [--after-seq <n>] [--timeout-secs <n>] [--json]
 team-run host-inbox --surface <s> --thread-id <id> [--all] [--json]  (both required)
 team-run events     --id <id> [--after-seq <n>] [--json]
@@ -258,7 +258,8 @@ pub(super) const CHEATSHEET_ALL: &str = r#"team-run create --objective <text> --
   --member name:role:provider[/mode][:model][@paths]
 team-run start --id <id> [--max-concurrency <n>]
 team-run add-member --id <id> --member <spec>
-team-run status --id <id> [--json]
+team-run list [--dashboard-base <url>] [--json]
+team-run status --id <id> [--dashboard-base <url>] [--json]
 team-run wait --id <id> [--after-seq <n>] [--timeout-secs <n>] [--json]
 team-run host-inbox --surface <s> --thread-id <id> [--all] [--json]  (both required)
 team-run events --id <id> [--json]
