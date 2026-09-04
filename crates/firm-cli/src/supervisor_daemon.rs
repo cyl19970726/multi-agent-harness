@@ -442,12 +442,18 @@ impl MultiTeamDaemon {
                 } else {
                     "recovery_scanner"
                 };
-                self.answer_deferred_stop_responses(Some(&StopDrainFailure {
-                    phase,
-                    error: CliError::Usage(format!(
-                        "NODE_DAEMON_DRAIN_INCOMPLETE: {phase} did not converge within the documented stop bound; machine authority is retained"
-                    )),
-                }));
+                // Release has not run at this point, and the gate below can
+                // no longer reach it, so `false` here is an observation rather
+                // than the prediction this message used to make.
+                self.answer_deferred_stop_responses(
+                    Some(&StopDrainFailure {
+                        phase,
+                        error: CliError::Usage(format!(
+                            "NODE_DAEMON_DRAIN_INCOMPLETE: {phase} did not converge within the documented stop bound; authority release is deferred until the joins complete"
+                        )),
+                    }),
+                    false,
+                );
             }
 
             for worker in control_workers {
@@ -501,16 +507,25 @@ impl MultiTeamDaemon {
                         .into(),
                 )),
             };
-            let release_result = if control_result.is_ok()
+            // The scanner belongs in this gate. It is the phase that proves
+            // every registered Execution Space is still readable under this
+            // exact generation; releasing machine authority after it failed
+            // would both silently drop the fence and make the stop receipt
+            // contradict itself (DEV-149-REVIEW-02).
+            let release_attempted = control_result.is_ok()
+                && scan_result.is_ok()
                 && supervisor_result.is_ok()
                 && settlement_result.is_ok()
                 && drain_result.is_ok()
-                && heartbeat_result.is_ok()
-            {
+                && heartbeat_result.is_ok();
+            let release_result = if release_attempted {
                 self.release_node_authorities()
             } else {
                 Ok(())
             };
+            // Observed, never predicted: authority is released only when the
+            // release actually ran and actually succeeded.
+            let authority_released = release_attempted && release_result.is_ok();
             // Every accepted `stop` is answered from what the drain actually
             // proved. Authority release is part of that answer: a caller must
             // never see `ok:true` while this process still owns runtimes, and
@@ -531,7 +546,7 @@ impl MultiTeamDaemon {
                     error: CliError::Usage(error.to_string()),
                 })
             });
-            self.answer_deferred_stop_responses(failure.as_ref());
+            self.answer_deferred_stop_responses(failure.as_ref(), authority_released);
 
             scan_result
                 .and(control_result)
@@ -544,7 +559,11 @@ impl MultiTeamDaemon {
     }
 
     /// Deliver the truthful Stop answer to every caller still waiting on it.
-    fn answer_deferred_stop_responses(&self, drain_failure: Option<&StopDrainFailure>) {
+    fn answer_deferred_stop_responses(
+        &self,
+        drain_failure: Option<&StopDrainFailure>,
+        authority_released: bool,
+    ) {
         let deferred = {
             let mut guard = self
                 .deferred_stop_responses
@@ -558,13 +577,13 @@ impl MultiTeamDaemon {
                     "ok": true,
                     "daemon_generation": pending.daemon_generation,
                     "drained": true,
-                    "authority_released": true,
+                    "authority_released": authority_released,
                 }),
                 Some(failure) => serde_json::json!({
                     "ok": false,
                     "daemon_generation": pending.daemon_generation,
                     "drained": false,
-                    "authority_released": false,
+                    "authority_released": authority_released,
                     "failed_phase": failure.phase,
                     "error": failure.error.to_string(),
                 }),

@@ -916,10 +916,11 @@ impl TeamSupervisorRegistration {
                 now_ms,
                 ttl_ms,
             )
-            .map_err(|e| {
-                store_conflict_as_usage::<TeamSupervisorLease>(Err(e))
-                    .expect_err("Supervisor acquisition error must remain an error")
-            })?;
+            // Typed, not flattened: a lost Supervisor-lease race on the
+            // adoption/start path must reach `start_failure_is_transient` as a
+            // Store conflict, never as an uncoded `CliError::Usage` that reads
+            // as a structural defect (DEV-149-REVIEW-02).
+            .map_err(CliError::Store)?;
         let heartbeat_stop = Arc::new(AtomicBool::new(false));
         let heartbeat_valid = Arc::new(AtomicBool::new(true));
         let authority_gate = Arc::new(Mutex::new(()));

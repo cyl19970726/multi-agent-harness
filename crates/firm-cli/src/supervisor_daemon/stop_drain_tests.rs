@@ -128,6 +128,23 @@ fn managed_context(
     }
 }
 
+/// Read the lease this daemon generation actually left in the Store. The stop
+/// receipt's `authority_released` must agree with this, never with a guess
+/// derived from whether some phase reported a failure (DEV-149-REVIEW-02).
+fn observed_lease_is_released(fixture: &StopFixture) -> bool {
+    HarnessStore::new(
+        crate::execution_space::list_spaces(&fixture.daemon.firm_home)
+            .expect("list stop Spaces")
+            .remove(0)
+            .store_root,
+    )
+    .latest_node_daemon_lease(STOP_TEST_NODE_ID)
+    .expect("read stop lease")
+    .expect("stop lease remains auditable")
+    .status
+        == harness_core::NodeDaemonLeaseStatus::Released
+}
+
 fn request_stop(fixture: &StopFixture) -> serde_json::Value {
     let mut client = UnixStream::connect(&fixture.socket_path).expect("connect stop client");
     client
@@ -187,6 +204,15 @@ fn stop_answers_only_after_the_managed_runtime_drains() {
             "the stop answer must not precede the managed runtime's exit"
         );
         server.join().expect("serve thread").expect("serve result");
+        assert_eq!(
+            response["authority_released"], true,
+            "a clean drain releases authority: {response}"
+        );
+        assert_eq!(
+            response["authority_released"].as_bool(),
+            Some(observed_lease_is_released(&fixture)),
+            "the receipt must report the release that actually happened, not a prediction"
+        );
     });
 }
 
@@ -224,6 +250,10 @@ fn stop_reports_drain_incomplete_without_releasing_authority() {
         );
         assert_eq!(response["drained"], false);
         assert_eq!(response["authority_released"], false);
+        assert_eq!(
+            response["failed_phase"], "supervisor_drain",
+            "the operator must be told which phase denied the stop: {response}"
+        );
         assert!(
             response["error"]
                 .as_str()
@@ -232,19 +262,15 @@ fn stop_reports_drain_incomplete_without_releasing_authority() {
         );
         let serve_result = server.join().expect("serve thread");
         assert!(serve_result.is_err(), "a failed drain fails the generation");
-        let lease = HarnessStore::new(
-            crate::execution_space::list_spaces(&fixture.daemon.firm_home)
-                .expect("list stop Spaces")
-                .remove(0)
-                .store_root,
-        )
-        .latest_node_daemon_lease(STOP_TEST_NODE_ID)
-        .expect("read stop lease")
-        .expect("stop lease exists");
-        assert_ne!(
-            lease.status,
-            harness_core::NodeDaemonLeaseStatus::Released,
+        let released = observed_lease_is_released(&fixture);
+        assert!(
+            !released,
             "an incomplete drain must retain machine authority"
+        );
+        assert_eq!(
+            response["authority_released"].as_bool(),
+            Some(released),
+            "the receipt must report the lease state the Store actually holds"
         );
     });
 

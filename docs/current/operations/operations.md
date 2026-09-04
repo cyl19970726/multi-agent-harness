@@ -349,15 +349,33 @@ Supervisor generation on every scan.
 It replies only after accepted control commands, the recovery scanner, managed
 Supervisor threads and authority settlement have converged, within a documented
 75-second bound (20s control workers + 20s scanner + 30s Supervisor drain + 5s
-forced process-group drain). A drain that does not complete returns
-`ok:false` with `NODE_DAEMON_DRAIN_INCOMPLETE`, the failing phase, and
-`authority_released:false`; the CLI exits non-zero and the Operator action
-returns the `NODE_DAEMON_DRAIN_INCOMPLETE` code rather than
-`SUPERVISOR_GENERATION_FENCED`. Machine authority is deliberately retained in
-that case — never treat a failed stop as a stopped daemon. Known limit:
-`harness daemon status` is unanswered for the remainder of the drain, because
-control ingress closes when the stop is accepted; the bound above is the
-window.
+forced process-group drain). A drain that does not complete returns `ok:false`
+with `NODE_DAEMON_DRAIN_INCOMPLETE` and the failing phase; the CLI exits
+non-zero and the Operator action returns the `NODE_DAEMON_DRAIN_INCOMPLETE`
+code rather than `SUPERVISOR_GENERATION_FENCED`. Never treat a failed stop as a
+stopped daemon.
+
+`authority_released` on that receipt is an observation, not a prediction: it is
+true only when `release_node_authorities` actually ran and succeeded. Every
+phase — including the recovery scanner — gates the release, so a scanner
+failure leaves the lease `Draining` and the receipt reports
+`authority_released:false` consistently with the Store. Read the
+`NodeDaemonLease` when you need certainty; the receipt agrees with it.
+
+Two known limits:
+
+- `harness daemon status` is unanswered for the remainder of the drain, because
+  control ingress closes when the stop is accepted; the bound above is the
+  window. `daemon status` also lists only process-local adoption holds under
+  `recovery_blocked_runs` — a durable `team_supervisor_no_progress` hold is
+  read from the TeamRun's MemberAction journal, not from status, because
+  listing it would put whole-Store scans on the reserved control lane.
+- The Operator `daemon-stop` HTTP action can occupy its connection for the full
+  drain bound. The serving loop sets no socket timeouts and handles each
+  connection on its own thread, so this starves nothing, but a dashboard or
+  proxy client with a shorter timeout may give up before the receipt arrives. A
+  client-side timeout is not a failed stop: re-read the `NodeDaemonLease` to
+  learn whether authority was released.
 
 NodeDaemon lease expiry is not takeover authority. If the exact predecessor
 process is still alive, let that instance settle commands, drain providers and

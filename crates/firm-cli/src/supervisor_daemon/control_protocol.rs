@@ -1074,6 +1074,14 @@ impl MultiTeamDaemon {
                         .lock()
                         .unwrap_or_else(|error| error.into_inner())
                         .is_empty(),
+                    // Known limit: this reports only the process-local holds.
+                    // A durable `team_supervisor_no_progress` hold is not
+                    // listed, because surfacing it means reading
+                    // `member_actions` and re-fingerprinting every Running run
+                    // across every registered Execution Space — whole-Store
+                    // scans on the one control lane that must stay answerable
+                    // while discovery and reap are busy (#671). Read those
+                    // holds from the TeamRun's MemberAction journal instead.
                     "recovery_blocked_runs": self.recovery_blocked_runs
                         .lock()
                         .unwrap_or_else(|error| error.into_inner())

@@ -141,8 +141,16 @@ fn start_failure_is_transient(error: &CliError) -> bool {
         | CliError::ProviderAdmissionContention(_)
         | CliError::SupervisorLeaseLost(_)
         | CliError::ProviderProcessAdmissionClosed(_) => true,
-        // An accepted or ambiguous provider effect is never a no-progress
-        // observation; the RuntimeCommand recovery paths own those.
+        // Defensive, and not currently reachable from `start_supervising`:
+        // that path stops at the durable Supervisor registration and the
+        // Planning→Running lifecycle CAS, before any provider effect is
+        // prepared, so neither variant can be the start failure being
+        // classified. Should a future start step prepare an effect, an
+        // accepted or ambiguous one is emphatically not a no-progress
+        // observation — the unresolved-RuntimeCommand branch above already
+        // owns it and writes the stronger recovery-required marker — so
+        // silently converting it into a weak canonical-state hold would lose
+        // that diagnosis. Kept explicit rather than left to the `_` arm.
         CliError::ProviderEffectAccepted(_) | CliError::RuntimeRecoveryRequired(_) => true,
         CliError::Usage(message) => {
             TRANSIENT_START_FAILURE_PREFIXES
