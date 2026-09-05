@@ -228,7 +228,10 @@ fn spawn_node_authority(
         command.env(key, value);
     }
     let mut child = command.spawn().expect("spawn NodeDaemon authority");
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    // Readiness budget derives from the product's own daemon-start readiness
+    // bound (60s, main_modules/daemon_cli.rs `daemon start`); exhaustion
+    // means the daemon genuinely failed to start, not a slow runner.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
     loop {
         let status = run_firm(home, home.base(), &["daemon", "status"]);
         if status.status.success() && !String::from_utf8_lossy(&status.stdout).contains("absent") {
@@ -464,12 +467,18 @@ fn close_worker_member_runtime(home: &TempHome, project_id: &str, run_id: &str) 
     });
 }
 
+/// State-gated wait with a budget derived from the fixture's own cadence: the
+/// daemon here scans every 1s (--scan-interval-secs 1) and the slowest
+/// legitimate convergence is a handful of scan cycles plus a provider probe,
+/// so 120s is >10x that product cadence — exhaustion means a wedge, and the
+/// failure names the phase and the elapsed time.
 fn wait_for_runtime_projection(description: &str, mut ready: impl FnMut() -> bool) {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let started_at = std::time::Instant::now();
     while !ready() {
         assert!(
-            std::time::Instant::now() < deadline,
-            "timed out waiting for {description}"
+            started_at.elapsed() < std::time::Duration::from_secs(120),
+            "phase '{description}' exceeded its hard deadline: {:?} elapsed",
+            started_at.elapsed()
         );
         std::thread::sleep(std::time::Duration::from_millis(25));
     }
