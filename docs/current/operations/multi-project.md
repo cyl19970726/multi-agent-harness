@@ -67,6 +67,17 @@ its stores remain only as export/verify sources for
 └── ACTIVE_PROJECT
 ```
 
+Both registries record `store_root` relative to FIRM_HOME (new registrations;
+existing absolute in-home paths still load and are normalized to relative on
+the next write). On load, a recorded `store_root` that lies outside the
+current FIRM_HOME is refused with an error naming the registry file, the
+recorded path and FIRM_HOME — a copied home must never silently serve or
+write the original store. The explicit operator override
+`FIRM_ALLOW_EXTERNAL_STORE_ROOT=1` admits an external root; every CLI/serve
+startup then prints a `WARNING: external store_root …` line naming it.
+
+## Selecting a space and a project
+
 Logical separation is mandatory even if a deployment later co-locates some
 physical files.
 
