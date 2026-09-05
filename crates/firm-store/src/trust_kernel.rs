@@ -384,15 +384,6 @@ fn runtime_command_requires_exact_binding(kind: RuntimeCommandKind) -> bool {
     !matches!(kind, RuntimeCommandKind::AuthorMessage)
 }
 
-fn runtime_command_allows_native_session_attachment(kind: RuntimeCommandKind) -> bool {
-    matches!(
-        kind,
-        RuntimeCommandKind::StartSession
-            | RuntimeCommandKind::OpenRuntime
-            | RuntimeCommandKind::StartCycle
-    )
-}
-
 fn runtime_binding_for_session(
     session: &AgentSession,
 ) -> firm_core::agentfirm_api::RuntimeCommandBinding {

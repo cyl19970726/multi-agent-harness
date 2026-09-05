@@ -430,10 +430,20 @@ impl HarnessStore {
         }
         let invocation_binding =
             self.work_execution_runtime_binding(&context.execution_space_id, &binding.id)?;
+        // The stored admission was frozen when the Work was bound, possibly
+        // before the first provider Open returned the native session id.
+        // Judge it with exactly the rule `work_execution_binding_is_current_unlocked`
+        // uses, so a binding the stale-release keeps as current is also
+        // claimable: attaching the native id to the same exact
+        // session/runtime/driver generation is durable progress, never stale
+        // authority (GitHub #745). Every other fence field stays exact.
         self.require_live_runtime_binding_unlocked(
             &session,
             &invocation_binding,
-            RuntimeBindingAdmission::Invocation,
+            RuntimeBindingAdmission::RuntimeCommand {
+                allow_native_session_attachment: true,
+                settlement_only: false,
+            },
             "work_delivery",
             delivery_id,
             Some(delivery.version),
