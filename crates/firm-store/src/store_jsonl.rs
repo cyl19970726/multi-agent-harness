@@ -162,6 +162,54 @@ impl HarnessStore {
         Ok(())
     }
 
+    /// Collapse the NodeDaemon lease file to one row per node (latest wins).
+    ///
+    /// Called on renewal: NodeDaemon heartbeats renew ~1/s while acquisition
+    /// is rare, so this is where compaction belongs (the Supervisor version
+    /// compacts on the rare acquisition instead). The retention rule is the
+    /// same as `compact_supervisor_leases_unlocked`: keep exactly the latest
+    /// row per key — for supervisor leases the key is the run, here it is
+    /// `node_id` — and drop every superseded row, including prior
+    /// acquire/draining/expired/released transitions; no NodeDaemon lease
+    /// reader consumes more than the latest row per node. Generation fencing
+    /// is unaffected: the retained row is exactly the row a full-scan
+    /// latest-wins projection would have produced.
+    pub(super) fn compact_node_daemon_leases_unlocked(&self) -> StoreResult<()> {
+        let path = self.root.join("node_daemon_leases.jsonl");
+        if !path.exists() {
+            return Ok(());
+        }
+        let all = self.read_jsonl::<NodeDaemonLease>("node_daemon_leases.jsonl")?;
+        let latest = latest_by_id(all, |lease| lease.node_id.clone());
+        let temp = self.root.join("node_daemon_leases.jsonl.compact");
+        {
+            let mut file = OpenOptions::new()
+                .create(true)
+                .write(true)
+                .truncate(true)
+                .open(&temp)?;
+            for lease in latest.values() {
+                let mut row = Vec::new();
+                serde_json::to_writer(&mut row, lease)?;
+                row.push(b'\n');
+                file.write_all(&row)?;
+            }
+            file.flush()?;
+            file.sync_all()?;
+        }
+        fs::rename(&temp, &path)?;
+        // fsync the PARENT DIRECTORY, not just the temp inode. POSIX allows a
+        // crash to recover either the old or the new directory entry after a
+        // rename; only syncing the directory makes the replacement durable.
+        // Without it a system crash can resurrect the pre-compaction file and
+        // with it an already-issued generation, violating the monotonic
+        // higher-generation contract.
+        if let Ok(dir) = File::open(&self.root) {
+            let _ = dir.sync_all();
+        }
+        Ok(())
+    }
+
     pub(super) fn acquire_write_lock(&self) -> StoreResult<StoreWriteLock> {
         let (timeout, poll_interval) = store_write_lock_policy();
         self.acquire_write_lock_with_policy(timeout, poll_interval)
