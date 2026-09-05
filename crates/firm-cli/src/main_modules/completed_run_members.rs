@@ -1,3 +1,15 @@
+//! Completed-TeamRun member serving and receipt-free member Close (#812).
+//!
+//! A Completed run keeps its Supervisor lease until every managed member is
+//! explicitly Closed. Before a daemon restart the already-running member lanes
+//! survive, so Close goes through the ordinary live-control path and returns a
+//! real provider receipt. After a restart the re-adopted Supervisor spawns NO
+//! member lanes: a Completed run's members can never claim Work again, and a
+//! native-session resume would only race the predecessor runtime settlement.
+//! Close then goes only through the coordination path in this module, which
+//! reuses the detached-recovery Close on a current-or-superseded generation
+//! axis, gated on the recorded predecessor evidence.
+
 use super::*;
 
 pub(super) const COMPLETED_RUN_SERVING_POLL_INTERVAL: Duration = Duration::from_secs(1);
@@ -42,17 +54,14 @@ pub(super) fn completed_serving_label(unclosed_members: usize) -> String {
 
 /// Close an unclosed managed member of a COMPLETED TeamRun when its runtime is
 /// provably over (#812). After a daemon restart the re-adopted Supervisor
-/// serves the lane for Close authority without starting a new provider cycle,
-/// so there is no live control handle to answer CloseMember. The canonical
-/// detached+idle AgentSession at a terminal turn boundary — last driven by a
-/// current or superseded Supervisor generation of this exact TeamRun on this
-/// NodeDaemon, with the member's matching native-session authority and no
-/// ambiguous RuntimeCommand — is positive evidence that this member's runtime
-/// generation has already ended. The ordinary latch and coordination write
-/// path then close the member without fabricating a provider Close receipt.
-/// Returns Ok(None) when the lane is still Attached or the proof does not
-/// hold; the caller then uses the ordinary live-control close, which returns a
-/// real provider receipt.
+/// serves the run for Close authority without spawning a member lane, so there
+/// is no live control handle to answer CloseMember. This reuses the
+/// detached-recovery Close with the `CompletedRunMember` generation axis: the
+/// exact-current generation needs no extra proof, while a superseded driver
+/// generation must carry the recorded predecessor evidence. A failed proof is
+/// a typed fenced error, never a silent fall-through; an Attached lane returns
+/// Ok(None) so the caller uses the ordinary live-control close with its real
+/// provider receipt.
 pub(crate) fn close_completed_run_member_coordination(
     store: &HarnessStore,
     team_run_id: &str,
@@ -61,114 +70,17 @@ pub(crate) fn close_completed_run_member_coordination(
     requested_by: &str,
     reason: &str,
 ) -> CliResult<Option<serde_json::Value>> {
-    use harness_core::agentfirm_api::{
-        RuntimeCommandStatus, RuntimeDriverRef, RuntimeEffectCertainty, RuntimeResidency,
-    };
-
-    let ledger = TeamRunLedger::without_supervisor(store, team_run_id);
-    let (execution_space_id, session) = provider_session_for_member(&ledger, member)?;
-    if session.control_state.runtime_residency != RuntimeResidency::Detached
-        || !session_is_at_terminal_turn_boundary(&session)
-    {
-        return Ok(None);
-    }
-    // The recorded driver names the generation that LAST drove the session;
-    // after a daemon restart that is the drained predecessor, not the current
-    // Supervisor. Detached residency above already proves no live handle
-    // exists, so any current-or-superseded Supervisor generation of this exact
-    // TeamRun on this NodeDaemon is acceptable. A newer generation or a
-    // foreign driver means this Close raced a successor: fail closed.
-    let current_or_superseded_driver = matches!(
-        &session.control_state.driver_ref,
-        RuntimeDriverRef::TeamSupervisor {
-            team_run_id: driver_team_run_id,
-            team_supervisor_generation,
-            ..
-        } if driver_team_run_id == team_run_id
-            && *team_supervisor_generation <= supervisor.generation
-    );
-    if !current_or_superseded_driver
-        || supervisor.node_daemon_id != session.node_daemon_id
-        || supervisor.node_daemon_generation < session.node_daemon_generation
-    {
-        return Ok(None);
-    }
-    let native_matches = match (
-        member.native_session.as_ref(),
-        session.native_session_ref.as_ref(),
-    ) {
-        (Some(member_native), Some(session_native)) => {
-            member_native.native_session_id == session_native.native_session_id
-        }
-        _ => false,
-    };
-    if !native_matches {
-        return Ok(None);
-    }
-    let ambiguous_command = store
-        .runtime_commands(&execution_space_id)?
-        .into_iter()
-        .any(|command| {
-            command.target_session_id.as_deref() == Some(session.id.as_str())
-                && command.target_session_generation == Some(session.runtime_generation)
-                && matches!(
-                    command.status,
-                    RuntimeCommandStatus::Accepted
-                        | RuntimeCommandStatus::Quiesced
-                        | RuntimeCommandStatus::RecoveryRequired
-                )
-                && command.effect_certainty == RuntimeEffectCertainty::Unknown
-        });
-    if ambiguous_command {
-        return Ok(None);
-    }
-
-    let close = latch_member_close_for_supervisor(
+    close_detached_blocked_member_for_recovery_with_hooks(
         store,
         team_run_id,
-        &member.id,
+        member,
+        supervisor,
         requested_by,
         reason,
-        &supervisor.supervisor_id,
-        supervisor.generation,
-    )?;
-    cancel_unanswered_provider_messages(store, team_run_id, &member.id, requested_by, reason)?;
-    let closed = mark_member_coordination_closed(store, team_run_id, &member.id)?;
-    let mut closed_member = closed.clone();
-    closed_member.status = MemberRunStatus::Stopped;
-    closed_member.finished_at = Some(now_string());
-    closed_member.last_event_at = Some(now_string());
-    store_conflict_as_usage(store.compare_and_append_member_run(&closed, &closed_member))?;
-    store_conflict_as_usage(store.complete_team_member_close(
-        team_run_id,
-        &member.id,
-        &close.id,
-        &now_string(),
-    ))?;
-    ledger.append_action(
-        &member.id,
-        "closed",
-        MemberActionStatus::Succeeded,
-        "member runtime provably over at completed-run Close; coordination closed without a provider effect",
-        &format!("{requested_by}: {reason}"),
-    )?;
-    ledger.fold_event(
-        TeamRunEventSourceKind::Host,
-        Some(member.id.clone()),
-        "member_run",
-        &member.id,
-        "closed",
-        &format!("member {} coordination closed", member.name),
-    )?;
-    Ok(Some(serde_json::json!({
-        "member_run_id": closed_member.id,
-        "status": "stopped",
-        "coordination_status": "closed",
-        "runtime": "not_live",
-        "runtime_effect": "none",
-        "coordination_effect": "member_closed",
-        "idempotent": false,
-    })))
+        DetachedRecoveryCloseMode::CompletedRunMember,
+        |_| Ok(()),
+        |_| Ok(()),
+    )
 }
 
 /// Members a Supervisor start/reattach should drive. A Completed run is
@@ -196,4 +108,65 @@ pub(crate) fn members_to_drive_for_start(
             )
         })
         .collect())
+}
+
+/// Generation evidence for the completed-run receipt-free Close (#812).
+///
+/// The exact-current case needs no extra proof. When a SUPERSEDED
+/// Supervisor/NodeDaemon generation last drove the session, Detached residency
+/// alone does not prove the predecessor's provider process group ended — after
+/// a daemon crash there is no drain (the #798 orphan-process class). Accept
+/// only the recorded predecessor evidence: the driver Supervisor generation's
+/// Released lease, which is written either by a clean drain (which terminates
+/// the registered process groups, `supervisor_daemon/shutdown.rs`) or by an
+/// explicit `daemon recover-predecessor` (the Operator's confirmed
+/// `provider_process_groups_terminated_confirmed` fact). A newer or foreign
+/// generation means this Close raced a successor: fail closed with a typed
+/// reason, never `Ok(None)`.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn require_completed_run_close_generation_evidence(
+    store: &HarnessStore,
+    team_run_id: &str,
+    member: &ProviderRuntimeProjection,
+    session: &harness_core::agentfirm_api::AgentSession,
+    supervisor: &TeamSupervisorLease,
+    driver_supervisor: Option<&(String, u64)>,
+    exact_current_driver: bool,
+    exact_current_daemon: bool,
+) -> CliResult<()> {
+    if supervisor.node_daemon_id != session.node_daemon_id
+        || supervisor.node_daemon_generation < session.node_daemon_generation
+        || driver_supervisor.is_none_or(|(_, generation)| *generation > supervisor.generation)
+    {
+        return Err(CliError::RuntimeRecoveryRequired(format!(
+            "DETACHED_MEMBER_RECOVERY_FENCED: member {} session {} names a newer or foreign Supervisor/NodeDaemon generation than the current authority",
+            member.id, session.id
+        )));
+    }
+    if exact_current_driver && exact_current_daemon {
+        return Ok(());
+    }
+    let (driver_id, driver_generation) = driver_supervisor.ok_or_else(|| {
+        CliError::RuntimeRecoveryRequired(format!(
+            "DETACHED_MEMBER_RECOVERY_FENCED: member {} session {} has no TeamSupervisor driver lineage for this TeamRun",
+            member.id, session.id
+        ))
+    })?;
+    let driver_lease_released = store
+        .team_supervisor_leases()
+        .map_err(CliError::Store)?
+        .into_iter()
+        .rfind(|lease| {
+            lease.team_run_id == team_run_id
+                && lease.supervisor_id == *driver_id
+                && lease.generation == *driver_generation
+        })
+        .is_some_and(|lease| lease.status == harness_core::TeamSupervisorLeaseStatus::Released);
+    if !driver_lease_released {
+        return Err(CliError::RuntimeRecoveryRequired(format!(
+            "DETACHED_MEMBER_RECOVERY_FENCED: member {} session {} was last driven by superseded Supervisor {driver_id} generation {driver_generation} (NodeDaemon generation {}) without recorded predecessor recovery evidence; drain-stop or recover the predecessor generation (`firm daemon recover-predecessor --confirm daemon-recover-predecessor`) before Close",
+            member.id, session.id, session.node_daemon_generation
+        )));
+    }
+    Ok(())
 }

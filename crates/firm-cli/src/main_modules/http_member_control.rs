@@ -364,6 +364,20 @@ pub(super) fn session_is_at_terminal_turn_boundary(
         && session.current_turn_id.is_none()
 }
 
+/// Admission axis for the receipt-free detached-recovery Close.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum DetachedRecoveryCloseMode {
+    /// DEV-184: a Blocked member bound to the exact current Supervisor and
+    /// NodeDaemon generation.
+    BlockedMemberExactGeneration,
+    /// #812: an unclosed member of a Completed TeamRun. After a daemon
+    /// restart the recorded driver may be a superseded Supervisor/NodeDaemon
+    /// generation; the Close then requires the recorded predecessor evidence
+    /// (the driver Supervisor generation's Released lease) before the runtime
+    /// counts as provably over.
+    CompletedRunMember,
+}
+
 pub(super) fn close_detached_blocked_member_for_recovery(
     store: &HarnessStore,
     team_run_id: &str,
@@ -399,6 +413,7 @@ pub(super) fn close_detached_blocked_member_for_recovery_with_hook(
         supervisor,
         requested_by,
         reason,
+        DetachedRecoveryCloseMode::BlockedMemberExactGeneration,
         before_terminal_cas,
         |_| Ok(()),
     )
@@ -412,6 +427,7 @@ pub(super) fn close_detached_blocked_member_for_recovery_with_hooks(
     supervisor: &TeamSupervisorLease,
     requested_by: &str,
     reason: &str,
+    mode: DetachedRecoveryCloseMode,
     mut before_terminal_cas: impl FnMut(usize) -> CliResult<()>,
     mut after_terminal_cas: impl FnMut(&ProviderRuntimeProjection) -> CliResult<()>,
 ) -> CliResult<Option<serde_json::Value>> {
@@ -464,26 +480,61 @@ pub(super) fn close_detached_blocked_member_for_recovery_with_hooks(
             member.id, session.id
         )));
     }
-    let exact_supervisor_driver = matches!(
-        &session.control_state.driver_ref,
+    let driver_supervisor = match &session.control_state.driver_ref {
         RuntimeDriverRef::TeamSupervisor {
             team_run_id: driver_team_run_id,
             team_supervisor_id,
             team_supervisor_generation,
-        } if driver_team_run_id == team_run_id
-            && team_supervisor_id == &supervisor.supervisor_id
-            && *team_supervisor_generation == supervisor.generation
-    );
-    if !exact_supervisor_driver
-        || supervisor.node_daemon_id != session.node_daemon_id
-        || supervisor.node_daemon_generation != session.node_daemon_generation
-    {
-        return Err(CliError::RuntimeRecoveryRequired(format!(
-            "DETACHED_MEMBER_RECOVERY_FENCED: member {} is not bound to the exact current Supervisor and NodeDaemon generations",
-            member.id
-        )));
+        } if driver_team_run_id == team_run_id => {
+            Some((team_supervisor_id.clone(), *team_supervisor_generation))
+        }
+        _ => None,
+    };
+    let exact_current_driver =
+        driver_supervisor
+            .as_ref()
+            .is_some_and(|(driver_id, driver_generation)| {
+                driver_id == &supervisor.supervisor_id
+                    && *driver_generation == supervisor.generation
+            });
+    let exact_current_daemon = supervisor.node_daemon_id == session.node_daemon_id
+        && supervisor.node_daemon_generation == session.node_daemon_generation;
+    match mode {
+        DetachedRecoveryCloseMode::BlockedMemberExactGeneration => {
+            if !exact_current_driver || !exact_current_daemon {
+                return Err(CliError::RuntimeRecoveryRequired(format!(
+                    "DETACHED_MEMBER_RECOVERY_FENCED: member {} is not bound to the exact current Supervisor and NodeDaemon generations",
+                    member.id
+                )));
+            }
+        }
+        DetachedRecoveryCloseMode::CompletedRunMember => {
+            crate::completed_run_members::require_completed_run_close_generation_evidence(
+                store,
+                team_run_id,
+                member,
+                &session,
+                supervisor,
+                driver_supervisor.as_ref(),
+                exact_current_driver,
+                exact_current_daemon,
+            )?;
+        }
     }
-    require_provider_session_authority(&ledger, &member.agent_member_id, false)?;
+    match mode {
+        DetachedRecoveryCloseMode::BlockedMemberExactGeneration => {
+            require_provider_session_authority(&ledger, &member.agent_member_id, false)?;
+        }
+        DetachedRecoveryCloseMode::CompletedRunMember => {
+            // The session may still name the settled predecessor NodeDaemon
+            // generation (proven by the evidence gate above), so the
+            // live-daemon half of the authority proof cannot hold here.
+            require_provider_session_authority_for_settled_generation(
+                &ledger,
+                &member.agent_member_id,
+            )?;
+        }
+    }
 
     let ambiguous_command = store
         .runtime_commands(&execution_space_id)?
@@ -571,39 +622,67 @@ pub(super) fn close_detached_blocked_member_for_recovery_with_hooks(
     // below through one Store writer-lock transaction that revalidates the
     // exact Supervisor/NodeDaemon, AgentSession, ambiguous-command set, and
     // MemberRun revision. No provider effect is issued on this path.
-    let close = latch_detached_recovery_close_for_supervisor(
-        store,
-        team_run_id,
-        &member.id,
-        requested_by,
-        reason,
-        harness_core::DetachedRecoveryCloseFence {
-            execution_space_id: execution_space_id.clone(),
-            member_run_generation: member.runtime_generation,
-            agent_session_id: session.id.clone(),
-            agent_session_generation: session.runtime_generation,
-            agent_session_version: session.version,
-            agent_session_driver_generation: session.control_state.driver_generation,
-            native_session_id: session
-                .native_session_ref
-                .as_ref()
-                .expect("detached recovery requires native Session")
-                .native_session_id
-                .clone(),
-            node_daemon_id: session.node_daemon_id.clone(),
-            node_daemon_generation: session.node_daemon_generation,
-            authorizing_supervisor_id: supervisor.supervisor_id.clone(),
-            authorizing_supervisor_generation: supervisor.generation,
-        },
-    )?;
+    let close = match mode {
+        DetachedRecoveryCloseMode::BlockedMemberExactGeneration => {
+            latch_detached_recovery_close_for_supervisor(
+                store,
+                team_run_id,
+                &member.id,
+                requested_by,
+                reason,
+                harness_core::DetachedRecoveryCloseFence {
+                    execution_space_id: execution_space_id.clone(),
+                    member_run_generation: member.runtime_generation,
+                    agent_session_id: session.id.clone(),
+                    agent_session_generation: session.runtime_generation,
+                    agent_session_version: session.version,
+                    agent_session_driver_generation: session.control_state.driver_generation,
+                    native_session_id: session
+                        .native_session_ref
+                        .as_ref()
+                        .expect("detached recovery requires native Session")
+                        .native_session_id
+                        .clone(),
+                    node_daemon_id: session.node_daemon_id.clone(),
+                    node_daemon_generation: session.node_daemon_generation,
+                    authorizing_supervisor_id: supervisor.supervisor_id.clone(),
+                    authorizing_supervisor_generation: supervisor.generation,
+                },
+            )?
+        }
+        DetachedRecoveryCloseMode::CompletedRunMember => {
+            // The store-side detached-recovery fence is typed for the DEV-184
+            // exact-generation Blocked case only. The completed-run Close
+            // carries its CLI-side proofs (above) and the same terminal-CAS
+            // revalidation (below) under an ordinary Supervisor latch.
+            latch_member_close_for_supervisor(
+                store,
+                team_run_id,
+                &member.id,
+                requested_by,
+                reason,
+                &supervisor.supervisor_id,
+                supervisor.generation,
+            )?
+        }
+    };
     let mut conflicted_expected = None;
     let closed = 'terminal_cas: {
         for attempt in 0..PROVIDER_MEMBER_CAS_RETRIES {
             let latest = ledger
                 .latest_member_run(&member.id)?
                 .ok_or_else(|| CliError::Usage(format!("member run not found: {}", member.id)))?;
+            let status_admitted = match mode {
+                DetachedRecoveryCloseMode::BlockedMemberExactGeneration => {
+                    latest.status == MemberRunStatus::Blocked
+                }
+                DetachedRecoveryCloseMode::CompletedRunMember => !matches!(
+                    latest.status,
+                    MemberRunStatus::Completed | MemberRunStatus::Failed | MemberRunStatus::Stopped
+                ),
+            };
             if latest.runtime_generation != member.runtime_generation
-                || latest.status != MemberRunStatus::Blocked
+                || !status_admitted
                 || !latest.coordination_is_active()
                 || !provider_callback_native_session_matches(
                     &member.native_session,
@@ -689,11 +768,19 @@ pub(super) fn close_detached_blocked_member_for_recovery_with_hooks(
         &now_string(),
     ))?;
     cancel_unanswered_provider_messages(store, team_run_id, &member.id, requested_by, reason)?;
+    let action_detail = match mode {
+        DetachedRecoveryCloseMode::BlockedMemberExactGeneration => {
+            "detached blocked member coordination closed for recovery"
+        }
+        DetachedRecoveryCloseMode::CompletedRunMember => {
+            "completed-run member coordination closed without a provider effect"
+        }
+    };
     ledger.append_action(
         &member.id,
         "closed",
         MemberActionStatus::Succeeded,
-        "detached blocked member coordination closed for recovery",
+        action_detail,
         &format!("{requested_by}: {reason}"),
     )?;
     ledger.fold_event(

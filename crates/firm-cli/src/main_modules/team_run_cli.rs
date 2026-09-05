@@ -881,6 +881,14 @@ pub(super) fn team_run_command(
                 .and_then(|raw| raw.parse::<u64>().ok())
                 .filter(|n| *n > 0)
                 .unwrap_or(kimi_acp::DEFAULT_PROMPT_IDLE_TIMEOUT_SECS);
+            // A Completed run is adopted only to keep its Close lane reachable
+            // (#812): starting it drives zero members, so say so explicitly
+            // instead of letting the delegation look like a silent no-op.
+            if current.status == TeamRunStatus::Completed {
+                println!(
+                    "team run {id} is Completed: no members to drive; use close-member/deactivate-member"
+                );
+            }
             team_run_start(
                 store,
                 resolved,

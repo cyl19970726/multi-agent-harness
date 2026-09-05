@@ -321,3 +321,116 @@ fn completed_run_is_readopted_after_restart_until_close_then_allows_deactivate()
         member,
     });
 }
+
+#[test]
+fn completed_run_close_after_kill_requires_predecessor_recovery() {
+    let CompletedRunFixture {
+        home,
+        fixture,
+        provider_env,
+        run_id,
+        socket,
+        mut daemon,
+        store,
+        member,
+    } = completed_run_fixture();
+    let env_refs: Vec<(&str, &str)> = provider_env
+        .iter()
+        .map(|(key, value)| (key.as_str(), value.as_str()))
+        .collect();
+
+    // SIGKILL the daemon: no drain runs, so the generation's provider process
+    // groups are never terminated by shutdown and its leases stay unreleased.
+    // A Detached-or-Attached session row alone cannot prove the runtime ended.
+    daemon.kill().expect("SIGKILL NodeDaemon");
+    daemon.wait().expect("reap killed NodeDaemon");
+
+    // Operator recovery of the dead generation becomes possible once its
+    // NodeDaemon lease expires (the test daemon renews on a 15 s TTL).
+    let expiry_deadline = Instant::now() + Duration::from_secs(40);
+    loop {
+        let expired = store
+            .latest_node_daemon_lease(&fixture.node_id)
+            .expect("read NodeDaemon lease")
+            .is_some_and(|lease| {
+                lease.expires_unix_ms
+                    <= std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .expect("system clock")
+                        .as_millis() as u64
+            });
+        if expired {
+            break;
+        }
+        assert!(
+            Instant::now() < expiry_deadline,
+            "predecessor NodeDaemon lease did not expire"
+        );
+        std::thread::sleep(Duration::from_millis(250));
+    }
+    // Without predecessor recovery evidence the Close must be refused: the
+    // dead generation's Supervisor lease has expired with no live successor,
+    // so there is no current provider-loop authority to Close through.
+    let refused = run_firm_with_env(
+        &home,
+        &fixture.project_root,
+        &selected(
+            &fixture,
+            &[
+                "team-run",
+                "close-member",
+                "--id",
+                &run_id,
+                "--member-run-id",
+                &member.id,
+                "--reason",
+                "close before predecessor recovery must be refused",
+            ],
+        ),
+        &env_refs,
+    );
+    assert!(
+        !refused.status.success(),
+        "close-member without predecessor recovery must be refused: {refused:?}"
+    );
+    // Whichever fence fires first is honest: the dead Supervisor's transport
+    // is unreachable, or there is no current provider-loop authority. The
+    // typed DETACHED_MEMBER_RECOVERY_FENCED generation gate is covered by the
+    // unit tests of the coordination Close.
+    let refused_stderr = String::from_utf8_lossy(&refused.stderr);
+    assert!(
+        refused_stderr.contains("RUNTIME_COMMAND_RECOVERY_REQUIRED")
+            || refused_stderr.contains("cannot reach team run"),
+        "refusal must name the missing Supervisor authority: {refused_stderr}"
+    );
+
+    let recovered = run_firm_with_env(
+        &home,
+        &fixture.project_root,
+        &[
+            "daemon",
+            "recover-predecessor",
+            "--confirm",
+            "daemon-recover-predecessor",
+        ],
+        &env_refs,
+    );
+    success(&recovered, "recover predecessor after kill");
+
+    // The successor daemon now acquires authority and re-adopts the completed
+    // run; the recorded recovery evidence lets the coordination Close proceed.
+    let mut daemon = spawn_daemon(&home, &fixture, &env_refs);
+    wait_for_socket(&mut daemon, &socket);
+    wait_for_completed_run_status(&socket, &run_id, 1);
+
+    close_deactivate_and_stop(CompletedRunFixture {
+        home,
+        fixture,
+        provider_env,
+        run_id,
+        socket,
+        daemon,
+        store,
+        member,
+    });
+}
