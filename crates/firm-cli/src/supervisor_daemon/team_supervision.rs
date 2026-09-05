@@ -224,7 +224,7 @@ impl MultiTeamDaemon {
 
         let run_id = run_id.to_string();
         let max_concurrency = self.max_concurrency;
-        let idle_timeout_secs = self.idle_timeout_secs;
+        let input_acceptance_secs = self.input_acceptance_secs;
         let native_session_wake_endpoint = Arc::clone(&self.native_session_wake_endpoint);
 
         // Validate and create registration outside the context lock. Store and
@@ -370,7 +370,7 @@ impl MultiTeamDaemon {
                 None,
                 max_concurrency,
                 harness_runtime_contract::CycleTimeouts::with_input_acceptance(
-                    Duration::from_secs(idle_timeout_secs),
+                    Duration::from_secs(input_acceptance_secs),
                 ),
                 Some(live_sink),
                 Some(thread_serving_status),

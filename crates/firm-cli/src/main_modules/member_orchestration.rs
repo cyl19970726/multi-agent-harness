@@ -476,17 +476,19 @@ pub(crate) fn prepare_team_run_start_body(
 }
 
 /// `firm team-run start`: delegate one admitted TeamRun to the machine-scoped
-/// NodeDaemon. Public start surfaces never spawn a per-run daemon.
+/// NodeDaemon. Public start surfaces never spawn a per-run daemon. The
+/// input-acceptance boundary is the daemon's (`daemon serve
+/// --idle-timeout-secs`), never a per-start value — the old `idle_timeout`
+/// parameter was dead on this path and is gone (SPEC-TYPED-CYCLE-OUTCOME-01
+/// S4).
 pub(crate) fn team_run_start(
     store: &HarnessStore,
     resolved: &ResolvedStore,
     run_id: &str,
     max_concurrency: usize,
-    idle_timeout: Duration,
 ) -> CliResult<()> {
     #[cfg(unix)]
     {
-        let _ = idle_timeout;
         let delegated = delegate_team_run_to_node_daemon(store, resolved, run_id, max_concurrency)?;
         let node_id = delegated["node_id"].as_str().unwrap_or("unknown");
         let daemon_response = &delegated["daemon_response"];
@@ -506,7 +508,7 @@ pub(crate) fn team_run_start(
 
     #[cfg(not(unix))]
     {
-        let _ = (store, resolved, run_id, max_concurrency, idle_timeout);
+        let _ = (store, resolved, run_id, max_concurrency);
         Err(CliError::Usage(
             "NodeDaemon execution currently requires Unix-domain sockets".to_string(),
         ))

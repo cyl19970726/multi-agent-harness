@@ -207,7 +207,10 @@ pub(crate) struct MultiTeamDaemon {
     /// it. The bearer token is required on every loopback ingress request.
     native_session_wake_endpoint: Arc<Mutex<HashMap<String, NativeSessionWakeEndpoint>>>,
     max_concurrency: usize,
-    idle_timeout_secs: u64,
+    /// The provider input-acceptance boundary in seconds (delivery boundary:
+    /// input written -> the provider's exact acceptance receipt), never a
+    /// silence or wall-clock limit on a running cycle.
+    input_acceptance_secs: u64,
     scan_interval: Duration,
     /// Stops control acceptance and discovery, but deliberately does not stop
     /// authority renewal while already-accepted mutations are draining.
@@ -296,7 +299,7 @@ impl MultiTeamDaemon {
         firm_home: PathBuf,
         node_id: String,
         max_concurrency: usize,
-        idle_timeout_secs: u64,
+        input_acceptance_secs: u64,
         scan_interval_secs: u64,
     ) -> CliResult<()> {
         let shutdown = Arc::new(AtomicBool::new(false));
@@ -374,7 +377,7 @@ impl MultiTeamDaemon {
             session_runtimes: Mutex::new(HashMap::new()),
             native_session_wake_endpoint: Arc::new(Mutex::new(HashMap::new())),
             max_concurrency,
-            idle_timeout_secs,
+            input_acceptance_secs,
             scan_interval: Duration::from_secs(scan_interval_secs),
             stop_requested: shutdown_sig,
             authority_shutdown: Arc::new(AtomicBool::new(false)),
@@ -1131,7 +1134,11 @@ pub(crate) fn start_daemon_process_fenced(
         .arg("--max-concurrency")
         .arg(max_concurrency.to_string())
         .arg("--idle-timeout-secs")
-        .arg("300")
+        .arg(
+            harness_runtime_contract::CycleTimeouts::DEFAULT_INPUT_ACCEPTANCE
+                .as_secs()
+                .to_string(),
+        )
         .arg("--scan-interval-secs")
         .arg("5")
         .stdin(std::process::Stdio::null())

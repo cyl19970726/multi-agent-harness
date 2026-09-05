@@ -110,7 +110,7 @@ fn http_console_delegates_native_team_run_to_node_daemon() {
     );
     let (status, body) = serve.post_json(
         &format!("/v1/team-runs/{run_id}/start?project={project_id}"),
-        &serde_json::json!({"max_concurrency": 1, "idle_timeout_s": 10}),
+        &serde_json::json!({"max_concurrency": 1}),
     );
     assert_eq!(status, 202, "body: {body}");
     assert_eq!(body["result"]["status"].as_str(), Some("running"));

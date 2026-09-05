@@ -877,10 +877,19 @@ pub(super) fn team_run_command(
                 .and_then(|raw| raw.parse::<usize>().ok())
                 .filter(|n| *n > 0)
                 .unwrap_or(TEAM_RUN_START_DEFAULT_CONCURRENCY);
-            let idle_timeout_s = value(args, "--idle-timeout-s")
-                .and_then(|raw| raw.parse::<u64>().ok())
-                .filter(|n| *n > 0)
-                .unwrap_or(kimi_acp::DEFAULT_PROMPT_IDLE_TIMEOUT_SECS);
+            // The run is delegated to the NodeDaemon, so a per-start timeout
+            // was always dead configuration. Fail honestly and name the
+            // surface where the input-acceptance boundary actually applies
+            // (frozen decision 6: one flag per surface, redefined as
+            // input_acceptance — never a silence/wall-clock limit on a
+            // running cycle).
+            if value(args, "--idle-timeout-s").is_some() {
+                return Err(CliError::Usage(
+                    "team-run start --idle-timeout-s has no effect: the run is delegated to the NodeDaemon; \
+                     set the provider input-acceptance boundary with `daemon serve --idle-timeout-secs`"
+                        .to_string(),
+                ));
+            }
             // A Completed run is adopted only to keep its Close lane reachable
             // (#812): starting it drives zero members, so say so explicitly
             // instead of letting the delegation look like a silent no-op.
@@ -889,13 +898,7 @@ pub(super) fn team_run_command(
                     "team run {id} is Completed: no members to drive; use close-member/deactivate-member"
                 );
             }
-            team_run_start(
-                store,
-                resolved,
-                &id,
-                max_concurrency,
-                Duration::from_secs(idle_timeout_s),
-            )?;
+            team_run_start(store, resolved, &id, max_concurrency)?;
         }
         "events" => {
             let id = required(args, "--id")?;

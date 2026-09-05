@@ -293,19 +293,25 @@ delivery authority and cannot synthesize a WorkDelivery. See ADR 0060.
 Start, resume, turn, queued input, interrupt, and stop all use the same durable
 RuntimeCommand protocol:
 
-Today, only the Claude adapter imposes no hidden wall-clock limit after a cycle
-is accepted: a long reasoning turn or silent provider tool remains live while
-the owned runner process and transport remain intact, and Interrupt/Close keep
-polling (`crates/firm-provider-claude/src/lib.rs:539-556`). DeepSeek and Codex
-do not yet honor that guarantee. DeepSeek converts total elapsed time at
-`idle_timeout` into cycle failure
-(`crates/firm-provider-deepseek/src/lib.rs:575-580`), while Codex converts a
-silent interval at `idle_timeout` into a native turn interrupt
-(`crates/firm-provider-codex/src/team_runtime.rs:996-1014`). Track adapter
-convergence in [GitHub issue #708](https://github.com/cyl19970726/multi-agent-harness/issues/708).
-A configured Claude delivery timeout fences only the provider input-acceptance
-boundary before an exact receipt; child exit, stdout disconnect, runner error,
-and unsettled durable effects remain explicit fail-closed recovery conditions.
+Every managed provider adapter (Claude, Codex, DeepSeek, Kimi, Pi) imposes no
+hidden wall-clock limit after a cycle is accepted: a long reasoning turn or
+silent provider tool remains live while the owned runner process and transport
+remain intact, and Interrupt/Close keep polling. The only timeouts an adapter
+applies are the three physical quantities of
+`CycleTimeouts` (`crates/firm-runtime-contract/src/cycle.rs`):
+`input_acceptance` bounds only the delivery boundary from input written to the
+provider's exact acceptance receipt; `transport_liveness` bounds the proof
+that the owned process and transport are still alive; `control_settle` bounds
+an issued control's settlement. Silence after acceptance is never a failure
+and never an adapter-initiated interrupt; an interrupted cycle carries an
+attributed `InterruptCause` (Host control, adapter policy, or provider
+initiated), and a provider terminal failure never settles `Satisfied` — it
+either settles the cycle receipt `Unsatisfied` (Claude, Codex, DeepSeek, Pi)
+or stops the cycle at `RuntimeRecoveryRequired` before any receipt exists
+(Kimi; cross-adapter unification is tracked in [GitHub issue
+#857](https://github.com/cyl19970726/multi-agent-harness/issues/857)). Child
+exit, stdout disconnect, runner error, and unsettled durable effects remain
+explicit fail-closed recovery conditions.
 
 ```text
 authenticate and resolve authority

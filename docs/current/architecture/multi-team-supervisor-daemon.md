@@ -106,6 +106,7 @@ firm team-run start --id <run-id>
 firm daemon stop
 ```
 
-`daemon serve` exposes concurrency, idle-timeout, and scan-interval tuning for
-foreground operation. Tests that claim runtime behavior must start a real
-NodeDaemon and cover at least two isolated Execution Spaces.
+`daemon serve` exposes concurrency, input-acceptance (`--idle-timeout-secs`),
+and scan-interval tuning for foreground operation. Tests that claim runtime
+behavior must start a real NodeDaemon and cover at least two isolated
+Execution Spaces.

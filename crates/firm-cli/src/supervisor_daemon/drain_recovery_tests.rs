@@ -201,7 +201,7 @@ pub(super) fn drain_fixture(label: &str) -> DrainFixture {
         session_runtimes: Mutex::new(HashMap::new()),
         native_session_wake_endpoint: Arc::new(Mutex::new(HashMap::new())),
         max_concurrency: 1,
-        idle_timeout_secs: 1,
+        input_acceptance_secs: 1,
         scan_interval: Duration::from_secs(1),
         stop_requested: Arc::new(AtomicBool::new(false)),
         authority_shutdown: Arc::new(AtomicBool::new(false)),
