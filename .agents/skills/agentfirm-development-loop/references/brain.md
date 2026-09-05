@@ -44,7 +44,10 @@ acceptance to the Human with evidence and options.
    before creating more work.
 2. If any mapping disagrees or the current owner, exact submission, verdict, or
    next action is unknown, stop dispatch and repair the one Task first.
-3. Write a concrete goal and acceptance criteria.
+3. Write a concrete goal and acceptance criteria, and state the acceptance
+   tier (K or P, per the reviewer contract's predicate) the submission will
+   be held to. Do not dispatch two K Tasks that change the same file family
+   concurrently.
 4. Create one Task with owner, status, next action, and the source GitHub Issue
    link when one exists.
 5. Send `TASK_ASSIGNED` to Dev with Task ID, Issue link when present, goal and

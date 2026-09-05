@@ -2708,6 +2708,48 @@
       ]
     },
     {
+      "path": "docs/current/architecture/adaptation-seams.md",
+      "ownerRole": "architecture",
+      "status": "stable",
+      "lifecycle": "volatile",
+      "canonicalFor": [
+        "positive overview of the provider adaptation layer: three layers, nine seams, and how each provider fills them (reading map; not a contract authority)"
+      ],
+      "dependsOn": [
+        "docs/current/architecture/agent-runtime.md",
+        "docs/current/architecture/agent-integration-model.md",
+        "docs/current/architecture/member-continuation-model.md",
+        "docs/current/architecture/provider-event-projection.md",
+        "docs/current/integration/native-session-storage.md",
+        "docs/decisions/0011-provider-neutral-runtime.md",
+        "docs/decisions/0032-provider-native-session-is-execution-truth.md",
+        "docs/decisions/0041-provider-neutral-member-continuation.md",
+        "docs/decisions/0064-host-attention-is-a-delivery-ledger.md",
+        "docs/decisions/0065-two-runtime-epochs.md"
+      ],
+      "machineConsumers": [
+        "check-doc-links",
+        "check-doc-governance"
+      ],
+      "reviewAfter": "2026-12-05",
+      "lastVerifiedWith": [
+        "harness governance check"
+      ],
+      "reorgTrigger": "A seam is added or removed, a provider changes execution mode or driver, or package ownership across the three layers changes.",
+      "authorityClass": "implementation_reference",
+      "implementationState": "implemented",
+      "truthRefs": [
+        {
+          "kind": "decision",
+          "ref": "docs/decisions/0065-two-runtime-epochs.md"
+        },
+        {
+          "kind": "decision",
+          "ref": "docs/decisions/0064-host-attention-is-a-delivery-ledger.md"
+        }
+      ]
+    },
+    {
       "path": "docs/decisions/0041-provider-neutral-member-continuation.md",
       "ownerRole": "architecture",
       "status": "stable",

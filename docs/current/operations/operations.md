@@ -14,7 +14,13 @@ is optional problem provenance and enters execution only after Brain triage. One
 Session owns a development Wave (repository delivery batch, not the retired
 runtime `Wave` structure) end to end in a clean isolated worktree. Ordinary work uses
 final-SHA self-review rather than a mandatory second reviewer; a narrow Host
-Gate is required only when the Development Record says so. A native Agent Team
+Gate is required only when the Development Record says so. Review depth is
+tiered by predicate: a change that alters an admission, fence, settlement, or
+permission decision, a durable schema, a lease or generation rule, or an
+invariant statement is kernel-tier and gets an independent Opus review bound
+to the exact SHA plus the full gate; everything else is projection-tier and
+needs CI plus one first-pass review (ADR 0065;
+[agent-operating-rules.md](../product/agent-operating-rules.md)). A native Agent Team
 run is required only when the runtime itself is the claim under test or an
 accepted Spec selects that scenario. Spec-level integrated dogfood runs after
 that Spec's Tasks merge; it is an exam, not a development mode. Findings enter
