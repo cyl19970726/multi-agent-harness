@@ -123,6 +123,7 @@ pub(crate) fn daemon_start_failure(pid: u32, reason: &str, log_path: &Path) -> C
 fn daemon_absent_status(firm_home: &Path, node_id: &str, log_path: &Path) -> CliResult<String> {
     let mut predecessors = Vec::new();
     let mut unreadable_spaces = Vec::new();
+    let now = current_unix_ms_u64();
     for space in execution_space::list_spaces(firm_home).map_err(execution_space_err)? {
         let store = HarnessStore::new(space.store_root);
         match store.latest_node_daemon_lease(node_id) {
@@ -133,8 +134,17 @@ fn daemon_absent_status(firm_home: &Path, node_id: &str, log_path: &Path) -> Cli
                     NodeDaemonLeaseStatus::Expired => "expired",
                     NodeDaemonLeaseStatus::Released => unreachable!(),
                 };
+                let expiry = if lease.expires_unix_ms <= now {
+                    format!("expires unix-ms:{} (expired)", lease.expires_unix_ms)
+                } else {
+                    format!(
+                        "expires unix-ms:{} (expires in {}s)",
+                        lease.expires_unix_ms,
+                        (lease.expires_unix_ms - now) / 1000
+                    )
+                };
                 predecessors.push(format!(
-                    "{}={status} generation {} (daemon {}, instance {})",
+                    "{}={status} generation {} (daemon {}, instance {}, {expiry})",
                     space.id, lease.generation, lease.daemon_id, lease.instance_id
                 ));
             }
@@ -219,6 +229,25 @@ fn daemon_recover_predecessor(
             "already_released": true,
             "evidence_ref": evidence_ref,
         }));
+    }
+
+    // Recovering inside the lease TTL is only ever a mistake or a live-daemon
+    // race; name the expiry so the operator knows when recovery becomes
+    // possible. The store's own refusal remains the backstop.
+    let now = current_unix_ms_u64();
+    if let Some(unreleased) = leases
+        .iter()
+        .filter(|lease| lease.status != NodeDaemonLeaseStatus::Released)
+        .max_by_key(|lease| lease.generation)
+    {
+        if unreleased.expires_unix_ms > now {
+            return Err(CliError::Usage(format!(
+                "predecessor lease generation {} has not expired (expires unix-ms:{}, in {}s); retry after expiry or stop the live daemon",
+                unreleased.generation,
+                unreleased.expires_unix_ms,
+                (unreleased.expires_unix_ms - now) / 1000
+            )));
+        }
     }
 
     let intent = validate_daemon_predecessor_recovery(firm_home, node_id, None)
