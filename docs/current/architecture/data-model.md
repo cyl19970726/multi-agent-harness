@@ -36,7 +36,8 @@ project binding.
 `MemberRun` carries the member's coordination status and its adapter-process
 epoch (`runtime_generation`), which `RuntimeBindingFence` requires before any
 provider effect (ADR 0065); it still scopes neither identity nor Work
-responsibility. `Work.team_run_id` only correlates the run that surfaced a
+responsibility, and neither run object owns a provider process or authorizes
+a provider effect. `Work.team_run_id` only correlates the run that surfaced a
 Work, and ending or discarding a run never moves or re-scopes responsibility.
 
 Work topology is flat. A versioned dependency edge points from a successor to

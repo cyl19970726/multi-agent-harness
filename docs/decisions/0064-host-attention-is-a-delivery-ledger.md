@@ -14,7 +14,8 @@ states that Work, Message, and RuntimeCommand are the three independent
 planes; SPEC-ARCH-BOUNDARY-01 listed HostAttention as a fourth. The
 architecture review in #765 (finding F5) asked for one answer.
 
-What the code does at master `875adb05` (the merge base of this ADR):
+What the code does at master `875adb05` (the merge base of the pull request
+that introduced this ADR):
 
 - `HostAttention` (`crates/firm-core/src/work.rs`) has twelve kinds. Most are
   derived from Work operations by the Store

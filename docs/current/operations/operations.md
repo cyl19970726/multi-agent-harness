@@ -16,7 +16,8 @@ runtime `Wave` structure) end to end in a clean isolated worktree. Ordinary (pro
 final-SHA self-review rather than a mandatory second reviewer; a narrow Host
 Gate is required only when the Development Record says so. Review depth is
 tiered by predicate: a change that alters an admission, fence, settlement, or
-permission decision, a durable schema, a lease or generation rule, or an
+permission decision, a durable schema, a lease, machine-authority, or
+generation rule, or an
 invariant statement is kernel-tier and gets an independent Opus review bound
 to the exact SHA plus the full gate; everything else is projection-tier and
 needs CI plus one first-pass review (SPEC-ADAPTATION-REFACTOR-01 D-D, Owner
