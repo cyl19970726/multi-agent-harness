@@ -196,6 +196,11 @@ pub struct WorkReport {
     pub candidate: Option<CandidateRef>,
     #[serde(default)]
     pub candidate_fingerprint: Option<String>,
+    /// DEV-214 (#830): this Result report is report-only — the Work produced
+    /// no commit, so it carries no candidate revision. Serde default false;
+    /// rows written before this field existed read as false.
+    #[serde(default)]
+    pub report_only: bool,
     #[serde(default)]
     pub finding_refs: Vec<String>,
     #[serde(default)]

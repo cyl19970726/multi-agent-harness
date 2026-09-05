@@ -938,6 +938,12 @@ pub(super) fn team_run_work_command(
                 &context,
                 expected_version,
             )?;
+            // DEV-214 (#830): the same revision shape as `member work
+            // submit` — --candidate-revision <sha> xor --report-only; naming
+            // both is a local usage error. Naming neither is left to the
+            // submission service, which derives the candidate from a
+            // structured GitHub link (#369) or refuses a bare submission.
+            let (candidate_revision, report_only) = submit_revision_args(args)?;
             let outcome = crate::work_action_service::execute(
                 store,
                 crate::work_action_service::CanonicalWorkCommand::SubmitResult {
@@ -950,7 +956,8 @@ pub(super) fn team_run_work_command(
                         check_refs,
                         github_links,
                         base_revision: value(args, "--base-revision"),
-                        candidate_revision: value(args, "--candidate-revision"),
+                        candidate_revision,
+                        report_only,
                     },
                 },
             )?;

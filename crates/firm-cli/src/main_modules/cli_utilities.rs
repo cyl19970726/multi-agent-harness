@@ -271,6 +271,8 @@ work assign --work-id <id> --expected-version <n> --membership-id <id>
   (canonical TeamMembership responsibility; runtime ids are not Work authority)
 work submit --team-run-id <id> --member-run-id <id> --work-id <id>
   --expected-version <n> --result <text> [--github-pr owner/repo#N]
+  --candidate-revision <full 40-hex sha> (commit produced; --result quotes it)
+  or --report-only (no commit); mutually exclusive, never fabricated.
 work accept --work-id <id> --expected-version <n>
 work request-changes --work-id <id> --expected-version <n> --reason <text>
 

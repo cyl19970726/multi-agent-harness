@@ -354,6 +354,10 @@ fn host_attentions_read_and_console_ack_lifecycle() {
             &member_id,
             "--result",
             "evidence for the console route",
+            // DEV-214 (#830): this fixture Work produces no commit — it only
+            // has to derive a WorkReviewRequested HostAttention — so it
+            // submits report-only rather than naming a fabricated candidate.
+            "--report-only",
             "--json",
         ],
     );

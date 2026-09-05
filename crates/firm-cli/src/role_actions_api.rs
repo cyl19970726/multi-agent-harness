@@ -218,6 +218,7 @@ pub fn execute(
             check_refs,
             base_revision,
             candidate_revision,
+            report_only,
         },
     ) = (route.operation, route.work_id, &intent)
     {
@@ -234,6 +235,7 @@ pub fn execute(
                     github_links: Vec::new(),
                     base_revision: base_revision.clone(),
                     candidate_revision: candidate_revision.clone(),
+                    report_only: *report_only,
                 },
             },
         )?;

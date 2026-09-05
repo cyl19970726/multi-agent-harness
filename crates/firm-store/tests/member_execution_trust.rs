@@ -834,6 +834,7 @@ fn report(id: &str, kind: WorkReportKind, author: &ActorRef) -> WorkReport {
         base_revision: None,
         candidate: None,
         candidate_fingerprint: None,
+        report_only: false,
         finding_refs: Vec::new(),
         failure_analysis_ref: None,
         artifact_refs: Vec::new(),

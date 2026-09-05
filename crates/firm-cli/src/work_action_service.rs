@@ -48,6 +48,9 @@ pub struct ResultSubmission {
     pub github_links: Vec<harness_core::GitHubLink>,
     pub base_revision: Option<String>,
     pub candidate_revision: Option<String>,
+    /// DEV-214 (#830): explicit report-only submission — the Work produced
+    /// no commit, so the report stores no candidate revision.
+    pub report_only: bool,
 }
 
 pub enum CanonicalWorkCommand {
@@ -291,19 +294,7 @@ fn submit_result(
                     "idempotency key is not a WorkReport submission",
                 )
             })?;
-        let expected_candidate_revision = submission
-            .candidate_revision
-            .as_deref()
-            .filter(|value| !value.trim().is_empty())
-            .map(str::to_string)
-            .unwrap_or_else(|| {
-                harness_store::canonical_work_candidate_revision(
-                    &submission.result_summary,
-                    &submission.artifact_refs,
-                    &submission.check_refs,
-                    &submission.github_links,
-                )
-            });
+        let expected_candidate_revision = resolve_submission_candidate(&submission)?;
         if operation.event.aggregate_kind != "work_report"
             || report.work_id != work_id
             || report.summary != submission.result_summary
@@ -311,11 +302,12 @@ fn submit_result(
             || report.check_refs != submission.check_refs
             || report.github_links != submission.github_links
             || report.base_revision != submission.base_revision
+            || report.report_only != submission.report_only
             || report
                 .candidate
                 .as_ref()
                 .map(|candidate| candidate.value.as_str())
-                != Some(expected_candidate_revision.as_str())
+                != expected_candidate_revision.as_deref()
         {
             return Err(conflict(
                 "IDEMPOTENCY_KEY_REUSED",
@@ -352,23 +344,7 @@ fn submit_result(
             "submission requires the exact current Work revision",
         ));
     }
-    // #787: a READY_FOR_REVIEW submission that names a candidate revision
-    // must carry the mandatory Verbatim evidence. Read-only/verification
-    // submissions (no candidate revision) skip this check entirely.
-    if let Some(candidate_revision) = &submission.candidate_revision {
-        validate_submission_evidence(&submission.result_summary, candidate_revision)?;
-    }
-    let candidate_revision = submission
-        .candidate_revision
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| {
-            harness_store::canonical_work_candidate_revision(
-                &submission.result_summary,
-                &submission.artifact_refs,
-                &submission.check_refs,
-                &submission.github_links,
-            )
-        });
+    let candidate_revision = resolve_submission_candidate(&submission)?;
     let mut evidence_refs = submission
         .artifact_refs
         .iter()
@@ -377,13 +353,22 @@ fn submit_result(
         .cloned()
         .collect::<Vec<_>>();
     if evidence_refs.is_empty() {
-        evidence_refs.push(format!("work-candidate:{candidate_revision}"));
+        evidence_refs.push(match &candidate_revision {
+            Some(revision) => format!("work-candidate:{revision}"),
+            None => "work-report-only".to_string(),
+        });
     }
-    let candidate = CandidateRef {
-        kind: CandidateKind::GitCommit,
-        value: candidate_revision,
+    let (candidate, candidate_fingerprint) = match &candidate_revision {
+        Some(revision) => {
+            let candidate = CandidateRef {
+                kind: CandidateKind::GitCommit,
+                value: revision.clone(),
+            };
+            let fingerprint = canonical_json_fingerprint(&serde_json::to_value(&candidate)?);
+            (Some(candidate), Some(fingerprint))
+        }
+        None => (None, None),
     };
-    let candidate_fingerprint = canonical_json_fingerprint(&serde_json::to_value(&candidate)?);
     let report = WorkReport {
         id: format!("work-report:{}", auth.idempotency_key),
         work_id: work_id.to_string(),
@@ -398,8 +383,9 @@ fn submit_result(
         authored_by: auth.actor.clone(),
         summary: submission.result_summary,
         base_revision: submission.base_revision,
-        candidate: Some(candidate),
-        candidate_fingerprint: Some(candidate_fingerprint),
+        candidate,
+        candidate_fingerprint,
+        report_only: submission.report_only,
         finding_refs: Vec::new(),
         failure_analysis_ref: None,
         artifact_refs: submission.artifact_refs,
@@ -679,6 +665,69 @@ pub fn current_work(
 
 fn conflict(code: &str, message: &str) -> StoreError {
     StoreError::Conflict(format!("{code}: {message}"))
+}
+
+/// DEV-214 (#830): the candidate revision a submission stores, or None for
+/// an explicit report-only submission.
+///
+/// Exactly three shapes are accepted:
+///
+/// 1. An explicitly named candidate revision is stored as given, after the
+///    #787 Verbatim-evidence validator has passed on it (unchanged).
+/// 2. A submission carrying a structured GitHub link (#369) needs no
+///    explicit candidate: the candidate is derived from the submitted
+///    content by `harness_store::canonical_work_candidate_revision`. The
+///    derivation itself is byte-for-byte the pre-DEV-214 one, but its GATE
+///    is new and narrower — before DEV-214 the fallback fired for ANY
+///    submission with no candidate, and it is now link-gated so that a bare
+///    submission is refused instead of silently digesting its own text.
+///    The #787 validator never ran on a derived candidate and still does
+///    not: it is a commit-SHA check, and a derived candidate is a
+///    `work-content-fnv1a64:` digest, not a commit.
+/// 3. An explicit report-only submission stores no candidate at all;
+///    naming one anyway is a typed refusal.
+///
+/// Only a bare submission — no candidate, no structured GitHub link, not
+/// report-only — is refused, with REPORT_EVIDENCE_MISSING.
+fn resolve_submission_candidate(
+    submission: &ResultSubmission,
+) -> Result<Option<String>, StoreError> {
+    let named = submission
+        .candidate_revision
+        .as_deref()
+        .filter(|value| !value.trim().is_empty());
+    if submission.report_only {
+        if named.is_some() {
+            return Err(conflict(
+                "REPORT_ONLY_WITH_CANDIDATE",
+                "a report-only submission must not name a candidate revision; drop --report-only or drop --candidate-revision",
+            ));
+        }
+        return Ok(None);
+    }
+    // #787 (unchanged): a submission that names a candidate revision must
+    // carry the mandatory Verbatim evidence.
+    if let Some(candidate_revision) = &submission.candidate_revision {
+        validate_submission_evidence(&submission.result_summary, candidate_revision)?;
+    }
+    if let Some(candidate_revision) = named {
+        return Ok(Some(candidate_revision.to_string()));
+    }
+    // #369: a structured GitHub link is itself the submitted evidence, so
+    // the candidate is derived from the submission content by the
+    // pre-DEV-214 derivation. Only the gate is new: no link, no fallback.
+    if !submission.github_links.is_empty() {
+        return Ok(Some(harness_store::canonical_work_candidate_revision(
+            &submission.result_summary,
+            &submission.artifact_refs,
+            &submission.check_refs,
+            &submission.github_links,
+        )));
+    }
+    Err(conflict(
+        "REPORT_EVIDENCE_MISSING",
+        "a submission with neither a candidate revision nor a structured GitHub link requires --report-only",
+    ))
 }
 
 /// #787: the mandatory Verbatim evidence for a READY_FOR_REVIEW submission

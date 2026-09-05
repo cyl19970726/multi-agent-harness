@@ -50,6 +50,10 @@ pub(super) enum RoleActionIntent {
         base_revision: Option<String>,
         #[serde(default)]
         candidate_revision: Option<String>,
+        /// DEV-214 (#830): explicit report-only submission — the Work
+        /// produced no commit, so it carries no candidate revision.
+        #[serde(default)]
+        report_only: bool,
     },
     ReviseWork {
         result_summary: String,

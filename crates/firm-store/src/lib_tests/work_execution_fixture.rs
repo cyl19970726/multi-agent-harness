@@ -286,6 +286,7 @@ pub(super) fn result_report_for_test(
             &serde_json::to_value(&candidate).expect("candidate JSON"),
         )),
         candidate: Some(candidate),
+        report_only: false,
         finding_refs: Vec::new(),
         failure_analysis_ref: None,
         artifact_refs,

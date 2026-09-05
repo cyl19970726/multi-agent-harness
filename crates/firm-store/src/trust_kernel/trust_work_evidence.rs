@@ -90,22 +90,43 @@ impl HarnessStore {
                 None,
             )?
         };
-        if report.kind == WorkReportKind::Result
-            && (report.candidate.is_none()
+        if report.kind == WorkReportKind::Result {
+            if report.report_only {
+                // DEV-214 (#830): a report-only Result honestly carries no
+                // candidate revision; carrying one anyway is a typed refusal.
+                if report.candidate.is_some() || report.candidate_fingerprint.is_some() {
+                    return Err(trust_error(
+                        TrustErrorCode::ReportEvidenceMissing,
+                        "report-only result report must not carry a candidate revision",
+                        "work_report",
+                        &report.id,
+                        None,
+                    ));
+                }
+            } else if report.candidate.is_none()
                 || report
                     .candidate_fingerprint
                     .as_deref()
                     .unwrap_or("")
                     .is_empty()
-                || report.evidence_refs.is_empty())
-        {
-            return Err(trust_error(
-                TrustErrorCode::ReportEvidenceMissing,
-                "result report requires exact CandidateRef, fingerprint and evidence",
-                "work_report",
-                &report.id,
-                None,
-            ));
+            {
+                return Err(trust_error(
+                    TrustErrorCode::ReportEvidenceMissing,
+                    "result report requires exact CandidateRef, fingerprint and evidence",
+                    "work_report",
+                    &report.id,
+                    None,
+                ));
+            }
+            if report.evidence_refs.is_empty() {
+                return Err(trust_error(
+                    TrustErrorCode::ReportEvidenceMissing,
+                    "result report requires exact CandidateRef, fingerprint and evidence",
+                    "work_report",
+                    &report.id,
+                    None,
+                ));
+            }
         }
         if report.kind == WorkReportKind::Result
             && (current_work.phase != firm_core::WorkPhase::Active
@@ -171,10 +192,6 @@ impl HarnessStore {
         }
         let mut resolved_requirements = Vec::new();
         if report.kind == WorkReportKind::Result {
-            let candidate_fingerprint = report
-                .candidate_fingerprint
-                .as_ref()
-                .expect("result validation requires candidate fingerprint");
             let bindings = self
                 .latest_trust_envelopes_unlocked(
                     &context.execution_space_id,
@@ -183,12 +200,32 @@ impl HarnessStore {
                 .into_values()
                 .map(|envelope| event_projection::<WorkModuleBinding>(&envelope))
                 .collect::<StoreResult<Vec<_>>>()?;
-            for binding in bindings.into_iter().filter(|binding| {
-                binding.work_id == report.work_id
-                    && binding.work_revision == source_work_revision
-                    && binding.module_id == WorkModuleId::IntegrationPlan
-                    && binding.module_version == 1
-            }) {
+            let mut gated_bindings = bindings
+                .into_iter()
+                .filter(|binding| {
+                    binding.work_id == report.work_id
+                        && binding.work_revision == source_work_revision
+                        && binding.module_id == WorkModuleId::IntegrationPlan
+                        && binding.module_version == 1
+                })
+                .peekable();
+            // DEV-214 (#830): a report-only Result mints no candidate, so it
+            // can mint no gate requirement either; an integration-plan
+            // binding on such a Work is a contract contradiction.
+            if report.report_only && gated_bindings.peek().is_some() {
+                return Err(trust_error(
+                    TrustErrorCode::ReportEvidenceMissing,
+                    "report-only result report cannot mint gate requirements without a candidate revision",
+                    "work_report",
+                    &report.id,
+                    None,
+                ));
+            }
+            for binding in gated_bindings {
+                let candidate_fingerprint = report
+                    .candidate_fingerprint
+                    .as_ref()
+                    .expect("result validation requires candidate fingerprint");
                 let definition = integration_plan_module_v1();
                 for (index, template) in definition.default_gate_templates.iter().enumerate() {
                     let resolved_config = serde_json::json!({
