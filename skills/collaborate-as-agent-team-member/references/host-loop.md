@@ -240,8 +240,8 @@ firm team-run work recover-lost-execution --work-id <work-id> --expected-version
 # release a binding you are abandoning; move a Work to a successor run
 firm team-run work release --work-id <work-id> --expected-version <n>
 firm team-run work retarget --work-id <work-id> --expected-version <n> --successor-team-run-id <run>
-# print the provider-native way to open the member's bound native session
-# (print-only: it never launches an application)
+# open the member's bound native session in the provider's own UI (default),
+# or print its provider-native URI with --print-only (never launches anything)
 firm member-run open-native --id <member-run-id> [--print-only] [--json]
 ```
 
