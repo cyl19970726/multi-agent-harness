@@ -334,7 +334,10 @@ this Node and prints the recovery projection (`daemon_id`, `instance_id`,
 `generation`, `recovered_spaces`, `status=released`). It refuses when there is
 no predecessor, when the confirmation literal is missing or wrong, or when the
 predecessor process still exists, and a second run reports the already
-released lease without changing anything.
+released lease without changing anything. Recovery inside the lease TTL is
+refused up front with the exact expiry (`predecessor lease generation N has
+not expired (expires unix-ms:<n>, in <s>s)`), and the absent `daemon status`
+output lists each unreleased predecessor lease with its expiry the same way.
 
 ```bash
 firm daemon recover-predecessor --confirm daemon-recover-predecessor \

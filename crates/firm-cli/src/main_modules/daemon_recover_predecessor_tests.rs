@@ -156,3 +156,75 @@ fn recover_predecessor_refuses_a_live_predecessor_process() {
         "{live}"
     );
 }
+
+#[test]
+fn recover_predecessor_refuses_an_unexpired_lease_naming_the_expiry() {
+    let (_tree, firm_home, store) = seed_recover_test_node("unexpired");
+    let dead_instance_id = format!("2147483647:{}:dead-daemon", current_unix_ms_u64());
+    let lease = store
+        .acquire_node_daemon_lease(
+            RECOVER_TEST_NODE_ID,
+            "dead-daemon",
+            &dead_instance_id,
+            current_unix_ms_u64(),
+            3_600_000,
+        )
+        .expect("seed unexpired dead-instance predecessor lease");
+
+    let refusal = daemon_recover_predecessor(&firm_home, RECOVER_TEST_NODE_ID, &recover_args(true))
+        .expect_err("an unexpired predecessor lease must be refused before the store");
+    let message = refusal.to_string();
+    assert!(message.contains("has not expired"), "{message}");
+    assert!(
+        message.contains(&format!("expires unix-ms:{}", lease.expires_unix_ms)),
+        "{message}"
+    );
+    assert!(message.contains("retry after expiry"), "{message}");
+}
+
+#[test]
+fn absent_status_names_each_predecessor_lease_expiry() {
+    let log_path = Path::new("node-daemon.log");
+
+    let (_unexpired_tree, unexpired_home, unexpired_store) =
+        seed_recover_test_node("status-unexpired");
+    let lease = unexpired_store
+        .acquire_node_daemon_lease(
+            RECOVER_TEST_NODE_ID,
+            "unexpired-daemon",
+            &format!("2147483647:{}:unexpired-daemon", current_unix_ms_u64()),
+            current_unix_ms_u64(),
+            3_600_000,
+        )
+        .expect("seed unexpired predecessor lease");
+    let status = daemon_absent_status(&unexpired_home, RECOVER_TEST_NODE_ID, log_path)
+        .expect("absent status with an unexpired lease");
+    assert!(
+        status.contains(&format!(
+            "expires unix-ms:{} (expires in",
+            lease.expires_unix_ms
+        )),
+        "{status}"
+    );
+
+    let (_expired_tree, expired_home, expired_store) = seed_recover_test_node("status-expired");
+    let expired_lease = expired_store
+        .acquire_node_daemon_lease(
+            RECOVER_TEST_NODE_ID,
+            "expired-daemon",
+            &format!("2147483647:{}:expired-daemon", current_unix_ms_u64()),
+            current_unix_ms_u64(),
+            1,
+        )
+        .expect("seed expired predecessor lease");
+    std::thread::sleep(Duration::from_millis(5));
+    let status = daemon_absent_status(&expired_home, RECOVER_TEST_NODE_ID, log_path)
+        .expect("absent status with an expired lease");
+    assert!(
+        status.contains(&format!(
+            "expires unix-ms:{} (expired)",
+            expired_lease.expires_unix_ms
+        )),
+        "{status}"
+    );
+}
