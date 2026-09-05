@@ -5,6 +5,25 @@
 
 use super::*;
 
+/// What one exact predecessor-generation recovery settled in one Execution
+/// Space.
+///
+/// `sessions_already_settled` names every Session this recovery found already
+/// detached — by the dying generation's own partial drain, or by an earlier
+/// recovery attempt — so the operator reads what recovery skipped instead of
+/// inferring it from an absence (#837).
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct NodeDaemonPredecessorRecovery {
+    /// The predecessor lease as it stands after recovery.
+    pub lease: NodeDaemonLease,
+    /// TeamRun ids whose Supervisor lease this recovery released.
+    pub supervisors_released: Vec<String>,
+    /// AgentSession ids this recovery detached.
+    pub sessions_detached: Vec<String>,
+    /// AgentSession ids that were already detached and idle when recovery ran.
+    pub sessions_already_settled: Vec<String>,
+}
+
 impl HarnessStore {
     /// Explicit hard-crash recovery for one exact predecessor generation.
     ///
@@ -26,7 +45,7 @@ impl HarnessStore {
         evidence_ref: &str,
         now_unix_ms: u64,
         updated_at: &str,
-    ) -> StoreResult<NodeDaemonLease> {
+    ) -> StoreResult<NodeDaemonPredecessorRecovery> {
         use firm_core::agentfirm_api::{
             ActorKind, AgentSessionStatus, DriverHandoffState, NativeContinuationActivation,
             RuntimeActivity, RuntimeCommandPhase, RuntimeEffectCertainty, RuntimeResidency,
@@ -66,7 +85,12 @@ impl HarnessStore {
             )));
         }
         if lease.status == NodeDaemonLeaseStatus::Released {
-            return Ok(lease);
+            return Ok(NodeDaemonPredecessorRecovery {
+                lease,
+                supervisors_released: Vec::new(),
+                sessions_detached: Vec::new(),
+                sessions_already_settled: Vec::new(),
+            });
         }
         if lease.expires_unix_ms > now_unix_ms {
             return Err(StoreError::Conflict(format!(
@@ -100,6 +124,10 @@ impl HarnessStore {
             }
         }
 
+        let mut supervisors_released = Vec::new();
+        let mut sessions_detached = Vec::new();
+        let mut sessions_already_settled = Vec::new();
+
         let mut supervisors = latest_by_id(self.team_supervisor_leases()?, |supervisor| {
             supervisor.team_run_id.clone()
         });
@@ -114,6 +142,7 @@ impl HarnessStore {
             supervisor.expires_unix_ms = now_unix_ms;
             supervisor.released_unix_ms = Some(now_unix_ms);
             self.append_jsonl_unlocked("team_supervisor_leases.jsonl", supervisor)?;
+            supervisors_released.push(supervisor.team_run_id.clone());
         }
 
         for execution_space_id in execution_space_ids {
@@ -145,6 +174,10 @@ impl HarnessStore {
                 if session.control_state.runtime_residency == RuntimeResidency::Detached
                     && session.current_turn_id.is_none()
                 {
+                    // Already settled by this generation's own partial drain or
+                    // by an earlier recovery attempt: recovery records the skip
+                    // and never rewrites a settled Session (#837).
+                    sessions_already_settled.push(session.id.clone());
                     continue;
                 }
                 session.control_state.runtime_residency = RuntimeResidency::Detached;
@@ -170,8 +203,20 @@ impl HarnessStore {
                 session_context.execution_space_id = execution_space_id.clone();
                 session_context.command_name =
                     "node_daemon.predecessor_recovery.session_detach".into();
-                session_context.idempotency_key =
-                    format!("{}:session:{}", context.idempotency_key, session.id);
+                // Same rule as the in-process drain
+                // (`store_node_runtime_shutdown.rs`): the key names the exact
+                // predecessor generation being settled, never the caller's
+                // recovery-attempt prefix. That prefix is stable across every
+                // recovery this Node ever runs (the CLI passes the constant
+                // `cli-daemon-recover-predecessor:<node_id>`), so deriving the
+                // key from it made the second recovery of one Node collide
+                // with the first one's detach of the same Session under a
+                // different payload — `IDEMPOTENCY_KEY_REUSED`, with no way to
+                // ever release the lease again (#837).
+                session_context.idempotency_key = format!(
+                    "node-daemon-predecessor-recovery:{node_id}:{daemon_id}:{generation}:{instance_id}:session:{}",
+                    session.id
+                );
                 session_context.expected_version = session.version.saturating_sub(1);
                 session_context.request_fingerprint = None;
                 self.commit_trust_projection_unlocked(
@@ -190,6 +235,7 @@ impl HarnessStore {
                     Vec::new(),
                     Vec::new(),
                 )?;
+                sessions_detached.push(session.id.clone());
             }
             // Same rule as the in-process drain (#756): hand the dead
             // generation's in-flight Work back to the ordinary dispatch path
@@ -218,7 +264,12 @@ impl HarnessStore {
         lease.expires_unix_ms = now_unix_ms;
         lease.released_unix_ms = Some(now_unix_ms);
         self.append_jsonl_unlocked("node_daemon_leases.jsonl", &lease)?;
-        Ok(lease)
+        Ok(NodeDaemonPredecessorRecovery {
+            lease,
+            supervisors_released,
+            sessions_detached,
+            sessions_already_settled,
+        })
     }
 
     /// Also used by `release_node_daemon_lease`: no generation may be released
