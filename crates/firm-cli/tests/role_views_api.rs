@@ -1232,6 +1232,7 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
         run_id,
         &project_id,
     );
+    submission_evidence_refusal::assert_report_only_refusals(&serve, run_id, &project_id);
 
     let submit_route = format!(
         "/v1/agentfirm/team-runs/{run_id}/works/work-store-live-1/submit?project={project_id}"
@@ -1465,6 +1466,16 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
             && operation.event.aggregate_id == "work-store-live-1"
             && operation.event.transition == "accepted"),
         "canonical acceptance and its delegation/gate/report roll-up must be one canonical operation");
+
+    submission_evidence_refusal::assert_report_only_submission_succeeds(
+        &serve,
+        &store,
+        &space_id,
+        run_id,
+        &project_id,
+        &team,
+        worker_id,
+    );
 
     let operator_route = format!("/v1/views/operator/{node_id}?project={project_id}");
     assert_action_matrix_and_final_projections(ActionMatrixContext {

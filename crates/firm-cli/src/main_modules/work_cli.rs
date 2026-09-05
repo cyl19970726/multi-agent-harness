@@ -894,6 +894,7 @@ pub(super) fn team_run_work_command(
                         github_links,
                         base_revision: value(args, "--base-revision"),
                         candidate_revision: value(args, "--candidate-revision"),
+                        report_only: false,
                     },
                 },
             )?;

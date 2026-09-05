@@ -176,6 +176,7 @@ fn supervisor_claims_and_records_provider_receipt_for_canonical_work_delivery() 
         base_revision: None,
         candidate: Some(candidate),
         candidate_fingerprint: Some(candidate_fingerprint.clone()),
+        report_only: false,
         finding_refs: Vec::new(),
         failure_analysis_ref: None,
         artifact_refs: vec!["artifact:canonical-work".into()],

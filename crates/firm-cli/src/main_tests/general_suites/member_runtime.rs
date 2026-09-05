@@ -70,6 +70,8 @@ mod member_role_action_capability_binds_sender_to_live_supervisor_identity;
 mod member_run_open_native_print_only_never_launches_an_application;
 #[path = "../general/member_run_snapshots_requested_provider_controls_before_start.rs"]
 mod member_run_snapshots_requested_provider_controls_before_start;
+#[path = "../general/member_work_submit_report_only_args.rs"]
+mod member_work_submit_report_only_args;
 #[path = "../general/native_session_open_target_rejects_unsupported_or_unsafe_sessions.rs"]
 mod native_session_open_target_rejects_unsupported_or_unsafe_sessions;
 #[path = "../general/provider_authority_never_borrows_a_sole_foreign_space_session.rs"]

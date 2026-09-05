@@ -322,6 +322,13 @@ Harness has no Plan Gate and it blocks headless members indefinitely (ADR
   40-hex SHA or the literal `git status --porcelain` text with
   `WORK_SUBMISSION_EVIDENCE_MISSING` (an abbreviated `--candidate-revision`
   is refused with the same code).
+- **Report-only submissions.** When a Work produces no commit — a
+  verification, audit, or plan review — submit with `--report-only` instead
+  of `--candidate-revision` (the two flags are mutually exclusive; naming
+  neither is a usage error). The submission then stores `candidate_revision`
+  null with a `report_only: true` marker, and report-contract items 1 and 3
+  do not apply. Never fabricate a candidate revision to make a report-only
+  Work fit the commit-shaped path.
 
 Short example (one gate shown; list every gate the Work names):
 

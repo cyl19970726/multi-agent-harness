@@ -1006,17 +1006,21 @@ pub(super) fn bound_member_work_command(store: &HarnessStore, args: &[String]) -
             }),
         ),
         "release" => ("release", serde_json::json!({"action": "release_work"})),
-        "submit" => (
-            "submit",
-            serde_json::json!({
-                "action": "submit_work",
-                "result_summary": required(args, "--result-summary")?,
-                "artifact_refs": many(args, "--artifact-ref"),
-                "check_refs": many(args, "--check-ref"),
-                "base_revision": value(args, "--base-revision"),
-                "candidate_revision": required(args, "--candidate-revision")?,
-            }),
-        ),
+        "submit" => {
+            let (candidate_revision, report_only) = submit_revision_args(args)?;
+            (
+                "submit",
+                serde_json::json!({
+                    "action": "submit_work",
+                    "result_summary": required(args, "--result-summary")?,
+                    "artifact_refs": many(args, "--artifact-ref"),
+                    "check_refs": many(args, "--check-ref"),
+                    "base_revision": value(args, "--base-revision"),
+                    "candidate_revision": candidate_revision,
+                    "report_only": report_only,
+                }),
+            )
+        }
         "accept" => ("accept", serde_json::json!({"action": "accept_work"})),
         other => {
             return Err(CliError::Usage(format!(
@@ -1045,6 +1049,25 @@ pub(super) fn bound_member_work_command(store: &HarnessStore, args: &[String]) -
         intent,
         (operation == "accept").then_some("accept".to_string()),
     )
+}
+
+/// DEV-214 (#830): the two submission revision shapes are exactly
+/// `--candidate-revision <sha>` (a commit exists) or `--report-only` (the
+/// Work produces no commit). Passing both, or neither, is a usage error
+/// naming both flags; never fabricate a candidate revision.
+pub(super) fn submit_revision_args(args: &[String]) -> CliResult<(Option<String>, bool)> {
+    let report_only = has_flag(args, "--report-only");
+    let candidate_revision = value(args, "--candidate-revision");
+    match (&candidate_revision, report_only) {
+        (Some(_), true) => Err(CliError::Usage(
+            "--candidate-revision and --report-only are mutually exclusive: a commit-producing Work names --candidate-revision <sha>; a report-only Work names --report-only"
+                .to_string(),
+        )),
+        (None, false) => Err(CliError::Usage(
+            "member work submit requires --candidate-revision <sha> or --report-only".to_string(),
+        )),
+        _ => Ok((candidate_revision, report_only)),
+    }
 }
 
 pub(super) fn org_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {

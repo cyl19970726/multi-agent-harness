@@ -114,6 +114,7 @@ fn host_inbox_shows_work_attention_after_submit() {
         summary: "All tasks complete".into(),
         base_revision: None,
         candidate_fingerprint: Some(candidate_fingerprint.clone()),
+        report_only: false,
         candidate: Some(candidate),
         finding_refs: Vec::new(),
         failure_analysis_ref: None,
