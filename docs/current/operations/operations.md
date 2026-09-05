@@ -219,7 +219,7 @@ pnpm star-harness:install
 ```
 
 This builds the Harness binary from the checkout, publishes it under a
-per-revision directory (`~/.local/lib/star-harness/<crate-version>+g<sha>/`,
+per-revision directory (`~/.local/lib/star-harness/<crate-version>+g<sha>[.dirty]/`,
 together with the Claude and DeepSeek member runners), atomically updates the
 stable binary links — `harness` (primary) and `firm` (alias) both point at the
 same versioned binary, and the command examples in these docs use `firm` —

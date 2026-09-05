@@ -540,7 +540,7 @@ runtime state uses AgentSession and RuntimeCommand. Historical TeamRun,
 MemberRun, native-session locator, and legacy export rows are labeled history
 and cannot enable actions.
 
-CLI, HTTP, Dashboard, skills, and plugin mirrors must expose only actions
+CLI, HTTP, Dashboard, and skills must expose only actions
 the server can bind to authenticated identity, authority, target, exact version,
 idempotency, confirmation, and current Node/Session generations. Retired
 message and runtime mutation routes fail closed with typed errors.
@@ -561,8 +561,8 @@ Release requires:
   provider available in the release environment;
 - executable zero-match governance for retired runtime/message authorities;
 - populated RoleView and live provider/message acceptance;
-- full Rust, formatting, clippy, repository governance, docs/plugin mirror,
-  and fresh clean-archive gates.
+- full Rust, formatting, clippy, repository governance, docs, and fresh
+  clean-archive gates.
 
 The development batch historically named “Wave 5” must consume these
 server-built projections and disabled reasons; it may not reconstruct runtime

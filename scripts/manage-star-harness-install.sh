@@ -882,7 +882,7 @@ if [[ "${MODE}" == "apply" ]]; then
   STATE_FILE="${STATE_BASE}/installations/${INSTALLED_AT//:/-}-unknown-$$.json"
 fi
 
-for command_name in node npm cargo rustc; do
+for command_name in node npm cargo rustc git; do
   if ! command -v "${command_name}" >/dev/null 2>&1; then
     echo "missing required command: ${command_name}" >&2
     exit 1
@@ -890,10 +890,11 @@ for command_name in node npm cargo rustc; do
 done
 
 # The installation version is the firm-cli crate version plus the exact source
-# revision (ADR 0063 retired the plugin manifest that used to carry it). Every
-# accepted revision therefore publishes into its own ${INSTALL_BASE}/<version>
-# directory, and a binary an active MemberRun already loaded is never
-# overwritten in place.
+# revision (ADR 0063 retired the plugin manifest that used to carry it), so a
+# new revision publishes into its own ${INSTALL_BASE}/<version> directory
+# instead of overwriting the binary an active MemberRun loaded. Re-applying the
+# same revision (or a dirty tree, suffixed .dirty) republishes that directory;
+# outside a git checkout only the crate version is available.
 CRATE_VERSION="$(awk -F'"' '/^version = "/ { print $2; exit }' "${REPO_ROOT}/crates/firm-cli/Cargo.toml")"
 if [[ -z "${CRATE_VERSION}" ]]; then
   echo "could not read the firm-cli crate version from ${REPO_ROOT}/crates/firm-cli/Cargo.toml" >&2

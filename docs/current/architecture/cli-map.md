@@ -60,7 +60,7 @@ tests and ADRs.
 
 | Check | What it proves |
 | --- | --- |
-| `pnpm check` | Umbrella: JSON validity, schema fixtures, provider events, collaboration foundation, member execution trust, runtime message fabric, remote fabric, tool descriptors, native-session boundary, plugin contract, cross-layer consistency, role views, dashboard. |
+| `pnpm check` | Umbrella: retired-path boundary (ADR 0063), JSON validity, schema fixtures, provider events, collaboration foundation, member execution trust, runtime message fabric, remote fabric, tool descriptors, native-session boundary, cross-layer consistency, role views, dashboard. |
 | `pnpm acceptance:legacy-retirement` | Deterministic Agent Team, CLI, Kimi ACP adapter, and Dashboard contracts plus the retired Mission/Wave legacy reads and retired-write errors. |
 | `firm governance check` | Documentation registry/link/retired-surface governance. |
 

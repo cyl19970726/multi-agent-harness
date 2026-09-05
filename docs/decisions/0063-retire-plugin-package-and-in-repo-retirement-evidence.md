@@ -83,7 +83,8 @@ Five top-level directories carried only ceremony or already-proven history:
 - The plugin's SessionStart hook that printed the Host thread binding and
   pushed the Host inbox is gone with it. A Host passes
   `--host-surface`/`--host-thread-id` itself and reads
-  `firm team-run host-inbox`, as `references/host-loop.md` already describes.
+  `firm team-run host-inbox`, as `references/host-loop.md` and
+  `docs/current/integration/codex.md` describe.
 - `~/.local/lib/star-harness/<version>` directories created before this change
   keep their plugin-semver names; the operator removes them when convenient.
 - Historical ADRs (0028, 0053, 0061) keep their references to the archived

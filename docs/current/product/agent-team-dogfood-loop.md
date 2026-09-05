@@ -81,7 +81,7 @@ records.
   ```bash
   firm member providers --fail-on-review
   npx pnpm@9.15.4 acceptance:legacy-retirement
-  npx pnpm@9.15.4 check:star-harness-plugin
+  node scripts/check-cross-layer-consistency.mjs
   firm governance check
   ```
 

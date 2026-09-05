@@ -792,7 +792,9 @@ pub(super) fn team_run_command(
             // member sessions; `harness serve` stays the read/broadcast side.
             let id = required(args, "--id")?;
             let run = latest_team_run(store, &id)?;
-            // L1: auto-bind from star-harness hook env when unambiguous.
+            // L1: auto-bind from STAR_HARNESS_HOST_* env when unambiguous. The
+            // operator's shell exports them; ADR 0063 retired the plugin hook
+            // that used to.
             if is_unbound_external_host(run.host_control_mode, run.host_thread_id.as_deref()) {
                 let env_surface = std::env::var("STAR_HARNESS_HOST_SURFACE")
                     .ok()

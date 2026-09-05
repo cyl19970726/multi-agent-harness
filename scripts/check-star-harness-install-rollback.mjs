@@ -1016,6 +1016,17 @@ withFixture((fixture) => {
     versionBin,
     "the firm alias link points at the same versioned binary as harness",
   );
+  const stateDir = join(fixture.root, "state", "installations");
+  const states = readdirSync(stateDir);
+  assert.equal(states.length, 1, "a successful apply records one installation state");
+  const state = JSON.parse(readFileSync(join(stateDir, states[0]), "utf8"));
+  assert.equal(state.schema_version, 2, "the success state uses the plugin-free schema");
+  assert.equal(state.version, "fixture");
+  assert.equal(state.harness_binary, versionBin);
+  assert.equal(state.firm_binary_link, fixture.firmLink);
+  for (const retired of ["codex_plugin", "claude_plugin", "kimi_plugin"]) {
+    assert.equal(retired in state, false, `${retired} must not be recorded any more`);
+  }
 });
 
 withFixture((fixture) => {

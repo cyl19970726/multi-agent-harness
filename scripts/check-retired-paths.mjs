@@ -6,6 +6,10 @@
 // paths, nor the gates that only existed to police them, may come back.
 
 import { existsSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 
 const retiredPaths = [
   "plugins",
@@ -20,7 +24,7 @@ const retiredPaths = [
 ];
 
 const failures = retiredPaths
-  .filter((path) => existsSync(path))
+  .filter((path) => existsSync(join(ROOT, path)))
   .map((path) => `retired path present: ${path} (ADR 0063; git history is the archive)`);
 
 if (failures.length) {
