@@ -372,6 +372,11 @@ impl HarnessStore {
         }
         lease.renewed_unix_ms = now_unix_ms;
         lease.expires_unix_ms = now_unix_ms.saturating_add(ttl_ms.max(1));
+        // Renewals are ~1/s per node while heartbeats are frequent, so this is
+        // where compaction belongs: every renewal append is preceded by a
+        // collapse to one row per node, keeping every machine-authority read
+        // bounded at #nodes + 1 rows instead of growing without bound (#811).
+        self.compact_node_daemon_leases_unlocked()?;
         self.append_jsonl_unlocked("node_daemon_leases.jsonl", &lease)?;
         Ok(lease)
     }

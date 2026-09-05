@@ -1,4 +1,5 @@
 use super::*;
+use std::collections::{BTreeMap, BTreeSet};
 
 impl HarnessStore {
     pub(super) fn append_jsonl<T: Serialize>(&self, file_name: &str, value: &T) -> StoreResult<()> {
@@ -156,6 +157,88 @@ impl HarnessStore {
         // Without it a system crash can resurrect the pre-compaction file and
         // with it an already-issued generation, violating the monotonic
         // higher-generation contract in ADR 0044.
+        if let Ok(dir) = File::open(&self.root) {
+            let _ = dir.sync_all();
+        }
+        Ok(())
+    }
+
+    /// Collapse NodeDaemon lease renewals while keeping every transition the
+    /// readers rely on.
+    ///
+    /// Called on renewal: NodeDaemon heartbeats renew ~1/s while acquisition
+    /// is rare, so this is where compaction belongs (the Supervisor version
+    /// compacts on the rare acquisition instead). The retention rule mirrors
+    /// `compact_supervisor_leases_unlocked`'s "latest row per key wins", but
+    /// the key is the lease LIFECYCLE, not the node: per
+    /// `(node_id, daemon_id, generation)` group, keep the group's first row
+    /// (the acquire of that generation) and the LAST row of each distinct
+    /// status (the newest renewal for `Active`; the `Draining` / `Expired` /
+    /// `Released` transition rows), and drop only superseded renewal rows.
+    /// The released-predecessor proof in
+    /// `trust_kernel/fabric_identity_sessions.rs` (`predecessor_was_released`,
+    /// an rfind over this file for the exact predecessor generation's row)
+    /// depends on the Released row of every prior generation surviving, so a
+    /// one-row-per-node rule would break session adoption on every daemon
+    /// restart. Generation fencing and latest-wins reads are unaffected: the
+    /// latest row per node is always retained, and `latest_by_id` over the
+    /// compacted file returns exactly what it returned before. Bound: at most
+    /// 1 + #statuses(4) rows per generation per node — bounded by generation
+    /// count (incident-rare), never by heartbeat count.
+    pub(super) fn compact_node_daemon_leases_unlocked(&self) -> StoreResult<()> {
+        let path = self.root.join("node_daemon_leases.jsonl");
+        if !path.exists() {
+            return Ok(());
+        }
+        let all = self.read_jsonl::<NodeDaemonLease>("node_daemon_leases.jsonl")?;
+        let mut first_of_group: BTreeMap<(String, String, u64), usize> = BTreeMap::new();
+        let mut last_of_group_status: BTreeMap<(String, String, u64, u8), usize> = BTreeMap::new();
+        for (index, lease) in all.iter().enumerate() {
+            let group = (
+                lease.node_id.clone(),
+                lease.daemon_id.clone(),
+                lease.generation,
+            );
+            first_of_group.entry(group.clone()).or_insert(index);
+            let status_rank = match lease.status {
+                NodeDaemonLeaseStatus::Active => 0,
+                NodeDaemonLeaseStatus::Draining => 1,
+                NodeDaemonLeaseStatus::Expired => 2,
+                NodeDaemonLeaseStatus::Released => 3,
+            };
+            last_of_group_status.insert((group.0, group.1, group.2, status_rank), index);
+        }
+        let keep: BTreeSet<usize> = first_of_group
+            .values()
+            .chain(last_of_group_status.values())
+            .copied()
+            .collect();
+        let temp = self.root.join("node_daemon_leases.jsonl.compact");
+        {
+            let mut file = OpenOptions::new()
+                .create(true)
+                .write(true)
+                .truncate(true)
+                .open(&temp)?;
+            for (index, lease) in all.iter().enumerate() {
+                if !keep.contains(&index) {
+                    continue;
+                }
+                let mut row = Vec::new();
+                serde_json::to_writer(&mut row, lease)?;
+                row.push(b'\n');
+                file.write_all(&row)?;
+            }
+            file.flush()?;
+            file.sync_all()?;
+        }
+        fs::rename(&temp, &path)?;
+        // fsync the PARENT DIRECTORY, not just the temp inode. POSIX allows a
+        // crash to recover either the old or the new directory entry after a
+        // rename; only syncing the directory makes the replacement durable.
+        // Without it a system crash can resurrect the pre-compaction file and
+        // with it an already-issued generation, violating the monotonic
+        // higher-generation contract.
         if let Ok(dir) = File::open(&self.root) {
             let _ = dir.sync_all();
         }
