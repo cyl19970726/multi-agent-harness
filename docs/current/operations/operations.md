@@ -229,6 +229,28 @@ Codex personal copy, and records the installation under
 sessions after applying it. Existing sessions keep the Plugin and Provider
 runtime they already loaded.
 
+### Collaboration skill distribution
+
+The canonical Host/Member contract is `skills/collaborate-as-agent-team-member`
+(plus `skills/shared-references`). It reaches agents through exactly these
+paths:
+
+- **Inside this repository**: `.agents/skills/collaborate-as-agent-team-member`
+  and `.agents/skills/shared-references` are symlinks to the canonical
+  `skills/` sources, so Codex (`.agents/skills`), Claude Code
+  (`.claude/skills` → `.agents/skills`), and Kimi (`--skills-dir
+  .agents/skills`) members dogfooding in this checkout read the current file.
+- **Other projects / user scope**: the plugin marketplace copy is regenerated
+  from the same sources by `scripts/sync-star-harness-plugin-skills.mjs`.
+  `scripts/install-skill.sh` copies a snapshot; a copy without a `references/`
+  directory beside `SKILL.md` predates the two-role contract and must be
+  refreshed (`scripts/install-skill.sh --agent both --scope user`) or removed,
+  otherwise it shadows the current skill.
+
+The Host waiting protocol (`firm team-run wait`) is part of that contract; a
+Host that scripts a sleep-and-status loop instead is a defect to file, not a
+workaround to keep (#766).
+
 Provider binary maintenance is separate and follows ADR 0031. The operating
 window is:
 

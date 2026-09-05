@@ -3412,9 +3412,10 @@
       "machineConsumers": [
         "check-doc-governance"
       ],
-      "reviewAfter": "2026-09-03",
+      "reviewAfter": "2026-10-04",
       "lastVerifiedWith": [
-        "npx pnpm@9.15.4 check:star-harness-plugin"
+        "npx pnpm@9.15.4 check:star-harness-plugin",
+        "node scripts/check-cross-layer-consistency.mjs"
       ],
       "reorgTrigger": "Skill mirroring or plugin skill contract changes.",
       "authorityClass": "implementation_reference",
@@ -3819,7 +3820,8 @@
       "authorityClass": "canonical_contract",
       "lastVerifiedWith": [
         "node scripts/check-runtime-message-fabric.mjs",
-        "node scripts/sync-star-harness-plugin-skills.mjs --check"
+        "node scripts/sync-star-harness-plugin-skills.mjs --check",
+        "node scripts/check-cross-layer-consistency.mjs"
       ],
       "implementationState": "implemented",
       "reviewAfter": "2026-11-18"
