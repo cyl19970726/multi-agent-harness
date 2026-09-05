@@ -764,7 +764,7 @@ pub(super) fn canonical_team_messages_for_run(
 ) -> CliResult<Vec<TeamMessageProjection>> {
     let run = latest_team_run(store, team_run_id)?;
     let execution_space_id = team_run_execution_space_id(store, &run)?;
-    let member_runs = latest_member_runs_in_append_order(store)?;
+    let member_runs = store.member_run_rows_for_team_run(team_run_id)?;
     let identity_to_runtime = member_runs
         .iter()
         .filter(|member| member.team_run_id == team_run_id)
@@ -774,12 +774,14 @@ pub(super) fn canonical_team_messages_for_run(
     let host_identity = host_binding.host_agent_member_id;
     let host_runtime_id = host_binding.member_run.id;
     let mut projected = Vec::new();
-    let deliveries = store.fabric_message_deliveries(&execution_space_id)?;
-    for message in store
-        .fabric_messages(&execution_space_id)?
-        .into_iter()
-        .filter(|message| message.team_run_id.as_deref() == Some(team_run_id))
-    {
+    let messages = store.fabric_messages_for_team_run(&execution_space_id, team_run_id)?;
+    let message_ids = messages
+        .iter()
+        .map(|message| message.id.clone())
+        .collect::<HashSet<_>>();
+    let deliveries =
+        store.fabric_message_deliveries_for_messages(&execution_space_id, &message_ids)?;
+    for message in messages {
         let recipient_rows = deliveries
             .iter()
             .filter(|delivery| delivery.message_id == message.id)
@@ -1121,9 +1123,10 @@ pub(super) fn resolve_team_message_lineage(
 
 /// Load the latest row for a team run id, or a clear not-found error.
 pub(super) fn latest_team_run(store: &HarnessStore, id: &str) -> CliResult<AgentTeamRun> {
-    latest_team_runs_in_append_order(store)?
+    store
+        .team_run_rows(id)?
         .into_iter()
-        .find(|run| run.id == id)
+        .last()
         .ok_or_else(|| CliError::Usage(format!("team run not found: {id}")))
 }
 

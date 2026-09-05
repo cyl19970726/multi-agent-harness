@@ -8,7 +8,10 @@ pub(super) fn dashboard_snapshot_with_team_run(
     store: &HarnessStore,
     team_run_id: Option<&str>,
 ) -> CliResult<serde_json::Value> {
-    let mut team_runs = latest_team_runs_in_append_order(store)?;
+    let mut team_runs = match team_run_id {
+        Some(id) => latest_team_runs_from_rows(store.team_run_rows(id)?),
+        None => latest_team_runs_in_append_order(store)?,
+    };
     let selected_run = match team_run_id {
         Some(team_run_id) => Some(
             team_runs
@@ -22,10 +25,12 @@ pub(super) fn dashboard_snapshot_with_team_run(
     if let Some(selected) = &selected_run {
         team_runs.retain(|run| run.id == selected.id);
     }
-    let mut member_runs = latest_member_runs_in_append_order(store)?;
-    if let Some(selected) = &selected_run {
-        member_runs.retain(|run| run.team_run_id == selected.id);
-    }
+    let member_runs = match &selected_run {
+        Some(selected) => {
+            latest_member_runs_from_rows(store.member_run_rows_for_team_run(&selected.id)?)
+        }
+        None => latest_member_runs_in_append_order(store)?,
+    };
     let agent_member_ids = member_runs
         .iter()
         .map(|run| run.agent_member_id.clone())
@@ -35,12 +40,25 @@ pub(super) fn dashboard_snapshot_with_team_run(
         .map(|run| run.id.clone())
         .collect::<HashSet<_>>();
 
-    let mut members = latest_members(store)?;
-    let mut teams = latest_teams(store)?;
-    if let Some(selected) = &selected_run {
-        members.retain(|id, _| agent_member_ids.contains(id));
-        teams.retain(|id, _| id == &selected.agent_team_id);
-    }
+    let members = match &selected_run {
+        Some(_) => store
+            .members_for_ids(&agent_member_ids)?
+            .into_iter()
+            .map(|member| (member.id.clone(), member))
+            .collect(),
+        None => latest_members(store)?,
+    };
+    let teams = match &selected_run {
+        Some(selected) => {
+            let execution_space_id = team_run_execution_space_id(store, selected)?;
+            store
+                .agent_team(&execution_space_id, &selected.agent_team_id)?
+                .into_iter()
+                .map(|team| (team.id.clone(), team))
+                .collect()
+        }
+        None => latest_teams(store)?,
+    };
     let runtimes = if selected_run.is_some() {
         BTreeMap::new()
     } else {
@@ -99,10 +117,10 @@ pub(super) fn dashboard_snapshot_with_team_run(
         }
         trust_scopes.extend(store.canonical_execution_space_ids()?);
     }
-    let mut works = store.latest_works()?;
-    if let Some(selected) = &selected_run {
-        works.retain(|work| work.team_run_id == selected.id);
-    }
+    let (works, mut work_events) = match &selected_run {
+        Some(selected) => store.latest_works_and_events_for_team_run(&selected.id)?,
+        None => (store.latest_works()?, store.work_events()?),
+    };
     let work_ids = works
         .iter()
         .map(|work| work.id.clone())
@@ -115,32 +133,47 @@ pub(super) fn dashboard_snapshot_with_team_run(
     let mut canonical_messages = Vec::new();
     let mut canonical_message_deliveries = Vec::new();
     for execution_space_id in trust_scopes {
-        agent_identities.extend(store.fabric_agent_identities(&execution_space_id)?);
-        agent_sessions.extend(store.fabric_agent_sessions(&execution_space_id)?);
-        team_memberships.extend(store.fabric_team_memberships(&execution_space_id)?);
-        work_execution_bindings.extend(store.fabric_work_execution_bindings(&execution_space_id)?);
-        if selected_run.is_none() {
+        if let Some(selected) = &selected_run {
+            agent_identities.extend(
+                store
+                    .fabric_agent_identities_for_members(&execution_space_id, &agent_member_ids)?,
+            );
+            agent_sessions.extend(
+                store.fabric_agent_sessions_for_members(&execution_space_id, &agent_member_ids)?,
+            );
+            team_memberships.extend(
+                store.fabric_team_memberships_for_team(
+                    &execution_space_id,
+                    &selected.agent_team_id,
+                )?,
+            );
+            work_execution_bindings.extend(
+                store.fabric_work_execution_bindings_for_works(&execution_space_id, &work_ids)?,
+            );
+            canonical_messages
+                .extend(store.fabric_messages_for_team_run(&execution_space_id, &selected.id)?);
+            let message_ids = canonical_messages
+                .iter()
+                .map(|message| message.id.clone())
+                .collect::<HashSet<_>>();
+            canonical_message_deliveries.extend(
+                store.fabric_message_deliveries_for_messages(&execution_space_id, &message_ids)?,
+            );
+        } else {
+            agent_identities.extend(store.fabric_agent_identities(&execution_space_id)?);
+            agent_sessions.extend(store.fabric_agent_sessions(&execution_space_id)?);
+            team_memberships.extend(store.fabric_team_memberships(&execution_space_id)?);
+            work_execution_bindings
+                .extend(store.fabric_work_execution_bindings(&execution_space_id)?);
             work_deliveries.extend(store.current_work_deliveries(&execution_space_id)?);
+            let space_messages = store.fabric_messages(&execution_space_id)?;
+            let deliveries = store.fabric_message_deliveries(&execution_space_id)?;
+            canonical_messages.extend(space_messages);
+            canonical_message_deliveries.extend(deliveries);
         }
-        let space_messages = store.fabric_messages(&execution_space_id)?;
-        let deliveries = store.fabric_message_deliveries(&execution_space_id)?;
-        canonical_messages.extend(space_messages.iter().cloned());
-        canonical_message_deliveries.extend(deliveries.iter().cloned());
     }
     if let Some(selected) = &selected_run {
         work_deliveries = store.current_work_deliveries_for_team_run(&selected.id)?;
-        agent_identities.retain(|identity| agent_member_ids.contains(&identity.id));
-        agent_sessions.retain(|session| agent_member_ids.contains(&session.agent_member_id));
-        team_memberships.retain(|membership| membership.team_id == selected.agent_team_id);
-        work_execution_bindings.retain(|binding| work_ids.contains(&binding.work_id));
-        work_deliveries.retain(|delivery| delivery.team_run_id == selected.id);
-        canonical_messages
-            .retain(|message| message.team_run_id.as_deref() == Some(selected.id.as_str()));
-        let message_ids = canonical_messages
-            .iter()
-            .map(|message| message.id.clone())
-            .collect::<HashSet<_>>();
-        canonical_message_deliveries.retain(|delivery| message_ids.contains(&delivery.message_id));
     }
     let mut team_messages = Vec::new();
     for run in &team_runs {
@@ -151,19 +184,62 @@ pub(super) fn dashboard_snapshot_with_team_run(
             .cmp(&right.created_at)
             .then_with(|| left.id.cmp(&right.id))
     });
-    let mut work_events = store.work_events()?;
-    let mut work_delegations = store.latest_work_delegations()?;
-    let mut work_delegation_events = store.work_delegation_events()?;
-    let mut execution_nodes = store.latest_execution_nodes()?;
-    let mut node_project_registrations = store.latest_node_project_registrations()?;
-    let mut node_daemon_leases = store.latest_node_daemon_leases()?;
-    let mut team_supervisor_leases = latest_team_supervisor_leases_in_append_order(store)?;
-    let mut team_member_close_requests = latest_team_member_close_requests_in_append_order(store)?;
+    let mut work_delegations = match &selected_run {
+        Some(selected) => store.latest_work_delegations_for_team_run(&selected.id)?,
+        None => store.latest_work_delegations()?,
+    };
+    let mut work_delegation_events = match &selected_run {
+        Some(selected) => store.work_delegation_events_for_team_run(&selected.id)?,
+        None => store.work_delegation_events()?,
+    };
+    let mut execution_nodes = match &selected_run {
+        Some(selected) => store
+            .latest_execution_node(&selected.execution_node_id)?
+            .into_iter()
+            .collect(),
+        None => store.latest_execution_nodes()?,
+    };
+    let mut node_project_registrations = match &selected_run {
+        Some(selected) => store.latest_node_project_registrations_for_binding(
+            &selected.execution_node_id,
+            &selected.project_binding_id,
+        )?,
+        None => store.latest_node_project_registrations()?,
+    };
+    let mut node_daemon_leases = match &selected_run {
+        Some(selected) => store
+            .latest_node_daemon_lease(&selected.execution_node_id)?
+            .into_iter()
+            .collect(),
+        None => store.latest_node_daemon_leases()?,
+    };
+    let mut team_supervisor_leases = match &selected_run {
+        Some(selected) => {
+            latest_team_supervisor_leases_from_rows(store.team_supervisor_lease_rows(&selected.id)?)
+        }
+        None => latest_team_supervisor_leases_in_append_order(store)?,
+    };
+    let mut team_member_close_requests = match &selected_run {
+        Some(_) => latest_team_member_close_requests_from_rows(
+            store.team_member_close_request_rows(&member_run_ids)?,
+        ),
+        None => latest_team_member_close_requests_in_append_order(store)?,
+    };
     // Old ledgers can contain v0 `thinking` rows. Keep the JSONL history
     // intact for migration/audit, but never project those rows into a new
     // snapshot: thinking is not product state or evidence.
-    let mut member_actions = visible_member_actions_in_append_order(store)?;
-    let mut delegation_runs = latest_delegation_runs_in_append_order(store)?;
+    let mut member_actions = match &selected_run {
+        Some(selected) => {
+            visible_member_actions_from_rows(store.member_action_rows_for_team_run(&selected.id)?)
+        }
+        None => visible_member_actions_in_append_order(store)?,
+    };
+    let mut delegation_runs = match &selected_run {
+        Some(selected) => {
+            latest_delegation_runs_from_rows(store.delegation_run_rows_for_team_run(&selected.id)?)
+        }
+        None => latest_delegation_runs_in_append_order(store)?,
+    };
     if let Some(selected) = &selected_run {
         work_events.retain(|event| work_ids.contains(&event.work_id));
         work_delegations.retain(|delegation| {
@@ -307,7 +383,11 @@ pub(super) fn dashboard_snapshot_with_team_run(
     // inside `canonical_team_messages_for_run`.
     let mut integrity_annotations = Vec::new();
     {
-        let legacy_teams_by_id = legacy_team_definitions_by_id(store)?;
+        let selected_team_ids = selected_run
+            .as_ref()
+            .map(|run| HashSet::from([run.agent_team_id.clone()]));
+        let legacy_teams_by_id =
+            legacy_team_definitions_for_ids(store, selected_team_ids.as_ref())?;
         let mut legacy_context_ids = BTreeSet::new();
         for run in &team_runs {
             if canonical_team_ids.contains(&run.agent_team_id) {
@@ -460,72 +540,83 @@ pub(super) fn latest_runtime(
 pub(super) fn latest_team_runs_in_append_order(
     store: &HarnessStore,
 ) -> CliResult<Vec<AgentTeamRun>> {
+    Ok(latest_team_runs_from_rows(store.team_runs()?))
+}
+
+fn latest_team_runs_from_rows(rows: Vec<AgentTeamRun>) -> Vec<AgentTeamRun> {
     let mut ids = Vec::new();
     let mut by_id = BTreeMap::new();
-    for run in store.team_runs()? {
+    for run in rows {
         ids.retain(|id| id != &run.id);
         ids.push(run.id.clone());
         by_id.insert(run.id.clone(), run);
     }
-    Ok(ids.into_iter().filter_map(|id| by_id.remove(&id)).collect())
+    ids.into_iter().filter_map(|id| by_id.remove(&id)).collect()
 }
 
 pub(super) fn latest_member_runs_in_append_order(
     store: &HarnessStore,
 ) -> CliResult<Vec<ProviderRuntimeProjection>> {
+    Ok(latest_member_runs_from_rows(store.member_runs()?))
+}
+
+fn latest_member_runs_from_rows(
+    rows: Vec<ProviderRuntimeProjection>,
+) -> Vec<ProviderRuntimeProjection> {
     let mut ids = Vec::new();
     let mut by_id = BTreeMap::new();
-    for run in store.member_runs()? {
+    for run in rows {
         ids.retain(|id| id != &run.id);
         ids.push(run.id.clone());
         by_id.insert(run.id.clone(), run);
     }
-    Ok(ids.into_iter().filter_map(|id| by_id.remove(&id)).collect())
+    ids.into_iter().filter_map(|id| by_id.remove(&id)).collect()
 }
 
 pub(super) fn latest_team_supervisor_leases_in_append_order(
     store: &HarnessStore,
 ) -> CliResult<Vec<TeamSupervisorLease>> {
+    Ok(latest_team_supervisor_leases_from_rows(
+        store.team_supervisor_leases()?,
+    ))
+}
+
+fn latest_team_supervisor_leases_from_rows(
+    rows: Vec<TeamSupervisorLease>,
+) -> Vec<TeamSupervisorLease> {
     let mut ids = Vec::new();
     let mut by_team_run = BTreeMap::new();
-    for lease in store.team_supervisor_leases()? {
+    for lease in rows {
         ids.retain(|id| id != &lease.team_run_id);
         ids.push(lease.team_run_id.clone());
         by_team_run.insert(lease.team_run_id.clone(), lease);
     }
-    Ok(ids
-        .into_iter()
+    ids.into_iter()
         .filter_map(|id| by_team_run.remove(&id))
-        .collect())
+        .collect()
 }
 
 pub(super) fn latest_team_member_close_requests_in_append_order(
     store: &HarnessStore,
 ) -> CliResult<Vec<TeamMemberCloseRequest>> {
+    Ok(latest_team_member_close_requests_from_rows(
+        store.team_member_close_requests()?,
+    ))
+}
+
+fn latest_team_member_close_requests_from_rows(
+    rows: Vec<TeamMemberCloseRequest>,
+) -> Vec<TeamMemberCloseRequest> {
     let mut ids = Vec::new();
     let mut by_member_run = BTreeMap::new();
-    for request in store.team_member_close_requests()? {
+    for request in rows {
         ids.retain(|id| id != &request.member_run_id);
         ids.push(request.member_run_id.clone());
         by_member_run.insert(request.member_run_id.clone(), request);
     }
-    Ok(ids
-        .into_iter()
+    ids.into_iter()
         .filter_map(|id| by_member_run.remove(&id))
-        .collect())
-}
-
-pub(super) fn latest_member_actions_in_append_order(
-    store: &HarnessStore,
-) -> CliResult<Vec<MemberAction>> {
-    let mut ids = Vec::new();
-    let mut by_id = BTreeMap::new();
-    for action in store.member_actions()? {
-        ids.retain(|id| id != &action.id);
-        ids.push(action.id.clone());
-        by_id.insert(action.id.clone(), action);
-    }
-    Ok(ids.into_iter().filter_map(|id| by_id.remove(&id)).collect())
+        .collect()
 }
 
 /// Project the product-visible MemberAction view. Legacy v0 reasoning rows
@@ -534,23 +625,38 @@ pub(super) fn latest_member_actions_in_append_order(
 pub(super) fn visible_member_actions_in_append_order(
     store: &HarnessStore,
 ) -> CliResult<Vec<MemberAction>> {
-    Ok(latest_member_actions_in_append_order(store)?
-        .into_iter()
+    Ok(visible_member_actions_from_rows(store.member_actions()?))
+}
+
+fn visible_member_actions_from_rows(rows: Vec<MemberAction>) -> Vec<MemberAction> {
+    let mut ids = Vec::new();
+    let mut by_id = BTreeMap::new();
+    for action in rows {
+        ids.retain(|id| id != &action.id);
+        ids.push(action.id.clone());
+        by_id.insert(action.id.clone(), action);
+    }
+    ids.into_iter()
+        .filter_map(|id| by_id.remove(&id))
         .filter(|action| action.action_type != "thinking")
-        .collect())
+        .collect()
 }
 
 pub(super) fn latest_delegation_runs_in_append_order(
     store: &HarnessStore,
 ) -> CliResult<Vec<DelegationRun>> {
+    Ok(latest_delegation_runs_from_rows(store.delegation_runs()?))
+}
+
+fn latest_delegation_runs_from_rows(rows: Vec<DelegationRun>) -> Vec<DelegationRun> {
     let mut ids = Vec::new();
     let mut by_id = BTreeMap::new();
-    for run in store.delegation_runs()? {
+    for run in rows {
         ids.retain(|id| id != &run.id);
         ids.push(run.id.clone());
         by_id.insert(run.id.clone(), run);
     }
-    Ok(ids.into_iter().filter_map(|id| by_id.remove(&id)).collect())
+    ids.into_iter().filter_map(|id| by_id.remove(&id)).collect()
 }
 
 pub(super) fn current_team_run_events_in_append_order(

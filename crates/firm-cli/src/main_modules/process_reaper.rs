@@ -125,8 +125,9 @@ pub(super) const PRE_CUTOVER_DANGLING_TEAM_ANNOTATION: &str = "PRE_CUTOVER_DANGL
 /// present in this ledger is a migration fact, not corruption. A team id
 /// missing from BOTH ledgers is a genuine dangling reference and callers must
 /// keep failing closed on it.
-pub(super) fn legacy_team_definitions_by_id(
+pub(super) fn legacy_team_definitions_for_ids(
     store: &HarnessStore,
+    team_ids: Option<&HashSet<String>>,
 ) -> CliResult<BTreeMap<String, serde_json::Value>> {
     let mut teams = BTreeMap::new();
     let contents = match fs::read_to_string(store.root().join("teams.jsonl")) {
@@ -145,7 +146,9 @@ pub(super) fn legacy_team_definitions_by_id(
             ))
         })?;
         if let Some(id) = value.get("id").and_then(|id| id.as_str()) {
-            teams.insert(id.to_string(), value);
+            if team_ids.is_none_or(|ids| ids.contains(id)) {
+                teams.insert(id.to_string(), value);
+            }
         }
     }
     Ok(teams)

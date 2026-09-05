@@ -777,6 +777,7 @@ mod fabric_identity_sessions;
 mod fabric_message_authoring;
 mod fabric_message_delivery;
 mod fabric_runtime_commands;
+mod fabric_scoped_work_projection;
 mod fabric_teams;
 mod fabric_work_execution;
 pub use fabric_work_execution::WorkExecutionBindingReconciliation;

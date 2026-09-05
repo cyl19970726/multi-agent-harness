@@ -52,9 +52,13 @@ impl HarnessStore {
     }
 
     pub(super) fn require_team_run_unlocked(&self, team_run_id: &str) -> StoreResult<AgentTeamRun> {
-        latest_by_id(self.read_jsonl::<AgentTeamRun>("team_runs.jsonl")?, |run| {
-            run.id.clone()
-        })
+        latest_by_id(
+            self.read_jsonl::<AgentTeamRun>("team_runs.jsonl")?
+                .into_iter()
+                .filter(|run| run.id == team_run_id)
+                .collect(),
+            |run| run.id.clone(),
+        )
         .remove(team_run_id)
         .ok_or_else(|| StoreError::Conflict(format!("team run not found: {team_run_id}")))
     }

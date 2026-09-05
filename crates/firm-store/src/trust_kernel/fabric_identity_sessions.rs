@@ -64,6 +64,26 @@ impl HarnessStore {
             .collect())
     }
 
+    pub fn fabric_agent_identities_for_members(
+        &self,
+        execution_space_id: &str,
+        member_ids: &std::collections::HashSet<String>,
+    ) -> StoreResult<Vec<AgentIdentity>> {
+        Ok(self
+            .trust_agent_members_for_ids(execution_space_id, member_ids)?
+            .into_iter()
+            .map(|member| AgentIdentity {
+                id: member.id,
+                display_name: member.name,
+                organization_status: member.organization_status,
+                permission_ceiling: member.permission_ceiling,
+                version: member.version,
+                created_at: member.created_at,
+                updated_at: member.updated_at,
+            })
+            .collect())
+    }
+
     #[deprecated(note = "AgentIdentity is a same-id read-only AgentMember projection")]
     pub fn create_agent_identity(
         &self,
@@ -143,6 +163,26 @@ impl HarnessStore {
             .values()
             .map(event_projection)
             .collect()
+    }
+
+    pub fn fabric_agent_sessions_for_members(
+        &self,
+        execution_space_id: &str,
+        member_ids: &std::collections::HashSet<String>,
+    ) -> StoreResult<Vec<AgentSession>> {
+        let mut latest = BTreeMap::new();
+        for envelope in self.trust_operation_envelopes_unlocked()? {
+            let event = &envelope.operation.event;
+            if envelope.execution_space_id == execution_space_id
+                && event.aggregate_kind == "agent_session"
+                && envelope.operation.resulting_projection["agent_member_id"]
+                    .as_str()
+                    .is_some_and(|id| member_ids.contains(id))
+            {
+                latest.insert(event.aggregate_id.clone(), envelope);
+            }
+        }
+        latest.values().map(event_projection).collect()
     }
 
     pub fn create_agent_session(
@@ -254,6 +294,39 @@ impl HarnessStore {
                 .initial_outbox_records
                 .iter()
                 .chain(&envelope.operation.immutable_side_records)
+            {
+                if let Ok(membership) = serde_json::from_value::<TeamMembership>(value.clone()) {
+                    latest.insert(membership.id.clone(), membership);
+                }
+            }
+        }
+        Ok(latest.into_values().collect())
+    }
+
+    pub fn fabric_team_memberships_for_team(
+        &self,
+        execution_space_id: &str,
+        team_id: &str,
+    ) -> StoreResult<Vec<TeamMembership>> {
+        let mut latest = BTreeMap::new();
+        for envelope in self
+            .trust_operation_envelopes_unlocked()?
+            .into_iter()
+            .filter(|envelope| envelope.execution_space_id == execution_space_id)
+        {
+            let event = &envelope.operation.event;
+            if event.aggregate_kind == "team_membership"
+                && envelope.operation.resulting_projection["team_id"].as_str() == Some(team_id)
+            {
+                let membership = event_projection::<TeamMembership>(&envelope)?;
+                latest.insert(membership.id.clone(), membership);
+            }
+            for value in envelope
+                .operation
+                .initial_outbox_records
+                .iter()
+                .chain(&envelope.operation.immutable_side_records)
+                .filter(|value| value["team_id"].as_str() == Some(team_id))
             {
                 if let Ok(membership) = serde_json::from_value::<TeamMembership>(value.clone()) {
                     latest.insert(membership.id.clone(), membership);

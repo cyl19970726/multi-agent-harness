@@ -737,12 +737,39 @@ impl HarnessStore {
             .collect())
     }
 
-    pub(crate) fn trust_work_delegation_revisions_unlocked(
+    pub(crate) fn trust_work_events_for_ids_unlocked(
         &self,
+        work_ids: &std::collections::HashSet<String>,
+    ) -> StoreResult<Vec<firm_core::WorkEvent>> {
+        Ok(self
+            .trust_operation_envelopes_unlocked()?
+            .into_iter()
+            .filter(|envelope| envelope.operation.event.aggregate_kind == "work")
+            .flat_map(|envelope| envelope.operation.immutable_side_records)
+            .filter(|record| {
+                record["work_id"]
+                    .as_str()
+                    .is_some_and(|id| work_ids.contains(id))
+            })
+            .filter_map(|record| serde_json::from_value::<firm_core::WorkEvent>(record).ok())
+            .collect())
+    }
+
+    pub(crate) fn trust_work_delegation_revisions_for_team_run_unlocked(
+        &self,
+        team_run_id: Option<&str>,
     ) -> StoreResult<Vec<WorkDelegationRevision>> {
         let mut revisions = Vec::new();
         for envelope in self.trust_operation_envelopes_unlocked()? {
             for record in envelope.operation.immutable_side_records {
+                let belongs_to_run = team_run_id.is_none_or(|id| {
+                    record["delegation"]["source_work_ref"]["team_run_id"].as_str() == Some(id)
+                        || record["delegation"]["target_work_ref"]["team_run_id"].as_str()
+                            == Some(id)
+                });
+                if !belongs_to_run {
+                    continue;
+                }
                 if let Ok(revision) = serde_json::from_value::<WorkDelegationRevision>(record) {
                     revisions.push(revision);
                 }
