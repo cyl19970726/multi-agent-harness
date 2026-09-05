@@ -55,7 +55,8 @@ async function waitFor(predicate, message, timeout = 30_000) {
   let lastError;
   while (Date.now() < deadline) {
     try {
-      if (await predicate()) return;
+      const value = await predicate();
+      if (value) return value;
     } catch (error) {
       lastError = error;
     }
@@ -278,15 +279,23 @@ try {
   assert.equal(lastRead?.project, projectB.id, "final settled snapshot read carries project B");
   assert.equal(lastRead?.space, spaceB.id, "final settled snapshot read carries space B");
   assert.equal(lastRead?.company, "dev33-company-a", "final settled snapshot read carries the URL-owned Company scope");
-  await waitFor(async () => {
+  // Assert on the ONE metrics read that satisfied the settle predicate. The
+  // open page keeps polling /v1/snapshot, so a fresh build can start between
+  // the settle wait and a second read; asserting on a later read confuses a
+  // just-started poll with an abandoned build (#801). The final read is kept
+  // purely for diagnostics so the two are distinguishable on failure.
+  const settledMetrics = await waitFor(async () => {
     const metrics = await requestMetrics(apiBase);
-    return metrics.active === 0 && metrics.completed === metrics.started;
+    return metrics.active === 0 && metrics.completed === metrics.started ? metrics : null;
   }, "all backend Store snapshot builds to settle", 45_000);
-  const metrics = await requestMetrics(apiBase);
+  const finalMetrics = await requestMetrics(apiBase);
+  const metrics = settledMetrics;
+  const metricsContext =
+    `\nsettled read: ${JSON.stringify(settledMetrics)}\nfinal read:   ${JSON.stringify(finalMetrics)}`;
 
-  assert.equal(metrics.max_active, 1, "true scope changes overlapped backend Store snapshot builds");
-  assert.ok(metrics.started >= 4, "repeated true scope changes did not reach the real backend builder");
-  assert.equal(metrics.completed, metrics.started, "an abandoned backend Store snapshot build did not settle");
+  assert.equal(metrics.max_active, 1, `true scope changes overlapped backend Store snapshot builds${metricsContext}`);
+  assert.ok(metrics.started >= 4, `repeated true scope changes did not reach the real backend builder${metricsContext}`);
+  assert.equal(metrics.completed, metrics.started, `an abandoned backend Store snapshot build did not settle${metricsContext}`);
   assert.equal(consoleErrors.length, 0, `browser console errors: ${consoleErrors.join(" | ")}`);
   assert.equal(pageErrors.length, 0, `browser page errors: ${pageErrors.join(" | ")}`);
   assert.equal(httpErrors.length, 0, `browser HTTP errors: ${httpErrors.join(" | ")}`);
