@@ -288,4 +288,61 @@ fn close_member_for_recovery_accepts_a_reconciled_recovery_required_lane() {
     let after = member_named(&fixture.store, &fixture.run_id, MID_TURN_MEMBER);
     assert_eq!(after.status, MemberRunStatus::Stopped);
     assert!(!after.coordination_is_active());
+    assert_eq!(closed["dormant_residue"], serde_json::json!([]));
+    // The Close performed the same Idle hop recover does, so a later Reopen
+    // finds an ordinary lane with ordinary exits instead of a lifecycle no
+    // writer can touch (round-2 review P2-A).
+    assert_eq!(
+        agent_session(&fixture.store, MID_TURN_MEMBER).lifecycle,
+        AgentSessionStatus::Idle
+    );
+}
+
+/// Dormant input is refused for a running run's Blocked member and tolerated
+/// (recorded) only where the Close explicitly asks for it: the proof is one
+/// function with one switch.
+#[test]
+fn dormant_input_is_refused_unless_the_close_tolerates_it() {
+    use harness_core::agentfirm_api::{
+        DriverHandoffState, NativeContinuationActivation, RuntimeResidency,
+    };
+    let fixture = drain_fixture("dormant-input-proof");
+    let mut armed = agent_session(&fixture.store, MID_TURN_MEMBER);
+    armed.lifecycle = AgentSessionStatus::Idle;
+    armed.control_state.runtime_residency = RuntimeResidency::Detached;
+    armed.control_state.activity = RuntimeActivity::Idle;
+    armed.current_turn_id = None;
+    armed.control_state.continuation.activation = NativeContinuationActivation::Armed {
+        runtime_generation: armed.runtime_generation,
+        driver_generation: armed.control_state.driver_generation,
+    };
+    let refused = crate::lane_termination_proof(&fixture.store, DRAIN_SPACE_ID, &armed, false)
+        .expect("proof reads");
+    assert!(
+        refused
+            .blocker
+            .as_deref()
+            .is_some_and(|blocker| blocker.contains("armed native continuation")),
+        "{:?}",
+        refused.blocker
+    );
+    assert!(refused.dormant_residue.is_empty());
+    let tolerated = crate::lane_termination_proof(&fixture.store, DRAIN_SPACE_ID, &armed, true)
+        .expect("proof reads");
+    assert!(tolerated.blocker.is_none(), "{:?}", tolerated.blocker);
+    assert_eq!(tolerated.dormant_residue.len(), 1);
+    assert!(tolerated.dormant_residue[0].contains("armed native continuation"));
+    // A handoff in progress is never tolerated.
+    let mut handing_off = armed.clone();
+    handing_off.control_state.handoff_state = DriverHandoffState::PreparingHostToProvider;
+    let refused = crate::lane_termination_proof(&fixture.store, DRAIN_SPACE_ID, &handing_off, true)
+        .expect("proof reads");
+    assert!(
+        refused
+            .blocker
+            .as_deref()
+            .is_some_and(|blocker| blocker.contains("mid driver handoff")),
+        "{:?}",
+        refused.blocker
+    );
 }

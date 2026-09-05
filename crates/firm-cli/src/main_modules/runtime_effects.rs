@@ -244,6 +244,25 @@ pub(super) fn transition_provider_session_for_member(
     member: &ProviderRuntimeProjection,
     desired: harness_core::agentfirm_api::AgentSessionStatus,
 ) -> CliResult<()> {
+    transition_provider_session_for_member_as(
+        ledger,
+        member,
+        desired,
+        None,
+        "node_daemon.agent_session.provider_state",
+    )
+}
+
+/// The same projection with an explicit authority and command name, for a
+/// Host verb that drives a lane (`team-run recover`, `close-member`) so the
+/// canonical operation records who asked, not only which NodeDaemon wrote.
+pub(super) fn transition_provider_session_for_member_as(
+    ledger: &TeamRunLedger,
+    member: &ProviderRuntimeProjection,
+    desired: harness_core::agentfirm_api::AgentSessionStatus,
+    authority: Option<harness_core::agentfirm_api::ActorRef>,
+    command_name: &str,
+) -> CliResult<()> {
     use harness_core::agentfirm_api::AgentSessionStatus;
     let (space_id, mut session) = provider_session_for_member(ledger, member)?;
     let daemon = ledger
@@ -335,14 +354,16 @@ pub(super) fn transition_provider_session_for_member(
         } else {
             format!("session:{}:{}:{next:?}", session.id, session.version)
         };
+        let mut transition_context = canonical_delivery_context(
+            &space_id,
+            &daemon.daemon_id,
+            command_name,
+            transition_idempotency_key,
+            session.version,
+        );
+        transition_context.authority_actor = authority.clone();
         let result = ledger.store.transition_agent_session(
-            &canonical_delivery_context(
-                &space_id,
-                &daemon.daemon_id,
-                "node_daemon.agent_session.provider_state",
-                transition_idempotency_key,
-                session.version,
-            ),
+            &transition_context,
             &session.id,
             next,
             &now_string(),

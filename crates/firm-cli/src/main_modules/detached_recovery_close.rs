@@ -76,8 +76,8 @@ pub(super) fn close_detached_blocked_member_for_recovery_with_hooks(
     mut after_terminal_cas: impl FnMut(&ProviderRuntimeProjection) -> CliResult<()>,
 ) -> CliResult<Option<serde_json::Value>> {
     use harness_core::agentfirm_api::{
-        NativeSessionAvailability as AgentNativeSessionAvailability, RuntimeCommandStatus,
-        RuntimeDriverRef, RuntimeEffectCertainty, RuntimeResidency, WorkDeliveryStatus,
+        AgentSessionStatus, NativeSessionAvailability as AgentNativeSessionAvailability,
+        RuntimeDriverRef, RuntimeResidency, WorkDeliveryStatus,
     };
 
     let ledger = TeamRunLedger::without_supervisor(store, team_run_id);
@@ -93,12 +93,37 @@ pub(super) fn close_detached_blocked_member_for_recovery_with_hooks(
     }
     // The same proof `team-run recover` evaluates (handoff, continuation,
     // queued input, ambiguous command), so the two verbs agree (GitHub #841).
-    if let Some(blocker) = lane_termination_blocker(store, &execution_space_id, &session)? {
+    // A Completed TeamRun's member may carry dormant input nothing will ever
+    // consume; it is recorded on the receipt instead of stranding the member.
+    let proof = lane_termination_proof(
+        store,
+        &execution_space_id,
+        &session,
+        mode == DetachedRecoveryCloseMode::CompletedRunMember,
+    )?;
+    if let Some(blocker) = proof.blocker {
         return Err(CliError::RuntimeRecoveryRequired(format!(
             "DETACHED_MEMBER_RECOVERY_FENCED: member {} does not prove its runtime gone: {blocker}",
             member.id
         )));
     }
+    let dormant_residue = proof.dormant_residue;
+    // A lane the runner left in `RecoveryRequired` re-enters the ordinary lane
+    // before its member is closed (the Store re-proves the same lane under its
+    // lock), so a later Reopen finds an ordinary Idle lane instead of a
+    // lifecycle with no writer left (GitHub #755).
+    let session = if session.lifecycle == AgentSessionStatus::RecoveryRequired {
+        transition_provider_session_for_member_as(
+            &ledger,
+            member,
+            AgentSessionStatus::Idle,
+            team_run_host_authority(store, team_run_id),
+            "host.member_close.agent_session.resume",
+        )?;
+        provider_session_for_member(&ledger, member)?.1
+    } else {
+        session
+    };
     let native_session_matches_and_resumable = match (
         member.native_session.as_ref(),
         session.native_session_ref.as_ref(),
@@ -184,27 +209,6 @@ pub(super) fn close_detached_blocked_member_for_recovery_with_hooks(
                 &member.agent_member_id,
             )?;
         }
-    }
-
-    let ambiguous_command = store
-        .runtime_commands(&execution_space_id)?
-        .into_iter()
-        .any(|command| {
-            command.target_session_id.as_deref() == Some(session.id.as_str())
-                && command.target_session_generation == Some(session.runtime_generation)
-                && matches!(
-                    command.status,
-                    RuntimeCommandStatus::Accepted
-                        | RuntimeCommandStatus::Quiesced
-                        | RuntimeCommandStatus::RecoveryRequired
-                )
-                && command.effect_certainty == RuntimeEffectCertainty::Unknown
-        });
-    if ambiguous_command {
-        return Err(CliError::RuntimeRecoveryRequired(format!(
-            "DETACHED_MEMBER_RECOVERY_FENCED: member {} still has an ambiguous RuntimeCommand",
-            member.id
-        )));
     }
 
     // A provider receipt proves that the old runtime consumed this exact Work
@@ -484,6 +488,7 @@ pub(super) fn close_detached_blocked_member_for_recovery_with_hooks(
         "coordination_status": "closed",
         "runtime": "not_live",
         "runtime_effect": "already_detached",
+        "dormant_residue": dormant_residue,
         "coordination_effect": "member_closed_for_recovery",
         "provider_close_receipt": "not_fabricated",
         "idempotent": false,

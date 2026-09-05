@@ -581,9 +581,13 @@ continuation, queued native input, or the ambiguous RuntimeCommand id) —
 reported in addition to the `skipped` count, never as repaired (#841).
 `team-run recover` and `close-member` judge a lane with one shared predicate
 and the same proof, so a lane `recover` calls dead is one `close-member`
-accepts: the coordination Close of a reconciled `RecoveryRequired` lane works
-like the `Interrupted` case (the MemberRun is closed; the Session row keeps
-its lifecycle as history).
+accepts. `close-member` first performs the same `Idle` hop on a reconciled
+`RecoveryRequired` lane and only then closes the MemberRun coordination, so a
+later `reopen-member` finds an ordinary `Idle` lane rather than a lifecycle
+with no writer left. For a member of a **Completed** TeamRun, an armed native
+continuation or queued native input that nothing will ever consume does not
+block the Close; it is recorded on the Close receipt as `dormant_residue`. A
+driver handoff in progress or an ambiguous RuntimeCommand always blocks it.
 
 ### Recovering a member left `blocked` over a dead lane
 

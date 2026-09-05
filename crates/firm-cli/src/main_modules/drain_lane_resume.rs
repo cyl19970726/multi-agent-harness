@@ -64,56 +64,91 @@ pub(super) fn is_recovery_required_not_yet_resumable(error: &CliError) -> bool {
     })
 }
 
-/// The first clause of the terminated-lane proof this lane fails, as one
-/// stable sentence, or `None` when the lane proves the runtime that owned it
-/// is gone. This is the Store fence's own predicate (residency, handoff,
-/// continuation, queued input, ambiguous RuntimeCommand), read from outside
-/// the writer lock so a caller can decide *whether to try* and can say *why
-/// not*. It never grants a transition: the Store re-proves all of it under
-/// its lock. Every reader of the proof derives from this one function, so the
-/// reason named and the decision taken cannot drift apart (GitHub #841).
-pub(super) fn lane_termination_blocker(
+/// The terminated-lane proof as one reading: the first clause the lane fails,
+/// plus the dormant residue a caller chose to tolerate.
+pub(super) struct LaneTerminationProof {
+    /// The first failing clause, or `None` when the lane proves its runtime
+    /// gone (modulo the tolerated residue).
+    pub blocker: Option<String>,
+    /// Residue that nothing will ever consume and the caller accepted instead
+    /// of refusing: an armed native continuation or queued native input on a
+    /// lane whose TeamRun is Completed. Always empty unless tolerated.
+    pub dormant_residue: Vec<String>,
+}
+
+/// The terminated-lane proof. This is the Store fence's own predicate
+/// (residency, activity, handoff, continuation, turn, queued input, ambiguous
+/// RuntimeCommand), read from outside the writer lock so a caller can decide
+/// *whether to try* and can say *why not*. It never grants a transition: the
+/// Store re-proves all of it under its lock. Every reader of the proof
+/// derives from this one function, so the reason named and the decision
+/// taken cannot drift apart (GitHub #841).
+///
+/// `tolerate_dormant_input` is for the coordination Close of a Completed
+/// TeamRun's member (#812): an armed continuation or queued native input on
+/// that lane will never be consumed, so refusing the Close on it would strand
+/// the member forever; the residue is recorded on the Close receipt instead.
+/// A driver handoff or an ambiguous command is never tolerated.
+pub(super) fn lane_termination_proof(
     store: &HarnessStore,
     execution_space_id: &str,
     session: &AgentSession,
-) -> CliResult<Option<String>> {
+    tolerate_dormant_input: bool,
+) -> CliResult<LaneTerminationProof> {
+    let mut dormant_residue = Vec::new();
+    let blocked = |blocker: String| {
+        Ok(LaneTerminationProof {
+            blocker: Some(blocker),
+            dormant_residue: Vec::new(),
+        })
+    };
     if session.control_state.runtime_residency != RuntimeResidency::Detached {
-        return Ok(Some(format!(
+        return blocked(format!(
             "AgentSession {} still holds an attached runtime handle",
             session.id
-        )));
+        ));
     }
     if session.control_state.activity != RuntimeActivity::Idle {
-        return Ok(Some(format!(
+        return blocked(format!(
             "AgentSession {} runtime activity is {:?}, not idle",
             session.id, session.control_state.activity
-        )));
+        ));
     }
     if session.control_state.handoff_state != DriverHandoffState::None {
-        return Ok(Some(format!(
+        return blocked(format!(
             "AgentSession {} is mid driver handoff ({:?})",
             session.id, session.control_state.handoff_state
-        )));
+        ));
     }
     if session.control_state.continuation.activation != NativeContinuationActivation::Disarmed {
-        return Ok(Some(format!(
+        let residue = format!(
             "AgentSession {} still has an armed native continuation",
             session.id
-        )));
+        );
+        if tolerate_dormant_input {
+            dormant_residue.push(residue);
+        } else {
+            return blocked(residue);
+        }
     }
     if let Some(turn) = session.current_turn_id.as_deref() {
-        return Ok(Some(format!(
+        return blocked(format!(
             "AgentSession {} still has an open turn {turn}",
             session.id
-        )));
+        ));
     }
     if session.queued_input_count != 0 {
-        return Ok(Some(format!(
+        let residue = format!(
             "AgentSession {} still has {} queued native input(s)",
             session.id, session.queued_input_count
-        )));
+        );
+        if tolerate_dormant_input {
+            dormant_residue.push(residue);
+        } else {
+            return blocked(residue);
+        }
     }
-    Ok(store
+    let ambiguous = store
         .runtime_commands(execution_space_id)?
         .into_iter()
         .find(|command| {
@@ -132,7 +167,21 @@ pub(super) fn lane_termination_blocker(
                 "ambiguous RuntimeCommand {} ({:?}) still has an unknown provider effect; reconcile it first",
                 command.id, command.command
             )
-        }))
+        });
+    Ok(LaneTerminationProof {
+        blocker: ambiguous,
+        dormant_residue,
+    })
+}
+
+/// The first clause of the terminated-lane proof this lane fails, or `None`
+/// when the lane proves the runtime that owned it is gone (nothing tolerated).
+pub(super) fn lane_termination_blocker(
+    store: &HarnessStore,
+    execution_space_id: &str,
+    session: &AgentSession,
+) -> CliResult<Option<String>> {
+    Ok(lane_termination_proof(store, execution_space_id, session, false)?.blocker)
 }
 
 /// Whether a lane still proves the runtime that owned it is gone.
@@ -505,6 +554,21 @@ pub(crate) fn zero_output_degradation_threshold() -> u32 {
 /// It lives here, next to the two proofs that authorize it, rather than in the
 /// recovery command: the authority is the drain-lane reasoning, not the shape
 /// of the CLI verb that happens to expose it.
+/// The exact Host of this TeamRun as a trust actor, for a Host verb's own
+/// canonical writes; `None` when the run has no verifiable Host (legacy rows).
+pub(super) fn team_run_host_authority(
+    store: &HarnessStore,
+    team_run_id: &str,
+) -> Option<harness_core::agentfirm_api::ActorRef> {
+    store
+        .exact_team_run_host_actor(team_run_id)
+        .ok()
+        .map(|actor| harness_core::agentfirm_api::ActorRef {
+            kind: harness_core::agentfirm_api::ActorKind::AgentMember,
+            id: actor.id,
+        })
+}
+
 /// Return one Blocked member on a dead lane to a startable status, or say
 /// exactly why not. A lane the runner left in `RecoveryRequired` first
 /// re-enters the ordinary lane through `Idle` — the Store admits that hop only
@@ -520,7 +584,13 @@ pub(super) fn restart_or_explain_blocked_member(
 ) -> CliResult<Option<serde_json::Value>> {
     let (_, session) = provider_session_for_member(ledger, member)?;
     if session.lifecycle == AgentSessionStatus::RecoveryRequired {
-        match transition_provider_session_for_member(ledger, member, AgentSessionStatus::Idle) {
+        match transition_provider_session_for_member_as(
+            ledger,
+            member,
+            AgentSessionStatus::Idle,
+            team_run_host_authority(store, &ledger.run_id),
+            "host.team_run_recover.agent_session.resume",
+        ) {
             Ok(()) => {}
             Err(error)
                 if is_recovery_required_not_yet_resumable(&error)
@@ -542,7 +612,28 @@ pub(super) fn restart_or_explain_blocked_member(
             Err(error) => return Err(error),
         }
     }
-    restart_blocked_member_on_dead_lane(store, ledger, member, now)?;
+    if let Err(error) = restart_blocked_member_on_dead_lane(store, ledger, member, now) {
+        // The lane already re-entered the ordinary lane; only the member row
+        // moved under us. Report it and let the next recover finish the flip
+        // instead of aborting every remaining member.
+        if matches!(&error, CliError::Usage(message) if message.contains("changed concurrently")) {
+            let blocker = format!(
+                "member row changed concurrently after its lane resumed; run recover again ({error})"
+            );
+            if !json {
+                println!(
+                    "  {} ({}): blocked, not restarted — {blocker}",
+                    member.name, member.provider
+                );
+            }
+            return Ok(Some(serde_json::json!({
+                "member_run_id": member.id,
+                "name": member.name,
+                "blocker": blocker,
+            })));
+        }
+        return Err(error);
+    }
     if !json {
         println!(
             "  {} ({}): blocked member returned to idle; its lane is detached and idle",
