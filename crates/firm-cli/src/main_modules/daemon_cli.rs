@@ -163,17 +163,87 @@ fn daemon_absent_status(firm_home: &Path, node_id: &str, log_path: &Path) -> Cli
         }
         Ok(format!(
             "absent (no live NodeDaemon for Node {node_id}); {}; recovery action: \
-             daemon-recover-predecessor; log: {}",
+             firm daemon recover-predecessor --confirm daemon-recover-predecessor; log: {}",
             details.join("; "),
             log_path.display()
         ))
     }
 }
 
+/// `daemon recover-predecessor`: settle one exact unreleased predecessor
+/// NodeDaemonLease through the same validate+recover seam as the Operator
+/// HTTP role action. Returns the recovery projection; the caller prints it.
+fn daemon_recover_predecessor(
+    firm_home: &Path,
+    node_id: &str,
+    args: &[String],
+) -> CliResult<serde_json::Value> {
+    let confirm = value(args, "--confirm").ok_or_else(|| {
+        CliError::Usage(
+            "daemon recover-predecessor refuses without --confirm daemon-recover-predecessor"
+                .to_string(),
+        )
+    })?;
+    if confirm != "daemon-recover-predecessor" {
+        return Err(CliError::Usage(format!(
+            "daemon recover-predecessor refuses --confirm {confirm:?}: the exact literal daemon-recover-predecessor is required"
+        )));
+    }
+    let evidence_ref = value(args, "--evidence-ref")
+        .unwrap_or_else(|| "cli:daemon-recover-predecessor".to_string());
+
+    // Read this Node's leases exactly like `daemon status` does.
+    let mut leases = Vec::new();
+    for space in execution_space::list_spaces(firm_home).map_err(execution_space_err)? {
+        let store = HarnessStore::new(space.store_root);
+        if let Some(lease) = store.latest_node_daemon_lease(node_id)? {
+            leases.push(lease);
+        }
+    }
+    let Some(reference) = leases.iter().max_by_key(|lease| lease.generation).cloned() else {
+        return Err(CliError::Usage(format!(
+            "no predecessor NodeDaemonLease exists for Node {node_id}; nothing to recover"
+        )));
+    };
+    if leases
+        .iter()
+        .all(|lease| lease.status == NodeDaemonLeaseStatus::Released)
+    {
+        return Ok(serde_json::json!({
+            "node_id": node_id,
+            "daemon_id": reference.daemon_id,
+            "instance_id": reference.instance_id,
+            "generation": reference.generation,
+            "status": "released",
+            "recovered_spaces": [],
+            "already_released": true,
+            "evidence_ref": evidence_ref,
+        }));
+    }
+
+    let intent = validate_daemon_predecessor_recovery(firm_home, node_id, None)
+        .map_err(|(code, detail)| CliError::Usage(format!("{code}: {detail}")))?;
+    let actor = harness_core::agentfirm_api::ActorRef {
+        kind: harness_core::agentfirm_api::ActorKind::Service,
+        id: node_id.to_string(),
+    };
+    recover_daemon_predecessor_spaces(
+        firm_home,
+        node_id,
+        &intent,
+        &actor,
+        true,
+        &evidence_ref,
+        &format!("cli-daemon-recover-predecessor:{node_id}"),
+        None,
+    )
+    .map_err(|(code, detail)| CliError::Usage(format!("{code}: {detail}")))
+}
+
 /// Machine-scoped NodeDaemon lifecycle. Exactly one process serves the stable
 /// local Node and discovers all registered Execution Spaces under FIRM_HOME.
 pub(super) fn daemon_command(args: &[String]) -> CliResult<()> {
-    require_subcommand(args, "daemon start|serve|status|stop")?;
+    require_subcommand(args, "daemon start|serve|status|stop|recover-predecessor")?;
     let firm_home = execution_space::firm_home().map_err(execution_space_err)?;
     let node_id = read_local_node_id()?;
     let log_path = node_daemon_log_path(&firm_home, &node_id);
@@ -295,6 +365,13 @@ pub(super) fn daemon_command(args: &[String]) -> CliResult<()> {
             Some(response) => println!("{}", daemon_status_with_log_path(&response, &log_path)?),
             None => println!("{}", daemon_absent_status(&firm_home, &node_id, &log_path)?),
         },
+        "recover-predecessor" => {
+            let projection = daemon_recover_predecessor(&firm_home, &node_id, args)?;
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&projection).map_err(CliError::from)?
+            );
+        }
         "stop" => {
             let (space_id, generation) = execution_space::list_spaces(&firm_home)
                 .map_err(execution_space_err)?
@@ -376,6 +453,10 @@ pub(super) fn daemon_command(args: &[String]) -> CliResult<()> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "daemon_recover_predecessor_tests.rs"]
+mod daemon_recover_predecessor_tests;
 
 #[cfg(test)]
 mod tests {

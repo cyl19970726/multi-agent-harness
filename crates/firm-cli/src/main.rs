@@ -194,6 +194,9 @@ use dashboard_server::*;
 mod daemon_cli;
 #[cfg(unix)]
 use daemon_cli::*;
+#[path = "main_modules/daemon_predecessor_recovery.rs"]
+mod daemon_predecessor_recovery;
+use daemon_predecessor_recovery::*;
 #[path = "main_modules/http_action_dispatch.rs"]
 mod http_action_dispatch;
 use http_action_dispatch::*;

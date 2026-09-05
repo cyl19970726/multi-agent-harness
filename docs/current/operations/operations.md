@@ -320,10 +320,26 @@ replacing the previous `.1`, before a new current log is opened. `firm daemon
 status` includes `log_path` in a live daemon's JSON and includes the same path
 in absent status output. If no live daemon exists but any registered Execution
 Space retains a latest `NodeDaemonLease` that is not `Released`, status names
-the lease state and the operator recovery action
-`daemon-recover-predecessor` instead of reporting a bare absence. A lease store
+the lease state and the recovery command `firm daemon recover-predecessor
+--confirm daemon-recover-predecessor` instead of reporting a bare absence. A lease store
 that cannot be read is reported by Execution Space without hiding readable
 Spaces or changing the absent status exit code.
+
+The named recovery action is an ordinary CLI command, not a hand-crafted HTTP
+call. After the daemon is stopped and the dead predecessor instance's pid is
+proven absent, `firm daemon recover-predecessor --confirm
+daemon-recover-predecessor [--evidence-ref <text>]` releases the exact
+unreleased predecessor `NodeDaemonLease` in every Execution Space belonging to
+this Node and prints the recovery projection (`daemon_id`, `instance_id`,
+`generation`, `recovered_spaces`, `status=released`). It refuses when there is
+no predecessor, when the confirmation literal is missing or wrong, or when the
+predecessor process still exists, and a second run reports the already
+released lease without changing anything.
+
+```bash
+firm daemon recover-predecessor --confirm daemon-recover-predecessor \
+  --evidence-ref "operator: pid 11823 and its provider process groups are gone"
+```
 
 `team-run start` is an accepted-command boundary, not a fire-and-forget hint.
 If the request was sent but the response socket times out or closes, the CLI
