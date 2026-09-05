@@ -87,11 +87,8 @@ coverage_roots = [
     "docs/mental",
     "docs/current/dashboard/pages",
     "docs/current/integration",
-    "plugins",
 ]
-coverage_exclude = [
-    "plugins/star-harness/skills/shared-references/agent-team-mental-model.md",
-]
+coverage_exclude = []
 
 [retired_vocabulary]
 terms = [
@@ -142,9 +139,9 @@ context_markers = [
 
 # Retired skill names must never reappear under any skill_roots entry —
 # including ignored or untracked local copies (the skills gate scans the
-# filesystem). Each name is either archived under archive/skills/ or was
-# deleted with its methodology relocated into
-# docs/current/documentation-governance.md (bootstrap-project-workflow).
+# filesystem). Retired skill sources live only in git history (ADR 0063);
+# bootstrap-project-workflow's methodology was relocated into
+# docs/current/documentation-governance.md.
 [retired_skills]
 names = [
     "bootstrap-project-workflow",

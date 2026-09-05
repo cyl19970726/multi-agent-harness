@@ -228,7 +228,6 @@ const sourceRoots = [
   "docs/current",
   "docs/mental",
   "docs/registry.json",
-  "plugins/star-harness",
 ];
 const sourceExtensions = new Set([".rs", ".ts", ".tsx", ".js", ".mjs", ".json", ".md"]);
 const thisScript = "scripts/check-member-execution-trust.mjs";

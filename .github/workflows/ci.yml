@@ -31,7 +31,7 @@ jobs:
           node-version: 24
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      # check:fast includes the current-HEAD Dynamic Workflow retirement proof.
+      # check:fast starts with the retired-path boundary (ADR 0063).
       - run: pnpm check:fast
   rust:
     runs-on: ubuntu-latest

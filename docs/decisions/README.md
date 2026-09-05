@@ -60,6 +60,7 @@ consequences, affected modules, and validation path.
 | [0060](0060-source-lifecycle-projection-folds.md) | accepted; DEV-74 implementation | Canonical WorkDelivery revisions and HostAttention source/lifecycle rows fold deterministically and fail closed on identity, version, or transition conflicts |
 | [0061](0061-retire-harness-coordination-mcp.md) | accepted; DEV-100 implementation | `firm` CLI is the sole Agent-facing Harness coordination transport; the duplicate Harness MCP server is deleted without migration |
 | [0062](0062-host-owned-work-peer-acceptance.md) | accepted; DEV-102 implementation | Member Work remains Host-reviewed; Host-owned Work requires one exact active non-owner peer in the same TeamRun, without a Reviewer ledger |
+| [0063](0063-retire-plugin-package-and-in-repo-retirement-evidence.md) | accepted; 2026-09-05 cleanup | The plugin package, the in-repo Dynamic Workflow retirement register/archive, archived operator skills, superseded specs, and the skill evaluation workspace live only in git history (last tree `918e9002`); one retired-path gate replaces four path-policing gates and the installer publishes the binary only |
 
 ## Split Rule
 

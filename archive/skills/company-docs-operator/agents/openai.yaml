@@ -1,4 +1,0 @@
-interface:
-  display_name: "Company Docs Operator"
-  short_description: "Operate Company OS Docs, page contracts, records, relations, and views"
-  default_prompt: "Use $company-docs-operator to design page contracts and mutate Company OS Docs through governed CLI/API while preserving Docs, Work, Org, Finance, and UI truth boundaries."

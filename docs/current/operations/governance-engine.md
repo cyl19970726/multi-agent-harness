@@ -78,8 +78,8 @@ names = ["company-org-operator"]
 `[retired_skills]` lists skill names that are retired and archived: the
 `skills` gate fails when a directory (or a symlink to one) directly under any
 `skill_roots` entry carries one of these names, so an ignored or untracked
-local copy is caught the same as a committed one. Archived copies outside the
-skill roots (for example `archive/skills/`) are not scanned.
+local copy is caught the same as a committed one. Copies outside the skill
+roots are not scanned; retired skill sources live only in git history (ADR 0063).
 
 A project with docs in `book/` sets `doc_roots` accordingly; an mdBook project
 drops the `[registry]` block and keeps `links` + `size`.

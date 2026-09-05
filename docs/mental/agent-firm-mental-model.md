@@ -138,4 +138,5 @@ This document lives in `docs/mental/` — the canonical directory for mental mod
 2. Cascade to skills (`collaborate-as-agent-team-member`)
 3. Add "superseded by docs/mental/agent-firm-mental-model.md" to affected ADRs
 4. Run `node scripts/check-cross-layer-consistency.mjs`
-5. Run `bash scripts/manage-star-harness-install.sh --apply`
+5. Refresh any snapshot copies with `scripts/install-skill.sh --agent both --scope user`
+   (agents inside this repository read the `.agents/skills` symlinks directly)

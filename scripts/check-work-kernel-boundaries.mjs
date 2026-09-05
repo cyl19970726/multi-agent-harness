@@ -23,20 +23,12 @@ function read(path) {
 }
 
 const historicalVocabularyAllowlist = new Map([
-  ["collab-skill-workspace/iteration-1/eval-2/old_skill/outputs/answer.md", "frozen Skill evaluation output"],
-  ["collab-skill-workspace/iteration-1/review.html", "frozen Skill evaluation report"],
-  ["collab-skill-workspace/skill-snapshot/SKILL.md", "frozen pre-cutover Skill snapshot"],
   ["docs/current/operations/evidence/dev-7-wave6-two-mac-v2/source-work.jsonl", "immutable acceptance evidence"],
   ["docs/current/operations/evidence/dev-7-wave6-two-mac-v2/target-work.jsonl", "immutable acceptance evidence"],
   ["docs/current/operations/evidence/dev-7-wave6-two-mac-v3/source-work.jsonl", "immutable acceptance evidence"],
   ["docs/current/operations/evidence/dev-7-wave6-two-mac-v3/target-work.jsonl", "immutable acceptance evidence"],
   ["docs/decisions/0050-agent-team-work-board-and-message-boundary.md", "amended historical ADR body preserved by ADR 0058"],
   ["docs/decisions/0058-work-dependency-dag-and-kernel-boundary.md", "supersession rationale names the retired vocabulary"],
-  ["specs/nested-agent-team-organization/design.md", "superseded design evidence"],
-  ["specs/nested-agent-team-organization/requirements.md", "superseded requirements evidence"],
-  ["specs/nested-agent-team-organization/tasks.md", "superseded task evidence"],
-  ["specs/organization-company-work/design.md", "superseded Company OS design evidence"],
-  ["specs/organization-company-work/exploration.md", "superseded Company OS research evidence"],
   ["scripts/check-work-kernel-boundaries.mjs", "the gate must name the forbidden vocabulary"],
 ]);
 
@@ -422,7 +414,7 @@ for (const path of repositoryFiles.filter((candidate) => candidate.startsWith("s
   }
 }
 
-const maintainedRoots = ["apps/", "crates/", "docs/current/", "plugins/star-harness/skills/", "schemas/", "scripts/", "skills/"];
+const maintainedRoots = ["apps/", "crates/", "docs/current/", "schemas/", "scripts/", "skills/"];
 const lineCheckedExtensions = new Set([".js", ".mjs", ".md", ".rs", ".ts", ".tsx"]);
 for (const path of repositoryFiles) {
   if (!maintainedRoots.some((prefix) => path.startsWith(prefix))) continue;

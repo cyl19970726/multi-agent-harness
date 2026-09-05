@@ -16,8 +16,7 @@
 #             claude | codex | both  → copy skills to the respective fixed dirs.
 #             kimi                   → prints the Kimi Code skill model and exits;
 #                                      Kimi loads skills from cwd/--skills-dir, not
-#                                      a fixed install directory. See the Star Harness
-#                                      plugin README for details.
+#                                      a fixed install directory.
 #   --scope   project = <cwd>, user = $HOME                  (default: project)
 #   --dest    explicit base dir (overrides --scope)
 #   --skill   install an explicit current skill directory (repeatable)
@@ -29,8 +28,8 @@
 #   curl -fsSL https://raw.githubusercontent.com/cyl19970726/multi-agent-harness/master/scripts/install-skill.sh | bash -s -- --agent both
 #
 # The copy is a snapshot: it does not track the repository. Re-run this script
-# after pulling, or prefer the plugin marketplace / the in-repo
-# .agents/skills symlinks, which always resolve to the current source. A copy
+# after pulling, or (inside this repository) use the .agents/skills symlinks,
+# which always resolve to the current source. A copy
 # without a references/ directory beside SKILL.md predates the two-role
 # contract and shadows the current skill until refreshed.
 set -euo pipefail
@@ -61,8 +60,8 @@ done
 
 expand_suite() {
   case "$1" in
-    # The company-os suite was retired by DOC-108; its operator skills moved
-    # to archive/skills/ and are no longer installable.
+    # The company-os suite was retired by DOC-108; its operator skills live
+    # only in git history (ADR 0063) and are no longer installable.
     collaboration)
       echo "collaborate-as-agent-team-member shared-references"
       ;;
@@ -152,13 +151,10 @@ To use Star Harness skills with Kimi:
   • Start a Kimi Code session inside that directory.
   • Or pass --skills-dir <path> pointing at the skills root.
 
-For the Star Harness plugin (collaborate-as-agent-team-member,
-shared-references, hooks, MCP), see:
-  plugins/star-harness/README.md
-  plugins/star-harness/kimi.plugin.json
-
-The kimi.plugin.json descriptor is prepared for a future native Kimi
-plugin installer; do not claim it is globally installed today.
+Star Harness ships no Kimi plugin (ADR 0063 retired the plugin package).
+Copy or symlink skills/collaborate-as-agent-team-member and
+skills/shared-references into the directory you start Kimi from, or pass
+--skills-dir pointing at a checkout's skills/ directory.
 KIMIEOF
   exit 0
 fi

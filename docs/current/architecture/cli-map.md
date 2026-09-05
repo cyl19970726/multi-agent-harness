@@ -45,11 +45,12 @@ error and are documented here only as retired compatibility.
 
 Active repository skills:
 
-- `skills/collaborate-as-agent-team-member` (mirrored into the Star Harness plugin)
-- `skills/shared-references` (cross-reference, mirrored)
+- `skills/collaborate-as-agent-team-member` (reached through the `.agents/skills` symlinks)
+- `skills/shared-references` (cross-reference)
 
 The retired Company OS operator skills and the Mission-orchestration skill were
-archived to `archive/skills/` with the DOC-108 cutover and must not be
+retired with the DOC-108 cutover (their sources live only in git history,
+ADR 0063) and must not be
 installed or treated as current operating contracts. Skills are
 distribution/operator guidance. They are not the authority for product
 architecture; canonical truth remains schemas, store/API, CLI routing, UI,

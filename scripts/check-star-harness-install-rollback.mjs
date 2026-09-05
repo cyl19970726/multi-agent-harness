@@ -13,6 +13,7 @@ import {
   rmSync,
   symlinkSync,
   writeFileSync,
+  realpathSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -58,23 +59,9 @@ function createFixture() {
 
   write(join(repo, "scripts/manage-star-harness-install.sh"), installerSource, true);
   write(join(repo, "scripts/star-harness-install-fs.rs"), installerFsSource);
-  for (const script of [
-    "sync-star-harness-plugin-skills.mjs",
-    "check-star-harness-plugin.mjs",
-    "check-star-harness-hook.mjs",
-    "check-cross-layer-consistency.mjs",
-  ]) {
-    write(join(repo, "scripts", script), "// isolated installer fixture\n");
-  }
-  write(
-    join(repo, "plugins/star-harness/.codex-plugin/plugin.json"),
-    `${JSON.stringify({ version: "fixture" })}\n`,
-  );
-  write(join(repo, "plugins/star-harness/kimi.plugin.json"), "{}\n");
-  write(join(repo, "plugins/star-harness/scripts/star-harness-hook.sh"), "#!/bin/sh\n");
-  mkdirSync(join(repo, "plugins/star-harness/skills"), { recursive: true });
-  mkdirSync(join(repo, "plugins/star-harness/commands"), { recursive: true });
-  write(join(repo, ".claude-plugin/marketplace.json"), "{}\n");
+  write(join(repo, "scripts/check-cross-layer-consistency.mjs"), "// isolated installer fixture\n");
+  // The installer reads its version from the firm-cli crate (ADR 0063).
+  write(join(repo, "crates/firm-cli/Cargo.toml"), '[package]\nname = "firm-cli"\nversion = "fixture"\n');
   mkdirSync(join(repo, "apps/claude-member-runner"), { recursive: true });
   mkdirSync(join(repo, "apps/deepseek-member-runner"), { recursive: true });
   write(
@@ -159,6 +146,19 @@ function createFixture() {
     [
       "#!/bin/sh",
       'if [ "${FAKE_PROCESS_EXISTENCE_UNKNOWN:-0}" = 1 ]; then case "$*" in *process.kill*) exit 1 ;; esac; fi',
+      '# Preflight: the cross-layer check is the only repository gate the installer runs before the lock.',
+      'case "$*" in *check-cross-layer-consistency.mjs*) if [ "${FAKE_PREFLIGHT_FAIL:-0}" = 1 ]; then exit 47; fi ;; esac',
+      '# Post-publication: the success state write is the first command after both links are live.',
+      '# It passes "-" plus seven fields (8 argv entries); the failure state write passes ten fields.',
+      'if [ "$1" = "-" ] && [ "$#" -eq 8 ]; then',
+      '  if [ "${FAKE_BLOCK_LOCK_RELEASE:-0}" = 1 ]; then touch "${STAR_HARNESS_BIN_LINK}.star-harness-install.lock/residual"; fi',
+      '  if [ -n "${FAKE_HOLD_READY:-}" ]; then touch "${FAKE_HOLD_READY}"; while [ ! -e "${FAKE_HOLD_RELEASE}" ]; do sleep 0.01; done; fi',
+      '  if [ "${FAKE_FAIL_AFTER_PUBLICATION:-0}" = 1 ]; then',
+      '    if [ -n "${FAKE_FOREIGN_TARGET:-}" ]; then ln -sfn "${FAKE_FOREIGN_TARGET}" "${STAR_HARNESS_BIN_LINK}"; fi',
+      '    if [ "${FAKE_RECREATE_SAME_TARGET:-0}" = 1 ]; then target=$(readlink "${STAR_HARNESS_BIN_LINK}"); unlink "${STAR_HARNESS_BIN_LINK}"; ln -s "$target" "${STAR_HARNESS_BIN_LINK}"; fi',
+      '    exit 42',
+      '  fi',
+      'fi',
       'case "$*" in',
       "  *symlinkSync*.star-harness-install.lock*)",
       '    if [ -n "${FAKE_SIGNAL_AFTER_LOCK_EFFECT:-}" ] || [ "${FAKE_BLOCK_LOCK_ON_ACQUIRE:-0}" = 1 ]; then',
@@ -208,30 +208,6 @@ function createFixture() {
     true,
   );
   write(
-    join(fakeBin, "codex"),
-    [
-      "#!/bin/sh",
-      'if [ "$1 $2" = "plugin list" ] && [ "${FAKE_CODEX_LIST_FAIL:-0}" = 1 ]; then exit 47; fi',
-      'if [ "$1 $2" = "plugin add" ]; then',
-      '  if [ "${FAKE_BLOCK_LOCK_RELEASE:-0}" = 1 ]; then touch "${STAR_HARNESS_BIN_LINK}.star-harness-install.lock/residual"; fi',
-      '  if [ -n "${FAKE_HOLD_READY:-}" ]; then touch "${FAKE_HOLD_READY}"; while [ ! -e "${FAKE_HOLD_RELEASE}" ]; do sleep 0.01; done; fi',
-      '  if [ "${FAKE_FAIL_AFTER_PUBLICATION:-0}" = 1 ]; then',
-      '    if [ -n "${FAKE_FOREIGN_TARGET:-}" ]; then ln -sfn "${FAKE_FOREIGN_TARGET}" "${STAR_HARNESS_BIN_LINK}"; fi',
-      '    if [ "${FAKE_RECREATE_SAME_TARGET:-0}" = 1 ]; then target=$(readlink "${STAR_HARNESS_BIN_LINK}"); unlink "${STAR_HARNESS_BIN_LINK}"; ln -s "$target" "${STAR_HARNESS_BIN_LINK}"; fi',
-      "    exit 42",
-      "  fi",
-      "fi",
-      "exit 0",
-      "",
-    ].join("\n"),
-    true,
-  );
-  write(
-    join(fakeBin, "claude"),
-    "#!/bin/sh\nif [ \"$1 $2\" = 'plugin install' ] && [ \"${FAKE_CLAUDE_FAIL_AFTER_PUBLICATION:-0}\" = 1 ]; then exit 42; fi\nexit 0\n",
-    true,
-  );
-  write(
     join(fakeBin, "unlink"),
     "#!/bin/sh\nif [ \"${FAKE_UNLINK_HOLD_PATH:-}\" = \"$1\" ]; then touch \"${FAKE_UNLINK_HOLD_READY}\"; while [ ! -e \"${FAKE_UNLINK_HOLD_RELEASE}\" ]; do sleep 0.01; done; fi\nif [ \"${FAKE_UNLINK_FAIL_PATH:-}\" = \"$1\" ]; then exit 43; fi\nexec /bin/rm -f -- \"$1\"\n",
     true,
@@ -262,7 +238,8 @@ function applyEnvironment(fixture, extraEnv = {}) {
     STAR_HARNESS_FIRM_LINK: fixture.firmLink,
     STAR_HARNESS_INSTALL_ROOT: join(fixture.root, "install"),
     STAR_HARNESS_STATE_ROOT: join(fixture.root, "state"),
-    KIMI_CODE_HOME: join(fixture.root, "kimi"),
+    // The fixture is not a git checkout; keep discovery from escaping into one.
+    GIT_CEILING_DIRECTORIES: realpathSync(fixture.root),
   };
 }
 
@@ -374,10 +351,10 @@ withFixture((fixture) => {
 });
 
 withFixture((fixture) => {
-  rmSync(join(fixture.fakeBin, "claude"));
+  rmSync(join(fixture.fakeBin, "npm"));
   const result = runApply(fixture, { PATH: `${fixture.fakeBin}:/bin:/usr/bin` });
   assert.equal(result.status, 1);
-  assert.match(result.stderr, /missing required command: claude/);
+  assert.match(result.stderr, /missing required command: npm/);
   const state = readFailureState(fixture);
   assert.equal(state.status, "failed_before_binary_publication");
   assert.equal(state.install_lock_status, "not_acquired");
@@ -385,7 +362,7 @@ withFixture((fixture) => {
 });
 
 withFixture((fixture) => {
-  const result = runApply(fixture, { FAKE_CODEX_LIST_FAIL: "1" });
+  const result = runApply(fixture, { FAKE_PREFLIGHT_FAIL: "1" });
   assert.equal(result.status, 47, "apply preflight failures retain their native exit code");
   const state = readFailureState(fixture);
   assert.equal(state.status, "failed_before_binary_publication");
@@ -672,7 +649,7 @@ withFixture((fixture) => {
   const foreignTarget = join(fixture.root, "rollback-race-owner");
   write(foreignTarget, "#!/bin/sh\nexit 0\n", true);
   const result = runApply(fixture, {
-    FAKE_CLAUDE_FAIL_AFTER_PUBLICATION: "1",
+    FAKE_FAIL_AFTER_PUBLICATION: "1",
     FAKE_FOREIGN_BEFORE_ROLLBACK: foreignTarget,
   });
   assert.equal(result.status, 42, "rollback reconciliation preserves the primary failure");
@@ -684,7 +661,7 @@ withFixture((fixture) => {
 
 withFixture((fixture) => {
   const result = runApply(fixture, {
-    FAKE_CLAUDE_FAIL_AFTER_PUBLICATION: "1",
+    FAKE_FAIL_AFTER_PUBLICATION: "1",
     FAKE_DIRECTORY_BEFORE_ROLLBACK: "1",
   });
   assert.equal(result.status, 42);
@@ -702,7 +679,7 @@ withFixture((fixture) => {
   symlinkSync(previousTarget, fixture.binLink);
   const previousIdentity = lstatSync(fixture.binLink);
   const result = runApply(fixture, {
-    FAKE_CLAUDE_FAIL_AFTER_PUBLICATION: "1",
+    FAKE_FAIL_AFTER_PUBLICATION: "1",
     FAKE_DELETE_BEFORE_ROLLBACK: "1",
   });
   assert.equal(result.status, 42);
@@ -734,7 +711,7 @@ withFixture((fixture) => {
 
 withFixture((fixture) => {
   const result = runApply(fixture, {
-    FAKE_CLAUDE_FAIL_AFTER_PUBLICATION: "1",
+    FAKE_FAIL_AFTER_PUBLICATION: "1",
     FAKE_UNLINK_FAIL_PATH: fixture.binLink,
   });
   assert.equal(result.status, 42, "rollback failure must preserve the original installer exit code");
@@ -759,7 +736,7 @@ withFixture((fixture) => {
   symlinkSync(previousTarget, fixture.binLink);
   const previousIdentity = lstatSync(fixture.binLink);
   const result = runApply(fixture, {
-    FAKE_CLAUDE_FAIL_AFTER_PUBLICATION: "1",
+    FAKE_FAIL_AFTER_PUBLICATION: "1",
     FAKE_HELPER_FAIL_RESTORE_AFTER_EFFECT: "1",
   });
   assert.equal(result.status, 42);
@@ -779,7 +756,7 @@ withFixture((fixture) => {
   mkdirSync(dirname(fixture.binLink), { recursive: true });
   symlinkSync(previousTarget, fixture.binLink);
   const result = runApply(fixture, {
-    FAKE_CLAUDE_FAIL_AFTER_PUBLICATION: "1",
+    FAKE_FAIL_AFTER_PUBLICATION: "1",
     FAKE_HELPER_FAIL_RESTORE: "1",
   });
   assert.equal(result.status, 42);
@@ -957,7 +934,7 @@ withFixture((fixture) => {
 withFixture((fixture) => {
   const result = runApply(fixture, {
     FAKE_BLOCK_LOCK_RELEASE: "1",
-    FAKE_CLAUDE_FAIL_AFTER_PUBLICATION: "1",
+    FAKE_FAIL_AFTER_PUBLICATION: "1",
   });
   assert.equal(result.status, 42, "cleanup failures cannot replace the primary exit code");
   const state = readFailureState(fixture);

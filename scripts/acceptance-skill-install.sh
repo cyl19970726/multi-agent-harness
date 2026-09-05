@@ -14,22 +14,6 @@ work="$(mktemp -d)"
 cleanup() { rm -rf "$work"; }
 trap cleanup EXIT
 
-echo "== A0: only the current Star Harness plugin is advertised =="
-if python3 - "$repo_root" <<'PY'
-import json, pathlib, sys
-root = pathlib.Path(sys.argv[1])
-market = json.loads((root / ".claude-plugin/marketplace.json").read_text())
-plugins = market.get("plugins", [])
-assert not (root / ".claude-plugin/plugin.json").exists()
-assert [entry.get("name") for entry in plugins] == ["star-harness"]
-assert all(entry.get("source") != "./skills/star-workflow" for entry in plugins)
-PY
-then
-  ok "marketplace advertises only star-harness"
-else
-  bad "retired standalone plugin remains active"
-fi
-
 echo "== A1: default collaboration install is complete =="
 project="$work/project"
 mkdir -p "$project"
@@ -87,8 +71,8 @@ fi
 echo "== A4: Kimi guidance remains current =="
 kimi_output="$(bash "$repo_root/scripts/install-skill.sh" --agent kimi 2>&1)" || true
 if [[ "$kimi_output" == *"--skills-dir"* ]] \
-  && [[ "$kimi_output" == *"plugins/star-harness/README.md"* ]]; then
-  ok "Kimi guidance points to current discovery and plugin paths"
+  && [[ "$kimi_output" == *"skills/collaborate-as-agent-team-member"* ]]; then
+  ok "Kimi guidance points to current discovery paths"
 else
   bad "Kimi guidance is incomplete"
 fi

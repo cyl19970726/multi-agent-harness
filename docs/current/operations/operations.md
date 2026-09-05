@@ -206,28 +206,42 @@ NativeSessionRef, AgentSession generation and provider attempt all match.
 
 ## Harness And Provider Update Windows
 
-Validate the repository's unified Harness/Plugin source and compare it with the
-local installation:
+Compare the repository source with the local Harness installation:
 
 ```bash
 pnpm star-harness:install:check
 ```
 
-After the source commit is accepted and published in the repository
-marketplace, install it with:
+After the source commit is accepted, install it with:
 
 ```bash
 pnpm star-harness:install
 ```
 
-This builds a versioned Harness binary, updates the stable binary links —
-`harness` (primary) and `firm` (alias) both point at the same versioned
-binary, and the command examples in these docs use `firm` — converges Codex
-and Claude on the Git marketplace copy, removes the duplicate
-Codex personal copy, and records the installation under
-`~/.local/state/star-harness/installations/`. Start new Codex and Claude
-sessions after applying it. Existing sessions keep the Plugin and Provider
-runtime they already loaded.
+This builds the Harness binary from the checkout, publishes it under a
+per-revision directory (`~/.local/lib/star-harness/<crate-version>+g<sha>/`,
+together with the Claude and DeepSeek member runners), atomically updates the
+stable binary links — `harness` (primary) and `firm` (alias) both point at the
+same versioned binary, and the command examples in these docs use `firm` —
+and records the installation under `~/.local/state/star-harness/installations/`.
+Existing sessions keep the binary they loaded; start new member sessions after
+applying it.
+
+ADR 0063 retired the Star Harness plugin package, so the installer no longer
+touches Codex, Claude, or Kimi plugin marketplaces. Machines that installed the
+plugin before that cutover remove it once:
+
+```bash
+codex plugin remove star-harness@multi-agent-harness && codex plugin marketplace remove multi-agent-harness
+```
+
+```bash
+claude plugin uninstall star-harness@multi-agent-harness --scope user && claude plugin marketplace remove multi-agent-harness --scope user
+```
+
+```bash
+rm -rf ~/.kimi-code/plugins/managed/star-harness
+```
 
 ### Collaboration skill distribution
 
@@ -240,11 +254,10 @@ paths:
   `skills/` sources, so Codex (`.agents/skills`), Claude Code
   (`.claude/skills` → `.agents/skills`), and Kimi (`--skills-dir
   .agents/skills`) members dogfooding in this checkout read the current file.
-- **Other projects / user scope**: the plugin marketplace copy is regenerated
-  from the same sources by `scripts/sync-star-harness-plugin-skills.mjs`.
-  `scripts/install-skill.sh` copies a snapshot; a copy without a `references/`
-  directory beside `SKILL.md` predates the two-role contract and must be
-  refreshed (`scripts/install-skill.sh --agent both --scope user`) or removed,
+- **Other projects / user scope**: `scripts/install-skill.sh` copies a
+  snapshot (`--agent both --scope user`); there is no plugin marketplace copy
+  any more (ADR 0063). A copy without a `references/` directory beside
+  `SKILL.md` predates the two-role contract and must be refreshed or removed,
   otherwise it shadows the current skill.
 
 The Host waiting protocol (`firm team-run wait`) is part of that contract; a

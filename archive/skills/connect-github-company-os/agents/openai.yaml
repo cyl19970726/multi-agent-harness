@@ -1,4 +1,0 @@
-interface:
-  display_name: "Connect GitHub to Company OS"
-  short_description: "Link GitHub source and delivery facts to Company OS truth."
-  default_prompt: "Use $connect-github-company-os to map this repository, issue, PR, and checks into Company OS safely."

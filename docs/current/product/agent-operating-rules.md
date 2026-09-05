@@ -82,7 +82,8 @@ firm team-run work assign --work-id <work-id> --expected-version <version> \
 - Scenario execution rosters and research budgets (for example the current
   dogfood roster) are scenario policy, not repository-wide invariants: they
   live in [docs/current/operations/operations.md](../../../docs/current/operations/operations.md) and the owning scenario
-  skill ([archive/skills/dogfood-company-os/SKILL.md](../../../archive/skills/dogfood-company-os/SKILL.md) (archived with the DOC-108 cutover))
+  skill (`dogfood-company-os`, archived with the DOC-108 cutover; its source
+  lives only in git history per ADR 0063)
   and must not be broadened into root instructions.
 - Prefer the progression `doc -> skill -> schema -> CLI/API -> dashboard ->
   plugin`. The Agent Dashboard is the operator view for harness state; product

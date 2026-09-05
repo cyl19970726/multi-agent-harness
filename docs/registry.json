@@ -311,8 +311,7 @@
         "docs/current/operations/workflow-git-pr.md",
         "docs/current/integration/codex.md",
         "docs/current/integration/codex-message-delivery.md",
-        "docs/current/operations/operations.md",
-        "archive/dynamic-workflow/assets/earning-engine/README.md"
+        "docs/current/operations/operations.md"
       ],
       "machineConsumers": [
         "check-doc-links",
@@ -1389,7 +1388,6 @@
         "docs/current/integration/claude.md",
         "docs/decisions/0011-provider-neutral-runtime.md",
         "docs/decisions/0031-interactive-provider-modes-and-version-drift.md",
-        "archive/dynamic-workflow/assets/earning-engine/adapter.json",
         "crates/firm-core/src/lib.rs",
         "schemas/agent-member.schema.json",
         "docs/current/integration/kimi.md"
@@ -2491,8 +2489,7 @@
       "lastVerifiedWith": [
         "cargo test -p firm-cli -- --test-threads=1",
         "npx pnpm@9.15.4 check",
-        "npx pnpm@9.15.4 acceptance:legacy-retirement",
-        "npx pnpm@9.15.4 check:star-harness-plugin"
+        "npx pnpm@9.15.4 acceptance:legacy-retirement"
       ],
       "reorgTrigger": "Historical Host-plan Wave interpretation, retained Mission-Team cardinality, TeamRun lifecycle, or the CLI/MCP boundary changes.",
       "authorityClass": "historical_evidence",
@@ -2654,8 +2651,7 @@
       ],
       "reviewAfter": "2026-09-30",
       "lastVerifiedWith": [
-        "npx pnpm@9.15.4 acceptance:legacy-retirement",
-        "npx pnpm@9.15.4 check:star-harness-plugin"
+        "npx pnpm@9.15.4 acceptance:legacy-retirement"
       ],
       "reorgTrigger": "Mailbox delivery semantics, coordination message shapes, Member autonomy, or provider-native execution boundary changes.",
       "authorityClass": "canonical_contract",
@@ -2695,13 +2691,11 @@
       ],
       "machineConsumers": [
         "check-doc-links",
-        "check-doc-governance",
-        "check:star-harness-plugin"
+        "check-doc-governance"
       ],
       "reviewAfter": "2026-09-13",
       "lastVerifiedWith": [
-        "harness governance check",
-        "npx pnpm@9.15.4 check:star-harness-plugin"
+        "harness governance check"
       ],
       "reorgTrigger": "Execution-driver ownership, completion policy, native continuation capabilities, permission continuity, or Member acceptance semantics change.",
       "authorityClass": "canonical_contract",
@@ -2898,7 +2892,6 @@
       "reviewAfter": "2026-09-29",
       "lastVerifiedWith": [
         "npx pnpm@9.15.4 acceptance:legacy-retirement",
-        "npx pnpm@9.15.4 check:star-harness-plugin",
         "harness governance check"
       ],
       "reorgTrigger": "Dogfood loop scope, Team/Work runtime projection, or acceptance boundary changes.",
@@ -3205,245 +3198,6 @@
       "reorgTrigger": "The durable Agent identity, recursive Team hierarchy, Work kernel, local Host authority, or Supervising Operator boundary changes.",
       "authorityClass": "historical_evidence",
       "implementationState": "design_only",
-      "truthRefs": []
-    },
-    {
-      "path": "specs/nested-agent-team-organization/requirements.md",
-      "ownerRole": "product-architecture",
-      "status": "deprecated",
-      "lifecycle": "archival",
-      "canonicalFor": [
-        "nested Agent Team Organization product requirements and acceptance"
-      ],
-      "dependsOn": [
-        "docs/decisions/0052-nested-agent-teams-are-the-agent-organization.md"
-      ],
-      "machineConsumers": [
-        "check-doc-links",
-        "check-doc-governance"
-      ],
-      "reviewAfter": "2026-10-04",
-      "lastVerifiedWith": [
-        "npx pnpm@9.15.4 check:docs-governance"
-      ],
-      "reorgTrigger": "Product behavior, actors, Work authority, recursive delegation, UI acceptance, or non-goals change.",
-      "authorityClass": "historical_evidence",
-      "implementationState": "design_only",
-      "truthRefs": [
-        {
-          "kind": "decision",
-          "ref": "docs/decisions/0052-nested-agent-teams-are-the-agent-organization.md"
-        }
-      ]
-    },
-    {
-      "path": "specs/nested-agent-team-organization/design.md",
-      "ownerRole": "product-architecture",
-      "status": "deprecated",
-      "lifecycle": "archival",
-      "canonicalFor": [
-        "nested Agent Team Organization technical design and migration boundary"
-      ],
-      "dependsOn": [
-        "docs/decisions/0050-agent-team-work-board-and-message-boundary.md",
-        "docs/decisions/0052-nested-agent-teams-are-the-agent-organization.md"
-      ],
-      "machineConsumers": [
-        "check-doc-links",
-        "check-doc-governance"
-      ],
-      "reviewAfter": "2026-10-04",
-      "lastVerifiedWith": [
-        "npx pnpm@9.15.4 check:docs-governance"
-      ],
-      "reorgTrigger": "Target schemas, authority table, delivery, recovery, CLI/API, UI, migration, or tests change.",
-      "authorityClass": "historical_evidence",
-      "implementationState": "design_only",
-      "truthRefs": []
-    },
-    {
-      "path": "specs/nested-agent-team-organization/tasks.md",
-      "ownerRole": "product-architecture",
-      "status": "deprecated",
-      "lifecycle": "archival",
-      "canonicalFor": [
-        "nested Agent Team Organization implementation and dogfood task sequence"
-      ],
-      "dependsOn": [],
-      "machineConsumers": [
-        "check-doc-links",
-        "check-doc-governance"
-      ],
-      "reviewAfter": "2026-11-19",
-      "lastVerifiedWith": [
-        "npx pnpm@9.15.4 check:docs-governance"
-      ],
-      "reorgTrigger": "Implementation sequencing, migration gates, UI contract, provider recovery acceptance, or dogfood scope changes.",
-      "authorityClass": "historical_evidence",
-      "implementationState": "design_only",
-      "truthRefs": []
-    },
-    {
-      "path": "plugins/star-harness/README.md",
-      "ownerRole": "platform",
-      "status": "stable",
-      "lifecycle": "stable",
-      "canonicalFor": [
-        "Star Harness plugin entry point and scope"
-      ],
-      "dependsOn": [],
-      "machineConsumers": [
-        "check-doc-links",
-        "check-doc-governance"
-      ],
-      "reviewAfter": "2026-09-03",
-      "lastVerifiedWith": [
-        "npx pnpm@9.15.4 check:star-harness-plugin"
-      ],
-      "reorgTrigger": "Plugin scope, commands, or skill mirroring changes.",
-      "authorityClass": "implementation_reference",
-      "implementationState": "partial",
-      "truthRefs": []
-    },
-    {
-      "path": "plugins/star-harness/commands/dashboard.md",
-      "ownerRole": "platform",
-      "status": "stable",
-      "lifecycle": "stable",
-      "canonicalFor": [
-        "Star Harness dashboard command specification"
-      ],
-      "dependsOn": [
-        "plugins/star-harness/README.md"
-      ],
-      "machineConsumers": [
-        "check-doc-governance"
-      ],
-      "reviewAfter": "2026-09-03",
-      "lastVerifiedWith": [
-        "npx pnpm@9.15.4 check:star-harness-plugin"
-      ],
-      "reorgTrigger": "Dashboard command spec changes.",
-      "authorityClass": "implementation_reference",
-      "implementationState": "partial",
-      "truthRefs": []
-    },
-    {
-      "path": "plugins/star-harness/commands/status.md",
-      "ownerRole": "platform",
-      "status": "stable",
-      "lifecycle": "stable",
-      "canonicalFor": [
-        "Star Harness status command specification"
-      ],
-      "dependsOn": [
-        "plugins/star-harness/README.md"
-      ],
-      "machineConsumers": [
-        "check-doc-governance"
-      ],
-      "reviewAfter": "2026-09-03",
-      "lastVerifiedWith": [
-        "npx pnpm@9.15.4 check:star-harness-plugin"
-      ],
-      "reorgTrigger": "Status command spec changes.",
-      "authorityClass": "implementation_reference",
-      "implementationState": "partial",
-      "truthRefs": []
-    },
-    {
-      "path": "plugins/star-harness/commands/team-start.md",
-      "ownerRole": "platform",
-      "status": "stable",
-      "lifecycle": "stable",
-      "canonicalFor": [
-        "Star Harness team-start command specification"
-      ],
-      "dependsOn": [
-        "plugins/star-harness/README.md"
-      ],
-      "machineConsumers": [
-        "check-doc-governance"
-      ],
-      "reviewAfter": "2026-09-03",
-      "lastVerifiedWith": [
-        "npx pnpm@9.15.4 check:star-harness-plugin"
-      ],
-      "reorgTrigger": "Team-start command spec changes.",
-      "authorityClass": "implementation_reference",
-      "implementationState": "partial",
-      "truthRefs": []
-    },
-    {
-      "path": "plugins/star-harness/commands/team-status.md",
-      "ownerRole": "platform",
-      "status": "stable",
-      "lifecycle": "stable",
-      "canonicalFor": [
-        "Star Harness team-status command specification"
-      ],
-      "dependsOn": [
-        "plugins/star-harness/README.md"
-      ],
-      "machineConsumers": [
-        "check-doc-governance"
-      ],
-      "reviewAfter": "2026-09-03",
-      "lastVerifiedWith": [
-        "npx pnpm@9.15.4 check:star-harness-plugin"
-      ],
-      "reorgTrigger": "Team-status command spec changes.",
-      "authorityClass": "implementation_reference",
-      "implementationState": "partial",
-      "truthRefs": []
-    },
-    {
-      "path": "plugins/star-harness/skills/collaborate-as-agent-team-member/SKILL.md",
-      "ownerRole": "platform",
-      "status": "stable",
-      "lifecycle": "stable",
-      "canonicalFor": [
-        "Star Harness collaborate-as-agent-team-member skill mirror"
-      ],
-      "dependsOn": [
-        "plugins/star-harness/README.md",
-        "skills/collaborate-as-agent-team-member/SKILL.md"
-      ],
-      "machineConsumers": [
-        "check-doc-governance"
-      ],
-      "reviewAfter": "2026-10-04",
-      "lastVerifiedWith": [
-        "npx pnpm@9.15.4 check:star-harness-plugin",
-        "node scripts/check-cross-layer-consistency.mjs"
-      ],
-      "reorgTrigger": "Skill mirroring or plugin skill contract changes.",
-      "authorityClass": "implementation_reference",
-      "implementationState": "partial",
-      "truthRefs": []
-    },
-    {
-      "path": "plugins/star-harness/skills/shared-references/SKILL.md",
-      "ownerRole": "platform",
-      "status": "stable",
-      "lifecycle": "stable",
-      "canonicalFor": [
-        "Star Harness shared-references skill mirror"
-      ],
-      "dependsOn": [
-        "plugins/star-harness/README.md",
-        "skills/shared-references/SKILL.md"
-      ],
-      "machineConsumers": [
-        "check-doc-governance"
-      ],
-      "reviewAfter": "2026-09-03",
-      "lastVerifiedWith": [
-        "npx pnpm@9.15.4 check:star-harness-plugin"
-      ],
-      "reorgTrigger": "Skill mirroring or plugin skill contract changes.",
-      "authorityClass": "implementation_reference",
-      "implementationState": "partial",
       "truthRefs": []
     },
     {
@@ -3799,28 +3553,27 @@
       "status": "stable",
       "lifecycle": "volatile",
       "canonicalFor": [
-        "canonical Host + Member Agent Team collaboration contract (shared mental model; source of the plugin mirror)"
+        "canonical Host + Member Agent Team collaboration contract (shared mental model; reached through the .agents/skills symlinks)"
       ],
       "dependsOn": [],
       "truthRefs": [
         {
           "kind": "test",
-          "ref": "scripts/sync-star-harness-plugin-skills.mjs"
+          "ref": "scripts/check-runtime-message-fabric.mjs"
         },
         {
           "kind": "test",
-          "ref": "scripts/check-runtime-message-fabric.mjs"
+          "ref": "scripts/check-cross-layer-consistency.mjs"
         }
       ],
       "machineConsumers": [
         "scripts/check-runtime-message-fabric.mjs",
-        "scripts/sync-star-harness-plugin-skills.mjs"
+        "scripts/check-cross-layer-consistency.mjs"
       ],
       "reorgTrigger": "skill contract changes",
       "authorityClass": "canonical_contract",
       "lastVerifiedWith": [
         "node scripts/check-runtime-message-fabric.mjs",
-        "node scripts/sync-star-harness-plugin-skills.mjs --check",
         "node scripts/check-cross-layer-consistency.mjs"
       ],
       "implementationState": "implemented",
@@ -3832,22 +3585,22 @@
       "status": "stable",
       "lifecycle": "volatile",
       "canonicalFor": [
-        "canonical shared hard-invariants reference (source of the plugin mirror)"
+        "canonical shared hard-invariants reference (reached through the .agents/skills symlinks)"
       ],
       "dependsOn": [],
       "truthRefs": [
         {
           "kind": "test",
-          "ref": "scripts/sync-star-harness-plugin-skills.mjs"
+          "ref": "scripts/check-cross-layer-consistency.mjs"
         }
       ],
       "machineConsumers": [
-        "scripts/sync-star-harness-plugin-skills.mjs"
+        "scripts/check-cross-layer-consistency.mjs"
       ],
       "reorgTrigger": "skill contract changes",
       "authorityClass": "canonical_contract",
       "lastVerifiedWith": [
-        "node scripts/sync-star-harness-plugin-skills.mjs --check"
+        "node scripts/check-cross-layer-consistency.mjs"
       ],
       "implementationState": "implemented",
       "reviewAfter": "2026-11-18"
@@ -3955,62 +3708,6 @@
       "reviewAfter": "2026-11-18",
       "reorgTrigger": "Provider observation binding, owner boundary, or projection rules change.",
       "authorityClass": "canonical_contract"
-    },
-    {
-      "path": "plugins/star-harness/skills/collaborate-as-agent-team-member/references/host-loop.md",
-      "ownerRole": "product",
-      "status": "stable",
-      "lifecycle": "volatile",
-      "canonicalFor": [
-        "Host operating loop (generated mirror of the canonical skill reference)"
-      ],
-      "dependsOn": [
-        "skills/collaborate-as-agent-team-member/SKILL.md"
-      ],
-      "truthRefs": [
-        {
-          "kind": "test",
-          "ref": "scripts/sync-star-harness-plugin-skills.mjs"
-        }
-      ],
-      "machineConsumers": [
-        "scripts/sync-star-harness-plugin-skills.mjs"
-      ],
-      "lastVerifiedWith": [
-        "node scripts/sync-star-harness-plugin-skills.mjs --check"
-      ],
-      "implementationState": "implemented",
-      "reviewAfter": "2026-11-18",
-      "reorgTrigger": "Canonical skill reference changes.",
-      "authorityClass": "implementation_reference"
-    },
-    {
-      "path": "plugins/star-harness/skills/collaborate-as-agent-team-member/references/member-loop.md",
-      "ownerRole": "product",
-      "status": "stable",
-      "lifecycle": "volatile",
-      "canonicalFor": [
-        "Member operating loop (generated mirror of the canonical skill reference)"
-      ],
-      "dependsOn": [
-        "skills/collaborate-as-agent-team-member/SKILL.md"
-      ],
-      "truthRefs": [
-        {
-          "kind": "test",
-          "ref": "scripts/sync-star-harness-plugin-skills.mjs"
-        }
-      ],
-      "machineConsumers": [
-        "scripts/sync-star-harness-plugin-skills.mjs"
-      ],
-      "lastVerifiedWith": [
-        "node scripts/sync-star-harness-plugin-skills.mjs --check"
-      ],
-      "implementationState": "implemented",
-      "reviewAfter": "2026-11-18",
-      "reorgTrigger": "Canonical skill reference changes.",
-      "authorityClass": "implementation_reference"
     }
   ]
 }

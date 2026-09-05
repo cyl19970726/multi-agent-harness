@@ -1,4 +1,0 @@
-interface:
-  display_name: "Company Page Builder"
-  short_description: "Build governed custom Company OS pages from Store page contracts"
-  default_prompt: "Use $company-page-builder to create expected visuals, implement, and verify a governed custom page from an approved module design and Store-backed page contract."

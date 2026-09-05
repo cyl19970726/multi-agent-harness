@@ -1,4 +1,0 @@
-interface:
-  display_name: "Company Work Operator"
-  short_description: "Query and route authoritative TeamWork from Company OS"
-  default_prompt: "Use $company-work-operator to inspect Company Work as a read-only TeamWork aggregate, route mutations to team-run work, and manage Milestone or Approval references without creating a second task object."
