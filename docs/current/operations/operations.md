@@ -548,7 +548,7 @@ printed as `blocked, not restarted — <reason>`:
 | --- | --- |
 | `provider_compatibility` | the provider review gate (`harness member providers --fail-on-review`), which clears the typed cause with the status |
 | `provider_capacity` | a successful capacity probe, through the preflight's own recovery |
-| `zero_output_degradation` | the Host, by messaging or steering the member (only once the streak reaches the degradation threshold) |
+| `zero_output_degradation` | explicit Host reconciliation through `team-run close-member` + `team-run reopen-member`. Messaging a `Blocked` member cannot restart it: `claim_member_provider_start` admits only `Queued`/`Idle`/`Disconnected` and `decide_wake` keeps a streak-at-threshold member asleep, so a message never reaches the provider; the detached-blocked close (`close_detached_blocked_member_for_recovery`) is what resets `zero_output_streak`, and the reopened member returns to `Queued` |
 
 Clearing one of those by hand would strand its evidence — and for a
 compatibility block the typed cause is bound to `blocked` by validation, so a

@@ -13,7 +13,6 @@ pub(super) enum MemberRecoveryPath {
     RestartBlockedDetachedLane,
     /// The member is Blocked by a gate that owns its own recovery. Reported
     /// with the reason, never restarted here.
-    ///
     BlockedByTypedProvenance { provenance: BlockedMemberProvenance },
     /// Native session exists and supports resume — reopen the member.
     ResumeCompatible,
@@ -26,12 +25,13 @@ pub(super) enum MemberRecoveryPath {
 impl MemberRecoveryPath {
     /// The stable snake label an operator reads on the orientation line.
     ///
-    /// `serde_snake_label` answers "unknown" for any variant carrying data,
-    /// because those serialize to an object rather than a string — so the two
-    /// pre-existing data-carrying variants already rendered as
-    /// `recovery=unknown`, and the provenance variant would have joined them.
-    /// The reason each one carries is reported separately; this is only the
-    /// name of the decision.
+    /// Hand-written rather than serde's: the three unit variants also moved
+    /// from PascalCase (`RestartBlockedDetachedLane`) to snake_case
+    /// (`restart_blocked_detached_lane`), and variants carrying data
+    /// serialize to an object rather than a string, so a derived label would
+    /// answer "unknown" for them. No consumer parses the line — the reason
+    /// each variant carries is reported separately; this is only the name of
+    /// the decision.
     pub(super) fn label(&self) -> &'static str {
         match self {
             Self::AlreadyActive => "already_active",

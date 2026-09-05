@@ -540,7 +540,7 @@ pub(crate) fn run_team_member_with_adapter<A: TeamRuntimeAdapter<Error = CliErro
         supports_inject,
         provider,
         display,
-        wake_policy: WakePolicy::default(),
+        wake_policy: crate::supervisor_wake::effective_wake_policy(),
         wake_backoff: WakeBackoff::new(),
         zero_output_streak,
         last_consumed_work_version,
