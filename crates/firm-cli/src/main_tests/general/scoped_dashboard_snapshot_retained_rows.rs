@@ -507,6 +507,17 @@ fn retained_projected_rows_remain_bounded_with_200_unrelated_team_runs_and_works
     let scoped = source_snapshot;
 
     let baseline_counts = projected_row_counts(&scoped);
+    // #264 follow-up reference for the post-scale identity check: the
+    // filtered-global reference cannot be REBUILT after the raw scale append
+    // — the raw rows deliberately lack canonical Host bindings, and the
+    // global builder fails closed on them — so capture it now. The whole
+    // #264 claim is that unrelated rows never enter the selected run's
+    // projection, so this reference is exactly what a filtered-global built
+    // after the append would contain.
+    let mut filtered_global_reference =
+        dashboard_team_run_snapshot_via_global(&store, &selected.team_run.id)
+            .expect("filtered-global reference before the scale append");
+    filtered_global_reference["generated_at"] = serde_json::Value::Null;
     let seed_run = selected.team_run.clone();
     let seed_operation = store
         .work_operations()
@@ -551,6 +562,18 @@ fn retained_projected_rows_remain_bounded_with_200_unrelated_team_runs_and_works
     assert_eq!(
         after_counts, baseline_counts,
         "retained/projected target rows must not grow with unrelated TeamRuns or Works"
+    );
+    // #264 follow-up: the scoped == filtered-global identity held before the
+    // 200-row scale append (:471-473); it must also hold at scale. The scoped
+    // snapshot after the append must equal the pre-append filtered-global
+    // reference byte-for-byte — which both re-proves the identity and proves
+    // the unrelated raw rows changed nothing in the selected run's
+    // projection.
+    let mut scoped_after = after;
+    scoped_after["generated_at"] = serde_json::Value::Null;
+    assert_eq!(
+        scoped_after, filtered_global_reference,
+        "scoped == filtered-global identity must still hold at scale: the scoped snapshot after the raw append must equal the pre-append filtered-global reference"
     );
 
     let projection_estimate = scoped_total_elapsed.saturating_sub(raw_deserialization_elapsed);

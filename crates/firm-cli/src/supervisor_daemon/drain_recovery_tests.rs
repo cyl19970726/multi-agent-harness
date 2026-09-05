@@ -205,6 +205,7 @@ pub(super) fn drain_fixture(label: &str) -> DrainFixture {
         stop_requested: Arc::new(AtomicBool::new(false)),
         authority_shutdown: Arc::new(AtomicBool::new(false)),
         authority_lost: AtomicBool::new(false),
+        machine_authority_loss: Mutex::new(None),
         control_worker_failed: AtomicBool::new(false),
         recovery_blocked_runs: Mutex::new(HashMap::new()),
         settling_runs: Mutex::new(HashSet::new()),

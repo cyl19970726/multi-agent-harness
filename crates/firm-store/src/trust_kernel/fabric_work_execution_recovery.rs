@@ -14,6 +14,14 @@
 //! so the ordinary dispatch path mints a fresh binding generation and a fresh
 //! delivery on the next Supervisor pass.
 //!
+//! A `Claimed` (pre-receipt) delivery is covered by the same rule even though
+//! no receipt row proves the provider ever answered: the claim may have
+//! reached the provider before the crash. Superseding it is still safe
+//! because the caller has already proved this generation's provider process
+//! groups terminated, the killed turn is never replayed, and the next
+//! dispatch mints a fresh binding generation — never a replay of the claimed
+//! attempt.
+//!
 //! #734's shape — an Active binding with a `ProviderReceived` delivery after a
 //! non-clean MemberRun generation advance — is deliberately NOT handled here.
 //! Superseding it automatically would change the shipped Close/Reopen contract,

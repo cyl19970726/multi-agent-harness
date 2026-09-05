@@ -352,6 +352,12 @@ fn submit_result(
             "submission requires the exact current Work revision",
         ));
     }
+    // #787: a READY_FOR_REVIEW submission that names a candidate revision
+    // must carry the mandatory Verbatim evidence. Read-only/verification
+    // submissions (no candidate revision) skip this check entirely.
+    if let Some(candidate_revision) = &submission.candidate_revision {
+        validate_submission_evidence(&submission.result_summary, candidate_revision)?;
+    }
     let candidate_revision = submission
         .candidate_revision
         .filter(|value| !value.trim().is_empty())
@@ -673,4 +679,94 @@ pub fn current_work(
 
 fn conflict(code: &str, message: &str) -> StoreError {
     StoreError::Conflict(format!("{code}: {message}"))
+}
+
+/// #787: the mandatory Verbatim evidence for a READY_FOR_REVIEW submission
+/// that names a candidate revision — a pure string check on the submitted
+/// text; it never inspects a repository.
+///
+/// The candidate must itself be the exact full 40-hex commit SHA (an
+/// abbreviated revision is refused), the result summary must contain that
+/// exact SHA, and it must carry the literal `git status --porcelain` text.
+/// Each refusal names which requirement failed.
+fn validate_submission_evidence(
+    result_summary: &str,
+    candidate_revision: &str,
+) -> Result<(), StoreError> {
+    let trimmed = candidate_revision.trim();
+    if trimmed.len() != 40 || !trimmed.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err(conflict(
+            "WORK_SUBMISSION_EVIDENCE_MISSING",
+            &format!(
+                "candidate-revision must be the exact full 40-hex commit SHA, got {candidate_revision:?}"
+            ),
+        ));
+    }
+    if !result_summary.contains(trimmed) {
+        return Err(conflict(
+            "WORK_SUBMISSION_EVIDENCE_MISSING",
+            "result_summary does not contain the exact full 40-hex candidate SHA",
+        ));
+    }
+    if !result_summary.contains("git status --porcelain") {
+        return Err(conflict(
+            "WORK_SUBMISSION_EVIDENCE_MISSING",
+            "result_summary does not contain the literal `git status --porcelain` evidence",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const SHA: &str = "0123456789abcdef0123456789abcdef01234567";
+
+    #[test]
+    fn submission_evidence_accepts_sha_and_porcelain() {
+        let summary =
+            format!("SHA {SHA} on branch.\ngit status --porcelain: empty\nGates: fmt exit 0");
+        validate_submission_evidence(&summary, SHA).expect("compliant submission");
+    }
+
+    #[test]
+    fn submission_evidence_refuses_a_summary_without_the_sha() {
+        let error = validate_submission_evidence("git status --porcelain: empty", SHA)
+            .expect_err("missing SHA must be refused");
+        let message = error.to_string();
+        assert!(
+            message.contains("WORK_SUBMISSION_EVIDENCE_MISSING"),
+            "{message}"
+        );
+        assert!(message.contains("full 40-hex candidate SHA"), "{message}");
+    }
+
+    #[test]
+    fn submission_evidence_refuses_a_summary_without_porcelain() {
+        let summary = format!("SHA {SHA} on branch.");
+        let error = validate_submission_evidence(&summary, SHA)
+            .expect_err("missing porcelain text must be refused");
+        let message = error.to_string();
+        assert!(
+            message.contains("WORK_SUBMISSION_EVIDENCE_MISSING"),
+            "{message}"
+        );
+        assert!(message.contains("git status --porcelain"), "{message}");
+    }
+
+    #[test]
+    fn submission_evidence_refuses_an_abbreviated_candidate() {
+        let error = validate_submission_evidence(
+            "SHA abcdef01 on branch.\ngit status --porcelain: empty",
+            "abcdef01",
+        )
+        .expect_err("an abbreviated candidate must be refused");
+        let message = error.to_string();
+        assert!(
+            message.contains("WORK_SUBMISSION_EVIDENCE_MISSING"),
+            "{message}"
+        );
+        assert!(message.contains("full 40-hex commit SHA"), "{message}");
+    }
 }

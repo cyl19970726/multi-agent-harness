@@ -18,6 +18,8 @@ mod provider_received_work_attempt;
 mod remote_fabric_health;
 #[path = "role_views_api/standalone_codex_session.rs"]
 mod standalone_codex_session;
+#[path = "role_views_api/submission_evidence_refusal.rs"]
+mod submission_evidence_refusal;
 
 use action_matrix_and_projection::{
     assert_action_matrix_and_final_projections, ActionMatrixContext,
@@ -1222,6 +1224,15 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
         "progress replay with changed If-Match must fail: {changed_progress}"
     );
 
+    // #787: a submission that names a candidate revision but omits the
+    // mandatory Verbatim evidence is refused before any durable effect.
+    submission_evidence_refusal::assert_submission_evidence_refusals(
+        &serve,
+        &store,
+        run_id,
+        &project_id,
+    );
+
     let submit_route = format!(
         "/v1/agentfirm/team-runs/{run_id}/works/work-store-live-1/submit?project={project_id}"
     );
@@ -1230,7 +1241,7 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
         &submit_route,
         &serde_json::json!({
             "action":"submit_work",
-            "result_summary":"Store-live loop complete",
+            "result_summary":"SHA 0123456789abcdef0123456789abcdef01234567: Store-live loop complete.\ngit status --porcelain: empty",
             "candidate_revision":"0123456789abcdef0123456789abcdef01234567",
             "check_refs":["check:role-action-loop"]
         }),
@@ -1244,7 +1255,7 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
         &submit_route,
         &serde_json::json!({
             "action":"submit_work",
-            "result_summary":"Store-live loop complete",
+            "result_summary":"SHA 0123456789abcdef0123456789abcdef01234567: Store-live loop complete.\ngit status --porcelain: empty",
             "candidate_revision":"0123456789abcdef0123456789abcdef01234567",
             "check_refs":["check:role-action-loop"]
         }),
@@ -1258,7 +1269,7 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
         &submit_route,
         &serde_json::json!({
             "action":"submit_work",
-            "result_summary":"Store-live loop complete",
+            "result_summary":"SHA 0123456789abcdef0123456789abcdef01234567: Store-live loop complete.\ngit status --porcelain: empty",
             "candidate_revision":"0123456789abcdef0123456789abcdef01234567",
             "check_refs":["check:role-action-loop"]
         }),
@@ -1272,7 +1283,7 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
         &submit_route,
         &serde_json::json!({
             "action":"submit_work",
-            "result_summary":"different candidate",
+            "result_summary":"SHA 0123456789abcdef0123456789abcdef01234567: a DIFFERENT compliant summary.\ngit status --porcelain: empty",
             "candidate_revision":"0123456789abcdef0123456789abcdef01234567",
             "check_refs":["check:role-action-loop"]
         }),

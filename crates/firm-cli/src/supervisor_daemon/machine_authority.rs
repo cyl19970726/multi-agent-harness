@@ -56,10 +56,18 @@ impl MultiTeamDaemon {
         // must stop preparing new provider effects immediately.
         harness_store::close_process_node_daemon_admission(&self.daemon_id, &self.instance_id);
         self.authority_lost.store(true, Ordering::SeqCst);
+        // Snapshot the served runs before publishing Stop. The serve loop
+        // drains `contexts` as soon as it observes that flag, so reversing
+        // these two operations could lose the Host-visible event targets.
+        let first_loss = self.capture_machine_authority_loss(failures);
         self.stop_requested.store(true, Ordering::SeqCst);
         let mut failures = failures.to_vec();
         if let Err(error) = self.drain_node_authorities() {
             failures.push(format!("machine-wide admission drain: {error}"));
+        }
+        if first_loss {
+            self.journal_machine_authority_loss_phase("renewal_failed", &[]);
+            self.journal_machine_authority_loss_phase("lease_lost", &[]);
         }
         CliError::Usage(format!(
             "NODE_DAEMON_MACHINE_AUTHORITY_LOST: {}",
@@ -388,6 +396,28 @@ impl MultiTeamDaemon {
                 ttl_ms,
             )
             .map_err(CliError::Store)
+    }
+
+    #[cfg(test)]
+    pub(super) fn supersede_node_authority_for_test(&self, store: &HarnessStore) -> CliResult<()> {
+        let lease = store
+            .latest_node_daemon_lease(&self.node_id)?
+            .ok_or_else(|| CliError::Usage("test NodeDaemon lease is missing".into()))?;
+        store.release_node_daemon_lease(
+            &self.node_id,
+            &self.daemon_id,
+            lease.generation,
+            &self.instance_id,
+            current_unix_ms_u64(),
+        )?;
+        store.acquire_node_daemon_lease(
+            &self.node_id,
+            "node-daemon:successor",
+            "successor-instance",
+            current_unix_ms_u64(),
+            60_000,
+        )?;
+        Ok(())
     }
 
     /// Release this generation's lease in every registered Execution Space.

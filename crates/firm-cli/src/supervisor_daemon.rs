@@ -29,12 +29,14 @@ use crate::{
 mod control_protocol;
 mod machine_authority;
 pub(crate) mod recovery;
+mod self_stop_events;
 mod shutdown;
 mod team_supervision;
 use machine_authority::{
     daemon_control_generation_authorized, node_authority_refresh_interval, AuthorityReleaseReport,
 };
 pub(crate) use recovery::reconcile_team_run_start_postcondition;
+use self_stop_events::MachineAuthorityLoss;
 
 const SIGINT: i32 = 2;
 const SIGTERM: i32 = 15;
@@ -190,6 +192,10 @@ pub(crate) struct MultiTeamDaemon {
     /// this instance's exact lease, no Space may admit another provider
     /// effect and this process may only drain/settle its predecessor bundle.
     authority_lost: AtomicBool,
+    /// First machine-authority failure plus the TeamRuns served when it was
+    /// latched. Shutdown drains `contexts`, so this snapshot keeps the
+    /// Host-visible self-stop journal complete through the final phase.
+    machine_authority_loss: Mutex<Option<MachineAuthorityLoss>>,
     /// Latches an accepted worker that panicked or returned without proving
     /// command completion. Such a generation may drain but never Release.
     control_worker_failed: AtomicBool,
@@ -341,6 +347,7 @@ impl MultiTeamDaemon {
             stop_requested: shutdown_sig,
             authority_shutdown: Arc::new(AtomicBool::new(false)),
             authority_lost: AtomicBool::new(false),
+            machine_authority_loss: Mutex::new(None),
             control_worker_failed: AtomicBool::new(false),
             recovery_blocked_runs: Mutex::new(HashMap::new()),
             settling_runs: Mutex::new(HashSet::new()),

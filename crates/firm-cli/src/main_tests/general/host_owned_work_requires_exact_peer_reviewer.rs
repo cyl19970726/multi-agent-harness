@@ -1,5 +1,9 @@
 use super::*;
 
+/// Full 40-hex candidate revision used by this fixture's compliant
+/// submit_work payloads (the #787 submit gate requires SHA + porcelain).
+const SUBMIT_FIXTURE_SHA: &str = "3123456789abcdef0123456789abcdef01234567";
+
 fn create_assigned_review_work(
     store: &HarnessStore,
     created: &CreatedTeamRun,
@@ -115,8 +119,8 @@ fn advance_to_review(
         &format!("submit-{}", work.id),
         serde_json::json!({
             "action":"submit_work",
-            "result_summary":format!("{} candidate", work.id),
-            "candidate_revision":format!("revision:{}", work.id),
+            "result_summary":format!("SHA {}: {} candidate.\ngit status --porcelain: empty", SUBMIT_FIXTURE_SHA, work.id),
+            "candidate_revision":SUBMIT_FIXTURE_SHA,
             "artifact_refs":[format!("artifact:{}", work.id)]
         }),
         None,

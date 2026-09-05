@@ -107,6 +107,17 @@ resolution: Accepted | Cancelled | Failed       (exists only at Closed)
   completion status alone is never acceptance. Request-changes returns
   Review → Open; the scheduler then admits the next exact
   binding/delivery generation before the member can Start again.
+- **Acceptance does not wake a member.** A managed member's next provider
+  cycle starts only from three wake sources: a delivery of an assigned or
+  redelivered Work, a `response-required` Message, or the member's own
+  active Work. Host acceptance moves a Work to `Closed`; it never starts
+  the member's next cycle. So never park a Work `blocked` expecting
+  acceptance — or another Work's completion — to resume it. Keep the
+  standing Work active while running round Works when the one-Active-Work
+  rule allows; when parking is unavoidable, the block note must name the
+  exact Host action you wait for ("resume me with a response-required
+  message after W-x is accepted") so the Host can send the wake
+  deliberately.
 - **Assignment never travels by message.** Work assignment is a Work-module
   operation; a Message may explain, ask, or announce — it never changes Work
   owner or status.
@@ -271,6 +282,10 @@ Member essentials (full sequence in the member loop reference):
 "$FIRM_BIN" member message request-decision --body "<decision, options, recommendation>"
 ```
 
+While blocked, remember acceptance does not wake you: name the exact Host
+action you wait for in the block note; the resume arrives as a Work
+delivery or a `response-required` Message, never from acceptance itself.
+
 These Member commands are the authenticated Member Role Action of the
 server-built member view: the server resolves your AgentMember, current
 AgentSession generation, TeamMembership, Work scope, and NodeDaemon generation
@@ -301,6 +316,12 @@ Harness has no Plan Gate and it blocks headless members indefinitely (ADR
   4. for every gate the Work names: the exact command line, its verbatim
      final result line(s), and the captured exit code. A summary sentence
      ("all gates passed") is never acceptable as gate evidence.
+
+  The CLI enforces items 1 and 3: when `--candidate-revision` is supplied,
+  `member work submit` refuses a result summary that lacks the exact full
+  40-hex SHA or the literal `git status --porcelain` text with
+  `WORK_SUBMISSION_EVIDENCE_MISSING` (an abbreviated `--candidate-revision`
+  is refused with the same code).
 
 Short example (one gate shown; list every gate the Work names):
 

@@ -27,6 +27,7 @@ impl MultiTeamDaemon {
         forced_timeout: Duration,
     ) -> CliResult<()> {
         eprintln!("[node-daemon] graceful shutdown initiated");
+        self.journal_machine_authority_loss_phase("shutdown_initiated", &[]);
         self.session_runtimes
             .lock()
             .map_err(|_| {
@@ -83,6 +84,7 @@ impl MultiTeamDaemon {
         // guards. Terminate only PGIDs registered by providers in this exact
         // daemon process, then let their Supervisor threads observe EOF.
         let termination = harness_runtime_host::terminate_registered_process_groups();
+        let mut terminated_process_groups = termination.pids.clone();
         if !termination.pids.is_empty() {
             eprintln!(
                 "[node-daemon] terminated {} owned provider process group(s): {:?}",
@@ -119,6 +121,9 @@ impl MultiTeamDaemon {
         // closed throughout the forced join window, so each late registration
         // was synchronously killed and is reported here.
         let late_termination = harness_runtime_host::terminate_registered_process_groups();
+        terminated_process_groups.extend(late_termination.pids.iter().copied());
+        terminated_process_groups.sort_unstable();
+        terminated_process_groups.dedup();
         if !late_termination.pids.is_empty() {
             eprintln!(
                 "[node-daemon] terminated {} late owned provider process group(s): {:?}",
@@ -132,6 +137,10 @@ impl MultiTeamDaemon {
                 late_termination.signal_failures
             ));
         }
+        self.journal_machine_authority_loss_phase(
+            "process_groups_terminated",
+            &terminated_process_groups,
+        );
         if failures.is_empty() {
             // Every old Supervisor has joined and the final closed-admission
             // drain is empty of failures. A future daemon generation in this
@@ -143,6 +152,10 @@ impl MultiTeamDaemon {
             }
         }
         if failures.is_empty() {
+            self.journal_machine_authority_loss_phase(
+                "shutdown_complete",
+                &terminated_process_groups,
+            );
             Ok(())
         } else {
             Err(CliError::Usage(format!(
@@ -235,6 +248,7 @@ mod tests {
             stop_requested: Arc::new(AtomicBool::new(false)),
             authority_shutdown: Arc::new(AtomicBool::new(false)),
             authority_lost: AtomicBool::new(false),
+            machine_authority_loss: Mutex::new(None),
             control_worker_failed: AtomicBool::new(false),
             recovery_blocked_runs: Mutex::new(HashMap::new()),
             settling_runs: Mutex::new(HashSet::new()),
@@ -296,6 +310,7 @@ mod tests {
             stop_requested: Arc::new(AtomicBool::new(false)),
             authority_shutdown: Arc::new(AtomicBool::new(false)),
             authority_lost: AtomicBool::new(false),
+            machine_authority_loss: Mutex::new(None),
             control_worker_failed: AtomicBool::new(false),
             recovery_blocked_runs: Mutex::new(HashMap::new()),
             settling_runs: Mutex::new(HashSet::new()),

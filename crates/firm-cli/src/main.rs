@@ -459,6 +459,7 @@ fn project_err(e: project::ProjectError) -> CliError {
         project::ProjectError::NoHome => {
             CliError::Usage("could not determine home directory".to_string())
         }
+        project::ProjectError::ExternalStoreRoot(message) => CliError::Usage(message),
     }
 }
 
@@ -471,6 +472,9 @@ fn execution_space_err(error: execution_space::ExecutionSpaceError) -> CliError 
         )),
         execution_space::ExecutionSpaceError::NoHome => {
             CliError::Usage("could not determine harness home".to_string())
+        }
+        execution_space::ExecutionSpaceError::ExternalStoreRoot(message) => {
+            CliError::Usage(message)
         }
     }
 }
