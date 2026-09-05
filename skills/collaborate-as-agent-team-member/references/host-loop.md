@@ -234,6 +234,9 @@ Delivery repair belongs to you as well:
 ```bash
 # an Open, never-started Work frozen on a member generation that no longer runs
 firm team-run work redeliver --work-id <work-id> --expected-version <n> [--reason <text>]
+# a started Work whose execution is provably lost (binding invalidated by a
+# daemon drain/predecessor recovery, or frozen on a superseded generation)
+firm team-run work recover-lost-execution --work-id <work-id> --expected-version <n> [--reason <text>]
 # release a binding you are abandoning; move a Work to a successor run
 firm team-run work release --work-id <work-id> --expected-version <n>
 firm team-run work retarget --work-id <work-id> --expected-version <n> --successor-team-run-id <run>
@@ -243,6 +246,15 @@ firm team-run work retarget --work-id <work-id> --expected-version <n> --success
 `WORK_ALREADY_STARTED`, `WORK_NOT_ASSIGNED`, `WORK_HAS_NO_UNSTARTED_DELIVERY`,
 `WORK_DELIVERY_LIVE`, `EXECUTION_SPACE_SCOPE_MISMATCH`. A `Claimed` delivery
 that never settled is uncertain: reconcile it, never replay it.
+`recover-lost-execution` covers what `redeliver` refuses: a **started** Work
+stranded after `team-run recover` (the daemon invalidated its binding but the
+Work is not Open) or a binding frozen on a MemberRun generation that advanced
+without a clean Close. It refuses `WORK_EXECUTION_AUTHORITY_LIVE` while the
+binding's generations are still current and `WORK_EXECUTION_NOT_LOST` when
+nothing is lost; `team-run recover` lists candidates as
+`lost_execution_works`. After it, the next Supervisor pass re-delivers the
+Work and the member claims/starts it again — never `cancel` plus a re-issued
+Work.
 
 Cross-Team needs are an explicit `WorkDelegation` from a source Work you own
 to a target Work in the other flat Team; target completion never
@@ -265,7 +277,9 @@ firm team-run recover --id <run>                                                
 - `reopen-member` resumes the **exact native session** under a new runtime
   generation after delivery reconciliation — the member returns with its
   memory intact. Prefer this over any fresh spawn. A Work that was delivered
-  but never started before the Close needs `work redeliver` afterwards.
+  but never started before the Close needs `work redeliver` afterwards; a
+  Work the member had already started and whose binding a daemon settlement
+  invalidated needs `work recover-lost-execution`.
 - `deactivate-member` retires the coordination identity permanently;
   unfinished Work must be reassigned or cancelled first.
 - After a service restart, the new Supervisor generation fences the old one;

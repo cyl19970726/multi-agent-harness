@@ -112,7 +112,7 @@ the browser does not write graph semantics or infer readiness.
 Mutation surface (all executable Work mutations):
 
 ```bash
-firm team-run work list|show|create|assign|redeliver|claim|start|block|resume
+firm team-run work list|show|create|assign|redeliver|recover-lost-execution|claim|start|block|resume
 firm team-run work release|submit|review|request-changes|accept|cancel|retarget
 firm team-run work reconcile-projection|poll-github-ci
 ```
@@ -122,6 +122,20 @@ firm team-run work reconcile-projection|poll-github-ci
 supersedes that delivery in an explicit `Rebound` WorkOperation without
 touching the delivery row or moving responsibility. See
 [member-continuation-model.md](../architecture/member-continuation-model.md).
+
+`recover-lost-execution` is the Host authority for a Work whose execution is
+provably lost: a started Work whose `WorkExecutionBinding` a NodeDaemon drain
+or predecessor recovery invalidated, or a binding frozen on a MemberRun /
+AgentSession generation that can never pass the runtime fence again (GitHub
+#799, #734). It releases such a binding through the lost-runtime-generation
+writer (the claim id and provider receipt stay on the event as evidence; no
+provider outcome is asserted) and appends one `ExecutionRecovered`
+WorkOperation that returns the Work to `Open` with the same assignee and an
+advanced revision, so the ordinary delivery path re-delivers it. It fails
+closed with `WORK_EXECUTION_AUTHORITY_LIVE` while the binding's generations
+are still the member's current runtime authority, and with
+`WORK_EXECUTION_NOT_LOST` when nothing is lost. `team-run recover` lists
+candidates as `lost_execution_works`.
 
 `firm work list` (DOC-106) replaces the retired `firm company work
 list/query`; it reads native Work read-only and never falls back to the

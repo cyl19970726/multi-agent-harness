@@ -40,6 +40,10 @@ pub enum LostRuntimeGenerationCause {
     /// The Operator recovered a crashed predecessor generation with exact
     /// process/process-group termination evidence.
     NodeDaemonPredecessorRecovery,
+    /// The Host proved from durable epochs alone that the binding's exact
+    /// MemberRun/AgentSession generation can never pass the runtime fence
+    /// again, and recovered the Work (`team-run work recover-lost-execution`).
+    HostLostExecutionRecovery,
 }
 
 impl LostRuntimeGenerationCause {
@@ -48,6 +52,7 @@ impl LostRuntimeGenerationCause {
         match self {
             Self::NodeDaemonDrain => "node_daemon_drain",
             Self::NodeDaemonPredecessorRecovery => "node_daemon_predecessor_recovery",
+            Self::HostLostExecutionRecovery => "host_lost_execution_recovery",
         }
     }
 
@@ -59,6 +64,9 @@ impl LostRuntimeGenerationCause {
             }
             Self::NodeDaemonPredecessorRecovery => {
                 firm_core::agentfirm_api::WORK_DELIVERY_SUPERSEDED_BY_NODE_DAEMON_PREDECESSOR_RECOVERY
+            }
+            Self::HostLostExecutionRecovery => {
+                firm_core::agentfirm_api::WORK_DELIVERY_SUPERSEDED_BY_HOST_LOST_EXECUTION_RECOVERY
             }
         }
     }
@@ -153,6 +161,117 @@ impl HarnessStore {
             invalidated.push(observed);
         }
         Ok(invalidated)
+    }
+
+    /// Release one binding whose exact runtime generation the Host proved
+    /// gone from durable epochs (`team-run work recover-lost-execution`).
+    ///
+    /// A `Claimed` or `ProviderReceived` delivery is superseded through the
+    /// same writer a NodeDaemon settlement uses, so the claim id and provider
+    /// receipt stay on the event as evidence and no provider outcome is ever
+    /// asserted. A `Queued` delivery was never handed to a provider and fails
+    /// with the ordinary released-before-claim code. The caller must already
+    /// hold the Store write lock and must already have proved the loss.
+    pub(crate) fn release_lost_execution_binding_unlocked(
+        &self,
+        context: &MutationContext,
+        binding: &WorkExecutionBinding,
+        evidence: &Value,
+        ended_at: &str,
+    ) -> StoreResult<(
+        CanonicalMutationResult<WorkExecutionBinding>,
+        Option<InvalidatedWorkExecution>,
+    )> {
+        if !matches!(
+            binding.status,
+            WorkExecutionBindingStatus::Offered
+                | WorkExecutionBindingStatus::Accepted
+                | WorkExecutionBindingStatus::Active
+        ) {
+            return Err(trust_error(
+                TrustErrorCode::InvalidStateTransition,
+                "only an executable WorkExecutionBinding can be released as a lost execution",
+                "work_execution_binding",
+                &binding.id,
+                Some(binding.version),
+            ));
+        }
+        let mut delivery = self
+            .canonical_fabric_work_deliveries_unlocked(&context.execution_space_id)?
+            .remove(&binding.delivery_id)
+            .ok_or_else(|| {
+                trust_error(
+                    TrustErrorCode::InvalidStateTransition,
+                    "lost-execution WorkExecutionBinding release requires its exact canonical WorkDelivery",
+                    "work_delivery",
+                    &binding.delivery_id,
+                    None,
+                )
+            })?;
+        let cause = LostRuntimeGenerationCause::HostLostExecutionRecovery;
+        if matches!(
+            delivery.status,
+            WorkDeliveryStatus::Claimed | WorkDeliveryStatus::ProviderReceived
+        ) {
+            let (result, observed) = self.supersede_lost_generation_work_execution_unlocked(
+                context, binding, delivery, cause, evidence, ended_at,
+            )?;
+            return Ok((result, Some(observed)));
+        }
+        if delivery.work_execution_binding_id != binding.id
+            || delivery.work_id != binding.work_id
+            || delivery.work_revision != binding.work_revision
+        {
+            return Err(trust_error(
+                TrustErrorCode::InvalidStateTransition,
+                "lost-execution WorkExecutionBinding release found conflicting canonical delivery evidence",
+                "work_execution_binding",
+                &binding.id,
+                Some(binding.version),
+            ));
+        }
+        let status_before = delivery.status;
+        let mut side_records = Vec::new();
+        if delivery.status == WorkDeliveryStatus::Queued {
+            delivery.status = WorkDeliveryStatus::Failed;
+            delivery.failure_code =
+                Some("WORK_EXECUTION_BINDING_RELEASED_BEFORE_CLAIM".to_string());
+            delivery.version += 1;
+            delivery.updated_at = ended_at.to_string();
+            side_records.push(serde_json::to_value(&delivery)?);
+        }
+        let request_payload = serde_json::json!({
+            "lost_runtime_generation": {
+                "cause": cause.reason(),
+                "agent_session_id": binding.agent_session_id,
+                "agent_session_generation": binding.agent_session_generation,
+                "evidence": evidence,
+            },
+            "superseded_delivery": {
+                "delivery_id": delivery.id,
+                "status_before_supersession": status_before,
+                "claim_id": delivery.claim_id,
+                "claimed_node_daemon_generation": delivery.claimed_node_daemon_generation,
+                "provider_receipt_id": delivery.provider_receipt_id,
+                "failure_code": delivery.failure_code,
+            },
+            "ended_at": ended_at,
+        });
+        let mut released = binding.clone();
+        released.status = WorkExecutionBindingStatus::Released;
+        released.version += 1;
+        released.ended_at = Some(ended_at.to_string());
+        let result = self.commit_trust_projection_unlocked(
+            context,
+            "work_execution_binding",
+            &binding.id,
+            "invalidated_by_lost_runtime_generation",
+            request_payload,
+            &released,
+            side_records,
+            Vec::new(),
+        )?;
+        Ok((result, None))
     }
 
     /// Release one exact Active binding and supersede its in-flight delivery.

@@ -78,6 +78,13 @@ pub fn validate_work_transition(
         | WorkEventKind::Updated
         | WorkEventKind::Rebound
         | WorkEventKind::ExecutionRetargeted => before == after,
+        // A lost execution returns an open or started Work to the dispatchable
+        // state; the responsibility fields are untouched by this rule.
+        WorkEventKind::ExecutionRecovered => {
+            matches!(before.0, WorkPhase::Open | WorkPhase::Active)
+                && before.2.is_none()
+                && after == (WorkPhase::Open, WorkCondition::Normal, None)
+        }
         WorkEventKind::Created => false,
     };
 

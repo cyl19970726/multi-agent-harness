@@ -7,15 +7,19 @@ use super::*;
 /// reaches the provider, the member never starts it, and the Host then closes
 /// and reopens the member runtime. The frozen delivery can never be claimed
 /// again, so the Host needs an explicit redelivery verb.
-struct ReopenedMemberFixture {
-    store: HarnessStore,
-    session: AgentSession,
-    membership: TeamMembership,
-    runtime_binding: firm_core::agentfirm_api::RuntimeCommandBinding,
-    member_run_id: String,
+pub(super) struct ReopenedMemberFixture {
+    pub(super) store: HarnessStore,
+    pub(super) session: AgentSession,
+    pub(super) membership: TeamMembership,
+    pub(super) runtime_binding: firm_core::agentfirm_api::RuntimeCommandBinding,
+    pub(super) member_run_id: String,
 }
 
-fn host_context(store: &HarnessStore, event: &str, key: &str) -> firm_core::WorkCommandContext {
+pub(super) fn host_context(
+    store: &HarnessStore,
+    event: &str,
+    key: &str,
+) -> firm_core::WorkCommandContext {
     let actor = store.exact_team_run_host_actor("run-admission").unwrap();
     firm_core::WorkCommandContext {
         event_id: event.into(),
@@ -28,7 +32,11 @@ fn host_context(store: &HarnessStore, event: &str, key: &str) -> firm_core::Work
     }
 }
 
-fn member_context(member_run_id: &str, event: &str, key: &str) -> firm_core::WorkCommandContext {
+pub(super) fn member_context(
+    member_run_id: &str,
+    event: &str,
+    key: &str,
+) -> firm_core::WorkCommandContext {
     firm_core::WorkCommandContext {
         event_id: event.into(),
         performed_by_actor: firm_core::TeamActorRef {
@@ -45,7 +53,7 @@ fn member_context(member_run_id: &str, event: &str, key: &str) -> firm_core::Wor
     }
 }
 
-fn reopened_member_fixture(suffix: &str) -> (ReopenedMemberFixture, PathBuf) {
+pub(super) fn reopened_member_fixture(suffix: &str) -> (ReopenedMemberFixture, PathBuf) {
     let (store, root) = fabric_store();
     let member_id = format!("worker-{suffix}");
     let member_run_id = format!("member-run-{suffix}");
@@ -103,7 +111,7 @@ fn reopened_member_fixture(suffix: &str) -> (ReopenedMemberFixture, PathBuf) {
 
 /// Bind, dispatch, and settle one provider receipt for `work` without the
 /// member ever starting it.
-fn deliver_to_provider(
+pub(super) fn deliver_to_provider(
     fixture: &ReopenedMemberFixture,
     work: &firm_core::Work,
     suffix: &str,
