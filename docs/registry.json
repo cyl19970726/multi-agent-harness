@@ -3123,7 +3123,7 @@
       "status": "stable",
       "lifecycle": "stable",
       "canonicalFor": [
-        "MemberRun Close, Reopen, Retire, mailbox freezing, runtime generations, and provider-native history continuity"
+        "MemberRun Close, Reopen, Retire, mailbox freezing, and provider-native history continuity (runtime-generation semantics: ADR 0065)"
       ],
       "dependsOn": [
         "docs/decisions/0032-provider-native-session-is-execution-truth.md",
