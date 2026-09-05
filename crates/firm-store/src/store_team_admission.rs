@@ -503,7 +503,13 @@ impl HarnessStore {
     ) -> StoreResult<String> {
         if run.member_run_ids.is_empty() {
             let registrations = latest_by_id(
-                self.read_jsonl::<NodeProjectRegistration>("node_project_registrations.jsonl")?,
+                self.read_jsonl::<NodeProjectRegistration>("node_project_registrations.jsonl")?
+                    .into_iter()
+                    .filter(|registration| {
+                        registration.node_id == run.execution_node_id
+                            && registration.project_binding_id == run.project_binding_id
+                    })
+                    .collect(),
                 node_project_registration_identity,
             )
             .values()
@@ -527,7 +533,10 @@ impl HarnessStore {
         }
 
         let legacy_by_id = latest_by_id(
-            self.read_jsonl::<ProviderRuntimeProjection>("member_runs.jsonl")?,
+            self.read_jsonl::<ProviderRuntimeProjection>("member_runs.jsonl")?
+                .into_iter()
+                .filter(|member| run.member_run_ids.contains(&member.id))
+                .collect(),
             |member| member.id.clone(),
         );
         let declared_ids = run
@@ -539,15 +548,11 @@ impl HarnessStore {
             String,
             Vec<(String, firm_core::agentfirm_api::MemberRun)>,
         >::new();
-        for scope in self.canonical_execution_space_ids()? {
-            for member in self.trust_member_runs(&scope)? {
-                if declared_ids.contains(&member.id) {
-                    canonical_by_id
-                        .entry(member.id.clone())
-                        .or_default()
-                        .push((scope.clone(), member));
-                }
-            }
+        for (scope, member) in self.trust_member_runs_for_ids_all_scopes(&declared_ids)? {
+            canonical_by_id
+                .entry(member.id.clone())
+                .or_default()
+                .push((scope, member));
         }
 
         let mut resolved_scope = None::<String>;

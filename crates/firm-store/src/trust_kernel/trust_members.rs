@@ -8,6 +8,24 @@ impl HarnessStore {
             .collect()
     }
 
+    pub fn trust_agent_members_for_ids(
+        &self,
+        execution_space_id: &str,
+        member_ids: &std::collections::HashSet<String>,
+    ) -> StoreResult<Vec<AgentMember>> {
+        let mut latest = BTreeMap::new();
+        for envelope in self.trust_operation_envelopes_unlocked()? {
+            let event = &envelope.operation.event;
+            if envelope.execution_space_id == execution_space_id
+                && event.aggregate_kind == "agent_member"
+                && member_ids.contains(&event.aggregate_id)
+            {
+                latest.insert(event.aggregate_id.clone(), envelope);
+            }
+        }
+        latest.values().map(event_projection).collect()
+    }
+
     /// Company/read-model projection only. One HarnessStore is one Execution
     /// Space in normal operation; this fold exists for callers that were given
     /// only the physical store and must not resurrect a second identity ledger.
@@ -140,6 +158,49 @@ impl HarnessStore {
         self.latest_trust_envelopes_unlocked(execution_space_id, "member_run")?
             .values()
             .map(event_projection)
+            .collect()
+    }
+
+    pub fn trust_member_runs_for_team_run(
+        &self,
+        execution_space_id: &str,
+        team_run_id: &str,
+    ) -> StoreResult<Vec<MemberRun>> {
+        let mut latest = BTreeMap::new();
+        for envelope in self.trust_operation_envelopes_unlocked()? {
+            let event = &envelope.operation.event;
+            if envelope.execution_space_id == execution_space_id
+                && event.aggregate_kind == "member_run"
+                && envelope.operation.resulting_projection["team_run_id"].as_str()
+                    == Some(team_run_id)
+            {
+                latest.insert(event.aggregate_id.clone(), envelope);
+            }
+        }
+        latest.values().map(event_projection).collect()
+    }
+
+    pub(crate) fn trust_member_runs_for_ids_all_scopes(
+        &self,
+        member_run_ids: &std::collections::BTreeSet<String>,
+    ) -> StoreResult<Vec<(String, MemberRun)>> {
+        let mut latest = BTreeMap::new();
+        for envelope in self.trust_operation_envelopes_unlocked()? {
+            let event = &envelope.operation.event;
+            if event.aggregate_kind == "member_run" && member_run_ids.contains(&event.aggregate_id)
+            {
+                latest.insert(
+                    (
+                        envelope.execution_space_id.clone(),
+                        event.aggregate_id.clone(),
+                    ),
+                    envelope,
+                );
+            }
+        }
+        latest
+            .into_iter()
+            .map(|((scope, _), envelope)| event_projection(&envelope).map(|run| (scope, run)))
             .collect()
     }
 

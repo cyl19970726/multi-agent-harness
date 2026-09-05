@@ -8,6 +8,25 @@ impl HarnessStore {
             .collect()
     }
 
+    pub fn fabric_messages_for_team_run(
+        &self,
+        execution_space_id: &str,
+        team_run_id: &str,
+    ) -> StoreResult<Vec<Message>> {
+        let mut latest = BTreeMap::new();
+        for envelope in self.trust_operation_envelopes_unlocked()? {
+            let event = &envelope.operation.event;
+            if envelope.execution_space_id == execution_space_id
+                && event.aggregate_kind == "message"
+                && envelope.operation.resulting_projection["team_run_id"].as_str()
+                    == Some(team_run_id)
+            {
+                latest.insert(event.aggregate_id.clone(), envelope);
+            }
+        }
+        latest.values().map(event_projection).collect()
+    }
+
     pub fn fabric_message_deliveries(
         &self,
         execution_space_id: &str,
@@ -19,6 +38,38 @@ impl HarnessStore {
             )?
             .into_values()
             .collect())
+    }
+
+    pub fn fabric_message_deliveries_for_messages(
+        &self,
+        execution_space_id: &str,
+        message_ids: &std::collections::HashSet<String>,
+    ) -> StoreResult<Vec<CanonicalMessageDelivery>> {
+        let mut latest = BTreeMap::<String, CanonicalMessageDelivery>::new();
+        for envelope in self
+            .trust_operation_envelopes_unlocked()?
+            .into_iter()
+            .filter(|envelope| envelope.execution_space_id == execution_space_id)
+        {
+            for value in envelope
+                .operation
+                .initial_outbox_records
+                .iter()
+                .chain(&envelope.operation.immutable_side_records)
+                .filter(|value| {
+                    value["message_id"]
+                        .as_str()
+                        .is_some_and(|id| message_ids.contains(id))
+                })
+            {
+                if let Ok(delivery) =
+                    serde_json::from_value::<CanonicalMessageDelivery>(value.clone())
+                {
+                    latest.insert(delivery.id.clone(), delivery);
+                }
+            }
+        }
+        Ok(latest.into_values().collect())
     }
 
     pub fn author_message(

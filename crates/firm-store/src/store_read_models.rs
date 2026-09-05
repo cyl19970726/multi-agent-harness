@@ -73,6 +73,17 @@ impl HarnessStore {
         self.read_jsonl("provider_launch_profiles.jsonl")
     }
 
+    pub fn members_for_ids(
+        &self,
+        member_ids: &std::collections::HashSet<String>,
+    ) -> StoreResult<Vec<ProviderLaunchProfile>> {
+        Ok(self
+            .read_jsonl::<ProviderLaunchProfile>("provider_launch_profiles.jsonl")?
+            .into_iter()
+            .filter(|row| member_ids.contains(&row.id))
+            .collect())
+    }
+
     /// Raw append-only compatibility admission rows in causal order.
     /// Invalid JSON or semantically invalid rows fail the entire read closed.
     pub fn provider_compatibility_admissions(
@@ -208,6 +219,17 @@ impl HarnessStore {
         self.read_jsonl("team_runs.jsonl")
     }
 
+    /// Decode the shared ledger, then retain one TeamRun before callers apply
+    /// latest-wins projection work. The JSONL layout has no per-run index, so
+    /// raw deserialization remains store-wide.
+    pub fn team_run_rows(&self, team_run_id: &str) -> StoreResult<Vec<AgentTeamRun>> {
+        Ok(self
+            .read_jsonl::<AgentTeamRun>("team_runs.jsonl")?
+            .into_iter()
+            .filter(|run| run.id == team_run_id)
+            .collect())
+    }
+
     pub fn latest_execution_nodes(&self) -> StoreResult<Vec<ExecutionNode>> {
         Ok(latest_by_id(
             self.read_jsonl::<ExecutionNode>("execution_nodes.jsonl")?,
@@ -217,6 +239,17 @@ impl HarnessStore {
         .collect())
     }
 
+    pub fn latest_execution_node(&self, node_id: &str) -> StoreResult<Option<ExecutionNode>> {
+        Ok(latest_by_id(
+            self.read_jsonl::<ExecutionNode>("execution_nodes.jsonl")?
+                .into_iter()
+                .filter(|node| node.id == node_id)
+                .collect(),
+            |node| node.id.clone(),
+        )
+        .remove(node_id))
+    }
+
     pub fn execution_nodes(&self) -> StoreResult<Vec<ExecutionNode>> {
         self.read_jsonl("execution_nodes.jsonl")
     }
@@ -224,6 +257,24 @@ impl HarnessStore {
     pub fn latest_node_project_registrations(&self) -> StoreResult<Vec<NodeProjectRegistration>> {
         Ok(latest_by_id(
             self.read_jsonl::<NodeProjectRegistration>("node_project_registrations.jsonl")?,
+            node_project_registration_identity,
+        )
+        .into_values()
+        .collect())
+    }
+
+    pub fn latest_node_project_registrations_for_binding(
+        &self,
+        node_id: &str,
+        project_binding_id: &str,
+    ) -> StoreResult<Vec<NodeProjectRegistration>> {
+        Ok(latest_by_id(
+            self.read_jsonl::<NodeProjectRegistration>("node_project_registrations.jsonl")?
+                .into_iter()
+                .filter(|row| {
+                    row.node_id == node_id && row.project_binding_id == project_binding_id
+                })
+                .collect(),
             node_project_registration_identity,
         )
         .into_values()
@@ -277,6 +328,22 @@ impl HarnessStore {
         Ok(rows)
     }
 
+    pub fn member_run_rows_for_team_run(
+        &self,
+        team_run_id: &str,
+    ) -> StoreResult<Vec<ProviderRuntimeProjection>> {
+        let rows = self
+            .read_jsonl::<ProviderRuntimeProjection>("member_runs.jsonl")?
+            .into_iter()
+            .filter(|row| row.team_run_id == team_run_id)
+            .collect::<Vec<_>>();
+        for row in &rows {
+            row.validate()
+                .map_err(|error| StoreError::Conflict(error.to_string()))?;
+        }
+        Ok(rows)
+    }
+
     /// Read the append-only pre-canonical message projection for explicit
     /// migration, export, and historical inspection only.
     ///
@@ -294,6 +361,25 @@ impl HarnessStore {
         Ok(self.latest_works_unlocked()?.into_values().collect())
     }
 
+    pub fn latest_works_for_team_run(&self, team_run_id: &str) -> StoreResult<Vec<Work>> {
+        let mut latest = latest_by_id(
+            self.work_operations_with_recovered_provenance_for_team_run_unlocked(team_run_id)?,
+            |operation| operation.work.id.clone(),
+        )
+        .into_iter()
+        .map(|(id, operation)| (id, operation.work))
+        .collect::<std::collections::BTreeMap<_, _>>();
+        for work in self.trust_work_projections_for_team_run_unlocked(Some(team_run_id))? {
+            match latest.get(&work.id) {
+                Some(current) if current.version >= work.version => {}
+                _ => {
+                    latest.insert(work.id.clone(), work);
+                }
+            }
+        }
+        Ok(latest.into_values().collect())
+    }
+
     pub fn work_delegation_events(&self) -> StoreResult<Vec<WorkDelegationEvent>> {
         Ok(self
             .all_work_delegation_revisions_unlocked()?
@@ -306,6 +392,27 @@ impl HarnessStore {
         Ok(self
             .latest_work_delegations_unlocked()?
             .into_values()
+            .collect())
+    }
+
+    pub fn latest_work_delegations_for_team_run(
+        &self,
+        team_run_id: &str,
+    ) -> StoreResult<Vec<WorkDelegation>> {
+        Ok(self
+            .latest_work_delegations_for_team_run_unlocked(team_run_id)?
+            .into_values()
+            .collect())
+    }
+
+    pub fn work_delegation_events_for_team_run(
+        &self,
+        team_run_id: &str,
+    ) -> StoreResult<Vec<WorkDelegationEvent>> {
+        Ok(self
+            .work_delegation_revisions_for_team_run_unlocked(Some(team_run_id))?
+            .into_iter()
+            .map(|revision| revision.event)
             .collect())
     }
 
@@ -458,8 +565,33 @@ impl HarnessStore {
         Ok(events)
     }
 
+    pub fn work_events_for_team_run(&self, team_run_id: &str) -> StoreResult<Vec<WorkEvent>> {
+        let operations = self.work_operations_for_team_run_unlocked(Some(team_run_id))?;
+        let work_ids = operations
+            .iter()
+            .map(|operation| operation.work.id.clone())
+            .collect::<std::collections::HashSet<_>>();
+        let mut events = operations
+            .into_iter()
+            .map(|operation| operation.event)
+            .collect::<Vec<_>>();
+        events.extend(self.trust_work_events_for_ids_unlocked(&work_ids)?);
+        Ok(events)
+    }
+
     pub fn team_supervisor_leases(&self) -> StoreResult<Vec<TeamSupervisorLease>> {
         self.read_jsonl("team_supervisor_leases.jsonl")
+    }
+
+    pub fn team_supervisor_lease_rows(
+        &self,
+        team_run_id: &str,
+    ) -> StoreResult<Vec<TeamSupervisorLease>> {
+        Ok(self
+            .read_jsonl::<TeamSupervisorLease>("team_supervisor_leases.jsonl")?
+            .into_iter()
+            .filter(|row| row.team_run_id == team_run_id)
+            .collect())
     }
 
     pub fn latest_team_supervisor_lease(
@@ -476,6 +608,17 @@ impl HarnessStore {
         self.read_jsonl("team_member_close_requests.jsonl")
     }
 
+    pub fn team_member_close_request_rows(
+        &self,
+        member_run_ids: &std::collections::HashSet<String>,
+    ) -> StoreResult<Vec<TeamMemberCloseRequest>> {
+        Ok(self
+            .read_jsonl::<TeamMemberCloseRequest>("team_member_close_requests.jsonl")?
+            .into_iter()
+            .filter(|row| member_run_ids.contains(&row.member_run_id))
+            .collect())
+    }
+
     pub fn latest_team_member_close_request(
         &self,
         member_run_id: &str,
@@ -490,8 +633,30 @@ impl HarnessStore {
         self.read_jsonl("member_actions.jsonl")
     }
 
+    pub fn member_action_rows_for_team_run(
+        &self,
+        team_run_id: &str,
+    ) -> StoreResult<Vec<MemberAction>> {
+        Ok(self
+            .read_jsonl::<MemberAction>("member_actions.jsonl")?
+            .into_iter()
+            .filter(|row| row.team_run_id == team_run_id)
+            .collect())
+    }
+
     pub fn delegation_runs(&self) -> StoreResult<Vec<DelegationRun>> {
         self.read_jsonl("delegation_runs.jsonl")
+    }
+
+    pub fn delegation_run_rows_for_team_run(
+        &self,
+        team_run_id: &str,
+    ) -> StoreResult<Vec<DelegationRun>> {
+        Ok(self
+            .read_jsonl::<DelegationRun>("delegation_runs.jsonl")?
+            .into_iter()
+            .filter(|row| row.team_run_id == team_run_id)
+            .collect())
     }
 
     /// Raw historical event rows for explicit Legacy diagnostics/export.

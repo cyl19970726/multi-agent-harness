@@ -1,13 +1,24 @@
 use super::*;
 
 /// A bounded canonical projection for a Team deep link. The shared Dashboard
-/// builder applies the selected-run filter before it materializes JSON, so
-/// unrelated history never becomes part of this response in memory.
+/// builder asks each ledger reader for the selected run before latest-wins
+/// folds and JSON materialization. The current JSONL storage still decodes the
+/// shared files; unrelated rows do not enter projection maps or the response.
 pub(super) fn dashboard_team_run_snapshot(
     store: &HarnessStore,
     team_run_id: &str,
 ) -> CliResult<serde_json::Value> {
     dashboard_snapshot_with_team_run(store, Some(team_run_id))
+}
+
+#[cfg(test)]
+pub(super) fn projected_row_counts(snapshot: &serde_json::Value) -> BTreeMap<String, usize> {
+    snapshot
+        .as_object()
+        .into_iter()
+        .flat_map(|object| object.iter())
+        .filter_map(|(key, value)| value.as_array().map(|rows| (key.clone(), rows.len())))
+        .collect()
 }
 
 #[cfg(test)]

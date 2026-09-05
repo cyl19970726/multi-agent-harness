@@ -349,11 +349,23 @@ impl HarnessStore {
     }
 
     pub(super) fn work_operations_unlocked(&self) -> StoreResult<Vec<WorkOperation>> {
-        let mut operations: Vec<WorkOperation> = self.read_jsonl("work_operations.jsonl")?;
+        self.work_operations_for_team_run_unlocked(None)
+    }
+
+    pub(super) fn work_operations_for_team_run_unlocked(
+        &self,
+        team_run_id: Option<&str>,
+    ) -> StoreResult<Vec<WorkOperation>> {
+        let mut operations: Vec<WorkOperation> = self
+            .read_jsonl::<WorkOperation>("work_operations.jsonl")?
+            .into_iter()
+            .filter(|operation| team_run_id.is_none_or(|id| operation.work.team_run_id == id))
+            .collect();
         let mut delegated = self
             .read_jsonl::<WorkDelegationOperation>("work_delegation_operations.jsonl")?
             .into_iter()
             .map(|operation| operation.target_work_operation)
+            .filter(|operation| team_run_id.is_none_or(|id| operation.work.team_run_id == id))
             .collect::<Vec<_>>();
         // WorkDelegation creation is crash-atomic in a separate composite
         // ledger, while later target transitions use the ordinary Work ledger.
@@ -380,6 +392,19 @@ impl HarnessStore {
     pub(super) fn all_work_delegation_revisions_unlocked(
         &self,
     ) -> StoreResult<Vec<WorkDelegationRevision>> {
+        self.work_delegation_revisions_for_team_run_unlocked(None)
+    }
+
+    pub(super) fn work_delegation_revisions_for_team_run_unlocked(
+        &self,
+        team_run_id: Option<&str>,
+    ) -> StoreResult<Vec<WorkDelegationRevision>> {
+        let belongs_to_run = |revision: &WorkDelegationRevision| {
+            team_run_id.is_none_or(|id| {
+                revision.delegation.source_work_ref.team_run_id == id
+                    || revision.delegation.target_work_ref.team_run_id == id
+            })
+        };
         let mut revisions = self
             .read_jsonl::<WorkDelegationOperation>("work_delegation_operations.jsonl")?
             .into_iter()
@@ -387,15 +412,19 @@ impl HarnessStore {
                 delegation: operation.delegation,
                 event: operation.event,
             })
+            .filter(&belongs_to_run)
             .collect::<Vec<_>>();
-        revisions
-            .extend(self.read_jsonl::<WorkDelegationRevision>("work_delegation_events.jsonl")?);
         revisions.extend(
-            self.work_operations_unlocked()?
+            self.read_jsonl::<WorkDelegationRevision>("work_delegation_events.jsonl")?
+                .into_iter()
+                .filter(&belongs_to_run),
+        );
+        revisions.extend(
+            self.work_operations_for_team_run_unlocked(team_run_id)?
                 .into_iter()
                 .flat_map(|operation| operation.delegation_revisions),
         );
-        revisions.extend(self.trust_work_delegation_revisions_unlocked()?);
+        revisions.extend(self.trust_work_delegation_revisions_for_team_run_unlocked(team_run_id)?);
         revisions.sort_by(|left, right| {
             left.delegation
                 .id
@@ -408,8 +437,24 @@ impl HarnessStore {
     pub(super) fn latest_work_delegations_unlocked(
         &self,
     ) -> StoreResult<std::collections::BTreeMap<String, WorkDelegation>> {
+        self.fold_latest_work_delegations(self.all_work_delegation_revisions_unlocked()?)
+    }
+
+    pub(super) fn latest_work_delegations_for_team_run_unlocked(
+        &self,
+        team_run_id: &str,
+    ) -> StoreResult<std::collections::BTreeMap<String, WorkDelegation>> {
+        self.fold_latest_work_delegations(
+            self.work_delegation_revisions_for_team_run_unlocked(Some(team_run_id))?,
+        )
+    }
+
+    fn fold_latest_work_delegations(
+        &self,
+        revisions: Vec<WorkDelegationRevision>,
+    ) -> StoreResult<std::collections::BTreeMap<String, WorkDelegation>> {
         let mut latest = std::collections::BTreeMap::<String, WorkDelegation>::new();
-        for revision in self.all_work_delegation_revisions_unlocked()? {
+        for revision in revisions {
             revision
                 .delegation
                 .validate()
@@ -669,10 +714,26 @@ impl HarnessStore {
     pub(super) fn work_operations_with_recovered_provenance_unlocked(
         &self,
     ) -> StoreResult<Vec<WorkOperation>> {
+        self.recover_work_operation_provenance(self.work_operations_unlocked()?)
+    }
+
+    pub(super) fn work_operations_with_recovered_provenance_for_team_run_unlocked(
+        &self,
+        team_run_id: &str,
+    ) -> StoreResult<Vec<WorkOperation>> {
+        self.recover_work_operation_provenance(
+            self.work_operations_for_team_run_unlocked(Some(team_run_id))?,
+        )
+    }
+
+    fn recover_work_operation_provenance(
+        &self,
+        operations: Vec<WorkOperation>,
+    ) -> StoreResult<Vec<WorkOperation>> {
         let mut team_ids = std::collections::BTreeMap::<String, String>::new();
         let mut creator_ids = std::collections::BTreeMap::<String, String>::new();
         let mut recovered = Vec::new();
-        for mut operation in self.work_operations_unlocked()? {
+        for mut operation in operations {
             let work_id = operation.work.id.clone();
             match (
                 team_ids.get(&work_id),

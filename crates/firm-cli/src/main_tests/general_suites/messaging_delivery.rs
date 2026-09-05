@@ -53,6 +53,8 @@ mod running_delivery_attempt_blocks_more_delivery;
 mod running_delivery_is_acknowledged_not_delivered;
 #[path = "../general/scoped_dashboard_snapshot_matches_filtered_global.rs"]
 mod scoped_dashboard_snapshot_matches_filtered_global;
+#[path = "../general/scoped_dashboard_snapshot_retained_rows.rs"]
+mod scoped_dashboard_snapshot_retained_rows;
 #[path = "../general/stale_failed_delivery_attempt_marks_message_failed_and_clears_member.rs"]
 mod stale_failed_delivery_attempt_marks_message_failed_and_clears_member;
 #[path = "../general/stale_unknown_delivery_attempt_blocks_more_delivery.rs"]

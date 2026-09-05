@@ -623,11 +623,7 @@ impl HarnessStore {
         execution_space_id: &str,
         mut team: AgentTeam,
     ) -> StoreResult<AgentTeam> {
-        let memberships = self
-            .fabric_team_memberships(execution_space_id)?
-            .into_iter()
-            .filter(|membership| membership.team_id == team.id)
-            .collect::<Vec<_>>();
+        let memberships = self.fabric_team_memberships_for_team(execution_space_id, &team.id)?;
         let hosts = memberships
             .iter()
             .filter(|membership| membership.role == TeamMembershipRole::Host)
@@ -666,6 +662,30 @@ impl HarnessStore {
                 })
             })
             .collect()
+    }
+
+    pub fn agent_team(
+        &self,
+        execution_space_id: &str,
+        team_id: &str,
+    ) -> StoreResult<Option<AgentTeam>> {
+        let mut latest = None;
+        for envelope in self.trust_operation_envelopes_unlocked()? {
+            if envelope.execution_space_id == execution_space_id
+                && envelope.operation.event.aggregate_kind == "agent_team"
+                && envelope.operation.event.aggregate_id == team_id
+            {
+                latest = Some(envelope);
+            }
+        }
+        latest
+            .as_ref()
+            .map(|envelope| {
+                event_projection::<AgentTeam>(envelope).and_then(|team| {
+                    self.hydrate_agent_team_compatibility_projection(execution_space_id, team)
+                })
+            })
+            .transpose()
     }
 
     /// Scope-preserving Company/read projection. Duplicate ids across spaces

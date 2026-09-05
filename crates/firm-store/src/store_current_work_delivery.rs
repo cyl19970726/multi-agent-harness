@@ -37,18 +37,13 @@ impl HarnessStore {
         team_run_id: &str,
     ) -> StoreResult<Vec<CurrentWorkDeliveryView>> {
         let run = self
-            .team_runs()?
+            .team_run_rows(team_run_id)?
             .into_iter()
             .rev()
             .find(|run| run.id == team_run_id)
             .ok_or_else(|| StoreError::Conflict(format!("TeamRun not found: {team_run_id}")))?;
         let execution_space_id = self.current_team_run_execution_space(&run)?;
-        let team_ids = std::collections::BTreeSet::from([run.agent_team_id.clone()]);
-        Ok(self
-            .current_work_deliveries_for_teams(&execution_space_id, &team_ids)?
-            .into_iter()
-            .filter(|delivery| delivery.team_run_id == team_run_id)
-            .collect())
+        self.current_work_deliveries_scoped(&execution_space_id, None, Some(team_run_id))
     }
 
     /// Project current Work deliveries only from canonical trust authority.
@@ -57,7 +52,7 @@ impl HarnessStore {
         &self,
         execution_space_id: &str,
     ) -> StoreResult<Vec<CurrentWorkDeliveryView>> {
-        self.current_work_deliveries_scoped(execution_space_id, None)
+        self.current_work_deliveries_scoped(execution_space_id, None, None)
     }
 
     /// Project the exact requested Team scope before strict canonical joins.
@@ -68,13 +63,14 @@ impl HarnessStore {
         execution_space_id: &str,
         team_ids: &std::collections::BTreeSet<String>,
     ) -> StoreResult<Vec<CurrentWorkDeliveryView>> {
-        self.current_work_deliveries_scoped(execution_space_id, Some(team_ids))
+        self.current_work_deliveries_scoped(execution_space_id, Some(team_ids), None)
     }
 
     fn current_work_deliveries_scoped(
         &self,
         execution_space_id: &str,
         team_ids: Option<&std::collections::BTreeSet<String>>,
+        team_run_id: Option<&str>,
     ) -> StoreResult<Vec<CurrentWorkDeliveryView>> {
         // Canonical Work, binding, delivery, Session, membership, and MemberRun
         // facts can span several append-only files. Use the canonical trust
@@ -86,7 +82,8 @@ impl HarnessStore {
         let mut backoff_ms = 1_u64;
         for attempt in 0..16 {
             let before = self.current_work_delivery_store_sequence(execution_space_id)?;
-            let projected = self.current_work_deliveries_once(execution_space_id, team_ids);
+            let projected =
+                self.current_work_deliveries_once(execution_space_id, team_ids, team_run_id);
             let after = self.current_work_delivery_store_sequence(execution_space_id)?;
             if before == after {
                 return projected;
@@ -103,15 +100,21 @@ impl HarnessStore {
         &self,
         execution_space_id: &str,
         team_ids: Option<&std::collections::BTreeSet<String>>,
+        team_run_id: Option<&str>,
     ) -> StoreResult<Vec<CurrentWorkDeliveryView>> {
-        let team_runs = self
-            .team_runs()?
-            .into_iter()
-            .map(|run| (run.id.clone(), run))
-            .collect::<std::collections::BTreeMap<_, _>>();
+        let team_runs = match team_run_id {
+            Some(id) => self.team_run_rows(id)?,
+            None => self.team_runs()?,
+        }
+        .into_iter()
+        .map(|run| (run.id.clone(), run))
+        .collect::<std::collections::BTreeMap<_, _>>();
         let scoped_team_run_ids = team_runs
             .values()
-            .filter(|run| team_ids.is_none_or(|ids| ids.contains(&run.agent_team_id)))
+            .filter(|run| {
+                team_run_id.is_none_or(|id| run.id == id)
+                    && team_ids.is_none_or(|ids| ids.contains(&run.agent_team_id))
+            })
             .filter_map(|run| {
                 self.current_team_run_execution_space(run)
                     .ok()
@@ -121,7 +124,7 @@ impl HarnessStore {
             .collect::<std::collections::BTreeSet<_>>();
         let mut work_revisions = std::collections::BTreeMap::<(String, u64), Work>::new();
         for work in self
-            .work_operations_unlocked()?
+            .work_operations_for_team_run_unlocked(team_run_id)?
             .into_iter()
             .map(|operation| operation.work)
             .filter(|work| scoped_team_run_ids.contains(&work.team_run_id))
@@ -129,45 +132,77 @@ impl HarnessStore {
             insert_work_revision(&mut work_revisions, work)?;
         }
         for operation in self.canonical_operations_for_space(execution_space_id)? {
-            if let Ok(work) = serde_json::from_value::<Work>(operation.resulting_projection) {
-                if scoped_team_run_ids.contains(&work.team_run_id) {
+            let projection_is_scoped = operation.resulting_projection["team_run_id"]
+                .as_str()
+                .is_some_and(|id| scoped_team_run_ids.contains(id));
+            if projection_is_scoped {
+                if let Ok(work) = serde_json::from_value::<Work>(operation.resulting_projection) {
                     insert_work_revision(&mut work_revisions, work)?;
                 }
             }
             for record in operation.immutable_side_records {
-                if let Ok(work) = serde_json::from_value::<Work>(record) {
-                    if scoped_team_run_ids.contains(&work.team_run_id) {
+                let record_is_scoped = record["team_run_id"]
+                    .as_str()
+                    .is_some_and(|id| scoped_team_run_ids.contains(id));
+                if record_is_scoped {
+                    if let Ok(work) = serde_json::from_value::<Work>(record) {
                         insert_work_revision(&mut work_revisions, work)?;
                     }
                 }
             }
         }
-        let bindings = self
-            .fabric_work_execution_bindings(execution_space_id)?
-            .into_iter()
-            .filter(|binding| team_ids.is_none_or(|ids| ids.contains(&binding.team_id)))
-            .map(|binding| (binding.id.clone(), binding))
-            .collect::<std::collections::BTreeMap<_, _>>();
-        let sessions = self
-            .fabric_agent_sessions(execution_space_id)?
-            .into_iter()
-            .map(|session| (session.id.clone(), session))
-            .collect::<std::collections::BTreeMap<_, _>>();
-        let memberships = self
-            .fabric_team_memberships(execution_space_id)?
-            .into_iter()
-            .map(|membership| (membership.id.clone(), membership))
-            .collect::<std::collections::BTreeMap<_, _>>();
-        let member_runs = self.trust_member_runs(execution_space_id)?;
+        let work_ids = work_revisions
+            .values()
+            .map(|work| work.id.clone())
+            .collect::<std::collections::HashSet<_>>();
+        let bindings = match team_run_id {
+            Some(_) => {
+                self.fabric_work_execution_bindings_for_works(execution_space_id, &work_ids)?
+            }
+            None => self.fabric_work_execution_bindings(execution_space_id)?,
+        }
+        .into_iter()
+        .filter(|binding| team_ids.is_none_or(|ids| ids.contains(&binding.team_id)))
+        .map(|binding| (binding.id.clone(), binding))
+        .collect::<std::collections::BTreeMap<_, _>>();
+        let member_ids = bindings
+            .values()
+            .map(|binding| binding.agent_member_id.clone())
+            .collect::<std::collections::HashSet<_>>();
+        let sessions = match team_run_id {
+            Some(_) => self.fabric_agent_sessions_for_members(execution_space_id, &member_ids)?,
+            None => self.fabric_agent_sessions(execution_space_id)?,
+        }
+        .into_iter()
+        .map(|session| (session.id.clone(), session))
+        .collect::<std::collections::BTreeMap<_, _>>();
+        let team_id = team_runs
+            .values()
+            .next()
+            .map(|run| run.agent_team_id.as_str());
+        let memberships = match team_id {
+            Some(id) if team_run_id.is_some() => {
+                self.fabric_team_memberships_for_team(execution_space_id, id)?
+            }
+            _ => self.fabric_team_memberships(execution_space_id)?,
+        }
+        .into_iter()
+        .map(|membership| (membership.id.clone(), membership))
+        .collect::<std::collections::BTreeMap<_, _>>();
+        let member_runs = match team_run_id {
+            Some(id) => self.trust_member_runs_for_team_run(execution_space_id, id)?,
+            None => self.trust_member_runs(execution_space_id)?,
+        };
         let mut views = Vec::new();
 
-        for delivery in self
-            .fabric_work_deliveries(execution_space_id)?
-            .into_iter()
-            .filter(|delivery| {
-                team_ids.is_none() || bindings.contains_key(&delivery.work_execution_binding_id)
-            })
-        {
+        let deliveries = match team_run_id {
+            Some(_) => self.fabric_work_deliveries_for_works(execution_space_id, &work_ids)?,
+            None => self.fabric_work_deliveries(execution_space_id)?,
+        };
+        for delivery in deliveries.into_iter().filter(|delivery| {
+            (team_ids.is_none() && team_run_id.is_none())
+                || bindings.contains_key(&delivery.work_execution_binding_id)
+        }) {
             let work = work_revisions
                 .get(&(delivery.work_id.clone(), delivery.work_revision))
                 .ok_or_else(|| {
