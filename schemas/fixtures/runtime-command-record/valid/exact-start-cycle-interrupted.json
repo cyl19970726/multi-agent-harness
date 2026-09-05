@@ -1,5 +1,5 @@
 {
-  "id": "command-2",
+  "id": "command-3",
   "execution_space_id": "space-1",
   "target_node_id": "11111111-1111-4111-8111-111111111111",
   "target_node_daemon_id": "daemon-1",
@@ -7,12 +7,12 @@
   "authenticated_actor": {"kind": "service", "id": "daemon-1"},
   "command": "start_cycle",
   "required_capability": "runtime.start_cycle",
-  "idempotency_key": "start-cycle-1",
-  "request_fingerprint": "sha256:0000000000000000000000000000000000000000000000000000000000000001",
-  "status": "accepted",
-  "phase": "prepared",
-  "effect_certainty": "unknown",
-  "postcondition_status": "unknown",
+  "idempotency_key": "start-cycle-interrupted-1",
+  "request_fingerprint": "sha256:0000000000000000000000000000000000000000000000000000000000000002",
+  "status": "applied",
+  "phase": "settled",
+  "effect_certainty": "applied",
+  "postcondition_status": "satisfied",
   "binding": {
     "target_member_run_id": "member-run-1",
     "target_member_run_generation": 7,
@@ -35,13 +35,13 @@
   "postcondition": {
     "desired_ack_level": "target_native_state_observed",
     "desired_postcondition": "cycle_started",
-    "status": "unknown",
-    "evidence_refs": []
+    "status": "satisfied",
+    "evidence_refs": ["provider-terminal-1"]
   },
   "target_session_id": "session-1",
   "target_session_generation": 3,
   "cycle_correlation": {
-    "invocation_id": "command-2",
+    "invocation_id": "command-3",
     "source_delivery_id": "work-delivery-1",
     "provider_input_id": "provider-input-1",
     "input_acceptance_receipt": "provider-receipt-1",
@@ -49,9 +49,10 @@
     "exact_terminal_ref": "provider-terminal-1",
     "native_session_id": "native-session-1",
     "agent_session_generation": 3,
-    "provider_attempt": 1
+    "provider_attempt": 1,
+    "interrupt_cause": "host_control"
   },
-  "version": 1,
+  "version": 2,
   "created_at": "unix-ms:1",
-  "updated_at": "unix-ms:1"
+  "updated_at": "unix-ms:2"
 }

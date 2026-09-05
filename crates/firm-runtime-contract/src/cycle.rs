@@ -363,6 +363,16 @@ impl EffectReceipt {
             native_evidence,
         }
     }
+
+    /// Append adapter-specific native evidence to a [`EffectReceipt::for_cycle`]
+    /// receipt. The settlement derivation is already final; this only restores
+    /// the observational handles each adapter recorded before S3 (session ids,
+    /// provider receipt refs), so execution claims stay reconstructable from
+    /// the provider's native records (invariant 1).
+    pub fn with_native_evidence(mut self, extra: impl IntoIterator<Item = String>) -> Self {
+        self.native_evidence.extend(extra);
+        self
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]

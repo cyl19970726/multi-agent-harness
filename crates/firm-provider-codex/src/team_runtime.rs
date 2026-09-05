@@ -1143,7 +1143,7 @@ impl<'a, B: CodexAppServerBridge> harness_runtime_contract::RuntimeAdapter
                     &mut CycleControl::default,
                 )
                 .map_err(bridge_error)?;
-                accepted
+                let turn_id = accepted
                     .ok_or_else(|| bridge_error("turn/start succeeded without an exact turn id"))?;
                 // The StartCycle receipt derives from the typed cycle
                 // settlement (D5); it never asserts a postcondition directly.
@@ -1151,7 +1151,14 @@ impl<'a, B: CodexAppServerBridge> harness_runtime_contract::RuntimeAdapter
                     request.effect_id,
                     admission.admission,
                     CycleSettlement::from_cycle_outcome(&outcome),
-                ));
+                )
+                .with_native_evidence([
+                    format!("codex.turn/start:{turn_id}"),
+                    format!(
+                        "codex.turn/completed:settled={}",
+                        outcome.terminal_observation.settled_boundary_observed
+                    ),
+                ]));
             }
             ControlIntent::InjectCurrentCycle { input } => {
                 let turn_id = match self.active_turn_id.clone() {

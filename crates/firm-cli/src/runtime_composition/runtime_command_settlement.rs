@@ -157,29 +157,41 @@ mod tests {
     use super::*;
 
     /// D1: the settlement dimensions are stated explicitly and stay
-    /// orthogonal. The two canned settlements preserve the legacy bool
-    /// mapping exactly (`true` → APPLIED_SATISFIED, `false` → UNPROVEN), now
-    /// as typed inputs rather than a derivation from one boolean.
+    /// orthogonal. A settlement carrying Unknown certainty settles as
+    /// not-Applied on every axis; a satisfied settlement settles Applied on
+    /// every axis — and the two never share a dimension value, so no single
+    /// input can silently steer the other two.
     #[test]
     fn provider_effect_settlement_dimensions_are_explicit() {
         use harness_core::agentfirm_api::{
             RuntimeCommandStatus, RuntimeEffectCertainty, RuntimePostconditionStatus,
         };
-        assert_eq!(
-            ProviderEffectSettlement::APPLIED_SATISFIED,
-            ProviderEffectSettlement {
-                status: RuntimeCommandStatus::Applied,
-                certainty: RuntimeEffectCertainty::Applied,
-                postcondition: RuntimePostconditionStatus::Satisfied,
-            }
+        let applied = ProviderEffectSettlement::APPLIED_SATISFIED;
+        assert_eq!(applied.status, RuntimeCommandStatus::Applied);
+        assert_eq!(applied.certainty, RuntimeEffectCertainty::Applied);
+        assert_eq!(applied.postcondition, RuntimePostconditionStatus::Satisfied);
+
+        let unproven = ProviderEffectSettlement::UNPROVEN;
+        assert_ne!(unproven.status, RuntimeCommandStatus::Applied);
+        assert_ne!(unproven.certainty, RuntimeEffectCertainty::Applied);
+        assert_ne!(
+            unproven.postcondition,
+            RuntimePostconditionStatus::Satisfied
         );
-        assert_eq!(
-            ProviderEffectSettlement::UNPROVEN,
-            ProviderEffectSettlement {
-                status: RuntimeCommandStatus::RecoveryRequired,
-                certainty: RuntimeEffectCertainty::Unknown,
-                postcondition: RuntimePostconditionStatus::Unknown,
-            }
-        );
+        assert_eq!(unproven.status, RuntimeCommandStatus::RecoveryRequired);
+        assert_eq!(unproven.certainty, RuntimeEffectCertainty::Unknown);
+        assert_eq!(unproven.postcondition, RuntimePostconditionStatus::Unknown);
+
+        // The dimensions are independent: mixing one UNPROVEN axis with the
+        // APPLIED_SATISFIED axes yields a different, also-expressible
+        // settlement — the type does not collapse them to one flag.
+        let mixed = ProviderEffectSettlement {
+            postcondition: unproven.postcondition,
+            ..applied
+        };
+        assert_ne!(mixed, applied);
+        assert_ne!(mixed, unproven);
+        assert_eq!(mixed.status, RuntimeCommandStatus::Applied);
+        assert_eq!(mixed.postcondition, RuntimePostconditionStatus::Unknown);
     }
 }

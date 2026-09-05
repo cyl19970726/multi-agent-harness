@@ -422,11 +422,26 @@ impl harness_runtime_contract::TeamRuntimeAdapter for KimiTeamRuntime<'_> {
         if let Some(error) = control_error {
             return Err(CliError::Usage(error));
         }
-        if let Some(provider_error) = outcome.provider_error {
-            return Err(CliError::Usage(format!(
-                "KIMI_CYCLE_PROVIDER_ERROR: {provider_error}"
-            )));
-        }
+        // A provider-reported terminal failure AFTER the input was accepted
+        // is settlement evidence, not a transport unknown: it travels on the
+        // outcome so the StartCycle receipt settles Unsatisfied (I5/C1),
+        // exactly like claude's isError terminal or codex's failed turn. A
+        // rejected prompt (no acceptance receipt — the provider never started
+        // work) stays fail-closed as before (A2).
+        let provider_terminal_failure = match outcome.provider_error {
+            Some(provider_error) if accepted_receipt.is_some() => {
+                Some(harness_runtime_contract::ProviderTerminalFailure {
+                    reason: provider_error,
+                    http_status: None,
+                })
+            }
+            Some(provider_error) => {
+                return Err(CliError::Usage(format!(
+                    "KIMI_CYCLE_PROVIDER_ERROR: {provider_error}"
+                )));
+            }
+            None => None,
+        };
         let input_acceptance_receipt = accepted_receipt.ok_or_else(|| {
             CliError::Usage(
                 "RUNTIME_COMMAND_RECOVERY_REQUIRED: Kimi cycle had no correlated input-acceptance receipt"
@@ -460,7 +475,7 @@ impl harness_runtime_contract::TeamRuntimeAdapter for KimiTeamRuntime<'_> {
         );
         Ok(harness_runtime_contract::ExecutionCycleOutcome {
             final_text,
-            provider_terminal_failure: None,
+            provider_terminal_failure,
             interrupt,
             close_requested_by_harness: close_requested,
             tool_call_count,
@@ -597,14 +612,21 @@ impl harness_runtime_contract::RuntimeAdapter for KimiTeamRuntime<'_> {
                         &mut harness_runtime_contract::CycleControl::default,
                     )
                     .map_err(kimi_contract_bridge_error)?;
-                accepted.ok_or_else(|| {
+                let receipt = accepted.ok_or_else(|| {
                     kimi_contract_bridge_error("prompt completed without acceptance receipt")
                 })?;
                 Ok(harness_runtime_contract::EffectReceipt::for_cycle(
                     request.effect_id,
                     admission.admission,
                     harness_runtime_contract::CycleSettlement::from_cycle_outcome(&outcome),
-                ))
+                )
+                .with_native_evidence([
+                    format!("kimi.session_prompt.accepted:{receipt}"),
+                    format!(
+                        "kimi.session_prompt.terminal:settled={}",
+                        outcome.terminal_observation.settled_boundary_observed
+                    ),
+                ]))
             }
             ControlIntent::Interrupt => {
                 // The live Team loop compiles Interrupt inside `run_cycle`,

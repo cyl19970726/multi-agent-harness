@@ -288,7 +288,7 @@ impl harness_runtime_contract::TeamRuntimeAdapter for PiTeamRuntime {
         )?;
         Ok(harness_runtime_contract::ExecutionCycleOutcome {
             final_text: outcome.final_text,
-            provider_terminal_failure: None,
+            provider_terminal_failure: outcome.provider_terminal_failure,
             interrupt: outcome.interrupt,
             close_requested_by_harness: outcome.close_requested_by_harness,
             tool_call_count: outcome.tool_call_count,
@@ -401,7 +401,7 @@ impl harness_runtime_contract::RuntimeAdapter for PiTeamRuntime {
                     &mut harness_runtime_contract::CycleControl::default,
                 )
                 .map_err(pi_contract_bridge_error)?;
-                input_receipt.ok_or_else(|| {
+                let receipt = input_receipt.ok_or_else(|| {
                     pi_contract_bridge_error("prompt success lacked a provider response id")
                 })?;
                 // The StartCycle receipt derives from the typed cycle
@@ -410,7 +410,15 @@ impl harness_runtime_contract::RuntimeAdapter for PiTeamRuntime {
                     request.effect_id,
                     admission.admission,
                     harness_runtime_contract::CycleSettlement::from_cycle_outcome(&outcome),
-                ));
+                )
+                .with_native_evidence([
+                    format!("pi.prompt.response:{receipt}"),
+                    format!(
+                        "pi.agent_settled:is_streaming={:?}:pending={:?}",
+                        outcome.terminal_observation.is_streaming,
+                        outcome.terminal_observation.pending_message_count
+                    ),
+                ]));
             }
             ControlIntent::InjectCurrentCycle { input } => {
                 let response = self

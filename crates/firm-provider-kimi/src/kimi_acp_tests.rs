@@ -1308,43 +1308,25 @@ fn kimi_b4_silence_after_acceptance_never_cancels() {
     assert_eq!(outcome.interrupt, None);
 }
 
-/// C1 (kimi): the kimi adapter never sets `provider_terminal_failure` from
-/// its own frame loop (its terminal is a clean prompt response), so the
-/// assertion is pinned against a synthetically failed outcome — it proves
-/// the shared settlement projection kimi's StartCycle arm uses can never
-/// yield Satisfied with a failure present (#709).
+/// C1 (kimi): a turn the provider ends with a failure stopReason AFTER the
+/// input was accepted settles its StartCycle receipt Unsatisfied — never
+/// Satisfied (#709). The fixture drives the real run_cycle: the acceptance
+/// update publishes the receipt, then the terminal reports `max_tokens`.
 #[test]
 fn kimi_c1_terminal_failure_settles_unsatisfied() {
-    let outcome = harness_runtime_contract::ExecutionCycleOutcome {
-        final_text: String::new(),
-        provider_terminal_failure: Some(harness_runtime_contract::ProviderTerminalFailure {
-            reason: "api_overloaded".into(),
-            http_status: Some(529),
-        }),
-        interrupt: None,
-        close_requested_by_harness: false,
-        tool_call_count: 0,
-        native_correlation: harness_runtime_contract::NativeCycleCorrelation {
-            provider_input_id: "kimi-cycle-1".into(),
-            input_acceptance_receipt: harness_runtime_contract::ControlTransportReceipt {
-                command: "deliver".into(),
-                response_id: Some("kimi-receipt-1".into()),
-                success: true,
-            },
-            terminal_provider_input_id: Some("kimi-cycle-1".into()),
-            exact_terminal_ref: Some("kimi.session_prompt.terminal:kimi-cycle-1".into()),
-        },
-        control_receipts: vec![],
-        terminal_observation: harness_runtime_contract::CycleRuntimeObservation {
-            transport_alive: true,
-            process_alive: true,
-            is_streaming: Some(false),
-            pending_message_count: Some(0),
-            steering_mode: None,
-            follow_up_mode: None,
-            settled_boundary_observed: true,
-        },
-    };
+    let outcome = drive_kimi_cycle(
+        &kimi_conformance_timeouts(),
+        true,
+        Some(terminal_frame(2, "max_tokens")),
+        false,
+        harness_runtime_contract::CycleControl::default,
+    )
+    .expect("a provider terminal failure after acceptance still returns an outcome");
+    let failure = outcome
+        .provider_terminal_failure
+        .as_ref()
+        .expect("max_tokens maps to a provider terminal failure");
+    assert!(failure.reason.contains("max_tokens"), "{failure:?}");
     let receipt = harness_runtime_contract::EffectReceipt::for_cycle(
         "conformance-c1",
         harness_core::ProviderBindingAdmission::Active,

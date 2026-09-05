@@ -462,14 +462,25 @@ impl RuntimeAdapter for ClaudeTeamRuntime {
                         &mut CycleControl::default,
                     )
                     .map_err(contract_bridge_error)?;
-                accepted.ok_or_else(|| {
+                let provider_receipt = accepted.ok_or_else(|| {
                     contract_bridge_error("cycle completed without consumed input receipt")
                 })?;
                 Ok(EffectReceipt::for_cycle(
                     request.effect_id,
                     admission.admission,
                     CycleSettlement::from_cycle_outcome(&outcome),
-                ))
+                )
+                .with_native_evidence([
+                    provider_receipt,
+                    format!(
+                        "claude.turn_complete:session={}",
+                        self.transport.native_session_id
+                    ),
+                    format!(
+                        "claude.terminal:settled={}",
+                        outcome.terminal_observation.settled_boundary_observed
+                    ),
+                ]))
             }
             ControlIntent::Interrupt => {
                 self.transport.interrupt().map_err(contract_bridge_error)?;

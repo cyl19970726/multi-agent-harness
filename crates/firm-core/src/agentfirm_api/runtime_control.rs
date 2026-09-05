@@ -296,8 +296,8 @@ pub struct ProviderCycleCorrelation {
     /// (invariant I3 / assertion B3): `host_control`,
     /// `adapter_policy:<reason>`, or `provider_initiated:<reason>`. Additive
     /// (S3): absent on pre-S3 durable rows and on non-interrupted cycles,
-    /// both read back as `None`.
-    #[serde(default)]
+    /// both read back as `None`; the key is omitted entirely when unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub interrupt_cause: Option<String>,
 }
 

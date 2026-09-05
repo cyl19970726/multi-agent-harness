@@ -769,49 +769,41 @@ mod cycle_conformance {
             "no abort frame may be written during silence: {written}"
         );
     }
-}
 
-/// C1 (pi): the pi adapter never sets `provider_terminal_failure` from its
-/// own frame loop (its terminal is a clean agent_settled), so the assertion
-/// is pinned against a synthetically failed outcome — it proves the shared
-/// settlement projection pi's StartCycle arm uses can never yield Satisfied
-/// with a failure present (#709).
-#[test]
-fn pi_c1_terminal_failure_settles_unsatisfied() {
-    let outcome = harness_runtime_contract::ExecutionCycleOutcome {
-        final_text: String::new(),
-        provider_terminal_failure: Some(harness_runtime_contract::ProviderTerminalFailure {
-            reason: "api_overloaded".into(),
-            http_status: Some(529),
-        }),
-        interrupt: None,
-        close_requested_by_harness: false,
-        tool_call_count: 0,
-        native_correlation: harness_runtime_contract::NativeCycleCorrelation {
-            provider_input_id: "pi-cycle-1".into(),
-            input_acceptance_receipt: harness_runtime_contract::ControlTransportReceipt {
-                command: "deliver".into(),
-                response_id: Some("pi-receipt-1".into()),
-                success: true,
+    /// C1 (pi): a turn the provider ends with `stopReason: "error"` settles
+    /// its StartCycle receipt Unsatisfied — never Satisfied (#709). The
+    /// fixture drives the real run_cycle: accepted prompt, then a turn_end
+    /// whose message carries the provider's failure stopReason.
+    #[test]
+    fn pi_c1_terminal_failure_settles_unsatisfied() {
+        let outcome = drive_pi_cycle(
+            PiScript {
+                answers: vec![
+                    ("prompt".to_string(), pi_response("pi-rpc-1", "prompt", serde_json::json!({}))),
+                    ("get_state".to_string(), pi_response("pi-rpc-2", "get_state", pi_state(false))),
+                ],
+                events: vec![
+                    serde_json::json!({"type": "turn_end", "message": {"stopReason": "error", "errorMessage": "provider exploded", "content": [{"type": "text", "text": ""}]}}),
+                    serde_json::json!({"type": "agent_settled"}),
+                ],
+                events_after: 1,
+                delay_events_ms: 0,
+                disconnect_after: false,
             },
-            terminal_provider_input_id: Some("pi-cycle-1".into()),
-            exact_terminal_ref: Some("pi.agent_settled:pi-cycle-1".into()),
-        },
-        control_receipts: vec![],
-        terminal_observation: harness_runtime_contract::CycleRuntimeObservation {
-            transport_alive: true,
-            process_alive: true,
-            is_streaming: Some(false),
-            pending_message_count: Some(0),
-            steering_mode: None,
-            follow_up_mode: None,
-            settled_boundary_observed: true,
-        },
-    };
-    let receipt = harness_runtime_contract::EffectReceipt::for_cycle(
-        "conformance-c1",
-        harness_core::ProviderBindingAdmission::Active,
-        harness_runtime_contract::CycleSettlement::from_cycle_outcome(&outcome),
-    );
-    harness_runtime_contract::assert_c1_terminal_failure_unsatisfied(&receipt).expect("C1");
+            &pi_timeouts(),
+            harness_runtime_contract::CycleControl::default,
+        )
+        .expect("a provider terminal failure still returns an outcome");
+        let failure = outcome
+            .provider_terminal_failure
+            .as_ref()
+            .expect("stopReason error maps to a provider terminal failure");
+        assert_eq!(failure.reason, "provider exploded");
+        let receipt = harness_runtime_contract::EffectReceipt::for_cycle(
+            "conformance-c1",
+            harness_core::ProviderBindingAdmission::Active,
+            harness_runtime_contract::CycleSettlement::from_cycle_outcome(&outcome),
+        );
+        harness_runtime_contract::assert_c1_terminal_failure_unsatisfied(&receipt).expect("C1");
+    }
 }
