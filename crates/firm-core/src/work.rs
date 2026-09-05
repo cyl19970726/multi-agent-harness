@@ -814,6 +814,13 @@ pub enum WorkEventKind {
     /// successor TeamRun of the same AgentTeam. Durable scope (`team_id`),
     /// owner, and provenance are unchanged (ADR 0052).
     ExecutionRetargeted,
+    /// The Host recovered a Work whose execution authority was provably lost
+    /// (its WorkExecutionBinding ended by a lost runtime generation, or was
+    /// bound to a MemberRun/AgentSession epoch that can never settle it). The
+    /// Work returns to `Open` with the same responsibility so the ordinary
+    /// dispatch path re-delivers it; the lost binding and the superseded
+    /// delivery are recorded verbatim in the payload (#799, #734).
+    ExecutionRecovered,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

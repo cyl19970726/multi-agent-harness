@@ -313,7 +313,7 @@ pub(super) fn print_help() {
   team-run board-summary --id <team-run-id>
       <=500-char plain-text board digest: counts by status, assigned/unassigned,
       ready, and one idle|working|awaiting-review line per active member.
-  team-run work list|show|create|assign|redeliver|claim|start|block|resume|release|submit|review|request-changes|accept|cancel
+  team-run work list|show|create|assign|redeliver|recover-lost-execution|claim|start|block|resume|release|submit|review|request-changes|accept|cancel
   team-run work redeliver --work-id <id> --expected-version <n> [--reason <text>]
       Re-authorize an open Work whose delivery is frozen on an AgentSession
       generation the member no longer runs (typically after close-member +
@@ -322,6 +322,21 @@ pub(super) fn print_help() {
       current generation. Refusal codes: WORK_TERMINAL_NOT_REDELIVERABLE,
       WORK_ALREADY_STARTED, WORK_NOT_ASSIGNED, WORK_HAS_NO_UNSTARTED_DELIVERY,
       WORK_DELIVERY_LIVE, EXECUTION_SPACE_SCOPE_MISMATCH.
+  team-run work recover-lost-execution --work-id <id> --expected-version <n> [--reason <text>]
+      Recover a Work whose execution authority is provably lost: its binding
+      was invalidated by a NodeDaemon drain/predecessor recovery, or is frozen
+      on a MemberRun/AgentSession generation that can never pass the runtime
+      fence again (typically a started Work after `team-run recover`). Releases
+      the dead binding with the claim id and provider receipt as evidence,
+      returns the Work to Open with the same assignee, and advances the
+      revision so the ordinary delivery path re-delivers it; never replays a
+      provider effect. Refusal codes: WORK_TERMINAL_NOT_RECOVERABLE,
+      WORK_IN_REVIEW_NOT_RECOVERABLE, WORK_CONDITION_NOT_NORMAL (resume first),
+      WORK_NOT_ASSIGNED, WORK_EXECUTION_AUTHORITY_LIVE, WORK_EXECUTION_NOT_LOST,
+      EXECUTION_SPACE_SCOPE_MISMATCH. A binding a Member Close released is never
+      lost (the reopened member resubmits against it). `team-run recover` lists
+      candidates as lost_execution_works and unreadable Works as
+      lost_execution_scan_errors.
   team-run work release --work-id <id> --expected-version <n> [--member-run-id <id>]
       --team-run-id is optional; the TeamRun is derived from the Work.
   team-run work list [--brief] [--since <cursor>] --team-run-id <id> [--status <status>] [--member-run-id <id>]

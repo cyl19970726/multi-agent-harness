@@ -533,6 +533,9 @@ pub(super) fn team_run_recover(
         }
     }
 
+    let lost_execution_scan =
+        report_lost_execution_works(store, execution_space_id.as_deref(), team_run_id, json)?;
+
     let supervisor_diagnosis = supervisor.as_ref().map(|lease| {
         let (live, diagnosis) = supervisor_lease_live_diagnosis(lease);
         let heartbeat_age_s = current_unix_ms_u64().saturating_sub(lease.heartbeat_unix_ms) / 1000;
@@ -562,11 +565,19 @@ pub(super) fn team_run_recover(
         "blocked_by_typed_provenance": blocked_by_typed_provenance,
         "blocked_members_not_restarted": blocked_by_provenance,
         "skipped": skipped,
+        "lost_execution_works": lost_execution_scan.lost,
+        "lost_execution_scan_errors": lost_execution_scan.errors,
     });
     if !json {
         println!(
-            "recovery complete: reopened={} rebound_works={} restarted_blocked_members={} blocked_by_typed_provenance={} reconciled_deliveries={} skipped={}",
-            reopened, rebound, restarted, blocked_by_typed_provenance, reconciled, skipped
+            "recovery complete: reopened={} rebound_works={} restarted_blocked_members={} blocked_by_typed_provenance={} reconciled_deliveries={} skipped={} lost_execution_works={}",
+            reopened,
+            rebound,
+            restarted,
+            blocked_by_typed_provenance,
+            reconciled,
+            skipped,
+            lost_execution_scan.lost.len()
         );
     }
     Ok(report)

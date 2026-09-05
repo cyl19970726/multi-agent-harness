@@ -28,6 +28,7 @@ impl HarnessStore {
                             | firm_core::WorkEventKind::Updated
                             | firm_core::WorkEventKind::Rebound
                             | firm_core::WorkEventKind::ExecutionRetargeted
+                            | firm_core::WorkEventKind::ExecutionRecovered
                     )
             }))
     }

@@ -27,6 +27,7 @@ impl HarnessStore {
                             | WorkEventKind::Released
                             | WorkEventKind::Rebound
                             | WorkEventKind::ExecutionRetargeted
+                            | WorkEventKind::ExecutionRecovered
                     )
             }))
     }

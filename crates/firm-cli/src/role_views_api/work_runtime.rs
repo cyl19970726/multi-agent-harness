@@ -37,7 +37,14 @@ pub(super) fn current_work_runtime<'a>(
             })
             && matches!(
                 event["kind"].as_str(),
-                Some("assigned" | "claimed" | "released" | "rebound" | "execution_retargeted")
+                Some(
+                    "assigned"
+                        | "claimed"
+                        | "released"
+                        | "rebound"
+                        | "execution_retargeted"
+                        | "execution_recovered"
+                )
             )
     });
     if responsibility_changed {
