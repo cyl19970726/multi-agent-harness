@@ -16,25 +16,53 @@
 //!   deliberately refuses a provider-received delivery.
 //!
 //! `recover_lost_work_execution` is the explicit Host authority for exactly
-//! that state. It proves the loss from durable records alone — the binding's
-//! exact MemberRun generation is no longer the member's current one, the
-//! MemberRun has no live runtime authority, or the AgentSession is Closed —
-//! and otherwise fails closed with `WORK_EXECUTION_AUTHORITY_LIVE`. When the
-//! loss is proven it (1) releases a still-executable binding through the same
-//! lost-runtime-generation writer the NodeDaemon uses, recording the claim id
-//! and provider receipt as evidence and never asserting a provider outcome,
-//! and (2) appends one `ExecutionRecovered` WorkOperation that returns the
-//! Work to `Open` with its responsibility intact and its revision advanced.
-//! The ordinary NodeDaemon path then binds the new revision to the member's
-//! current generation and delivers it again, exactly as after `work assign`.
-//! Nothing is deleted or rewritten, and no provider effect is replayed.
+//! those two states. It proves the loss from durable records alone and
+//! otherwise fails closed:
+//!
+//! - a still-executable binding is lost only when its exact MemberRun
+//!   generation is no longer the member's current one, the MemberRun has no
+//!   live runtime authority, or its AgentSession is Closed — each of which is
+//!   a conjunct the runtime fence requires, so no settlement for that attempt
+//!   can ever be recorded again (`WORK_EXECUTION_AUTHORITY_LIVE` otherwise);
+//! - a started Work with no executable binding is lost only when its latest
+//!   binding ended with `invalidated_by_lost_runtime_generation`. A binding
+//!   that a Member Close released keeps the reopened-Result settlement path
+//!   open (the member resubmits against that released binding after the
+//!   formal Reopen), so it is never lost (`WORK_EXECUTION_NOT_LOST`).
+//!
+//! When the loss is proven it (1) releases a still-executable binding through
+//! the same lost-runtime-generation writer the NodeDaemon uses, recording the
+//! claim id and provider receipt as evidence and never asserting a provider
+//! outcome, and (2) appends one `ExecutionRecovered` WorkOperation that
+//! returns the Work to `Open` with its responsibility intact and its revision
+//! advanced. The ordinary NodeDaemon path then binds the new revision to the
+//! member's current generation and delivers it again, exactly as after
+//! `work assign`. Nothing is deleted or rewritten, and no provider effect is
+//! replayed.
+//!
+//! The honest cost of the Host causes: unlike a drain or predecessor
+//! recovery, the Host proves only that the old attempt can never be
+//! *recorded*, not that its process died. An orphaned adapter process of the
+//! superseded generation may still be executing the same Work while the
+//! recovered revision is delivered to the current generation; its result can
+//! never pass the fence, so no double settlement is possible, but the wasted
+//! execution is real and the Host accepts it explicitly by running the verb.
+//!
+//! Recovery writes the binding release and the Work operation as two appends
+//! under one store write lock. A crash between them leaves the binding
+//! released and the Work started: a retry of the same command reclassifies
+//! the Work as lost through its invalidated binding and appends the Work
+//! operation (with a smaller evidence payload, since the release is already
+//! history); an open Work in that state is simply dispatchable again and the
+//! retry answers `WORK_EXECUTION_NOT_LOST`.
 
 use super::store_work_redelivery::{delivery_staleness, SupersededWorkDelivery};
 use super::*;
 use firm_core::agentfirm_api::{
-    ActorKind, ActorRef, AgentSessionStatus, MutationContext, WorkExecutionBinding,
-    WorkExecutionBindingStatus,
+    ActorKind, ActorRef, AgentSession, AgentSessionStatus, CanonicalMutationEvent, MemberRun,
+    MutationContext, RuntimeCommandBinding, WorkExecutionBinding, WorkExecutionBindingStatus,
 };
+use std::collections::BTreeMap;
 
 /// Why one Work's execution is judged lost, live, or not lost at all. The
 /// tokens are durable evidence in the `ExecutionRecovered` payload and in the
@@ -89,11 +117,27 @@ pub struct LostWorkExecution {
     pub work_id: String,
     pub work_version: u64,
     pub phase: WorkPhase,
+    pub condition: WorkCondition,
     pub owner_member_id: Option<String>,
     pub assignee_membership_id: Option<String>,
     pub causes: Vec<String>,
     pub executable_binding_id: Option<String>,
     pub latest_binding_end_transition: Option<String>,
+}
+
+/// One Work the scan could not classify; reported, never fatal.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LostWorkExecutionScanError {
+    pub work_id: String,
+    pub error: String,
+}
+
+/// The read-only `team-run recover` scan: what is provably lost, plus every
+/// Work whose durable facts could not be read.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct LostWorkExecutionScan {
+    pub lost: Vec<LostWorkExecution>,
+    pub errors: Vec<LostWorkExecutionScanError>,
 }
 
 fn binding_can_still_execute(status: WorkExecutionBindingStatus) -> bool {
@@ -105,185 +149,84 @@ fn binding_can_still_execute(status: WorkExecutionBindingStatus) -> bool {
     )
 }
 
+/// The durable facts one classification reads, loaded once per call so a scan
+/// over many Works parses the trust ledger once instead of once per Work.
+struct LostExecutionFacts {
+    member_runs: Vec<MemberRun>,
+    sessions: Vec<AgentSession>,
+    /// Binding id -> (number of `bound` events, the runtime admission of the
+    /// last one). Exactly one is provable; anything else fails closed.
+    bound_admissions: BTreeMap<String, (usize, RuntimeCommandBinding)>,
+    /// Binding id -> the last event other than `bound`.
+    end_events: BTreeMap<String, CanonicalMutationEvent>,
+}
+
 impl HarnessStore {
-    /// Judge one Work's execution from durable records only. Never writes.
-    fn classify_work_execution_loss_unlocked(
+    fn load_lost_execution_facts(
         &self,
         execution_space_id: &str,
-        work: &Work,
-        bindings: &[WorkExecutionBinding],
-    ) -> StoreResult<WorkExecutionLoss> {
-        if work.assignee_membership_id.is_none() || work.owner_member_id.is_none() {
-            return Ok(WorkExecutionLoss::NotLost {
-                reason: "work_has_no_responsible_member".into(),
-            });
-        }
-        if work.phase == WorkPhase::Review {
-            return Ok(WorkExecutionLoss::NotLost {
-                reason: "work_is_in_review".into(),
-            });
-        }
-        let mut work_bindings = bindings
-            .iter()
-            .filter(|binding| binding.work_id == work.id)
-            .collect::<Vec<_>>();
-        work_bindings.sort_by_key(|binding| binding.binding_generation);
-        let latest = work_bindings.last().copied();
-        let executable = work_bindings
-            .iter()
-            .copied()
-            .find(|binding| binding_can_still_execute(binding.status));
-
-        let mut evidence = LostExecutionEvidence {
-            causes: Vec::new(),
-            executable_binding: None,
-            latest_binding_id: latest.map(|binding| binding.id.clone()),
-            latest_binding_status: latest.map(|binding| binding.status),
-            latest_binding_end_transition: None,
-            latest_binding_end_cause: None,
-            member_run_id: None,
-            member_run_generation_at_binding: None,
-            member_run_generation_now: None,
-            member_run_has_live_runtime_authority: None,
-            agent_session_id: None,
-            agent_session_generation: None,
-            agent_session_lifecycle: None,
-        };
-
-        if let Some(binding) = executable {
-            let admission = self.work_execution_runtime_binding(execution_space_id, &binding.id)?;
-            let (Some(member_run_id), Some(member_run_generation)) = (
-                admission.target_member_run_id.clone(),
-                admission.target_member_run_generation,
-            ) else {
-                return Err(StoreError::Conflict(format!(
-                    "WORK_EXECUTION_RUNTIME_BINDING_NOT_PROVABLE: WorkExecutionBinding {} carries no exact MemberRun generation",
-                    binding.id
-                )));
-            };
-            let member_run = self
-                .trust_member_runs(execution_space_id)?
-                .into_iter()
-                .find(|member| member.id == member_run_id)
-                .ok_or_else(|| {
+    ) -> StoreResult<LostExecutionFacts> {
+        let mut bound_admissions: BTreeMap<String, (usize, RuntimeCommandBinding)> =
+            BTreeMap::new();
+        let mut end_events = BTreeMap::new();
+        for operation in self.canonical_operations_for_space(execution_space_id)? {
+            let event = operation.event;
+            if event.aggregate_kind != "work_execution_binding" {
+                continue;
+            }
+            if event.transition == "bound" {
+                let admission: RuntimeCommandBinding = serde_json::from_value(
+                    event.payload["runtime_binding"].clone(),
+                )
+                .map_err(|error| {
                     StoreError::Conflict(format!(
-                        "WORK_EXECUTION_MEMBER_RUN_MISSING: WorkExecutionBinding {} references MemberRun {member_run_id}, which has no canonical source fact",
-                        binding.id
+                        "WORK_EXECUTION_RUNTIME_BINDING_INVALID: WorkExecutionBinding {}: {error}",
+                        event.aggregate_id
                     ))
                 })?;
-            let session = self
-                .fabric_agent_sessions(execution_space_id)?
-                .into_iter()
-                .find(|session| session.id == binding.agent_session_id)
-                .ok_or_else(|| {
-                    StoreError::Conflict(format!(
-                        "WORK_EXECUTION_SESSION_MISSING: WorkExecutionBinding {} references AgentSession {}, which has no canonical source fact",
-                        binding.id, binding.agent_session_id
-                    ))
-                })?;
-            evidence.member_run_id = Some(member_run.id.clone());
-            evidence.member_run_generation_at_binding = Some(member_run_generation);
-            evidence.member_run_generation_now = Some(member_run.runtime_generation);
-            evidence.member_run_has_live_runtime_authority =
-                Some(member_run.has_live_runtime_authority());
-            evidence.agent_session_id = Some(session.id.clone());
-            evidence.agent_session_generation = Some(binding.agent_session_generation);
-            evidence.agent_session_lifecycle = Some(session.lifecycle);
-            if member_run.runtime_generation != member_run_generation {
-                evidence
-                    .causes
-                    .push("member_run_generation_superseded".into());
+                let entry = bound_admissions
+                    .entry(event.aggregate_id.clone())
+                    .or_insert((0, admission.clone()));
+                entry.0 += 1;
+                entry.1 = admission;
+            } else {
+                end_events.insert(event.aggregate_id.clone(), event);
             }
-            if !member_run.has_live_runtime_authority() {
-                evidence
-                    .causes
-                    .push("member_run_runtime_authority_ended".into());
-            }
-            if session.lifecycle == AgentSessionStatus::Closed {
-                evidence.causes.push("agent_session_closed".into());
-            }
-            if session.runtime_generation != binding.agent_session_generation {
-                evidence
-                    .causes
-                    .push("agent_session_generation_superseded".into());
-            }
-            if evidence.causes.is_empty() {
-                return Ok(WorkExecutionLoss::Live {
-                    binding_id: binding.id.clone(),
-                    member_run_id,
-                    member_run_generation,
-                    agent_session_id: binding.agent_session_id.clone(),
-                    agent_session_generation: binding.agent_session_generation,
-                });
-            }
-            evidence.executable_binding = Some(binding.clone());
-            return Ok(WorkExecutionLoss::Lost(Box::new(evidence)));
         }
-
-        // No executable binding. An open Work is simply dispatchable (or, when
-        // a provider-received delivery froze it, a `redeliver` case); only a
-        // started Work is stranded here.
-        if work.phase != WorkPhase::Active {
-            return Ok(WorkExecutionLoss::NotLost {
-                reason: match latest {
-                    Some(_) => "open_work_has_no_executable_binding".into(),
-                    None => "work_was_never_dispatched".into(),
-                },
-            });
-        }
-        let Some(latest) = latest else {
-            evidence
-                .causes
-                .push("started_work_has_no_execution_binding".into());
-            return Ok(WorkExecutionLoss::Lost(Box::new(evidence)));
-        };
-        let end_event = self
-            .canonical_operations()?
-            .into_iter()
-            .map(|operation| operation.event)
-            .rfind(|event| {
-                event.aggregate_kind == "work_execution_binding"
-                    && event.aggregate_id == latest.id
-                    && event.transition != "bound"
-            });
-        evidence.latest_binding_end_transition =
-            end_event.as_ref().map(|event| event.transition.clone());
-        evidence.latest_binding_end_cause = end_event
-            .as_ref()
-            .and_then(|event| event.payload["lost_runtime_generation"]["cause"].as_str())
-            .map(str::to_string);
-        evidence.causes.push(format!(
-            "started_work_binding_{}",
-            serde_snake(latest.status)
-        ));
-        Ok(WorkExecutionLoss::Lost(Box::new(evidence)))
+        Ok(LostExecutionFacts {
+            member_runs: self.trust_member_runs(execution_space_id)?,
+            sessions: self.fabric_agent_sessions(execution_space_id)?,
+            bound_admissions,
+            end_events,
+        })
     }
 
     /// Read-only report of every non-terminal Work of one TeamRun whose
-    /// execution is provably lost. Used by `team-run recover`.
+    /// execution is provably lost. Used by `team-run recover`; a Work whose
+    /// facts cannot be read is reported as a scan error, never as lost and
+    /// never as a failure of the recovery itself.
     pub fn lost_work_executions(
         &self,
         execution_space_id: &str,
         team_run_id: &str,
-    ) -> StoreResult<Vec<LostWorkExecution>> {
+    ) -> StoreResult<LostWorkExecutionScan> {
         self.init()?;
-        let _lock = self.acquire_write_lock()?;
         let bindings = self.fabric_work_execution_bindings(execution_space_id)?;
+        let facts = self.load_lost_execution_facts(execution_space_id)?;
         let mut works = self
             .latest_works_unlocked()?
             .into_values()
             .filter(|work| work.team_run_id == team_run_id && !work.is_terminal())
             .collect::<Vec<_>>();
         works.sort_by(|left, right| left.id.cmp(&right.id));
-        let mut lost = Vec::new();
+        let mut scan = LostWorkExecutionScan::default();
         for work in works {
-            if let WorkExecutionLoss::Lost(evidence) =
-                self.classify_work_execution_loss_unlocked(execution_space_id, &work, &bindings)?
-            {
-                lost.push(LostWorkExecution {
+            match classify_work_execution_loss(&work, &bindings, &facts) {
+                Ok(WorkExecutionLoss::Lost(evidence)) => scan.lost.push(LostWorkExecution {
                     work_id: work.id.clone(),
                     work_version: work.version,
                     phase: work.phase,
+                    condition: work.condition,
                     owner_member_id: work.owner_member_id.clone(),
                     assignee_membership_id: work.assignee_membership_id.clone(),
                     causes: evidence.causes.clone(),
@@ -292,10 +235,15 @@ impl HarnessStore {
                         .as_ref()
                         .map(|binding| binding.id.clone()),
                     latest_binding_end_transition: evidence.latest_binding_end_transition.clone(),
-                });
+                }),
+                Ok(WorkExecutionLoss::Live { .. } | WorkExecutionLoss::NotLost { .. }) => {}
+                Err(error) => scan.errors.push(LostWorkExecutionScanError {
+                    work_id: work.id.clone(),
+                    error: error.to_string(),
+                }),
             }
         }
-        Ok(lost)
+        Ok(scan)
     }
 
     /// Return a Work whose execution authority is provably lost to the
@@ -351,6 +299,15 @@ impl HarnessStore {
                 "WORK_IN_REVIEW_NOT_RECOVERABLE: Work {work_id} is awaiting review; accept it or use request-changes"
             )));
         }
+        // A blocked or on-hold Work carries a durable condition record and a
+        // blocker reason that only `resume` resolves; recovery never clears a
+        // block silently.
+        if current.condition != WorkCondition::Normal {
+            return Err(StoreError::Conflict(format!(
+                "WORK_CONDITION_NOT_NORMAL: Work {work_id} is {:?}; resume it (team-run work resume) or resolve the hold before recovering its execution",
+                current.condition
+            )));
+        }
         let (Some(membership_id), Some(agent_member_id)) = (
             current.assignee_membership_id.clone(),
             current.owner_member_id.clone(),
@@ -360,11 +317,8 @@ impl HarnessStore {
             )));
         };
         let bindings = self.fabric_work_execution_bindings(&work_execution_space_id)?;
-        let evidence = match self.classify_work_execution_loss_unlocked(
-            &work_execution_space_id,
-            &current,
-            &bindings,
-        )? {
+        let facts = self.load_lost_execution_facts(&work_execution_space_id)?;
+        let evidence = match classify_work_execution_loss(&current, &bindings, &facts)? {
             WorkExecutionLoss::Live {
                 binding_id,
                 member_run_id,
@@ -384,26 +338,15 @@ impl HarnessStore {
             WorkExecutionLoss::Lost(evidence) => *evidence,
         };
 
-        // Snapshot the current revision's deliveries before the release below
-        // rewrites the live one, so the payload records what was superseded.
-        let superseded_before = self
-            .canonical_work_deliveries_for_work_unlocked(&current)?
-            .into_iter()
-            .filter(|delivery| {
-                // A started Work carries deliveries from the revision it was
-                // dispatched at, which is older than its current one.
-                delivery.work_revision <= current.version
-                    && matches!(
-                        delivery.status,
-                        WorkDeliveryStatus::Queued
-                            | WorkDeliveryStatus::Claimed
-                            | WorkDeliveryStatus::ProviderReceived
-                    )
-            })
-            .collect::<Vec<_>>();
-
-        let released_binding = match &evidence.executable_binding {
+        // Only the delivery of a binding this recovery actually releases is
+        // superseded; a Work whose binding a settlement already ended has no
+        // delivery to rewrite, and its payload says so with an empty list.
+        let (released_binding, superseded) = match &evidence.executable_binding {
             Some(binding) => {
+                let delivery_before = self
+                    .canonical_work_deliveries_for_work_unlocked(&current)?
+                    .into_iter()
+                    .find(|delivery| delivery.id == binding.delivery_id);
                 let actor = ActorRef {
                     kind: ActorKind::AgentMember,
                     id: context.performed_by_actor.id.clone(),
@@ -439,52 +382,40 @@ impl HarnessStore {
                     &evidence_json,
                     &context.created_at,
                 )?;
-                Some(released.projection)
+                let released = released.projection;
+                let superseded = delivery_before
+                    .into_iter()
+                    .map(|delivery| SupersededWorkDelivery {
+                        stale_because: delivery_staleness(Some(&released)).to_string(),
+                        delivery_id: delivery.id.clone(),
+                        delivery_version: delivery.version,
+                        status: delivery.status,
+                        work_revision: delivery.work_revision,
+                        work_execution_binding_id: delivery.work_execution_binding_id.clone(),
+                        work_execution_binding_status: Some(released.status),
+                        recipient_agent_member_id: delivery.recipient_agent_member_id.clone(),
+                        recipient_session_id: delivery.recipient_session_id.clone(),
+                        recipient_session_generation: delivery.recipient_session_generation,
+                        provider_receipt_id: delivery.provider_receipt_id.clone(),
+                    })
+                    .collect::<Vec<_>>();
+                (Some(released), superseded)
             }
-            None => None,
+            None => (None, Vec::new()),
         };
-
-        let bindings_after = self.fabric_work_execution_bindings(&work_execution_space_id)?;
-        let mut superseded = superseded_before
-            .into_iter()
-            .map(|delivery| {
-                let binding = bindings_after
-                    .iter()
-                    .find(|binding| binding.id == delivery.work_execution_binding_id);
-                SupersededWorkDelivery {
-                    stale_because: delivery_staleness(binding).to_string(),
-                    delivery_id: delivery.id.clone(),
-                    delivery_version: delivery.version,
-                    status: delivery.status,
-                    work_revision: delivery.work_revision,
-                    work_execution_binding_id: delivery.work_execution_binding_id.clone(),
-                    work_execution_binding_status: binding.map(|binding| binding.status),
-                    recipient_agent_member_id: delivery.recipient_agent_member_id.clone(),
-                    recipient_session_id: delivery.recipient_session_id.clone(),
-                    recipient_session_generation: delivery.recipient_session_generation,
-                    provider_receipt_id: delivery.provider_receipt_id.clone(),
-                }
-            })
-            .collect::<Vec<_>>();
-        superseded.sort_by(|left, right| left.delivery_id.cmp(&right.delivery_id));
 
         // Evidence only, as in `redeliver`: the binding that freezes the new
         // generation is written later by the NodeDaemon.
-        let target_session = self
-            .fabric_agent_sessions(&work_execution_space_id)?
-            .into_iter()
-            .find(|session| {
-                session.agent_member_id == agent_member_id
-                    && session.lifecycle != AgentSessionStatus::Closed
-            });
+        let target_session = facts.sessions.iter().find(|session| {
+            session.agent_member_id == agent_member_id
+                && session.lifecycle != AgentSessionStatus::Closed
+        });
         let mut next = current.clone();
         next.phase = WorkPhase::Open;
-        next.condition = WorkCondition::Normal;
         next.resolution = None;
         next.version += 1;
         next.updated_at = context.created_at.clone();
         let phase_before = current.phase;
-        let condition_before = current.condition;
         self.append_work_transition_with_payload_unlocked(
             current,
             next,
@@ -494,7 +425,6 @@ impl HarnessStore {
                 "recovery": "lost_execution",
                 "reason": reason,
                 "phase_before": phase_before,
-                "condition_before": condition_before,
                 "assignee_membership_id": membership_id,
                 "assignee_agent_member_id": agent_member_id,
                 "lost_execution": {
@@ -513,12 +443,174 @@ impl HarnessStore {
                 },
                 "released_binding": released_binding,
                 "superseded_deliveries": superseded,
-                "target_agent_session_id": target_session.as_ref().map(|session| session.id.clone()),
+                "target_agent_session_id": target_session.map(|session| session.id.clone()),
                 "target_agent_session_generation": target_session
-                    .as_ref()
                     .map(|session| session.runtime_generation),
             }),
         )
+    }
+}
+
+/// Judge one Work's execution from durable records only. Never writes.
+fn classify_work_execution_loss(
+    work: &Work,
+    bindings: &[WorkExecutionBinding],
+    facts: &LostExecutionFacts,
+) -> StoreResult<WorkExecutionLoss> {
+    if work.assignee_membership_id.is_none() || work.owner_member_id.is_none() {
+        return Ok(WorkExecutionLoss::NotLost {
+            reason: "work_has_no_responsible_member".into(),
+        });
+    }
+    if work.phase == WorkPhase::Review {
+        return Ok(WorkExecutionLoss::NotLost {
+            reason: "work_is_in_review".into(),
+        });
+    }
+    let mut work_bindings = bindings
+        .iter()
+        .filter(|binding| binding.work_id == work.id)
+        .collect::<Vec<_>>();
+    work_bindings.sort_by_key(|binding| binding.binding_generation);
+    let latest = work_bindings.last().copied();
+    let executable = work_bindings
+        .iter()
+        .copied()
+        .find(|binding| binding_can_still_execute(binding.status));
+
+    let mut evidence = LostExecutionEvidence {
+        causes: Vec::new(),
+        executable_binding: None,
+        latest_binding_id: latest.map(|binding| binding.id.clone()),
+        latest_binding_status: latest.map(|binding| binding.status),
+        latest_binding_end_transition: None,
+        latest_binding_end_cause: None,
+        member_run_id: None,
+        member_run_generation_at_binding: None,
+        member_run_generation_now: None,
+        member_run_has_live_runtime_authority: None,
+        agent_session_id: None,
+        agent_session_generation: None,
+        agent_session_lifecycle: None,
+    };
+
+    if let Some(binding) = executable {
+        let admission = match facts.bound_admissions.get(&binding.id) {
+            Some((1, admission)) => admission,
+            _ => {
+                return Err(StoreError::Conflict(format!(
+                    "WORK_EXECUTION_RUNTIME_BINDING_NOT_PROVABLE: WorkExecutionBinding {} must have exactly one canonical bound source fact",
+                    binding.id
+                )));
+            }
+        };
+        let (Some(member_run_id), Some(member_run_generation)) = (
+            admission.target_member_run_id.clone(),
+            admission.target_member_run_generation,
+        ) else {
+            return Err(StoreError::Conflict(format!(
+                "WORK_EXECUTION_RUNTIME_BINDING_NOT_PROVABLE: WorkExecutionBinding {} carries no exact MemberRun generation",
+                binding.id
+            )));
+        };
+        let member_run = facts
+            .member_runs
+            .iter()
+            .find(|member| member.id == member_run_id)
+            .ok_or_else(|| {
+                StoreError::Conflict(format!(
+                    "WORK_EXECUTION_MEMBER_RUN_MISSING: WorkExecutionBinding {} references MemberRun {member_run_id}, which has no canonical source fact",
+                    binding.id
+                ))
+            })?;
+        let session = facts
+            .sessions
+            .iter()
+            .find(|session| session.id == binding.agent_session_id)
+            .ok_or_else(|| {
+                StoreError::Conflict(format!(
+                    "WORK_EXECUTION_SESSION_MISSING: WorkExecutionBinding {} references AgentSession {}, which has no canonical source fact",
+                    binding.id, binding.agent_session_id
+                ))
+            })?;
+        evidence.member_run_id = Some(member_run.id.clone());
+        evidence.member_run_generation_at_binding = Some(member_run_generation);
+        evidence.member_run_generation_now = Some(member_run.runtime_generation);
+        evidence.member_run_has_live_runtime_authority =
+            Some(member_run.has_live_runtime_authority());
+        evidence.agent_session_id = Some(session.id.clone());
+        evidence.agent_session_generation = Some(binding.agent_session_generation);
+        evidence.agent_session_lifecycle = Some(session.lifecycle);
+        if member_run.runtime_generation != member_run_generation {
+            evidence
+                .causes
+                .push("member_run_generation_superseded".into());
+        }
+        if !member_run.has_live_runtime_authority() {
+            evidence
+                .causes
+                .push("member_run_runtime_authority_ended".into());
+        }
+        if session.lifecycle == AgentSessionStatus::Closed {
+            evidence.causes.push("agent_session_closed".into());
+        }
+        if session.runtime_generation != binding.agent_session_generation {
+            evidence
+                .causes
+                .push("agent_session_generation_superseded".into());
+        }
+        if evidence.causes.is_empty() {
+            return Ok(WorkExecutionLoss::Live {
+                binding_id: binding.id.clone(),
+                member_run_id,
+                member_run_generation,
+                agent_session_id: binding.agent_session_id.clone(),
+                agent_session_generation: binding.agent_session_generation,
+            });
+        }
+        evidence.executable_binding = Some(binding.clone());
+        return Ok(WorkExecutionLoss::Lost(Box::new(evidence)));
+    }
+
+    // No executable binding. An open Work is simply dispatchable (or, when a
+    // provider-received delivery froze it, a `redeliver` case); only a
+    // started Work can be stranded here.
+    if work.phase != WorkPhase::Active {
+        return Ok(WorkExecutionLoss::NotLost {
+            reason: match latest {
+                Some(_) => "open_work_has_no_executable_binding".into(),
+                None => "work_was_never_dispatched".into(),
+            },
+        });
+    }
+    let Some(latest) = latest else {
+        return Ok(WorkExecutionLoss::NotLost {
+            reason: "started_work_has_no_execution_binding".into(),
+        });
+    };
+    let end_event = facts.end_events.get(&latest.id);
+    evidence.latest_binding_end_transition = end_event.map(|event| event.transition.clone());
+    evidence.latest_binding_end_cause = end_event
+        .and_then(|event| event.payload["lost_runtime_generation"]["cause"].as_str())
+        .map(str::to_string);
+    // Only a lost-runtime-generation invalidation strands a started Work. A
+    // binding a Member Close released (transition `released` with the Close
+    // evidence in its payload) keeps the reopened-Result settlement path open,
+    // and a binding still executing never reaches this branch.
+    match end_event.map(|event| event.transition.as_str()) {
+        Some(INVALIDATED_BY_LOST_RUNTIME_GENERATION) => {
+            evidence.causes.push(format!(
+                "started_work_binding_{}_by_lost_runtime_generation",
+                serde_snake(latest.status)
+            ));
+            Ok(WorkExecutionLoss::Lost(Box::new(evidence)))
+        }
+        other => Ok(WorkExecutionLoss::NotLost {
+            reason: format!(
+                "started_work_binding_ended_by_{}",
+                other.unwrap_or("unknown_transition")
+            ),
+        }),
     }
 }
 

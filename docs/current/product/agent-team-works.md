@@ -134,8 +134,14 @@ WorkOperation that returns the Work to `Open` with the same assignee and an
 advanced revision, so the ordinary delivery path re-delivers it. It fails
 closed with `WORK_EXECUTION_AUTHORITY_LIVE` while the binding's generations
 are still the member's current runtime authority, and with
-`WORK_EXECUTION_NOT_LOST` when nothing is lost. `team-run recover` lists
-candidates as `lost_execution_works`.
+`WORK_EXECUTION_NOT_LOST` when nothing is lost (a started Work whose binding a
+Member Close released is never lost: the reopened member resubmits against
+that binding), and with `WORK_CONDITION_NOT_NORMAL` until a blocked Work is
+resumed. Its proof is weaker than a daemon settlement's: it shows the old
+attempt can never be recorded, not that its process died, so an orphaned
+adapter process may still run the superseded attempt — the Host accepts that
+cost by running the verb. `team-run recover` lists candidates as
+`lost_execution_works` and unreadable Works as `lost_execution_scan_errors`.
 
 `firm work list` (DOC-106) replaces the retired `firm company work
 list/query`; it reads native Work read-only and never falls back to the

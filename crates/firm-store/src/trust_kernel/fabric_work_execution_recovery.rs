@@ -1,35 +1,50 @@
 //! What happens to one member's in-flight Work when the exact runtime
 //! generation that received it is provably gone.
 //!
-//! One settlement seam reaches this module (#756): a NodeDaemon drain or
-//! Operator predecessor recovery, both of which already prove that this daemon
-//! generation's owned provider process groups terminated.
+//! Two settlement seams reach this module. The NodeDaemon seam (#756) — a
+//! drain or an Operator predecessor recovery — proves that this daemon
+//! generation's owned provider process groups terminated. The Host seam
+//! (`team-run work recover-lost-execution`, DEV-230) proves less: only that
+//! the binding's exact MemberRun/AgentSession generation is superseded, its
+//! MemberRun has no live runtime authority, or its AgentSession is Closed —
+//! each a conjunct the runtime fence requires, so no settlement for that
+//! attempt can ever be recorded again. An orphaned adapter process of that
+//! generation may still be running; the Host accepts that wasted execution
+//! explicitly when it runs the verb (see `store_work_execution_recovery`).
 //!
 //! The killed turn is never replayed: its `RuntimeCommand` stays settled
 //! against the dead generation, and no `StartCycle` is re-issued here. What is
 //! written is the honest opposite — the binding is invalidated with a recorded
 //! cause, and the in-flight `CanonicalWorkDelivery` is superseded with an
 //! explicit failure code that says the attempt can never be settled, never that
-//! the turn completed. The Work itself keeps its responsibility and revision,
-//! so the ordinary dispatch path mints a fresh binding generation and a fresh
-//! delivery on the next Supervisor pass.
+//! the turn completed. On the daemon seam the Work keeps its responsibility
+//! and revision, so the ordinary dispatch path mints a fresh binding
+//! generation and a fresh delivery on the next Supervisor pass; on the Host
+//! seam the Work additionally returns to `Open` through one
+//! `ExecutionRecovered` WorkOperation, because a started Work is never
+//! re-dispatched by that path.
 //!
 //! A `Claimed` (pre-receipt) delivery is covered by the same rule even though
 //! no receipt row proves the provider ever answered: the claim may have
 //! reached the provider before the crash. Superseding it is still safe
-//! because the caller has already proved this generation's provider process
-//! groups terminated, the killed turn is never replayed, and the next
-//! dispatch mints a fresh binding generation — never a replay of the claimed
-//! attempt.
+//! because the caller has already proved the attempt can never be settled by
+//! that generation, the killed turn is never replayed, and the next dispatch
+//! mints a fresh binding generation — never a replay of the claimed attempt.
 //!
 //! #734's shape — an Active binding with a `ProviderReceived` delivery after a
-//! non-clean MemberRun generation advance — is deliberately NOT handled here.
-//! Superseding it automatically would change the shipped Close/Reopen contract,
-//! which requires the Host to re-drive that Work explicitly
-//! (`kimi_provider_error_after_receipt_requires_recovery_without_replay`), so
-//! who re-drives it is an open owner decision rather than a mechanism gap.
+//! non-clean MemberRun generation advance — is never superseded automatically
+//! by the daemon: that would change the shipped Close/Reopen contract, which
+//! requires the Host to re-drive such a Work explicitly
+//! (`kimi_provider_error_after_receipt_requires_recovery_without_replay`).
+//! The Host seam is exactly that explicit re-drive.
 
 use super::*;
+
+/// The transition every lost-runtime-generation invalidation writes on the
+/// binding, whichever seam proved the loss. Readers that must tell such an
+/// invalidation from a Member Close release (`released`) key on this string.
+pub(crate) const INVALIDATED_BY_LOST_RUNTIME_GENERATION: &str =
+    "invalidated_by_lost_runtime_generation";
 
 /// Why one WorkExecutionBinding's exact runtime generation is provably gone.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -182,15 +197,10 @@ impl HarnessStore {
         CanonicalMutationResult<WorkExecutionBinding>,
         Option<InvalidatedWorkExecution>,
     )> {
-        if !matches!(
-            binding.status,
-            WorkExecutionBindingStatus::Offered
-                | WorkExecutionBindingStatus::Accepted
-                | WorkExecutionBindingStatus::Active
-        ) {
+        if binding.status != WorkExecutionBindingStatus::Active {
             return Err(trust_error(
                 TrustErrorCode::InvalidStateTransition,
-                "only an executable WorkExecutionBinding can be released as a lost execution",
+                "only an Active WorkExecutionBinding can be released as a lost execution",
                 "work_execution_binding",
                 &binding.id,
                 Some(binding.version),
@@ -221,6 +231,9 @@ impl HarnessStore {
         if delivery.work_execution_binding_id != binding.id
             || delivery.work_id != binding.work_id
             || delivery.work_revision != binding.work_revision
+            || delivery.recipient_agent_member_id != binding.agent_member_id
+            || delivery.recipient_session_id != binding.agent_session_id
+            || delivery.recipient_session_generation != binding.agent_session_generation
         {
             return Err(trust_error(
                 TrustErrorCode::InvalidStateTransition,
@@ -265,7 +278,7 @@ impl HarnessStore {
             context,
             "work_execution_binding",
             &binding.id,
-            "invalidated_by_lost_runtime_generation",
+            INVALIDATED_BY_LOST_RUNTIME_GENERATION,
             request_payload,
             &released,
             side_records,
@@ -353,7 +366,7 @@ impl HarnessStore {
             context,
             "work_execution_binding",
             &binding.id,
-            "invalidated_by_lost_runtime_generation",
+            INVALIDATED_BY_LOST_RUNTIME_GENERATION,
             request_payload,
             &released,
             vec![serde_json::to_value(&delivery)?],

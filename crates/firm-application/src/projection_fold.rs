@@ -207,10 +207,12 @@ fn valid_work_delivery_transition(
         }
         // A delivery the provider already received can only be superseded,
         // never completed, by a settlement writer: the exact runtime
-        // generation that received it is provably gone (a NodeDaemon drain or
-        // an Operator predecessor recovery, both of which prove the owned
-        // provider process groups terminated), so no provider outcome can ever
-        // arrive for it any more. The immutable provider
+        // generation that received it is provably gone. A NodeDaemon drain or
+        // an Operator predecessor recovery proves the owned provider process
+        // groups terminated; a Host lost-execution recovery (DEV-230) proves
+        // only that the delivery's exact MemberRun/AgentSession generation can
+        // never pass the runtime fence again, so an orphaned process may still
+        // run but no outcome for it can ever be recorded. The immutable provider
         // receipt stays on the row as evidence of what did cross the provider
         // boundary, and only the named lost-generation codes may claim this
         // transition, so nothing can record it as a semantic turn result.

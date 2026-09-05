@@ -545,8 +545,17 @@ evidence), returns the Work to `Open` with the same assignee in one
 `ExecutionRecovered` WorkOperation, and lets the next Supervisor pass deliver
 it again. It refuses with `WORK_EXECUTION_AUTHORITY_LIVE` while those
 generations are still the member's current authority — interrupt or close the
-member, or let daemon settlement invalidate the binding, first — and with
-`WORK_EXECUTION_NOT_LOST` when nothing is lost.
+member, or let daemon settlement invalidate the binding, first — with
+`WORK_EXECUTION_NOT_LOST` when nothing is lost (a started Work whose binding a
+Member Close released keeps its reopened-Result path and is never lost), and
+with `WORK_CONDITION_NOT_NORMAL` until a blocked Work is resumed. Its proof is
+weaker than a drain's: the old attempt can never be *recorded*, but its
+adapter process may still be running as an orphan, so the wasted execution is
+the Host's accepted cost. Unreadable Works appear under
+`lost_execution_scan_errors` instead of failing the recovery. Rollback note:
+the verb writes a new `execution_recovered` WorkEvent kind, which a `firm`
+binary older than DEV-230 cannot parse, so a downgrade after any use of it is
+one-way.
 
 If a resume is refused with `AgentSession interrupted by a NodeDaemon drain may
 resume only from a detached, disarmed lane…`, the lane still claims a live

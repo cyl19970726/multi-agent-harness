@@ -5,20 +5,22 @@ use super::*;
 /// binding frozen on a MemberRun/AgentSession generation that can never pass
 /// the runtime fence again. Reported, never repaired — `team-run work
 /// recover-lost-execution` is the explicit Host verb — so the Host does not
-/// learn this from member complaints (GitHub #799). A run whose Execution
-/// Space cannot be resolved proves nothing about any Work, so it reports none.
+/// learn this from member complaints (GitHub #799). A Work whose durable
+/// facts cannot be read is reported as a scan error and never fails the
+/// recovery; a run whose Execution Space cannot be resolved proves nothing
+/// about any Work, so it reports none.
 pub(super) fn report_lost_execution_works(
     store: &HarnessStore,
     execution_space_id: Option<&str>,
     team_run_id: &str,
     json: bool,
-) -> CliResult<Vec<harness_store::LostWorkExecution>> {
-    let lost_execution_works = match execution_space_id {
+) -> CliResult<harness_store::LostWorkExecutionScan> {
+    let scan = match execution_space_id {
         Some(space_id) => store.lost_work_executions(space_id, team_run_id)?,
-        None => Vec::new(),
+        None => harness_store::LostWorkExecutionScan::default(),
     };
     if !json {
-        for lost in &lost_execution_works {
+        for lost in &scan.lost {
             println!(
                 "  work {} (v{}, {}): execution lost [{}] - run `team-run work recover-lost-execution --work-id {} --expected-version {}`",
                 lost.work_id,
@@ -29,6 +31,12 @@ pub(super) fn report_lost_execution_works(
                 lost.work_version
             );
         }
+        for error in &scan.errors {
+            println!(
+                "  work {}: lost-execution scan could not read its facts: {}",
+                error.work_id, error.error
+            );
+        }
     }
-    Ok(lost_execution_works)
+    Ok(scan)
 }

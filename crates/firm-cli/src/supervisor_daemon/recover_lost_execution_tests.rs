@@ -181,9 +181,10 @@ fn started_work_lost_to_a_drain_is_recovered_by_the_host_and_redelivered() {
     );
     assert_eq!(
         lost[0]["causes"],
-        serde_json::json!(["started_work_binding_released"])
+        serde_json::json!(["started_work_binding_released_by_lost_runtime_generation"])
     );
     assert!(lost[0]["executable_binding_id"].is_null());
+    assert_eq!(report["lost_execution_scan_errors"], serde_json::json!([]));
 
     // The Host recovers: the Work returns to Open with the same assignee and
     // an advanced revision; nothing is replayed.

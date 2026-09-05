@@ -250,8 +250,10 @@ that never settled is uncertain: reconcile it, never replay it.
 stranded after `team-run recover` (the daemon invalidated its binding but the
 Work is not Open) or a binding frozen on a MemberRun generation that advanced
 without a clean Close. It refuses `WORK_EXECUTION_AUTHORITY_LIVE` while the
-binding's generations are still current and `WORK_EXECUTION_NOT_LOST` when
-nothing is lost; `team-run recover` lists candidates as
+binding's generations are still current, `WORK_EXECUTION_NOT_LOST` when
+nothing is lost (a binding your Close released is never lost — the reopened
+member resubmits against it), and `WORK_CONDITION_NOT_NORMAL` until you
+resume a blocked Work; `team-run recover` lists candidates as
 `lost_execution_works`. After it, the next Supervisor pass re-delivers the
 Work and the member claims/starts it again — never `cancel` plus a re-issued
 Work.

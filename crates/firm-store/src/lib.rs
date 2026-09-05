@@ -385,7 +385,8 @@ mod store_team_journal;
 mod store_work_application;
 mod store_work_execution_recovery;
 pub use store_work_execution_recovery::{
-    LostExecutionEvidence, LostWorkExecution, WorkExecutionLoss,
+    LostExecutionEvidence, LostWorkExecution, LostWorkExecutionScan, LostWorkExecutionScanError,
+    WorkExecutionLoss,
 };
 mod store_work_graph;
 mod store_work_mutations;

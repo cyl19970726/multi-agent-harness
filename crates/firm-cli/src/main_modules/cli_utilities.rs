@@ -331,10 +331,12 @@ pub(super) fn print_help() {
       returns the Work to Open with the same assignee, and advances the
       revision so the ordinary delivery path re-delivers it; never replays a
       provider effect. Refusal codes: WORK_TERMINAL_NOT_RECOVERABLE,
-      WORK_IN_REVIEW_NOT_RECOVERABLE, WORK_NOT_ASSIGNED,
-      WORK_EXECUTION_AUTHORITY_LIVE, WORK_EXECUTION_NOT_LOST,
-      EXECUTION_SPACE_SCOPE_MISMATCH. `team-run recover` lists candidates as
-      lost_execution_works.
+      WORK_IN_REVIEW_NOT_RECOVERABLE, WORK_CONDITION_NOT_NORMAL (resume first),
+      WORK_NOT_ASSIGNED, WORK_EXECUTION_AUTHORITY_LIVE, WORK_EXECUTION_NOT_LOST,
+      EXECUTION_SPACE_SCOPE_MISMATCH. A binding a Member Close released is never
+      lost (the reopened member resubmits against it). `team-run recover` lists
+      candidates as lost_execution_works and unreadable Works as
+      lost_execution_scan_errors.
   team-run work release --work-id <id> --expected-version <n> [--member-run-id <id>]
       --team-run-id is optional; the TeamRun is derived from the Work.
   team-run work list [--brief] [--since <cursor>] --team-run-id <id> [--status <status>] [--member-run-id <id>]
