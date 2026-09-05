@@ -1,4 +1,5 @@
 use super::*;
+use std::collections::{BTreeMap, BTreeSet};
 
 impl HarnessStore {
     pub(super) fn append_jsonl<T: Serialize>(&self, file_name: &str, value: &T) -> StoreResult<()> {
@@ -162,25 +163,56 @@ impl HarnessStore {
         Ok(())
     }
 
-    /// Collapse the NodeDaemon lease file to one row per node (latest wins).
+    /// Collapse NodeDaemon lease renewals while keeping every transition the
+    /// readers rely on.
     ///
     /// Called on renewal: NodeDaemon heartbeats renew ~1/s while acquisition
     /// is rare, so this is where compaction belongs (the Supervisor version
-    /// compacts on the rare acquisition instead). The retention rule is the
-    /// same as `compact_supervisor_leases_unlocked`: keep exactly the latest
-    /// row per key — for supervisor leases the key is the run, here it is
-    /// `node_id` — and drop every superseded row, including prior
-    /// acquire/draining/expired/released transitions; no NodeDaemon lease
-    /// reader consumes more than the latest row per node. Generation fencing
-    /// is unaffected: the retained row is exactly the row a full-scan
-    /// latest-wins projection would have produced.
+    /// compacts on the rare acquisition instead). The retention rule mirrors
+    /// `compact_supervisor_leases_unlocked`'s "latest row per key wins", but
+    /// the key is the lease LIFECYCLE, not the node: per
+    /// `(node_id, daemon_id, generation)` group, keep the group's first row
+    /// (the acquire of that generation) and the LAST row of each distinct
+    /// status (the newest renewal for `Active`; the `Draining` / `Expired` /
+    /// `Released` transition rows), and drop only superseded renewal rows.
+    /// The released-predecessor proof in
+    /// `trust_kernel/fabric_identity_sessions.rs` (`predecessor_was_released`,
+    /// an rfind over this file for the exact predecessor generation's row)
+    /// depends on the Released row of every prior generation surviving, so a
+    /// one-row-per-node rule would break session adoption on every daemon
+    /// restart. Generation fencing and latest-wins reads are unaffected: the
+    /// latest row per node is always retained, and `latest_by_id` over the
+    /// compacted file returns exactly what it returned before. Bound: at most
+    /// 1 + #statuses(4) rows per generation per node — bounded by generation
+    /// count (incident-rare), never by heartbeat count.
     pub(super) fn compact_node_daemon_leases_unlocked(&self) -> StoreResult<()> {
         let path = self.root.join("node_daemon_leases.jsonl");
         if !path.exists() {
             return Ok(());
         }
         let all = self.read_jsonl::<NodeDaemonLease>("node_daemon_leases.jsonl")?;
-        let latest = latest_by_id(all, |lease| lease.node_id.clone());
+        let mut first_of_group: BTreeMap<(String, String, u64), usize> = BTreeMap::new();
+        let mut last_of_group_status: BTreeMap<(String, String, u64, u8), usize> = BTreeMap::new();
+        for (index, lease) in all.iter().enumerate() {
+            let group = (
+                lease.node_id.clone(),
+                lease.daemon_id.clone(),
+                lease.generation,
+            );
+            first_of_group.entry(group.clone()).or_insert(index);
+            let status_rank = match lease.status {
+                NodeDaemonLeaseStatus::Active => 0,
+                NodeDaemonLeaseStatus::Draining => 1,
+                NodeDaemonLeaseStatus::Expired => 2,
+                NodeDaemonLeaseStatus::Released => 3,
+            };
+            last_of_group_status.insert((group.0, group.1, group.2, status_rank), index);
+        }
+        let keep: BTreeSet<usize> = first_of_group
+            .values()
+            .chain(last_of_group_status.values())
+            .copied()
+            .collect();
         let temp = self.root.join("node_daemon_leases.jsonl.compact");
         {
             let mut file = OpenOptions::new()
@@ -188,7 +220,10 @@ impl HarnessStore {
                 .write(true)
                 .truncate(true)
                 .open(&temp)?;
-            for lease in latest.values() {
+            for (index, lease) in all.iter().enumerate() {
+                if !keep.contains(&index) {
+                    continue;
+                }
                 let mut row = Vec::new();
                 serde_json::to_writer(&mut row, lease)?;
                 row.push(b'\n');
