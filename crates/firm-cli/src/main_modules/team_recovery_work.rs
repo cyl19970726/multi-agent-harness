@@ -535,6 +535,8 @@ pub(super) fn team_run_recover(
 
     let lost_execution_scan =
         report_lost_execution_works(store, execution_space_id.as_deref(), team_run_id, json)?;
+    let blocked_lanes_not_proven =
+        report_blocked_lanes_not_proven(store, execution_space_id.as_deref(), &members, json);
 
     let supervisor_diagnosis = supervisor.as_ref().map(|lease| {
         let (live, diagnosis) = supervisor_lease_live_diagnosis(lease);
@@ -567,6 +569,7 @@ pub(super) fn team_run_recover(
         "skipped": skipped,
         "lost_execution_works": lost_execution_scan.lost,
         "lost_execution_scan_errors": lost_execution_scan.errors,
+        "blocked_lanes_not_proven": blocked_lanes_not_proven,
     });
     if !json {
         println!(

@@ -111,13 +111,105 @@ pub(super) fn member_lane_proves_runtime_gone(
     if current.next().is_some() {
         return false;
     }
-    if !matches!(
-        session.lifecycle,
-        AgentSessionStatus::Cold | AgentSessionStatus::Idle | AgentSessionStatus::Interrupted
-    ) {
+    if !lane_is_at_terminal_turn_boundary(&session) {
         return false;
     }
     lane_proves_runtime_is_terminated(store, execution_space_id, &session).unwrap_or(false)
+}
+
+/// The one definition of "this lane sits at a terminal turn boundary with no
+/// cycle open" shared by `team-run recover` (may a coordination-only repair
+/// touch it?) and the detached-recovery Close fence (may the Host close it?).
+/// Both verbs must agree, or recover reports a lane as repairable that Close
+/// then refuses (GitHub #841). `RecoveryRequired` belongs here since GitHub
+/// #755: the Store admits its exits under the same terminated-lane proof.
+pub(super) fn lane_is_at_terminal_turn_boundary(session: &AgentSession) -> bool {
+    matches!(
+        session.lifecycle,
+        AgentSessionStatus::Cold
+            | AgentSessionStatus::Idle
+            | AgentSessionStatus::Interrupted
+            | AgentSessionStatus::RecoveryRequired
+    ) && session.control_state.activity == RuntimeActivity::Idle
+        && session.current_turn_id.is_none()
+}
+
+/// Why this member's lane does NOT prove its runtime gone, as one stable
+/// sentence for the Host, or `None` when it does. Reports the first failing
+/// clause of exactly the proof `member_lane_proves_runtime_gone` evaluates.
+pub(super) fn member_lane_blocker(
+    store: &HarnessStore,
+    execution_space_id: &str,
+    member: &ProviderRuntimeProjection,
+) -> Option<String> {
+    let Ok(sessions) = store.fabric_agent_sessions(execution_space_id) else {
+        return Some("the Execution Space store could not be read".into());
+    };
+    let mut current = sessions.into_iter().filter(|session| {
+        session.agent_member_id == member.agent_member_id
+            && session.lifecycle != AgentSessionStatus::Closed
+    });
+    let Some(session) = current.next() else {
+        return Some("no current AgentSession".into());
+    };
+    if current.next().is_some() {
+        return Some("more than one current AgentSession".into());
+    }
+    if !lane_is_at_terminal_turn_boundary(&session) {
+        return Some(format!(
+            "AgentSession {} is not at a terminal turn boundary (lifecycle {:?}, activity {:?}, turn {})",
+            session.id,
+            session.lifecycle,
+            session.control_state.activity,
+            session.current_turn_id.as_deref().unwrap_or("none")
+        ));
+    }
+    if session.control_state.runtime_residency != RuntimeResidency::Detached {
+        return Some(format!(
+            "AgentSession {} still holds an attached runtime handle",
+            session.id
+        ));
+    }
+    if session.control_state.handoff_state != DriverHandoffState::None {
+        return Some(format!(
+            "AgentSession {} is mid driver handoff ({:?})",
+            session.id, session.control_state.handoff_state
+        ));
+    }
+    if session.control_state.continuation.activation != NativeContinuationActivation::Disarmed {
+        return Some(format!(
+            "AgentSession {} still has an armed native continuation",
+            session.id
+        ));
+    }
+    if session.queued_input_count != 0 {
+        return Some(format!(
+            "AgentSession {} still has {} queued native input(s)",
+            session.id, session.queued_input_count
+        ));
+    }
+    match store.runtime_commands(execution_space_id) {
+        Ok(commands) => commands
+            .into_iter()
+            .find(|command| {
+                command.target_session_id.as_deref() == Some(session.id.as_str())
+                    && command.target_session_generation == Some(session.runtime_generation)
+                    && matches!(
+                        command.status,
+                        RuntimeCommandStatus::Accepted
+                            | RuntimeCommandStatus::Quiesced
+                            | RuntimeCommandStatus::RecoveryRequired
+                    )
+                    && command.effect_certainty == RuntimeEffectCertainty::Unknown
+            })
+            .map(|command| {
+                format!(
+                    "RuntimeCommand {} ({:?}) still has an ambiguous provider effect; reconcile it first",
+                    command.id, command.command
+                )
+            }),
+        Err(error) => Some(format!("RuntimeCommands could not be read: {error}")),
+    }
 }
 
 /// Re-read one AgentSession by id after a write that bumped its version.

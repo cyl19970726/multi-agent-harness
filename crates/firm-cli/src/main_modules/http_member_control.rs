@@ -356,12 +356,8 @@ pub(super) fn close_team_member_value(
 pub(super) fn session_is_at_terminal_turn_boundary(
     session: &harness_core::agentfirm_api::AgentSession,
 ) -> bool {
-    use harness_core::agentfirm_api::{AgentSessionStatus, RuntimeActivity};
-    matches!(
-        session.lifecycle,
-        AgentSessionStatus::Idle | AgentSessionStatus::Interrupted
-    ) && session.control_state.activity == RuntimeActivity::Idle
-        && session.current_turn_id.is_none()
+    // One definition shared with `team-run recover` (GitHub #841).
+    lane_is_at_terminal_turn_boundary(session)
 }
 
 /// POST /v1/team-runs/{id}/members/{m}/resume — dedicated entry for resuming

@@ -1265,6 +1265,8 @@ mod drain_recovery_tests;
 #[cfg(test)]
 mod drive_outcome_tests;
 #[cfg(test)]
+mod recover_blocked_lane_blocker_tests;
+#[cfg(test)]
 mod recover_lost_execution_tests;
 #[cfg(test)]
 mod stop_drain_tests;

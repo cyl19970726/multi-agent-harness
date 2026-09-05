@@ -568,6 +568,16 @@ provider handle or carries an ambiguous `RuntimeCommand`: reconcile that command
 through `runtime-commands/{id}/resolve` first. When the member should not come
 back at all, `team-run close-member` is the escape hatch and works on an
 `Interrupted` Session whose runtime is detached at a terminal turn boundary.
+A Session the runner left in `RecoveryRequired` (an unrecoverable provider
+error on an open cycle) follows the same rule (GitHub #755): after you
+reconcile the runtime it resumes, goes Cold, or closes under exactly the same
+proof, and until then the Store answers `AgentSession in RecoveryRequired may
+resume, go Cold, or close only from a detached, disarmed lane…`. `team-run
+recover` and `close-member` judge a lane with one shared predicate; a Blocked
+member whose lane does not prove its runtime gone is listed by `recover` under
+`blocked_lanes_not_proven` with the exact blocking clause (an attached handle,
+an open cycle, an ambiguous RuntimeCommand id) instead of being reported as
+repaired or silently skipped (#841).
 
 ### Recovering a member left `blocked` over a dead lane
 

@@ -875,6 +875,18 @@ impl HarnessStore {
             == AgentSessionStatus::Interrupted
             && next_status == AgentSessionStatus::Idle
             && interrupted_runtime_is_terminated;
+        // A lane that reached `RecoveryRequired` (an unrecoverable provider
+        // error on an open cycle, or a Cold session that could not open) had no
+        // exit at all (GitHub #755). After operator reconciliation it may
+        // resume, go Cold for a ResumeSession, or close — each admitted only
+        // under the same terminated-lane proof as the drain exit above, never
+        // on the lifecycle alone.
+        let recovers_reconciled_lane = session.lifecycle == AgentSessionStatus::RecoveryRequired
+            && matches!(
+                next_status,
+                AgentSessionStatus::Idle | AgentSessionStatus::Cold | AgentSessionStatus::Closed
+            )
+            && interrupted_runtime_is_terminated;
         let allowed = matches!(
             (session.lifecycle, next_status),
             (AgentSessionStatus::Cold, AgentSessionStatus::Idle)
@@ -901,7 +913,8 @@ impl HarnessStore {
             AgentSessionStatus::Cold | AgentSessionStatus::Active
         ) && next_status == AgentSessionStatus::Closed
             && authorized_stop)
-            || resumes_terminated_interrupted_lane;
+            || resumes_terminated_interrupted_lane
+            || recovers_reconciled_lane;
         if !allowed {
             // Name the exact fence for the drain-recovery case so an operator
             // reads "the lane is not proven dead yet", not a bare table miss.
@@ -909,6 +922,16 @@ impl HarnessStore {
                 && next_status == AgentSessionStatus::Idle
             {
                 firm_core::agentfirm_api::AGENT_SESSION_DRAIN_RESUME_NOT_YET_RESUMABLE.to_string()
+            } else if session.lifecycle == AgentSessionStatus::RecoveryRequired
+                && matches!(
+                    next_status,
+                    AgentSessionStatus::Idle
+                        | AgentSessionStatus::Cold
+                        | AgentSessionStatus::Closed
+                )
+            {
+                firm_core::agentfirm_api::AGENT_SESSION_RECOVERY_REQUIRED_NOT_YET_RESUMABLE
+                    .to_string()
             } else {
                 format!(
                     "invalid AgentSession transition {:?}->{next_status:?}",
