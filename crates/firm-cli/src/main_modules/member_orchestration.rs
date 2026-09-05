@@ -451,16 +451,8 @@ pub(crate) fn prepare_team_run_start_body(
             serde_snake_label(&run.status)
         )));
     }
-    let mut members: Vec<ProviderRuntimeProjection> = latest_member_runs_in_append_order(store)?
-        .into_iter()
-        .filter(|member| member.team_run_id == run_id && member.coordination_is_active())
-        .filter(|member| {
-            !matches!(
-                member.status,
-                MemberRunStatus::Completed | MemberRunStatus::Failed | MemberRunStatus::Stopped
-            )
-        })
-        .collect();
+    let mut members: Vec<ProviderRuntimeProjection> =
+        crate::completed_run_members::members_to_drive_for_start(store, run_id, run.status)?;
     // Fail the whole start/reattach before reserving a Supervisor or moving the
     // TeamRun to running when any persistent adapter version is unreviewed.
     // The refreshed profile is still durable operator evidence; native-session
@@ -1138,6 +1130,10 @@ pub(crate) fn drive_prepared_team_run(
                 .into_iter()
                 .filter(|member| {
                     member.team_run_id == run_id
+                        // A Completed run never spawns another member lane
+                        // (#812): its members cannot claim Work, and a resume
+                        // would race the predecessor runtime settlement.
+                        && run_status != TeamRunStatus::Completed
                         && !member.is_external_interactive()
                         && member.coordination_is_active()
                         && !matches!(

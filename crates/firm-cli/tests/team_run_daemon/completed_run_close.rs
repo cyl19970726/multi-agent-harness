@@ -62,8 +62,21 @@ fn wait_for_completed_run_status(socket: &Path, run_id: &str, unclosed_members: 
     }
 }
 
-#[test]
-fn completed_run_is_readopted_after_restart_until_close_then_allows_deactivate() {
+/// One completed TeamRun with one unclosed idle managed member, served by a
+/// live NodeDaemon: the shared precondition for the pre-restart Close test
+/// and the restart-then-Close test (#812).
+struct CompletedRunFixture {
+    home: TempHome,
+    fixture: RuntimeFixture,
+    provider_env: Vec<(String, String)>,
+    run_id: String,
+    socket: PathBuf,
+    daemon: std::process::Child,
+    store: HarnessStore,
+    member: harness_core::ProviderRuntimeProjection,
+}
+
+fn completed_run_fixture() -> CompletedRunFixture {
     let home = TempHome::new("completed-run-close");
     let fixture = bootstrap_runtime(&home, "project");
     let fake_bin = fake_provider::install_kimi_acp_shim(home.base());
@@ -73,21 +86,25 @@ fn completed_run_is_readopted_after_restart_until_close_then_allows_deactivate()
         std::env::var("PATH").unwrap_or_default()
     );
     let kimi_bin = fake_bin.join("kimi").display().to_string();
-    let provider_env = [
-        ("PATH", fake_path.as_str()),
-        ("KIMI_CODE_BIN", kimi_bin.as_str()),
-        ("FAKE_KIMI_VERSION", "0.36.1"),
+    let provider_env = vec![
+        ("PATH".to_string(), fake_path),
+        ("KIMI_CODE_BIN".to_string(), kimi_bin),
+        ("FAKE_KIMI_VERSION".to_string(), "0.36.1".to_string()),
     ];
-    let run_id = create_run(&home, &fixture, "close-after-complete", &provider_env);
+    let env_refs: Vec<(&str, &str)> = provider_env
+        .iter()
+        .map(|(key, value)| (key.as_str(), value.as_str()))
+        .collect();
+    let run_id = create_run(&home, &fixture, "close-after-complete", &env_refs);
     let socket = node_daemon_socket_path(&home, &fixture.node_id);
-    let mut daemon = spawn_daemon(&home, &fixture, &provider_env);
+    let mut daemon = spawn_daemon(&home, &fixture, &env_refs);
     wait_for_socket(&mut daemon, &socket);
 
     let start = run_firm_with_env(
         &home,
         &fixture.project_root,
         &selected(&fixture, &["team-run", "start", "--id", &run_id]),
-        &provider_env,
+        &env_refs,
     );
     success(&start, "team-run start");
     wait_for_run(&socket, &fixture.execution_space_id, &run_id);
@@ -118,7 +135,7 @@ fn completed_run_is_readopted_after_restart_until_close_then_allows_deactivate()
                 "fixture reached its terminal responsibility state",
             ],
         ),
-        &provider_env,
+        &env_refs,
     );
     success(&cancelled, "cancel initial Work");
 
@@ -126,7 +143,7 @@ fn completed_run_is_readopted_after_restart_until_close_then_allows_deactivate()
         &home,
         &fixture.project_root,
         &selected(&fixture, &["team-run", "complete", "--id", &run_id]),
-        &provider_env,
+        &env_refs,
     );
     success(&completed, "team-run complete");
     let completion_output = String::from_utf8_lossy(&completed.stdout);
@@ -157,7 +174,7 @@ fn completed_run_is_readopted_after_restart_until_close_then_allows_deactivate()
         &home,
         &fixture.project_root,
         &selected(&fixture, &["team-run", "board-summary", "--id", &run_id]),
-        &provider_env,
+        &env_refs,
     );
     success(&board, "completed board-summary");
     assert!(
@@ -166,21 +183,37 @@ fn completed_run_is_readopted_after_restart_until_close_then_allows_deactivate()
         String::from_utf8_lossy(&board.stdout)
     );
 
-    stop_daemon(&home, &fixture, &mut daemon, &socket);
-    let stopped_member = store
-        .member_runs()
-        .expect("read stopped-daemon MemberRun")
-        .into_iter()
-        .filter(|candidate| candidate.id == member.id)
-        .max_by_key(|candidate| candidate.last_event_at.clone())
-        .expect("MemberRun after daemon stop");
-    let mut daemon = spawn_daemon(&home, &fixture, &provider_env);
-    wait_for_socket(&mut daemon, &socket);
-    wait_for_completed_run_status(&socket, &run_id, 1);
-    let readopted_member =
-        wait_for_idle_managed_member(&store, &run_id, Some(&stopped_member.last_event_at));
-    assert_eq!(readopted_member.id, member.id);
+    CompletedRunFixture {
+        home,
+        fixture,
+        provider_env,
+        run_id,
+        socket,
+        daemon,
+        store,
+        member,
+    }
+}
 
+/// Close the fixture's one unclosed member, then prove the last Close
+/// releases the Supervisor lease and removes the run from `daemon status`,
+/// and that deactivate still works. Returns after the final daemon stop.
+fn close_deactivate_and_stop(
+    CompletedRunFixture {
+        home,
+        fixture,
+        provider_env,
+        run_id,
+        socket,
+        mut daemon,
+        store,
+        member,
+    }: CompletedRunFixture,
+) {
+    let env_refs: Vec<(&str, &str)> = provider_env
+        .iter()
+        .map(|(key, value)| (key.as_str(), value.as_str()))
+        .collect();
     let closed = run_firm_with_env(
         &home,
         &fixture.project_root,
@@ -197,7 +230,7 @@ fn completed_run_is_readopted_after_restart_until_close_then_allows_deactivate()
                 "completed TeamRun cleanup",
             ],
         ),
-        &provider_env,
+        &env_refs,
     );
     success(&closed, "close member after completion");
 
@@ -237,7 +270,7 @@ fn completed_run_is_readopted_after_restart_until_close_then_allows_deactivate()
                 "completed TeamRun cleanup finished",
             ],
         ),
-        &provider_env,
+        &env_refs,
     );
     success(&deactivated, "deactivate member after Close");
     let deactivated: serde_json::Value =
@@ -245,4 +278,46 @@ fn completed_run_is_readopted_after_restart_until_close_then_allows_deactivate()
     assert_eq!(deactivated["coordination_status"], "retired");
 
     stop_daemon(&home, &fixture, &mut daemon, &socket);
+}
+
+#[test]
+fn completed_run_stays_served_until_close_then_allows_deactivate() {
+    close_deactivate_and_stop(completed_run_fixture());
+}
+
+#[test]
+fn completed_run_is_readopted_after_restart_until_close_then_allows_deactivate() {
+    let CompletedRunFixture {
+        home,
+        fixture,
+        provider_env,
+        run_id,
+        socket,
+        mut daemon,
+        store,
+        member,
+    } = completed_run_fixture();
+    let env_refs: Vec<(&str, &str)> = provider_env
+        .iter()
+        .map(|(key, value)| (key.as_str(), value.as_str()))
+        .collect();
+
+    stop_daemon(&home, &fixture, &mut daemon, &socket);
+    let mut daemon = spawn_daemon(&home, &fixture, &env_refs);
+    wait_for_socket(&mut daemon, &socket);
+    // The readopted Supervisor serves the completed run without spawning a
+    // member lane: the drained member's runtime is provably over, so Close
+    // goes through the coordination path.
+    wait_for_completed_run_status(&socket, &run_id, 1);
+
+    close_deactivate_and_stop(CompletedRunFixture {
+        home,
+        fixture,
+        provider_env,
+        run_id,
+        socket,
+        daemon,
+        store,
+        member,
+    });
 }

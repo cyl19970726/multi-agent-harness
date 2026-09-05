@@ -183,7 +183,7 @@ fn spawn_daemon(
         .env_remove("FIRM_SPACE")
         .env_remove("FIRM_COMPANY")
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::inherit());
+        .stderr(std::process::Stdio::null());
     for (key, value) in extra_env {
         command.env(key, value);
     }

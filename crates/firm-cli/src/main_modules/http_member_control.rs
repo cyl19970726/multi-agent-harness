@@ -268,6 +268,26 @@ pub(super) fn close_team_member_value(
                     return Ok(result);
                 }
             }
+            // #812: after a daemon restart the re-adopted Supervisor serves an
+            // unclosed member of a COMPLETED run for Close authority without
+            // starting a new provider cycle. When the session proves the
+            // runtime is over, close through the ordinary latch and
+            // coordination write path; an Attached lane falls through to the
+            // live-control close and its real provider receipt.
+            if run.status == TeamRunStatus::Completed {
+                if let Some(result) =
+                    crate::completed_run_members::close_completed_run_member_coordination(
+                        store,
+                        &run.id,
+                        &member,
+                        &supervisor,
+                        &requested_by,
+                        &reason,
+                    )?
+                {
+                    return Ok(result);
+                }
+            }
             return dispatch_live_member_control(
                 store,
                 LiveMemberControlRequest::Close {
