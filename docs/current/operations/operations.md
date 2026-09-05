@@ -538,7 +538,7 @@ alone. Use it when `team-run status` shows a member as `blocked` and prints:
 
 ```text
 blocked with a detached, idle AgentSession lane — return it to startable with:
-harness team-run recover --id <run>
+firm team-run recover --id <run>
 ```
 
 It applies on two proofs, both required. The member's own AgentSession must
