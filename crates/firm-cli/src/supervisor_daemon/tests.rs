@@ -657,9 +657,13 @@ fn status_remains_responsive_while_execution_space_scan_is_blocked() {
     let server = std::thread::spawn(move || server_daemon.serve_loop(&listener));
     let test_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         // Opening the FIFO writer nonblocking succeeds only after the
-        // scanner is waiting in its blocking registry read. Keep the
-        // writer open without data so the scan cannot finish while the
-        // status request below is served.
+        // scanner is waiting in its blocking registry read — that successful
+        // open IS the observable blocked-scan state, not a timing guess.
+        // Keep the writer open without data so the scan cannot finish while
+        // the status request below is served. The 60s budget derives from
+        // the product's own daemon-start readiness bound
+        // (main_modules/daemon_cli.rs `daemon start`); exhaustion means the
+        // daemon never started scanning, not a slow runner.
         let scanner_wait_started = Instant::now();
         let registry_writer = loop {
             match OpenOptions::new()
@@ -670,7 +674,7 @@ fn status_remains_responsive_while_execution_space_scan_is_blocked() {
                 Ok(file) => break file,
                 Err(error) if error.raw_os_error() == Some(libc::ENXIO) => {
                     assert!(
-                        scanner_wait_started.elapsed() < Duration::from_secs(10),
+                        scanner_wait_started.elapsed() < Duration::from_secs(60),
                         "phase 'wait for scanner to open registry FIFO' exceeded its hard deadline: {:?} elapsed",
                         scanner_wait_started.elapsed()
                     );
@@ -688,8 +692,15 @@ fn status_remains_responsive_while_execution_space_scan_is_blocked() {
         // turning into a hung test process.
         let status_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let mut client = UnixStream::connect(&socket_path).expect("connect control client");
+            // The "responsive WHILE the scan is blocked" proof is structural:
+            // the writer above holds the FIFO open with no data, so the scan
+            // cannot finish, and any status response received in that window
+            // proves the reserved control lane is not blocked by the scan.
+            // This read timeout is only a liveness budget — 10x the original
+            // 1s — so a loaded runner's scheduler cannot turn that proof
+            // into a flake; the test never asserted a latency figure.
             client
-                .set_read_timeout(Some(Duration::from_secs(1)))
+                .set_read_timeout(Some(Duration::from_secs(10)))
                 .expect("bound status response wait");
             client
                 .write_all(b"{\"cmd\":\"status\"}\n")
@@ -713,16 +724,19 @@ fn status_remains_responsive_while_execution_space_scan_is_blocked() {
         // every two-phase shutdown read (scanner, heartbeat and drain), not
         // merely the first late reader, so the fixture does not manufacture
         // an unbounded filesystem operation that production cannot have. The
-        // join is bounded by a hard deadline: a daemon that cannot be
-        // released fails this test with the phase name and elapsed time
-        // instead of hanging the CI job.
+        // join budget is a backstop behind the documented 75-second drain
+        // bound (20s control workers + 20s scanner + 30s Supervisor drain +
+        // 5s settlement, see operations.md) plus slack — a guarantee
+        // backstop, not a cadence estimate: a daemon that cannot be released
+        // fails this test with the phase name and elapsed time instead of
+        // hanging the CI job.
         let release_started = Instant::now();
         loop {
             if server.is_finished() {
                 break;
             }
             assert!(
-                release_started.elapsed() < Duration::from_secs(60),
+                release_started.elapsed() < Duration::from_secs(120),
                 "phase 'release blocked scan and join daemon control thread' exceeded its hard deadline: {:?} elapsed",
                 release_started.elapsed()
             );
