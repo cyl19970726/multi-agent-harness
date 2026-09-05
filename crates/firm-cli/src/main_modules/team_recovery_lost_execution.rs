@@ -21,12 +21,23 @@ pub(super) fn report_lost_execution_works(
     };
     if !json {
         for lost in &scan.lost {
+            let prerequisite = if lost.condition == harness_core::WorkCondition::Normal {
+                String::new()
+            } else {
+                format!(
+                    "resume it first (it is {}; `team-run work resume --work-id {} --expected-version {}`), then ",
+                    serde_snake_label(&lost.condition),
+                    lost.work_id,
+                    lost.work_version
+                )
+            };
             println!(
-                "  work {} (v{}, {}): execution lost [{}] - run `team-run work recover-lost-execution --work-id {} --expected-version {}`",
+                "  work {} (v{}, {}): execution lost [{}] - {}run `team-run work recover-lost-execution --work-id {} --expected-version {}`",
                 lost.work_id,
                 lost.work_version,
                 serde_snake_label(&lost.phase),
                 lost.causes.join(", "),
+                prerequisite,
                 lost.work_id,
                 lost.work_version
             );

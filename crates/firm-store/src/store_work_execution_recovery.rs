@@ -156,7 +156,7 @@ struct LostExecutionFacts {
     sessions: Vec<AgentSession>,
     /// Binding id -> (number of `bound` events, the runtime admission of the
     /// last one). Exactly one is provable; anything else fails closed.
-    bound_admissions: BTreeMap<String, (usize, RuntimeCommandBinding)>,
+    bound_admissions: BTreeMap<String, (usize, serde_json::Value)>,
     /// Binding id -> the last event other than `bound`.
     end_events: BTreeMap<String, CanonicalMutationEvent>,
 }
@@ -166,8 +166,7 @@ impl HarnessStore {
         &self,
         execution_space_id: &str,
     ) -> StoreResult<LostExecutionFacts> {
-        let mut bound_admissions: BTreeMap<String, (usize, RuntimeCommandBinding)> =
-            BTreeMap::new();
+        let mut bound_admissions: BTreeMap<String, (usize, serde_json::Value)> = BTreeMap::new();
         let mut end_events = BTreeMap::new();
         for operation in self.canonical_operations_for_space(execution_space_id)? {
             let event = operation.event;
@@ -175,15 +174,9 @@ impl HarnessStore {
                 continue;
             }
             if event.transition == "bound" {
-                let admission: RuntimeCommandBinding = serde_json::from_value(
-                    event.payload["runtime_binding"].clone(),
-                )
-                .map_err(|error| {
-                    StoreError::Conflict(format!(
-                        "WORK_EXECUTION_RUNTIME_BINDING_INVALID: WorkExecutionBinding {}: {error}",
-                        event.aggregate_id
-                    ))
-                })?;
+                // Kept raw: a malformed admission on one binding must fail only
+                // that Work's classification, never the whole scan.
+                let admission = event.payload["runtime_binding"].clone();
                 let entry = bound_admissions
                     .entry(event.aggregate_id.clone())
                     .or_insert((0, admission.clone()));
@@ -204,22 +197,37 @@ impl HarnessStore {
     /// Read-only report of every non-terminal Work of one TeamRun whose
     /// execution is provably lost. Used by `team-run recover`; a Work whose
     /// facts cannot be read is reported as a scan error, never as lost and
-    /// never as a failure of the recovery itself.
+    /// never as a failure of the recovery itself; a failure to read the space
+    /// itself is reported once under work id `*`. The reads are not one
+    /// snapshot, so a concurrent daemon write can make a row transiently
+    /// wrong: the report is advisory, and the verb re-classifies under the
+    /// store write lock and fails closed.
     pub fn lost_work_executions(
         &self,
         execution_space_id: &str,
         team_run_id: &str,
     ) -> StoreResult<LostWorkExecutionScan> {
         self.init()?;
-        let bindings = self.fabric_work_execution_bindings(execution_space_id)?;
-        let facts = self.load_lost_execution_facts(execution_space_id)?;
+        let mut scan = LostWorkExecutionScan::default();
+        let (bindings, facts) = match (
+            self.fabric_work_execution_bindings(execution_space_id),
+            self.load_lost_execution_facts(execution_space_id),
+        ) {
+            (Ok(bindings), Ok(facts)) => (bindings, facts),
+            (Err(error), _) | (_, Err(error)) => {
+                scan.errors.push(LostWorkExecutionScanError {
+                    work_id: "*".into(),
+                    error: error.to_string(),
+                });
+                return Ok(scan);
+            }
+        };
         let mut works = self
             .latest_works_unlocked()?
             .into_values()
             .filter(|work| work.team_run_id == team_run_id && !work.is_terminal())
             .collect::<Vec<_>>();
         works.sort_by(|left, right| left.id.cmp(&right.id));
-        let mut scan = LostWorkExecutionScan::default();
         for work in works {
             match classify_work_execution_loss(&work, &bindings, &facts) {
                 Ok(WorkExecutionLoss::Lost(evidence)) => scan.lost.push(LostWorkExecution {
@@ -496,7 +504,13 @@ fn classify_work_execution_loss(
 
     if let Some(binding) = executable {
         let admission = match facts.bound_admissions.get(&binding.id) {
-            Some((1, admission)) => admission,
+            Some((1, raw)) => serde_json::from_value::<RuntimeCommandBinding>(raw.clone())
+                .map_err(|error| {
+                    StoreError::Conflict(format!(
+                        "WORK_EXECUTION_RUNTIME_BINDING_INVALID: WorkExecutionBinding {}: {error}",
+                        binding.id
+                    ))
+                })?,
             _ => {
                 return Err(StoreError::Conflict(format!(
                     "WORK_EXECUTION_RUNTIME_BINDING_NOT_PROVABLE: WorkExecutionBinding {} must have exactly one canonical bound source fact",
@@ -619,4 +633,180 @@ fn serde_snake<T: Serialize>(value: T) -> String {
         .ok()
         .and_then(|value| value.as_str().map(str::to_string))
         .unwrap_or_else(|| "unknown".to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use firm_core::{CurrentWorkDraft, TeamActorKind, TeamActorRef, WorkClaimMode, WorkPriority};
+
+    fn responsible_work(id: &str, phase: WorkPhase) -> Work {
+        let mut work = CurrentWorkDraft::new(
+            id.into(),
+            "run-1".into(),
+            "team-1".into(),
+            "title".into(),
+            String::new(),
+            "done".into(),
+            WorkClaimMode::HostAssign,
+            WorkPriority::Normal,
+            TeamActorRef {
+                kind: TeamActorKind::Host,
+                id: "host".into(),
+                display_name: None,
+                authn_source: Some("test".into()),
+            },
+            "t-0".into(),
+        )
+        .into_work();
+        work.owner_member_id = Some("member-a".into());
+        work.assignee_membership_id = Some("membership-a".into());
+        work.phase = phase;
+        work.condition = WorkCondition::Normal;
+        work
+    }
+
+    fn released_binding(work: &Work) -> WorkExecutionBinding {
+        WorkExecutionBinding {
+            id: "binding-1".into(),
+            work_id: work.id.clone(),
+            work_revision: work.version,
+            team_id: "team-1".into(),
+            team_membership_id: "membership-a".into(),
+            agent_member_id: "member-a".into(),
+            agent_session_id: "session-a".into(),
+            agent_session_generation: 1,
+            delivery_id: "delivery-1".into(),
+            binding_generation: 1,
+            status: WorkExecutionBindingStatus::Released,
+            version: 2,
+            created_by: ActorRef {
+                kind: ActorKind::Service,
+                id: "daemon".into(),
+            },
+            bound_at: "t-1".into(),
+            ended_at: Some("t-2".into()),
+        }
+    }
+
+    fn end_event(
+        binding_id: &str,
+        transition: &str,
+        payload: serde_json::Value,
+    ) -> CanonicalMutationEvent {
+        CanonicalMutationEvent {
+            id: format!("event-{transition}"),
+            aggregate_kind: "work_execution_binding".into(),
+            aggregate_id: binding_id.into(),
+            sequence: 2,
+            store_sequence: 2,
+            transition: transition.into(),
+            expected_version: 1,
+            resulting_version: 2,
+            performed_by_actor: ActorRef {
+                kind: ActorKind::Service,
+                id: "daemon".into(),
+            },
+            authority_actor: None,
+            causation_ref: None,
+            idempotency_key: format!("key-{transition}"),
+            canonical_request_fingerprint: "fp".into(),
+            payload,
+            created_at: "t-2".into(),
+        }
+    }
+
+    fn facts(end_events: Vec<CanonicalMutationEvent>) -> LostExecutionFacts {
+        LostExecutionFacts {
+            member_runs: Vec::new(),
+            sessions: Vec::new(),
+            bound_admissions: BTreeMap::new(),
+            end_events: end_events
+                .into_iter()
+                .map(|event| (event.aggregate_id.clone(), event))
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn started_work_without_any_binding_is_not_lost() {
+        let work = responsible_work("work-no-binding", WorkPhase::Active);
+        let judged = classify_work_execution_loss(&work, &[], &facts(Vec::new())).unwrap();
+        assert_eq!(
+            judged,
+            WorkExecutionLoss::NotLost {
+                reason: "started_work_has_no_execution_binding".into()
+            }
+        );
+    }
+
+    #[test]
+    fn open_work_without_any_binding_was_never_dispatched() {
+        let work = responsible_work("work-open", WorkPhase::Open);
+        let judged = classify_work_execution_loss(&work, &[], &facts(Vec::new())).unwrap();
+        assert_eq!(
+            judged,
+            WorkExecutionLoss::NotLost {
+                reason: "work_was_never_dispatched".into()
+            }
+        );
+    }
+
+    #[test]
+    fn started_work_whose_binding_a_member_close_released_is_not_lost() {
+        let work = responsible_work("work-closed", WorkPhase::Active);
+        let binding = released_binding(&work);
+        let facts = facts(vec![end_event(
+            &binding.id,
+            "released",
+            serde_json::json!({
+                "close_request_id": "close-1",
+                "close_runtime_command_id": "command-1",
+                "ended_at": "t-2",
+            }),
+        )]);
+        let judged = classify_work_execution_loss(&work, &[binding], &facts).unwrap();
+        assert_eq!(
+            judged,
+            WorkExecutionLoss::NotLost {
+                reason: "started_work_binding_ended_by_released".into()
+            }
+        );
+    }
+
+    #[test]
+    fn started_work_whose_binding_a_settlement_invalidated_is_lost_with_its_cause() {
+        let work = responsible_work("work-drained", WorkPhase::Active);
+        let binding = released_binding(&work);
+        let facts = facts(vec![end_event(
+            &binding.id,
+            INVALIDATED_BY_LOST_RUNTIME_GENERATION,
+            serde_json::json!({
+                "lost_runtime_generation": {"cause": "node_daemon_drain"},
+                "ended_at": "t-2",
+            }),
+        )]);
+        let judged =
+            classify_work_execution_loss(&work, std::slice::from_ref(&binding), &facts).unwrap();
+        let WorkExecutionLoss::Lost(evidence) = judged else {
+            panic!("a drained binding strands a started Work: {judged:?}");
+        };
+        assert_eq!(
+            evidence.causes,
+            vec!["started_work_binding_released_by_lost_runtime_generation".to_string()]
+        );
+        assert_eq!(
+            evidence.latest_binding_end_transition.as_deref(),
+            Some(INVALIDATED_BY_LOST_RUNTIME_GENERATION)
+        );
+        assert_eq!(
+            evidence.latest_binding_end_cause.as_deref(),
+            Some("node_daemon_drain")
+        );
+        assert_eq!(
+            evidence.latest_binding_id.as_deref(),
+            Some(binding.id.as_str())
+        );
+        assert!(evidence.executable_binding.is_none());
+    }
 }
