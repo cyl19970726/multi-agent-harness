@@ -25,8 +25,9 @@ pub(super) fn report_lost_execution_works(
                 String::new()
             } else {
                 format!(
-                    "resume it first (it is {}; `team-run work resume --work-id {} --expected-version {}`), then ",
+                    "resume it first (it is {}; `team-run work resume --team-run-id {} --work-id {} --expected-version {} --resolution \"<why the blocker is resolved>\"`), then ",
                     serde_snake_label(&lost.condition),
+                    team_run_id,
                     lost.work_id,
                     lost.work_version
                 )

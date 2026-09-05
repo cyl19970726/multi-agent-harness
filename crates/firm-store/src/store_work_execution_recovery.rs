@@ -209,12 +209,13 @@ impl HarnessStore {
     ) -> StoreResult<LostWorkExecutionScan> {
         self.init()?;
         let mut scan = LostWorkExecutionScan::default();
-        let (bindings, facts) = match (
+        let (bindings, facts, works) = match (
             self.fabric_work_execution_bindings(execution_space_id),
             self.load_lost_execution_facts(execution_space_id),
+            self.latest_works_unlocked(),
         ) {
-            (Ok(bindings), Ok(facts)) => (bindings, facts),
-            (Err(error), _) | (_, Err(error)) => {
+            (Ok(bindings), Ok(facts), Ok(works)) => (bindings, facts, works),
+            (Err(error), _, _) | (_, Err(error), _) | (_, _, Err(error)) => {
                 scan.errors.push(LostWorkExecutionScanError {
                     work_id: "*".into(),
                     error: error.to_string(),
@@ -222,8 +223,7 @@ impl HarnessStore {
                 return Ok(scan);
             }
         };
-        let mut works = self
-            .latest_works_unlocked()?
+        let mut works = works
             .into_values()
             .filter(|work| work.team_run_id == team_run_id && !work.is_terminal())
             .collect::<Vec<_>>();
@@ -772,6 +772,28 @@ mod tests {
                 reason: "started_work_binding_ended_by_released".into()
             }
         );
+    }
+
+    #[test]
+    fn malformed_bound_admission_fails_only_that_works_classification() {
+        let work = responsible_work("work-malformed", WorkPhase::Active);
+        let mut binding = released_binding(&work);
+        binding.status = WorkExecutionBindingStatus::Active;
+        binding.version = 1;
+        binding.ended_at = None;
+        let mut facts = facts(Vec::new());
+        facts.bound_admissions.insert(
+            binding.id.clone(),
+            (1, serde_json::json!("not-a-runtime-binding")),
+        );
+        let error = classify_work_execution_loss(&work, std::slice::from_ref(&binding), &facts)
+            .expect_err("a malformed admission cannot prove anything")
+            .to_string();
+        assert!(
+            error.contains("WORK_EXECUTION_RUNTIME_BINDING_INVALID"),
+            "{error}"
+        );
+        assert!(error.contains(&binding.id), "{error}");
     }
 
     #[test]
