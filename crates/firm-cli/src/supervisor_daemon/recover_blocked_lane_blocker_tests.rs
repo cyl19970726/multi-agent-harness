@@ -347,13 +347,13 @@ fn dormant_input_is_refused_unless_the_close_tolerates_it() {
     );
 }
 
-/// A reopened member whose lane is still `RecoveryRequired` (a completed run's
-/// coordination Close cannot hop a lane on a settled daemon generation)
-/// re-enters through the same Store-proved hop on its first cycle, exactly as
-/// an `Interrupted` lane does; while the lane is not proven gone the cycle is
-/// refused with the named constant and nothing is written.
+/// The projection planner reaches `Active` from `RecoveryRequired` only through
+/// the Store-proved `Idle` hop. The production path is the adoption seam, which
+/// performs that hop before any process-open command is admitted; this pins
+/// the planner arm and the fence behind it: while the lane is not proven gone
+/// the projection is refused with the named constant and nothing is written.
 #[test]
-fn first_cycle_after_reopen_hops_a_reconciled_recovery_required_lane_through_idle() {
+fn recovery_required_lane_reaches_active_only_through_the_proved_idle_hop() {
     let fixture = drain_fixture("rr-first-cycle");
     let ledger = fixture.supervise("supervisor-rr-first-cycle-1", fixture.daemon_generation);
     fixture.start_cycle_for(&ledger, "work-delivery:rr-first-cycle:1");
@@ -389,7 +389,7 @@ fn first_cycle_after_reopen_hops_a_reconciled_recovery_required_lane_through_idl
     )
     .expect("the reaped process detaches the lane");
     crate::transition_provider_session_for_member(&ledger, &member, AgentSessionStatus::Active)
-        .expect("the first cycle re-enters through the proved Idle hop");
+        .expect("a reconciled lane reaches Active through the proved Idle hop");
     let lane = agent_session(&fixture.store, MID_TURN_MEMBER);
     assert_eq!(lane.lifecycle, AgentSessionStatus::Active);
     assert!(lane.current_turn_id.is_some());
@@ -454,4 +454,64 @@ fn close_member_for_recovery_leaves_the_lane_untouched_when_its_authority_is_fen
     let after = member_named(&fixture.store, &fixture.run_id, MID_TURN_MEMBER);
     assert_eq!(after.status, MemberRunStatus::Blocked);
     assert!(after.coordination_is_active());
+}
+
+/// The adoption seam performs the same hop for a reconciled `RecoveryRequired`
+/// lane that it performs for a drained `Interrupted` one (round-4 review
+/// P2-R4): the drain skips the lane as already settled, the successor
+/// generation reattaches it, and it is `Idle` on that generation before any
+/// process-open command is prepared for its member.
+#[test]
+fn readoption_hops_a_reconciled_recovery_required_lane_to_idle() {
+    let fixture = drain_fixture("rr-readopt");
+    let ledger = fixture.supervise("supervisor-rr-readopt-1", fixture.daemon_generation);
+    fixture.start_cycle_for(&ledger, "work-delivery:rr-readopt:1");
+    let member = member_named(&fixture.store, &fixture.run_id, MID_TURN_MEMBER);
+    crate::transition_provider_session_for_member(
+        &ledger,
+        &member,
+        AgentSessionStatus::RecoveryRequired,
+    )
+    .expect("the runner's RecoveryRequired write lands");
+    crate::transition_provider_session_runtime_control(
+        &ledger,
+        &member,
+        harness_core::agentfirm_api::RuntimeResidency::Detached,
+        RuntimeActivity::Idle,
+    )
+    .expect("the reaped process detaches the lane");
+    let reconciled = agent_session(&fixture.store, MID_TURN_MEMBER);
+    drop(ledger);
+
+    // The drain has nothing left to settle on this lane and leaves it as it
+    // stands, so it outlives the daemon generation that owned it.
+    fixture.drain("supervisor-rr-readopt-1", 1);
+    let survived = agent_session(&fixture.store, MID_TURN_MEMBER);
+    assert_eq!(survived.lifecycle, AgentSessionStatus::RecoveryRequired);
+    assert_eq!(
+        survived.version, reconciled.version,
+        "the drain skips a settled lane"
+    );
+
+    let successor_generation = fixture.readopt();
+    let adopted = agent_session(&fixture.store, MID_TURN_MEMBER);
+    assert_eq!(
+        adopted.lifecycle,
+        AgentSessionStatus::Idle,
+        "the adoption seam hops the reattached lane before any provider effect"
+    );
+    assert_eq!(adopted.node_daemon_generation, successor_generation);
+    assert_eq!(adopted.runtime_generation, reconciled.runtime_generation);
+    assert!(adopted.current_turn_id.is_none());
+    assert_eq!(
+        adopted
+            .native_session_ref
+            .as_ref()
+            .map(|native| native.native_session_id.as_str()),
+        reconciled
+            .native_session_ref
+            .as_ref()
+            .map(|native| native.native_session_id.as_str()),
+        "the hop keeps the provider-native session identity"
+    );
 }

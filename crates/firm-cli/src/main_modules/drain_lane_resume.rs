@@ -84,7 +84,7 @@ pub(super) struct LaneTerminationProof {
 /// derives from this one function, so the reason named and the decision
 /// taken cannot drift apart (GitHub #841).
 ///
-/// `tolerate_dormant_input` is for the coordination Close of a Completed
+/// `tolerate_dormant_continuation` is for the coordination Close of a Completed
 /// TeamRun's member (#812): an armed native continuation on that lane will
 /// never be driven, so refusing the Close on it would strand the member
 /// forever; the residue is recorded on the Close receipt instead. A driver
@@ -94,7 +94,7 @@ pub(super) fn lane_termination_proof(
     store: &HarnessStore,
     execution_space_id: &str,
     session: &AgentSession,
-    tolerate_dormant_input: bool,
+    tolerate_dormant_continuation: bool,
 ) -> CliResult<LaneTerminationProof> {
     let mut dormant_residue = Vec::new();
     let blocked = |blocker: String| {
@@ -126,7 +126,7 @@ pub(super) fn lane_termination_proof(
             "AgentSession {} still has an armed native continuation",
             session.id
         );
-        if tolerate_dormant_input {
+        if tolerate_dormant_continuation {
             // A record, not a latch: the next Supervisor bind at adoption sets
             // the activation back to Disarmed before any reopened cycle
             // (`member_orchestration.rs`, the driver bind), and a detached
@@ -276,11 +276,12 @@ pub(super) fn current_agent_session(
 /// What the adoption seam did about one drained lane.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum DrainedLaneResume {
-    /// The lane was not left `Interrupted` by a drain. Nothing was written.
+    /// The lane was left neither `Interrupted` by a drain nor
+    /// `RecoveryRequired` by a runner. Nothing was written.
     NotDrained,
     /// The lane re-entered the ordinary lane as `Idle` under this generation.
     Resumed,
-    /// The lane is still `Interrupted` because it does not yet prove the killed
+    /// The lane keeps its lifecycle because it does not yet prove the killed
     /// runtime is gone. Nothing was written; a later pass retries.
     NotYetResumable,
 }
@@ -301,6 +302,12 @@ pub(super) enum DrainedLaneResume {
 /// A lane that does not yet prove its runtime dead is left `Interrupted`
 /// untouched. That is an attempt-scoped observation, not a verdict about the
 /// member, so it never fails adoption.
+///
+/// A lane a runner left `RecoveryRequired` (#755) takes the same hop once an
+/// operator has reconciled it: the drain skipped it as already settled, the
+/// successor reattached it, and the Store admits `RecoveryRequired -> Idle`
+/// under the same clauses, refusing with
+/// `AGENT_SESSION_RECOVERY_REQUIRED_NOT_YET_RESUMABLE` otherwise.
 pub(super) fn resume_drained_lane_for_adoption(
     store: &HarnessStore,
     execution_space_id: &str,
@@ -308,7 +315,10 @@ pub(super) fn resume_drained_lane_for_adoption(
     session: &AgentSession,
     timestamp: &str,
 ) -> CliResult<DrainedLaneResume> {
-    if session.lifecycle != AgentSessionStatus::Interrupted {
+    if !matches!(
+        session.lifecycle,
+        AgentSessionStatus::Interrupted | AgentSessionStatus::RecoveryRequired
+    ) {
         return Ok(DrainedLaneResume::NotDrained);
     }
     if !lane_proves_runtime_is_terminated(store, execution_space_id, session)? {
@@ -337,7 +347,9 @@ pub(super) fn resume_drained_lane_for_adoption(
             // The lane changed under us, or the Store's own re-proof disagrees
             // with the read above. Either way this attempt learned nothing
             // durable about the member; the next pass observes the lane again.
-            if is_drain_resume_not_yet_resumable(&error) {
+            if is_drain_resume_not_yet_resumable(&error)
+                || is_recovery_required_not_yet_resumable(&error)
+            {
                 Ok(DrainedLaneResume::NotYetResumable)
             } else {
                 Err(error)

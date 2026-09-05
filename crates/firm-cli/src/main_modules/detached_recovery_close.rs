@@ -201,8 +201,13 @@ pub(super) fn close_detached_blocked_member_for_recovery_with_hooks(
     // authority and generation gate above, so a Close this Host may not
     // perform leaves no durable trace. A completed run's member may still
     // name a settled predecessor NodeDaemon generation, where the hop is
-    // fenced; that lane is reattached at the next adoption and hops then.
+    // fenced; the next adoption reattaches that lane and performs this same
+    // hop at its seam (`resume_drained_lane_for_adoption`), before any
+    // provider effect is prepared for the reopened member.
     let session = if session.lifecycle == AgentSessionStatus::RecoveryRequired {
+        // The Host actor only attributes the hop. A Host-authority mismatch is
+        // an integrity fault in the run's own provenance, so the Close fails
+        // closed on it instead of attributing the hop to an unverifiable Host.
         match transition_provider_session_for_member_as(
             &ledger,
             member,

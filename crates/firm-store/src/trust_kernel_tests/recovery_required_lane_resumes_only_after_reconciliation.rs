@@ -394,3 +394,95 @@ fn reconciled_recovery_required_lane_is_reattached_by_the_successor_daemon() {
     assert!(resumed.native_session_ref.is_some());
     fs::remove_dir_all(root).unwrap();
 }
+
+/// The same lane after a hard crash of its daemon: the predecessor recovery
+/// (#837) records the reconciled lane as already settled instead of rewriting
+/// it, the successor reattaches it, and the one exit holds there too.
+#[test]
+fn reconciled_recovery_required_lane_is_reattached_after_a_predecessor_crash() {
+    let (store, root) = fabric_store();
+    let lane = mark_recovery_required(&store, &active_lane(&store, "crash"));
+    let lane = detach(&store, &lane, "rr-crash-detach");
+
+    let recovery_time = current_unix_ms() + 61_000;
+    let mut operator = context(
+        "host",
+        "node_daemon.predecessor_recover",
+        "rr-crash-recover",
+        0,
+    );
+    operator.authenticated_actor = ActorRef {
+        kind: ActorKind::Service,
+        id: lane.node_id.clone(),
+    };
+    let recovered = store
+        .recover_node_daemon_predecessor(
+            &operator,
+            &lane.node_id,
+            "daemon-1",
+            1,
+            "instance-1",
+            true,
+            true,
+            "operator-check:pid-absent+process-groups-esrch",
+            recovery_time,
+            "t-crash",
+        )
+        .expect("exact Operator evidence settles the crashed predecessor");
+    assert_eq!(
+        recovered.lease.status,
+        firm_core::NodeDaemonLeaseStatus::Released
+    );
+    assert_eq!(recovered.sessions_already_settled, vec![lane.id.clone()]);
+    assert!(recovered.sessions_detached.is_empty());
+    let survived = current(&store, &lane.id);
+    assert_eq!(survived.lifecycle, AgentSessionStatus::RecoveryRequired);
+    assert_eq!(
+        survived.version, lane.version,
+        "recovery never rewrites a settled Session"
+    );
+
+    let successor = store
+        .acquire_node_daemon_lease(
+            &lane.node_id,
+            "daemon-2",
+            "instance-2",
+            recovery_time + 1,
+            60_000,
+        )
+        .expect("successor NodeDaemon generation");
+    store
+        .reattach_agent_session_to_node_daemon(
+            &successor_context(
+                &successor.daemon_id,
+                "runtime_fabric.session.reattach_node_daemon",
+                "rr-crash-reattach",
+                survived.version,
+            ),
+            &lane.id,
+            survived.runtime_generation,
+            1,
+            &successor.daemon_id,
+            successor.generation,
+            "t-reattach",
+        )
+        .expect("the successor reattaches the reconciled lane after a crash");
+    let reattached = current(&store, &lane.id);
+    let resumed = store
+        .transition_agent_session(
+            &successor_context(
+                &successor.daemon_id,
+                "node_daemon.agent_session.provider_state",
+                "rr-crash-idle",
+                reattached.version,
+            ),
+            &lane.id,
+            AgentSessionStatus::Idle,
+            "t-resumed-after-crash",
+        )
+        .expect("the reconciled lane resumes under the successor generation")
+        .projection;
+    assert_eq!(resumed.lifecycle, AgentSessionStatus::Idle);
+    assert_eq!(resumed.node_daemon_generation, successor.generation);
+    fs::remove_dir_all(root).unwrap();
+}

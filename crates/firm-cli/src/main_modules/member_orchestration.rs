@@ -201,8 +201,15 @@ pub(crate) fn ensure_team_runtime_fabric(
             // what wedged #779: the member runner publishes an Attached
             // residency before its first cycle projects the Session Active, so
             // by then the DEV-171 fence — which requires a detached, disarmed
-            // lane — can no longer admit the hop the runner needs.
-            if session.lifecycle == AgentSessionStatus::Interrupted {
+            // lane — can no longer admit the hop the runner needs. A lane a
+            // runner left `RecoveryRequired` (#755) takes the same hop once an
+            // operator has reconciled it: the drain skipped it as already
+            // settled, the successor just reattached it, and the Store
+            // re-proves the same terminated-lane clauses under its lock.
+            if matches!(
+                session.lifecycle,
+                AgentSessionStatus::Interrupted | AgentSessionStatus::RecoveryRequired
+            ) {
                 let reattached = current_agent_session(store, execution_space_id, &session.id)?;
                 if resume_drained_lane_for_adoption(
                     store,
@@ -213,7 +220,7 @@ pub(crate) fn ensure_team_runtime_fabric(
                 )? == DrainedLaneResume::NotYetResumable
                 {
                     eprintln!(
-                        "[node-daemon] AgentSession {} stays interrupted: its lane does not yet prove the drained runtime is gone; the next adoption pass retries",
+                        "[node-daemon] AgentSession {} stays out of the ordinary lane: it does not yet prove the dead runtime is gone; the next adoption pass retries",
                         reattached.id
                     );
                 }
