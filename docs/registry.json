@@ -2737,7 +2737,7 @@
       ],
       "reorgTrigger": "A seam is added or removed, a provider changes execution mode or driver, or package ownership across the three layers changes.",
       "authorityClass": "implementation_reference",
-      "implementationState": "implemented",
+      "implementationState": "partial",
       "truthRefs": [
         {
           "kind": "decision",

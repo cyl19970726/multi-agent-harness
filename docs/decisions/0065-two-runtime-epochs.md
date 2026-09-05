@@ -19,7 +19,7 @@ that generation on Reopen, recovery, and non-clean runtime replacement
 (`crates/firm-store/src/trust_kernel/trust_members.rs`,
 `crates/firm-cli/src/main_modules/team_recovery_work.rs`). The review in #765
 (finding F4) and the four review rounds of SPEC-ADAPTATION-REFACTOR-01
-established the facts, verified at master `84b93001`:
+established the facts, verified at master `875adb05`:
 
 - The code already states the model in
   `crates/firm-cli/src/main_modules/runtime_effects.rs`:
@@ -95,8 +95,9 @@ wording (every recovery fix rediscovers the truth).
 
 - `agent-runtime.md` no longer contradicts the fence: MemberRun carries the
   adapter-process epoch and coordination status; TeamRun stays a projection.
-- The generation-related defects are fixed by mechanism, each in its own
-  kernel-tier slice and without a dogfood freeze: a Host verb that releases a
+- The generation-related defects are to be fixed by mechanism, each in its
+  own kernel-tier slice and without a dogfood freeze (all open at this
+  revision): a Host verb that releases a
   binding whose adapter-process and provider-session epochs are both provably
   superseded (#799, #734 option c), the native-session-attach admission
   asymmetry (#745, #583), the `RecoveryRequired` session exit (#755), the

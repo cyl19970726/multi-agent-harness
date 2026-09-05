@@ -1,12 +1,14 @@
 # ADR 0049: Split Member Coordination And Runtime Lifecycle
 
 > Successor note (DOC-16 Keep row, DEV-40 flip 2026-08-18): this ADR is kept; the governing successor context is [DOC-105](https://app.notion.com/p/3be49a4fa379817aa594fd8e7331c30d).
+>
+> Amended by [ADR 0065](0065-two-runtime-epochs.md) (2026-09-05): the meaning of `MemberRun.runtime_generation` (the adapter-process epoch) and its relation to `AgentSession.runtime_generation` (the provider-session epoch) are canonical there; this ADR keeps the coordination lifecycle (Close, Reopen, Retire, mailbox freezing, history continuity).
 
 ```text
 status: accepted
 owner_role: architecture
-canonical_for: MemberRun Close, Reopen, Retire, mailbox freezing, runtime
-  generations, and provider-native history continuity
+canonical_for: MemberRun Close, Reopen, Retire, mailbox freezing, and
+  provider-native history continuity (runtime-generation semantics: ADR 0065)
 ```
 
 ## Context

@@ -12,7 +12,7 @@ Repository development uses the canonical
 [Notion Task -> Codex -> Review -> PR flow](workflow-git-pr.md). A GitHub Issue
 is optional problem provenance and enters execution only after Brain triage. One Primary
 Session owns a development Wave (repository delivery batch, not the retired
-runtime `Wave` structure) end to end in a clean isolated worktree. Ordinary work uses
+runtime `Wave` structure) end to end in a clean isolated worktree. Ordinary (projection-tier) work uses
 final-SHA self-review rather than a mandatory second reviewer; a narrow Host
 Gate is required only when the Development Record says so. Review depth is
 tiered by predicate: a change that alters an admission, fence, settlement, or
