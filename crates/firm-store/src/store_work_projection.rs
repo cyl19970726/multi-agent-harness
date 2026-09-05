@@ -352,25 +352,12 @@ impl HarnessStore {
         self.all_work_operations_unlocked()
     }
 
-    pub(super) fn work_operations_for_team_run_unlocked(
+    pub(super) fn work_operations_for_ids_unlocked(
         &self,
-        team_run_id: Option<&str>,
+        work_ids: &std::collections::HashSet<String>,
     ) -> StoreResult<Vec<WorkOperation>> {
-        let operations = self.all_work_operations_unlocked()?;
-        let Some(team_run_id) = team_run_id else {
-            return Ok(operations);
-        };
-        // Work.team_run_id names the current execution attempt and may change
-        // on retarget. Select Work identities from the folded latest state,
-        // then retain every operation for those identities so event history
-        // and immutable provenance remain complete.
-        let work_ids = self
-            .latest_works_unlocked()?
-            .into_values()
-            .filter(|work| work.team_run_id == team_run_id)
-            .map(|work| work.id)
-            .collect::<std::collections::HashSet<_>>();
-        Ok(operations
+        Ok(self
+            .all_work_operations_unlocked()?
             .into_iter()
             .filter(|operation| work_ids.contains(&operation.work.id))
             .collect())
@@ -464,6 +451,9 @@ impl HarnessStore {
         &self,
         team_run_id: &str,
     ) -> StoreResult<std::collections::BTreeMap<String, WorkDelegation>> {
+        // The reader still decodes each backing ledger, but fail-closed
+        // validation below is intentionally local to revisions retained for
+        // this source-or-target TeamRun projection.
         self.fold_latest_work_delegations(
             self.work_delegation_revisions_for_team_run_unlocked(Some(team_run_id))?,
         )

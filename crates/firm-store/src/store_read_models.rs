@@ -328,6 +328,9 @@ impl HarnessStore {
         Ok(rows)
     }
 
+    /// Validate only rows retained for this TeamRun. Raw JSONL decoding still
+    /// visits the complete ledger; malformed rows outside the scope are not
+    /// part of this scope-local projection validation.
     pub fn member_run_rows_for_team_run(
         &self,
         team_run_id: &str,
@@ -363,10 +366,39 @@ impl HarnessStore {
 
     pub fn latest_works_for_team_run(&self, team_run_id: &str) -> StoreResult<Vec<Work>> {
         Ok(self
+            .latest_works_and_ids_for_team_run_unlocked(team_run_id)?
+            .0)
+    }
+
+    fn latest_works_and_ids_for_team_run_unlocked(
+        &self,
+        team_run_id: &str,
+    ) -> StoreResult<(Vec<Work>, std::collections::HashSet<String>)> {
+        let works = self
             .latest_works_unlocked()?
             .into_values()
             .filter(|work| work.team_run_id == team_run_id)
-            .collect())
+            .collect::<Vec<_>>();
+        let work_ids = works.iter().map(|work| work.id.clone()).collect();
+        Ok((works, work_ids))
+    }
+
+    pub fn latest_works_and_events_for_team_run(
+        &self,
+        team_run_id: &str,
+    ) -> StoreResult<(Vec<Work>, Vec<WorkEvent>)> {
+        // Work.team_run_id names the current execution attempt and may change
+        // on retarget. Fold ownership once, then retain every operation and
+        // trust event for those identities so history and provenance remain
+        // complete without repeating the store-wide latest-Work fold.
+        let (works, work_ids) = self.latest_works_and_ids_for_team_run_unlocked(team_run_id)?;
+        let mut events = self
+            .work_operations_for_ids_unlocked(&work_ids)?
+            .into_iter()
+            .map(|operation| operation.event)
+            .collect::<Vec<_>>();
+        events.extend(self.trust_work_events_for_ids_unlocked(&work_ids)?);
+        Ok((works, events))
     }
 
     pub fn work_delegation_events(&self) -> StoreResult<Vec<WorkDelegationEvent>> {
@@ -555,19 +587,7 @@ impl HarnessStore {
     }
 
     pub fn work_events_for_team_run(&self, team_run_id: &str) -> StoreResult<Vec<WorkEvent>> {
-        let operations = self.work_operations_for_team_run_unlocked(Some(team_run_id))?;
-        let work_ids = self
-            .latest_works_unlocked()?
-            .into_values()
-            .filter(|work| work.team_run_id == team_run_id)
-            .map(|work| work.id)
-            .collect::<std::collections::HashSet<_>>();
-        let mut events = operations
-            .into_iter()
-            .map(|operation| operation.event)
-            .collect::<Vec<_>>();
-        events.extend(self.trust_work_events_for_ids_unlocked(&work_ids)?);
-        Ok(events)
+        Ok(self.latest_works_and_events_for_team_run(team_run_id)?.1)
     }
 
     pub fn team_supervisor_leases(&self) -> StoreResult<Vec<TeamSupervisorLease>> {

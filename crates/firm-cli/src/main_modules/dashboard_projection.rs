@@ -117,9 +117,9 @@ pub(super) fn dashboard_snapshot_with_team_run(
         }
         trust_scopes.extend(store.canonical_execution_space_ids()?);
     }
-    let works = match &selected_run {
-        Some(selected) => store.latest_works_for_team_run(&selected.id)?,
-        None => store.latest_works()?,
+    let (works, mut work_events) = match &selected_run {
+        Some(selected) => store.latest_works_and_events_for_team_run(&selected.id)?,
+        None => (store.latest_works()?, store.work_events()?),
     };
     let work_ids = works
         .iter()
@@ -184,10 +184,6 @@ pub(super) fn dashboard_snapshot_with_team_run(
             .cmp(&right.created_at)
             .then_with(|| left.id.cmp(&right.id))
     });
-    let mut work_events = match &selected_run {
-        Some(selected) => store.work_events_for_team_run(&selected.id)?,
-        None => store.work_events()?,
-    };
     let mut work_delegations = match &selected_run {
         Some(selected) => store.latest_work_delegations_for_team_run(&selected.id)?,
         None => store.latest_work_delegations()?,

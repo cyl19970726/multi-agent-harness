@@ -744,10 +744,7 @@ impl HarnessStore {
         Ok(self
             .trust_operation_envelopes_unlocked()?
             .into_iter()
-            .filter(|envelope| {
-                envelope.operation.event.aggregate_kind == "work"
-                    && work_ids.contains(&envelope.operation.event.aggregate_id)
-            })
+            .filter(|envelope| envelope.operation.event.aggregate_kind == "work")
             .flat_map(|envelope| envelope.operation.immutable_side_records)
             .filter(|record| {
                 record["work_id"]
