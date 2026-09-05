@@ -1,5 +1,7 @@
 import { Fragment, type ReactNode } from "react";
 import { cn } from "@/lib/utils";
+import { useOpenEvidence } from "./EvidenceLinkContext";
+import { localEvidenceTarget } from "./localEvidenceLink";
 
 /**
  * Minimal, dependency-free markdown renderer for project docs (ADR 0019, Vision
@@ -8,18 +10,19 @@ import { cn } from "@/lib/utils";
  * escapes all text, so no HTML injection. Tables/mermaid render as plain text;
  * this is intentionally a first-cut renderer, not a full CommonMark engine.
  */
-export function Markdown({ source, compact = false }: { source: string; compact?: boolean }) {
+export function Markdown({ source, compact = false, messageId }: { source: string; compact?: boolean; messageId?: string }) {
+  const openEvidence = useOpenEvidence();
   return (
     <div className={cn(
       "text-foreground/90",
       compact ? "space-y-2 text-[12px] leading-relaxed" : "space-y-3 text-[13px] leading-relaxed",
     )}>
-      {render(source, compact)}
+      {render(source, compact, openEvidence, messageId)}
     </div>
   );
 }
 
-function render(source: string, compact: boolean): ReactNode[] {
+function render(source: string, compact: boolean, openEvidence: ReturnType<typeof useOpenEvidence>, messageId?: string): ReactNode[] {
   const lines = source.replace(/\r\n/g, "\n").split("\n");
   const blocks: ReactNode[] = [];
   let i = 0;
@@ -64,7 +67,7 @@ function render(source: string, compact: boolean): ReactNode[] {
             : compact ? "text-[11px] font-semibold uppercase tracking-[0.08em] text-muted-foreground" : "text-[13px] font-semibold uppercase tracking-wide text-muted-foreground";
       blocks.push(
         <p key={key++} className={cls}>
-          {inline(text)}
+          {inline(text, openEvidence, messageId)}
         </p>,
       );
       i += 1;
@@ -120,7 +123,7 @@ function render(source: string, compact: boolean): ReactNode[] {
         >
           {items.map((item, index) => (
             <li key={index} className="pl-1">
-              {inline(item)}
+              {inline(item, openEvidence, messageId)}
             </li>
           ))}
         </ListTag>,
@@ -141,7 +144,7 @@ function render(source: string, compact: boolean): ReactNode[] {
       i += 1;
     }
     blocks.push(
-      <p key={key++}>{inline(para.join(" "))}</p>,
+      <p key={key++}>{inline(para.join(" "), openEvidence, messageId)}</p>,
     );
   }
 
@@ -149,7 +152,7 @@ function render(source: string, compact: boolean): ReactNode[] {
 }
 
 /** Inline formatting: `code`, **bold**, [text](url). */
-function inline(text: string): ReactNode {
+function inline(text: string, openEvidence: ReturnType<typeof useOpenEvidence>, messageId?: string): ReactNode {
   const nodes: ReactNode[] = [];
   const regex = /(`[^`]+`)|(\*\*[^*]+\*\*)|(\[[^\]]+\]\([^)]+\))/g;
   let last = 0;
@@ -173,12 +176,18 @@ function inline(text: string): ReactNode {
     } else {
       const linkMatch = /^\[([^\]]+)\]\(([^)]+)\)$/.exec(token);
       if (linkMatch) {
-        const href = safeMarkdownHref(linkMatch[2]);
+        const evidence = localEvidenceTarget(linkMatch[2]);
+        const href = evidence ? linkMatch[2].trim() : safeMarkdownHref(linkMatch[2]);
         nodes.push(href ? (
           <a
             key={key++}
             href={href}
             rel="noreferrer"
+            data-local-evidence={evidence ? "true" : undefined}
+            onClick={evidence && openEvidence ? (event) => {
+              event.preventDefault();
+              openEvidence(evidence, messageId);
+            } : undefined}
             className="font-medium text-primary underline decoration-primary/25 underline-offset-2 hover:decoration-primary"
           >
             {linkMatch[1]}
