@@ -305,10 +305,13 @@ that the owned process and transport are still alive; `control_settle` bounds
 an issued control's settlement. Silence after acceptance is never a failure
 and never an adapter-initiated interrupt; an interrupted cycle carries an
 attributed `InterruptCause` (Host control, adapter policy, or provider
-initiated), and a provider terminal failure settles the cycle receipt
-`Unsatisfied` — never masked by a `Satisfied` one. Child exit, stdout
-disconnect, runner error, and unsettled durable effects remain explicit
-fail-closed recovery conditions.
+initiated), and a provider terminal failure never settles `Satisfied` — it
+either settles the cycle receipt `Unsatisfied` (Claude, Codex, DeepSeek, Pi)
+or stops the cycle at `RuntimeRecoveryRequired` before any receipt exists
+(Kimi; cross-adapter unification is tracked in [GitHub issue
+#857](https://github.com/cyl19970726/multi-agent-harness/issues/857)). Child
+exit, stdout disconnect, runner error, and unsettled durable effects remain
+explicit fail-closed recovery conditions.
 
 ```text
 authenticate and resolve authority

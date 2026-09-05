@@ -293,7 +293,7 @@ fn host_attentions_read_and_console_ack_lifecycle() {
 
     let (status, body) = serve.post_json(
         &format!("/v1/team-runs/{run_id}/start?project={project_id}"),
-        &serde_json::json!({"max_concurrency": 1, "idle_timeout_s": 10}),
+        &serde_json::json!({"max_concurrency": 1}),
     );
     assert_eq!(status, 202, "body: {body}");
     wait_for_path(&first_prompt_ready, Duration::from_secs(15));
@@ -435,7 +435,7 @@ fn member_resume_route_rejects_active_and_resumes_closed_member() {
 
     let (status, body) = serve.post_json(
         &format!("/v1/team-runs/{run_id}/start?project={project_id}"),
-        &serde_json::json!({"max_concurrency": 1, "idle_timeout_s": 10}),
+        &serde_json::json!({"max_concurrency": 1}),
     );
     assert_eq!(status, 202, "body: {body}");
     wait_for_member_runtime_ready(&serve, &project_id, &member_id, Duration::from_secs(15));
