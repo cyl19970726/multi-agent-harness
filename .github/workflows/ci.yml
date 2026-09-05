@@ -55,12 +55,11 @@ jobs:
       # Provider lifecycle integration tests intentionally exercise process-local
       # supervisors and live control handles. Serialize them so the release gate
       # measures protocol behavior instead of host scheduling contention.
-      # Two load-sensitive timing tests are quarantined from the PR tier as
-      # flakes (issue #480 tracks them); the full-acceptance tier runs them
+      # One load-sensitive timing test is quarantined from the PR tier as a
+      # flake (issue #480 tracks it); the full-acceptance tier runs it
       # unskipped.
       - run: >
           cargo test -- --test-threads=1
-          --skip fresh_exhausted_capacity_blocks_start_and_leaves_work_queued
           --skip status_remains_responsive_while_execution_space_scan_is_blocked
       # Doc/skill governance gate, native in the binary (replaces the retired
       # node check-doc-*/check-skills scripts). The cargo-test self-host test
