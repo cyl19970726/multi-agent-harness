@@ -45,6 +45,7 @@ pub enum CodexError {
 mod team_runtime;
 pub use team_runtime::*;
 mod compatibility;
+mod descendant_threads;
 pub use compatibility::*;
 mod permission;
 pub use permission::*;

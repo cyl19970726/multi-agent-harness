@@ -15,6 +15,7 @@ use harness_core::agentfirm_api::{
 use harness_core::ProviderIntegrationProfile;
 use serde_json::Value;
 
+use crate::descendant_threads::{DescendantThreadRegistry, FrameThreadScope};
 use crate::{
     CodexAppServerClient, CodexAppServerShutdownReceipt, CodexError as CliError,
     CodexResult as CliResult,
@@ -156,10 +157,12 @@ pub struct CodexTeamRuntime<'a, B = CodexAppServerClient> {
     last_control_acknowledged: bool,
     canonical_quiesced: bool,
     runtime_closed: bool,
+    descendant_threads: DescendantThreadRegistry,
 }
 
 impl<'a, B: CodexAppServerBridge> CodexTeamRuntime<'a, B> {
     pub fn new(bridge: B) -> Self {
+        let descendant_threads = DescendantThreadRegistry::new(bridge.thread_id());
         Self {
             bridge,
             description: RuntimeDescription {
@@ -176,6 +179,7 @@ impl<'a, B: CodexAppServerBridge> CodexTeamRuntime<'a, B> {
             last_control_acknowledged: false,
             canonical_quiesced: false,
             runtime_closed: false,
+            descendant_threads,
         }
     }
 
@@ -415,6 +419,26 @@ impl<'a, B: CodexAppServerBridge> CodexTeamRuntime<'a, B> {
         Ok(())
     }
 
+    fn observe_frame_thread(&mut self, frame: &Value) -> CliResult<FrameThreadScope> {
+        let observation = self
+            .descendant_threads
+            .observe(frame)
+            .map_err(CliError::Usage)?;
+        for thread_id in observation.newly_registered {
+            eprintln!(
+                "[codex-native-child-thread] observed descendant thread {thread_id} of owned thread {}",
+                self.bridge.thread_id()
+            );
+        }
+        Ok(observation.scope)
+    }
+
+    fn require_resolved_frame_threads(&self) -> CliResult<()> {
+        self.descendant_threads
+            .ensure_no_pending()
+            .map_err(CliError::Usage)
+    }
+
     fn terminal_frame_for_active_turn(
         &self,
         frame: &Value,
@@ -488,7 +512,12 @@ impl<'a, B: CodexAppServerBridge> CodexTeamRuntime<'a, B> {
                         self.handle_provider_request(&frame)?;
                         continue;
                     }
+                    match self.observe_frame_thread(&frame)? {
+                        FrameThreadScope::Descendant | FrameThreadScope::Pending => continue,
+                        FrameThreadScope::Owned | FrameThreadScope::Unscoped => {}
+                    }
                     if let Some(terminal) = self.terminal_frame_for_active_turn(&frame)? {
+                        self.require_resolved_frame_threads()?;
                         if !matches!(
                             terminal.status.as_str(),
                             "interrupted" | "completed" | "failed"
@@ -506,10 +535,11 @@ impl<'a, B: CodexAppServerBridge> CodexTeamRuntime<'a, B> {
                 }
                 Err(RecvTimeoutError::Timeout) => {}
                 Err(RecvTimeoutError::Disconnected) => {
+                    self.require_resolved_frame_threads()?;
                     return Err(CliError::Usage(
                         "CODEX_RUNTIME_CLOSE_UNKNOWN: transport disconnected before turn/completed"
                             .to_string(),
-                    ))
+                    ));
                 }
             }
         }
@@ -878,6 +908,10 @@ impl<'a, B: CodexAppServerBridge> TeamRuntimeAdapter for CodexTeamRuntime<'a, B>
                         self.handle_provider_request(&frame)?;
                         continue;
                     }
+                    match self.observe_frame_thread(&frame)? {
+                        FrameThreadScope::Descendant | FrameThreadScope::Pending => continue,
+                        FrameThreadScope::Owned | FrameThreadScope::Unscoped => {}
+                    }
                     let method = frame.get("method").and_then(Value::as_str);
                     let params = frame.get("params").unwrap_or(&frame);
                     let frame_turn_id = params
@@ -929,6 +963,7 @@ impl<'a, B: CodexAppServerBridge> TeamRuntimeAdapter for CodexTeamRuntime<'a, B>
                             on_event(&frame)
                         }
                         Some("turn/completed") => {
+                            self.require_resolved_frame_threads()?;
                             let terminal = self
                                 .terminal_frame_for_active_turn(&frame)?
                                 .expect("matched terminal method");
@@ -1015,9 +1050,10 @@ impl<'a, B: CodexAppServerBridge> TeamRuntimeAdapter for CodexTeamRuntime<'a, B>
                     }
                 }
                 Err(RecvTimeoutError::Disconnected) => {
+                    self.require_resolved_frame_threads()?;
                     return Err(CliError::Usage(
                         "codex app-server transport disconnected before turn/completed".to_string(),
-                    ))
+                    ));
                 }
             }
         }
