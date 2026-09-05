@@ -116,13 +116,15 @@ fn completed_run_coordination_close_exact_current_generation_needs_no_evidence()
 }
 
 #[test]
-fn completed_run_coordination_close_superseded_generation_requires_released_evidence() {
+fn completed_run_coordination_close_newer_daemon_generation_is_the_evidence() {
     let (store, _root, lease, idle) =
-        completed_run_close_fixture("completed-close-superseded-evidence");
+        completed_run_close_fixture("completed-close-newer-daemon-evidence");
     let team_run_id = idle.team_run_id.clone();
 
-    // Drain-equivalent evidence: the gen-1 Supervisor generation is Released
-    // before its successor adopts the run.
+    // The only accepted evidence: the session's NodeDaemon generation
+    // reaches Released (a terminating drain or an Operator-confirmed
+    // recovery) and a newer daemon generation takes the machine. A
+    // Supervisor lease Released row is NOT evidence and is not consulted.
     store
         .release_team_supervisor_lease(
             &team_run_id,
@@ -131,8 +133,29 @@ fn completed_run_coordination_close_superseded_generation_requires_released_evid
             current_unix_ms_u64(),
         )
         .expect("release gen-1 Supervisor lease");
+    let run = latest_team_run(&store, &team_run_id).expect("TeamRun");
+    store
+        .release_node_daemon_lease(
+            &run.execution_node_id,
+            &lease.node_daemon_id,
+            lease.node_daemon_generation,
+            "test-node-daemon-instance",
+            current_unix_ms_u64(),
+        )
+        .expect("release gen-1 NodeDaemon lease");
+    let daemon_gen2 = store
+        .acquire_node_daemon_lease(
+            &run.execution_node_id,
+            &lease.node_daemon_id,
+            "test-node-daemon-instance-2",
+            current_unix_ms_u64(),
+            u64::MAX / 2,
+        )
+        .expect("acquire gen-2 NodeDaemon lease");
+    assert!(daemon_gen2.generation > lease.node_daemon_generation);
     let gen2 = acquire_gen2_lease(&store, &team_run_id, current_unix_ms_u64());
     assert!(gen2.generation > lease.generation);
+    assert_eq!(gen2.node_daemon_generation, daemon_gen2.generation);
 
     let closed = crate::completed_run_members::close_completed_run_member_coordination(
         &store,
@@ -142,8 +165,8 @@ fn completed_run_coordination_close_superseded_generation_requires_released_evid
         "host",
         "completed TeamRun cleanup",
     )
-    .expect("superseded coordination Close with released evidence")
-    .expect("released evidence admits the Close");
+    .expect("coordination Close under a newer daemon generation")
+    .expect("the newer daemon generation admits the Close");
     assert_eq!(closed["status"], "stopped");
 }
 
@@ -153,15 +176,17 @@ fn completed_run_coordination_close_superseded_generation_without_evidence_fails
         completed_run_close_fixture("completed-close-superseded-no-evidence");
     let team_run_id = idle.team_run_id.clone();
 
-    // The gen-1 lease expires without being Released: neither a drain nor an
-    // explicit predecessor recovery proved the generation's provider process
-    // groups terminated.
+    // A superseded Supervisor generation under the SAME still-live
+    // NodeDaemon generation: no daemon-lease fence and no recover-predecessor
+    // ever intervenes, and the predecessor Supervisor's exit terminated
+    // nothing. The gen-1 Supervisor lease only expires; it is never Released.
     let gen2 = acquire_gen2_lease(
         &store,
         &team_run_id,
         lease.expires_unix_ms.saturating_add(1),
     );
     assert!(gen2.generation > lease.generation);
+    assert_eq!(gen2.node_daemon_generation, lease.node_daemon_generation);
 
     let error = crate::completed_run_members::close_completed_run_member_coordination(
         &store,
@@ -175,8 +200,8 @@ fn completed_run_coordination_close_superseded_generation_without_evidence_fails
     let detail = error.to_string();
     assert!(
         detail.contains("DETACHED_MEMBER_RECOVERY_FENCED")
-            && detail.contains("without recorded predecessor recovery evidence"),
-        "refusal must name the missing predecessor evidence: {detail}"
+            && detail.contains("still-live NodeDaemon generation"),
+        "refusal must name the unproven process-group termination: {detail}"
     );
     let member = latest_member_runs_in_append_order(&store)
         .expect("members")

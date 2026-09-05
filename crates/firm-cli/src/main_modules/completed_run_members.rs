@@ -112,21 +112,26 @@ pub(crate) fn members_to_drive_for_start(
 
 /// Generation evidence for the completed-run receipt-free Close (#812).
 ///
-/// The exact-current case needs no extra proof. When a SUPERSEDED
-/// Supervisor/NodeDaemon generation last drove the session, Detached residency
-/// alone does not prove the predecessor's provider process group ended — after
-/// a daemon crash there is no drain (the #798 orphan-process class). Accept
-/// only the recorded predecessor evidence: the driver Supervisor generation's
-/// Released lease, which is written either by a clean drain (which terminates
-/// the registered process groups, `supervisor_daemon/shutdown.rs`) or by an
-/// explicit `daemon recover-predecessor` (the Operator's confirmed
-/// `provider_process_groups_terminated_confirmed` fact). A newer or foreign
-/// generation means this Close raced a successor: fail closed with a typed
-/// reason, never `Ok(None)`.
-#[allow(clippy::too_many_arguments)]
+/// The exact-current case needs no extra proof. Anything else needs the one
+/// evidence class that actually proves the predecessor's provider process
+/// groups ended: a NEWER NodeDaemon generation holding the machine. A
+/// successor daemon generation exists only because the session's NodeDaemon
+/// generation reached `Released`, and a NodeDaemon lease reaches `Released`
+/// only through a clean drain — which terminates the registered provider
+/// process groups before the release and revalidates settlement at release
+/// (`supervisor_daemon.rs` shutdown order) — or through an explicit
+/// `daemon recover-predecessor` (the Operator's confirmed
+/// `provider_process_groups_terminated_confirmed` fact).
+///
+/// A Supervisor lease `Released` row is deliberately NOT evidence:
+/// `TeamSupervisorRegistration::drop` writes it on every Supervisor exit —
+/// normal exit, lease-lost quiesce, or error — without terminating anything,
+/// and even the drain writes it before process-group termination begins. The
+/// same-daemon superseded-Supervisor case is therefore refused outright: no
+/// daemon-lease fence and no recover-predecessor ever intervenes there. A
+/// newer or foreign generation means this Close raced a successor: fail
+/// closed with a typed reason, never `Ok(None)`.
 pub(crate) fn require_completed_run_close_generation_evidence(
-    store: &HarnessStore,
-    team_run_id: &str,
     member: &ProviderRuntimeProjection,
     session: &harness_core::agentfirm_api::AgentSession,
     supervisor: &TeamSupervisorLease,
@@ -146,27 +151,20 @@ pub(crate) fn require_completed_run_close_generation_evidence(
     if exact_current_driver && exact_current_daemon {
         return Ok(());
     }
-    let (driver_id, driver_generation) = driver_supervisor.ok_or_else(|| {
-        CliError::RuntimeRecoveryRequired(format!(
+    if driver_supervisor.is_none() {
+        return Err(CliError::RuntimeRecoveryRequired(format!(
             "DETACHED_MEMBER_RECOVERY_FENCED: member {} session {} has no TeamSupervisor driver lineage for this TeamRun",
             member.id, session.id
-        ))
-    })?;
-    let driver_lease_released = store
-        .team_supervisor_leases()
-        .map_err(CliError::Store)?
-        .into_iter()
-        .rfind(|lease| {
-            lease.team_run_id == team_run_id
-                && lease.supervisor_id == *driver_id
-                && lease.generation == *driver_generation
-        })
-        .is_some_and(|lease| lease.status == harness_core::TeamSupervisorLeaseStatus::Released);
-    if !driver_lease_released {
-        return Err(CliError::RuntimeRecoveryRequired(format!(
-            "DETACHED_MEMBER_RECOVERY_FENCED: member {} session {} was last driven by superseded Supervisor {driver_id} generation {driver_generation} (NodeDaemon generation {}) without recorded predecessor recovery evidence; drain-stop or recover the predecessor generation (`firm daemon recover-predecessor --confirm daemon-recover-predecessor`) before Close",
-            member.id, session.id, session.node_daemon_generation
         )));
     }
-    Ok(())
+    if supervisor.node_daemon_generation > session.node_daemon_generation {
+        // A newer daemon holds the machine, so the session's NodeDaemon
+        // generation reached Released — written only by a terminating drain
+        // or an Operator-confirmed predecessor recovery.
+        return Ok(());
+    }
+    Err(CliError::RuntimeRecoveryRequired(format!(
+        "DETACHED_MEMBER_RECOVERY_FENCED: member {} session {} was last driven by a superseded Supervisor generation under the still-live NodeDaemon generation {}; the predecessor Supervisor's exit does not prove provider process-group termination — drain-restart the daemon or reopen the member so its lane rebinds before Close",
+        member.id, session.id, session.node_daemon_generation
+    )))
 }
