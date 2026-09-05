@@ -51,7 +51,7 @@ fn now_string() -> String {
 pub trait CodexAppServerBridge {
     fn ensure_transport_alive(&mut self) -> CliResult<()>;
     fn thread_id(&self) -> &str;
-    fn start_turn(&mut self, text: &str) -> CliResult<String>;
+    fn start_turn(&mut self, text: &str, acceptance: Duration) -> CliResult<String>;
     fn steer(&mut self, turn_id: &str, text: &str) -> CliResult<String>;
     fn interrupt(&mut self, turn_id: &str) -> CliResult<()>;
     fn recv(&self, timeout: Duration) -> Result<Value, RecvTimeoutError>;
@@ -70,8 +70,8 @@ impl CodexAppServerBridge for CodexAppServerClient {
         CodexAppServerClient::thread_id(self)
     }
 
-    fn start_turn(&mut self, text: &str) -> CliResult<String> {
-        CodexAppServerClient::start_turn(self, text)
+    fn start_turn(&mut self, text: &str, acceptance: Duration) -> CliResult<String> {
+        CodexAppServerClient::start_turn(self, text, acceptance)
     }
 
     fn steer(&mut self, turn_id: &str, text: &str) -> CliResult<String> {
@@ -755,6 +755,10 @@ impl<'a, B: CodexAppServerBridge> TeamRuntimeAdapter for CodexTeamRuntime<'a, B>
         Ok(())
     }
 
+    /// `transport_liveness` proof: the app-server reader thread's
+    /// `RecvTimeoutError::Disconnected` branch — a dead transport fails
+    /// closed without any wall-clock silence verdict (D2). The acceptance
+    /// RPC itself is bounded by `timeouts.input_acceptance`.
     fn run_cycle(
         &mut self,
         input: &str,
@@ -820,7 +824,7 @@ impl<'a, B: CodexAppServerBridge> TeamRuntimeAdapter for CodexTeamRuntime<'a, B>
                 }
             }
         }
-        let turn_id = self.bridge.start_turn(input)?;
+        let turn_id = self.bridge.start_turn(input, timeouts.input_acceptance)?;
         self.active_turn_id = Some(turn_id.clone());
         self.last_cycle_terminal = false;
         self.last_control_acknowledged = false;
@@ -990,9 +994,15 @@ impl<'a, B: CodexAppServerBridge> TeamRuntimeAdapter for CodexTeamRuntime<'a, B>
                                 )));
                             }
                             if terminal.status == "interrupted" && interrupt.is_none() {
-                                return Err(CliError::Usage(format!(
-                                    "CODEX_RUNTIME_POSTCONDITION_UNKNOWN: turn {turn_id} ended as interrupted without a Harness control request"
-                                )));
+                                // The real second interrupt source: the
+                                // provider ended the turn as interrupted on
+                                // its own. Attribute it honestly — never a
+                                // fabricated HostControl, never a silent
+                                // AdapterPolicy, never a fail-closed error
+                                // (Owner decision after S2 review 01).
+                                interrupt = InterruptCause::provider_initiated(format!(
+                                    "codex app-server ended turn {turn_id} as interrupted without a Harness control request"
+                                ));
                             }
                             self.active_turn_id = None;
                             self.exact_thread_is_idle(false)?;
@@ -1121,7 +1131,7 @@ impl<'a, B: CodexAppServerBridge> harness_runtime_contract::RuntimeAdapter
                 let outcome = TeamRuntimeAdapter::run_cycle(
                     self,
                     &input,
-                    CycleTimeouts::control_path(CycleTimeouts::DEFAULT_CONTROL_SETTLE),
+                    CycleTimeouts::with_input_acceptance(Duration::from_secs(30 * 60)),
                     &mut |receipt| {
                         accepted = receipt.response_id.clone();
                         Ok(())

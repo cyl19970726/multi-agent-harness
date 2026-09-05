@@ -1104,7 +1104,7 @@ impl RuntimeAdapter for ClaudeTeamRuntime {
                     .transport
                     .run_cycle(
                         &input,
-                        CycleTimeouts::control_path(CycleTimeouts::DEFAULT_CONTROL_SETTLE),
+                        CycleTimeouts::with_input_acceptance(Duration::from_secs(30 * 60)),
                         &mut |receipt| {
                             accepted = receipt.response_id.clone();
                             Ok(())

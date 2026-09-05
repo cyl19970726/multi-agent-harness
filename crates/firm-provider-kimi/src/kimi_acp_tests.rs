@@ -1098,6 +1098,10 @@ fn drive_kimi_cycle(
         drop(update_tx);
     }
     if let Some(frame) = terminal {
+        // A REAL silent interval between the acceptance evidence and the
+        // terminal answer — the "silent tool interval" A1/B4 must prove is
+        // never a failure.
+        std::thread::sleep(Duration::from_millis(250));
         let deadline = std::time::Instant::now() + Duration::from_secs(2);
         let id = loop {
             if handle.is_finished() {

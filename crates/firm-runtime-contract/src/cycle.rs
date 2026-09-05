@@ -88,17 +88,35 @@ pub enum InterruptCause {
     /// after the S2 migration no adapter's normal path may yield it (B4 is
     /// the reverse proof). `reason` must be non-empty (assertion B2).
     AdapterPolicy { reason: String },
+    /// The PROVIDER ended the cycle as interrupted on its own — no Harness
+    /// control request and no adapter policy (Owner decision after S2 review
+    /// 01: the real second interrupt source §3.2's two variants cannot
+    /// express). `reason` must be non-empty.
+    ProviderInitiated { reason: String },
 }
 
 impl InterruptCause {
     /// The only construction path for an adapter-policy cause; rejects an
     /// empty or blank reason so B2 is falsifiable at the type boundary.
     pub fn adapter_policy(reason: impl Into<String>) -> Option<Self> {
+        Self::with_reason(reason, |reason| Self::AdapterPolicy { reason })
+    }
+
+    /// The only construction path for a provider-initiated cause; rejects an
+    /// empty or blank reason for the same falsifiability.
+    pub fn provider_initiated(reason: impl Into<String>) -> Option<Self> {
+        Self::with_reason(reason, |reason| Self::ProviderInitiated { reason })
+    }
+
+    fn with_reason(
+        reason: impl Into<String>,
+        variant: impl FnOnce(String) -> Self,
+    ) -> Option<Self> {
         let reason = reason.into();
         if reason.trim().is_empty() {
             None
         } else {
-            Some(Self::AdapterPolicy { reason })
+            Some(variant(reason))
         }
     }
 }
@@ -304,6 +322,9 @@ impl EffectReceipt {
             }
             CycleInterruptSettlement::Settled(InterruptCause::AdapterPolicy { reason }) => {
                 native_evidence.push(format!("interrupt=adapter_policy:{reason}"));
+            }
+            CycleInterruptSettlement::Settled(InterruptCause::ProviderInitiated { reason }) => {
+                native_evidence.push(format!("interrupt=provider_initiated:{reason}"));
             }
             CycleInterruptSettlement::Unsettled => {
                 native_evidence.push("interrupt=unsettled".to_string());

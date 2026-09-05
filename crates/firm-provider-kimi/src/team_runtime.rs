@@ -15,6 +15,8 @@
 //! - strict Quiesce/Release remain fail-closed because ACP exposes no complete
 //!   native queue, writable-child, or durable-flush proof.
 
+use std::time::Duration;
+
 use harness_core::agentfirm_api::{
     AgentSession, NativeContinuationActivation, RuntimeEffectCertainty, RuntimePostconditionStatus,
 };
@@ -583,8 +585,8 @@ impl harness_runtime_contract::RuntimeAdapter for KimiTeamRuntime<'_> {
                 let outcome = self
                     .run_cycle(
                         &input,
-                        harness_runtime_contract::CycleTimeouts::control_path(
-                            harness_runtime_contract::CycleTimeouts::DEFAULT_CONTROL_SETTLE,
+                        harness_runtime_contract::CycleTimeouts::with_input_acceptance(
+                            Duration::from_secs(30 * 60),
                         ),
                         &mut |receipt| {
                             accepted = receipt.response_id.clone();

@@ -301,16 +301,36 @@ mod cycle_conformance {
         events: Vec<String>,
         disconnect: bool,
         timeouts: &harness_runtime_contract::CycleTimeouts,
+        control: impl FnMut() -> harness_runtime_contract::CycleControl,
+    ) -> Result<harness_runtime_contract::ExecutionCycleOutcome, String> {
+        drive_ds_cycle_with_silence(events, disconnect, 0, timeouts, control)
+    }
+
+    /// `silence_ms` is a REAL wall-clock silent interval injected between the
+    /// first scripted event (the acceptance receipt) and the rest — the
+    /// "silent tool interval" the A1/B4 regressions must prove is never a
+    /// failure.
+    fn drive_ds_cycle_with_silence(
+        events: Vec<String>,
+        disconnect: bool,
+        silence_ms: u64,
+        timeouts: &harness_runtime_contract::CycleTimeouts,
         mut control: impl FnMut() -> harness_runtime_contract::CycleControl,
     ) -> Result<harness_runtime_contract::ExecutionCycleOutcome, String> {
         let (mut transport, line_tx) = scripted_deepseek_transport();
-        for event in events {
-            line_tx.send(event).map_err(|error| error.to_string())?;
+        let mut events = events.into_iter();
+        if let Some(first) = events.next() {
+            line_tx.send(first).map_err(|error| error.to_string())?;
         }
-        if disconnect {
-            drop(line_tx);
-        }
-        transport
+        let rest: Vec<String> = events.collect();
+        let rest_tx = if disconnect { line_tx } else { line_tx.clone() };
+        let silence = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(silence_ms));
+            for event in rest {
+                let _ = rest_tx.send(event);
+            }
+        });
+        let outcome = transport
             .run_cycle(
                 "conformance cycle",
                 *timeouts,
@@ -319,7 +339,9 @@ mod cycle_conformance {
                 &mut |_event| {},
                 &mut control,
             )
-            .map_err(|error| error.to_string())
+            .map_err(|error| error.to_string());
+        let _ = silence.join();
+        outcome
     }
 
     struct DeepSeekCycleConformanceFixture;
@@ -331,13 +353,14 @@ mod cycle_conformance {
             &mut self,
             timeouts: &harness_runtime_contract::CycleTimeouts,
         ) -> Result<harness_runtime_contract::CycleConformanceOutcome, Self::Error> {
-            let outcome = drive_ds_cycle(
+            let outcome = drive_ds_cycle_with_silence(
                 vec![
                     ds_consumed("deepseek-cycle-2"),
                     ds_assistant_message(),
                     ds_turn_complete("deepseek-cycle-2"),
                 ],
                 false,
+                250,
                 timeouts,
                 harness_runtime_contract::CycleControl::default,
             )?;
@@ -501,13 +524,14 @@ mod cycle_conformance {
 
     #[test]
     fn deepseek_b4_silence_after_acceptance_never_fails_the_cycle() {
-        let outcome = drive_ds_cycle(
+        let outcome = drive_ds_cycle_with_silence(
             vec![
                 ds_consumed("deepseek-cycle-2"),
                 ds_assistant_message(),
                 ds_turn_complete("deepseek-cycle-2"),
             ],
             false,
+            250,
             &ds_timeouts(),
             harness_runtime_contract::CycleControl::default,
         )

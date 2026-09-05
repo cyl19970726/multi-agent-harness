@@ -733,10 +733,13 @@ impl PiRpcClient {
         // prompt response id. A stale idle event must not terminate a fresh
         // follow-up.
         while self.incoming.try_recv().is_ok() {}
+        // The acceptance RPC itself is bounded by input_acceptance; after
+        // it, `transport_liveness` is proven by the reader thread's
+        // Disconnected branch, never by a wall-clock silence verdict (D2).
         let prompt_response = self.request_blocking(
             "prompt",
             serde_json::json!({"message": text}),
-            HANDSHAKE_TIMEOUT,
+            timeouts.input_acceptance,
         )?;
         let input_acceptance_receipt = harness_runtime_contract::ControlTransportReceipt {
             command: "prompt".to_string(),

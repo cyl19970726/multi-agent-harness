@@ -213,10 +213,20 @@ pub fn assert_a5_control_settle_only_bounds_control<F: CycleConformanceFixture>(
         );
     }
     match outcome.result {
-        // The honest fail-closed shapes: a control-level Unknown. The input
-        // was accepted, so a replay-safe disposition is always wrong here.
-        CycleConformanceResult::Failed(CycleFailureDisposition::AcceptedOutcomeUnknown)
-        | CycleConformanceResult::Outcome(_) => Ok(()),
+        // The honest fail-closed shape: a control-level Unknown.
+        CycleConformanceResult::Failed(CycleFailureDisposition::AcceptedOutcomeUnknown) => Ok(()),
+        // An Outcome is accepted only when the cycle's own content did not
+        // fail — spec A5 clause 2: the expiry must never be attributed to
+        // the cycle itself.
+        CycleConformanceResult::Outcome(ref cycle)
+            if cycle.provider_terminal_failure.is_none() =>
+        {
+            Ok(())
+        }
+        CycleConformanceResult::Outcome(_) => fail(
+            A,
+            "control_settle expiry was attributed to a cycle failure (provider_terminal_failure present)",
+        ),
         CycleConformanceResult::Failed(CycleFailureDisposition::InputNeverAccepted) => fail(
             A,
             "control_settle expiry was attributed to an unaccepted input (replay-safe)",

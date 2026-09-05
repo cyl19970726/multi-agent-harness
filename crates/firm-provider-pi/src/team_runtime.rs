@@ -1,6 +1,7 @@
 //! Provider-neutral Team runtime binding backed by the Pi RPC client.
 
 use std::path::Path;
+use std::time::Duration;
 
 use crate::{confirm_pi_session_flush, PiRpcClient, HANDSHAKE_TIMEOUT};
 use crate::{PiError as CliError, PiResult as CliResult};
@@ -259,6 +260,10 @@ impl harness_runtime_contract::TeamRuntimeAdapter for PiTeamRuntime {
         Ok(())
     }
 
+    /// `transport_liveness` proof: the RPC reader thread's Disconnected
+    /// branch — a dead transport fails closed without a wall-clock silence
+    /// verdict (D2); the prompt (acceptance) RPC is bounded by
+    /// `timeouts.input_acceptance`.
     fn run_cycle(
         &mut self,
         input: &str,
@@ -385,8 +390,8 @@ impl harness_runtime_contract::RuntimeAdapter for PiTeamRuntime {
                     .client
                     .prompt(
                         &input,
-                        harness_runtime_contract::CycleTimeouts::control_path(
-                            harness_runtime_contract::CycleTimeouts::DEFAULT_CONTROL_SETTLE,
+                        harness_runtime_contract::CycleTimeouts::with_input_acceptance(
+                            Duration::from_secs(30 * 60),
                         ),
                         |receipt| {
                             input_receipt = receipt.response_id.clone();

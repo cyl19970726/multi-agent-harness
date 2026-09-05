@@ -576,6 +576,11 @@ impl DeepSeekRunnerTransport {
             }
 
             let Some(event) = self.receive_event(CONTROL_POLL)? else {
+                // D2/liveness: prove the transport is alive on every silent
+                // poll; the probe failing (or the reader-thread Disconnected
+                // branch) is the transport-death proof, never a wall-clock
+                // silence verdict.
+                self.ensure_alive()?;
                 // A5/D3: an issued Interrupt that the provider never
                 // acknowledges expires after control_settle — Unknown, never
                 // a cycle failure and never a silent hang.
@@ -1139,7 +1144,7 @@ impl RuntimeAdapter for DeepSeekTeamRuntime {
                     .transport
                     .run_cycle(
                         &input,
-                        CycleTimeouts::control_path(CycleTimeouts::DEFAULT_CONTROL_SETTLE),
+                        CycleTimeouts::with_input_acceptance(Duration::from_secs(30 * 60)),
                         &mut |receipt| {
                             accepted = receipt.response_id.clone();
                             Ok(())

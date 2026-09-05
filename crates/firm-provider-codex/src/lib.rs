@@ -588,7 +588,7 @@ impl CodexAppServerClient {
         Ok(())
     }
 
-    pub fn start_turn(&mut self, text: &str) -> CliResult<String> {
+    pub fn start_turn(&mut self, text: &str, acceptance: Duration) -> CliResult<String> {
         let response = self.request_blocking(
             "turn/start",
             serde_json::json!({
@@ -610,7 +610,7 @@ impl CodexAppServerClient {
                     }
                 }
             }),
-            HANDSHAKE_TIMEOUT,
+            acceptance,
         )?;
         response
             .pointer("/result/turn/id")

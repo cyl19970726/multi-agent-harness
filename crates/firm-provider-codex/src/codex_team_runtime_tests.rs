@@ -68,7 +68,7 @@ impl CodexAppServerBridge for FakeBridge {
     fn thread_id(&self) -> &str {
         &self.thread_id
     }
-    fn start_turn(&mut self, _text: &str) -> CliResult<String> {
+    fn start_turn(&mut self, _text: &str, _acceptance: Duration) -> CliResult<String> {
         self.starts += 1;
         if let Some(error) = self.start_error.clone() {
             return Err(CliError::Usage(error));
@@ -1096,14 +1096,20 @@ fn codex_passes_the_s1_cycle_conformance_family() {
 fn codex_a4_silence_no_longer_interrupts_and_b4_no_policy_interrupt() {
     // A4: a silent tool interval far past the OLD idle_timeout completes
     // normally and never reaches bridge.interrupt (B4: the adapter's normal
-    // path cannot produce InterruptCause::AdapterPolicy anymore).
-    let outcome = drive_cycle(
-        silent_then("completed", 40),
-        &conformance_timeouts(),
+    // path cannot produce InterruptCause::AdapterPolicy anymore). The
+    // assertion binds the DRIVEN bridge, not a fresh one.
+    let mut adapter = CodexTeamRuntime::new(silent_then("completed", 40));
+    let outcome = TeamRuntimeAdapter::run_cycle(
+        &mut adapter,
+        "conformance cycle",
+        conformance_timeouts(),
+        &mut |_receipt| Ok(()),
+        &mut |_pending, _result| Ok(()),
+        &mut |_event| {},
         &mut harness_runtime_contract::CycleControl::default,
     )
     .expect("a silent accepted cycle completes");
-    let bridge = CodexTeamRuntime::new(FakeBridge::completed("completed")).into_inner();
+    let bridge = adapter.into_inner();
     assert_eq!(bridge.interrupts, 0, "no adapter-initiated interrupt");
     assert_eq!(outcome.interrupt, None);
 }

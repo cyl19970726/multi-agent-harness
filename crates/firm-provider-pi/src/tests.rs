@@ -302,8 +302,22 @@ mod cycle_conformance {
     use std::time::{Duration, Instant};
 
     fn scripted_pi_client() -> (PiRpcClient, Sender<serde_json::Value>) {
+        scripted_pi_client_with_stdin_sink("cat >/dev/null")
+    }
+
+    /// A scripted client whose child appends everything it reads on stdin to
+    /// `log_path`, so tests can observe exactly which frames were written.
+    fn scripted_pi_client_logging(
+        log_path: &std::path::Path,
+    ) -> (PiRpcClient, Sender<serde_json::Value>) {
+        scripted_pi_client_with_stdin_sink(&format!("cat >> {}", log_path.display()))
+    }
+
+    fn scripted_pi_client_with_stdin_sink(
+        sink_command: &str,
+    ) -> (PiRpcClient, Sender<serde_json::Value>) {
         let mut child = Command::new("sh")
-            .args(["-c", "cat >/dev/null"])
+            .args(["-c", sink_command])
             .stdin(Stdio::piped())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -361,6 +375,9 @@ mod cycle_conformance {
     struct PiScript {
         answers: Vec<(String, serde_json::Value)>,
         events: Vec<serde_json::Value>,
+        /// Real wall-clock delay before the scripted events are sent — the
+        /// "silent tool interval" the A4 regression needs to be real.
+        delay_events_ms: u64,
         /// Scripted events are sent only after this many answers have landed
         /// (`prompt_dyn` discards pre-dispatch events at start, and a Host
         /// interrupt must be polled before the terminal event arrives).
@@ -371,9 +388,31 @@ mod cycle_conformance {
     fn drive_pi_cycle(
         script: PiScript,
         timeouts: &harness_runtime_contract::CycleTimeouts,
+        control: impl FnMut() -> harness_runtime_contract::CycleControl + Send + 'static,
+    ) -> Result<harness_runtime_contract::ExecutionCycleOutcome, String> {
+        drive_pi_cycle_with(scripted_pi_client(), script, timeouts, control)
+    }
+
+    fn drive_pi_cycle_logging(
+        log_path: &std::path::Path,
+        script: PiScript,
+        timeouts: &harness_runtime_contract::CycleTimeouts,
+        control: impl FnMut() -> harness_runtime_contract::CycleControl + Send + 'static,
+    ) -> Result<harness_runtime_contract::ExecutionCycleOutcome, String> {
+        drive_pi_cycle_with(
+            scripted_pi_client_logging(log_path),
+            script,
+            timeouts,
+            control,
+        )
+    }
+
+    fn drive_pi_cycle_with(
+        (client, event_tx): (PiRpcClient, Sender<serde_json::Value>),
+        script: PiScript,
+        timeouts: &harness_runtime_contract::CycleTimeouts,
         mut control: impl FnMut() -> harness_runtime_contract::CycleControl + Send + 'static,
     ) -> Result<harness_runtime_contract::ExecutionCycleOutcome, String> {
-        let (client, event_tx) = scripted_pi_client();
         let pending = Arc::clone(&client.pending);
         let timeouts = *timeouts;
         let handle = std::thread::spawn(move || {
@@ -433,6 +472,9 @@ mod cycle_conformance {
                 .map_err(|error| error.to_string())?;
             answered += 1;
             if answered == script.events_after {
+                if script.delay_events_ms > 0 {
+                    std::thread::sleep(Duration::from_millis(script.delay_events_ms));
+                }
                 for event in events.by_ref() {
                     event_tx.send(event).map_err(|error| error.to_string())?;
                 }
@@ -473,6 +515,7 @@ mod cycle_conformance {
                         serde_json::json!({"type": "agent_settled"}),
                     ],
                     events_after: 1,
+                    delay_events_ms: 0,
                     disconnect_after: false,
                 },
                 timeouts,
@@ -499,6 +542,7 @@ mod cycle_conformance {
                     )],
                     events: Vec::new(),
                     events_after: 0,
+                    delay_events_ms: 0,
                     disconnect_after: false,
                 },
                 timeouts,
@@ -529,6 +573,7 @@ mod cycle_conformance {
                     )],
                     events: Vec::new(),
                     events_after: 1,
+                    delay_events_ms: 0,
                     disconnect_after: true,
                 },
                 timeouts,
@@ -566,6 +611,7 @@ mod cycle_conformance {
                     ],
                     events: Vec::new(),
                     events_after: 0,
+                    delay_events_ms: 0,
                     disconnect_after: false,
                 },
                 timeouts,
@@ -623,6 +669,7 @@ mod cycle_conformance {
                     ],
                     events: vec![serde_json::json!({"type": "agent_settled"})],
                     events_after: 2,
+                    delay_events_ms: 0,
                     disconnect_after: false,
                 },
                 &settle,
@@ -679,9 +726,14 @@ mod cycle_conformance {
 
     #[test]
     fn pi_a4_silence_after_acceptance_never_aborts() {
-        // A4: a silent interval past the OLD idle_timeout never reaches the
-        // abort write; the cycle completes normally (B4).
-        let outcome = drive_pi_cycle(
+        // A4: a REAL silent interval past the OLD idle_timeout never reaches
+        // the abort write; the cycle completes normally (B4). The scripted
+        // child logs every stdin frame, so "no abort write" is observed, not
+        // inferred.
+        let log = std::env::temp_dir().join(format!("pi-a4-stdin-{}.log", std::process::id()));
+        let _ = std::fs::remove_file(&log);
+        let outcome = drive_pi_cycle_logging(
+            &log,
             PiScript {
                 answers: vec![
                     ("prompt".to_string(), pi_response("pi-rpc-1", "prompt", serde_json::json!({}))),
@@ -692,6 +744,7 @@ mod cycle_conformance {
                     serde_json::json!({"type": "agent_settled"}),
                 ],
                 events_after: 1,
+                delay_events_ms: 250,
                 disconnect_after: false,
             },
             &pi_timeouts(),
@@ -699,5 +752,10 @@ mod cycle_conformance {
         )
         .expect("a silent accepted cycle completes");
         assert_eq!(outcome.interrupt, None);
+        let written = std::fs::read_to_string(&log).expect("stdin log");
+        assert!(
+            !written.contains("\"type\": \"abort\"") && !written.contains("\"type\":\"abort\""),
+            "no abort frame may be written during silence: {written}"
+        );
     }
 }

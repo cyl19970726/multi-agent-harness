@@ -712,6 +712,13 @@ impl KimiAcpClient {
     /// `session/cancel` and waits `timeouts.control_settle` for the prompt
     /// response; a still-silent session is then killed tree-wide and an
     /// error returned. After acceptance, silence is never a failure (I1).
+    ///
+    /// `transport_liveness` is proven by the multiplexed reader: a
+    /// disconnected updates/response channel ends the session fail-closed
+    /// (`session_ended_error`), never a wall-clock silence verdict (D2). On
+    /// `control_settle` expiry the client kills the owned process group —
+    /// the provider-native "what to do on expiry" (D3); the expiry itself
+    /// maps to Unknown, never to success.
     #[allow(clippy::too_many_arguments)]
     pub fn prompt(
         &mut self,
