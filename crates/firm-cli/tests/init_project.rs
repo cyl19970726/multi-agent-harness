@@ -83,11 +83,21 @@ fn init_does_not_adopt_ancestor_local_dot_harness() {
         canonical.ends_with("child"),
         "init registered the wrong root (adopted ancestor?): {canonical}"
     );
-    // The ancestor's local store_root is NOT used as the central store_root.
+    // The ancestor's local store_root is NOT used as the central store_root:
+    // the recorded root (relative to FIRM_HOME, #794) must resolve inside
+    // FIRM_HOME and must BE the central projects store for this project id —
+    // never the ancestor's local .harness.
     let store_root = entry["store_root"].as_str().unwrap();
+    let resolved = home.firm_home().join(store_root);
     assert!(
-        store_root.contains("/projects/"),
-        "store_root is not central: {store_root}"
+        resolved.starts_with(home.firm_home()),
+        "recorded store_root must resolve inside FIRM_HOME: {store_root}"
+    );
+    assert_eq!(
+        resolved,
+        home.projects_dir()
+            .join(registry["current_project_id"].as_str().unwrap()),
+        "the resolved store_root must be the central projects store: {store_root}"
     );
     assert!(
         !store_root.ends_with("legacy/.harness"),
