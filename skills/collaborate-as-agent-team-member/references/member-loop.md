@@ -215,6 +215,18 @@ When safe progress is impossible, preserve ownership and record the blocker:
 The Supervisor-bound Member Role Action derives your exact MemberRun and
 AgentSession scope. Never supply or override a sender or Member identity.
 
+**Never park to wait for acceptance.** Host acceptance of a Work does not
+wake you — the only wake sources are a delivery of an assigned/redelivered
+Work, a `response-required` Message, and your own active Work. Do not block
+your standing Work to run round Works and expect the last acceptance (or
+another Work's completion) to resume it: nothing wakes on acceptance, and
+you stay blocked until someone messages you. If the one-Active-Work rule
+allows, keep the standing Work active while running the round Works. When
+parking is genuinely unavoidable, the block `--reason` must name the exact
+Host action you are waiting for — e.g. "parked for W-123; resume me with a
+response-required message after W-123 is accepted" — so the Host can send
+the wake deliberately instead of discovering a silently parked member.
+
 Then send one concise linked Message with options and recommendation when Human,
 Host, or peer input is useful. Do not repeatedly resend or create duplicate
 Work. When the Host resolves the blocker or requests changes, refresh the Work

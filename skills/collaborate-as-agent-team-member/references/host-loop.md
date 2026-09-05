@@ -205,6 +205,12 @@ firm team-run work request-changes --work-id <work-id> --expected-version <n> \
 - **Accept** → Work closes with resolution `Accepted`. Declared Work gates are
   a Store invariant; there is no bypass flag, so unmet gates mean
   request-changes, not a workaround.
+- **Acceptance does not wake the member.** After you accept the last
+  outstanding Work of a member that holds a parked (`blocked`) Work, send
+  the resume deliberately: a `response-required` Message naming what you
+  accepted and what should resume. The member then runs `member work
+  resume` on the next exact version itself. Without the message the member
+  stays asleep — it never wakes from acceptance itself.
 - **Request changes** → Work returns Review → Open with your reasons recorded
   in WorkEvent history. Stable AgentMember/TeamMembership responsibility
   remains; the scheduler must create the next exact `WorkExecutionBinding`
