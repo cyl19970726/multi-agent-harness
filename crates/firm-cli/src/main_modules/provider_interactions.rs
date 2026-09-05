@@ -1080,7 +1080,7 @@ pub(super) fn work_contract_prompt(
          - Read actionable mail through the same exact-self Supervisor binding with: \"$FIRM_BIN\" member inbox --all --json.\n\
 {member_operating_contract}\n\
          - If blocked, inspect the latest version, then run: \"$FIRM_BIN\" member work block --work-id {work_id} --expected-version <latest-version> --reason '<reason>'; follow it with a concise Work-linked Message. Resume with member work resume and the next exact version.\n\
-         - When complete, inspect the latest version, then run: \"$FIRM_BIN\" member work submit --work-id {work_id} --expected-version <latest-version> --result-summary '<result>' --candidate-revision '<exact-revision>' --artifact-ref '<artifact>' --check-ref '<check>'. Host acceptance, not provider completion, moves Work to done.\n\
+         - When complete, inspect the latest version, then run: \"$FIRM_BIN\" member work submit --work-id {work_id} --expected-version <latest-version> --result-summary '<result>' --candidate-revision '<full 40-hex sha>' --artifact-ref '<artifact>' --check-ref '<check>'. Name --candidate-revision only when this Work produced a commit, and quote that exact SHA plus the literal `git status --porcelain` output in --result-summary. When it produced no commit (verification, audit, plan review) pass --report-only instead; the two flags are mutually exclusive. Never fabricate a revision to fit the commit-shaped path. Host acceptance, not provider completion, moves Work to done.\n\
          - You may propose scoped follow-up Work, and may use provider-native subagents as implementation details.\n\
          - Do not deploy, push, merge, or perform sensitive external actions unless the Host explicitly gave that authority.\n\
          \n\

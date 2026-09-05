@@ -670,17 +670,20 @@ fn conflict(code: &str, message: &str) -> StoreError {
 /// DEV-214 (#830): the candidate revision a submission stores, or None for
 /// an explicit report-only submission.
 ///
-/// Exactly three shapes are accepted, and only the third is new:
+/// Exactly three shapes are accepted:
 ///
 /// 1. An explicitly named candidate revision is stored as given, after the
 ///    #787 Verbatim-evidence validator has passed on it (unchanged).
-/// 2. #369 (unchanged since the GitHub linkage feature shipped): a
-///    submission that carries a structured GitHub link needs no explicit
-///    candidate — the candidate is derived from the submitted content by
-///    `harness_store::canonical_work_candidate_revision`, exactly as before
-///    DEV-214. The #787 validator never ran on a derived candidate and
-///    still does not: it is a commit-SHA check, and a derived candidate is
-///    a `work-content-fnv1a64:` digest, not a commit.
+/// 2. A submission carrying a structured GitHub link (#369) needs no
+///    explicit candidate: the candidate is derived from the submitted
+///    content by `harness_store::canonical_work_candidate_revision`. The
+///    derivation itself is byte-for-byte the pre-DEV-214 one, but its GATE
+///    is new and narrower — before DEV-214 the fallback fired for ANY
+///    submission with no candidate, and it is now link-gated so that a bare
+///    submission is refused instead of silently digesting its own text.
+///    The #787 validator never ran on a derived candidate and still does
+///    not: it is a commit-SHA check, and a derived candidate is a
+///    `work-content-fnv1a64:` digest, not a commit.
 /// 3. An explicit report-only submission stores no candidate at all;
 ///    naming one anyway is a typed refusal.
 ///
@@ -710,8 +713,9 @@ fn resolve_submission_candidate(
     if let Some(candidate_revision) = named {
         return Ok(Some(candidate_revision.to_string()));
     }
-    // #369 (unchanged): a structured GitHub link is itself the submitted
-    // evidence, so the candidate is derived from the submission content.
+    // #369: a structured GitHub link is itself the submitted evidence, so
+    // the candidate is derived from the submission content by the
+    // pre-DEV-214 derivation. Only the gate is new: no link, no fallback.
     if !submission.github_links.is_empty() {
         return Ok(Some(harness_store::canonical_work_candidate_revision(
             &submission.result_summary,
