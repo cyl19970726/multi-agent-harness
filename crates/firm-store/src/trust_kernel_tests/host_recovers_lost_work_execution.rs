@@ -672,6 +672,9 @@ fn started_work_released_by_member_close_is_not_lost_and_keeps_its_reopened_resu
             &serde_json::to_value(&candidate).unwrap(),
         )),
         candidate: Some(candidate),
+        // DEV-214 (#830): this recovery result names a commit candidate, so
+        // it is not a report-only submission.
+        report_only: false,
         finding_refs: Vec::new(),
         failure_analysis_ref: None,
         artifact_refs: Vec::new(),
