@@ -21,6 +21,9 @@ fn host_close_contention_is_bounded_or_machine_fenced_without_writing() {
         &[],
         &[
             ("PATH", path.as_str()),
+            // The serve's own product bound for one store write-lock
+            // acquisition attempt (debug-only override, firm-store
+            // store_write_lock_policy); every budget below derives from it.
             ("FIRM_TEST_STORE_WRITE_LOCK_TIMEOUT_MS", "30"),
             ("FIRM_MEMBER_SUPERVISOR_TEST_IDLE_MS", "10000"),
             ("FAKE_CODEX_AUTO_COMPLETE", "1"),
@@ -48,32 +51,54 @@ fn host_close_contention_is_bounded_or_machine_fenced_without_writing() {
         &serde_json::json!({}),
     );
     assert_eq!(status, 202, "body: {started}");
-    // Hard-deadline polls: a loaded runner may stretch startup, but a wedge
-    // fails with the phase name and elapsed time instead of hanging forever.
-    let member_live_started = std::time::Instant::now();
-    loop {
-        let (_, snapshot) = serve.get_json("/v1/snapshot");
-        let live = snapshot["member_runs"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .any(|member| {
-                member["id"].as_str() == Some(member_id.as_str())
-                    && member["status"].as_str() == Some("idle")
-                    && member["native_session"]["native_session_id"]
-                        .as_str()
-                        .is_some()
-            });
-        if live {
-            break;
+    // Phases 'member binds a native session' and 'member completes its first
+    // turn': gate on the serve's own durable record (the member_runs
+    // ledger), never on snapshot-build cadence. There is no product bound
+    // for provider startup, so each budget is a wedge detector derived from
+    // the fixture's own supervisor idle cadence
+    // (FIRM_MEMBER_SUPERVISOR_TEST_IDLE_MS=10000, 10s per cycle): 300s is
+    // 30 stalled cycles and ~100x the isolated startup (~3s) — exhaustion
+    // means a genuine wedge, and the failure names the phase, the elapsed
+    // time and the last ledger row it observed.
+    let mut last_member_row = serde_json::Value::Null;
+    let mut wait_member = |phase: &str,
+                           ready: &dyn Fn(&serde_json::Value) -> bool,
+                           started_at: std::time::Instant|
+     -> serde_json::Value {
+        loop {
+            let row = firm_env::store_jsonl_rows(&home, &project_id, "member_runs.jsonl")
+                .into_iter()
+                .find(|member| member["id"].as_str() == Some(member_id.as_str()));
+            if let Some(row) = row {
+                if ready(&row) {
+                    return row;
+                }
+                last_member_row = row;
+            }
+            assert!(
+                started_at.elapsed() < Duration::from_secs(300),
+                "phase '{phase}' exceeded its hard deadline: {:?} elapsed; last member_runs row: {last_member_row}",
+                started_at.elapsed()
+            );
+            std::thread::sleep(Duration::from_millis(25));
         }
-        assert!(
-            member_live_started.elapsed() < Duration::from_secs(120),
-            "phase 'idle member binds live native session' exceeded its hard deadline: {:?} elapsed",
-            member_live_started.elapsed()
-        );
-        std::thread::sleep(Duration::from_millis(20));
-    }
+    };
+    let session_bound_at = std::time::Instant::now();
+    wait_member(
+        "member binds a native session",
+        &|member| {
+            member["native_session"]["native_session_id"]
+                .as_str()
+                .is_some()
+        },
+        session_bound_at,
+    );
+    let first_turn_at = std::time::Instant::now();
+    wait_member(
+        "member completes its first turn and goes idle",
+        &|member| member["status"].as_str() == Some("idle"),
+        first_turn_at,
+    );
 
     let store = HarnessStore::new(home.spaces_dir().join(&project_id));
     let close_rows_before = store
@@ -81,6 +106,11 @@ fn host_close_contention_is_bounded_or_machine_fenced_without_writing() {
         .expect("read initial Close rows")
         .len();
 
+    // Phase 'acquire deterministic Store contention lock': gate on the held
+    // flock itself. The serve's per-write lock acquisition is bounded at
+    // 30ms (FIRM_TEST_STORE_WRITE_LOCK_TIMEOUT_MS above); 10s is >300x that
+    // product bound, so exhaustion means a wedged store, not scheduling
+    // jitter, and fails with the phase name and elapsed time.
     let lock_path = home.spaces_dir().join(&project_id).join(".store.lock");
     let lock = OpenOptions::new()
         .create(true)
@@ -101,6 +131,11 @@ fn host_close_contention_is_bounded_or_machine_fenced_without_writing() {
         );
         std::thread::sleep(Duration::from_millis(10));
     }
+    // Phase 'bounded close under the held lock': the response itself is the
+    // gate. The test holds the flock through the whole request, so the
+    // serve's write attempt must either fail its 30ms bound (503 store_busy,
+    // retryable) or fence on machine authority (400) — never block, never
+    // write the durable Close latch.
     let (status, outcome) = serve.post_json(
         &format!("/v1/team-runs/{run_id}/members/{member_id}/close"),
         &serde_json::json!({"requested_by": "host", "reason": "deterministic contention"}),
