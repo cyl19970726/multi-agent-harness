@@ -820,6 +820,14 @@ fn poll_idle_member_wake(
             }));
         }
 
+        // Completion ends coordination work, not the daemon-owned adapter.
+        // Keep only the live Close lane reachable: do not claim another Work,
+        // Message, or attention after the attempt became terminal.
+        if latest_team_run(&ledger.store, &ledger.run_id)?.status == TeamRunStatus::Completed {
+            ensure_transport_alive()?;
+            return Ok(IdleWakeStep::Retry);
+        }
+
         // Fence the provider transport before taking durable ownership of any
         // queued mail. If the transport died after the previous turn, resume
         // the same native session first; otherwise a message could be left in

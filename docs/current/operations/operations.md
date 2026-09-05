@@ -12,9 +12,17 @@ Repository development uses the canonical
 [Notion Task -> Codex -> Review -> PR flow](workflow-git-pr.md). A GitHub Issue
 is optional problem provenance and enters execution only after Brain triage. One Primary
 Session owns a development Wave (repository delivery batch, not the retired
-runtime `Wave` structure) end to end in a clean isolated worktree. Ordinary work uses
+runtime `Wave` structure) end to end in a clean isolated worktree. Ordinary (projection-tier) work uses
 final-SHA self-review rather than a mandatory second reviewer; a narrow Host
-Gate is required only when the Development Record says so. A native Agent Team
+Gate is required only when the Development Record says so. Review depth is
+tiered by predicate: a change that alters an admission, fence, settlement, or
+permission decision, a durable schema, a lease, machine-authority, or
+generation rule, or an
+invariant statement is kernel-tier and gets an independent Opus review bound
+to the exact SHA plus the full gate; everything else is projection-tier and
+needs CI plus one first-pass review (SPEC-ADAPTATION-REFACTOR-01 D-D, Owner
+decision 2026-09-05; the reviewer contract of the development Skill;
+[agent-operating-rules.md](../product/agent-operating-rules.md)). A native Agent Team
 run is required only when the runtime itself is the claim under test or an
 accepted Spec selects that scenario. Spec-level integrated dogfood runs after
 that Spec's Tasks merge; it is an exam, not a development mode. Findings enter
@@ -376,7 +384,12 @@ proven absent, `firm daemon recover-predecessor --confirm
 daemon-recover-predecessor [--evidence-ref <text>]` releases the exact
 unreleased predecessor `NodeDaemonLease` in every Execution Space belonging to
 this Node and prints the recovery projection (`daemon_id`, `instance_id`,
-`generation`, `recovered_spaces`, `status=released`). It refuses when there is
+`generation`, `recovered_spaces`, `space_settlements`, `status=released`).
+`space_settlements` names, per Execution Space, the AgentSessions this recovery
+detached, the ones it skipped because the dying generation's own incomplete
+drain had already settled them, and the Supervisor leases it released. Recovery
+writes are keyed to the exact predecessor generation and instance, so recovering
+one Node twice never collides with an earlier recovery's rows. It refuses when there is
 no predecessor, when the confirmation literal is missing or wrong, or when the
 predecessor process still exists, and a second run reports the already
 released lease without changing anything. Recovery inside the lease TTL is

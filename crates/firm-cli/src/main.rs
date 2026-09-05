@@ -167,6 +167,9 @@ mod member_lifecycle;
 use member_lifecycle::*;
 #[path = "main_modules/member_orchestration.rs"]
 mod member_orchestration;
+
+#[path = "main_modules/completed_run_members.rs"]
+mod completed_run_members;
 use member_orchestration::*;
 #[path = "main_modules/member_start_fabric.rs"]
 mod member_start_fabric;
@@ -200,8 +203,11 @@ use daemon_predecessor_recovery::*;
 #[path = "main_modules/http_action_dispatch.rs"]
 mod http_action_dispatch;
 use http_action_dispatch::*;
+#[path = "main_modules/detached_recovery_close.rs"]
+mod detached_recovery_close;
 #[path = "main_modules/http_member_control.rs"]
 mod http_member_control;
+use detached_recovery_close::*;
 use http_member_control::*;
 #[path = "main_modules/http_team_actions.rs"]
 mod http_team_actions;

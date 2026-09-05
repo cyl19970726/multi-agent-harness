@@ -14,6 +14,8 @@ mod close_without_live_supervisor_requires_runtime_command_recovery_without_side
 mod codex_multi_question_request_fails_closed_without_durable_side_effects;
 #[path = "../general/codex_request_user_input_survives_settled_round_work_progress_bookkeeping.rs"]
 mod codex_request_user_input_survives_settled_round_work_progress_bookkeeping;
+#[path = "../general/completed_run_member_coordination_close_generation_evidence.rs"]
+mod completed_run_member_coordination_close_generation_evidence;
 #[path = "../general/coordination_close_retries_provider_callback_status_race.rs"]
 mod coordination_close_retries_provider_callback_status_race;
 #[path = "../general/detached_blocked_member_recovery_close_is_exact_and_fail_closed.rs"]

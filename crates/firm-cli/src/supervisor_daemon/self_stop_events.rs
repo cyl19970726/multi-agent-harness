@@ -150,6 +150,7 @@ impl MultiTeamDaemon {
 mod tests {
     use super::super::adoption_tests::adoption_fixture;
     use super::*;
+    use std::sync::Mutex;
 
     #[test]
     fn authority_renewal_failure_is_returned_by_the_team_run_events_reader() {
@@ -202,6 +203,7 @@ mod tests {
                 heartbeat_valid: Arc::new(AtomicBool::new(true)),
                 thread: None,
                 started_at: Instant::now(),
+                serving_status: Arc::new(Mutex::new("running".to_string())),
             });
 
         daemon
