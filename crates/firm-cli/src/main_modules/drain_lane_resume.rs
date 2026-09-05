@@ -286,28 +286,32 @@ pub(super) enum DrainedLaneResume {
     NotYetResumable,
 }
 
-/// Return one drained lane to `Idle` at the adoption seam.
+/// Return one drained or reconciled lane to `Idle` at the adoption seam.
 ///
-/// This is the only correct moment for the hop. The drain settlement already
-/// detached the lane, disarmed its continuation, cleared its turn and settled
-/// every RuntimeCommand of the dead generation, and
-/// `reattach_agent_session_to_node_daemon` has just moved it onto this live
-/// NodeDaemon generation — so every clause of the DEV-171 fence holds and is
-/// re-proved by the Store under its own lock. Nothing has been spawned yet, so
-/// no provider handle can be attached, no cycle can be open, and no killed
-/// cycle can be replayed: the successor generation simply opens a fresh cycle
-/// on the same provider-native session, which is exactly what ADR 0032
-/// requires of resume.
+/// This is the only correct moment for the hop: `reattach_agent_session_to_node_daemon`
+/// has just moved the lane onto this live NodeDaemon generation, and nothing
+/// has been spawned yet, so no provider handle can be attached, no cycle can be
+/// open, and no killed cycle can be replayed — the successor generation simply
+/// opens a fresh cycle on the same provider-native session, which is exactly
+/// what ADR 0032 requires of resume. The Store re-proves every clause of the
+/// DEV-171 fence under its own lock either way.
 ///
-/// A lane that does not yet prove its runtime dead is left `Interrupted`
+/// For a lane a drain left `Interrupted`, the drain settlement already
+/// detached it, disarmed its continuation, cleared its turn and settled every
+/// RuntimeCommand of the dead generation, so the proof holds by construction.
+///
+/// For a lane a runner left `RecoveryRequired` (#755), the drain skipped it as
+/// already settled, so none of that is guaranteed: the hop rests on the
+/// operator's reconciliation (detached, quiet, no ambiguous RuntimeCommand of
+/// the dead generation) and on the Store's re-proof, which refuses with
+/// `AGENT_SESSION_RECOVERY_REQUIRED_NOT_YET_RESUMABLE` while any clause fails —
+/// an unsettled ambiguous command of that generation still fails it. An armed
+/// continuation on such a lane is disarmed by the Supervisor bind later in the
+/// same adoption, so the next pass hops it.
+///
+/// A lane that does not yet prove its runtime dead keeps its lifecycle
 /// untouched. That is an attempt-scoped observation, not a verdict about the
 /// member, so it never fails adoption.
-///
-/// A lane a runner left `RecoveryRequired` (#755) takes the same hop once an
-/// operator has reconciled it: the drain skipped it as already settled, the
-/// successor reattached it, and the Store admits `RecoveryRequired -> Idle`
-/// under the same clauses, refusing with
-/// `AGENT_SESSION_RECOVERY_REQUIRED_NOT_YET_RESUMABLE` otherwise.
 pub(super) fn resume_drained_lane_for_adoption(
     store: &HarnessStore,
     execution_space_id: &str,
@@ -324,6 +328,20 @@ pub(super) fn resume_drained_lane_for_adoption(
     if !lane_proves_runtime_is_terminated(store, execution_space_id, session)? {
         return Ok(DrainedLaneResume::NotYetResumable);
     }
+    // The canonical operation is the durable record: a reconciliation after a
+    // runner failure (#755) must stay distinguishable from a drain recovery
+    // (DEV-171) in `canonical_operations`.
+    let (command_name, key_prefix) = if session.lifecycle == AgentSessionStatus::RecoveryRequired {
+        (
+            "node_daemon.agent_session.resume_after_recovery_required",
+            "session-recovery-resume",
+        )
+    } else {
+        (
+            "node_daemon.agent_session.resume_after_drain",
+            "session-drain-resume",
+        )
+    };
     let context = MutationContext {
         execution_space_id: execution_space_id.to_string(),
         authenticated_actor: ActorRef {
@@ -331,9 +349,9 @@ pub(super) fn resume_drained_lane_for_adoption(
             id: daemon_id.to_string(),
         },
         authority_actor: None,
-        command_name: "node_daemon.agent_session.resume_after_drain".into(),
+        command_name: command_name.into(),
         idempotency_key: format!(
-            "session-drain-resume:{}:{}:{}",
+            "{key_prefix}:{}:{}:{}",
             session.id, session.node_daemon_generation, session.version
         ),
         expected_version: session.version,

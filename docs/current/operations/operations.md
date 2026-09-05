@@ -578,7 +578,14 @@ in RecoveryRequired may resume only from a detached, disarmed lane…`, the
 member stays `Blocked`, and `recover` lists it under `blocked_lanes_not_proven`
 with the exact clause (an attached handle, an open cycle, an armed
 continuation, queued native input, or the ambiguous RuntimeCommand id) —
-reported in addition to the `skipped` count, never as repaired (#841).
+reported in addition to the `skipped` count, never as repaired (#841). The
+adoption seam performs the same `Idle` hop for a reconciled `RecoveryRequired`
+lane that it performs for a drained `Interrupted` one, on the generation that
+just reattached it and before any provider effect, so a lane that reaches a
+successor NodeDaemon generation re-enters the ordinary lane at adoption. An
+armed native continuation on such a lane is disarmed by the Supervisor bind of
+that same adoption pass, so when `recover` names it as the blocker, run
+`recover` again after one adoption pass rather than looking for a disarm verb.
 `team-run recover` and `close-member` judge a lane with one shared predicate
 and the same proof, so a lane `recover` calls dead is one `close-member`
 accepts. `close-member` first performs the same `Idle` hop on a reconciled

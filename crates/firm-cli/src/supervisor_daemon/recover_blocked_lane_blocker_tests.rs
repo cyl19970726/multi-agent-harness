@@ -302,7 +302,7 @@ fn close_member_for_recovery_accepts_a_reconciled_recovery_required_lane() {
 /// (recorded) only where the Close explicitly asks for it: the proof is one
 /// function with one switch.
 #[test]
-fn dormant_input_is_refused_unless_the_close_tolerates_it() {
+fn dormant_continuation_is_refused_unless_the_close_tolerates_it() {
     use harness_core::agentfirm_api::{
         DriverHandoffState, NativeContinuationActivation, RuntimeResidency,
     };
@@ -513,5 +513,31 @@ fn readoption_hops_a_reconciled_recovery_required_lane_to_idle() {
             .as_ref()
             .map(|native| native.native_session_id.as_str()),
         "the hop keeps the provider-native session identity"
+    );
+    // The ledger tells a reconciliation after a runner failure apart from a
+    // drain recovery (round-5 review P3-R5-a).
+    let operations = fixture
+        .store
+        .canonical_operations()
+        .expect("canonical operations");
+    assert!(
+        operations.iter().any(|operation| {
+            operation.event.aggregate_id == adopted.id
+                && operation
+                    .event
+                    .idempotency_key
+                    .starts_with("session-recovery-resume:")
+        }),
+        "the adoption hop of a reconciled lane is recorded as a recovery resume"
+    );
+    assert!(
+        !operations.iter().any(|operation| {
+            operation.event.aggregate_id == adopted.id
+                && operation
+                    .event
+                    .idempotency_key
+                    .starts_with("session-drain-resume:")
+        }),
+        "no drain recovery is recorded for a lane the drain skipped"
     );
 }
