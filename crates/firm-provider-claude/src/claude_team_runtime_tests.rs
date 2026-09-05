@@ -969,3 +969,39 @@ fn claude_passes_the_s1_cycle_conformance_family() {
     harness_runtime_contract::assert_b1_host_interrupt_attribution(&mut fixture, &timeouts)
         .expect("B1");
 }
+
+/// C1 (claude): a cycle whose terminal frame reports a provider error must
+/// settle its StartCycle receipt Unsatisfied — never Satisfied (#709).
+#[cfg(unix)]
+#[test]
+fn claude_c1_terminal_failure_settles_unsatisfied() {
+    let outcome = drive_claude_cycle(
+        vec![
+            claude_consumed("claude-cycle-2"),
+            claude_assistant_message(),
+            claude_event(
+                "turn_complete",
+                serde_json::json!({
+                    "sessionId": "scripted-session",
+                    "subtype": "error",
+                    "triggerMessageId": "claude-cycle-2",
+                    "evidenceRefs": [],
+                    "isError": true,
+                    "terminalReason": "api_overloaded",
+                    "apiErrorStatus": 529
+                }),
+            ),
+        ],
+        false,
+        &claude_conformance_timeouts(),
+        harness_runtime_contract::CycleControl::default,
+    )
+    .expect("a terminal-failure cycle still returns an outcome");
+    assert!(outcome.provider_terminal_failure.is_some());
+    let receipt = EffectReceipt::for_cycle(
+        "conformance-c1",
+        harness_core::ProviderBindingAdmission::Active,
+        harness_runtime_contract::CycleSettlement::from_cycle_outcome(&outcome),
+    );
+    harness_runtime_contract::assert_c1_terminal_failure_unsatisfied(&receipt).expect("C1");
+}

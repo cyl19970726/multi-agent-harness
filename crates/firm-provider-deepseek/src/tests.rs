@@ -539,4 +539,39 @@ mod cycle_conformance {
         assert_eq!(outcome.interrupt, None);
         assert!(outcome.provider_terminal_failure.is_none());
     }
+
+    /// C1 (deepseek): a cycle whose terminal frame reports a provider error
+    /// must settle its StartCycle receipt Unsatisfied — never Satisfied (#709).
+    #[test]
+    fn deepseek_c1_terminal_failure_settles_unsatisfied() {
+        let outcome = drive_ds_cycle(
+            vec![
+                ds_consumed("deepseek-cycle-2"),
+                ds_assistant_message(),
+                ds_event(
+                    "turn_complete",
+                    serde_json::json!({
+                        "sessionId": "scripted-session",
+                        "subtype": "error",
+                        "triggerMessageId": "deepseek-cycle-2",
+                        "evidenceRefs": [],
+                        "isError": true,
+                        "terminalReason": "api_overloaded",
+                        "apiErrorStatus": 529
+                    }),
+                ),
+            ],
+            false,
+            &ds_timeouts(),
+            harness_runtime_contract::CycleControl::default,
+        )
+        .expect("a terminal-failure cycle still returns an outcome");
+        assert!(outcome.provider_terminal_failure.is_some());
+        let receipt = harness_runtime_contract::EffectReceipt::for_cycle(
+            "conformance-c1",
+            harness_core::ProviderBindingAdmission::Active,
+            harness_runtime_contract::CycleSettlement::from_cycle_outcome(&outcome),
+        );
+        harness_runtime_contract::assert_c1_terminal_failure_unsatisfied(&receipt).expect("C1");
+    }
 }

@@ -1113,3 +1113,27 @@ fn codex_a4_silence_no_longer_interrupts_and_b4_no_policy_interrupt() {
     assert_eq!(bridge.interrupts, 0, "no adapter-initiated interrupt");
     assert_eq!(outcome.interrupt, None);
 }
+
+/// C1 (codex): a cycle whose terminal turn status is `failed` must settle
+/// its StartCycle receipt Unsatisfied — never Satisfied (#709).
+#[test]
+fn codex_c1_terminal_failure_settles_unsatisfied() {
+    let mut adapter = CodexTeamRuntime::new(FakeBridge::completed("failed"));
+    let outcome = TeamRuntimeAdapter::run_cycle(
+        &mut adapter,
+        "hello",
+        harness_runtime_contract::CycleTimeouts::with_input_acceptance(Duration::from_secs(1)),
+        &mut |_receipt| Ok(()),
+        &mut |_pending, _result| Ok(()),
+        &mut |_event| {},
+        &mut CycleControl::default,
+    )
+    .expect("a failed terminal still returns an outcome");
+    assert!(outcome.provider_terminal_failure.is_some());
+    let receipt = EffectReceipt::for_cycle(
+        "conformance-c1",
+        ProviderBindingAdmission::Active,
+        CycleSettlement::from_cycle_outcome(&outcome),
+    );
+    harness_runtime_contract::assert_c1_terminal_failure_unsatisfied(&receipt).expect("C1");
+}

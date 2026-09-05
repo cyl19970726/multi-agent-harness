@@ -49,10 +49,17 @@ pub enum ProviderEffectOutcome {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "outcome", content = "detail")]
 pub enum CycleOutcome {
-    Terminal { correlation_id: String },
-    Interrupted { correlation_id: String },
+    Terminal {
+        correlation_id: String,
+    },
+    Interrupted {
+        correlation_id: String,
+        cause: firm_runtime_contract::InterruptCause,
+    },
     StillRunning,
-    Unknown { recovery_ref: String },
+    Unknown {
+        recovery_ref: String,
+    },
 }
 
 /// Application-owned identity supplied around one provider-native cycle. The
@@ -67,6 +74,19 @@ pub struct ProviderCycleAuthority {
     pub provider_attempt: u64,
 }
 
+/// The durable, provider-neutral label for one attributed interrupt cause
+/// (assertion B3: Host, adapter-policy and provider-initiated causes must
+/// read back distinguishably from the RuntimeCommandRecord). The labels
+/// match the receipt evidence strings in `EffectReceipt::for_cycle`.
+fn durable_interrupt_cause(cause: &firm_runtime_contract::InterruptCause) -> String {
+    use firm_runtime_contract::InterruptCause;
+    match cause {
+        InterruptCause::HostControl => "host_control".to_string(),
+        InterruptCause::AdapterPolicy { reason } => format!("adapter_policy:{reason}"),
+        InterruptCause::ProviderInitiated { reason } => format!("provider_initiated:{reason}"),
+    }
+}
+
 /// Close the provider-native correlation against the exact application-owned
 /// RuntimeCommand/session authority. A provider terminal is operational
 /// evidence only and never becomes semantic Work completion here.
@@ -74,7 +94,7 @@ pub fn correlate_provider_cycle(
     authority: ProviderCycleAuthority,
     native: firm_runtime_contract::NativeCycleCorrelation,
     terminal_observed: bool,
-    interrupted: bool,
+    interrupt: Option<firm_runtime_contract::InterruptCause>,
 ) -> Result<
     (
         firm_core::agentfirm_api::ProviderCycleCorrelation,
@@ -134,12 +154,14 @@ pub fn correlate_provider_cycle(
         native_session_id: authority.native_session_id,
         agent_session_generation: authority.agent_session_generation,
         provider_attempt: authority.provider_attempt,
+        interrupt_cause: interrupt.as_ref().map(durable_interrupt_cause),
     };
     let outcome = if !terminal_observed {
         CycleOutcome::StillRunning
-    } else if interrupted {
+    } else if let Some(cause) = interrupt {
         CycleOutcome::Interrupted {
             correlation_id: authority.invocation_id,
+            cause,
         }
     } else {
         CycleOutcome::Terminal {
@@ -263,12 +285,13 @@ mod tests {
             cycle_authority(),
             native_cycle(Some("provider-input:1")),
             true,
-            false,
+            None,
         )
         .unwrap();
         assert_eq!(correlation.invocation_id, "runtime-command:1");
         assert_eq!(correlation.provider_attempt, 3);
         assert_eq!(correlation.agent_session_generation, 2);
+        assert_eq!(correlation.interrupt_cause, None);
         assert_eq!(
             outcome,
             CycleOutcome::Terminal {
@@ -283,7 +306,7 @@ mod tests {
             cycle_authority(),
             native_cycle(Some("provider-input:old")),
             true,
-            false,
+            None,
         )
         .unwrap_err();
         assert!(error.contains("PROVIDER_CYCLE_TERMINAL_MISMATCH"));
@@ -292,15 +315,97 @@ mod tests {
     #[test]
     fn missing_terminal_identity_is_rejected_before_durable_correlation() {
         let missing_input =
-            correlate_provider_cycle(cycle_authority(), native_cycle(None), true, false)
+            correlate_provider_cycle(cycle_authority(), native_cycle(None), true, None)
                 .unwrap_err();
         assert!(missing_input.contains("terminal_provider_input_id"));
 
         let mut missing_ref = native_cycle(Some("provider-input:1"));
         missing_ref.exact_terminal_ref = None;
         let error =
-            correlate_provider_cycle(cycle_authority(), missing_ref, true, false).unwrap_err();
+            correlate_provider_cycle(cycle_authority(), missing_ref, true, None).unwrap_err();
         assert!(error.contains("exact_terminal_ref"));
+    }
+
+    /// B3: Host, adapter-policy and provider-initiated interrupts correlate to
+    /// distinct typed outcomes AND read back distinguishably from the durable
+    /// correlation carried on the RuntimeCommandRecord.
+    #[test]
+    fn interrupt_causes_correlate_to_distinct_outcomes_and_durable_labels() {
+        use firm_runtime_contract::InterruptCause;
+        let (host_correlation, host_outcome) = correlate_provider_cycle(
+            cycle_authority(),
+            native_cycle(Some("provider-input:1")),
+            true,
+            Some(InterruptCause::HostControl),
+        )
+        .unwrap();
+        let (policy_correlation, policy_outcome) = correlate_provider_cycle(
+            cycle_authority(),
+            native_cycle(Some("provider-input:1")),
+            true,
+            InterruptCause::adapter_policy("provider-native quiesce policy"),
+        )
+        .unwrap();
+        let (provider_correlation, provider_outcome) = correlate_provider_cycle(
+            cycle_authority(),
+            native_cycle(Some("provider-input:1")),
+            true,
+            InterruptCause::provider_initiated("member cancelled in the provider UI"),
+        )
+        .unwrap();
+        assert_eq!(
+            host_correlation.interrupt_cause.as_deref(),
+            Some("host_control")
+        );
+        assert_eq!(
+            policy_correlation.interrupt_cause.as_deref(),
+            Some("adapter_policy:provider-native quiesce policy")
+        );
+        assert_eq!(
+            provider_correlation.interrupt_cause.as_deref(),
+            Some("provider_initiated:member cancelled in the provider UI")
+        );
+        assert!(matches!(
+            host_outcome,
+            CycleOutcome::Interrupted {
+                cause: InterruptCause::HostControl,
+                ..
+            }
+        ));
+        assert!(matches!(
+            policy_outcome,
+            CycleOutcome::Interrupted {
+                cause: InterruptCause::AdapterPolicy { .. },
+                ..
+            }
+        ));
+        assert!(matches!(
+            provider_outcome,
+            CycleOutcome::Interrupted {
+                cause: InterruptCause::ProviderInitiated { .. },
+                ..
+            }
+        ));
+        assert_ne!(host_outcome, policy_outcome);
+        assert_ne!(host_outcome, provider_outcome);
+        assert_ne!(policy_outcome, provider_outcome);
+    }
+
+    /// The S3 durability rule: pre-S3 ProviderCycleCorrelation rows (no
+    /// interrupt_cause key) deserialize unchanged with `None`.
+    #[test]
+    fn pre_s3_cycle_correlation_rows_read_with_no_interrupt_cause() {
+        let correlation: firm_core::agentfirm_api::ProviderCycleCorrelation =
+            serde_json::from_value(serde_json::json!({
+                "invocation_id": "runtime-command:1",
+                "provider_input_id": "provider-input:1",
+                "input_acceptance_receipt": "provider-receipt:1",
+                "native_session_id": "native-session:1",
+                "agent_session_generation": 2,
+                "provider_attempt": 3
+            }))
+            .expect("pre-S3 row without interrupt_cause reads");
+        assert_eq!(correlation.interrupt_cause, None);
     }
 
     #[test]

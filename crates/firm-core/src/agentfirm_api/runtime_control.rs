@@ -292,6 +292,13 @@ pub struct ProviderCycleCorrelation {
     pub native_session_id: String,
     pub agent_session_generation: u64,
     pub provider_attempt: u64,
+    /// The attributed interrupt cause when the cycle ended interrupted
+    /// (invariant I3 / assertion B3): `host_control`,
+    /// `adapter_policy:<reason>`, or `provider_initiated:<reason>`. Additive
+    /// (S3): absent on pre-S3 durable rows and on non-interrupted cycles,
+    /// both read back as `None`.
+    #[serde(default)]
+    pub interrupt_cause: Option<String>,
 }
 
 /// Durable machine-local command journal. The NodeDaemon records acceptance

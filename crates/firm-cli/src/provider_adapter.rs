@@ -13,7 +13,8 @@ use std::process::Command;
 
 use crate::codex_app_server::{CodexAppServerClient, CodexAppServerSpawnOptions};
 use crate::{
-    CliError, CliResult, ProviderEffectAdmission, ProviderRuntimeProjection, TeamRunLedger,
+    CliError, CliResult, ProviderEffectAdmission, ProviderEffectSettlement,
+    ProviderRuntimeProjection, TeamRunLedger,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -347,7 +348,13 @@ pub(crate) fn execute_team_control(
                 "PROVIDER_CONTROL_FAILED:{}:{:?}:{error}",
                 plan.provider, plan.action
             );
-            crate::settle_provider_effect(ledger, &admission, false, None, Some(error.clone()))?;
+            crate::settle_provider_effect(
+                ledger,
+                &admission,
+                ProviderEffectSettlement::UNPROVEN,
+                None,
+                Some(error.clone()),
+            )?;
             Err(CliError::Usage(error))
         }
     }
@@ -365,7 +372,7 @@ pub(crate) fn settle_team_control(
         Some(ack) => crate::settle_provider_effect(
             ledger,
             &pending.admission,
-            true,
+            ProviderEffectSettlement::APPLIED_SATISFIED,
             Some(serde_json::json!({
                 "provider": pending.provider,
                 "control": match pending.action {
@@ -379,7 +386,7 @@ pub(crate) fn settle_team_control(
         None => crate::settle_provider_effect(
             ledger,
             &pending.admission,
-            false,
+            ProviderEffectSettlement::UNPROVEN,
             None,
             Some(format!(
                 "PROVIDER_CONTROL_TERMINAL_ACK_MISSING:{}:{:?}",

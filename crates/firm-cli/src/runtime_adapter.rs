@@ -38,6 +38,7 @@ use harness_application::{
 use harness_core::agentfirm_api::{AgentSessionStatus, PermissionCeiling};
 
 use crate::provider_adapter::{self, PendingProviderControl, ProviderControlDispatch};
+use crate::settlements::{APPLIED_SATISFIED, UNPROVEN};
 use crate::supervisor_wake::{WakeBackoff, WakePolicy};
 use crate::{
     active_work_continuation_prompt, emit_native_session_wake, mark_message_delivered,
@@ -416,7 +417,7 @@ fn execute_member_runtime_close<A: TeamRuntimeAdapter<Error = CliError>>(
             )));
         }
         Err(error) => {
-            settle_provider_effect(ledger, &effect, false, None, Some(error.to_string()))?;
+            settle_provider_effect(ledger, &effect, UNPROVEN, None, Some(error.to_string()))?;
             return Err(CliError::RuntimeRecoveryRequired(format!(
                 "{} {boundary} Close is unproven: {error}",
                 adapter.provider()
@@ -424,7 +425,7 @@ fn execute_member_runtime_close<A: TeamRuntimeAdapter<Error = CliError>>(
         }
     };
     if let Err(error) = close_receipt.verify() {
-        settle_provider_effect(ledger, &effect, false, None, Some(error.to_string()))?;
+        settle_provider_effect(ledger, &effect, UNPROVEN, None, Some(error.to_string()))?;
         return Err(CliError::RuntimeRecoveryRequired(format!(
             "{} {boundary} Close receipt is incomplete: {error}",
             adapter.provider()
@@ -433,7 +434,7 @@ fn execute_member_runtime_close<A: TeamRuntimeAdapter<Error = CliError>>(
     settle_provider_effect(
         ledger,
         &effect,
-        true,
+        APPLIED_SATISFIED,
         Some(serde_json::json!({
             "phase": "member_runtime_closed",
             "receipt": &close_receipt,
@@ -708,7 +709,7 @@ pub(crate) fn run_team_member_with_adapter<A: TeamRuntimeAdapter<Error = CliErro
                     settle_provider_effect(
                         ledger,
                         &effect,
-                        true,
+                        APPLIED_SATISFIED,
                         Some(serde_json::json!({
                             "provider": provider,
                             "round": round,
@@ -766,7 +767,7 @@ pub(crate) fn run_team_member_with_adapter<A: TeamRuntimeAdapter<Error = CliErro
                             settle_provider_effect(
                                 ledger,
                                 &pending.admission,
-                                true,
+                                APPLIED_SATISFIED,
                                 Some(serde_json::json!({
                                     "phase": "provider_input_accepted",
                                     "provider_receipt": receipt,
@@ -786,7 +787,7 @@ pub(crate) fn run_team_member_with_adapter<A: TeamRuntimeAdapter<Error = CliErro
                             settle_provider_effect(
                                 ledger,
                                 &pending.admission,
-                                false,
+                                UNPROVEN,
                                 None,
                                 Some(detail.clone()),
                             )?;
@@ -1073,7 +1074,13 @@ pub(crate) fn run_team_member_with_adapter<A: TeamRuntimeAdapter<Error = CliErro
                     let error = CliError::Usage(format!(
                         "{provider} cycle returned without a provider input-acceptance receipt"
                     ));
-                    settle_provider_effect(ledger, &effect, false, None, Some(error.to_string()))?;
+                    settle_provider_effect(
+                        ledger,
+                        &effect,
+                        UNPROVEN,
+                        None,
+                        Some(error.to_string()),
+                    )?;
                     requeue_managed_host_attentions(
                         ledger,
                         &cycle.host_attentions,
@@ -1185,7 +1192,7 @@ pub(crate) fn run_team_member_with_adapter<A: TeamRuntimeAdapter<Error = CliErro
                 },
                 turn.native_correlation.clone(),
                 cycle_terminal_observed,
-                turn.interrupt.is_some(),
+                turn.interrupt.clone(),
             )
             .map_err(CliError::RuntimeRecoveryRequired)?;
             if matches!(

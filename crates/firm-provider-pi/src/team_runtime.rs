@@ -386,37 +386,31 @@ impl harness_runtime_contract::RuntimeAdapter for PiTeamRuntime {
         let (certainty, postcondition, native_evidence) = match request.intent {
             ControlIntent::StartCycle { input } => {
                 let mut input_receipt = None;
-                let outcome = self
-                    .client
-                    .prompt(
-                        &input,
-                        harness_runtime_contract::CycleTimeouts::with_input_acceptance(
-                            Duration::from_secs(30 * 60),
-                        ),
-                        |receipt| {
-                            input_receipt = receipt.response_id.clone();
-                            Ok(())
-                        },
-                        |_pending, _result| Ok(()),
-                        |_event| {},
-                        harness_runtime_contract::CycleControl::default,
-                    )
-                    .map_err(pi_contract_bridge_error)?;
-                let receipt = input_receipt.ok_or_else(|| {
+                let outcome = harness_runtime_contract::TeamRuntimeAdapter::run_cycle(
+                    self,
+                    &input,
+                    harness_runtime_contract::CycleTimeouts::with_input_acceptance(
+                        Duration::from_secs(30 * 60),
+                    ),
+                    &mut |receipt| {
+                        input_receipt = receipt.response_id.clone();
+                        Ok(())
+                    },
+                    &mut |_pending, _result| Ok(()),
+                    &mut |_event| {},
+                    &mut harness_runtime_contract::CycleControl::default,
+                )
+                .map_err(pi_contract_bridge_error)?;
+                input_receipt.ok_or_else(|| {
                     pi_contract_bridge_error("prompt success lacked a provider response id")
                 })?;
-                (
-                    RuntimeEffectCertainty::Applied,
-                    RuntimePostconditionStatus::Satisfied,
-                    vec![
-                        format!("pi.prompt.response:{receipt}"),
-                        format!(
-                            "pi.agent_settled:is_streaming={:?}:pending={:?}",
-                            outcome.terminal_observation.is_streaming,
-                            outcome.terminal_observation.pending_message_count
-                        ),
-                    ],
-                )
+                // The StartCycle receipt derives from the typed cycle
+                // settlement (D5); it never asserts a postcondition directly.
+                return Ok(harness_runtime_contract::EffectReceipt::for_cycle(
+                    request.effect_id,
+                    admission.admission,
+                    harness_runtime_contract::CycleSettlement::from_cycle_outcome(&outcome),
+                ));
             }
             ControlIntent::InjectCurrentCycle { input } => {
                 let response = self
@@ -476,13 +470,13 @@ impl harness_runtime_contract::RuntimeAdapter for PiTeamRuntime {
             }
         };
 
-        Ok(harness_runtime_contract::EffectReceipt {
-            effect_id: request.effect_id,
+        Ok(harness_runtime_contract::EffectReceipt::for_control(
+            request.effect_id,
             certainty,
             postcondition,
-            admission: admission.admission,
+            admission.admission,
             native_evidence,
-        })
+        ))
     }
 
     fn observe(

@@ -78,7 +78,7 @@ impl Default for CycleTimeouts {
 
 /// Who caused an interrupt (invariant I3: a Host control action and an
 /// adapter's own policy must be distinguishable in the durable record).
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum InterruptCause {
     /// The Harness/Host issued Interrupt through `CycleControl`. This is the
     /// only cause adapters produce on the ordinary path.
@@ -248,6 +248,31 @@ impl CycleSettlement {
 
     pub fn interrupt(&self) -> &CycleInterruptSettlement {
         &self.interrupt
+    }
+
+    /// Project the settlement facts out of one finished
+    /// [`ExecutionCycleOutcome`]. This is the single projection every
+    /// adapter's `execute_control(StartCycle)` arm uses, so all five derive
+    /// the receipt from the outcome identically (S3). `Unsettled` is never
+    /// produced here: these arms run the cycle with `CycleControl::default`,
+    /// so an attributed interrupt (`Some`) has, by construction, already
+    /// settled inside `run_cycle`; `Unsettled` stays reserved for an adapter
+    /// reporting an unacknowledged control (decision D3), which this path
+    /// cannot express.
+    pub fn from_cycle_outcome(outcome: &ExecutionCycleOutcome) -> Self {
+        Self::new(
+            outcome.native_correlation.clone(),
+            if outcome.terminal_observation.terminal_cycle_observed() {
+                CycleTerminalStatus::Observed
+            } else {
+                CycleTerminalStatus::NotObserved
+            },
+            outcome.provider_terminal_failure.clone(),
+            match &outcome.interrupt {
+                None => CycleInterruptSettlement::None,
+                Some(cause) => CycleInterruptSettlement::Settled(cause.clone()),
+            },
+        )
     }
 }
 

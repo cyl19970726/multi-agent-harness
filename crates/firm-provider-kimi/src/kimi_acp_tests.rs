@@ -1307,3 +1307,48 @@ fn kimi_b4_silence_after_acceptance_never_cancels() {
     .expect("a silent accepted cycle completes");
     assert_eq!(outcome.interrupt, None);
 }
+
+/// C1 (kimi): the kimi adapter never sets `provider_terminal_failure` from
+/// its own frame loop (its terminal is a clean prompt response), so the
+/// assertion is pinned against a synthetically failed outcome — it proves
+/// the shared settlement projection kimi's StartCycle arm uses can never
+/// yield Satisfied with a failure present (#709).
+#[test]
+fn kimi_c1_terminal_failure_settles_unsatisfied() {
+    let outcome = harness_runtime_contract::ExecutionCycleOutcome {
+        final_text: String::new(),
+        provider_terminal_failure: Some(harness_runtime_contract::ProviderTerminalFailure {
+            reason: "api_overloaded".into(),
+            http_status: Some(529),
+        }),
+        interrupt: None,
+        close_requested_by_harness: false,
+        tool_call_count: 0,
+        native_correlation: harness_runtime_contract::NativeCycleCorrelation {
+            provider_input_id: "kimi-cycle-1".into(),
+            input_acceptance_receipt: harness_runtime_contract::ControlTransportReceipt {
+                command: "deliver".into(),
+                response_id: Some("kimi-receipt-1".into()),
+                success: true,
+            },
+            terminal_provider_input_id: Some("kimi-cycle-1".into()),
+            exact_terminal_ref: Some("kimi.session_prompt.terminal:kimi-cycle-1".into()),
+        },
+        control_receipts: vec![],
+        terminal_observation: harness_runtime_contract::CycleRuntimeObservation {
+            transport_alive: true,
+            process_alive: true,
+            is_streaming: Some(false),
+            pending_message_count: Some(0),
+            steering_mode: None,
+            follow_up_mode: None,
+            settled_boundary_observed: true,
+        },
+    };
+    let receipt = harness_runtime_contract::EffectReceipt::for_cycle(
+        "conformance-c1",
+        harness_core::ProviderBindingAdmission::Active,
+        harness_runtime_contract::CycleSettlement::from_cycle_outcome(&outcome),
+    );
+    harness_runtime_contract::assert_c1_terminal_failure_unsatisfied(&receipt).expect("C1");
+}

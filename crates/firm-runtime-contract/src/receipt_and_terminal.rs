@@ -32,13 +32,60 @@ impl ProviderTerminalFailure {
     }
 }
 
+/// One settled provider effect. Scope (decision D6): this records
+/// control/effect settlement only — it does not claim semantic success, a
+/// Work result, or Host acceptance, and it carries no semantic field
+/// (invariant I6).
+///
+/// Construction is sealed (S1 amendment iii, enabled in S3): reads stay
+/// `pub`, but `#[non_exhaustive]` makes struct-literal construction
+/// impossible outside this crate, so assertion C4 holds for `EffectReceipt`
+/// itself. The StartCycle shape has exactly one constructor,
+/// [`EffectReceipt::for_cycle`] (decision D5); every other control receipt
+/// is built through [`EffectReceipt::for_control`]:
+///
+/// ```compile_fail
+/// use firm_runtime_contract::EffectReceipt;
+/// let receipt = EffectReceipt {
+///     effect_id: "effect-1".to_string(),
+///     certainty: todo!(),
+///     postcondition: todo!(),
+///     admission: todo!(),
+///     native_evidence: vec![],
+/// };
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct EffectReceipt {
     pub effect_id: String,
     pub certainty: RuntimeEffectCertainty,
     pub postcondition: RuntimePostconditionStatus,
     pub admission: ProviderBindingAdmission,
     pub native_evidence: Vec<String>,
+}
+
+impl EffectReceipt {
+    /// Constructor for every NON-StartCycle control receipt (interrupt
+    /// acknowledgements, continuation operations, steer/queue transport
+    /// receipts). The caller states the observed certainty and postcondition
+    /// explicitly; the StartCycle shape never goes through here — it is
+    /// derived from typed cycle settlement facts by
+    /// [`EffectReceipt::for_cycle`] only (decision D5).
+    pub fn for_control(
+        effect_id: impl Into<String>,
+        certainty: RuntimeEffectCertainty,
+        postcondition: RuntimePostconditionStatus,
+        admission: ProviderBindingAdmission,
+        native_evidence: Vec<String>,
+    ) -> Self {
+        Self {
+            effect_id: effect_id.into(),
+            certainty,
+            postcondition,
+            admission,
+            native_evidence,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]

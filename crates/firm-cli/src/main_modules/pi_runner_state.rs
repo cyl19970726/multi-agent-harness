@@ -211,7 +211,7 @@ pub(super) fn run_pi_team_member(
             settle_provider_effect(
                 ledger,
                 &process_effect,
-                false,
+                ProviderEffectSettlement::UNPROVEN,
                 None,
                 Some(error.to_string()),
             )?;
@@ -223,7 +223,7 @@ pub(super) fn run_pi_team_member(
     settle_provider_effect(
         ledger,
         &process_effect,
-        true,
+        ProviderEffectSettlement::APPLIED_SATISFIED,
         Some(serde_json::json!({
             "provider": "pi",
             "phase": "runtime_attached",

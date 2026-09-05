@@ -18,7 +18,7 @@
 use std::time::Duration;
 
 use harness_core::agentfirm_api::{
-    AgentSession, NativeContinuationActivation, RuntimeEffectCertainty, RuntimePostconditionStatus,
+    AgentSession, NativeContinuationActivation, RuntimePostconditionStatus,
 };
 use serde_json::Value;
 
@@ -597,22 +597,14 @@ impl harness_runtime_contract::RuntimeAdapter for KimiTeamRuntime<'_> {
                         &mut harness_runtime_contract::CycleControl::default,
                     )
                     .map_err(kimi_contract_bridge_error)?;
-                let receipt = accepted.ok_or_else(|| {
+                accepted.ok_or_else(|| {
                     kimi_contract_bridge_error("prompt completed without acceptance receipt")
                 })?;
-                Ok(harness_runtime_contract::EffectReceipt {
-                    effect_id: request.effect_id,
-                    certainty: RuntimeEffectCertainty::Applied,
-                    postcondition: RuntimePostconditionStatus::Satisfied,
-                    admission: admission.admission,
-                    native_evidence: vec![
-                        format!("kimi.session_prompt.accepted:{receipt}"),
-                        format!(
-                            "kimi.session_prompt.terminal:settled={}",
-                            outcome.terminal_observation.settled_boundary_observed
-                        ),
-                    ],
-                })
+                Ok(harness_runtime_contract::EffectReceipt::for_cycle(
+                    request.effect_id,
+                    admission.admission,
+                    harness_runtime_contract::CycleSettlement::from_cycle_outcome(&outcome),
+                ))
             }
             ControlIntent::Interrupt => {
                 // The live Team loop compiles Interrupt inside `run_cycle`,
