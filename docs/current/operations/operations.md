@@ -384,7 +384,12 @@ proven absent, `firm daemon recover-predecessor --confirm
 daemon-recover-predecessor [--evidence-ref <text>]` releases the exact
 unreleased predecessor `NodeDaemonLease` in every Execution Space belonging to
 this Node and prints the recovery projection (`daemon_id`, `instance_id`,
-`generation`, `recovered_spaces`, `status=released`). It refuses when there is
+`generation`, `recovered_spaces`, `space_settlements`, `status=released`).
+`space_settlements` names, per Execution Space, the AgentSessions this recovery
+detached, the ones it skipped because the dying generation's own incomplete
+drain had already settled them, and the Supervisor leases it released. Recovery
+writes are keyed to the exact predecessor generation and instance, so recovering
+one Node twice never collides with an earlier recovery's rows. It refuses when there is
 no predecessor, when the confirmation literal is missing or wrong, or when the
 predecessor process still exists, and a second run reports the already
 released lease without changing anything. Recovery inside the lease TTL is

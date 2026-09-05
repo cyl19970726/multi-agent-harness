@@ -241,6 +241,7 @@ fn daemon_recover_predecessor(
             "generation": reference.generation,
             "status": "released",
             "recovered_spaces": [],
+            "space_settlements": [],
             "already_released": true,
             "evidence_ref": evidence_ref,
         }));

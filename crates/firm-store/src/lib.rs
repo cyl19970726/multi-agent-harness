@@ -377,6 +377,7 @@ mod store_host_runtime_binding;
 mod store_jsonl;
 mod store_node_runtime;
 mod store_node_runtime_predecessor;
+pub use store_node_runtime_predecessor::NodeDaemonPredecessorRecovery;
 mod store_node_runtime_shutdown;
 mod store_read_models;
 mod store_store_base;

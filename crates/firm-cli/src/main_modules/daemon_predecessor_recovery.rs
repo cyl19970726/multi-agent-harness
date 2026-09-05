@@ -134,6 +134,7 @@ pub(crate) fn recover_daemon_predecessor_spaces(
         execution_space_error_pair("NODE_DAEMON_PREDECESSOR_RECOVERY_INCOMPLETE", error)
     })?;
     let mut recovered_spaces = Vec::new();
+    let mut space_settlements = Vec::new();
     let mut failures = Vec::new();
     for space in spaces {
         let scoped = HarnessStore::new(space.store_root.clone());
@@ -169,7 +170,19 @@ pub(crate) fn recover_daemon_predecessor_spaces(
             current_unix_ms_u64(),
             &format!("unix-ms:{}", current_unix_ms_u64()),
         ) {
-            Ok(_) => recovered_spaces.push(space.id),
+            // The settlement summary is part of the receipt: an operator must
+            // be able to see which Sessions this recovery detached and which
+            // it skipped because the dying generation had already settled them
+            // (#837), not infer the difference from silence.
+            Ok(recovery) => {
+                space_settlements.push(serde_json::json!({
+                    "execution_space_id": space.id,
+                    "supervisors_released": recovery.supervisors_released,
+                    "sessions_detached": recovery.sessions_detached,
+                    "sessions_already_settled": recovery.sessions_already_settled,
+                }));
+                recovered_spaces.push(space.id);
+            }
             Err(error) => failures.push(format!("{}: {error}", space.id)),
         }
     }
@@ -186,6 +199,7 @@ pub(crate) fn recover_daemon_predecessor_spaces(
         "generation": intent.generation,
         "status": "released",
         "recovered_spaces": recovered_spaces,
+        "space_settlements": space_settlements,
         "evidence_ref": evidence_ref,
     }))
 }

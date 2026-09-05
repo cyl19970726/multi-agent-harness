@@ -113,6 +113,17 @@ fn recover_predecessor_releases_dead_instance_and_is_idempotent() {
         projection["recovered_spaces"],
         serde_json::json!(["space-recover"])
     );
+    // The receipt names what each Space settled, including the Sessions
+    // recovery skipped because they were already settled (#837).
+    assert_eq!(
+        projection["space_settlements"],
+        serde_json::json!([{
+            "execution_space_id": "space-recover",
+            "supervisors_released": [],
+            "sessions_detached": [],
+            "sessions_already_settled": [],
+        }])
+    );
     assert_eq!(
         store
             .latest_node_daemon_lease(RECOVER_TEST_NODE_ID)

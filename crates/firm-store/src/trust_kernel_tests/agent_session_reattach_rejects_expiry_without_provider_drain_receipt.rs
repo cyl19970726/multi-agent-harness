@@ -203,7 +203,12 @@ fn hard_crash_recovery_requires_exact_operator_evidence_and_detaches_the_predece
             "t2",
         )
         .expect("exact Operator evidence settles the hard-crash predecessor");
-    assert_eq!(released.status, firm_core::NodeDaemonLeaseStatus::Released);
+    assert_eq!(
+        released.lease.status,
+        firm_core::NodeDaemonLeaseStatus::Released
+    );
+    assert_eq!(released.sessions_detached, vec!["session-crash-recovery"]);
+    assert!(released.sessions_already_settled.is_empty());
     let recovered = store
         .fabric_agent_sessions("space-test")
         .unwrap()
@@ -217,7 +222,7 @@ fn hard_crash_recovery_requires_exact_operator_evidence_and_detaches_the_predece
     assert!(recovered.current_turn_id.is_none());
     store
         .acquire_node_daemon_lease(
-            &released.node_id,
+            &released.lease.node_id,
             "daemon-2",
             "instance-2",
             recovery_time + 1,
