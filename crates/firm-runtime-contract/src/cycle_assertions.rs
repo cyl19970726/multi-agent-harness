@@ -325,10 +325,12 @@ pub fn assert_c3_unobserved_terminal_unknown(
     Ok(())
 }
 
-/// C4 — the receipt's D5 honesty derives only from the settlement: two
-/// settlements that differ only in facts the D5 table ignores must derive
-/// the same postcondition, proving no settlement field can smuggle a
-/// postcondition past the constructor.
+/// C4 companion: the D5 derivation reads only the D5 axes. Two settlements
+/// that differ only in facts the D5 table ignores must derive the same
+/// postcondition. The non-bypassability half of C4 — that `CycleSettlement`
+/// cannot be struct-literal-constructed outside this crate — is pinned by
+/// the `compile_fail` doc-test on `CycleSettlement`; this assertion proves
+/// the derivation itself cannot be steered through non-D5 fields.
 pub fn assert_c4_postcondition_derives_only_from_settlement(
     first: &CycleSettlement,
     second: &CycleSettlement,

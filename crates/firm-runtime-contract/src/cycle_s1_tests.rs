@@ -88,6 +88,31 @@ fn c3_unobserved_terminal_settles_unknown_without_semantics() {
 }
 
 #[test]
+fn settled_interrupt_on_clean_terminal_settles_satisfied() {
+    // D5's fourth cell (Brain errata): a settled interrupt — Host or
+    // AdapterPolicy — with the terminal observed and no failure derives
+    // Satisfied; the cause travels on the receipt's evidence.
+    for cause in [
+        InterruptCause::HostControl,
+        InterruptCause::AdapterPolicy {
+            reason: "reviewed policy".to_string(),
+        },
+    ] {
+        let receipt = cycle_receipt(settlement(
+            CycleTerminalStatus::Observed,
+            None,
+            CycleInterruptSettlement::Settled(cause.clone()),
+        ));
+        assert_eq!(
+            receipt.postcondition,
+            RuntimePostconditionStatus::Satisfied,
+            "settled {cause:?} on a clean terminal must derive Satisfied"
+        );
+        assert_eq!(receipt.certainty, RuntimeEffectCertainty::Applied);
+    }
+}
+
+#[test]
 fn unsettled_interrupt_settles_unknown() {
     let receipt = cycle_receipt(settlement(
         CycleTerminalStatus::Observed,

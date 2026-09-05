@@ -145,6 +145,8 @@ pub struct NativeCycleCorrelation {
 
 /// Whether the provider's terminal cycle state was observed. Source: the
 /// existing `CycleRuntimeObservation::terminal_cycle_observed`, nothing new.
+/// Placed in cycle.rs per the package-boundary edge list; the Spec text
+/// names receipt_and_terminal.rs (Host amendment, recorded in DEV-156 S1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CycleTerminalStatus {
     Observed,
@@ -153,7 +155,9 @@ pub enum CycleTerminalStatus {
 
 /// The interrupt axis of one settled cycle. `Option<InterruptCause>` alone
 /// cannot express D5's "interrupt issued but never settled", so the
-/// settlement carries that third state explicitly.
+/// settlement carries that third state explicitly. Placed in cycle.rs per
+/// the package-boundary edge list; the Spec text names
+/// receipt_and_terminal.rs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CycleInterruptSettlement {
     /// No interrupt was issued during the cycle.
@@ -170,9 +174,25 @@ pub enum CycleInterruptSettlement {
 /// Scope (decision D6): this is control/effect settlement evidence only. It
 /// does not claim semantic success, a Work result, or Host acceptance — the
 /// strongest value the runtime layer can express is "the postcondition held",
-/// and semantics stay in the Harness (invariant I6). Fields are private so
-/// the ONLY public way to obtain a StartCycle-shaped [`EffectReceipt`] is
-/// [`EffectReceipt::for_cycle`] (assertion C4).
+/// and semantics stay in the Harness (invariant I6). Placed in cycle.rs per
+/// the package-boundary edge list; the Spec text names
+/// receipt_and_terminal.rs.
+///
+/// Fields are private so the ONLY public way to obtain a StartCycle-shaped
+/// [`EffectReceipt`] is [`EffectReceipt::for_cycle`]. Assertion C4 is the
+/// negative proof that no struct-literal path exists outside this crate:
+///
+/// ```compile_fail
+/// use firm_runtime_contract::{
+///     CycleInterruptSettlement, CycleSettlement, CycleTerminalStatus,
+/// };
+/// let settlement = CycleSettlement {
+///     correlation: todo!(),
+///     terminal: CycleTerminalStatus::Observed,
+///     provider_terminal_failure: None,
+///     interrupt: CycleInterruptSettlement::None,
+/// };
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CycleSettlement {
     correlation: crate::NativeCycleCorrelation,
@@ -215,30 +235,50 @@ impl CycleSettlement {
 
 impl EffectReceipt {
     /// The SOLE constructor for a StartCycle-shaped receipt (#709, frozen
-    /// decision 3). The postcondition is derived from the settlement exactly
-    /// per decision D5 — it can never be asserted independently:
+    /// decision 3). The postcondition is derived from the settlement
+    /// exhaustively over the three D5 axes — it can never be asserted
+    /// independently:
     ///
     /// - `provider_terminal_failure = Some(_)` → `Unsatisfied` (I5);
     /// - terminal not observed, or interrupt unsettled → `Unknown`;
-    /// - terminal observed, no failure, no interrupt → `Satisfied`.
+    /// - terminal observed, no failure, no interrupt → `Satisfied`;
+    /// - terminal observed, no failure, interrupt SETTLED (Host or
+    ///   AdapterPolicy) → `Satisfied` — D5's fourth cell, decided by the
+    ///   Brain as a Spec errata: a settled interrupt IS an observed terminal
+    ///   boundary, the cause travels on the receipt (I3 is attribution, not
+    ///   postcondition), and `Unsatisfied` is reserved for provider terminal
+    ///   failure.
     ///
     /// Scope (decision D6): the receipt records control/effect settlement
     /// only. It does not claim semantic success, a Work result, or Host
     /// acceptance, and it carries no semantic field (invariant I6).
+    /// Placed in cycle.rs per the package-boundary edge list; the Spec text
+    /// names receipt_and_terminal.rs.
     pub fn for_cycle(
         effect_id: impl Into<String>,
         admission: ProviderBindingAdmission,
         settlement: CycleSettlement,
     ) -> EffectReceipt {
         let effect_id = effect_id.into();
-        let postcondition = if settlement.provider_terminal_failure.is_some() {
-            RuntimePostconditionStatus::Unsatisfied
-        } else if settlement.terminal == CycleTerminalStatus::NotObserved
-            || settlement.interrupt == CycleInterruptSettlement::Unsettled
-        {
-            RuntimePostconditionStatus::Unknown
-        } else {
-            RuntimePostconditionStatus::Satisfied
+        let postcondition = match (
+            settlement.provider_terminal_failure.is_some(),
+            settlement.terminal,
+            &settlement.interrupt,
+        ) {
+            // D5 row 1 (invariant I5): never Satisfied with a failure.
+            (true, _, _) => RuntimePostconditionStatus::Unsatisfied,
+            // D5 row 2: terminal not observed, or interrupt never settled.
+            (false, CycleTerminalStatus::NotObserved, _) => RuntimePostconditionStatus::Unknown,
+            (false, _, CycleInterruptSettlement::Unsettled) => RuntimePostconditionStatus::Unknown,
+            // D5 row 3: terminal observed, no failure, no interrupt.
+            (false, CycleTerminalStatus::Observed, CycleInterruptSettlement::None) => {
+                RuntimePostconditionStatus::Satisfied
+            }
+            // D5 fourth cell (Brain errata): a settled interrupt on a clean
+            // observed terminal is itself the terminal boundary.
+            (false, CycleTerminalStatus::Observed, CycleInterruptSettlement::Settled(_)) => {
+                RuntimePostconditionStatus::Satisfied
+            }
         };
         let certainty = match settlement.terminal {
             CycleTerminalStatus::Observed => RuntimeEffectCertainty::Applied,
