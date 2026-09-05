@@ -302,6 +302,10 @@ pub(super) fn daemon_command(args: &[String]) -> CliResult<()> {
                 })
                 .transpose()?
                 .unwrap_or(4);
+            // The provider input-acceptance boundary in seconds (delivery
+            // boundary: input written -> the provider's exact acceptance
+            // receipt) — never a silence or wall-clock limit on a running
+            // cycle. One source of truth: the contract default.
             let idle_timeout_secs = value(args, "--idle-timeout-secs")
                 .map(|raw| {
                     raw.parse::<u64>().map_err(|_| {
@@ -309,7 +313,9 @@ pub(super) fn daemon_command(args: &[String]) -> CliResult<()> {
                     })
                 })
                 .transpose()?
-                .unwrap_or(300);
+                .unwrap_or_else(|| {
+                    harness_runtime_contract::CycleTimeouts::DEFAULT_INPUT_ACCEPTANCE.as_secs()
+                });
             let scan_interval_secs = value(args, "--scan-interval-secs")
                 .map(|raw| {
                     raw.parse::<u64>().map_err(|_| {
@@ -354,7 +360,11 @@ pub(super) fn daemon_command(args: &[String]) -> CliResult<()> {
                 .arg("--max-concurrency")
                 .arg(value(args, "--max-concurrency").unwrap_or_else(|| "4".to_string()))
                 .arg("--idle-timeout-secs")
-                .arg(value(args, "--idle-timeout-secs").unwrap_or_else(|| "300".to_string()))
+                .arg(value(args, "--idle-timeout-secs").unwrap_or_else(|| {
+                    harness_runtime_contract::CycleTimeouts::DEFAULT_INPUT_ACCEPTANCE
+                        .as_secs()
+                        .to_string()
+                }))
                 .arg("--scan-interval-secs")
                 .arg(value(args, "--scan-interval-secs").unwrap_or_else(|| "5".to_string()))
                 .stdin(Stdio::null())

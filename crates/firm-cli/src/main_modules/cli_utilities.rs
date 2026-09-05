@@ -213,7 +213,7 @@ pub(super) fn cheatsheet_command(args: &[String]) -> CliResult<()> {
 
 pub(super) const CHEATSHEET_TEAM: &str = r#"team-run create     --objective <text> --agent-team-id <id> [--budget-usd <n>] [--no-initial-work]
                     --member name:role:provider[/mode][:model][@paths]
-team-run start      --id <id> [--max-concurrency <n>] [--idle-timeout-s <n>]
+team-run start      --id <id> [--max-concurrency <n>]
 team-run status     --id <id> [--dashboard-base <url>] [--json]
 team-run wait       --id <id> [--after-seq <n>] [--timeout-secs <n>] [--json]
 team-run host-inbox --surface <s> --thread-id <id> [--all] [--json]  (both required)
@@ -384,7 +384,8 @@ pub(super) fn print_help() {
   dashboard doctor --team-run-id <id> --api <base-url> [--expected-git-rev <rev>]
   hook record --agent <agent> [--runtime <runtime>]
   serve [--addr 127.0.0.1:8787] [--once]
-  daemon start|status|stop|serve
+  daemon start|status|stop|serve [--idle-timeout-secs <n>]
+      (provider input-acceptance boundary, not a cycle silence/wall-clock limit)
   cheatsheet [team|work|mission|all]
 
 Retired coordination commands fail explicitly. Historical rows are available only
