@@ -29,7 +29,8 @@ What the code does at master `875adb05` (the merge base of this ADR):
   `EscalationRequired`), with exact claim fences (external Host thread or
   managed session plus daemon generation) and a provider receipt (ADR 0060).
 - Exactly two Work-plane decisions read it. `retarget_work_execution`
-  refuses with `HOST_ATTENTION_PENDING` until the Host acknowledges every
+  refuses with `HOST_ATTENTION_PENDING` until the Host acknowledges (or an
+  escalation clears) every
   attention that still needs Host action (`store_work_mutations.rs`); and the
   terminal-Work provenance fold uses a well-formed `WorkReviewRequested` row as
   evidence of the submitting MemberRun (`store_work_graph.rs`). Every other

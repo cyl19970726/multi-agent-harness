@@ -3,7 +3,7 @@
 ```text
 status: accepted; Owner decision 2026-09-05 (SPEC-ADAPTATION-REFACTOR-01 D-B, Review 04 Pass)
 date: 2026-09-05
-amends: ADR 0049 (clarifies runtime_generation); docs/current/architecture/agent-runtime.md "Team Host runtime" and "Work delivery" wording
+amends: ADR 0049 (clarifies runtime_generation); docs/current/architecture/agent-runtime.md "Team Host runtime" and "Work delivery" wording; docs/current/architecture/data-model.md MemberRun wording
 canonical_for: the meaning of MemberRun.runtime_generation and AgentSession.runtime_generation and the scope of their relation
 ```
 
@@ -33,7 +33,10 @@ established the facts, verified at master `875adb05`:
   (`member_orchestration.rs`) copies the current MemberRun generation into
   `AgentSession.runtime_generation` and embeds it in the session id. The
   standalone session-start route (`http_trust_routes.rs`) mints
-  `runtime_generation: 1` with no MemberRun and no NodeDaemon.
+  `runtime_generation: 1` with no MemberRun; its literal starts with an empty
+  NodeDaemon id and generation 0, but the route requires an active NodeDaemon
+  lease for the target Node and stamps that lease's id and generation into the
+  session before dispatch, so the persisted row is daemon-fenced.
 - Production code never advances the session field afterwards; a session row
   is reused across Reopens while it is not Closed. `AgentSession` carries no
   `member_run_id` and is `deny_unknown_fields`; lookup is keyed on

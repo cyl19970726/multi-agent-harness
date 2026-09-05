@@ -10,7 +10,7 @@ AgentTeam 1 ── * Work / Evidence                # durable responsibility nod
                    └── depends_on ──> Work      # hard, directed, acyclic
      ├── * TeamMembership ──> AgentMember       # participation, not identity
      ├── 1 ExecutionNode
-     └── * AgentTeamRun ── * MemberRun          # internal diagnostics/history
+     └── * AgentTeamRun ── * MemberRun          # run projection / coordination status + adapter-process epoch (ADR 0065)
                         └── WorkExecutionBinding
 
 AgentMember ── * AgentSession
@@ -32,9 +32,12 @@ or gates a Team. `AgentTeamRun` always names its Team, execution Node, and
 project binding.
 
 `Work` hangs off the durable `AgentTeam` through `accountable_team_id`.
-`AgentTeamRun` and `MemberRun` are internal diagnostics and history
-projections: `Work.team_run_id` only correlates the run that surfaced a Work,
-and ending or discarding a run never moves or re-scopes responsibility.
+`AgentTeamRun` is an internal coordination and history projection.
+`MemberRun` carries the member's coordination status and its adapter-process
+epoch (`runtime_generation`), which `RuntimeBindingFence` requires before any
+provider effect (ADR 0065); it still scopes neither identity nor Work
+responsibility. `Work.team_run_id` only correlates the run that surfaced a
+Work, and ending or discarding a run never moves or re-scopes responsibility.
 
 Work topology is flat. A versioned dependency edge points from a successor to
 one prerequisite; a Work may have many prerequisites and many derived

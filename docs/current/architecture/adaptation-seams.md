@@ -70,7 +70,7 @@ adapter to prove, and what the provider-native side supplies.
 | S6 Interaction and permission callbacks | provider questions become correlated Messages (`ProviderInteractionRequest` / `Response`); no second permission object | `interaction_mode`, `ordinary_message_boundary`, `ProviderInteractionType`, `control_topology`; in-ceiling tool approvals auto-acknowledged idempotently, out-of-ceiling fails closed | `requestUserInput`, `request_permission`, SDK permission callbacks |
 | S7 Member collaboration capability | members act on Harness only through authenticated `firm` Role Actions submitted to the current Supervisor | `CollaborationCapabilityEnvelope` bound to exact TeamRun/MemberRun/Session/Daemon/Supervisor generations; a reviewed delivery mechanism per provider proving the capability reaches the agent tool boundary | direct tool environment, SDK tool environment, ACP, RPC, DSH Cordis shell environment |
 | S8 Observation projection | the runtime plane (`AgentSession.control_state`, receipts) is canonical; the session-history plane is provider-native truth read through the NodeDaemon's official readers | `ProviderNativeEventRecord` v3 with source generation, ordering key, and content availability; live callbacks are payload-less wake hints | rollout / session / wire / pi_sessions / DSH JSONL |
-| S9 Conformance | one shared assertion set every adapter must pass | `conformance.rs`: receipt before terminal, no stale-idle terminal, transport loss after receipt → Unknown, empty output is not success, Close only on exact owned evidence | each provider's scripted fixtures |
+| S9 Conformance | one shared admission and lifecycle discipline every adapter must pass | `conformance.rs`: the fenced `RuntimeAdapter` trait, `preflight_effect` (fence plus capability-closure admission), `CompositionLifecycle` (quiesce verified before a composition swap), `OneShotDisposer`. The cycle-level rules — receipt before terminal, no stale-idle terminal, transport loss after receipt → Unknown, empty output is not success, Close only on exact owned evidence — are stated in [agent-runtime.md](agent-runtime.md) and exercised by the four-provider native-control seam test harness in `firm-cli`; their shared provider-parameterised assertions are planned under SPEC-TYPED-CYCLE-OUTCOME-01 (DEV-156) | each provider's scripted fixtures |
 
 ## 4. How the five providers fill the seams
 
@@ -85,13 +85,16 @@ Capability statuses as each package declares them in `capability_bindings()`
 | inspect_effect | Unsupported | Unsupported | Unsupported | Degraded | Unsupported |
 | reconcile_effect | Unsupported | Unsupported | Unsupported | Unsupported | Unsupported |
 | inspect / inhibit / resume_continuation | Experimental (thread/goal) | Unsupported | Unsupported | Unsupported | Unsupported |
-| quiesce · release | Degraded | Degraded | Degraded | Supported (read-only provable; full access Unknown) | Degraded |
+| quiesce | Degraded | Degraded | Degraded | Supported (read-only provable; full access returns Unknown) | Degraded |
+| release | Degraded | Degraded | Degraded | Supported (owned process-group disposer) | Degraded |
 | permission_enforcement | Supported (provider-native policy) | Degraded (bypass is not a sandbox) | Degraded (adapter auto-approval) | Degraded (full access unverified) | Degraded (DSH sandbox policy) |
 
-Every current profile is `host_driven`; no provider has passed the
-`provider_driven` admission gate, so the continuation controls remain
+Every managed provider profile is `host_driven`; the `external_interactive`
+Host profile is `user_driven`; no profile is `provider_driven` and no provider
+has passed that admission gate, so the continuation controls remain
 experimental at best (S1) and the one-driver invariant is enforced by the
-outer layer, not by a provider.
+outer layer, not by a provider. Pi additionally declares one binding outside
+the shared fourteen (`observe_native_queue`, Supported).
 
 Native session locators (S5): Codex `codex_rollout` (thread id; rollout
 JSONL; `thread/resume`), Claude `claude_project_session` (session id from the

@@ -31,10 +31,12 @@ Review depth follows the change and is decided at assignment (ADR 0065 batch;
 SPEC-ADAPTATION-REFACTOR-01 D-D). A submission is **K (kernel)** when any
 changed hunk (1) changes an admission, fence, settlement, or permission
 decision; (2) changes a `deny_unknown_fields` struct or any durable schema
-field; (3) changes a lease, machine-authority, Supervisor, or NodeDaemon
-generation rule; or (4) changes the statement of an invariant — including an
+field; (3) changes any lease, machine-authority, or generation rule (NodeDaemon,
+Supervisor, driver, MemberRun adapter-process epoch, AgentSession
+provider-session epoch); or (4) changes the statement of an invariant — including an
 ADR that authorizes a kernel change, the authority sections of
-`docs/current/architecture/agent-runtime.md`, and in-code model comments such
+`docs/current/architecture/agent-runtime.md` (`Canonical separation`,
+`Team Host runtime`, `Authority flow` and its subsections), and in-code model comments such
 as the "deliberately independent" epoch comment in `runtime_effects.rs`.
 Everything else is **P (projection)**: dashboard, docs, skills, prompt
 vocabulary, observation projection, non-kernel tests. A mixed submission takes

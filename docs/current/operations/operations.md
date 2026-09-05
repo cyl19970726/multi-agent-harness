@@ -19,7 +19,8 @@ tiered by predicate: a change that alters an admission, fence, settlement, or
 permission decision, a durable schema, a lease or generation rule, or an
 invariant statement is kernel-tier and gets an independent Opus review bound
 to the exact SHA plus the full gate; everything else is projection-tier and
-needs CI plus one first-pass review (ADR 0065;
+needs CI plus one first-pass review (SPEC-ADAPTATION-REFACTOR-01 D-D, Owner
+decision 2026-09-05; the reviewer contract of the development Skill;
 [agent-operating-rules.md](../product/agent-operating-rules.md)). A native Agent Team
 run is required only when the runtime itself is the claim under test or an
 accepted Spec selects that scenario. Spec-level integrated dogfood runs after
