@@ -1,6 +1,5 @@
 //! Application adapter for the DeepSeek provider package.
 
-
 use harness_runtime_contract as rt;
 
 pub(crate) use harness_provider_deepseek::DeepSeekTeamRuntimeConfig;

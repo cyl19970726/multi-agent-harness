@@ -15,7 +15,6 @@
 //! - strict Quiesce/Release remain fail-closed because ACP exposes no complete
 //!   native queue, writable-child, or durable-flush proof.
 
-
 use harness_core::agentfirm_api::{
     AgentSession, NativeContinuationActivation, RuntimeEffectCertainty, RuntimePostconditionStatus,
 };

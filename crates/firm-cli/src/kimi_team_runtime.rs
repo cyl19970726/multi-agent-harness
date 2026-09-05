@@ -1,6 +1,5 @@
 //! Application adapter for the Kimi provider package.
 
-
 use harness_runtime_contract as rt;
 
 fn callback_error(error: crate::CliError) -> harness_provider_kimi::KimiError {
