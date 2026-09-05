@@ -309,6 +309,13 @@ pub(super) fn transition_provider_session_for_member_as(
         // lane to the ordinary lane; the Store admits the hop only under the
         // terminated-lane proof, so this never resumes a live cycle.
         (AgentSessionStatus::RecoveryRequired, AgentSessionStatus::Idle) => vec![desired],
+        // A reopened member whose lane is still `RecoveryRequired` re-enters
+        // through the same proved hop before its first cycle, exactly as an
+        // `Interrupted` lane does; the Store refuses the hop while the old
+        // runtime is not provably gone, so this never resumes a live cycle.
+        (AgentSessionStatus::RecoveryRequired, AgentSessionStatus::Active) => {
+            vec![AgentSessionStatus::Idle, AgentSessionStatus::Active]
+        }
         _ => {
             return Err(CliError::Usage(format!(
                 "AGENT_SESSION_RECOVERY_REQUIRED: cannot project {:?}->{desired:?}",

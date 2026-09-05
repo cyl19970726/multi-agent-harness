@@ -85,10 +85,11 @@ pub(super) struct LaneTerminationProof {
 /// taken cannot drift apart (GitHub #841).
 ///
 /// `tolerate_dormant_input` is for the coordination Close of a Completed
-/// TeamRun's member (#812): an armed continuation or queued native input on
-/// that lane will never be consumed, so refusing the Close on it would strand
-/// the member forever; the residue is recorded on the Close receipt instead.
-/// A driver handoff or an ambiguous command is never tolerated.
+/// TeamRun's member (#812): an armed native continuation on that lane will
+/// never be driven, so refusing the Close on it would strand the member
+/// forever; the residue is recorded on the Close receipt instead. A driver
+/// handoff, an open turn, queued input, or an ambiguous command is never
+/// tolerated.
 pub(super) fn lane_termination_proof(
     store: &HarnessStore,
     execution_space_id: &str,
@@ -126,6 +127,10 @@ pub(super) fn lane_termination_proof(
             session.id
         );
         if tolerate_dormant_input {
+            // A record, not a latch: the next Supervisor bind at adoption sets
+            // the activation back to Disarmed before any reopened cycle
+            // (`member_orchestration.rs`, the driver bind), and a detached
+            // lane has no process that could drive the continuation meanwhile.
             dormant_residue.push(residue);
         } else {
             return blocked(residue);
@@ -137,16 +142,14 @@ pub(super) fn lane_termination_proof(
             session.id
         ));
     }
+    // Nothing in the tree increments `queued_input_count` today (it is only
+    // reset and decremented), so this clause is a fail-closed guard for a
+    // future writer, never a tolerated residue.
     if session.queued_input_count != 0 {
-        let residue = format!(
+        return blocked(format!(
             "AgentSession {} still has {} queued native input(s)",
             session.id, session.queued_input_count
-        );
-        if tolerate_dormant_input {
-            dormant_residue.push(residue);
-        } else {
-            return blocked(residue);
-        }
+        ));
     }
     let ambiguous = store
         .runtime_commands(execution_space_id)?
@@ -555,18 +558,25 @@ pub(crate) fn zero_output_degradation_threshold() -> u32 {
 /// recovery command: the authority is the drain-lane reasoning, not the shape
 /// of the CLI verb that happens to expose it.
 /// The exact Host of this TeamRun as a trust actor, for a Host verb's own
-/// canonical writes; `None` when the run has no verifiable Host (legacy rows).
+/// canonical writes. `None` only when the run records no Host actor at all
+/// (legacy rows); a Host-authority mismatch or an unreadable store is an
+/// error, never a silent fall-back to daemon-attributed writes.
 pub(super) fn team_run_host_authority(
     store: &HarnessStore,
     team_run_id: &str,
-) -> Option<harness_core::agentfirm_api::ActorRef> {
-    store
-        .exact_team_run_host_actor(team_run_id)
-        .ok()
-        .map(|actor| harness_core::agentfirm_api::ActorRef {
+) -> CliResult<Option<harness_core::agentfirm_api::ActorRef>> {
+    match store.exact_team_run_host_actor(team_run_id) {
+        Ok(actor) => Ok(Some(harness_core::agentfirm_api::ActorRef {
             kind: harness_core::agentfirm_api::ActorKind::AgentMember,
             id: actor.id,
-        })
+        })),
+        Err(harness_store::StoreError::Conflict(message))
+            if message.starts_with("TEAM_RUN_HOST_AUTHORITY_REQUIRED:") =>
+        {
+            Ok(None)
+        }
+        Err(error) => Err(error.into()),
+    }
 }
 
 /// Return one Blocked member on a dead lane to a startable status, or say
@@ -588,7 +598,7 @@ pub(super) fn restart_or_explain_blocked_member(
             ledger,
             member,
             AgentSessionStatus::Idle,
-            team_run_host_authority(store, &ledger.run_id),
+            team_run_host_authority(store, &ledger.run_id)?,
             "host.team_run_recover.agent_session.resume",
         ) {
             Ok(()) => {}

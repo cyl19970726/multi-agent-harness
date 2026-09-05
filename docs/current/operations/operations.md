@@ -585,9 +585,11 @@ accepts. `close-member` first performs the same `Idle` hop on a reconciled
 `RecoveryRequired` lane and only then closes the MemberRun coordination, so a
 later `reopen-member` finds an ordinary `Idle` lane rather than a lifecycle
 with no writer left. For a member of a **Completed** TeamRun, an armed native
-continuation or queued native input that nothing will ever consume does not
-block the Close; it is recorded on the Close receipt as `dormant_residue`. A
-driver handoff in progress or an ambiguous RuntimeCommand always blocks it.
+continuation that nothing will ever drive does not block the Close; it is
+recorded on the Close receipt as `dormant_residue` (a record, not a hazard:
+the next Supervisor bind at adoption disarms it before any reopened cycle). A
+driver handoff in progress, queued native input, or an ambiguous
+RuntimeCommand always blocks it.
 
 ### Recovering a member left `blocked` over a dead lane
 

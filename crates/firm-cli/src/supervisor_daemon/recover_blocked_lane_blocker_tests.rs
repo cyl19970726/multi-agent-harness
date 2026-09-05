@@ -346,3 +346,112 @@ fn dormant_input_is_refused_unless_the_close_tolerates_it() {
         refused.blocker
     );
 }
+
+/// A reopened member whose lane is still `RecoveryRequired` (a completed run's
+/// coordination Close cannot hop a lane on a settled daemon generation)
+/// re-enters through the same Store-proved hop on its first cycle, exactly as
+/// an `Interrupted` lane does; while the lane is not proven gone the cycle is
+/// refused with the named constant and nothing is written.
+#[test]
+fn first_cycle_after_reopen_hops_a_reconciled_recovery_required_lane_through_idle() {
+    let fixture = drain_fixture("rr-first-cycle");
+    let ledger = fixture.supervise("supervisor-rr-first-cycle-1", fixture.daemon_generation);
+    fixture.start_cycle_for(&ledger, "work-delivery:rr-first-cycle:1");
+    let member = member_named(&fixture.store, &fixture.run_id, MID_TURN_MEMBER);
+    crate::transition_provider_session_for_member(
+        &ledger,
+        &member,
+        AgentSessionStatus::RecoveryRequired,
+    )
+    .expect("the runner's RecoveryRequired write lands");
+
+    // Still attached: the hop is refused, so the cycle never resumes on top of
+    // a runtime that is not provably gone.
+    let refused =
+        crate::transition_provider_session_for_member(&ledger, &member, AgentSessionStatus::Active)
+            .expect_err("an attached RecoveryRequired lane cannot start a cycle");
+    assert!(
+        refused.to_string().contains(
+            harness_core::agentfirm_api::AGENT_SESSION_RECOVERY_REQUIRED_NOT_YET_RESUMABLE
+        ),
+        "{refused}"
+    );
+    assert_eq!(
+        agent_session(&fixture.store, MID_TURN_MEMBER).lifecycle,
+        AgentSessionStatus::RecoveryRequired
+    );
+
+    crate::transition_provider_session_runtime_control(
+        &ledger,
+        &member,
+        harness_core::agentfirm_api::RuntimeResidency::Detached,
+        RuntimeActivity::Idle,
+    )
+    .expect("the reaped process detaches the lane");
+    crate::transition_provider_session_for_member(&ledger, &member, AgentSessionStatus::Active)
+        .expect("the first cycle re-enters through the proved Idle hop");
+    let lane = agent_session(&fixture.store, MID_TURN_MEMBER);
+    assert_eq!(lane.lifecycle, AgentSessionStatus::Active);
+    assert!(lane.current_turn_id.is_some());
+}
+
+/// The Close hop sits behind the authority and generation gates: a Close that
+/// this Supervisor generation may not perform is refused before the lane is
+/// touched, so it leaves no durable trace (round-3 review P2).
+#[test]
+fn close_member_for_recovery_leaves_the_lane_untouched_when_its_authority_is_fenced() {
+    let fixture = drain_fixture("rr-close-fenced");
+    let ledger = fixture.supervise("supervisor-rr-close-fenced-1", fixture.daemon_generation);
+    fixture.start_cycle_for(&ledger, "work-delivery:rr-close-fenced:1");
+    let member = member_named(&fixture.store, &fixture.run_id, MID_TURN_MEMBER);
+    crate::transition_provider_session_for_member(
+        &ledger,
+        &member,
+        AgentSessionStatus::RecoveryRequired,
+    )
+    .expect("the runner's RecoveryRequired write lands");
+    crate::transition_provider_session_runtime_control(
+        &ledger,
+        &member,
+        harness_core::agentfirm_api::RuntimeResidency::Detached,
+        RuntimeActivity::Idle,
+    )
+    .expect("the reaped process detaches the lane");
+    let expected = member_named(&fixture.store, &fixture.run_id, MID_TURN_MEMBER);
+    let mut blocked = expected.clone();
+    blocked.status = MemberRunStatus::Blocked;
+    fixture
+        .store
+        .compare_and_append_member_run(&expected, &blocked)
+        .expect("journal the blocked member");
+    let mut stale_lease = fixture
+        .store
+        .latest_team_supervisor_lease(&fixture.run_id)
+        .expect("lease read")
+        .expect("the fixture Supervisor holds the lease");
+    stale_lease.generation += 1;
+
+    let error = crate::close_detached_blocked_member_for_recovery(
+        &fixture.store,
+        &fixture.run_id,
+        &blocked,
+        &stale_lease,
+        "host",
+        "a Close from the wrong Supervisor generation",
+    )
+    .expect_err("a Close outside the exact Supervisor generation is refused");
+    assert!(
+        error
+            .to_string()
+            .contains("DETACHED_MEMBER_RECOVERY_FENCED"),
+        "{error}"
+    );
+    assert_eq!(
+        agent_session(&fixture.store, MID_TURN_MEMBER).lifecycle,
+        AgentSessionStatus::RecoveryRequired,
+        "the refused Close performed no hop"
+    );
+    let after = member_named(&fixture.store, &fixture.run_id, MID_TURN_MEMBER);
+    assert_eq!(after.status, MemberRunStatus::Blocked);
+    assert!(after.coordination_is_active());
+}

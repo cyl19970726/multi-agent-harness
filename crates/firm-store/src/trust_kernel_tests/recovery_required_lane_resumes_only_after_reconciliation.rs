@@ -286,3 +286,111 @@ fn recovery_required_lane_resumes_only_after_reconciliation() {
     assert_eq!(closed.lifecycle, AgentSessionStatus::Closed);
     fs::remove_dir_all(root).unwrap();
 }
+
+fn successor_context(daemon_id: &str, command: &str, key: &str, expected: u64) -> MutationContext {
+    MutationContext {
+        execution_space_id: "space-test".into(),
+        authenticated_actor: ActorRef {
+            kind: ActorKind::Service,
+            id: daemon_id.into(),
+        },
+        authority_actor: None,
+        command_name: command.into(),
+        idempotency_key: key.into(),
+        expected_version: expected,
+        request_fingerprint: None,
+    }
+}
+
+/// A reconciled `RecoveryRequired` lane (detached, turn-free) has nothing left
+/// for a drain to settle, so both drain settlements leave it as it stands and
+/// it outlives its NodeDaemon generation. The successor generation must
+/// reattach it — the same terminated-lane proof plus the released predecessor
+/// lease — and the one exit must then hold under the successor; otherwise the
+/// lane has no writer left in any generation (round-3 review P1).
+#[test]
+fn reconciled_recovery_required_lane_is_reattached_by_the_successor_daemon() {
+    let (store, root) = fabric_store();
+    let lane = mark_recovery_required(&store, &active_lane(&store, "successor"));
+    let lane = detach(&store, &lane, "rr-successor-detach");
+
+    // The exact daemon drains: the reconciled lane is skipped, not rewritten.
+    store
+        .settle_node_daemon_shutdown_sessions(
+            &service_context(
+                "node_daemon.shutdown.settle_sessions",
+                "rr-successor-drain-settle",
+                1,
+            ),
+            &lane.node_id,
+            "daemon-1",
+            1,
+            "instance-1",
+            true,
+            "t-drain",
+        )
+        .expect("the exact daemon settles its own sessions");
+    let survived = current(&store, &lane.id);
+    assert_eq!(survived.lifecycle, AgentSessionStatus::RecoveryRequired);
+    assert_eq!(
+        survived.version, lane.version,
+        "a reconciled lane has nothing left to settle, so the drain leaves it as it stands"
+    );
+
+    // Predecessor settlement, then the successor generation reattaches it.
+    let drain_time = current_unix_ms();
+    store
+        .release_node_daemon_lease(&lane.node_id, "daemon-1", 1, "instance-1", drain_time)
+        .expect("the drained daemon releases its own settled lease");
+    let successor = store
+        .acquire_node_daemon_lease(
+            &lane.node_id,
+            "daemon-2",
+            "instance-2",
+            drain_time + 1,
+            60_000,
+        )
+        .expect("successor NodeDaemon generation");
+    store
+        .reattach_agent_session_to_node_daemon(
+            &successor_context(
+                &successor.daemon_id,
+                "runtime_fabric.session.reattach_node_daemon",
+                "rr-successor-reattach",
+                survived.version,
+            ),
+            &lane.id,
+            survived.runtime_generation,
+            1,
+            &successor.daemon_id,
+            successor.generation,
+            "t-reattach",
+        )
+        .expect("the successor reattaches a reconciled RecoveryRequired lane");
+    let reattached = current(&store, &lane.id);
+    assert_eq!(reattached.lifecycle, AgentSessionStatus::RecoveryRequired);
+    assert_eq!(reattached.node_daemon_id, successor.daemon_id);
+    assert_eq!(reattached.node_daemon_generation, successor.generation);
+    assert_eq!(reattached.runtime_generation, lane.runtime_generation);
+
+    // The one exit holds under the successor, on the same runtime generation.
+    let resumed = store
+        .transition_agent_session(
+            &successor_context(
+                &successor.daemon_id,
+                "node_daemon.agent_session.provider_state",
+                "rr-successor-idle",
+                reattached.version,
+            ),
+            &lane.id,
+            AgentSessionStatus::Idle,
+            "t-resumed-under-successor",
+        )
+        .expect("the reconciled lane resumes under the successor generation")
+        .projection;
+    assert_eq!(resumed.lifecycle, AgentSessionStatus::Idle);
+    assert_eq!(resumed.node_daemon_generation, successor.generation);
+    assert_eq!(resumed.runtime_generation, lane.runtime_generation);
+    assert!(resumed.native_session_ref.is_some());
+    fs::remove_dir_all(root).unwrap();
+}

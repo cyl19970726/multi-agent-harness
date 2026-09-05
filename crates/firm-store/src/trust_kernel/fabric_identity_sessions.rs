@@ -1085,9 +1085,17 @@ impl HarnessStore {
                 Some(session.version),
             ));
         }
+        // A reconciled `RecoveryRequired` lane (detached, turn-free) is skipped
+        // by both drain settlements, so it can outlive its daemon generation;
+        // the successor must be able to reattach it, or no writer could ever
+        // reach it again (GitHub #755). The clauses below plus the released
+        // predecessor lease are the same terminated-lane proof.
         let lane_is_quiescent = matches!(
             session.lifecycle,
-            AgentSessionStatus::Cold | AgentSessionStatus::Idle | AgentSessionStatus::Interrupted
+            AgentSessionStatus::Cold
+                | AgentSessionStatus::Idle
+                | AgentSessionStatus::Interrupted
+                | AgentSessionStatus::RecoveryRequired
         ) && session.current_turn_id.is_none()
             && session.queued_input_count == 0
             && matches!(

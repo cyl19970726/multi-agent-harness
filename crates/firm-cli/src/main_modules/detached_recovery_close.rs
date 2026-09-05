@@ -107,23 +107,6 @@ pub(super) fn close_detached_blocked_member_for_recovery_with_hooks(
             member.id
         )));
     }
-    let dormant_residue = proof.dormant_residue;
-    // A lane the runner left in `RecoveryRequired` re-enters the ordinary lane
-    // before its member is closed (the Store re-proves the same lane under its
-    // lock), so a later Reopen finds an ordinary Idle lane instead of a
-    // lifecycle with no writer left (GitHub #755).
-    let session = if session.lifecycle == AgentSessionStatus::RecoveryRequired {
-        transition_provider_session_for_member_as(
-            &ledger,
-            member,
-            AgentSessionStatus::Idle,
-            team_run_host_authority(store, team_run_id),
-            "host.member_close.agent_session.resume",
-        )?;
-        provider_session_for_member(&ledger, member)?.1
-    } else {
-        session
-    };
     let native_session_matches_and_resumable = match (
         member.native_session.as_ref(),
         session.native_session_ref.as_ref(),
@@ -210,6 +193,50 @@ pub(super) fn close_detached_blocked_member_for_recovery_with_hooks(
             )?;
         }
     }
+
+    // A lane the runner left in `RecoveryRequired` re-enters the ordinary lane
+    // before its member is closed (the Store re-proves the same lane under its
+    // lock), so a later Reopen finds an ordinary Idle lane instead of a
+    // lifecycle with no writer left (GitHub #755). The hop sits after every
+    // authority and generation gate above, so a Close this Host may not
+    // perform leaves no durable trace. A completed run's member may still
+    // name a settled predecessor NodeDaemon generation, where the hop is
+    // fenced; that lane is reattached at the next adoption and hops then.
+    let session = if session.lifecycle == AgentSessionStatus::RecoveryRequired {
+        match transition_provider_session_for_member_as(
+            &ledger,
+            member,
+            AgentSessionStatus::Idle,
+            team_run_host_authority(store, team_run_id)?,
+            "host.member_close.agent_session.resume",
+        ) {
+            Ok(()) => provider_session_for_member(&ledger, member)?.1,
+            Err(CliError::Usage(message))
+                if mode == DetachedRecoveryCloseMode::CompletedRunMember
+                    && message.starts_with("NODE_DAEMON_GENERATION_FENCED") =>
+            {
+                session
+            }
+            Err(error) => return Err(error),
+        }
+    } else {
+        session
+    };
+    // The proof is re-read with the lane as it stands now; the latch fence and
+    // the terminal CAS pin this exact version.
+    let proof = lane_termination_proof(
+        store,
+        &execution_space_id,
+        &session,
+        mode == DetachedRecoveryCloseMode::CompletedRunMember,
+    )?;
+    if let Some(blocker) = proof.blocker {
+        return Err(CliError::RuntimeRecoveryRequired(format!(
+            "DETACHED_MEMBER_RECOVERY_FENCED: member {} does not prove its runtime gone: {blocker}",
+            member.id
+        )));
+    }
+    let dormant_residue = proof.dormant_residue;
 
     // A provider receipt proves that the old runtime consumed this exact Work
     // revision even when the adapter failed before persisting its ordinary
