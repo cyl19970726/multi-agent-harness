@@ -317,6 +317,12 @@ Harness has no Plan Gate and it blocks headless members indefinitely (ADR
      final result line(s), and the captured exit code. A summary sentence
      ("all gates passed") is never acceptable as gate evidence.
 
+  The CLI enforces items 1 and 3: when `--candidate-revision` is supplied,
+  `member work submit` refuses a result summary that lacks the exact full
+  40-hex SHA or the literal `git status --porcelain` text with
+  `WORK_SUBMISSION_EVIDENCE_MISSING` (an abbreviated `--candidate-revision`
+  is refused with the same code).
+
 Short example (one gate shown; list every gate the Work names):
 
 ```text

@@ -415,7 +415,7 @@ pub(super) fn assert_action_matrix_and_final_projections(context: ActionMatrixCo
             "claimed submit_work",
             "5",
             "matrix-claimed-submit",
-            serde_json::json!({"action":"submit_work","result_summary":"claim path complete","candidate_revision":"3123456789abcdef0123456789abcdef01234567","check_refs":["check:claim-replay-matrix"]}),
+            serde_json::json!({"action":"submit_work","result_summary":"SHA 3123456789abcdef0123456789abcdef01234567: claim path complete.\ngit status --porcelain: empty","candidate_revision":"3123456789abcdef0123456789abcdef01234567","check_refs":["check:claim-replay-matrix"]}),
         ),
     ] {
         let route = format!("/v1/agentfirm/team-runs/{run_id}/works/work-member-claim-replay/{route_suffix}?project={project_id}");
@@ -487,7 +487,7 @@ pub(super) fn assert_action_matrix_and_final_projections(context: ActionMatrixCo
             "submit_work",
             "5",
             "matrix-member-submit",
-            serde_json::json!({"action":"submit_work","result_summary":"member replay matrix complete","candidate_revision":"2123456789abcdef0123456789abcdef01234567","check_refs":["check:member-replay-matrix"]}),
+            serde_json::json!({"action":"submit_work","result_summary":"SHA 2123456789abcdef0123456789abcdef01234567: member replay matrix complete.\ngit status --porcelain: empty","candidate_revision":"2123456789abcdef0123456789abcdef01234567","check_refs":["check:member-replay-matrix"]}),
         ),
     ];
     for (route_suffix, label, version, key, body) in member_steps {
