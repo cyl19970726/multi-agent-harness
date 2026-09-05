@@ -41,7 +41,7 @@ use harness_core::{
 use harness_store::{CurrentTeamMemberLifecycleTransition, HarnessStore};
 use provider_received_work_attempt::{
     admit_provider_received_work_attempt, assert_released_provider_received_attempt,
-    ProviderReceivedWorkAttemptInput,
+    ProviderReceivedWorkAttempt, ProviderReceivedWorkAttemptInput,
 };
 
 const TOKEN: &str = "role-view-local-capability";
@@ -1234,73 +1234,14 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
     );
     submission_evidence_refusal::assert_report_only_refusals(&serve, run_id, &project_id);
 
-    let submit_route = format!(
-        "/v1/agentfirm/team-runs/{run_id}/works/work-store-live-1/submit?project={project_id}"
-    );
-    let submit_headers = action_headers(MEMBER_TOKEN, "submit-store-live-1", "3");
-    let (status, submitted) = serve.post_json_with_headers(
-        &submit_route,
-        &serde_json::json!({
-            "action":"submit_work",
-            "result_summary":"SHA 0123456789abcdef0123456789abcdef01234567: Store-live loop complete.\ngit status --porcelain: empty",
-            "candidate_revision":"0123456789abcdef0123456789abcdef01234567",
-            "check_refs":["check:role-action-loop"]
-        }),
-        &submit_headers,
-    );
-    assert_eq!(status, 200, "member submit: {submitted}");
-    assert_eq!(submitted["projection"]["kind"], "result");
-    assert_eq!(submitted["projection"]["work_revision"], 4);
-    assert_released_provider_received_attempt(&store, &space_id, &first_attempt);
-    let (status, submit_replay) = serve.post_json_with_headers(
-        &submit_route,
-        &serde_json::json!({
-            "action":"submit_work",
-            "result_summary":"SHA 0123456789abcdef0123456789abcdef01234567: Store-live loop complete.\ngit status --porcelain: empty",
-            "candidate_revision":"0123456789abcdef0123456789abcdef01234567",
-            "check_refs":["check:role-action-loop"]
-        }),
-        &submit_headers,
-    );
-    assert_eq!(status, 200, "submit replay: {submit_replay}");
-    assert_eq!(submit_replay["event_id"], submitted["event_id"]);
-    assert_eq!(submit_replay["replayed"], true);
-    let changed_submit_cas = action_headers(MEMBER_TOKEN, "submit-store-live-1", "2");
-    let (status, changed_submit_cas_result) = serve.post_json_with_headers(
-        &submit_route,
-        &serde_json::json!({
-            "action":"submit_work",
-            "result_summary":"SHA 0123456789abcdef0123456789abcdef01234567: Store-live loop complete.\ngit status --porcelain: empty",
-            "candidate_revision":"0123456789abcdef0123456789abcdef01234567",
-            "check_refs":["check:role-action-loop"]
-        }),
-        &changed_submit_cas,
-    );
-    assert_eq!(
-        status, 409,
-        "same report key with changed If-Match must fail: {changed_submit_cas_result}"
-    );
-    let (status, changed_submit_body) = serve.post_json_with_headers(
-        &submit_route,
-        &serde_json::json!({
-            "action":"submit_work",
-            "result_summary":"SHA 0123456789abcdef0123456789abcdef01234567: a DIFFERENT compliant summary.\ngit status --porcelain: empty",
-            "candidate_revision":"0123456789abcdef0123456789abcdef01234567",
-            "check_refs":["check:role-action-loop"]
-        }),
-        &submit_headers,
-    );
-    assert_eq!(
-        status, 409,
-        "same report key with changed semantic body must fail: {changed_submit_body}"
-    );
-    assert_eq!(
-        store
-            .work_operations()
-            .expect("submission is canonical-only")
-            .len(),
-        before + 3,
-        "result submission advances Work through its canonical WorkReport without a second Work operation"
+    submission_evidence_refusal::assert_compliant_result_submission(
+        &serve,
+        &store,
+        &space_id,
+        run_id,
+        &project_id,
+        before,
+        &first_attempt,
     );
     let (status, review_view) =
         serve.get_json_with_headers(&view_route, &[("X-AgentFirm-Token", TOKEN)]);

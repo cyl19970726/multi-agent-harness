@@ -667,7 +667,6 @@ fn conflict(code: &str, message: &str) -> StoreError {
     StoreError::Conflict(format!("{code}: {message}"))
 }
 
-/// #787: the mandatory Verbatim evidence for a READY_FOR_REVIEW submission
 /// DEV-214 (#830): the candidate revision a submission stores, or None for
 /// an explicit report-only submission. A report-only submission that still
 /// names a candidate is a typed refusal; any other submission must name a
@@ -705,6 +704,7 @@ fn resolve_submission_candidate(
     })
 }
 
+/// #787: the mandatory Verbatim evidence for a READY_FOR_REVIEW submission
 /// that names a candidate revision — a pure string check on the submitted
 /// text; it never inspects a repository.
 ///
