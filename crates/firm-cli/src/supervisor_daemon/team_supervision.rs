@@ -369,7 +369,9 @@ impl MultiTeamDaemon {
                 Some(space),
                 None,
                 max_concurrency,
-                Duration::from_secs(idle_timeout_secs),
+                harness_runtime_contract::CycleTimeouts::with_input_acceptance(
+                    Duration::from_secs(idle_timeout_secs),
+                ),
                 Some(live_sink),
                 Some(thread_serving_status),
             )

@@ -1,7 +1,5 @@
 //! Application adapter for the Codex provider package.
 
-use std::time::Duration;
-
 use harness_runtime_contract as rt;
 
 pub(crate) use harness_provider_codex::{capability_bindings, CodexAppServerBridge};
@@ -75,7 +73,7 @@ impl<B: CodexAppServerBridge> rt::TeamRuntimeAdapter for CodexTeamRuntime<'_, B>
     fn run_cycle(
         &mut self,
         input: &str,
-        idle_timeout: Duration,
+        timeouts: rt::CycleTimeouts,
         on_input_accepted: &mut dyn FnMut(&rt::ControlTransportReceipt) -> crate::CliResult<()>,
         on_steer_result: &mut dyn FnMut(
             &rt::SteerRequest,
@@ -87,7 +85,7 @@ impl<B: CodexAppServerBridge> rt::TeamRuntimeAdapter for CodexTeamRuntime<'_, B>
         Ok(rt::TeamRuntimeAdapter::run_cycle(
             &mut self.0,
             input,
-            idle_timeout,
+            timeouts,
             &mut |receipt| on_input_accepted(receipt).map_err(callback_error),
             &mut |request, result| on_steer_result(request, result).map_err(callback_error),
             on_event,

@@ -260,10 +260,14 @@ impl harness_runtime_contract::TeamRuntimeAdapter for PiTeamRuntime {
         Ok(())
     }
 
+    /// `transport_liveness` proof: the RPC reader thread's Disconnected
+    /// branch — a dead transport fails closed without a wall-clock silence
+    /// verdict (D2); the prompt (acceptance) RPC is bounded by
+    /// `timeouts.input_acceptance`.
     fn run_cycle(
         &mut self,
         input: &str,
-        idle_timeout: Duration,
+        timeouts: harness_runtime_contract::CycleTimeouts,
         on_input_accepted: &mut dyn FnMut(
             &harness_runtime_contract::ControlTransportReceipt,
         ) -> CliResult<()>,
@@ -276,7 +280,7 @@ impl harness_runtime_contract::TeamRuntimeAdapter for PiTeamRuntime {
     ) -> CliResult<harness_runtime_contract::ExecutionCycleOutcome> {
         let outcome = self.client.prompt_dyn(
             input,
-            idle_timeout,
+            timeouts,
             on_input_accepted,
             on_steer_result,
             &mut *on_event,
@@ -285,7 +289,7 @@ impl harness_runtime_contract::TeamRuntimeAdapter for PiTeamRuntime {
         Ok(harness_runtime_contract::ExecutionCycleOutcome {
             final_text: outcome.final_text,
             provider_terminal_failure: None,
-            interrupted: outcome.interrupted,
+            interrupt: outcome.interrupt,
             close_requested_by_harness: outcome.close_requested_by_harness,
             tool_call_count: outcome.tool_call_count,
             native_correlation: outcome.native_correlation,
@@ -386,7 +390,9 @@ impl harness_runtime_contract::RuntimeAdapter for PiTeamRuntime {
                     .client
                     .prompt(
                         &input,
-                        Duration::from_secs(30 * 60),
+                        harness_runtime_contract::CycleTimeouts::with_input_acceptance(
+                            Duration::from_secs(30 * 60),
+                        ),
                         |receipt| {
                             input_receipt = receipt.response_id.clone();
                             Ok(())

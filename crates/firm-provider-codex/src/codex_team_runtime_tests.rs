@@ -23,6 +23,7 @@ struct FakeBridge {
     thread_status_after_terminal: &'static str,
     goal_status: Option<&'static str>,
     goal_sets: Vec<String>,
+    start_error: Option<String>,
     turn_id: String,
     starts: usize,
     interrupts: usize,
@@ -50,6 +51,7 @@ impl FakeBridge {
             thread_status_after_terminal: "idle",
             goal_status: None,
             goal_sets: Vec::new(),
+            start_error: None,
             turn_id: "turn-1".to_string(),
             starts: 0,
             interrupts: 0,
@@ -66,8 +68,11 @@ impl CodexAppServerBridge for FakeBridge {
     fn thread_id(&self) -> &str {
         &self.thread_id
     }
-    fn start_turn(&mut self, _text: &str) -> CliResult<String> {
+    fn start_turn(&mut self, _text: &str, _acceptance: Duration) -> CliResult<String> {
         self.starts += 1;
+        if let Some(error) = self.start_error.clone() {
+            return Err(CliError::Usage(error));
+        }
         Ok(self.turn_id.clone())
     }
     fn steer(&mut self, turn_id: &str, text: &str) -> CliResult<String> {
@@ -362,7 +367,7 @@ fn cycle_requires_turn_completed_and_exact_idle_observation() {
     let outcome = TeamRuntimeAdapter::run_cycle(
         &mut adapter,
         "hello",
-        Duration::from_secs(1),
+        harness_runtime_contract::CycleTimeouts::with_input_acceptance(Duration::from_secs(1)),
         &mut |receipt| {
             accepted = receipt.response_id.clone();
             Ok(())
@@ -397,7 +402,7 @@ fn unknown_thread_status_fails_closed_after_terminal_frame() {
     let error = TeamRuntimeAdapter::run_cycle(
         &mut adapter,
         "hello",
-        Duration::from_secs(1),
+        harness_runtime_contract::CycleTimeouts::with_input_acceptance(Duration::from_secs(1)),
         &mut |_receipt| Ok(()),
         &mut |_pending, _result| Ok(()),
         &mut |_event| {},
@@ -421,7 +426,7 @@ fn started_and_terminal_frames_require_the_exact_owned_thread() {
     let started_error = TeamRuntimeAdapter::run_cycle(
         &mut started_adapter,
         "hello",
-        Duration::from_secs(1),
+        harness_runtime_contract::CycleTimeouts::with_input_acceptance(Duration::from_secs(1)),
         &mut |_receipt| Ok(()),
         &mut |_pending, _result| Ok(()),
         &mut |_event| {},
@@ -440,7 +445,7 @@ fn started_and_terminal_frames_require_the_exact_owned_thread() {
     let terminal_error = TeamRuntimeAdapter::run_cycle(
         &mut terminal_adapter,
         "hello",
-        Duration::from_secs(1),
+        harness_runtime_contract::CycleTimeouts::with_input_acceptance(Duration::from_secs(1)),
         &mut |_receipt| Ok(()),
         &mut |_pending, _result| Ok(()),
         &mut |_event| {},
@@ -460,7 +465,7 @@ fn run_native_descendant_frames(frames: Vec<Value>) -> CliResult<ExecutionCycleO
     TeamRuntimeAdapter::run_cycle(
         &mut adapter,
         "hello",
-        Duration::from_secs(1),
+        harness_runtime_contract::CycleTimeouts::with_input_acceptance(Duration::from_secs(1)),
         &mut |_receipt| Ok(()),
         &mut |_pending, _result| Ok(()),
         &mut |_event| {},
@@ -647,7 +652,7 @@ fn failed_terminal_is_settled_and_close_does_not_interrupt_it_again() {
     let outcome = TeamRuntimeAdapter::run_cycle(
         &mut adapter,
         "hello",
-        Duration::from_secs(1),
+        harness_runtime_contract::CycleTimeouts::with_input_acceptance(Duration::from_secs(1)),
         &mut |_receipt| Ok(()),
         &mut |_pending, _result| Ok(()),
         &mut |_event| {},
@@ -736,7 +741,7 @@ fn interrupt_is_transport_ack_until_matching_terminal_frame() {
     let outcome = TeamRuntimeAdapter::run_cycle(
         &mut adapter,
         "hello",
-        Duration::from_secs(1),
+        harness_runtime_contract::CycleTimeouts::with_input_acceptance(Duration::from_secs(1)),
         &mut |_receipt| Ok(()),
         &mut |_pending, _result| Ok(()),
         &mut |_event| {},
@@ -752,7 +757,10 @@ fn interrupt_is_transport_ack_until_matching_terminal_frame() {
         },
     )
     .unwrap();
-    assert!(outcome.interrupted);
+    assert_eq!(
+        outcome.interrupt,
+        Some(harness_runtime_contract::InterruptCause::HostControl)
+    );
     assert_eq!(outcome.control_receipts.len(), 1);
     assert_eq!(outcome.control_receipts[0].command, "abort");
     let bridge = adapter.into_inner();
@@ -769,7 +777,7 @@ fn host_driven_cycle_fails_before_turn_start_when_native_goal_is_active() {
     let error = TeamRuntimeAdapter::run_cycle(
         &mut adapter,
         "must not start",
-        Duration::from_secs(1),
+        harness_runtime_contract::CycleTimeouts::with_input_acceptance(Duration::from_secs(1)),
         &mut |_receipt| Ok(()),
         &mut |_pending, _result| Ok(()),
         &mut |_event| {},
@@ -793,7 +801,7 @@ fn host_driven_cycle_fails_closed_on_an_unclassified_native_goal() {
     let error = TeamRuntimeAdapter::run_cycle(
         &mut adapter,
         "must not start",
-        Duration::from_secs(1),
+        harness_runtime_contract::CycleTimeouts::with_input_acceptance(Duration::from_secs(1)),
         &mut |_receipt| Ok(()),
         &mut |_pending, _result| Ok(()),
         &mut |_event| {},
@@ -878,4 +886,230 @@ fn strong_quiesce_controls_an_active_goal_but_fails_closed_on_unprovable_drain_a
     assert_eq!(bridge.goal_sets, vec!["paused"]);
     assert_eq!(bridge.interrupts, 1);
     assert_eq!(bridge.shutdowns, 0);
+}
+
+// ---------------------------------------------------------------------------
+// SPEC-TYPED-CYCLE-OUTCOME-01 §5: the S1 assertion family against Codex.
+
+struct CodexCycleConformanceFixture;
+
+fn conformance_timeouts() -> harness_runtime_contract::CycleTimeouts {
+    harness_runtime_contract::CycleTimeouts {
+        input_acceptance: Duration::from_millis(1),
+        transport_liveness: Duration::from_millis(1),
+        control_settle: Duration::from_millis(30),
+    }
+}
+
+fn silent_then(status: &'static str, silent_polls: usize) -> FakeBridge {
+    let mut bridge = FakeBridge::completed(status);
+    let mut frames = VecDeque::new();
+    for _ in 0..silent_polls {
+        frames.push_back(Err(RecvTimeoutError::Timeout));
+    }
+    frames.extend(bridge.frames.borrow().iter().cloned());
+    bridge.frames = RefCell::new(frames);
+    bridge
+}
+
+fn drive_cycle(
+    bridge: FakeBridge,
+    timeouts: &harness_runtime_contract::CycleTimeouts,
+    poll_control: &mut dyn FnMut() -> harness_runtime_contract::CycleControl,
+) -> Result<harness_runtime_contract::ExecutionCycleOutcome, String> {
+    let mut adapter = CodexTeamRuntime::new(bridge);
+    TeamRuntimeAdapter::run_cycle(
+        &mut adapter,
+        "conformance cycle",
+        *timeouts,
+        &mut |_receipt| Ok(()),
+        &mut |_pending, _result| Ok(()),
+        &mut |_event| {},
+        poll_control,
+    )
+    .map_err(|error| error.to_string())
+}
+
+impl harness_runtime_contract::CycleConformanceFixture for CodexCycleConformanceFixture {
+    type Error = String;
+
+    fn run_receipt_then_silence(
+        &mut self,
+        timeouts: &harness_runtime_contract::CycleTimeouts,
+    ) -> Result<harness_runtime_contract::CycleConformanceOutcome, Self::Error> {
+        // turn/start is the instant receipt; many silent polls follow, far
+        // past any old idle bound, before a normal terminal.
+        let outcome = drive_cycle(
+            silent_then("completed", 40),
+            timeouts,
+            &mut harness_runtime_contract::CycleControl::default,
+        )?;
+        Ok(harness_runtime_contract::CycleConformanceOutcome {
+            interrupt: outcome.interrupt.clone(),
+            control_unproven: false,
+            result: harness_runtime_contract::CycleConformanceResult::Outcome(Box::new(outcome)),
+        })
+    }
+
+    fn run_no_receipt(
+        &mut self,
+        _timeouts: &harness_runtime_contract::CycleTimeouts,
+    ) -> Result<harness_runtime_contract::CycleConformanceOutcome, Self::Error> {
+        let mut bridge = FakeBridge::completed("completed");
+        bridge.start_error = Some("scripted start failure".to_string());
+        let error = match drive_cycle(
+            bridge,
+            &conformance_timeouts(),
+            &mut harness_runtime_contract::CycleControl::default,
+        ) {
+            Ok(_) => return Err("a never-started turn produced an outcome".to_string()),
+            Err(error) => error,
+        };
+        assert!(error.contains("scripted start failure"), "{error}");
+        Ok(harness_runtime_contract::CycleConformanceOutcome {
+            interrupt: None,
+            control_unproven: false,
+            result: harness_runtime_contract::CycleConformanceResult::Failed(
+                harness_runtime_contract::CycleFailureDisposition::InputNeverAccepted,
+            ),
+        })
+    }
+
+    fn run_transport_dies_after_receipt(
+        &mut self,
+        timeouts: &harness_runtime_contract::CycleTimeouts,
+    ) -> Result<harness_runtime_contract::CycleConformanceOutcome, Self::Error> {
+        // The receipt crossed, then the first recv disconnects.
+        let mut bridge = FakeBridge::completed("completed");
+        bridge.frames = RefCell::new(VecDeque::new());
+        let error = match drive_cycle(
+            bridge,
+            timeouts,
+            &mut harness_runtime_contract::CycleControl::default,
+        ) {
+            Ok(_) => return Err("a dead transport produced an outcome".to_string()),
+            Err(error) => error,
+        };
+        assert!(error.contains("disconnected"), "{error}");
+        Ok(harness_runtime_contract::CycleConformanceOutcome {
+            interrupt: None,
+            control_unproven: false,
+            result: harness_runtime_contract::CycleConformanceResult::Failed(
+                harness_runtime_contract::CycleFailureDisposition::AcceptedOutcomeUnknown,
+            ),
+        })
+    }
+
+    fn run_interrupt_not_acknowledged(
+        &mut self,
+        timeouts: &harness_runtime_contract::CycleTimeouts,
+    ) -> Result<harness_runtime_contract::CycleConformanceOutcome, Self::Error> {
+        // A zero control_settle makes the settle deadline deterministic:
+        // scripted silent polls do not advance the wall clock.
+        let settle = harness_runtime_contract::CycleTimeouts {
+            control_settle: Duration::ZERO,
+            ..*timeouts
+        };
+        let mut first = true;
+        let error = match drive_cycle(silent_then("completed", 1000), &settle, &mut || {
+            if std::mem::take(&mut first) {
+                harness_runtime_contract::CycleControl {
+                    interrupt: true,
+                    ..Default::default()
+                }
+            } else {
+                harness_runtime_contract::CycleControl::default()
+            }
+        }) {
+            Ok(_) => return Err("an unacknowledged interrupt produced an outcome".to_string()),
+            Err(error) => error,
+        };
+        assert!(error.contains("CODEX_RUNTIME_CONTROL_UNKNOWN"), "{error}");
+        Ok(harness_runtime_contract::CycleConformanceOutcome {
+            interrupt: None,
+            control_unproven: true,
+            result: harness_runtime_contract::CycleConformanceResult::Failed(
+                harness_runtime_contract::CycleFailureDisposition::AcceptedOutcomeUnknown,
+            ),
+        })
+    }
+
+    fn run_host_interrupt(
+        &mut self,
+        timeouts: &harness_runtime_contract::CycleTimeouts,
+    ) -> Result<harness_runtime_contract::CycleConformanceOutcome, Self::Error> {
+        let mut first = true;
+        let outcome = drive_cycle(FakeBridge::completed("interrupted"), timeouts, &mut || {
+            if std::mem::take(&mut first) {
+                harness_runtime_contract::CycleControl {
+                    interrupt: true,
+                    ..Default::default()
+                }
+            } else {
+                harness_runtime_contract::CycleControl::default()
+            }
+        })?;
+        Ok(harness_runtime_contract::CycleConformanceOutcome {
+            interrupt: outcome.interrupt.clone(),
+            control_unproven: false,
+            result: harness_runtime_contract::CycleConformanceResult::Outcome(Box::new(outcome)),
+        })
+    }
+
+    fn run_adapter_policy_interrupt(
+        &mut self,
+        timeouts: &harness_runtime_contract::CycleTimeouts,
+        _reason: &str,
+    ) -> Result<harness_runtime_contract::CycleConformanceOutcome, Self::Error> {
+        // B4: the old trigger (a silent interval past the old idle bound) no
+        // longer produces any adapter-initiated interrupt.
+        let outcome = drive_cycle(
+            silent_then("completed", 40),
+            timeouts,
+            &mut harness_runtime_contract::CycleControl::default,
+        )?;
+        Ok(harness_runtime_contract::CycleConformanceOutcome {
+            interrupt: outcome.interrupt.clone(),
+            control_unproven: false,
+            result: harness_runtime_contract::CycleConformanceResult::Outcome(Box::new(outcome)),
+        })
+    }
+}
+
+#[test]
+fn codex_passes_the_s1_cycle_conformance_family() {
+    let timeouts = conformance_timeouts();
+    let mut fixture = CodexCycleConformanceFixture;
+    harness_runtime_contract::assert_a1_accepted_input_survives_silence(&mut fixture, &timeouts)
+        .expect("A1");
+    harness_runtime_contract::assert_a2_delivery_timeout_fails_closed(&mut fixture, &timeouts)
+        .expect("A2");
+    harness_runtime_contract::assert_a3_transport_death_fails_closed(&mut fixture, &timeouts)
+        .expect("A3");
+    harness_runtime_contract::assert_a5_control_settle_only_bounds_control(&mut fixture, &timeouts)
+        .expect("A5");
+    harness_runtime_contract::assert_b1_host_interrupt_attribution(&mut fixture, &timeouts)
+        .expect("B1");
+}
+
+#[test]
+fn codex_a4_silence_no_longer_interrupts_and_b4_no_policy_interrupt() {
+    // A4: a silent tool interval far past the OLD idle_timeout completes
+    // normally and never reaches bridge.interrupt (B4: the adapter's normal
+    // path cannot produce InterruptCause::AdapterPolicy anymore). The
+    // assertion binds the DRIVEN bridge, not a fresh one.
+    let mut adapter = CodexTeamRuntime::new(silent_then("completed", 40));
+    let outcome = TeamRuntimeAdapter::run_cycle(
+        &mut adapter,
+        "conformance cycle",
+        conformance_timeouts(),
+        &mut |_receipt| Ok(()),
+        &mut |_pending, _result| Ok(()),
+        &mut |_event| {},
+        &mut harness_runtime_contract::CycleControl::default,
+    )
+    .expect("a silent accepted cycle completes");
+    let bridge = adapter.into_inner();
+    assert_eq!(bridge.interrupts, 0, "no adapter-initiated interrupt");
+    assert_eq!(outcome.interrupt, None);
 }

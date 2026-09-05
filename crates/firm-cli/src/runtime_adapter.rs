@@ -685,7 +685,7 @@ pub(crate) fn run_team_member_with_adapter<A: TeamRuntimeAdapter<Error = CliErro
                 let live_sink = context.live_sink.clone();
                 adapter.run_cycle(
                 &prompt,
-                context.idle_timeout,
+                context.timeouts,
                 &mut |acceptance| {
                     // Prompt response success proves input acceptance only.
                     // Settle this dispatch immediately so a later transport
@@ -1185,7 +1185,7 @@ pub(crate) fn run_team_member_with_adapter<A: TeamRuntimeAdapter<Error = CliErro
                 },
                 turn.native_correlation.clone(),
                 cycle_terminal_observed,
-                turn.interrupted,
+                turn.interrupt.is_some(),
             )
             .map_err(CliError::RuntimeRecoveryRequired)?;
             if matches!(
@@ -1216,7 +1216,7 @@ pub(crate) fn run_team_member_with_adapter<A: TeamRuntimeAdapter<Error = CliErro
                 .iter()
                 .any(|receipt| receipt.command == "abort" && receipt.success);
             let cycle_control_ack = verified_terminal_control_ack(
-                turn.interrupted,
+                turn.interrupt.is_some(),
                 abort_receipt_observed,
                 cycle_terminal_observed,
                 false,
@@ -1278,7 +1278,7 @@ pub(crate) fn run_team_member_with_adapter<A: TeamRuntimeAdapter<Error = CliErro
             }
 
             let terminal_ack = verified_terminal_control_ack(
-                turn.interrupted,
+                turn.interrupt.is_some(),
                 abort_receipt_observed,
                 cycle_terminal_observed,
                 turn.close_requested_by_harness,
@@ -1328,7 +1328,7 @@ pub(crate) fn run_team_member_with_adapter<A: TeamRuntimeAdapter<Error = CliErro
             drop(cycle.active_work.take());
             cycle.accepted_messages.clear();
 
-            if turn.interrupted {
+            if turn.interrupt.is_some() {
                 let interruption_summary = if turn.close_requested_by_harness {
                     format!("The Host explicitly closed the {display} member runtime.")
                 } else if had_pending_control {

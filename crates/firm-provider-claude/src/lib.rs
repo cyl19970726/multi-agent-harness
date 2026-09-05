@@ -20,11 +20,12 @@ use serde_json::{json, Value};
 use harness_runtime_contract::{
     AdmissionDecision, CapabilityBinding, CapabilityStatus, ControlIntent, ControlRequest,
     ControlTransportReceipt, CycleControl, CycleRuntimeObservation as CycleObservation,
-    EffectInspection, EffectReceipt, ExecutionCycleOutcome, MemberRuntimeCloseReceipt,
-    NativeControlPrimitive, ProviderControlAction, ProviderControlPlan, ProviderNativeControl,
-    ProviderTerminalFailure, QuiesceReceipt, QuiesceReceiptBuilder, QuiesceStep, ReconcileReceipt,
-    ReleaseReceipt, RuntimeAdapter, RuntimeBindingFence, RuntimeContractError, RuntimeDescription,
-    SemanticCapability, SteerProviderResult, SteerRequest, TeamRuntimeAdapter,
+    CycleTimeouts, EffectInspection, EffectReceipt, ExecutionCycleOutcome, InterruptCause,
+    MemberRuntimeCloseReceipt, NativeControlPrimitive, ProviderControlAction, ProviderControlPlan,
+    ProviderNativeControl, ProviderTerminalFailure, QuiesceReceipt, QuiesceReceiptBuilder,
+    QuiesceStep, ReconcileReceipt, ReleaseReceipt, RuntimeAdapter, RuntimeBindingFence,
+    RuntimeContractError, RuntimeDescription, SemanticCapability, SteerProviderResult,
+    SteerRequest, TeamRuntimeAdapter,
 };
 
 mod cycle_correlation;
@@ -494,7 +495,7 @@ impl ClaudeRunnerTransport {
     fn run_cycle(
         &mut self,
         input: &str,
-        input_acceptance_timeout: Duration,
+        timeouts: CycleTimeouts,
         on_input_accepted: &mut dyn FnMut(&ControlTransportReceipt) -> CliResult<()>,
         on_steer_result: &mut dyn FnMut(&SteerRequest, &SteerProviderResult) -> CliResult<()>,
         on_event: &mut dyn FnMut(&Value),
@@ -508,6 +509,7 @@ impl ClaudeRunnerTransport {
         let mut tool_call_count = 0u32;
         let mut saw_assistant_message = false;
         let mut interrupt_sent = false;
+        let mut interrupt_sent_at: Option<Instant> = None;
         let mut interrupt_requested = false;
         let mut interrupted = false;
         let mut close_requested = false;
@@ -534,6 +536,7 @@ impl ClaudeRunnerTransport {
             if interrupt_requested && input_acceptance_receipt.is_some() && !interrupt_sent {
                 self.interrupt()?;
                 interrupt_sent = true;
+                interrupt_sent_at = Some(Instant::now());
             }
 
             let Some(event) = self.receive_event(CONTROL_POLL)? else {
@@ -541,16 +544,27 @@ impl ClaudeRunnerTransport {
                 // provider tool may be silent while it does real work. The
                 // caller's timeout therefore fences only the unacknowledged
                 // delivery boundary; it is not a hidden wall-clock limit on
-                // an already accepted provider cycle. After `consumed`, child
-                // exit and stdout disconnect remain fail-closed transport
-                // errors, while Interrupt and Close keep polling normally.
+                // an accepted cycle. `transport_liveness` (Spec D2) is proven
+                // by `ensure_alive()` and by child-exit/stdout-disconnect
+                // failing closed — never by a silence verdict.
                 self.ensure_alive()?;
+                // A5/D3: an issued Interrupt that the provider never
+                // acknowledges expires after control_settle — Unknown, never
+                // a cycle failure and never a silent hang.
+                if let Some(sent_at) = interrupt_sent_at {
+                    if sent_at.elapsed() >= timeouts.control_settle {
+                        return Err(CliError::Usage(format!(
+                            "CLAUDE_AGENT_SDK_CONTROL_SETTLE_TIMEOUT: interrupt was not acknowledged within {}s",
+                            timeouts.control_settle.as_secs()
+                        )));
+                    }
+                }
                 if input_acceptance_receipt.is_none()
-                    && input_sent_at.elapsed() >= input_acceptance_timeout
+                    && input_sent_at.elapsed() >= timeouts.input_acceptance
                 {
                     return Err(CliError::Usage(format!(
                         "CLAUDE_AGENT_SDK_INPUT_ACCEPTANCE_TIMEOUT: cycle {input_id} was not consumed within {}s",
-                        input_acceptance_timeout.as_secs()
+                        timeouts.input_acceptance.as_secs()
                     )));
                 }
                 continue;
@@ -628,7 +642,7 @@ impl ClaudeRunnerTransport {
                     return Ok(ExecutionCycleOutcome {
                         final_text,
                         provider_terminal_failure,
-                        interrupted: false,
+                        interrupt: None,
                         close_requested_by_harness: false,
                         tool_call_count,
                         native_correlation: cycle_ref(&input_id, receipt, "turn_complete"),
@@ -669,7 +683,7 @@ impl ClaudeRunnerTransport {
                     return Ok(ExecutionCycleOutcome {
                         final_text,
                         provider_terminal_failure: None,
-                        interrupted: true,
+                        interrupt: Some(InterruptCause::HostControl),
                         close_requested_by_harness: close_requested,
                         tool_call_count,
                         native_correlation: cycle_ref(&input_id, receipt, "interrupt_resume"),
@@ -1019,7 +1033,7 @@ impl TeamRuntimeAdapter for ClaudeTeamRuntime {
     fn run_cycle(
         &mut self,
         input: &str,
-        idle_timeout: Duration,
+        timeouts: CycleTimeouts,
         on_input_accepted: &mut dyn FnMut(&ControlTransportReceipt) -> CliResult<()>,
         on_steer_result: &mut dyn FnMut(&SteerRequest, &SteerProviderResult) -> CliResult<()>,
         on_event: &mut dyn FnMut(&Value),
@@ -1027,7 +1041,7 @@ impl TeamRuntimeAdapter for ClaudeTeamRuntime {
     ) -> CliResult<ExecutionCycleOutcome> {
         self.transport.run_cycle(
             input,
-            idle_timeout,
+            timeouts,
             on_input_accepted,
             on_steer_result,
             on_event,
@@ -1090,7 +1104,7 @@ impl RuntimeAdapter for ClaudeTeamRuntime {
                     .transport
                     .run_cycle(
                         &input,
-                        Duration::from_secs(30 * 60),
+                        CycleTimeouts::with_input_acceptance(Duration::from_secs(30 * 60)),
                         &mut |receipt| {
                             accepted = receipt.response_id.clone();
                             Ok(())

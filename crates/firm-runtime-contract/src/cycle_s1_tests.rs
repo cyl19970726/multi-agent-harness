@@ -193,7 +193,7 @@ fn test_cycle_outcome() -> ExecutionCycleOutcome {
     ExecutionCycleOutcome {
         final_text: "done".to_string(),
         provider_terminal_failure: None,
-        interrupted: false,
+        interrupt: None,
         close_requested_by_harness: false,
         tool_call_count: 1,
         native_correlation: test_correlation(),
@@ -218,6 +218,8 @@ struct ScriptedFixture {
     a2_disposition: CycleFailureDisposition,
     a3_disposition: CycleFailureDisposition,
     a5_unproven: bool,
+    a5_replay_safe: bool,
+    a5_terminal_failure: bool,
     b1_cause: InterruptCause,
     b2_cause: InterruptCause,
 }
@@ -230,6 +232,8 @@ impl Default for ScriptedFixture {
             a2_disposition: CycleFailureDisposition::InputNeverAccepted,
             a3_disposition: CycleFailureDisposition::AcceptedOutcomeUnknown,
             a5_unproven: true,
+            a5_replay_safe: false,
+            a5_terminal_failure: false,
             b1_cause: InterruptCause::HostControl,
             b2_cause: InterruptCause::AdapterPolicy {
                 reason: "scripted policy".to_string(),
@@ -286,7 +290,18 @@ impl CycleConformanceFixture for ScriptedFixture {
         _timeouts: &CycleTimeouts,
     ) -> Result<CycleConformanceOutcome, Self::Error> {
         Ok(CycleConformanceOutcome {
-            result: CycleConformanceResult::Outcome(Box::new(test_cycle_outcome())),
+            result: if self.a5_replay_safe {
+                CycleConformanceResult::Failed(CycleFailureDisposition::InputNeverAccepted)
+            } else if self.a5_terminal_failure {
+                let mut outcome = test_cycle_outcome();
+                outcome.provider_terminal_failure = Some(ProviderTerminalFailure {
+                    reason: "scripted".to_string(),
+                    http_status: None,
+                });
+                CycleConformanceResult::Outcome(Box::new(outcome))
+            } else {
+                CycleConformanceResult::Failed(CycleFailureDisposition::AcceptedOutcomeUnknown)
+            },
             interrupt: None,
             control_unproven: self.a5_unproven,
         })
@@ -376,6 +391,24 @@ fn nonconforming_fixtures_fail_their_assertions() {
     assert!(
         assert_a5_control_settle_only_bounds_control(&mut a5_wrong, &timeouts).is_err(),
         "an unacknowledged Interrupt ending proven must fail A5"
+    );
+
+    let mut a5_cycle_failure = ScriptedFixture {
+        a5_terminal_failure: true,
+        ..ScriptedFixture::default()
+    };
+    assert!(
+        assert_a5_control_settle_only_bounds_control(&mut a5_cycle_failure, &timeouts).is_err(),
+        "an Outcome carrying a provider terminal failure must fail A5 clause 2"
+    );
+
+    let mut a5_replay_safe = ScriptedFixture {
+        a5_replay_safe: true,
+        ..ScriptedFixture::default()
+    };
+    assert!(
+        assert_a5_control_settle_only_bounds_control(&mut a5_replay_safe, &timeouts).is_err(),
+        "a replay-safe settle expiry must fail A5"
     );
 
     let mut b1_wrong = ScriptedFixture {

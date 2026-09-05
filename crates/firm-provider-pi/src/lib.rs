@@ -137,7 +137,7 @@ pub struct PiSpawnOptions<'a> {
 
 pub struct PiTurnOutcome {
     pub final_text: String,
-    pub interrupted: bool,
+    pub interrupt: Option<harness_runtime_contract::InterruptCause>,
     pub close_requested_by_harness: bool,
     pub tool_call_count: u32,
     pub native_correlation: harness_runtime_contract::NativeCycleCorrelation,
@@ -688,7 +688,7 @@ impl PiRpcClient {
     pub fn prompt<A, S, F, C>(
         &mut self,
         text: &str,
-        idle_timeout: Duration,
+        timeouts: harness_runtime_contract::CycleTimeouts,
         mut on_input_accepted: A,
         mut on_steer_result: S,
         mut on_event: F,
@@ -705,7 +705,7 @@ impl PiRpcClient {
     {
         self.prompt_dyn(
             text,
-            idle_timeout,
+            timeouts,
             &mut on_input_accepted,
             &mut on_steer_result,
             &mut on_event,
@@ -716,7 +716,7 @@ impl PiRpcClient {
     pub fn prompt_dyn(
         &mut self,
         text: &str,
-        idle_timeout: Duration,
+        timeouts: harness_runtime_contract::CycleTimeouts,
         on_input_accepted: &mut dyn FnMut(
             &harness_runtime_contract::ControlTransportReceipt,
         ) -> CliResult<()>,
@@ -733,10 +733,13 @@ impl PiRpcClient {
         // prompt response id. A stale idle event must not terminate a fresh
         // follow-up.
         while self.incoming.try_recv().is_ok() {}
+        // The acceptance RPC itself is bounded by input_acceptance; after
+        // it, `transport_liveness` is proven by the reader thread's
+        // Disconnected branch, never by a wall-clock silence verdict (D2).
         let prompt_response = self.request_blocking(
             "prompt",
             serde_json::json!({"message": text}),
-            HANDSHAKE_TIMEOUT,
+            timeouts.input_acceptance,
         )?;
         let input_acceptance_receipt = harness_runtime_contract::ControlTransportReceipt {
             command: "prompt".to_string(),
@@ -753,8 +756,8 @@ impl PiRpcClient {
         }
         on_input_accepted(&input_acceptance_receipt)?;
 
-        let mut last_idle = Instant::now();
-        let mut interrupted = false;
+        let mut interrupt: Option<harness_runtime_contract::InterruptCause> = None;
+        let mut control_sent_at: Option<Instant> = None;
         let mut close_requested = false;
         let mut tool_call_count: u32 = 0;
         let mut final_text = String::new();
@@ -763,7 +766,6 @@ impl PiRpcClient {
         loop {
             match self.incoming.recv_timeout(Duration::from_millis(500)) {
                 Ok(frame) => {
-                    last_idle = Instant::now();
                     let event_type = frame.get("type").and_then(|v| v.as_str()).unwrap_or("");
 
                     // A control observed after agent_settled would target no
@@ -776,8 +778,9 @@ impl PiRpcClient {
                     // Check for control intents (close/interrupt/steer).
                     let mut control = poll_control();
                     if control.close || control.interrupt {
-                        interrupted = true;
+                        interrupt = Some(harness_runtime_contract::InterruptCause::HostControl);
                         close_requested = control.close;
+                        control_sent_at.get_or_insert_with(Instant::now);
                     }
                     control_receipts
                         .extend(self.apply_cycle_control(&mut control, on_steer_result)?);
@@ -800,27 +803,29 @@ impl PiRpcClient {
                     }
                 }
                 Err(RecvTimeoutError::Timeout) => {
-                    // Poll control intents even during idle.
+                    // Poll control intents even during idle. A4/B4: a silent
+                    // tool interval after the accepted input is never an
+                    // adapter-initiated abort; only transport death fails
+                    // closed (the Disconnected branch below).
                     let mut control = poll_control();
                     control_receipts
                         .extend(self.apply_cycle_control(&mut control, on_steer_result)?);
                     if control.close || control.interrupt {
-                        interrupted = true;
+                        interrupt = Some(harness_runtime_contract::InterruptCause::HostControl);
                         close_requested = control.close;
+                        control_sent_at.get_or_insert_with(Instant::now);
                     }
-                    if last_idle.elapsed() > idle_timeout {
-                        // Wedged — abort, then kill.
-                        let _ = self.write_frame(&serde_json::json!({
-                            "type": "abort"
-                        }));
-                        // Give a short grace window, then kill the process tree.
-                        std::thread::sleep(Duration::from_secs(2));
-                        let _ = self.owned_process_group.kill_and_reap(&mut self.child);
-                        return Err(CliError::Usage(format!(
-                            "pi rpc prompt timed out after {}s idle{}",
-                            idle_timeout.as_secs(),
-                            stderr_suffix(&self.stderr_tail)
-                        )));
+                    // A5/D3: an issued abort the provider never settles
+                    // expires after control_settle — Unknown, never a cycle
+                    // failure and never a silent hang.
+                    if let Some(sent_at) = control_sent_at {
+                        if sent_at.elapsed() >= timeouts.control_settle {
+                            return Err(CliError::Usage(format!(
+                                "PI_CONTROL_SETTLE_TIMEOUT: abort was not settled within {}s{}",
+                                timeouts.control_settle.as_secs(),
+                                stderr_suffix(&self.stderr_tail)
+                            )));
+                        }
                     }
                 }
                 Err(RecvTimeoutError::Disconnected) => {
@@ -870,7 +875,7 @@ impl PiRpcClient {
             .expect("validated Pi prompt response id");
         Ok(PiTurnOutcome {
             final_text,
-            interrupted,
+            interrupt,
             close_requested_by_harness: close_requested,
             tool_call_count,
             native_correlation: harness_runtime_contract::NativeCycleCorrelation {

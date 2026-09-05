@@ -147,6 +147,7 @@ fn live_codex_0148_round_interrupt_close_and_same_thread_resume() {
     let first_turn = first
         .start_turn(
             "Reply with exactly DEV26_CODEX_CANARY_ROUND_ONE. Do not use tools or modify files.",
+            std::time::Duration::from_secs(120),
         )
         .expect("start first live Codex turn");
     let first_terminal = wait_for_live_turn_terminal(&first, &first_turn, Duration::from_secs(180));
@@ -171,6 +172,7 @@ fn live_codex_0148_round_interrupt_close_and_same_thread_resume() {
     let interrupted_turn = resumed
             .start_turn(
                 "Use the shell tool to run exactly `sleep 30`, wait for it to finish, then reply with DEV26_CODEX_INTERRUPT_TARGET. Do not perform any other action.",
+                std::time::Duration::from_secs(120),
             )
             .expect("start interrupt target turn");
     wait_for_live_command_start(&resumed, &interrupted_turn, Duration::from_secs(90));
@@ -191,6 +193,7 @@ fn live_codex_0148_round_interrupt_close_and_same_thread_resume() {
     let resumed_turn = resumed
         .start_turn(
             "Reply with exactly DEV26_CODEX_CANARY_ROUND_TWO. Do not use tools or modify files.",
+            std::time::Duration::from_secs(120),
         )
         .expect("start post-interrupt live Codex turn");
     let resumed_terminal =

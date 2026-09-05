@@ -28,11 +28,12 @@ use serde_json::{json, Value};
 use harness_runtime_contract::{
     AdmissionDecision, CapabilityBinding, CapabilityStatus, ControlIntent, ControlRequest,
     ControlTransportReceipt, CycleControl, CycleRuntimeObservation as CycleObservation,
-    EffectInspection, EffectReceipt, ExecutionCycleOutcome, MemberRuntimeCloseReceipt,
-    NativeControlPrimitive, ProviderControlAction, ProviderControlPlan, ProviderNativeControl,
-    ProviderTerminalFailure, QuiesceReceipt, QuiesceReceiptBuilder, QuiesceStep, ReconcileReceipt,
-    ReleaseReceipt, RuntimeAdapter, RuntimeBindingFence, RuntimeContractError, RuntimeDescription,
-    SemanticCapability, SteerProviderResult, SteerRequest, TeamRuntimeAdapter,
+    CycleTimeouts, EffectInspection, EffectReceipt, ExecutionCycleOutcome, InterruptCause,
+    MemberRuntimeCloseReceipt, NativeControlPrimitive, ProviderControlAction, ProviderControlPlan,
+    ProviderNativeControl, ProviderTerminalFailure, QuiesceReceipt, QuiesceReceiptBuilder,
+    QuiesceStep, ReconcileReceipt, ReleaseReceipt, RuntimeAdapter, RuntimeBindingFence,
+    RuntimeContractError, RuntimeDescription, SemanticCapability, SteerProviderResult,
+    SteerRequest, TeamRuntimeAdapter,
 };
 
 mod capability_transport;
@@ -530,7 +531,7 @@ impl DeepSeekRunnerTransport {
     fn run_cycle(
         &mut self,
         input: &str,
-        idle_timeout: Duration,
+        timeouts: CycleTimeouts,
         on_input_accepted: &mut dyn FnMut(&ControlTransportReceipt) -> CliResult<()>,
         on_steer_result: &mut dyn FnMut(&SteerRequest, &SteerProviderResult) -> CliResult<()>,
         on_event: &mut dyn FnMut(&Value),
@@ -544,6 +545,7 @@ impl DeepSeekRunnerTransport {
         let mut tool_call_count = 0u32;
         let mut saw_assistant_message = false;
         let mut interrupt_sent = false;
+        let mut interrupt_sent_at: Option<Instant> = None;
         let mut interrupt_requested = false;
         let mut interrupted = false;
         let mut close_requested = false;
@@ -570,13 +572,36 @@ impl DeepSeekRunnerTransport {
             if interrupt_requested && input_acceptance_receipt.is_some() && !interrupt_sent {
                 self.interrupt()?;
                 interrupt_sent = true;
+                interrupt_sent_at = Some(Instant::now());
             }
 
             let Some(event) = self.receive_event(CONTROL_POLL)? else {
-                if started.elapsed() >= idle_timeout {
+                // D2/liveness: prove the transport is alive on every silent
+                // poll; the probe failing (or the reader-thread Disconnected
+                // branch) is the transport-death proof, never a wall-clock
+                // silence verdict.
+                self.ensure_alive()?;
+                // A5/D3: an issued Interrupt that the provider never
+                // acknowledges expires after control_settle — Unknown, never
+                // a cycle failure and never a silent hang.
+                if let Some(sent_at) = interrupt_sent_at {
+                    if sent_at.elapsed() >= timeouts.control_settle {
+                        return Err(CliError::Usage(format!(
+                            "DEEPSEEK_HARNESS_CONTROL_SETTLE_TIMEOUT: interrupt was not acknowledged within {}s",
+                            timeouts.control_settle.as_secs()
+                        )));
+                    }
+                }
+                // I1: the acceptance bound fences only the unacknowledged
+                // delivery; after `consumed`, silence is never a failure and
+                // the reader-thread Disconnected branch fails transport
+                // death closed without a wall-clock verdict.
+                if input_acceptance_receipt.is_none()
+                    && started.elapsed() >= timeouts.input_acceptance
+                {
                     return Err(CliError::Usage(format!(
-                        "DeepSeek Harness cycle {input_id} exceeded idle timeout of {}s",
-                        idle_timeout.as_secs()
+                        "DEEPSEEK_HARNESS_INPUT_ACCEPTANCE_TIMEOUT: cycle {input_id} was not consumed within {}s",
+                        timeouts.input_acceptance.as_secs()
                     )));
                 }
                 continue;
@@ -647,7 +672,7 @@ impl DeepSeekRunnerTransport {
                     return Ok(ExecutionCycleOutcome {
                         final_text,
                         provider_terminal_failure,
-                        interrupted: false,
+                        interrupt: None,
                         close_requested_by_harness: false,
                         tool_call_count,
                         native_correlation: native_cycle_correlation(
@@ -693,7 +718,7 @@ impl DeepSeekRunnerTransport {
                     return Ok(ExecutionCycleOutcome {
                         final_text,
                         provider_terminal_failure: None,
-                        interrupted: true,
+                        interrupt: Some(InterruptCause::HostControl),
                         close_requested_by_harness: close_requested,
                         tool_call_count,
                         native_correlation: native_cycle_correlation(
@@ -1048,7 +1073,7 @@ impl TeamRuntimeAdapter for DeepSeekTeamRuntime {
     fn run_cycle(
         &mut self,
         input: &str,
-        idle_timeout: Duration,
+        timeouts: CycleTimeouts,
         on_input_accepted: &mut dyn FnMut(&ControlTransportReceipt) -> CliResult<()>,
         on_steer_result: &mut dyn FnMut(&SteerRequest, &SteerProviderResult) -> CliResult<()>,
         on_event: &mut dyn FnMut(&Value),
@@ -1056,7 +1081,7 @@ impl TeamRuntimeAdapter for DeepSeekTeamRuntime {
     ) -> CliResult<ExecutionCycleOutcome> {
         self.transport.run_cycle(
             input,
-            idle_timeout,
+            timeouts,
             on_input_accepted,
             on_steer_result,
             on_event,
@@ -1119,7 +1144,7 @@ impl RuntimeAdapter for DeepSeekTeamRuntime {
                     .transport
                     .run_cycle(
                         &input,
-                        Duration::from_secs(30 * 60),
+                        CycleTimeouts::with_input_acceptance(Duration::from_secs(30 * 60)),
                         &mut |receipt| {
                             accepted = receipt.response_id.clone();
                             Ok(())
