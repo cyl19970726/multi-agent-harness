@@ -422,26 +422,18 @@ impl harness_runtime_contract::TeamRuntimeAdapter for KimiTeamRuntime<'_> {
         if let Some(error) = control_error {
             return Err(CliError::Usage(error));
         }
-        // A provider-reported terminal failure AFTER the input was accepted
-        // is settlement evidence, not a transport unknown: it travels on the
-        // outcome so the StartCycle receipt settles Unsatisfied (I5/C1),
-        // exactly like claude's isError terminal or codex's failed turn. A
-        // rejected prompt (no acceptance receipt — the provider never started
-        // work) stays fail-closed as before (A2).
-        let provider_terminal_failure = match outcome.provider_error {
-            Some(provider_error) if accepted_receipt.is_some() => {
-                Some(harness_runtime_contract::ProviderTerminalFailure {
-                    reason: provider_error,
-                    http_status: None,
-                })
-            }
-            Some(provider_error) => {
-                return Err(CliError::Usage(format!(
-                    "KIMI_CYCLE_PROVIDER_ERROR: {provider_error}"
-                )));
-            }
-            None => None,
-        };
+        // Kimi keeps its pre-S3 recovery semantics (ADR 0041, pinned by the
+        // team_run_api recovery tests): a provider failure — before OR after
+        // acceptance — stops at RecoveryRequired through this Err, never at
+        // a fabricated failed-but-Idle round. The StartCycle receipt path is
+        // equally fail-closed: execute_control propagates this Err, so no
+        // receipt is produced and none can settle Satisfied/Applied (#709).
+        // Unifying failure handling across adapters is a tracked follow-up.
+        if let Some(provider_error) = outcome.provider_error {
+            return Err(CliError::Usage(format!(
+                "KIMI_CYCLE_PROVIDER_ERROR: {provider_error}"
+            )));
+        }
         let input_acceptance_receipt = accepted_receipt.ok_or_else(|| {
             CliError::Usage(
                 "RUNTIME_COMMAND_RECOVERY_REQUIRED: Kimi cycle had no correlated input-acceptance receipt"
@@ -475,7 +467,7 @@ impl harness_runtime_contract::TeamRuntimeAdapter for KimiTeamRuntime<'_> {
         );
         Ok(harness_runtime_contract::ExecutionCycleOutcome {
             final_text,
-            provider_terminal_failure,
+            provider_terminal_failure: None,
             interrupt,
             close_requested_by_harness: close_requested,
             tool_call_count,

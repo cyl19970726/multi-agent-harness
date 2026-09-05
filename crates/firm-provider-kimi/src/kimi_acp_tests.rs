@@ -1308,29 +1308,54 @@ fn kimi_b4_silence_after_acceptance_never_cancels() {
     assert_eq!(outcome.interrupt, None);
 }
 
-/// C1 (kimi): a turn the provider ends with a failure stopReason AFTER the
-/// input was accepted settles its StartCycle receipt Unsatisfied — never
-/// Satisfied (#709). The fixture drives the real run_cycle: the acceptance
-/// update publishes the receipt, then the terminal reports `max_tokens`.
+/// C1 (kimi) — fail-closed via recovery, never Satisfied: a post-acceptance
+/// provider failure keeps Kimi's pre-S3 recovery semantics. The real
+/// run_cycle returns Err carrying the provider reason (the path the runtime
+/// adapter stops at RecoveryRequired), so execute_control produces NO
+/// receipt for the failed cycle; and the only settlement such a failure
+/// could ever derive is Unsatisfied (#709, the three team_run_api recovery
+/// tests are the checked-in contract for the Err path).
 #[test]
-fn kimi_c1_terminal_failure_settles_unsatisfied() {
-    let outcome = drive_kimi_cycle(
+fn kimi_post_acceptance_failure_is_never_satisfied_and_requires_recovery() {
+    let error = drive_kimi_cycle(
         &kimi_conformance_timeouts(),
         true,
         Some(terminal_frame(2, "max_tokens")),
         false,
         harness_runtime_contract::CycleControl::default,
     )
-    .expect("a provider terminal failure after acceptance still returns an outcome");
-    let failure = outcome
-        .provider_terminal_failure
-        .as_ref()
-        .expect("max_tokens maps to a provider terminal failure");
-    assert!(failure.reason.contains("max_tokens"), "{failure:?}");
-    let receipt = harness_runtime_contract::EffectReceipt::for_cycle(
-        "conformance-c1",
-        harness_core::ProviderBindingAdmission::Active,
-        harness_runtime_contract::CycleSettlement::from_cycle_outcome(&outcome),
+    .expect_err("a post-acceptance provider failure must stop at the recovery path");
+    assert!(error.contains("KIMI_CYCLE_PROVIDER_ERROR"), "{error}");
+    assert!(error.contains("max_tokens"), "{error}");
+
+    // The settlement plane agrees: represented as typed settlement, the same
+    // provider terminal failure derives Unsatisfied — there is no path from
+    // this failure to a Satisfied receipt.
+    let settlement = harness_runtime_contract::CycleSettlement::new(
+        harness_runtime_contract::NativeCycleCorrelation {
+            provider_input_id: "kimi-acp-prompt:2".into(),
+            input_acceptance_receipt: harness_runtime_contract::ControlTransportReceipt {
+                command: "prompt".into(),
+                response_id: Some("kimi-acp-prompt:2".into()),
+                success: true,
+            },
+            terminal_provider_input_id: Some("kimi-acp-prompt:2".into()),
+            exact_terminal_ref: Some(
+                "kimi_acp.session_prompt:kimi-acp-prompt:2:stop_reason=max_tokens".into(),
+            ),
+        },
+        harness_runtime_contract::CycleTerminalStatus::Observed,
+        Some(harness_runtime_contract::ProviderTerminalFailure {
+            reason: error,
+            http_status: None,
+        }),
+        harness_runtime_contract::CycleInterruptSettlement::None,
     );
-    harness_runtime_contract::assert_c1_terminal_failure_unsatisfied(&receipt).expect("C1");
+    let receipt = harness_runtime_contract::EffectReceipt::for_cycle(
+        "kimi-post-acceptance-failure",
+        harness_core::ProviderBindingAdmission::Active,
+        settlement,
+    );
+    harness_runtime_contract::assert_c1_terminal_failure_unsatisfied(&receipt)
+        .expect("a provider terminal failure can never settle Satisfied");
 }
