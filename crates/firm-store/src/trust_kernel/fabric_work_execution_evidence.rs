@@ -1,7 +1,9 @@
 //! Provider-receipt evidence for a Work execution: the one canonical
 //! `WorkDelivery` a member's semantic report must be able to name before the
 //! kernel admits it (moved out of `fabric_work_execution.rs` as the first
-//! slice of GitHub #847; pure move, no behaviour change).
+//! slice of GitHub #847; pure move, no behaviour change). Its tests stay in
+//! `trust_kernel_tests` (the Work responsibility admission and close-cutover
+//! suites); keep them there when slicing further.
 
 use super::*;
 

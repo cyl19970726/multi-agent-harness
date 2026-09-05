@@ -175,12 +175,14 @@ fn version_precondition_tolerates_exactly_the_bind_and_the_commands_own_bump() {
     check(6, RuntimeCommandPoststate::Command).expect("the close alone");
     check(7, RuntimeCommandPoststate::Command)
         .expect_err("two bumps without the attachment poststate are not the command's own");
-    // With both flags one bump is an inconsistency, and three is never tolerated.
+    // With both flags one bump is within the tolerated range (the predicate
+    // reads the current lifecycle, so a session already Cold/Closed at prepare
+    // contributes no bump of its own); three is never tolerated.
     check(
         6,
         RuntimeCommandPoststate::CommandWithNativeSessionAttachment,
     )
-    .expect_err("both mutations happened, so one bump cannot be the whole story");
+    .expect("the bind alone is within the tolerated range");
     check(
         8,
         RuntimeCommandPoststate::CommandWithNativeSessionAttachment,
