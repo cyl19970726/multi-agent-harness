@@ -39,7 +39,11 @@ impl MultiTeamDaemon {
             };
             for run in runs {
                 if run.execution_node_id != self.node_id
-                    || !matches!(run.status, harness_core::TeamRunStatus::Running)
+                    || !matches!(
+                        run.status,
+                        harness_core::TeamRunStatus::Running
+                            | harness_core::TeamRunStatus::Completed
+                    )
                     || managed_ids.contains(&(space.id.clone(), run.id.clone()))
                 {
                     continue;
@@ -61,11 +65,13 @@ impl MultiTeamDaemon {
                     }
                 }
                 // Close freezes a MemberRun without completing its TeamRun.
-                // A Running TeamRun with no Active coordination member is
-                // therefore dormant, not orphaned runtime work. Re-adopting
+                // A Running or Completed TeamRun with no active managed member
+                // is therefore dormant, not orphaned runtime work. Re-adopting
                 // it would create an unbounded Supervisor-generation loop;
                 // Reopen makes the same row Active again and the next scan (or
-                // explicit daemon start request) becomes eligible.
+                // explicit daemon start request) becomes eligible. Completed
+                // runs with an unclosed managed member remain eligible so a
+                // daemon restart cannot strand the ordinary Close lane.
                 match team_run_has_active_member(&store, &run.id) {
                     Ok(true) => {}
                     Ok(false) => continue,
@@ -505,8 +511,5 @@ impl Drop for SettlingGuard<'_> {
 fn team_run_has_active_member(store: &HarnessStore, run_id: &str) -> CliResult<bool> {
     Ok(crate::latest_member_runs_in_append_order(store)?
         .into_iter()
-        .any(|member| {
-            member.team_run_id == run_id
-                && member.coordination_status == harness_core::MemberCoordinationStatus::Active
-        }))
+        .any(|member| crate::completed_run_members::is_unclosed_managed_member(&member, run_id)))
 }
