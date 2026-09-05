@@ -107,6 +107,17 @@ Work record and starts the next slice; unrelated active Works may carry
 forward unchanged). Review depth is proportional to risk;
 Proposal/Decision/outcome evaluation is not a universal product chain.
 
+Risk is decided by a predicate, not by directory. A repository change is
+kernel-tier (K) when it changes an admission, fence, settlement, or permission
+decision; a `deny_unknown_fields` struct or durable schema field; a lease,
+machine-authority, or generation rule; or the statement of an invariant
+(including an ADR that authorizes such a change). K submissions get an
+independent Opus review bound to the exact SHA plus the full gate, and a live
+check when runtime behaviour changes. Everything else is projection-tier (P):
+CI plus one first-pass review. A mixed change takes the highest tier. The
+predicate and its examples live in the development Skill's reviewer contract
+([.agents/skills/agentfirm-development-loop/references/reviewer.md](../../../.agents/skills/agentfirm-development-loop/references/reviewer.md)).
+
 Each MemberRun snapshots its concrete `ProviderIntegrationProfile`; platform
 capability, execution-mode capability, adapter coverage, and product permission
 are separate claims. Provider-native questions that actually pause a turn are

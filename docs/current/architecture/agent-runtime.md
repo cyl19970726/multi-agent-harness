@@ -109,18 +109,36 @@ cannot claim timely wake, provider receipt, or ACK. Historical `external` values
 this mode without fabricating managed evidence, and there is no silent fallback
 between modes.
 
-Work events, Messages, and runtime/recovery attentions remain independent
-canonical planes. The daemon may batch them into the next Host cycle, but
-delivery does not authorize Work mutation and provider completion does not
-mean Host acceptance. Ordinary progress is batched; decisions, blocked Work,
+Work events and Messages remain independent canonical planes; runtime and
+recovery attentions (`HostAttention`) are the Host-notification delivery
+ledger derived from them, the peer of `CanonicalWorkDelivery` and
+`CanonicalMessageDelivery`, not a fourth plane (ADR 0064). The daemon may
+batch them into the next Host cycle. Delivery does not authorize Work
+mutation, with exactly one documented exception: an un-acknowledged
+HostAttention is the Host-intake precondition of `retarget_work_execution`,
+and a `WorkReviewRequested` attention row is provenance evidence for a
+terminal Work. Provider completion does not mean Host acceptance. Ordinary
+progress is batched; decisions, blocked Work,
 submission, direct Messages, and recovery facts can wake an idle managed Host.
 Host-authored status updates do not recursively wake that same Host.
 
-`TeamRun` and `MemberRun` remain internal diagnostics and history
-projections. They are not provider runtime authority and never scope durable
-identity or Work responsibility. No CLI, HTTP,
-Dashboard, adapter, or mutable Store seam may dispatch, resume, interrupt, or
-stop a provider through them.
+`TeamRun` remains an internal coordination and history projection.
+`MemberRun` carries the member's coordination status and its
+**adapter-process epoch** (`runtime_generation`): Reopen, recovery, and
+non-clean runtime replacement advance it, and `RuntimeBindingFence` requires
+the exact value before any provider effect (ADR 0065).
+`AgentSession.runtime_generation` is the **provider-session epoch**: immutable
+per session row, embedded in the session id, equal to the MemberRun epoch at
+mint for Team-path sessions, and deliberately independent afterwards —
+Close/Reopen advances the adapter-process epoch while retaining the same
+AgentSession, native transcript, and WorkExecutionBindings. The relation
+between the two epochs holds only for the MemberRun that minted the session
+row; a session reused by a later MemberRun, a session minted by the
+standalone session-start route, and an `external_interactive` Host (no
+AgentSession) are outside it. Neither object scopes durable identity or Work
+responsibility, and no CLI, HTTP, Dashboard, adapter, or mutable Store seam
+may dispatch, resume, interrupt, or stop a provider through them; every
+provider effect goes through a `RuntimeCommand`.
 
 ## Authority flow
 
@@ -186,10 +204,12 @@ responsibility change after the binding revision invalidates it even if
 ownership later returns to the same member; this closes responsibility ABA
 without a second epoch.
 
-`Result` has one narrow settlement exception for an honest Close → Reopen. If
-the provider effect is already `ProviderReceived`, the same stable
-AgentMember, same MemberRun id, and same exact AgentSession generation may
-submit the Result from a higher current MemberRun runtime generation. The
+`Result` has one narrow settlement exception for an honest Close → Reopen, a
+direct consequence of the two-epoch model (ADR 0065). If the provider effect
+is already `ProviderReceived`, the same stable AgentMember, same MemberRun id,
+and same exact provider-session epoch (`AgentSession.runtime_generation`) may
+submit the Result from a higher current adapter-process epoch
+(`MemberRun.runtime_generation`). The
 operation revalidates the unchanged responsibility and provider-received
 delivery, then atomically releases the old binding. It does not admit or replay
 a provider effect, create a successor delivery, or authorize Progress,
