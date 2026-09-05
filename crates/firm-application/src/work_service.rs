@@ -42,6 +42,14 @@ pub trait WorkPersistence {
         reason: Option<&str>,
         context: WorkCommandContext,
     ) -> Result<Work, Self::Error>;
+    fn recover_lost_work_execution(
+        &self,
+        work_id: &str,
+        expected_version: u64,
+        execution_space_id: &str,
+        reason: Option<&str>,
+        context: WorkCommandContext,
+    ) -> Result<Work, Self::Error>;
     fn release_work_as_host(
         &self,
         work_id: &str,
@@ -152,6 +160,7 @@ pub enum WorkActionKind {
     ReplaceDependencies,
     AssignMembership,
     Redeliver,
+    RecoverLostExecution,
     ReleaseHost,
     ReleaseMember,
     Claim,
@@ -178,6 +187,16 @@ pub enum WorkAction {
     /// Host re-authorization of an open, never-started Work whose delivery is
     /// frozen on an AgentSession generation the member no longer runs.
     Redeliver {
+        work_id: String,
+        expected_version: u64,
+        execution_space_id: String,
+        reason: Option<String>,
+        context: WorkCommandContext,
+    },
+    /// Host recovery of a Work whose execution authority is provably lost:
+    /// its binding was invalidated by a lost runtime generation, or is frozen
+    /// on MemberRun/AgentSession epochs that can never pass the fence again.
+    RecoverLostExecution {
         work_id: String,
         expected_version: u64,
         execution_space_id: String,
@@ -254,6 +273,7 @@ impl WorkAction {
             Self::ReplaceDependencies(_) => WorkActionKind::ReplaceDependencies,
             Self::AssignMembership { .. } => WorkActionKind::AssignMembership,
             Self::Redeliver { .. } => WorkActionKind::Redeliver,
+            Self::RecoverLostExecution { .. } => WorkActionKind::RecoverLostExecution,
             Self::ReleaseHost { .. } => WorkActionKind::ReleaseHost,
             Self::ReleaseMember { .. } => WorkActionKind::ReleaseMember,
             Self::Claim { .. } => WorkActionKind::Claim,
@@ -273,6 +293,7 @@ impl WorkAction {
             Self::ReplaceDependencies(command) => &command.context,
             Self::AssignMembership { context, .. }
             | Self::Redeliver { context, .. }
+            | Self::RecoverLostExecution { context, .. }
             | Self::ReleaseHost { context, .. }
             | Self::ReleaseMember { context, .. }
             | Self::Claim { context, .. }
@@ -329,6 +350,19 @@ impl<'a, P: WorkPersistence + ?Sized> WorkApplication<'a, P> {
                 reason,
                 context,
             } => self.redeliver(
+                &work_id,
+                expected_version,
+                &execution_space_id,
+                reason.as_deref(),
+                context,
+            )?,
+            WorkAction::RecoverLostExecution {
+                work_id,
+                expected_version,
+                execution_space_id,
+                reason,
+                context,
+            } => self.recover_lost_execution(
                 &work_id,
                 expected_version,
                 &execution_space_id,
@@ -486,6 +520,27 @@ impl<'a, P: WorkPersistence + ?Sized> WorkApplication<'a, P> {
         context: WorkCommandContext,
     ) -> Result<Work, P::Error> {
         self.port.redeliver_work_to_current_session(
+            work_id,
+            expected_version,
+            execution_space_id,
+            reason,
+            context,
+        )
+    }
+
+    /// Return a Work whose execution authority is provably lost to the
+    /// dispatchable state (releasing its dead binding when one still claims
+    /// to be executable) so the ordinary delivery path can bind and wake the
+    /// member again. Fails closed whenever the loss cannot be proven.
+    pub fn recover_lost_execution(
+        &self,
+        work_id: &str,
+        expected_version: u64,
+        execution_space_id: &str,
+        reason: Option<&str>,
+        context: WorkCommandContext,
+    ) -> Result<Work, P::Error> {
+        self.port.recover_lost_work_execution(
             work_id,
             expected_version,
             execution_space_id,
@@ -681,6 +736,13 @@ mod tests {
                 reason: Some("member reopened".into()),
                 context: context(),
             },
+            WorkAction::RecoverLostExecution {
+                work_id: "work-1".into(),
+                expected_version: 1,
+                execution_space_id: "space-1".into(),
+                reason: Some("daemon lost the generation".into()),
+                context: context(),
+            },
             WorkAction::ReleaseHost {
                 work_id: "work-1".into(),
                 expected_version: 1,
@@ -751,6 +813,7 @@ mod tests {
                 WorkActionKind::ReplaceDependencies,
                 WorkActionKind::AssignMembership,
                 WorkActionKind::Redeliver,
+                WorkActionKind::RecoverLostExecution,
                 WorkActionKind::ReleaseHost,
                 WorkActionKind::ReleaseMember,
                 WorkActionKind::Claim,

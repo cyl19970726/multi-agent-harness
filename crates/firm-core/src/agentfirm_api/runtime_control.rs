@@ -401,6 +401,11 @@ pub const WORK_DELIVERY_SUPERSEDED_BY_NODE_DAEMON_DRAIN: &str =
 /// process/process-group termination evidence instead of an in-process drain.
 pub const WORK_DELIVERY_SUPERSEDED_BY_NODE_DAEMON_PREDECESSOR_RECOVERY: &str =
     "WORK_DELIVERY_SUPERSEDED_BY_NODE_DAEMON_PREDECESSOR_RECOVERY";
+/// The same supersession proved by the Host from durable epochs alone: the
+/// exact MemberRun/AgentSession generation the delivery was bound to can never
+/// pass the runtime fence again (`team-run work recover-lost-execution`).
+pub const WORK_DELIVERY_SUPERSEDED_BY_HOST_LOST_EXECUTION_RECOVERY: &str =
+    "WORK_DELIVERY_SUPERSEDED_BY_HOST_LOST_EXECUTION_RECOVERY";
 
 /// The exact refusal the Store returns when a Session interrupted by a
 /// NodeDaemon drain is asked to re-enter the ordinary lane before its killed
@@ -420,9 +425,10 @@ pub const AGENT_SESSION_DRAIN_RESUME_NOT_YET_RESUMABLE: &str =
 /// generation, never that the killed turn completed or failed semantically.
 /// The delivery fold and the writers that emit them read this one list, so
 /// they cannot drift apart, and no code enters it before a writer emits it.
-pub const LOST_RUNTIME_GENERATION_DELIVERY_FAILURE_CODES: [&str; 2] = [
+pub const LOST_RUNTIME_GENERATION_DELIVERY_FAILURE_CODES: [&str; 3] = [
     WORK_DELIVERY_SUPERSEDED_BY_NODE_DAEMON_DRAIN,
     WORK_DELIVERY_SUPERSEDED_BY_NODE_DAEMON_PREDECESSOR_RECOVERY,
+    WORK_DELIVERY_SUPERSEDED_BY_HOST_LOST_EXECUTION_RECOVERY,
 ];
 
 /// True when `code` is one of [`LOST_RUNTIME_GENERATION_DELIVERY_FAILURE_CODES`].
