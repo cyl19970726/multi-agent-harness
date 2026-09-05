@@ -107,6 +107,17 @@ resolution: Accepted | Cancelled | Failed       (exists only at Closed)
   completion status alone is never acceptance. Request-changes returns
   Review → Open; the scheduler then admits the next exact
   binding/delivery generation before the member can Start again.
+- **Acceptance does not wake a member.** A managed member's next provider
+  cycle starts only from three wake sources: a delivery of an assigned or
+  redelivered Work, a `response-required` Message, or the member's own
+  active Work. Host acceptance moves a Work to `Closed`; it never starts
+  the member's next cycle. So never park a Work `blocked` expecting
+  acceptance — or another Work's completion — to resume it. Keep the
+  standing Work active while running round Works when the one-Active-Work
+  rule allows; when parking is unavoidable, the block note must name the
+  exact Host action you wait for ("resume me with a response-required
+  message after W-x is accepted") so the Host can send the wake
+  deliberately.
 - **Assignment never travels by message.** Work assignment is a Work-module
   operation; a Message may explain, ask, or announce — it never changes Work
   owner or status.
@@ -270,6 +281,10 @@ Member essentials (full sequence in the member loop reference):
   --body "<markdown>" [--work-id <incoming-work-id>] [--response-required]
 "$FIRM_BIN" member message request-decision --body "<decision, options, recommendation>"
 ```
+
+While blocked, remember acceptance does not wake you: name the exact Host
+action you wait for in the block note; the resume arrives as a Work
+delivery or a `response-required` Message, never from acceptance itself.
 
 These Member commands are the authenticated Member Role Action of the
 server-built member view: the server resolves your AgentMember, current
