@@ -132,5 +132,17 @@ fn post_team_run_message_and_start_async() {
         .find(|message| message["id"].as_str() == Some(host_handoff_id.as_str()))
         .map(|message| message["deliveries"][0].clone())
         .expect("canonical informational delivery");
-    assert_eq!(delivery["status"].as_str(), Some("queued"));
+    // The run was started above, so the recipient's runtime may legitimately
+    // have advanced the delivery past creation by the time this snapshot is
+    // read. The proof point is that the delivery exists for the member and is
+    // healthy — the retired-ACK fence above carries the "no manual ACK"
+    // proof — so assert the documented healthy states (team_messaging.rs
+    // delivery projection): queued (Queued|Routed), claimed (Claimed),
+    // delivered (ProviderReceived), acknowledged (Acknowledged). "failed" or
+    // "expired" would be a genuine delivery defect and still fails here.
+    assert!(
+        ["queued", "claimed", "delivered", "acknowledged"]
+            .contains(&delivery["status"].as_str().unwrap_or_default()),
+        "delivery must be queued or a documented healthy successor state once the run is started: {delivery}"
+    );
 }
