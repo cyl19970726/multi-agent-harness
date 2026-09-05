@@ -53,6 +53,101 @@ pub(super) enum AllowedDocPathKind {
     RootDoc,
 }
 
+#[derive(Debug, Eq, PartialEq)]
+pub(super) enum WorkspaceFileResolution {
+    File(PathBuf),
+    Missing,
+    OutsideWorkspace,
+}
+
+pub(super) fn percent_decode_query_value(value: &str) -> Result<String, String> {
+    let mut decoded = Vec::with_capacity(value.len());
+    let bytes = value.as_bytes();
+    let mut index = 0;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'%' if index + 2 < bytes.len() => {
+                let high = (bytes[index + 1] as char)
+                    .to_digit(16)
+                    .ok_or_else(|| "invalid percent escape".to_string())?;
+                let low = (bytes[index + 2] as char)
+                    .to_digit(16)
+                    .ok_or_else(|| "invalid percent escape".to_string())?;
+                decoded.push((high * 16 + low) as u8);
+                index += 3;
+            }
+            b'%' => return Err("incomplete percent escape".to_string()),
+            b'+' => {
+                decoded.push(b' ');
+                index += 1;
+            }
+            byte => {
+                decoded.push(byte);
+                index += 1;
+            }
+        }
+    }
+    String::from_utf8(decoded).map_err(|_| "path is not valid UTF-8".to_string())
+}
+
+/// Resolve one file against canonical workspace roots. Existing targets and
+/// their roots are canonicalized, so a symlink cannot escape the boundary.
+/// Missing targets are classified only after their nearest existing ancestor
+/// has been checked against the same roots.
+pub(super) fn resolve_workspace_file(
+    requested: &Path,
+    relative_base: &Path,
+    allowed_roots: &[PathBuf],
+) -> Result<WorkspaceFileResolution, String> {
+    if requested
+        .components()
+        .any(|component| matches!(component, std::path::Component::ParentDir))
+    {
+        return Ok(WorkspaceFileResolution::OutsideWorkspace);
+    }
+    let roots = allowed_roots
+        .iter()
+        .filter_map(|root| root.canonicalize().ok())
+        .collect::<Vec<_>>();
+    if roots.is_empty() {
+        return Err("no readable workspace roots are available".to_string());
+    }
+    let candidate = if requested.is_absolute() {
+        requested.to_path_buf()
+    } else {
+        relative_base.join(requested)
+    };
+    match candidate.canonicalize() {
+        Ok(canonical) => {
+            if !roots.iter().any(|root| canonical.starts_with(root)) || !canonical.is_file() {
+                return Ok(WorkspaceFileResolution::OutsideWorkspace);
+            }
+            Ok(WorkspaceFileResolution::File(canonical))
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            let mut ancestor = candidate.as_path();
+            while !ancestor.exists() {
+                let Some(parent) = ancestor.parent() else {
+                    return Ok(WorkspaceFileResolution::OutsideWorkspace);
+                };
+                ancestor = parent;
+            }
+            let canonical_ancestor = ancestor
+                .canonicalize()
+                .map_err(|error| format!("cannot resolve path ancestor: {error}"))?;
+            if roots
+                .iter()
+                .any(|root| canonical_ancestor.starts_with(root))
+            {
+                Ok(WorkspaceFileResolution::Missing)
+            } else {
+                Ok(WorkspaceFileResolution::OutsideWorkspace)
+            }
+        }
+        Err(error) => Err(format!("cannot resolve path: {error}")),
+    }
+}
+
 pub(super) fn allowed_doc_path_kind(decoded: &str) -> Result<AllowedDocPathKind, String> {
     if decoded.contains("..") {
         return Err(format!("path must contain no ..: {decoded}"));
@@ -78,38 +173,50 @@ pub(super) fn read_allowed_doc(request_target: &str) -> Result<(String, String),
         .split('&')
         .find_map(|pair| pair.strip_prefix("path="))
         .ok_or_else(|| "missing ?path= parameter".to_string())?;
-    // Minimal percent-decoding (paths are simple: slashes + alnum + .-_).
-    let decoded = raw
-        .replace("%2F", "/")
-        .replace("%2f", "/")
-        .replace("%20", " ");
+    let decoded = percent_decode_query_value(raw)?;
     let path_kind = allowed_doc_path_kind(&decoded)?;
     let base = std::env::current_dir()
         .and_then(|dir| dir.canonicalize())
         .map_err(|error| format!("cannot resolve working dir: {error}"))?;
-    let full = base
-        .join(&decoded)
-        .canonicalize()
-        .map_err(|error| format!("doc not found: {decoded} ({error})"))?;
+    let requested = Path::new(&decoded);
     match path_kind {
         AllowedDocPathKind::DocsTree => {
             let docs_root = base
                 .join("docs")
                 .canonicalize()
                 .map_err(|error| format!("cannot resolve docs/: {error}"))?;
-            if !full.starts_with(&docs_root) {
-                return Err(format!("resolved path escapes docs/: {decoded}"));
-            }
+            let full = match resolve_workspace_file(requested, &base, &[docs_root])? {
+                WorkspaceFileResolution::File(path) => path,
+                WorkspaceFileResolution::Missing => {
+                    return Err(format!("doc not found: {decoded}"))
+                }
+                WorkspaceFileResolution::OutsideWorkspace => {
+                    return Err(format!("resolved path escapes docs/: {decoded}"))
+                }
+            };
+            let content =
+                std::fs::read_to_string(&full).map_err(|error| format!("read failed: {error}"))?;
+            Ok((decoded, content))
         }
         AllowedDocPathKind::RootDoc => {
+            let full = match resolve_workspace_file(requested, &base, std::slice::from_ref(&base))?
+            {
+                WorkspaceFileResolution::File(path) => path,
+                WorkspaceFileResolution::Missing => {
+                    return Err(format!("doc not found: {decoded}"))
+                }
+                WorkspaceFileResolution::OutsideWorkspace => {
+                    return Err(format!("resolved path escapes repository root: {decoded}"))
+                }
+            };
             if full.parent() != Some(base.as_path()) {
                 return Err(format!("resolved path escapes repository root: {decoded}"));
             }
+            let content =
+                std::fs::read_to_string(&full).map_err(|error| format!("read failed: {error}"))?;
+            Ok((decoded, content))
         }
     }
-    let content =
-        std::fs::read_to_string(&full).map_err(|error| format!("read failed: {error}"))?;
-    Ok((decoded, content))
 }
 
 pub(super) fn write_http_json<T: serde::Serialize, W: Write>(

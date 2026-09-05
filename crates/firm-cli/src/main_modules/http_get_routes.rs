@@ -74,6 +74,39 @@ impl HttpExchange<'_> {
                 .into_iter()
                 .map(|space| (space.id, HarnessStore::new(space.store_root)))
                 .collect::<Vec<_>>();
+            if let Some(route_project) = path_only
+                .strip_prefix("/v1/projects/")
+                .and_then(|rest| rest.strip_suffix("/source"))
+                .filter(|project| !project.is_empty() && !project.contains('/'))
+            {
+                let project = match projects
+                    .exact_project_context_for(Some(route_project), project_id)
+                {
+                    Ok(project) => project,
+                    Err(error) => {
+                        write_http_json(
+                            stream,
+                            "404 Not Found",
+                            &serde_json::json!({"ok":false,"error":{"code":"PROJECT_BINDING_NOT_FOUND","message":error.to_string()}}),
+                        )?;
+                        return Ok(true);
+                    }
+                };
+                match http_source_viewer::source_viewer_response(
+                    path,
+                    &project,
+                    store_owned,
+                    project_id,
+                ) {
+                    Ok(response) => write_http_json(stream, "200 OK", &response)?,
+                    Err(detail) => write_http_json(
+                        stream,
+                        "400 Bad Request",
+                        &serde_json::json!({"ok":false,"error":{"code":"INVALID_SOURCE_REQUEST","message":detail}}),
+                    )?,
+                }
+                return Ok(true);
+            }
             let role_view_store = if path_only.starts_with("/v1/views/") {
                 match projects.scoped_store_for_project(
                     store_owned,

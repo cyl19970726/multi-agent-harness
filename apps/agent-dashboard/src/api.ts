@@ -392,6 +392,24 @@ export async function fetchDoc(
   return (await response.json()) as { path: string; content: string };
 }
 
+export interface SourceViewerDocument {
+  kind: "markdown" | "text" | "binary" | "missing" | "outside_workspace";
+  path: string;
+  size: number;
+  line?: number;
+  content?: string;
+}
+
+export async function fetchSource(baseUrl: string, project: string, space: string, path: string, line?: number): Promise<SourceViewerDocument> {
+  const normalized = normalizeBaseUrl(baseUrl);
+  if (!normalized) throw new Error("Harness API URL is required");
+  const params = new URLSearchParams({ path, space, project });
+  if (line) params.set("line", String(line));
+  const response = await fetch(`${normalized}/v1/projects/${encodeURIComponent(project)}/source?${params}`);
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  return await response.json() as SourceViewerDocument;
+}
+
 /**
  * Fetch the docs manifest (`docs/registry.json`) and return its `documents`
  * array. Reuses the allow-listed `/v1/docs` route — the registry lives under

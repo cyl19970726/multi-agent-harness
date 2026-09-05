@@ -29,6 +29,8 @@ import {
 } from "@/components/ui/tooltip";
 import { Kbd, StatusDot } from "@/components/workbench/atoms";
 import { ProvenanceFooter } from "@/components/workbench/ProvenanceFooter";
+import { EvidenceLinkProvider } from "@/components/workbench/EvidenceLinkContext";
+import { SourceViewer } from "@/components/workbench/SourceViewer";
 
 import type { WorkbenchModel } from "../model/readModel";
 import type { RoleActionExecutor } from "../model/roleViews";
@@ -195,7 +197,8 @@ export function WorkbenchShell({
         />}
         <ActionErrorBanner error={sourceError} />
         <main className="relative flex min-h-0 min-w-0 flex-1 overflow-hidden">
-          {(() => {
+          <EvidenceLinkProvider open={(target, messageId) => updateSelection({ sourcePath: target.path, sourceLine: target.line, sourceMessageId: messageId })}>
+            {(() => {
             const surface = (
               <SurfaceSwitch
                 model={model}
@@ -229,7 +232,19 @@ export function WorkbenchShell({
                 <div className="mx-auto w-full max-w-[1480px] p-3 sm:p-5 xl:p-6">{surface}</div>
               </div>
             );
-          })()}
+            })()}
+          </EvidenceLinkProvider>
+          {selection.sourcePath && (
+            <SourceViewer
+              apiUrl={apiUrl}
+              project={selectedProjectId}
+              space={selectedSpaceId}
+              path={selection.sourcePath}
+              line={selection.sourceLine}
+              messageId={selection.sourceMessageId}
+              onBack={() => window.history.back()}
+            />
+          )}
         </main>
         <ProvenanceFooter apiUrl={apiUrl} projectId={selectedProjectId} spaceId={selectedSpaceId} />
       </div>

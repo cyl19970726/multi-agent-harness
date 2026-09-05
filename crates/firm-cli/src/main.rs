@@ -209,6 +209,8 @@ use http_team_actions::*;
 #[path = "main_modules/http_io.rs"]
 mod http_io;
 use http_io::*;
+#[path = "main_modules/http_source_viewer.rs"]
+mod http_source_viewer;
 #[path = "main_modules/runtime_delivery_setup.rs"]
 mod runtime_delivery_setup;
 use runtime_delivery_setup::*;

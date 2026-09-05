@@ -67,6 +67,10 @@ export interface SelectionState {
   workAssignee?: string;
   workStatus?: string;
   workPriority?: string;
+  /** In-app, workspace-bounded evidence viewer state. */
+  sourcePath?: string;
+  sourceLine?: number;
+  sourceMessageId?: string;
 }
 
 /**
@@ -185,6 +189,12 @@ function selectionFromSearch(search: string, pathname = "/"): SelectionState {
     const value = params.get(param);
     if (value) next[key] = value;
   }
+  const sourcePath = params.get("source");
+  if (sourcePath) next.sourcePath = sourcePath;
+  const sourceLine = Number(params.get("sourceLine"));
+  if (Number.isInteger(sourceLine) && sourceLine > 0) next.sourceLine = sourceLine;
+  const sourceMessage = params.get("sourceMessage");
+  if (sourceMessage) next.sourceMessageId = sourceMessage;
   return next;
 }
 
@@ -277,6 +287,9 @@ function locationForSelection(selection: SelectionState): {url:string;query:stri
   setOrDelete("workAssignee", selection.workAssignee);
   setOrDelete("workStatus", selection.workStatus);
   setOrDelete("workPriority", selection.workPriority);
+  setOrDelete("source", selection.sourcePath);
+  setOrDelete("sourceLine", selection.sourceLine ? String(selection.sourceLine) : undefined);
+  setOrDelete("sourceMessage", selection.sourceMessageId);
 
   const query = params.toString();
   const url = `${window.location.pathname}${query ? `?${query}` : ""}${window.location.hash}`;
@@ -306,6 +319,9 @@ const selectionCompareKeys = [
   "workAssignee",
   "workStatus",
   "workPriority",
+  "sourcePath",
+  "sourceLine",
+  "sourceMessageId",
 ] as const;
 
 function sameSelection(left: SelectionState, right: SelectionState): boolean {

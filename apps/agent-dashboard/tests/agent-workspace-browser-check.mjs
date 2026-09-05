@@ -44,7 +44,7 @@ const works=[
 ];
 const messages=[
   {message_id:"message-1",work_id:baseWork.work_id,sender:{kind:"agent_member",id:"agent-host"},recipients:[{kind:"agent_member",id:"agent-mira"}],body:"Keep the authored exchange primary. Compact tool and runtime facts underneath it.",kind:"message",correlation_id:"conversation-1",causation_id:null,response_intent:"response_required",reply_eligible:true,created_at:"2026-08-12T08:00:00Z",deliveries:[{id:"delivery-1",recipient_member_run_id:"member-run-mira",status:"provider_received",version:2,provider_receipt_id:"receipt-1",updated_at:"2026-08-12T08:00:02Z"}]},
-  {message_id:"message-2",work_id:baseWork.work_id,sender:{kind:"agent_member",id:"agent-mira"},recipients:[{kind:"agent_member",id:"agent-host"}],body:"Implemented the Team-scoped Session projection. The Host can inspect this Member's native events.",kind:"message",correlation_id:"conversation-1",causation_id:"message-1",response_intent:"informational",reply_eligible:false,created_at:"2026-08-12T08:04:00Z",deliveries:[]},
+  {message_id:"message-2",work_id:baseWork.work_id,sender:{kind:"agent_member",id:"agent-mira"},recipients:[{kind:"agent_member",id:"agent-host"}],body:"Implemented the Team-scoped Session projection. See [local evidence](docs/evidence.md:2) and [external evidence](https://example.com).",kind:"message",correlation_id:"conversation-1",causation_id:"message-1",response_intent:"informational",reply_eligible:false,created_at:"2026-08-12T08:04:00Z",deliveries:[]},
   {message_id:"message-3",work_id:works[1].work_id,sender:{kind:"agent_member",id:"agent-host"},recipients:[{kind:"agent_member",id:"agent-mira"}],body:"Please include exact-SHA Session, Messages and Work screenshots in the final bundle.",kind:"message",correlation_id:"conversation-2",causation_id:null,response_intent:"response_required",reply_eligible:true,created_at:"2026-08-12T08:06:00Z",deliveries:[{id:"delivery-3",recipient_member_run_id:"member-run-mira",status:"queued",version:1,provider_receipt_id:null,updated_at:"2026-08-12T08:06:00Z"}]},
   {message_id:"message-4",work_id:works[3].work_id,sender:{kind:"agent_member",id:"agent-mira"},recipients:[{kind:"agent_member",id:"agent-host"}],body:"Body text and metadata now separate by weight and contrast instead of tiny-size differences.",kind:"message",correlation_id:"conversation-3",causation_id:null,response_intent:"informational",reply_eligible:false,created_at:"2026-08-12T08:08:00Z",deliveries:[]},
   {message_id:"message-5",work_id:works[4].work_id,sender:{kind:"agent_member",id:"agent-host"},recipients:[{kind:"agent_member",id:"agent-mira"}],body:"Keep the context rail limited to facts that change the selected Agent or Work decision.",kind:"message",correlation_id:"conversation-4",causation_id:null,response_intent:"response_required",reply_eligible:true,created_at:"2026-08-12T08:09:00Z",deliveries:[{id:"delivery-5",recipient_member_run_id:"member-run-mira",status:"provider_received",version:2,provider_receipt_id:"receipt-5",updated_at:"2026-08-12T08:09:02Z"}]},
@@ -139,6 +139,7 @@ try{
     else if(url.pathname==="/v1/spaces")body={spaces:[{id:"fixture-space",is_current:true}]};
     else if(url.pathname==="/v1/companies")body={companies:[]};
     else if(url.pathname==="/v1/snapshot"||url.pathname.includes("/snapshot"))body={generated_at:"2026-08-12T08:10:00Z",execution_space_id:"fixture-space",teams:[],team_runs:[],member_runs:[],execution_nodes:[],company_os:{}};
+    else if(url.pathname==="/v1/projects/fixture-project/source")body={kind:"markdown",path:"/fixture/worktree/docs/evidence.md",size:35,line:Number(url.searchParams.get("line")),content:"# Evidence\nselected source line\nDone."};
     else if(url.pathname==="/v1/views/viewer-context")body=viewerContext(token);
     else if(url.pathname.includes("team-workspace"))body=teamWorkspace;
     else if(url.pathname.includes("agent-workspace")){
@@ -243,6 +244,24 @@ try{
     await page.screenshot({path:join(evidenceDir,`member-event-detail--1440x1000--${capturedSourceSha}.png`),animations:"disabled"});
   }
   await page.getByRole("tab",{name:/Messages/}).click();await page.getByRole("button",{name:"inbox",exact:true}).waitFor();
+  if(!liveConfig){
+    await page.getByRole("tab",{name:/Session/}).click();
+    const localEvidence=page.getByRole("link",{name:"local evidence",exact:true});
+    await localEvidence.click();
+    await page.getByTestId("source-viewer").waitFor();
+    await page.getByText("selected source line",{exact:true}).first().waitFor();
+    assert.equal(await page.locator('[data-highlighted-line="2"]').count()>0,true,"source viewer did not highlight the cited line");
+    const viewerUrl=new URL(page.url());
+    assert.equal(viewerUrl.searchParams.get("team"),routeState.teamRun,"source viewer lost TeamRun context");
+    assert.equal(viewerUrl.searchParams.get("memberRun"),routeState.memberRun,"source viewer lost MemberRun context");
+    assert.equal(viewerUrl.searchParams.get("sourceMessage"),"message-2","source viewer lost selected Message context");
+    assert.equal(await page.getByRole("link",{name:"external evidence",exact:true}).getAttribute("href"),"https://example.com","external links no longer retain normal HTTP behavior");
+    await page.getByTestId("source-viewer").getByRole("button",{name:"Back",exact:true}).click();
+    await page.getByTestId("source-viewer").waitFor({state:"detached"});
+    assert.equal(new URL(page.url()).searchParams.get("team"),routeState.teamRun,"Back lost TeamRun context");
+    await localEvidence.waitFor();
+    await page.getByRole("tab",{name:/Messages/}).click();
+  }
   if(!liveConfig){assert.ok(await page.locator('[data-message-fact="work-context"]').count()>0,"Messages view does not label Work as context-only");assert.ok(await page.locator('[data-message-fact="delivery"]').count()>0,"Messages view omits Harness delivery state");assert.ok(await page.locator('[data-message-fact="provider-receipt"]').count()>0,"Messages view omits provider-receipt state");assert.equal(await page.getByRole("region",{name:"Conversation about Work context · work-outside-view"}).count(),1,"linked Message without a projected Work record was mislabeled as unlinked coordination");assert.equal(await page.getByRole("heading",{name:"General coordination",exact:true}).count(),1,"truly unlinked Message did not remain under General coordination");}
   await waitForStableWriteSurface(page);
   const visibleTogether=await page.evaluate(()=>{
