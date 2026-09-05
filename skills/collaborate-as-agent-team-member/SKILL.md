@@ -324,11 +324,14 @@ Harness has no Plan Gate and it blocks headless members indefinitely (ADR
   is refused with the same code).
 - **Report-only submissions.** When a Work produces no commit — a
   verification, audit, or plan review — submit with `--report-only` instead
-  of `--candidate-revision` (the two flags are mutually exclusive; naming
-  neither is a usage error). The submission then stores `candidate_revision`
-  null with a `report_only: true` marker, and report-contract items 1 and 3
-  do not apply. Never fabricate a candidate revision to make a report-only
-  Work fit the commit-shaped path.
+  of `--candidate-revision`; the two flags are mutually exclusive. The
+  submission then stores `candidate_revision` null with a
+  `report_only: true` marker, and report-contract items 1 and 3 do not
+  apply. Naming neither flag is refused with `REPORT_EVIDENCE_MISSING`,
+  except for a submission that carries a structured GitHub link
+  (`--github-pr owner/repo#N`): that link is the evidence, and the candidate
+  is derived from it (#369). Never fabricate a candidate revision to make a
+  report-only Work fit the commit-shaped path.
 
 Short example (one gate shown; list every gate the Work names):
 

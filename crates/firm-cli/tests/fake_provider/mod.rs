@@ -935,6 +935,9 @@ for line in sys.stdin:
                 '--member-run-id', member_run, '--expected-version', str(version + 1),
                 '--result', 'Fake Pi submitted the initial Work',
                 '--check-ref', 'check:fake-pi-round-1',
+                # DEV-214 (#830): the fake Pi member runs no repository work
+                # and produces no commit, so it submits report-only.
+                '--report-only',
             ], check=True, stdout=subprocess.DEVNULL)
         for event in [
             {{"type": "agent_start"}},

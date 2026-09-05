@@ -396,6 +396,9 @@ for await (const line of rl) {{
         "--expected-version", String(Number(workVersion) + 1),
         "--result", `turn-${{turns}} completed`,
         "--artifact-ref", "src/member.ts",
+        // DEV-214 (#830): the fake member edits src/member.ts and never
+        // commits, so its submission is report-only.
+        "--report-only",
       ]);
     }}
     emit("turn_complete", {{

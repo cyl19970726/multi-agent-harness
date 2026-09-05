@@ -882,8 +882,10 @@ pub(super) fn team_run_work_command(
                 expected_version,
             )?;
             // DEV-214 (#830): the same revision shape as `member work
-            // submit` — --candidate-revision <sha> or --report-only; both or
-            // neither is a local usage error naming both flags.
+            // submit` — --candidate-revision <sha> xor --report-only; naming
+            // both is a local usage error. Naming neither is left to the
+            // submission service, which derives the candidate from a
+            // structured GitHub link (#369) or refuses a bare submission.
             let (candidate_revision, report_only) = submit_revision_args(args)?;
             let outcome = crate::work_action_service::execute(
                 store,

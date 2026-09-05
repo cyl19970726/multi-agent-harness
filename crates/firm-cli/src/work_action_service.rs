@@ -668,11 +668,24 @@ fn conflict(code: &str, message: &str) -> StoreError {
 }
 
 /// DEV-214 (#830): the candidate revision a submission stores, or None for
-/// an explicit report-only submission. A report-only submission that still
-/// names a candidate is a typed refusal; any other submission must name a
-/// candidate revision — a missing or blank one is refused with
-/// REPORT_EVIDENCE_MISSING, and the #787 Verbatim-evidence validator runs
-/// only when a candidate is named (never for report-only submissions).
+/// an explicit report-only submission.
+///
+/// Exactly three shapes are accepted, and only the third is new:
+///
+/// 1. An explicitly named candidate revision is stored as given, after the
+///    #787 Verbatim-evidence validator has passed on it (unchanged).
+/// 2. #369 (unchanged since the GitHub linkage feature shipped): a
+///    submission that carries a structured GitHub link needs no explicit
+///    candidate — the candidate is derived from the submitted content by
+///    `harness_store::canonical_work_candidate_revision`, exactly as before
+///    DEV-214. The #787 validator never ran on a derived candidate and
+///    still does not: it is a commit-SHA check, and a derived candidate is
+///    a `work-content-fnv1a64:` digest, not a commit.
+/// 3. An explicit report-only submission stores no candidate at all;
+///    naming one anyway is a typed refusal.
+///
+/// Only a bare submission — no candidate, no structured GitHub link, not
+/// report-only — is refused, with REPORT_EVIDENCE_MISSING.
 fn resolve_submission_candidate(
     submission: &ResultSubmission,
 ) -> Result<Option<String>, StoreError> {
@@ -690,18 +703,27 @@ fn resolve_submission_candidate(
         return Ok(None);
     }
     // #787 (unchanged): a submission that names a candidate revision must
-    // carry the mandatory Verbatim evidence. Read-only/verification
-    // submissions skip this check entirely — and must now say so explicitly
-    // with report_only.
+    // carry the mandatory Verbatim evidence.
     if let Some(candidate_revision) = &submission.candidate_revision {
         validate_submission_evidence(&submission.result_summary, candidate_revision)?;
     }
-    named.map(str::to_string).map(Some).ok_or_else(|| {
-        conflict(
-            "REPORT_EVIDENCE_MISSING",
-            "a submission without a candidate revision requires --report-only",
-        )
-    })
+    if let Some(candidate_revision) = named {
+        return Ok(Some(candidate_revision.to_string()));
+    }
+    // #369 (unchanged): a structured GitHub link is itself the submitted
+    // evidence, so the candidate is derived from the submission content.
+    if !submission.github_links.is_empty() {
+        return Ok(Some(harness_store::canonical_work_candidate_revision(
+            &submission.result_summary,
+            &submission.artifact_refs,
+            &submission.check_refs,
+            &submission.github_links,
+        )));
+    }
+    Err(conflict(
+        "REPORT_EVIDENCE_MISSING",
+        "a submission with neither a candidate revision nor a structured GitHub link requires --report-only",
+    ))
 }
 
 /// #787: the mandatory Verbatim evidence for a READY_FOR_REVIEW submission

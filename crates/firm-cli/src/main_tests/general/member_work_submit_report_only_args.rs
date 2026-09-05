@@ -1,10 +1,12 @@
 use super::*;
 
-/// DEV-214 (#830): `member work submit` takes exactly one revision shape —
-/// `--candidate-revision <sha>` or `--report-only`; both or neither is a
-/// usage error naming both flags.
+/// DEV-214 (#830): `--candidate-revision <sha>` and `--report-only` are
+/// mutually exclusive, so naming both is a usage error naming both flags.
+/// Naming neither parses cleanly — the submission service decides whether it
+/// can derive the candidate from a structured GitHub link (#369) or must
+/// refuse the submission.
 #[test]
-fn submit_revision_args_accepts_exactly_one_revision_shape() {
+fn submit_revision_args_refuses_only_both_revision_shapes_together() {
     let args = |tokens: &[&str]| {
         tokens
             .iter()
@@ -40,11 +42,8 @@ fn submit_revision_args_accepts_exactly_one_revision_shape() {
         "the both-flags error must name both flags: {detail}"
     );
 
-    let neither = submit_revision_args(&args(&["--result-summary", "done"]))
-        .expect_err("neither flag must be a usage error");
-    let detail = neither.to_string();
-    assert!(
-        detail.contains("--candidate-revision") && detail.contains("--report-only"),
-        "the neither-flag error must name both flags: {detail}"
-    );
+    let (candidate, report_only) = submit_revision_args(&args(&["--result-summary", "done"]))
+        .expect("naming neither flag parses; the submission service decides");
+    assert_eq!(candidate, None);
+    assert!(!report_only);
 }

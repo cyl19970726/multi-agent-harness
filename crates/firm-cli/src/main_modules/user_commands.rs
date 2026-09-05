@@ -1051,23 +1051,25 @@ pub(super) fn bound_member_work_command(store: &HarnessStore, args: &[String]) -
     )
 }
 
-/// DEV-214 (#830): the two submission revision shapes are exactly
-/// `--candidate-revision <sha>` (a commit exists) or `--report-only` (the
-/// Work produces no commit). Passing both, or neither, is a usage error
-/// naming both flags; never fabricate a candidate revision.
+/// DEV-214 (#830): `--candidate-revision <sha>` (a commit exists) and
+/// `--report-only` (the Work produces no commit) are mutually exclusive, so
+/// naming both is a local usage error naming both flags; never fabricate a
+/// candidate revision.
+///
+/// Naming NEITHER is not a parse-time error: the submission service decides,
+/// because a submission carrying a structured GitHub link derives its
+/// candidate from that link (#369) and only a bare submission is refused
+/// (with REPORT_EVIDENCE_MISSING). The CLI cannot see that link here.
 pub(super) fn submit_revision_args(args: &[String]) -> CliResult<(Option<String>, bool)> {
     let report_only = has_flag(args, "--report-only");
     let candidate_revision = value(args, "--candidate-revision");
-    match (&candidate_revision, report_only) {
-        (Some(_), true) => Err(CliError::Usage(
+    if candidate_revision.is_some() && report_only {
+        return Err(CliError::Usage(
             "--candidate-revision and --report-only are mutually exclusive: a commit-producing Work names --candidate-revision <sha>; a report-only Work names --report-only"
                 .to_string(),
-        )),
-        (None, false) => Err(CliError::Usage(
-            "member work submit requires --candidate-revision <sha> or --report-only".to_string(),
-        )),
-        _ => Ok((candidate_revision, report_only)),
+        ));
     }
+    Ok((candidate_revision, report_only))
 }
 
 pub(super) fn org_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
