@@ -1,3 +1,4 @@
+use super::fabric_foundation::RuntimeCommandPoststate;
 use super::*;
 
 /// GitHub #583 (DEV-231): a RuntimeCommand prepared before the provider
@@ -47,13 +48,25 @@ fn runtime_command_prepared_before_native_bind_settles_after_it() {
         .expect("StartCycle admission before the native id is known");
 
     // The Host interrupts that cycle, also before the id is known.
-    let (interrupt, interrupt_context) = runtime_command_fixture(
+    let (mut interrupt, mut interrupt_context) = runtime_command_fixture(
         "runtime-bind-race-interrupt",
         RuntimeCommandKind::InterruptCurrentCycle,
         &session,
         "interrupt_current_cycle",
     );
     assert!(interrupt.binding.native_session_ref.is_none());
+    // Every production caller pins the session version it prepared against;
+    // the bind below moves it by exactly one, which settlement must tolerate.
+    let version_at_prepare = store
+        .fabric_agent_sessions("space-test")
+        .unwrap()
+        .into_iter()
+        .find(|candidate| candidate.id == session.id)
+        .expect("the session")
+        .version;
+    interrupt.precondition.expected_session_version = Some(version_at_prepare);
+    interrupt_context.request_fingerprint =
+        Some(runtime_command_envelope_fingerprint(&interrupt).unwrap());
     let admitted = store
         .prepare_runtime_command(
             &interrupt_context,
@@ -76,6 +89,7 @@ fn runtime_command_prepared_before_native_bind_settles_after_it() {
         )
         .expect("the native session attaches to the same generation");
     assert_eq!(bound.projection.runtime_generation, 1);
+    assert_eq!(bound.projection.version, version_at_prepare + 1);
 
     // The interrupt's durable settlement must not be fenced by the attachment.
     let settled = store
@@ -101,7 +115,9 @@ fn runtime_command_prepared_before_native_bind_settles_after_it() {
     );
 
     // The tolerance is attachment only: a command whose binding names another
-    // native session is still fenced at admission.
+    // native session is still fenced at admission. (A foreign native id can
+    // never reach settlement: prepare is strict and the session's native ref
+    // is write-once, so this negative sits on the strict path by construction.)
     let mut foreign = session.clone();
     foreign.native_session_ref = Some(settled_native_session("thread-other"));
     let (foreign_command, foreign_context) = runtime_command_fixture(
@@ -123,4 +139,53 @@ fn runtime_command_prepared_before_native_bind_settles_after_it() {
         "{fenced}"
     );
     fs::remove_dir_all(root).unwrap();
+}
+
+/// The version-precondition escapes compose: a StopSession prepared before
+/// the bind sees the bind's bump and its own close bump, and exactly those.
+#[test]
+fn version_precondition_tolerates_exactly_the_bind_and_the_commands_own_bump() {
+    let mut closed = session("session-composed", "composed");
+    closed.native_session_ref = Some(settled_native_session("thread-composed"));
+    closed.lifecycle = AgentSessionStatus::Closed;
+    let precondition = firm_core::agentfirm_api::RuntimeCommandPrecondition {
+        expected_session_version: Some(5),
+        ..Default::default()
+    };
+    let check = |version: u64, poststate: RuntimeCommandPoststate| {
+        let mut session = closed.clone();
+        session.version = version;
+        HarnessStore::require_runtime_command_precondition_unlocked(
+            &session,
+            RuntimeCommandKind::StopSession,
+            &precondition,
+            poststate,
+            "runtime_command",
+            "composed",
+            None,
+        )
+    };
+    // Both bumps happened: bind (+1) and this command's close (+1).
+    check(
+        7,
+        RuntimeCommandPoststate::CommandWithNativeSessionAttachment,
+    )
+    .expect("bind plus close is exactly the tolerated advance");
+    // Only the close is tolerated without the attachment poststate.
+    check(6, RuntimeCommandPoststate::Command).expect("the close alone");
+    check(7, RuntimeCommandPoststate::Command)
+        .expect_err("two bumps without the attachment poststate are not the command's own");
+    // With both flags one bump is an inconsistency, and three is never tolerated.
+    check(
+        6,
+        RuntimeCommandPoststate::CommandWithNativeSessionAttachment,
+    )
+    .expect_err("both mutations happened, so one bump cannot be the whole story");
+    check(
+        8,
+        RuntimeCommandPoststate::CommandWithNativeSessionAttachment,
+    )
+    .expect_err("anything beyond the two named mutations is fenced");
+    // The exact expectation always passes.
+    check(5, RuntimeCommandPoststate::Command).expect("exact version");
 }

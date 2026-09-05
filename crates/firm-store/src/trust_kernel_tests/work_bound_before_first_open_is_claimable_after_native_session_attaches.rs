@@ -113,6 +113,11 @@ fn work_bound_before_first_open_is_claimable_after_native_session_attaches() {
         claimed.projection.source_record_id, binding.delivery_id,
         "the invocation carries exactly the pre-Open delivery"
     );
+    assert_eq!(
+        claimed.projection.binding.native_session_ref.as_ref(),
+        Some(&native),
+        "the recorded invocation carries the session the claim ran against"
+    );
     let delivery = store
         .fabric_work_deliveries("space-test")
         .unwrap()
@@ -134,7 +139,9 @@ fn work_bound_before_first_open_is_claimable_after_native_session_attaches() {
     );
 
     // Replacement is never tolerated: a binding frozen on a different native
-    // id is still fenced by both the stale-release and the claim.
+    // id is fenced at bind time. (It can never reach the claim: bind is strict
+    // and the session's native ref is write-once, so this negative sits on the
+    // strict path by construction.)
     let other_work = assign_responsibility(&store, "work-pre-open-other", &membership.id);
     let mut other_runtime_binding = runtime_binding.clone();
     other_runtime_binding.native_session_ref = Some(settled_native_session("thread-other"));

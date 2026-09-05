@@ -760,8 +760,9 @@ impl HarnessStore {
                         &session,
                         record.command,
                         &record.precondition,
-                        if record.command == RuntimeCommandKind::StartCycle
-                            && record.binding.native_session_ref.is_none()
+                        // Fires under exactly the condition the admission above
+                        // tolerated, whatever the command kind (GitHub #583).
+                        if record.binding.native_session_ref.is_none()
                             && session.native_session_ref.is_some()
                         {
                             RuntimeCommandPoststate::CommandWithNativeSessionAttachment
@@ -1034,8 +1035,9 @@ impl HarnessStore {
                 &session,
                 record.command,
                 &record.precondition,
-                if record.command == RuntimeCommandKind::StartCycle
-                    && record.binding.native_session_ref.is_none()
+                // Fires under exactly the condition the admission above
+                // tolerated, whatever the command kind (GitHub #583).
+                if record.binding.native_session_ref.is_none()
                     && session.native_session_ref.is_some()
                 {
                     RuntimeCommandPoststate::CommandWithNativeSessionAttachment

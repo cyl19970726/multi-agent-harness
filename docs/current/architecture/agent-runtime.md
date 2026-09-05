@@ -330,9 +330,10 @@ AgentSession generation. Provider adapters receive only a private-field
 RuntimeCommand and the exact current leases. They cannot rebuild authority from
 a Session snapshot or public struct literal. A command whose binding cannot be
 proven is rejected before the provider boundary. Exactly one difference is
-tolerated, and only where an already admitted binding is re-validated (a
-stored `WorkExecutionBinding` at claim time, a `RuntimeCommand` at settlement
-or recovery): a binding frozen before the first provider Open, with an empty
+tolerated, and only where an already admitted binding is re-validated (for
+example the stale-release and the claim of a stored `WorkExecutionBinding`,
+or a `RuntimeCommand` at settlement, recovery, or cycle correlation): a
+binding frozen before the first provider Open, with an empty
 `NativeSessionRef`, still matches the same exact session, runtime and driver
 generation once the provider's native id has attached — the attachment is
 durable progress, never stale authority (#745, #583). Replacing an existing
