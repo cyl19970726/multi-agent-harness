@@ -289,8 +289,16 @@ Work; never keep executing a Work already in `Review`, `Blocked`, or
   main checkout or in `.worktrees/`. Report the absolute worktree path, branch,
   and commit in your submission.
 
-- **Submission format.** Every `work submit --result-summary` must follow this
-  format so the Host can review efficiently:
+- **Submission format — the submission report contract (SKILL.md) is
+  authoritative.** Every `work submit --result-summary` for READY_FOR_REVIEW
+  starts with the **Verbatim evidence** section defined in SKILL.md
+  ("Submission report contract"): the exact full-40-hex commit SHA, the
+  three-dot `git diff --stat <base>...<sha>`, the literal
+  `git status --porcelain` output (state `empty` explicitly), and for every
+  gate the Work names the exact command line with its verbatim final result
+  line(s) and captured exit code. **A Work's explicit report requirement
+  always wins over this or any other template**; the sections below may only
+  be ADDED after the evidence section, never replace it:
 
   ```
   ## RESULT
@@ -314,7 +322,8 @@ Work; never keep executing a Work already in `Review`, `Blocked`, or
   - CI run URL (if applicable)
   ```
 
-  The `--result-summary` should be pasted from this template, not re-typed.
+  A summary sentence ("all gates passed") is never acceptable as gate
+  evidence — the Host reviews the verbatim lines, not the adjectives.
   The `## WORKTREE` section tells Host where to find your changes.
   After the authorized reviewer accepts, the review feedback is in the work's `result_summary`
   and the PR comments — check both.

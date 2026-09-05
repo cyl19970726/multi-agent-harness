@@ -257,7 +257,7 @@ Member essentials (full sequence in the member loop reference):
 "$FIRM_BIN" member work submit \
   --work-id "$FIRM_WORK_ID" \
   --expected-version <latest-version> \
-  --result-summary "<RESULT/SUMMARY/COVERAGE/WORKTREE/ARTIFACTS template>" \
+  --result-summary "<Verbatim evidence first — see the submission report contract below>" \
   --candidate-revision <exact-commit-sha> \
   --artifact-ref <PR URL> --check-ref "<command and actual result>" \
   --idempotency-key <stable-command-key>
@@ -285,6 +285,39 @@ commands are retired because they let a caller select another identity.
 Do NOT use provider Plan Mode (EnterPlanMode/ExitPlanMode) in team context —
 Harness has no Plan Gate and it blocks headless members indefinitely (ADR
 0039); plan-first means an ordinary Markdown plan message to the Host.
+
+### Submission report contract (READY_FOR_REVIEW)
+
+- **A Work's explicit report requirement always wins** over any provider-side
+  or personal template — including any template in this skill's references.
+  Templates may ADD sections after the evidence section; they never replace
+  it.
+- Every READY_FOR_REVIEW `--result-summary` starts with one **Verbatim
+  evidence** section, in this order:
+  1. the exact commit SHA (full 40 hex);
+  2. `git diff --stat <base>...<sha>` — three-dot, against the base the Work
+     names;
+  3. the literal `git status --porcelain` output — state `empty` explicitly
+     when there is none;
+  4. for every gate the Work names: the exact command line, its verbatim
+     final result line(s), and the captured exit code. A summary sentence
+     ("all gates passed") is never acceptable as gate evidence.
+
+Short example (one gate shown; list every gate the Work names):
+
+```text
+SHA 76763afa4e807e470ce88b57d41e75dd2cc7bfe6 on r5c-kimi-followups-795 (base origin/master e7497697).
+git diff --stat origin/master...HEAD:
+ crates/firm-cli/src/supervisor_wake.rs | 27 +++++++++++++++++++++++
+ 1 file changed, 27 insertions(+)
+git status --porcelain: empty
+Gates: cargo fmt --all -- --check: FMT_EXIT=0; cargo test -p firm-cli --bin firm -- --test-threads=1 recover_classifier_and_wake_loop: "test result: ok. 1 passed; 0 failed" / TEST_EXIT=0
+```
+
+The Host side of this contract is in
+[references/host-loop.md](references/host-loop.md) §5; the Member-side
+submission section is in
+[references/member-loop.md](references/member-loop.md).
 
 ## Part IV — Worked example: one Work, both sides
 
@@ -329,8 +362,11 @@ the legacy exporter's `verify`.
     NOT poll in a loop — blocks on
     team-run wait --after-seq <cursor>.
                                           8. work submit --expected-version 5
-                                             --result-summary "## RESULT done…
-                                             ## WORKTREE …"
+                                             --result-summary "<Verbatim
+                                             evidence first: SHA, three-dot
+                                             diff stat, porcelain, gate
+                                             commands + verbatim result
+                                             lines + exit codes>"
                                              --candidate-revision <commit sha>
                                              --artifact-ref <PR URL>
                                              --check-ref "cargo test -p

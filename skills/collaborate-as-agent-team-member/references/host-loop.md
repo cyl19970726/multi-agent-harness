@@ -180,6 +180,21 @@ Submission moves Work to `Review` — that is a request for judgment, not a
 result. Review means: open the artifact refs (the PR diff, the file), rerun
 or read the named check refs, and walk the completion criteria line by line.
 
+Before trusting a submission's report at all, apply the submission report
+contract (SKILL.md):
+
+- **Verify the SHA, never trust it.** `git cat-file -t <reported-sha>` must
+  answer `commit` and the object must equal the submitted candidate revision
+  — a report once carried a SHA whose tail did not exist (#787).
+- **Review the commit, not the report.** The report is a pointer; the diff
+  is the object under review.
+- **A missing Verbatim evidence section is Changes Required on its face.** If
+  the `--result-summary` does not start with the exact SHA, the three-dot
+  `git diff --stat <base>...<sha>`, the literal `git status --porcelain`
+  output, and every named gate's command with verbatim result line(s) and
+  exit code, do not reconstruct the evidence yourself — request changes and
+  name the missing section.
+
 ```bash
 firm team-run work show --work-id <work-id> --json        # report, artifact/check refs, deliveries
 firm team-run work accept --work-id <work-id> --expected-version <n>      # → Closed / Accepted
