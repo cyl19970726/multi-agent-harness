@@ -348,8 +348,9 @@ cargo run -p firm-cli -- serve --addr 127.0.0.1:8787
 Detached `firm daemon start` appends both stdout and stderr to
 `<FIRM_HOME>/nodes/<node_id>/node-daemon.log`. Start prints that stable path
 whether the daemon becomes ready or fails; a readiness failure also includes
-the last 20 lines from a seek-from-end read bounded to 64 KiB, so the underlying
-`daemon serve` error is immediately visible without loading an unbounded log.
+the last 20 lines from a seek-from-end read bounded to 64 KiB and calls out the
+last daemon error line, so the underlying `daemon serve` error is immediately
+visible without loading an unbounded log.
 At daemon start, a log larger than 8 MiB rotates to `node-daemon.log.1`,
 replacing the previous `.1`, before a new current log is opened. `firm daemon
 status` includes `log_path` in a live daemon's JSON and includes the same path
@@ -359,6 +360,15 @@ the lease state and the recovery command `firm daemon recover-predecessor
 --confirm daemon-recover-predecessor` instead of reporting a bare absence. A lease store
 that cannot be read is reported by Execution Space without hiding readable
 Spaces or changing the absent status exit code.
+
+If the NodeDaemon loses its machine authority and self-stops, it records the
+loss on every TeamRun it was serving through the ordinary TeamRun event log.
+The service-authored `node_daemon` / `self_stopped` events carry the first
+renewal error, shutdown phase, daemon instance and generation, and terminated
+provider process groups. Read them with `firm team-run events --id
+<team-run-id>` (or the TeamRun dashboard event stream); if Store contention
+prevents the bounded event-write retries, the same structured loss record is
+written to `node-daemon.log` as `NODE_DAEMON_SELF_STOP_EVENT_WRITE_FAILED`.
 
 The named recovery action is an ordinary CLI command, not a hand-crafted HTTP
 call. After the daemon is stopped and the dead predecessor instance's pid is

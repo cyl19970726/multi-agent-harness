@@ -93,6 +93,18 @@ fn read_log_tail(path: &Path) -> std::io::Result<String> {
     Ok(lines.join("\n"))
 }
 
+fn last_daemon_error_line(tail: &str) -> Option<&str> {
+    tail.lines()
+        .rev()
+        .find(|line| {
+            line.contains("NODE_DAEMON_")
+                || line.contains("PREDECESSOR_SETTLEMENT_REQUIRED")
+                || line.to_ascii_lowercase().contains("error")
+        })
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+}
+
 pub(crate) fn daemon_status_with_log_path(response: &str, log_path: &Path) -> CliResult<String> {
     let mut status = serde_json::from_str::<serde_json::Value>(response)
         .map_err(|error| CliError::Usage(format!("invalid daemon status JSON: {error}")))?;
@@ -114,8 +126,11 @@ pub(crate) fn daemon_start_failure(pid: u32, reason: &str, log_path: &Path) -> C
     } else {
         &tail
     };
+    let last_error = last_daemon_error_line(tail)
+        .map(|line| format!("\nlast daemon error: {line}"))
+        .unwrap_or_default();
     CliError::Usage(format!(
-        "NodeDaemon pid {pid} {reason}\nlog: {}\nlast {STARTUP_LOG_TAIL_LINES} log lines:\n{tail}",
+        "NodeDaemon pid {pid} {reason}{last_error}\nlog: {}\nlast {STARTUP_LOG_TAIL_LINES} log lines:\n{tail}",
         log_path.display()
     ))
 }
@@ -554,6 +569,31 @@ mod tests {
         fs::write(&path, "").expect("write empty log");
 
         assert_eq!(read_log_tail(&path).expect("read tail"), "");
+    }
+
+    #[test]
+    fn daemon_start_failure_surfaces_the_last_daemon_error_line() {
+        let root = TestDir::new("start-last-error");
+        let path = root.path().join("node-daemon.log");
+        fs::write(
+            &path,
+            "[node-daemon] first diagnostic\n\
+             [node-daemon] NODE_DAEMON_MACHINE_AUTHORITY_LOST: renewal failed\n\
+             [node-daemon] shutdown complete\n",
+        )
+        .expect("write daemon failure log");
+
+        let error = daemon_start_failure(
+            4242,
+            "did not become ready within 60s and was stopped",
+            &path,
+        );
+        let rendered = error.to_string();
+        assert!(rendered.contains(
+            "last daemon error: [node-daemon] NODE_DAEMON_MACHINE_AUTHORITY_LOST: renewal failed"
+        ));
+        assert!(rendered.contains("did not become ready within 60s and was stopped"));
+        assert!(rendered.contains(&format!("log: {}", path.display())));
     }
 
     #[test]

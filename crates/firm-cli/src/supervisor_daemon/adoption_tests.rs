@@ -71,8 +71,8 @@ pub(super) fn adoption_fixture(label: &str) -> AdoptionFixture {
 
     let daemon = MultiTeamDaemon {
         firm_home,
-        node_id: "adoption-node".into(),
-        daemon_id: "node-daemon:adoption-node".into(),
+        node_id: "11111111-1111-4111-8111-111111111119".into(),
+        daemon_id: "node-daemon:11111111-1111-4111-8111-111111111119".into(),
         instance_id: "adoption-instance".into(),
         contexts: Mutex::new(Vec::new()),
         supervisor_start_gate: Mutex::new(()),
@@ -84,6 +84,7 @@ pub(super) fn adoption_fixture(label: &str) -> AdoptionFixture {
         stop_requested: Arc::new(AtomicBool::new(false)),
         authority_shutdown: Arc::new(AtomicBool::new(false)),
         authority_lost: AtomicBool::new(false),
+        machine_authority_loss: Mutex::new(None),
         control_worker_failed: AtomicBool::new(false),
         recovery_blocked_runs: Mutex::new(HashMap::new()),
         settling_runs: Mutex::new(HashSet::new()),
@@ -347,6 +348,7 @@ fn status_remains_responsive_while_reap_joins_a_finished_supervisor() {
         stop_requested: Arc::new(AtomicBool::new(false)),
         authority_shutdown: Arc::new(AtomicBool::new(false)),
         authority_lost: AtomicBool::new(false),
+        machine_authority_loss: Mutex::new(None),
         control_worker_failed: AtomicBool::new(false),
         recovery_blocked_runs: Mutex::new(HashMap::new()),
         settling_runs: Mutex::new(HashSet::new()),
