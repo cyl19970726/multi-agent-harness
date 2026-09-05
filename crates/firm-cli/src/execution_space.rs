@@ -22,6 +22,10 @@ pub enum ExecutionSpaceError {
     Json(serde_json::Error),
     InvalidId(String),
     NoHome,
+    /// A recorded registry `store_root` lies outside the current FIRM_HOME and
+    /// the explicit override was not given; the message names the registry
+    /// file, the recorded path and FIRM_HOME.
+    ExternalStoreRoot(String),
 }
 
 impl std::fmt::Display for ExecutionSpaceError {
@@ -34,6 +38,7 @@ impl std::fmt::Display for ExecutionSpaceError {
                 "invalid execution space id `{id}`; use letters, digits, '.', '_' or '-'"
             ),
             Self::NoHome => write!(f, "could not determine harness home"),
+            Self::ExternalStoreRoot(message) => write!(f, "{message}"),
         }
     }
 }
@@ -417,10 +422,25 @@ pub fn validate_space_id(id: &str) -> ExecutionSpaceResult<()> {
 }
 
 impl ExecutionSpaceRegistry {
+    /// Load the registry. Recorded `store_root` paths resolve against the
+    /// current FIRM_HOME (relative paths join it; absolute in-home paths load
+    /// unchanged); an external root is refused unless
+    /// FIRM_ALLOW_EXTERNAL_STORE_ROOT=1.
     pub fn load(firm_home: &Path) -> ExecutionSpaceResult<Self> {
         match std::fs::read_to_string(registry_path(firm_home)) {
             Ok(text) if text.trim().is_empty() => Ok(Self::default()),
-            Ok(text) => Ok(serde_json::from_str(&text)?),
+            Ok(text) => {
+                let mut registry: Self = serde_json::from_str(&text)?;
+                for entry in &mut registry.spaces {
+                    entry.store_root = project::resolve_recorded_store_root(
+                        firm_home,
+                        &registry_path(firm_home),
+                        &entry.store_root,
+                    )
+                    .map_err(ExecutionSpaceError::ExternalStoreRoot)?;
+                }
+                Ok(registry)
+            }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
             Err(error) => Err(error.into()),
         }
@@ -428,6 +448,9 @@ impl ExecutionSpaceRegistry {
 
     pub fn save(&mut self, firm_home: &Path) -> ExecutionSpaceResult<()> {
         self.format_version = REGISTRY_FORMAT_VERSION;
+        for entry in &mut self.spaces {
+            entry.store_root = project::recorded_store_root_for_write(firm_home, &entry.store_root);
+        }
         atomic_write_bytes(
             &registry_path(firm_home),
             serde_json::to_string_pretty(self)?.as_bytes(),
@@ -704,6 +727,9 @@ pub fn firm_home() -> ExecutionSpaceResult<PathBuf> {
         project::ProjectError::NoHome => ExecutionSpaceError::NoHome,
         project::ProjectError::Io(error) => ExecutionSpaceError::Io(error),
         project::ProjectError::Json(error) => ExecutionSpaceError::Json(error),
+        project::ProjectError::ExternalStoreRoot(message) => {
+            ExecutionSpaceError::ExternalStoreRoot(message)
+        }
     })
 }
 

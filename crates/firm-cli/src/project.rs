@@ -33,6 +33,10 @@ pub enum ProjectError {
     Io(std::io::Error),
     Json(serde_json::Error),
     NoHome,
+    /// A recorded registry `store_root` lies outside the current FIRM_HOME and
+    /// the explicit override was not given; the message names the registry
+    /// file, the recorded path and FIRM_HOME.
+    ExternalStoreRoot(String),
 }
 
 impl std::fmt::Display for ProjectError {
@@ -41,6 +45,7 @@ impl std::fmt::Display for ProjectError {
             ProjectError::Io(e) => write!(f, "project io error: {e}"),
             ProjectError::Json(e) => write!(f, "project json error: {e}"),
             ProjectError::NoHome => write!(f, "could not determine home directory"),
+            ProjectError::ExternalStoreRoot(message) => write!(f, "{message}"),
         }
     }
 }
@@ -136,6 +141,62 @@ pub fn canonicalize_best_effort(path: &Path) -> PathBuf {
     }
 }
 
+/// The explicit operator override that lets a registry `store_root` outside
+/// the current FIRM_HOME load (with a WARNING line per startup).
+pub const ALLOW_EXTERNAL_STORE_ROOT_ENV: &str = "FIRM_ALLOW_EXTERNAL_STORE_ROOT";
+
+/// Resolve a `store_root` recorded in a registry file against the current
+/// FIRM_HOME. A relative path resolves under FIRM_HOME (the form new
+/// registrations are written in); an absolute path inside FIRM_HOME loads
+/// unchanged; an absolute path outside FIRM_HOME is refused — a copied home
+/// must never silently serve or write another store — unless the operator
+/// passes FIRM_ALLOW_EXTERNAL_STORE_ROOT=1, in which case a WARNING names the
+/// external root.
+pub(crate) fn resolve_recorded_store_root(
+    firm_home: &Path,
+    registry_file: &Path,
+    recorded: &Path,
+) -> Result<PathBuf, String> {
+    if recorded.is_relative() {
+        return Ok(firm_home.join(recorded));
+    }
+    let home = canonicalize_best_effort(firm_home);
+    if canonicalize_best_effort(recorded).starts_with(&home) {
+        return Ok(recorded.to_path_buf());
+    }
+    if std::env::var(ALLOW_EXTERNAL_STORE_ROOT_ENV).as_deref() == Ok("1") {
+        eprintln!(
+            "WARNING: external store_root {} recorded in {} lies outside FIRM_HOME {} (allowed by {}=1)",
+            recorded.display(),
+            registry_file.display(),
+            firm_home.display(),
+            ALLOW_EXTERNAL_STORE_ROOT_ENV
+        );
+        return Ok(recorded.to_path_buf());
+    }
+    Err(format!(
+        "refusing external store_root {} recorded in {}: it lies outside FIRM_HOME {}; a copied home must not silently serve another store — move the store inside FIRM_HOME or set {}=1 to override",
+        recorded.display(),
+        registry_file.display(),
+        firm_home.display(),
+        ALLOW_EXTERNAL_STORE_ROOT_ENV
+    ))
+}
+
+/// The form a `store_root` is recorded in on write: relative to FIRM_HOME
+/// when the root lives inside it (existing absolute in-home paths are
+/// normalized to relative on the next write), unchanged otherwise.
+pub(crate) fn recorded_store_root_for_write(firm_home: &Path, store_root: &Path) -> PathBuf {
+    let home = canonicalize_best_effort(firm_home);
+    let root = canonicalize_best_effort(store_root);
+    if store_root.is_absolute() && root.starts_with(&home) {
+        if let Ok(relative) = root.strip_prefix(&home) {
+            return relative.to_path_buf();
+        }
+    }
+    store_root.to_path_buf()
+}
+
 /// One registered project. `path` is the canonical project root; `store_root` is
 /// the centralized store under `<firm_home>/projects/<id>/`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -180,21 +241,35 @@ pub struct ProjectMetadata {
 impl ProjectRegistry {
     /// Load the registry from `<firm_home>/projects/registry.json`. A missing
     /// file yields an empty registry (first run); a corrupt file is a hard error
-    /// rather than silently discarding known projects.
+    /// rather than silently discarding known projects. Recorded `store_root`
+    /// paths resolve against the current FIRM_HOME; an external root is
+    /// refused unless FIRM_ALLOW_EXTERNAL_STORE_ROOT=1.
     pub fn load(firm_home: &Path) -> ProjectResult<Self> {
         let path = registry_path(firm_home);
         match std::fs::read_to_string(&path) {
             Ok(text) if text.trim().is_empty() => Ok(Self::default()),
-            Ok(text) => Ok(serde_json::from_str(&text)?),
+            Ok(text) => {
+                let mut registry: Self = serde_json::from_str(&text)?;
+                for entry in &mut registry.projects {
+                    entry.store_root =
+                        resolve_recorded_store_root(firm_home, &path, &entry.store_root)
+                            .map_err(ProjectError::ExternalStoreRoot)?;
+                }
+                Ok(registry)
+            }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
             Err(e) => Err(ProjectError::Io(e)),
         }
     }
 
     /// Persist the registry, creating `<firm_home>/projects/` as needed. The
-    /// `format_version` is stamped on save.
+    /// `format_version` is stamped on save, and `store_root` paths are written
+    /// relative to FIRM_HOME when they live inside it.
     pub fn save(&mut self, firm_home: &Path) -> ProjectResult<()> {
         self.format_version = REGISTRY_FORMAT_VERSION;
+        for entry in &mut self.projects {
+            entry.store_root = recorded_store_root_for_write(firm_home, &entry.store_root);
+        }
         std::fs::create_dir_all(projects_dir(firm_home))?;
         let text = serde_json::to_string_pretty(self)?;
         std::fs::write(registry_path(firm_home), text)?;

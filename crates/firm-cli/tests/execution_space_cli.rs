@@ -256,3 +256,153 @@ fn migration_rejects_an_unsafe_space_id_before_creating_a_target() {
         "unsafe id must not materialize any target"
     );
 }
+
+fn copy_tree(source: &Path, destination: &Path) {
+    std::fs::create_dir_all(destination).unwrap();
+    for entry in std::fs::read_dir(source).unwrap() {
+        let entry = entry.unwrap();
+        let target = destination.join(entry.file_name());
+        if entry.file_type().unwrap().is_dir() {
+            copy_tree(&entry.path(), &target);
+        } else {
+            std::fs::copy(entry.path(), &target).unwrap();
+        }
+    }
+}
+
+fn rewrite_store_roots_to_absolute(home: &TempHome) {
+    for (path, key) in [
+        (home.registry_path(), "projects"),
+        (home.space_registry_path(), "spaces"),
+    ] {
+        let mut registry: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        for entry in registry[key].as_array_mut().unwrap() {
+            let relative = entry["store_root"].as_str().unwrap().to_string();
+            entry["store_root"] =
+                serde_json::Value::String(home.firm_home().join(&relative).display().to_string());
+        }
+        std::fs::write(&path, serde_json::to_string_pretty(&registry).unwrap()).unwrap();
+    }
+}
+
+#[test]
+fn fresh_init_writes_relative_store_root_and_absolute_inside_home_still_loads() {
+    let home = TempHome::new("space-registry-relative-root");
+    let root = home.base().join("repo");
+    std::fs::create_dir_all(&root).unwrap();
+    init(&home, &root);
+    for (path, key) in [
+        (home.registry_path(), "projects"),
+        (home.space_registry_path(), "spaces"),
+    ] {
+        let registry: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        for entry in registry[key].as_array().unwrap() {
+            let store_root = entry["store_root"].as_str().expect("store_root recorded");
+            assert!(
+                !store_root.starts_with('/'),
+                "store_root must be recorded relative to FIRM_HOME in {}: {store_root}",
+                path.display()
+            );
+        }
+    }
+    // The relative form reloads.
+    assert!(run(&home, &root, &["space", "list"]).status.success());
+
+    // An absolute store_root inside FIRM_HOME still loads unchanged.
+    rewrite_store_roots_to_absolute(&home);
+    let listed = run(&home, &root, &["space", "list"]);
+    assert!(
+        listed.status.success(),
+        "absolute in-home store_root must load: {}",
+        String::from_utf8_lossy(&listed.stderr)
+    );
+}
+
+#[test]
+fn copied_home_refuses_external_store_root_until_explicitly_allowed() {
+    let home = TempHome::new("space-registry-external-root");
+    let root = home.base().join("repo");
+    std::fs::create_dir_all(&root).unwrap();
+    init(&home, &root);
+    // The pre-#794 registry form: absolute store_root paths, as produced by
+    // older installs (and by the DEV-189 incident).
+    rewrite_store_roots_to_absolute(&home);
+
+    let copied = TempHome::new("space-registry-external-root-copy");
+    copy_tree(home.firm_home(), copied.firm_home());
+
+    // `space list` refuses: the recorded roots point at the ORIGINAL home.
+    let refused = run(&copied, &root, &["space", "list"]);
+    assert!(
+        !refused.status.success(),
+        "a copied home must refuse external store_root"
+    );
+    let stderr = String::from_utf8_lossy(&refused.stderr);
+    assert!(
+        stderr.contains("refusing external store_root"),
+        "stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains(home.firm_home().to_string_lossy().as_ref()),
+        "the refusal names the recorded path: {stderr}"
+    );
+    assert!(
+        stderr.contains(copied.firm_home().to_string_lossy().as_ref()),
+        "the refusal names the current FIRM_HOME: {stderr}"
+    );
+
+    // `serve` refuses at startup the same way.
+    let serve = std::process::Command::new(env!("CARGO_BIN_EXE_firm"))
+        .args(["serve", "--addr", "127.0.0.1:0"])
+        .current_dir(&root)
+        .envs(copied.envs())
+        .env_remove("FIRM_ROOT")
+        .env_remove("FIRM_PROJECT")
+        .env_remove("FIRM_SPACE")
+        .output()
+        .expect("run serve");
+    assert!(
+        !serve.status.success(),
+        "serve must refuse external store_root"
+    );
+    assert!(
+        String::from_utf8_lossy(&serve.stderr).contains("refusing external store_root"),
+        "serve stderr: {}",
+        String::from_utf8_lossy(&serve.stderr)
+    );
+
+    // With the explicit override the copied home runs and warns.
+    let allowed = std::process::Command::new(env!("CARGO_BIN_EXE_firm"))
+        .args(["space", "list"])
+        .current_dir(&root)
+        .envs(copied.envs())
+        .env("FIRM_ALLOW_EXTERNAL_STORE_ROOT", "1")
+        .env_remove("FIRM_ROOT")
+        .env_remove("FIRM_PROJECT")
+        .env_remove("FIRM_SPACE")
+        .output()
+        .expect("run harness");
+    assert!(
+        allowed.status.success(),
+        "override must allow the copied home: {}",
+        String::from_utf8_lossy(&allowed.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&allowed.stderr).contains("WARNING: external store_root"),
+        "the override run must print the WARNING line: {}",
+        String::from_utf8_lossy(&allowed.stderr)
+    );
+
+    // And serve starts under the override, serving the copied home's
+    // (external) roots.
+    let serve = firm_env::ServeHandle::spawn_with_env(
+        &copied,
+        &root,
+        &[],
+        &[("FIRM_ALLOW_EXTERNAL_STORE_ROOT", "1")],
+    );
+    let (status, _snapshot) = serve.get_json("/v1/snapshot");
+    assert_eq!(status, 200, "serve must run under the override");
+}
