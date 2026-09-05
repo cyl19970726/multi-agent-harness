@@ -893,6 +893,14 @@ pub(crate) fn drive_prepared_team_run(
     let mut outcomes = Vec::new();
     let turn_leases = Arc::new(ActiveTurnLeasePool::new(max_concurrency));
     let mut lease_lost = false;
+    // Carried across passes so an idle completed-serving tick can keep the
+    // projection it already proved instead of decoding the ledgers again
+    // (#836).
+    let mut current_run_status = None;
+    let mut completed_unclosed = 0usize;
+    let mut serving_idler = crate::completed_run_members::CompletedRunServingIdler::new(
+        crate::completed_run_members::COMPLETED_RUN_SERVING_POLL_INTERVAL,
+    );
     // Fire the GitHub CI poll on the first iteration, then every
     // GITHUB_CI_POLL_INTERVAL (issue #369 Phase 2).
     let mut last_github_ci_poll = Instant::now() - GITHUB_CI_POLL_INTERVAL;
@@ -1108,14 +1116,24 @@ pub(crate) fn drive_prepared_team_run(
             }
         }
 
-        let mut current_run_status = None;
-        let mut completed_unclosed = 0usize;
+        // A Completed run with no member handle left is served only to keep
+        // the Close lane's provider-loop authority; re-decoding both ledgers
+        // every tick starved the daemon's own heartbeat off the machine
+        // (#836). Skip the decode while their bytes are provably unchanged.
+        let idle_completed_serving = handles.is_empty()
+            && current_run_status == Some(TeamRunStatus::Completed)
+            && completed_unclosed > 0;
         if lease_lost {
+            current_run_status = None;
+            completed_unclosed = 0;
             pending_members.clear();
-        } else {
-            let latest_members = latest_member_runs_in_append_order(&ledger.store)?;
-            let run_status = latest_team_run(&ledger.store, &run_id)?.status;
+        } else if let crate::completed_run_members::ServingObservation::Rescanned {
+            members: latest_members,
+            run_status,
+        } = serving_idler.observe(&ledger.store, &run_id, idle_completed_serving)?
+        {
             current_run_status = Some(run_status);
+            completed_unclosed = 0;
             if run_status == TeamRunStatus::Completed {
                 completed_unclosed = crate::completed_run_members::unclosed_managed_member_count(
                     &latest_members,
@@ -1126,31 +1144,13 @@ pub(crate) fn drive_prepared_team_run(
                         crate::completed_run_members::completed_serving_label(completed_unclosed);
                 }
             }
-            let rescanned = latest_members
-                .into_iter()
-                .filter(|member| {
-                    member.team_run_id == run_id
-                        // A Completed run never spawns another member lane
-                        // (#812): its members cannot claim Work, and a resume
-                        // would race the predecessor runtime settlement.
-                        && run_status != TeamRunStatus::Completed
-                        && !member.is_external_interactive()
-                        && member.coordination_is_active()
-                        && !matches!(
-                            member.status,
-                            MemberRunStatus::Completed
-                                | MemberRunStatus::Failed
-                                | MemberRunStatus::Stopped
-                        )
-                        && member.runtime_generation
-                            > seen_runtime_generations
-                                .get(&member.id)
-                                .copied()
-                                .unwrap_or(0)
-                        && !handles.contains_key(&member.id)
-                })
-                .collect::<Vec<_>>();
-            for member in rescanned {
+            for member in members_joined_since_last_pass(
+                latest_members,
+                &run_id,
+                run_status,
+                &seen_runtime_generations,
+                |member_id| handles.contains_key(member_id),
+            ) {
                 if !pending_members.iter().any(|pending| {
                     pending.id == member.id
                         && pending.runtime_generation == member.runtime_generation
@@ -1191,9 +1191,7 @@ pub(crate) fn drive_prepared_team_run(
         // exit behavior.
         if handles.is_empty() {
             if current_run_status == Some(TeamRunStatus::Completed) && completed_unclosed > 0 {
-                std::thread::sleep(
-                    crate::completed_run_members::COMPLETED_RUN_SERVING_POLL_INTERVAL,
-                );
+                serving_idler.wait_for_ledger_change(&ledger.store);
                 continue;
             }
             break;

@@ -115,7 +115,7 @@ const TRANSIENT_START_FAILURE_CODES: &[&str] = &[
 /// The two capacity/ownership rejections `start_supervising` writes as prose
 /// rather than as a code. Matched as a prefix for the same reason.
 const TRANSIENT_START_FAILURE_PREFIXES: &[&str] =
-    &["NodeDaemon at capacity", "NodeDaemon already manages"];
+    &[AT_CAPACITY_REFUSAL, "NodeDaemon already manages"];
 
 /// The leading `CODE:` token of a message, when it has one.
 fn leading_error_code(message: &str) -> Option<&str> {

@@ -2,6 +2,7 @@
 //! (#704, #671) and for keeping the control lane answerable while a finished
 //! Supervisor is reaped (#671).
 
+use super::team_supervision::ADOPTION_START_ATTEMPTS;
 use super::tests::TestTree;
 use super::*;
 
@@ -88,6 +89,7 @@ pub(super) fn adoption_fixture(label: &str) -> AdoptionFixture {
         control_worker_failed: AtomicBool::new(false),
         recovery_blocked_runs: Mutex::new(HashMap::new()),
         settling_runs: Mutex::new(HashSet::new()),
+        capacity_waits: Mutex::new(HashMap::new()),
         lease_ttl_override_ms: None,
         deferred_stop_responses: Mutex::new(Vec::new()),
         drain_timeout_override_ms: None,
@@ -353,6 +355,7 @@ fn status_remains_responsive_while_reap_joins_a_finished_supervisor() {
         control_worker_failed: AtomicBool::new(false),
         recovery_blocked_runs: Mutex::new(HashMap::new()),
         settling_runs: Mutex::new(HashSet::new()),
+        capacity_waits: Mutex::new(HashMap::new()),
         lease_ttl_override_ms: None,
         deferred_stop_responses: Mutex::new(Vec::new()),
         drain_timeout_override_ms: None,
@@ -434,4 +437,100 @@ fn status_remains_responsive_while_reap_joins_a_finished_supervisor() {
         }
         reaper.join().expect("reaper thread").expect("reap result");
     });
+}
+
+/// The NodeDaemon must not retry an adoption it already proved impossible.
+///
+/// At `--max-concurrency` the start path still decodes the whole TeamRun and
+/// MemberRun ledgers and renews the machine lease — two store write-lock
+/// acquisitions — before it reaches the capacity check. Retrying that on every
+/// discovery pass is what produced the observed "failed to adopt ... at
+/// capacity (2/2 runs)" storm and helped starve the daemon's own Supervisor
+/// heartbeat off the write lock until it lost machine authority and
+/// self-stopped (#836).
+#[test]
+fn at_capacity_adoption_is_attempted_once_per_scan_tick_not_once_per_pass() {
+    const PASSES: usize = 6;
+
+    let mut fixture = adoption_fixture("adoption-at-capacity");
+    // The unit-test AgentTeam fixture places its run on this canonical Node,
+    // already enrolled and project-registered in the adoption Store.
+    fixture.daemon.node_id = "00000000-0000-4000-8000-000000000001".to_string();
+    fixture.daemon.daemon_id = format!("node-daemon:{}", fixture.daemon.node_id);
+    // Long enough that every pass below falls inside one scan tick.
+    fixture.daemon.scan_interval = Duration::from_secs(600);
+    fixture.advance_team_run_status(harness_core::TeamRunStatus::Running);
+
+    // Fill the daemon's one concurrency slot with an unrelated managed run.
+    fixture
+        .daemon
+        .contexts
+        .lock()
+        .expect("lock managed contexts")
+        .push(MultiTeamContext {
+            execution_space_id: fixture.execution_space_id.clone(),
+            project_binding_id: "unit-test-project".to_string(),
+            run_id: "team-run-occupying-the-only-slot".to_string(),
+            daemon_generation: 1,
+            supervisor_id: "occupying-supervisor".to_string(),
+            supervisor_generation: 1,
+            heartbeat_valid: Arc::new(AtomicBool::new(true)),
+            serving_status: Arc::new(Mutex::new("running".to_string())),
+            thread: None,
+            started_at: Instant::now(),
+        });
+
+    let before = ADOPTION_START_ATTEMPTS.load(Ordering::Relaxed);
+    for pass in 0..PASSES {
+        fixture
+            .daemon
+            .scan_and_adopt()
+            .unwrap_or_else(|error| panic!("discovery pass {pass} failed: {error}"));
+    }
+    assert_eq!(
+        ADOPTION_START_ATTEMPTS.load(Ordering::Relaxed) - before,
+        1,
+        "{PASSES} passes inside one scan tick must produce one adoption attempt, not one per pass"
+    );
+
+    // The refusal is recorded exactly once and is what `daemon status` reports
+    // as `waiting_for_capacity`.
+    let waits = fixture
+        .daemon
+        .capacity_waits
+        .lock()
+        .expect("lock capacity waits");
+    let wait = waits
+        .get(&(fixture.execution_space_id.clone(), fixture.run_id.clone()))
+        .expect("the deferred run is recorded as waiting for capacity");
+    assert_eq!(waits.len(), 1);
+    assert_eq!(wait.occupancy, 1);
+    assert!(
+        wait.detail.starts_with(AT_CAPACITY_REFUSAL),
+        "the record carries the refusal verbatim: {}",
+        wait.detail
+    );
+    drop(waits);
+    assert!(
+        fixture
+            .daemon
+            .adoption_defers_for_capacity(&fixture.execution_space_id, &fixture.run_id),
+        "the deferral holds while the daemon stays at capacity"
+    );
+
+    // A freed slot ends the deferral immediately, long before the scan
+    // interval elapses. The retry itself is left to the daemon's own loop:
+    // adopting here would start a real provider runtime.
+    fixture
+        .daemon
+        .contexts
+        .lock()
+        .expect("lock managed contexts")
+        .clear();
+    assert!(
+        !fixture
+            .daemon
+            .adoption_defers_for_capacity(&fixture.execution_space_id, &fixture.run_id),
+        "a capacity change re-enables adoption without waiting out the scan interval"
+    );
 }

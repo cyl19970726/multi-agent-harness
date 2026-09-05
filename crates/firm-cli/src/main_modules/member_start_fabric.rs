@@ -62,6 +62,42 @@ pub(crate) fn prepare_member_provider_profile_for_start(
     Ok(())
 }
 
+/// Members that joined, or were Reopened, while this Supervisor generation was
+/// already driving, and that the current pass must therefore admit.
+///
+/// A Completed run never spawns another member lane (#812): its members cannot
+/// claim Work again, and a resume would race the predecessor runtime
+/// settlement, so the whole selection is empty there.
+pub(crate) fn members_joined_since_last_pass(
+    latest_members: Vec<ProviderRuntimeProjection>,
+    run_id: &str,
+    run_status: TeamRunStatus,
+    seen_runtime_generations: &HashMap<String, u64>,
+    already_driven: impl Fn(&str) -> bool,
+) -> Vec<ProviderRuntimeProjection> {
+    if run_status == TeamRunStatus::Completed {
+        return Vec::new();
+    }
+    latest_members
+        .into_iter()
+        .filter(|member| {
+            member.team_run_id == run_id
+                && !member.is_external_interactive()
+                && member.coordination_is_active()
+                && !matches!(
+                    member.status,
+                    MemberRunStatus::Completed | MemberRunStatus::Failed | MemberRunStatus::Stopped
+                )
+                && member.runtime_generation
+                    > seen_runtime_generations
+                        .get(&member.id)
+                        .copied()
+                        .unwrap_or(0)
+                && !already_driven(&member.id)
+        })
+        .collect()
+}
+
 /// What one member needed before this Supervisor generation could drive it.
 #[derive(Debug)]
 pub(crate) enum JoinedMemberRuntimeFabric {
