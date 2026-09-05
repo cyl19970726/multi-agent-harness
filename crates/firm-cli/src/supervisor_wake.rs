@@ -86,6 +86,19 @@ impl Default for WakePolicy {
     }
 }
 
+/// The one wake policy every managed member actually runs under.
+///
+/// Single source for both consumers of the degradation threshold: the wake
+/// loop itself (`run_team_member_with_adapter` in runtime_adapter.rs
+/// constructs each member's policy here) and the `team-run recover`
+/// blocked-member classifier (`zero_output_degradation_threshold` in
+/// drain_lane_resume.rs), which must agree with the gate it defers to. This
+/// is deliberately not a configurable policy — do not thread one through the
+/// runtime; a per-run override would silently desync the classifier.
+pub(crate) fn effective_wake_policy() -> WakePolicy {
+    WakePolicy::default()
+}
+
 // ---------------------------------------------------------------------------
 // Pure decision function
 // ---------------------------------------------------------------------------
@@ -270,6 +283,20 @@ mod tests {
 
     fn fresh_backoff() -> WakeBackoff {
         WakeBackoff::new()
+    }
+
+    #[test]
+    fn recover_classifier_and_wake_loop_read_one_threshold() {
+        // #795 item 2: the `team-run recover` blocked-member classifier
+        // (drain_lane_resume.rs) and the wake loop policy construction
+        // (runtime_adapter.rs) must never drift apart; both read the
+        // threshold through effective_wake_policy(). The shipped value is
+        // pinned so a silent change fails here.
+        assert_eq!(
+            crate::drain_lane_resume::zero_output_degradation_threshold(),
+            effective_wake_policy().zero_output_degradation_threshold
+        );
+        assert_eq!(effective_wake_policy().zero_output_degradation_threshold, 3);
     }
 
     // ── Wake predicate tests ──────────────────────────────────────────────

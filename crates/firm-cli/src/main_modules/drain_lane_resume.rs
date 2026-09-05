@@ -400,11 +400,11 @@ pub(super) fn blocked_member_provenance(
 
 /// The streak at which the wake loop actually degrades a member.
 ///
-/// One source: `WakePolicy::default()` is what `run_team_member_with_adapter`
+/// One source: `effective_wake_policy()` is what `run_team_member_with_adapter`
 /// constructs for every managed member, so this cannot disagree with the gate
 /// it defers to.
-fn zero_output_degradation_threshold() -> u32 {
-    crate::supervisor_wake::WakePolicy::default().zero_output_degradation_threshold
+pub(crate) fn zero_output_degradation_threshold() -> u32 {
+    crate::supervisor_wake::effective_wake_policy().zero_output_degradation_threshold
 }
 
 /// Return one `Blocked` member to a startable status, on the proof that its own
