@@ -3,7 +3,8 @@
 // source-only history per the inactive-historical convention (file kept,
 // removed from pipelines, named replacement) — see
 // docs/current/operations/operations.md.
-// Replacement: check:star-harness-plugin for the retained skills
+// Replacement: the governance `skills` gate (`firm governance check`) and
+// scripts/check-cross-layer-consistency.mjs for the retained skills
 
 #!/usr/bin/env node
 import fs from "node:fs";

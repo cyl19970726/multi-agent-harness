@@ -3,7 +3,8 @@ use super::*;
 #[test]
 fn create_auto_binds_from_star_harness_env() {
     let (store, root) = temp_store("auto-bind-create");
-    // Simulate star-harness SessionStart having set both env vars
+    // Simulate the operator's shell having exported both STAR_HARNESS_HOST_*
+    // vars (the retired plugin hook used to set them; ADR 0063)
     // by directly seeding the values the CLI resolution would produce.
     let host_surface = "kimi-cli".to_string();
     let host_thread_id = Some("thread-xyz".to_string());

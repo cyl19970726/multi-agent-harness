@@ -3,8 +3,8 @@
 //! Retired skills must never reappear as directories (or symlinks to
 //! directories) directly under any configured `skill_roots` entry. The check
 //! scans the filesystem, so an ignored or untracked local copy fails the same
-//! way as a committed one. Archived copies outside the skill roots (for
-//! example `archive/skills/`) are legitimate and are never scanned.
+//! way as a committed one. Copies outside the skill roots are never scanned;
+//! retired skill sources themselves live only in git history (ADR 0063).
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
@@ -29,7 +29,7 @@ pub(crate) fn retired_name_set(retired: Option<&RetiredSkillsConfig>) -> BTreeSe
 pub(crate) fn retired_skill_finding(skills_root: &str, entry: &str) -> String {
     format!(
         "{skills_root}/{entry}: retired skill name must not appear under a skill root; \
-         remove or relocate the copy (archived copies live outside skill roots, \
-         e.g. archive/skills/)"
+         remove the copy (retired skill sources live only in git history, \
+         never under a skill root)"
     )
 }

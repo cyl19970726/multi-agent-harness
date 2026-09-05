@@ -1,4 +1,0 @@
-interface:
-  display_name: "Shared Agent Team References"
-  short_description: "Shared governance invariants referenced by agent team skills (not independently installable)"
-  default_prompt: "These shared references are embedded into orchestrating and collaborating team skills. Do not install independently."

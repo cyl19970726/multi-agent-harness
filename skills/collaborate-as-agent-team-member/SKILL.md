@@ -27,16 +27,15 @@ example traced from both sides.
   interactive provider session (a Claude Code, Codex, or Kimi window) bound
   with `--host-surface <surface> --host-thread-id <id>`; Harness creates no
   AgentSession for it and cannot wake it. An external Host learns about
-  progress only by asking — `firm team-run wait` inside a turn, and the plugin
-  hook's inbox push at session start / prompt / stop boundaries.
-- **Load the current copy.** The supported distribution is the repository
-  plugin marketplace (`claude plugin install star-harness@multi-agent-harness`,
-  `codex plugin add star-harness@multi-agent-harness`); inside this repository
-  `.agents/skills/collaborate-as-agent-team-member` links to the canonical
-  `skills/` source so Codex, Claude Code (`.claude/skills` → `.agents/skills`),
-  and Kimi (`--skills-dir .agents/skills`) members see the same file.
-  `scripts/install-skill.sh` copies a snapshot that goes stale; refresh or
-  remove such copies when a `references/` directory is missing beside them.
+  progress only by asking — `firm team-run wait` inside a turn, then
+  `firm team-run host-inbox` for what arrived; nothing pushes into that window.
+- **Load the current copy.** There is no plugin package (ADR 0063). Inside
+  this repository `.agents/skills/collaborate-as-agent-team-member` links to
+  the canonical `skills/` source so Codex, Claude Code (`.claude/skills` →
+  `.agents/skills`), and Kimi (`--skills-dir .agents/skills`) members see the
+  same file. Elsewhere, `scripts/install-skill.sh --agent both --scope user`
+  copies a snapshot that goes stale; refresh or remove such copies when a
+  `references/` directory is missing beside them.
 
 ## Part I — Shared mental model (both roles hold this, verbatim)
 

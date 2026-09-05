@@ -106,7 +106,6 @@ and [getting started](docs/current/operations/getting-started.md).
 | `crates/` | Rust store, core, CLI, execution, and provider infrastructure. |
 | `apps/agent-dashboard/` | React/Vite operator dashboard for harness state. |
 | `skills/` | Optional capabilities, including Agent Team member operation. Skills are not product authority. |
-| `archive/` | Retired skills and packages kept as historical references only. |
 | `examples/adapters/` | Domain adapters; business-specific logic stays outside the generic core. |
 
 ## Core boundary

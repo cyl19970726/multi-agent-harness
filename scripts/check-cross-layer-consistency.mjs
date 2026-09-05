@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Cross-layer consistency check: skill ↔ code CONTRACT prompt ↔ plugin manifests
+// Cross-layer consistency check: skill ↔ code CONTRACT prompt
 // Exit 0 when consistent, 1 when gaps found.
 
 import { readFileSync, existsSync, readdirSync } from "node:fs";
@@ -132,45 +132,8 @@ if (!missionSchema || !waveSchema || !schemasReadme || !currentMissionFixture ||
   }
 }
 
-// Rule 3: Plugin manifest must not reference retired concepts.
-console.log("\nRule 3: Plugin manifest (no Wave, no Plan Gate as feature)");
-const pluginDir = join(ROOT, "plugins/star-harness");
-const manifests = [
-  join(pluginDir, "kimi.plugin.json"),
-  join(pluginDir, ".codex-plugin/plugin.json"),
-  join(pluginDir, ".claude-plugin/plugin.json"),
-];
-
-for (const mf of manifests) {
-  const name = mf.split("/").slice(-2).join("/");
-  const content = read(mf);
-  if (!content) { fail(`${name}: not found`); continue; }
-  
-  try {
-    const d = JSON.parse(content);
-    const desc = (d.description || "").toLowerCase();
-    const iface = d.interface || {};
-    const longDesc = (iface.longDescription || "").toLowerCase();
-    
-    if (desc.includes("mission/wave")) fail(`${name}: description says "Mission/Wave"`);
-    if (longDesc.includes("mission/wave")) fail(`${name}: longDescription references Wave as object`);
-    
-    const keywords = d.keywords || [];
-    if (keywords.includes("wave")) fail(`${name}: keywords include "wave"`);
-    
-    const prompts = iface.defaultPrompt || [];
-    for (const p of prompts) {
-      if (p.toLowerCase().includes("wave")) fail(`${name}: defaultPrompt mentions Wave`);
-    }
-    
-    ok(`${name}: clean`);
-  } catch(e) {
-    fail(`${name}: invalid JSON`);
-  }
-}
-
-// ── Rule 4: Member skill matches CONTRACT prompt for key operations ─────
-console.log("\nRule 4: Member skill ↔ CONTRACT prompt (key operations)");
+// ── Rule 3: Member skill matches CONTRACT prompt for key operations ─────
+console.log("\nRule 3: Member skill ↔ CONTRACT prompt (key operations)");
 const memberSkill = read(join(ROOT, "skills/collaborate-as-agent-team-member/SKILL.md"));
 
 if (memberSkill && mainRs) {
@@ -209,7 +172,7 @@ if (memberSkill && mainRs) {
 }
 
 // ── Summary ──────────────────────────────────────────────────────────────
-console.log("\nRule 5: four-layer development governance stays aligned");
+console.log("\nRule 4: four-layer development governance stays aligned");
 const rootAgents = read(join(ROOT, "AGENTS.md"));
 const operations = read(join(ROOT, "docs/current/operations/operations.md"));
 const operatingRules = read(join(ROOT, "docs/current/product/agent-operating-rules.md"));

@@ -131,16 +131,19 @@ Desktop app. TeamRuns therefore bind the Host explicitly:
 ```bash
 firm team-run create ... \
   --host-surface codex-app \
-  --host-thread-id <Codex hook session_id>
+  --host-thread-id <Codex Desktop thread id>
 ```
 
-The Star Harness hook queries `team-run host-inbox` with that exact pair.
-`SessionStart` and `UserPromptSubmit` surface actionable mail. When mail exists
-at `Stop`, Codex's native continuation protocol keeps the same task running
-once and supplies the bounded Inbox summary. `stop_hook_active` prevents a
-continuation loop.
+Nothing pushes into the Desktop task: ADR 0063 retired the plugin hook that
+used to query the inbox at SessionStart / UserPromptSubmit / Stop. The Host
+reads its own mail at the start of every turn and blocks on `firm team-run
+wait` inside a long turn while members work:
 
-If mail arrives after Desktop is already idle, no hook event occurs. Unless
+```bash
+firm team-run host-inbox --surface codex-app --thread-id <Codex Desktop thread id> --json
+```
+
+No event fires when mail arrives while Desktop is idle. Unless
 Harness owns a live app-server connection for that Host, the mail remains
 durable until the next prompt/resume. Known thread identity is not live
 connection ownership. Full contract: [ADR 0040](../../decisions/0040-native-host-inbox-delivery.md).

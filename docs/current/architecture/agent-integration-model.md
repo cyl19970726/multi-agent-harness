@@ -448,9 +448,9 @@ enumerating tools.
 
 ### The adapter boundary (generalized from a historical example)
 
-The retired Dynamic Workflow earning-engine example is preserved as historical
-design evidence
-([adapter.json](../../../archive/dynamic-workflow/assets/earning-engine/adapter.json)).
+The retired Dynamic Workflow earning-engine example survives only in git
+history as design evidence (`archive/dynamic-workflow/assets/earning-engine/adapter.json`
+at commit 918e9002; ADR 0063).
 It shows the generic split: an adapter supplies project tools, evidence policy,
 dashboard links, permission policy, and skills, while the generic harness owns
 coordination. Generalized:

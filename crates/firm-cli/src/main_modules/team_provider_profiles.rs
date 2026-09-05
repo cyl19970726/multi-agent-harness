@@ -176,9 +176,9 @@ pub(super) fn validate_team_member_execution_mode(member: &TeamMemberSpec) -> Cl
         // An external interactive member is the user's own already-open
         // provider session; there is no provider-native session to resume and
         // no Harness adapter whose registry should constrain the provider
-        // label. Known providers may use the plugin hook while any other
-        // non-empty label remains usable through the same trusted-local
-        // inbox/send/ack contract.
+        // label. Any non-empty label is usable through the same trusted-local
+        // host-inbox / answer-message contract (ADR 0063 retired the plugin
+        // hook).
         if member.resume_native_session_id.is_some() {
             return Err(CliError::Usage(
                 "external_interactive members have no provider-native session to resume"

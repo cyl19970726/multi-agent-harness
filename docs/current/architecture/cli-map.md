@@ -45,11 +45,12 @@ error and are documented here only as retired compatibility.
 
 Active repository skills:
 
-- `skills/collaborate-as-agent-team-member` (mirrored into the Star Harness plugin)
-- `skills/shared-references` (cross-reference, mirrored)
+- `skills/collaborate-as-agent-team-member` (reached through the `.agents/skills` symlinks)
+- `skills/shared-references` (cross-reference)
 
 The retired Company OS operator skills and the Mission-orchestration skill were
-archived to `archive/skills/` with the DOC-108 cutover and must not be
+retired with the DOC-108 cutover (their sources live only in git history,
+ADR 0063) and must not be
 installed or treated as current operating contracts. Skills are
 distribution/operator guidance. They are not the authority for product
 architecture; canonical truth remains schemas, store/API, CLI routing, UI,
@@ -59,7 +60,7 @@ tests and ADRs.
 
 | Check | What it proves |
 | --- | --- |
-| `pnpm check` | Umbrella: JSON validity, schema fixtures, provider events, collaboration foundation, member execution trust, runtime message fabric, remote fabric, tool descriptors, native-session boundary, plugin contract, cross-layer consistency, role views, dashboard. |
+| `pnpm check` | Umbrella: retired-path boundary (ADR 0063), JSON validity, schema fixtures, provider events, collaboration foundation, member execution trust, runtime message fabric, remote fabric, tool descriptors, native-session boundary, cross-layer consistency, role views, dashboard. |
 | `pnpm acceptance:legacy-retirement` | Deterministic Agent Team, CLI, Kimi ACP adapter, and Dashboard contracts plus the retired Mission/Wave legacy reads and retired-write errors. |
 | `firm governance check` | Documentation registry/link/retired-surface governance. |
 

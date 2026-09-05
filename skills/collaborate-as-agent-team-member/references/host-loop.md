@@ -11,7 +11,7 @@ output, or private session detail beyond the `host_member_public` scope.
 | Mode | How you run | What wakes you | What you must do yourself |
 | --- | --- | --- | --- |
 | `managed` (default for automated Teams) | one MemberRun → AgentSession under the NodeDaemon, same path as every Member | response-required deliveries, blocked/submitted Work, recovery attentions start your next cycle | nothing special — the Supervisor batches ordinary progress into your next cycle |
-| `external_interactive` (a Claude Code / Codex / Kimi window bound with `--host-surface … --host-thread-id …`) | your own interactive session; Harness creates no AgentSession, receipt, or timely wake | the plugin hook pushes queued Host mail at SessionStart / UserPromptSubmit / Stop | inside a long turn, block on `team-run wait`; read `host-inbox`; answer with `answer-message` |
+| `external_interactive` (a Claude Code / Codex / Kimi window bound with `--host-surface … --host-thread-id …`) | your own interactive session; Harness creates no AgentSession, receipt, or timely wake | nothing pushes into the window (ADR 0063 retired the plugin hook); read `host-inbox` at the start of every turn | inside a long turn, block on `team-run wait`; read `host-inbox`; answer with `answer-message` |
 
 Mode changes are explicit Close/Reopen operations with generation fencing;
 nothing falls back silently between them.

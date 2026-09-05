@@ -8,7 +8,6 @@ const retiredPaths = [
   "crates/firm-cli/src/mcp",
   "crates/firm-cli/tests/mcp_stdio.rs",
   "crates/firm-cli/tests/mcp_stdio",
-  "plugins/star-harness/.mcp.json",
   "docs/current/integration/host-agent-mcp.md",
 ];
 
@@ -16,14 +15,13 @@ for (const path of retiredPaths) {
   if (existsSync(path)) failures.push(`retired Harness MCP surface remains: ${path}`);
 }
 
+// ADR 0063 retired the plugin package that used to carry the .mcp.json
+// registration; scripts/check-retired-paths.mjs keeps plugins/ absent.
 const inspected = [
   "crates/firm-cli/src/main.rs",
   "skills/collaborate-as-agent-team-member/SKILL.md",
   "skills/collaborate-as-agent-team-member/references/host-loop.md",
   "skills/collaborate-as-agent-team-member/references/member-loop.md",
-  "plugins/star-harness/.codex-plugin/plugin.json",
-  "plugins/star-harness/.claude-plugin/plugin.json",
-  "plugins/star-harness/kimi.plugin.json",
 ];
 for (const path of inspected) {
   const text = readFileSync(path, "utf8");
@@ -33,11 +31,10 @@ for (const path of inspected) {
 }
 
 const installer = readFileSync("scripts/manage-star-harness-install.sh", "utf8");
-if (installer.includes('plugins/star-harness/.mcp.json')) {
-  failures.push("installer still publishes the retired Harness MCP registration");
-}
-if (!installer.includes('rm -f "${KIMI_MANAGED_DIR}/.mcp.json"')) {
-  failures.push("Kimi in-place upgrade does not remove the retired Harness MCP registration");
+for (const forbidden of [".mcp.json", "plugins/star-harness", "plugin marketplace"]) {
+  if (installer.includes(forbidden)) {
+    failures.push(`installer still references the retired plugin surface: ${forbidden}`);
+  }
 }
 
 if (failures.length) {

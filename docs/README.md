@@ -94,13 +94,14 @@ When adding, moving, or retiring documentation:
 5. **Registry is repository-only.** `docs/registry.json` classifies repository
    documents and their machine consumers; it does not own product intent,
    development Skill lifecycle, Crosswalk state, or Task status.
-6. **Skills sync.** Product skills live in `skills/` and mirror to
-   `plugins/star-harness/skills/` via `sync-star-harness-plugin-skills.mjs`.
-   The repository-only `.agents/skills/agentfirm-development-loop` follows the
+6. **Skills distribution.** Product skills live in `skills/` and reach agents
+   through the `.agents/skills` symlinks (`.claude/skills` → `.agents/skills`);
+   `scripts/install-skill.sh` copies snapshots for other projects (ADR 0063
+   retired the plugin mirror). The repository-only `.agents/skills/agentfirm-development-loop` follows the
    Development Playbook through reviewed repository changes and is not governed
    by the docs registry.
 7. **Cross-layer check.** `node scripts/check-cross-layer-consistency.mjs`
-   verifies skills, code prompts, and plugin manifests stay consistent.
+   verifies skills and code prompts stay consistent.
 
 Project-specific tool usage belongs in `examples/adapters/**` or in the
 integrating project repository, not in the generic core docs.

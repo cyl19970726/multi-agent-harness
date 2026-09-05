@@ -12,8 +12,6 @@ fi
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 USER_HOME_DIR="${HOME:?HOME is required}"
-PLUGIN_SELECTOR="star-harness@multi-agent-harness"
-MARKETPLACE_REPO="cyl19970726/multi-agent-harness"
 INSTALL_BASE="${STAR_HARNESS_INSTALL_ROOT:-${USER_HOME_DIR}/.local/lib/star-harness}"
 BIN_LINK="${STAR_HARNESS_BIN_LINK:-${USER_HOME_DIR}/.local/bin/harness}"
 FIRM_LINK="${STAR_HARNESS_FIRM_LINK:-${USER_HOME_DIR}/.local/bin/firm}"
@@ -884,25 +882,37 @@ if [[ "${MODE}" == "apply" ]]; then
   STATE_FILE="${STATE_BASE}/installations/${INSTALLED_AT//:/-}-unknown-$$.json"
 fi
 
-for command_name in node npm cargo rustc codex claude; do
+for command_name in node npm cargo rustc git; do
   if ! command -v "${command_name}" >/dev/null 2>&1; then
     echo "missing required command: ${command_name}" >&2
     exit 1
   fi
 done
 
-VERSION="$(
-  node -e \
-    'console.log(JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8")).version)' \
-    "${REPO_ROOT}/plugins/star-harness/.codex-plugin/plugin.json"
-)"
+# The installation version is the firm-cli crate version plus the exact source
+# revision (ADR 0063 retired the plugin manifest that used to carry it), so a
+# new revision publishes into its own ${INSTALL_BASE}/<version> directory
+# instead of overwriting the binary an active MemberRun loaded. Re-applying the
+# same revision (or a dirty tree, suffixed .dirty) republishes that directory;
+# outside a git checkout only the crate version is available.
+CRATE_VERSION="$(awk -F'"' '/^version = "/ { print $2; exit }' "${REPO_ROOT}/crates/firm-cli/Cargo.toml")"
+if [[ -z "${CRATE_VERSION}" ]]; then
+  echo "could not read the firm-cli crate version from ${REPO_ROOT}/crates/firm-cli/Cargo.toml" >&2
+  exit 1
+fi
+SOURCE_REVISION="$(git -C "${REPO_ROOT}" rev-parse --short=12 HEAD 2>/dev/null || true)"
+if [[ -n "${SOURCE_REVISION}" ]]; then
+  VERSION="${CRATE_VERSION}+g${SOURCE_REVISION}"
+  if ! git -C "${REPO_ROOT}" diff --quiet HEAD -- 2>/dev/null; then
+    VERSION="${VERSION}.dirty"
+  fi
+else
+  VERSION="${CRATE_VERSION}"
+fi
 
 echo "Star Harness source: ${VERSION} (${REPO_ROOT})"
 (
   cd "${REPO_ROOT}"
-  node scripts/sync-star-harness-plugin-skills.mjs --check
-  node scripts/check-star-harness-plugin.mjs
-  node scripts/check-star-harness-hook.mjs
   node scripts/check-cross-layer-consistency.mjs
 )
 
@@ -944,27 +954,6 @@ else
   echo "not built at ${CANDIDATE_BIN}; run cargo build -p firm-cli"
 fi
 
-echo
-echo "Current Codex Star Harness installation:"
-CODEX_PLUGINS_BEFORE="$(codex plugin list)"
-grep -E 'star-harness@(personal|multi-agent-harness)' <<<"${CODEX_PLUGINS_BEFORE}" || true
-
-echo
-echo "Current Claude Star Harness installation:"
-CLAUDE_PLUGINS_BEFORE="$(claude plugin list)"
-grep -A3 -B1 'star-harness@multi-agent-harness' <<<"${CLAUDE_PLUGINS_BEFORE}" || true
-
-echo
-echo "Current Kimi Code Star Harness installation:"
-KIMI_CODE_HOME="${KIMI_CODE_HOME:-${USER_HOME_DIR}/.kimi-code}"
-KIMI_MANAGED_DIR="${KIMI_CODE_HOME}/plugins/managed/star-harness"
-if [[ -f "${KIMI_MANAGED_DIR}/kimi.plugin.json" ]]; then
-  KIMI_INSTALLED_VERSION="$(node -e "console.log(JSON.parse(require('fs').readFileSync(process.argv[1],'utf8')).version||'?')" "${KIMI_MANAGED_DIR}/kimi.plugin.json" 2>/dev/null || echo "?")"
-  echo "  installed v${KIMI_INSTALLED_VERSION} at ${KIMI_MANAGED_DIR}"
-else
-  echo "  not installed (run --apply to install)"
-fi
-
 if [[ "${MODE}" == "check" ]]; then
   echo
   echo "Check-only mode; run with --apply to publish this accepted source locally."
@@ -984,26 +973,11 @@ prepare_firm_link_publication
 
 VERSION_DIR="${INSTALL_BASE}/${VERSION}"
 VERSION_BIN="${VERSION_DIR}/harness"
-MARKETPLACE_SNAPSHOT="${VERSION_DIR}/marketplace"
 CLAUDE_RUNNER_INSTALL="${VERSION_DIR}/apps/claude-member-runner"
 DEEPSEEK_RUNNER_INSTALL="${VERSION_DIR}/apps/deepseek-member-runner"
 mkdir -p "${VERSION_DIR}" "$(dirname "${BIN_LINK}")" "$(dirname "${FIRM_LINK}")"
 APPLY_IN_PROGRESS="true"
 install -m 0755 "${REPO_ROOT}/target/debug/firm" "${VERSION_BIN}"
-
-case "${MARKETPLACE_SNAPSHOT}" in
-  "${INSTALL_BASE}/"*) ;;
-  *)
-    echo "refusing to replace marketplace snapshot outside ${INSTALL_BASE}" >&2
-    exit 1
-    ;;
-esac
-rm -rf "${MARKETPLACE_SNAPSHOT}"
-mkdir -p "${MARKETPLACE_SNAPSHOT}/.claude-plugin" "${MARKETPLACE_SNAPSHOT}/plugins"
-install -m 0644 \
-  "${REPO_ROOT}/.claude-plugin/marketplace.json" \
-  "${MARKETPLACE_SNAPSHOT}/.claude-plugin/marketplace.json"
-cp -R "${REPO_ROOT}/plugins/star-harness" "${MARKETPLACE_SNAPSHOT}/plugins/"
 
 case "${CLAUDE_RUNNER_INSTALL}" in
   "${VERSION_DIR}/"*) ;;
@@ -1042,82 +1016,16 @@ npm ci \
 publish_bin_link "${VERSION_BIN}"
 publish_firm_link "${VERSION_BIN}"
 
-echo
-echo "Refreshing Codex marketplace and installing one canonical owner..."
-CODEX_MARKETPLACES="$(codex plugin marketplace list)"
-if grep -q '^multi-agent-harness[[:space:]]' <<<"${CODEX_MARKETPLACES}"; then
-  codex plugin marketplace remove multi-agent-harness
-fi
-if ! codex plugin marketplace add "${MARKETPLACE_REPO}" \
-  --sparse .claude-plugin \
-  --sparse plugins/star-harness; then
-  echo "Codex Git marketplace refresh failed; using accepted local snapshot." >&2
-  codex plugin marketplace add "${MARKETPLACE_SNAPSHOT}"
-fi
-if grep -q 'star-harness@personal[[:space:]].*installed' <<<"${CODEX_PLUGINS_BEFORE}"; then
-  REMOVE_PERSONAL_AFTER_INSTALL="true"
-else
-  REMOVE_PERSONAL_AFTER_INSTALL="false"
-fi
-if grep -q 'star-harness@multi-agent-harness[[:space:]].*installed' <<<"${CODEX_PLUGINS_BEFORE}"; then
-  codex plugin remove "${PLUGIN_SELECTOR}"
-fi
-if ! codex plugin add "${PLUGIN_SELECTOR}"; then
-  echo "canonical Codex Plugin installation failed" >&2
-  if [[ "${REMOVE_PERSONAL_AFTER_INSTALL}" == "false" ]]; then
-    echo "reinstall the previous marketplace snapshot before retrying" >&2
-  fi
-  exit 1
-fi
-if [[ "${REMOVE_PERSONAL_AFTER_INSTALL}" == "true" ]]; then
-  codex plugin remove star-harness@personal
-fi
-
-echo
-echo "Refreshing Claude marketplace and plugin..."
-CLAUDE_MARKETPLACES="$(claude plugin marketplace list)"
-if grep -q 'multi-agent-harness' <<<"${CLAUDE_MARKETPLACES}"; then
-  claude plugin marketplace remove multi-agent-harness --scope user
-fi
-if ! claude plugin marketplace add "${MARKETPLACE_REPO}" \
-  --scope user \
-  --sparse .claude-plugin plugins/star-harness; then
-  echo "Claude Git marketplace refresh failed; using accepted local snapshot." >&2
-  claude plugin marketplace add "${MARKETPLACE_SNAPSHOT}" --scope user
-fi
-CLAUDE_PLUGINS_AFTER_MARKETPLACE="$(claude plugin list)"
-if grep -q 'star-harness@multi-agent-harness' <<<"${CLAUDE_PLUGINS_AFTER_MARKETPLACE}"; then
-  claude plugin update "${PLUGIN_SELECTOR}" --scope user
-else
-  claude plugin install "${PLUGIN_SELECTOR}" --scope user
-fi
-
-	echo
-	echo "Installing Kimi Code plugin..."
-	mkdir -p "${KIMI_MANAGED_DIR}/scripts" "${KIMI_MANAGED_DIR}/skills" "${KIMI_MANAGED_DIR}/commands"
-	# Direct Kimi installs are upgraded in place, so explicitly remove the retired
-	# Harness coordination MCP registration before publishing the CLI-only plugin.
-	rm -f "${KIMI_MANAGED_DIR}/.mcp.json"
-	cp "${REPO_ROOT}/plugins/star-harness/kimi.plugin.json" "${KIMI_MANAGED_DIR}/"
-	cp "${REPO_ROOT}/plugins/star-harness/scripts/star-harness-hook.sh" "${KIMI_MANAGED_DIR}/scripts/"
-	cp -R "${REPO_ROOT}/plugins/star-harness/skills/" "${KIMI_MANAGED_DIR}/skills/"
-	cp -R "${REPO_ROOT}/plugins/star-harness/commands/" "${KIMI_MANAGED_DIR}/commands/"
-	echo "  installed ${VERSION} to ${KIMI_MANAGED_DIR}"
-	echo "  Run /reload in Kimi Code to activate the plugin."
-
-node - "${STATE_FILE}" "${VERSION}" "${REPO_ROOT}" "${VERSION_BIN}" "${PREVIOUS_BIN}" "${INSTALLED_AT}" "${KIMI_MANAGED_DIR}" "${FIRM_LINK}" <<'NODE'
+node - "${STATE_FILE}" "${VERSION}" "${REPO_ROOT}" "${VERSION_BIN}" "${PREVIOUS_BIN}" "${INSTALLED_AT}" "${FIRM_LINK}" <<'NODE'
 const fs = require("node:fs");
-const [path, version, sourceRoot, binary, previousBinary, installedAt, kimiPlugin, firmLink] = process.argv.slice(2);
+const [path, version, sourceRoot, binary, previousBinary, installedAt, firmLink] = process.argv.slice(2);
 fs.writeFileSync(path, `${JSON.stringify({
-  schema_version: 1,
+  schema_version: 2,
   version,
   source_root: sourceRoot,
   harness_binary: binary,
   firm_binary_link: firmLink,
   rollback_harness_binary: previousBinary || null,
-  codex_plugin: "star-harness@multi-agent-harness",
-  claude_plugin: "star-harness@multi-agent-harness",
-  kimi_plugin: kimiPlugin,
   installed_at: installedAt,
 }, null, 2)}\n`);
 NODE
@@ -1129,4 +1037,4 @@ echo
 echo "Installed Star Harness ${VERSION}."
 echo "Binary links: ${BIN_LINK} (primary) and ${FIRM_LINK} (alias) -> ${VERSION_BIN}"
 echo "State: ${STATE_FILE}"
-echo "Start a new Codex task, a new Claude session, and run /reload in Kimi Code to activate."
+echo "Existing member sessions keep the binary they loaded; start new sessions to use this one."
