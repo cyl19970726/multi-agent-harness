@@ -62,7 +62,9 @@ for line in sys.stdin:
     let outcome = client
         .prompt(
             "one cycle",
-            std::time::Duration::from_secs(2),
+            harness_runtime_contract::CycleTimeouts::with_input_acceptance(
+                std::time::Duration::from_secs(2),
+            ),
             |_| Ok(()),
             |_, _| Ok(()),
             |_| {},
@@ -283,4 +285,419 @@ fn rejects_a_native_session_that_would_replay_thinking() {
     let error = ensure_session_has_no_persisted_thinking(&path).unwrap_err();
     assert!(error.to_string().contains("persisted provider thinking"));
     std::fs::remove_dir_all(dir).expect("remove temp dir");
+}
+
+// ---------------------------------------------------------------------------
+// SPEC-TYPED-CYCLE-OUTCOME-01 §5: the S1 assertion family against Pi RPC.
+
+#[cfg(unix)]
+mod cycle_conformance {
+    use super::*;
+    use harness_runtime_host::OwnedProcessGroupRegistration;
+    use std::collections::HashMap;
+    use std::io::BufWriter;
+    use std::process::{Command, Stdio};
+    use std::sync::mpsc::{self, Sender};
+    use std::sync::{Arc, Mutex};
+    use std::time::{Duration, Instant};
+
+    fn scripted_pi_client() -> (PiRpcClient, Sender<serde_json::Value>) {
+        let mut child = Command::new("sh")
+            .args(["-c", "cat >/dev/null"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn scripted pi sink");
+        let stdin = child.stdin.take().expect("scripted pi stdin");
+        let owned_process_group =
+            OwnedProcessGroupRegistration::new(&mut child).expect("scripted process group");
+        let (event_tx, incoming) = mpsc::channel();
+        (
+            PiRpcClient {
+                child,
+                owned_process_group,
+                stdin: BufWriter::new(stdin),
+                next_request_id: 0,
+                pending: Arc::new(Mutex::new(HashMap::new())),
+                incoming,
+                reader: None,
+                stderr_tail: Arc::new(Mutex::new(String::new())),
+                session_file: "scripted-session.jsonl".to_string(),
+                permission_ceiling: PermissionCeiling::FullAccess,
+                tools_allowlist: None,
+                last_observation: None,
+                released: false,
+            },
+            event_tx,
+        )
+    }
+
+    fn pi_response(id: &str, command: &str, data: serde_json::Value) -> serde_json::Value {
+        serde_json::json!({
+            "id": id, "type": "response", "command": command, "success": true, "data": data
+        })
+    }
+
+    fn pi_state(streaming: bool) -> serde_json::Value {
+        serde_json::json!({
+            "sessionFile": "scripted-session.jsonl",
+            "autoCompactionEnabled": false,
+            "isStreaming": streaming,
+            "pendingMessageCount": 0,
+            "steeringMode": "one-at-a-time",
+            "followUpMode": "one-at-a-time"
+        })
+    }
+
+    fn pi_timeouts() -> harness_runtime_contract::CycleTimeouts {
+        harness_runtime_contract::CycleTimeouts {
+            input_acceptance: Duration::from_millis(1),
+            transport_liveness: Duration::from_millis(1),
+            control_settle: Duration::ZERO,
+        }
+    }
+
+    struct PiScript {
+        answers: Vec<(String, serde_json::Value)>,
+        events: Vec<serde_json::Value>,
+        /// Scripted events are sent only after this many answers have landed
+        /// (`prompt_dyn` discards pre-dispatch events at start, and a Host
+        /// interrupt must be polled before the terminal event arrives).
+        events_after: usize,
+        disconnect_after: bool,
+    }
+
+    fn drive_pi_cycle(
+        script: PiScript,
+        timeouts: &harness_runtime_contract::CycleTimeouts,
+        mut control: impl FnMut() -> harness_runtime_contract::CycleControl + Send + 'static,
+    ) -> Result<harness_runtime_contract::ExecutionCycleOutcome, String> {
+        let (client, event_tx) = scripted_pi_client();
+        let pending = Arc::clone(&client.pending);
+        let timeouts = *timeouts;
+        let handle = std::thread::spawn(move || {
+            let mut adapter = crate::team_runtime::PiTeamRuntime::new(client);
+            harness_runtime_contract::TeamRuntimeAdapter::run_cycle(
+                &mut adapter,
+                "conformance cycle",
+                timeouts,
+                &mut |_receipt| Ok(()),
+                &mut |_pending, _result| Ok(()),
+                &mut |_event| {},
+                &mut control,
+            )
+        });
+        let mut events = script.events.into_iter();
+        let mut answered = 0usize;
+        for (command, frame) in script.answers {
+            let deadline = Instant::now() + Duration::from_secs(2);
+            let id = loop {
+                if handle.is_finished() {
+                    let early = handle
+                        .join()
+                        .map_err(|_| "adapter thread panicked".to_string())?;
+                    return Err(format!(
+                        "adapter finished before the scripted {command} answer: {early:?}"
+                    ));
+                }
+                let waiter = pending
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .keys()
+                    .next()
+                    .cloned();
+                if let Some(id) = waiter {
+                    break id;
+                }
+                if Instant::now() >= deadline {
+                    let keys: Vec<String> = pending
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner())
+                        .keys()
+                        .cloned()
+                        .collect();
+                    panic!(
+                        "scripted {command} never arrived (thread_finished={}, pending={keys:?})",
+                        handle.is_finished()
+                    );
+                }
+                std::thread::sleep(Duration::from_millis(1));
+            };
+            pending
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .remove(&id)
+                .expect("request waiter")
+                .send(frame)
+                .map_err(|error| error.to_string())?;
+            answered += 1;
+            if answered == script.events_after {
+                for event in events.by_ref() {
+                    event_tx.send(event).map_err(|error| error.to_string())?;
+                }
+            }
+        }
+        if script.disconnect_after {
+            drop(event_tx);
+        }
+        handle
+            .join()
+            .map_err(|_| "adapter thread panicked".to_string())?
+            .map_err(|error| error.to_string())
+    }
+
+    struct PiCycleConformanceFixture;
+
+    impl harness_runtime_contract::CycleConformanceFixture for PiCycleConformanceFixture {
+        type Error = String;
+
+        fn run_receipt_then_silence(
+            &mut self,
+            timeouts: &harness_runtime_contract::CycleTimeouts,
+        ) -> Result<harness_runtime_contract::CycleConformanceOutcome, Self::Error> {
+            let outcome = drive_pi_cycle(
+                PiScript {
+                    answers: vec![
+                        (
+                            "prompt".to_string(),
+                            pi_response("pi-rpc-1", "prompt", serde_json::json!({})),
+                        ),
+                        (
+                            "get_state".to_string(),
+                            pi_response("pi-rpc-2", "get_state", pi_state(false)),
+                        ),
+                    ],
+                    events: vec![
+                        serde_json::json!({"type": "turn_end", "message": {"content": [{"type": "text", "text": "done"}]}}),
+                        serde_json::json!({"type": "agent_settled"}),
+                    ],
+                    events_after: 1,
+                    disconnect_after: false,
+                },
+                timeouts,
+                harness_runtime_contract::CycleControl::default,
+            )?;
+            Ok(harness_runtime_contract::CycleConformanceOutcome {
+                interrupt: outcome.interrupt.clone(),
+                control_unproven: false,
+                result: harness_runtime_contract::CycleConformanceResult::Outcome(Box::new(
+                    outcome,
+                )),
+            })
+        }
+
+        fn run_no_receipt(
+            &mut self,
+            timeouts: &harness_runtime_contract::CycleTimeouts,
+        ) -> Result<harness_runtime_contract::CycleConformanceOutcome, Self::Error> {
+            let error = match drive_pi_cycle(
+                PiScript {
+                    answers: vec![(
+                        "prompt".to_string(),
+                        serde_json::json!({"id": "pi-rpc-1", "type": "response", "command": "prompt", "success": false, "error": "scripted refusal"}),
+                    )],
+                    events: Vec::new(),
+                    events_after: 0,
+                    disconnect_after: false,
+                },
+                timeouts,
+                harness_runtime_contract::CycleControl::default,
+            ) {
+                Ok(_) => return Err("a never-accepted cycle produced an outcome".to_string()),
+                Err(error) => error,
+            };
+            assert!(error.contains("prompt"), "{error}");
+            Ok(harness_runtime_contract::CycleConformanceOutcome {
+                interrupt: None,
+                control_unproven: false,
+                result: harness_runtime_contract::CycleConformanceResult::Failed(
+                    harness_runtime_contract::CycleFailureDisposition::InputNeverAccepted,
+                ),
+            })
+        }
+
+        fn run_transport_dies_after_receipt(
+            &mut self,
+            timeouts: &harness_runtime_contract::CycleTimeouts,
+        ) -> Result<harness_runtime_contract::CycleConformanceOutcome, Self::Error> {
+            let error = match drive_pi_cycle(
+                PiScript {
+                    answers: vec![(
+                        "prompt".to_string(),
+                        pi_response("pi-rpc-1", "prompt", serde_json::json!({})),
+                    )],
+                    events: Vec::new(),
+                    events_after: 1,
+                    disconnect_after: true,
+                },
+                timeouts,
+                harness_runtime_contract::CycleControl::default,
+            ) {
+                Ok(_) => return Err("a dead transport produced an outcome".to_string()),
+                Err(error) => error,
+            };
+            assert!(error.contains("disconnected"), "{error}");
+            Ok(harness_runtime_contract::CycleConformanceOutcome {
+                interrupt: None,
+                control_unproven: false,
+                result: harness_runtime_contract::CycleConformanceResult::Failed(
+                    harness_runtime_contract::CycleFailureDisposition::AcceptedOutcomeUnknown,
+                ),
+            })
+        }
+
+        fn run_interrupt_not_acknowledged(
+            &mut self,
+            timeouts: &harness_runtime_contract::CycleTimeouts,
+        ) -> Result<harness_runtime_contract::CycleConformanceOutcome, Self::Error> {
+            let mut first = true;
+            let error = match drive_pi_cycle(
+                PiScript {
+                    answers: vec![
+                        (
+                            "prompt".to_string(),
+                            pi_response("pi-rpc-1", "prompt", serde_json::json!({})),
+                        ),
+                        (
+                            "abort".to_string(),
+                            pi_response("pi-rpc-2", "abort", serde_json::json!({})),
+                        ),
+                    ],
+                    events: Vec::new(),
+                    events_after: 0,
+                    disconnect_after: false,
+                },
+                timeouts,
+                move || {
+                    if std::mem::take(&mut first) {
+                        harness_runtime_contract::CycleControl {
+                            interrupt: true,
+                            ..Default::default()
+                        }
+                    } else {
+                        harness_runtime_contract::CycleControl::default()
+                    }
+                },
+            ) {
+                Ok(_) => return Err("an unacknowledged abort produced an outcome".to_string()),
+                Err(error) => error,
+            };
+            assert!(error.contains("PI_CONTROL_SETTLE_TIMEOUT"), "{error}");
+            Ok(harness_runtime_contract::CycleConformanceOutcome {
+                interrupt: None,
+                control_unproven: true,
+                result: harness_runtime_contract::CycleConformanceResult::Failed(
+                    harness_runtime_contract::CycleFailureDisposition::AcceptedOutcomeUnknown,
+                ),
+            })
+        }
+
+        fn run_host_interrupt(
+            &mut self,
+            timeouts: &harness_runtime_contract::CycleTimeouts,
+        ) -> Result<harness_runtime_contract::CycleConformanceOutcome, Self::Error> {
+            // The acknowledged path needs a real settle window: pi's first
+            // recv always times out before the control poll, and a zero
+            // control_settle would expire before agent_settled arrives.
+            let settle = harness_runtime_contract::CycleTimeouts {
+                control_settle: Duration::from_secs(2),
+                ..*timeouts
+            };
+            let mut first = true;
+            let outcome = drive_pi_cycle(
+                PiScript {
+                    answers: vec![
+                        (
+                            "prompt".to_string(),
+                            pi_response("pi-rpc-1", "prompt", serde_json::json!({})),
+                        ),
+                        (
+                            "abort".to_string(),
+                            pi_response("pi-rpc-2", "abort", serde_json::json!({})),
+                        ),
+                        (
+                            "get_state".to_string(),
+                            pi_response("pi-rpc-3", "get_state", pi_state(false)),
+                        ),
+                    ],
+                    events: vec![serde_json::json!({"type": "agent_settled"})],
+                    events_after: 2,
+                    disconnect_after: false,
+                },
+                &settle,
+                move || {
+                    if std::mem::take(&mut first) {
+                        harness_runtime_contract::CycleControl {
+                            interrupt: true,
+                            ..Default::default()
+                        }
+                    } else {
+                        harness_runtime_contract::CycleControl::default()
+                    }
+                },
+            )?;
+            Ok(harness_runtime_contract::CycleConformanceOutcome {
+                interrupt: outcome.interrupt.clone(),
+                control_unproven: false,
+                result: harness_runtime_contract::CycleConformanceResult::Outcome(Box::new(
+                    outcome,
+                )),
+            })
+        }
+
+        fn run_adapter_policy_interrupt(
+            &mut self,
+            timeouts: &harness_runtime_contract::CycleTimeouts,
+            _reason: &str,
+        ) -> Result<harness_runtime_contract::CycleConformanceOutcome, Self::Error> {
+            self.run_receipt_then_silence(timeouts)
+        }
+    }
+
+    #[test]
+    fn pi_passes_the_s1_cycle_conformance_family() {
+        let timeouts = pi_timeouts();
+        let mut fixture = PiCycleConformanceFixture;
+        harness_runtime_contract::assert_a1_accepted_input_survives_silence(
+            &mut fixture,
+            &timeouts,
+        )
+        .expect("A1");
+        harness_runtime_contract::assert_a2_delivery_timeout_fails_closed(&mut fixture, &timeouts)
+            .expect("A2");
+        harness_runtime_contract::assert_a3_transport_death_fails_closed(&mut fixture, &timeouts)
+            .expect("A3");
+        harness_runtime_contract::assert_a5_control_settle_only_bounds_control(
+            &mut fixture,
+            &timeouts,
+        )
+        .expect("A5");
+        harness_runtime_contract::assert_b1_host_interrupt_attribution(&mut fixture, &timeouts)
+            .expect("B1");
+    }
+
+    #[test]
+    fn pi_a4_silence_after_acceptance_never_aborts() {
+        // A4: a silent interval past the OLD idle_timeout never reaches the
+        // abort write; the cycle completes normally (B4).
+        let outcome = drive_pi_cycle(
+            PiScript {
+                answers: vec![
+                    ("prompt".to_string(), pi_response("pi-rpc-1", "prompt", serde_json::json!({}))),
+                    ("get_state".to_string(), pi_response("pi-rpc-2", "get_state", pi_state(false))),
+                ],
+                events: vec![
+                    serde_json::json!({"type": "turn_end", "message": {"content": [{"type": "text", "text": "done"}]}}),
+                    serde_json::json!({"type": "agent_settled"}),
+                ],
+                events_after: 1,
+                disconnect_after: false,
+            },
+            &pi_timeouts(),
+            harness_runtime_contract::CycleControl::default,
+        )
+        .expect("a silent accepted cycle completes");
+        assert_eq!(outcome.interrupt, None);
+    }
 }

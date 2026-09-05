@@ -43,7 +43,7 @@ pub fn run_kimi_host_turn(
         .to_string();
     let outcome = client.prompt(
         prompt,
-        timeout,
+        harness_runtime_contract::CycleTimeouts::with_input_acceptance(timeout),
         move |provider_receipt_id| {
             *receipt_sink.lock().map_err(|error| {
                 KimiError::Usage(format!("Host receipt lock poisoned: {error}"))

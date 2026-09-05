@@ -330,7 +330,11 @@ pub struct QuiesceOutcome {
 pub struct ExecutionCycleOutcome {
     pub final_text: String,
     pub provider_terminal_failure: Option<ProviderTerminalFailure>,
-    pub interrupted: bool,
+    /// The attributed interrupt cause when the cycle was interrupted
+    /// (invariant I3). `Some(HostControl)` is the only cause adapters produce
+    /// on the ordinary path; after the S2 migration no adapter's normal path
+    /// may yield `AdapterPolicy` (B4 is the reverse proof).
+    pub interrupt: Option<InterruptCause>,
     pub close_requested_by_harness: bool,
     pub tool_call_count: u32,
     pub native_correlation: NativeCycleCorrelation,
@@ -382,7 +386,7 @@ pub trait TeamRuntimeAdapter: RuntimeAdapter {
     fn run_cycle(
         &mut self,
         input: &str,
-        idle_timeout: std::time::Duration,
+        timeouts: CycleTimeouts,
         on_input_accepted: &mut dyn FnMut(&ControlTransportReceipt) -> Result<(), Self::Error>,
         on_steer_result: &mut dyn FnMut(
             &SteerRequest,

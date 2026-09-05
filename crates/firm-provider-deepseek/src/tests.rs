@@ -214,3 +214,305 @@ fn runner_contract_accepts_known_enum_only_activity_kind_and_rejects_unknown_kin
             .to_string();
     assert!(error.contains("provider_activity.data.kind is outside the allowed enum"));
 }
+
+// ---------------------------------------------------------------------------
+// SPEC-TYPED-CYCLE-OUTCOME-01 §5: the S1 assertion family against DeepSeek.
+
+#[cfg(unix)]
+mod cycle_conformance {
+    use super::*;
+    use std::process::{Command, Stdio};
+    use std::sync::mpsc::{self, Sender};
+    use std::time::Duration;
+
+    fn scripted_deepseek_transport() -> (DeepSeekRunnerTransport, Sender<String>) {
+        let mut child = Command::new("sh")
+            .args(["-c", "cat >/dev/null"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn scripted runner sink");
+        let stdin = child.stdin.take().expect("scripted runner stdin");
+        let (line_tx, lines) = mpsc::channel();
+        (
+            DeepSeekRunnerTransport {
+                child: DeepSeekRunnerChild::new(child).expect("scripted runner child"),
+                stdin: Some(stdin),
+                lines,
+                stdout_reader: None,
+                stderr_reader: None,
+                native_session_id: "scripted-session".to_string(),
+                expected_resume_session_id: None,
+                provider_version: None,
+                state: TransportState::Idle,
+                next_input_id: 1,
+                pending_input_count: 0,
+                last_cycle_terminal: false,
+                last_interrupt_resumed_same_session: false,
+                close_reason: None,
+            },
+            line_tx,
+        )
+    }
+
+    fn ds_event(event: &str, data: serde_json::Value) -> String {
+        serde_json::json!({"event": event, "data": data}).to_string()
+    }
+
+    fn ds_consumed(input_id: &str) -> String {
+        ds_event(
+            "consumed",
+            serde_json::json!({"id": input_id, "kind": "runtime_cycle", "sessionId": "scripted-session"}),
+        )
+    }
+
+    fn ds_assistant_message() -> String {
+        ds_event(
+            "assistant_message",
+            serde_json::json!({"sessionId": "scripted-session", "content": "done"}),
+        )
+    }
+
+    fn ds_turn_complete(input_id: &str) -> String {
+        ds_event(
+            "turn_complete",
+            serde_json::json!({
+                "sessionId": "scripted-session",
+                "subtype": "success",
+                "triggerMessageId": input_id,
+                "evidenceRefs": [],
+                "isError": false,
+                "terminalReason": "end_turn",
+                "apiErrorStatus": null
+            }),
+        )
+    }
+
+    fn ds_timeouts() -> harness_runtime_contract::CycleTimeouts {
+        harness_runtime_contract::CycleTimeouts {
+            input_acceptance: Duration::from_millis(1),
+            transport_liveness: Duration::from_millis(1),
+            control_settle: Duration::ZERO,
+        }
+    }
+
+    fn drive_ds_cycle(
+        events: Vec<String>,
+        disconnect: bool,
+        timeouts: &harness_runtime_contract::CycleTimeouts,
+        mut control: impl FnMut() -> harness_runtime_contract::CycleControl,
+    ) -> Result<harness_runtime_contract::ExecutionCycleOutcome, String> {
+        let (mut transport, line_tx) = scripted_deepseek_transport();
+        for event in events {
+            line_tx.send(event).map_err(|error| error.to_string())?;
+        }
+        if disconnect {
+            drop(line_tx);
+        }
+        transport
+            .run_cycle(
+                "conformance cycle",
+                *timeouts,
+                &mut |_receipt| Ok(()),
+                &mut |_pending, _result| Ok(()),
+                &mut |_event| {},
+                &mut control,
+            )
+            .map_err(|error| error.to_string())
+    }
+
+    struct DeepSeekCycleConformanceFixture;
+
+    impl harness_runtime_contract::CycleConformanceFixture for DeepSeekCycleConformanceFixture {
+        type Error = String;
+
+        fn run_receipt_then_silence(
+            &mut self,
+            timeouts: &harness_runtime_contract::CycleTimeouts,
+        ) -> Result<harness_runtime_contract::CycleConformanceOutcome, Self::Error> {
+            let outcome = drive_ds_cycle(
+                vec![
+                    ds_consumed("deepseek-cycle-2"),
+                    ds_assistant_message(),
+                    ds_turn_complete("deepseek-cycle-2"),
+                ],
+                false,
+                timeouts,
+                harness_runtime_contract::CycleControl::default,
+            )?;
+            Ok(harness_runtime_contract::CycleConformanceOutcome {
+                interrupt: outcome.interrupt.clone(),
+                control_unproven: false,
+                result: harness_runtime_contract::CycleConformanceResult::Outcome(Box::new(
+                    outcome,
+                )),
+            })
+        }
+
+        fn run_no_receipt(
+            &mut self,
+            timeouts: &harness_runtime_contract::CycleTimeouts,
+        ) -> Result<harness_runtime_contract::CycleConformanceOutcome, Self::Error> {
+            let error = match drive_ds_cycle(
+                Vec::new(),
+                false,
+                timeouts,
+                harness_runtime_contract::CycleControl::default,
+            ) {
+                Ok(_) => return Err("a never-accepted cycle produced an outcome".to_string()),
+                Err(error) => error,
+            };
+            assert!(error.contains("INPUT_ACCEPTANCE_TIMEOUT"), "{error}");
+            Ok(harness_runtime_contract::CycleConformanceOutcome {
+                interrupt: None,
+                control_unproven: false,
+                result: harness_runtime_contract::CycleConformanceResult::Failed(
+                    harness_runtime_contract::CycleFailureDisposition::InputNeverAccepted,
+                ),
+            })
+        }
+
+        fn run_transport_dies_after_receipt(
+            &mut self,
+            timeouts: &harness_runtime_contract::CycleTimeouts,
+        ) -> Result<harness_runtime_contract::CycleConformanceOutcome, Self::Error> {
+            let error = match drive_ds_cycle(
+                vec![ds_consumed("deepseek-cycle-2")],
+                true,
+                timeouts,
+                harness_runtime_contract::CycleControl::default,
+            ) {
+                Ok(_) => return Err("a dead transport produced an outcome".to_string()),
+                Err(error) => error,
+            };
+            assert!(error.contains("TRANSPORT_CLOSED"), "{error}");
+            Ok(harness_runtime_contract::CycleConformanceOutcome {
+                interrupt: None,
+                control_unproven: false,
+                result: harness_runtime_contract::CycleConformanceResult::Failed(
+                    harness_runtime_contract::CycleFailureDisposition::AcceptedOutcomeUnknown,
+                ),
+            })
+        }
+
+        fn run_interrupt_not_acknowledged(
+            &mut self,
+            timeouts: &harness_runtime_contract::CycleTimeouts,
+        ) -> Result<harness_runtime_contract::CycleConformanceOutcome, Self::Error> {
+            let mut first = true;
+            let error = match drive_ds_cycle(
+                vec![ds_consumed("deepseek-cycle-2")],
+                false,
+                timeouts,
+                move || {
+                    if std::mem::take(&mut first) {
+                        harness_runtime_contract::CycleControl {
+                            interrupt: true,
+                            ..Default::default()
+                        }
+                    } else {
+                        harness_runtime_contract::CycleControl::default()
+                    }
+                },
+            ) {
+                Ok(_) => return Err("an unacknowledged interrupt produced an outcome".to_string()),
+                Err(error) => error,
+            };
+            assert!(error.contains("CONTROL_SETTLE_TIMEOUT"), "{error}");
+            Ok(harness_runtime_contract::CycleConformanceOutcome {
+                interrupt: None,
+                control_unproven: true,
+                result: harness_runtime_contract::CycleConformanceResult::Failed(
+                    harness_runtime_contract::CycleFailureDisposition::AcceptedOutcomeUnknown,
+                ),
+            })
+        }
+
+        fn run_host_interrupt(
+            &mut self,
+            timeouts: &harness_runtime_contract::CycleTimeouts,
+        ) -> Result<harness_runtime_contract::CycleConformanceOutcome, Self::Error> {
+            let mut first = true;
+            let outcome = drive_ds_cycle(
+                vec![
+                    ds_consumed("deepseek-cycle-2"),
+                    ds_event(
+                        "interrupted",
+                        serde_json::json!({"stillQueued": [], "abandonedTriggerMessageIds": []}),
+                    ),
+                    ds_event(
+                        "member_resumed_after_interrupt",
+                        serde_json::json!({"sessionId": "scripted-session"}),
+                    ),
+                ],
+                false,
+                timeouts,
+                move || {
+                    if std::mem::take(&mut first) {
+                        harness_runtime_contract::CycleControl {
+                            interrupt: true,
+                            ..Default::default()
+                        }
+                    } else {
+                        harness_runtime_contract::CycleControl::default()
+                    }
+                },
+            )?;
+            Ok(harness_runtime_contract::CycleConformanceOutcome {
+                interrupt: outcome.interrupt.clone(),
+                control_unproven: false,
+                result: harness_runtime_contract::CycleConformanceResult::Outcome(Box::new(
+                    outcome,
+                )),
+            })
+        }
+
+        fn run_adapter_policy_interrupt(
+            &mut self,
+            timeouts: &harness_runtime_contract::CycleTimeouts,
+            _reason: &str,
+        ) -> Result<harness_runtime_contract::CycleConformanceOutcome, Self::Error> {
+            self.run_receipt_then_silence(timeouts)
+        }
+    }
+
+    #[test]
+    fn deepseek_passes_the_s1_cycle_conformance_family() {
+        let timeouts = ds_timeouts();
+        let mut fixture = DeepSeekCycleConformanceFixture;
+        harness_runtime_contract::assert_a1_accepted_input_survives_silence(
+            &mut fixture,
+            &timeouts,
+        )
+        .expect("A1");
+        harness_runtime_contract::assert_a2_delivery_timeout_fails_closed(&mut fixture, &timeouts)
+            .expect("A2");
+        harness_runtime_contract::assert_a3_transport_death_fails_closed(&mut fixture, &timeouts)
+            .expect("A3");
+        harness_runtime_contract::assert_a5_control_settle_only_bounds_control(
+            &mut fixture,
+            &timeouts,
+        )
+        .expect("A5");
+        harness_runtime_contract::assert_b1_host_interrupt_attribution(&mut fixture, &timeouts)
+            .expect("B1");
+    }
+
+    #[test]
+    fn deepseek_b4_silence_after_acceptance_never_fails_the_cycle() {
+        let outcome = drive_ds_cycle(
+            vec![
+                ds_consumed("deepseek-cycle-2"),
+                ds_assistant_message(),
+                ds_turn_complete("deepseek-cycle-2"),
+            ],
+            false,
+            &ds_timeouts(),
+            harness_runtime_contract::CycleControl::default,
+        )
+        .expect("a silent accepted cycle completes");
+        assert_eq!(outcome.interrupt, None);
+        assert!(outcome.provider_terminal_failure.is_none());
+    }
+}

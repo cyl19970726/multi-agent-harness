@@ -1,6 +1,5 @@
 //! Application adapter for the Kimi provider package.
 
-use std::time::Duration;
 
 use harness_runtime_contract as rt;
 
@@ -70,7 +69,7 @@ impl rt::TeamRuntimeAdapter for KimiTeamRuntime<'_> {
     fn run_cycle(
         &mut self,
         input: &str,
-        idle_timeout: Duration,
+        timeouts: rt::CycleTimeouts,
         on_input_accepted: &mut dyn FnMut(&rt::ControlTransportReceipt) -> crate::CliResult<()>,
         on_steer_result: &mut dyn FnMut(
             &rt::SteerRequest,
@@ -82,7 +81,7 @@ impl rt::TeamRuntimeAdapter for KimiTeamRuntime<'_> {
         Ok(rt::TeamRuntimeAdapter::run_cycle(
             &mut self.0,
             input,
-            idle_timeout,
+            timeouts,
             &mut |receipt| on_input_accepted(receipt).map_err(callback_error),
             &mut |request, result| on_steer_result(request, result).map_err(callback_error),
             on_event,

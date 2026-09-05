@@ -108,7 +108,11 @@ fn drive_scripted_prompt(
     client
         .drive_prompt(
             (1, response),
-            PromptTimeouts::production(Duration::from_secs(30)),
+            PromptTimeouts::production(
+                harness_runtime_contract::CycleTimeouts::with_input_acceptance(
+                    Duration::from_secs(30),
+                ),
+            ),
             on_accepted,
             on_update,
             on_request,
@@ -240,7 +244,9 @@ fn live_kimi_0390_prompt_resume_and_cancel() {
     let first_outcome = first
         .prompt(
             "Reply with exactly DEV125_KIMI_0390_NEW_OK and no other text. Do not use tools.",
-            Duration::from_secs(120),
+            harness_runtime_contract::CycleTimeouts::with_input_acceptance(Duration::from_secs(
+                120,
+            )),
             |receipt| {
                 first_receipt = Some(receipt.to_string());
                 Ok(())
@@ -272,7 +278,9 @@ fn live_kimi_0390_prompt_resume_and_cancel() {
     let resumed_outcome = resumed
         .prompt(
             "Reply with exactly DEV125_KIMI_0390_RESUME_OK and no other text. Do not use tools.",
-            Duration::from_secs(120),
+            harness_runtime_contract::CycleTimeouts::with_input_acceptance(Duration::from_secs(
+                120,
+            )),
             |receipt| {
                 resumed_receipt = Some(receipt.to_string());
                 Ok(())
@@ -301,7 +309,9 @@ fn live_kimi_0390_prompt_resume_and_cancel() {
     let cancel_outcome = cancellable
         .prompt(
             "Write a very detailed 10000-word architecture essay. Do not use tools.",
-            Duration::from_secs(120),
+            harness_runtime_contract::CycleTimeouts::with_input_acceptance(Duration::from_secs(
+                120,
+            )),
             |_| {
                 accepted.set(true);
                 Ok(())
@@ -610,7 +620,7 @@ fn wrong_session_frame_flood_cannot_prevent_prompt_idle_timeout() {
     let result = client.drive_prompt(
         (1, response),
         PromptTimeouts {
-            idle: Duration::from_millis(40),
+            input_acceptance: Duration::from_millis(40),
             cancel_grace: Duration::from_millis(40),
         },
         &mut |_| panic!("wrong-session traffic must not publish a receipt"),
@@ -797,7 +807,11 @@ fn reverse_request_written_callback_runs_only_after_native_write() {
     let outcome = client
         .drive_prompt(
             (1, response),
-            PromptTimeouts::production(Duration::from_secs(30)),
+            PromptTimeouts::production(
+                harness_runtime_contract::CycleTimeouts::with_input_acceptance(
+                    Duration::from_secs(30),
+                ),
+            ),
             &mut |_| Ok(()),
             &mut |_| {},
             &mut |_| {
@@ -848,7 +862,9 @@ fn reverse_request_write_failure_never_publishes_written_callback() {
 
     let result = client.drive_prompt(
         (1, response),
-        PromptTimeouts::production(Duration::from_secs(30)),
+        PromptTimeouts::production(
+            harness_runtime_contract::CycleTimeouts::with_input_acceptance(Duration::from_secs(30)),
+        ),
         &mut |_| Ok(()),
         &mut |_| {},
         &mut |_| Ok(serde_json::json!({"outcome": {"outcome": "cancelled"}})),
@@ -1008,7 +1024,9 @@ fn scripted_terminal_for_another_prompt_fails_closed() {
         .expect("queue crossed terminal");
     let result = client.drive_prompt(
         (1, response),
-        PromptTimeouts::production(Duration::from_secs(1)),
+        PromptTimeouts::production(
+            harness_runtime_contract::CycleTimeouts::with_input_acceptance(Duration::from_secs(1)),
+        ),
         &mut |_| Ok(()),
         &mut |_| {},
         &mut |_| Ok(serde_json::json!({})),
@@ -1020,4 +1038,258 @@ fn scripted_terminal_for_another_prompt_fails_closed() {
         Err(error) => error,
     };
     assert!(error.to_string().contains("KIMI_CYCLE_TERMINAL_MISMATCH"));
+}
+
+// ---------------------------------------------------------------------------
+// SPEC-TYPED-CYCLE-OUTCOME-01 §5: the S1 assertion family against Kimi ACP.
+
+fn acceptance_update() -> serde_json::Value {
+    session_update("agent_message_chunk")
+}
+
+fn terminal_frame(id: u64, stop_reason: &str) -> serde_json::Value {
+    serde_json::json!({
+        "jsonrpc": "2.0", "id": id, "result": {"stopReason": stop_reason}
+    })
+}
+
+struct KimiCycleConformanceFixture;
+
+fn kimi_conformance_timeouts() -> harness_runtime_contract::CycleTimeouts {
+    harness_runtime_contract::CycleTimeouts {
+        input_acceptance: Duration::from_millis(1),
+        transport_liveness: Duration::from_millis(1),
+        control_settle: Duration::ZERO,
+    }
+}
+
+/// Drive `KimiTeamRuntime::run_cycle` on a worker thread while the caller
+/// orchestrates acceptance updates and the terminal response.
+#[allow(clippy::too_many_arguments)]
+fn drive_kimi_cycle(
+    timeouts: &harness_runtime_contract::CycleTimeouts,
+    acceptance: bool,
+    terminal: Option<serde_json::Value>,
+    disconnect_updates: bool,
+    control: impl FnMut() -> harness_runtime_contract::CycleControl + Send + 'static,
+) -> Result<harness_runtime_contract::ExecutionCycleOutcome, String> {
+    let (client, update_tx) = scripted_client();
+    let pending = Arc::clone(&client.pending);
+    let timeouts = *timeouts;
+    let mut control = control;
+    let handle = std::thread::spawn(move || {
+        let mut adapter = KimiTeamRuntime::new(client, |_| Ok(serde_json::json!({})), |_| Ok(()));
+        harness_runtime_contract::TeamRuntimeAdapter::run_cycle(
+            &mut adapter,
+            "conformance cycle",
+            timeouts,
+            &mut |_receipt| Ok(()),
+            &mut |_pending, _result| Ok(()),
+            &mut |_event| {},
+            &mut control,
+        )
+    });
+    if acceptance {
+        update_tx
+            .send(acceptance_update())
+            .map_err(|error| error.to_string())?;
+    }
+    if disconnect_updates {
+        drop(update_tx);
+    }
+    if let Some(frame) = terminal {
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        let id = loop {
+            if handle.is_finished() {
+                let early = handle
+                    .join()
+                    .map_err(|_| "adapter thread panicked".to_string())?;
+                return Err(format!(
+                    "adapter finished before the scripted answer: {early:?}"
+                ));
+            }
+            let waiter = lock(&pending).keys().next().copied();
+            if let Some(id) = waiter {
+                break id;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "scripted prompt request never arrived"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        };
+        lock(&pending)
+            .remove(&id)
+            .expect("prompt waiter")
+            .send(frame)
+            .map_err(|error| error.to_string())?;
+    }
+    handle
+        .join()
+        .map_err(|_| "adapter thread panicked".to_string())?
+        .map_err(|error| error.to_string())
+}
+
+impl harness_runtime_contract::CycleConformanceFixture for KimiCycleConformanceFixture {
+    type Error = String;
+
+    fn run_receipt_then_silence(
+        &mut self,
+        timeouts: &harness_runtime_contract::CycleTimeouts,
+    ) -> Result<harness_runtime_contract::CycleConformanceOutcome, Self::Error> {
+        let outcome = drive_kimi_cycle(
+            timeouts,
+            true,
+            Some(terminal_frame(2, "end_turn")),
+            false,
+            harness_runtime_contract::CycleControl::default,
+        )?;
+        Ok(harness_runtime_contract::CycleConformanceOutcome {
+            interrupt: outcome.interrupt.clone(),
+            control_unproven: false,
+            result: harness_runtime_contract::CycleConformanceResult::Outcome(Box::new(outcome)),
+        })
+    }
+
+    fn run_no_receipt(
+        &mut self,
+        timeouts: &harness_runtime_contract::CycleTimeouts,
+    ) -> Result<harness_runtime_contract::CycleConformanceOutcome, Self::Error> {
+        // No acceptance evidence ever; the pre-receipt cancel strike fires
+        // and the session is killed after control_settle.
+        let error = match drive_kimi_cycle(timeouts, false, None, false, || {
+            harness_runtime_contract::CycleControl::default()
+        }) {
+            Ok(_) => return Err("a never-accepted prompt produced an outcome".to_string()),
+            Err(error) => error,
+        };
+        assert!(error.contains("session killed"), "{error}");
+        Ok(harness_runtime_contract::CycleConformanceOutcome {
+            interrupt: None,
+            control_unproven: false,
+            result: harness_runtime_contract::CycleConformanceResult::Failed(
+                harness_runtime_contract::CycleFailureDisposition::InputNeverAccepted,
+            ),
+        })
+    }
+
+    fn run_transport_dies_after_receipt(
+        &mut self,
+        timeouts: &harness_runtime_contract::CycleTimeouts,
+    ) -> Result<harness_runtime_contract::CycleConformanceOutcome, Self::Error> {
+        let error = match drive_kimi_cycle(timeouts, true, None, true, || {
+            harness_runtime_contract::CycleControl::default()
+        }) {
+            Ok(_) => return Err("a dead transport produced an outcome".to_string()),
+            Err(error) => error,
+        };
+        assert!(error.contains("session ended"), "{error}");
+        Ok(harness_runtime_contract::CycleConformanceOutcome {
+            interrupt: None,
+            control_unproven: false,
+            result: harness_runtime_contract::CycleConformanceResult::Failed(
+                harness_runtime_contract::CycleFailureDisposition::AcceptedOutcomeUnknown,
+            ),
+        })
+    }
+
+    fn run_interrupt_not_acknowledged(
+        &mut self,
+        timeouts: &harness_runtime_contract::CycleTimeouts,
+    ) -> Result<harness_runtime_contract::CycleConformanceOutcome, Self::Error> {
+        let mut first = true;
+        let error = match drive_kimi_cycle(timeouts, true, None, false, move || {
+            if std::mem::take(&mut first) {
+                harness_runtime_contract::CycleControl {
+                    interrupt: true,
+                    ..Default::default()
+                }
+            } else {
+                harness_runtime_contract::CycleControl::default()
+            }
+        }) {
+            Ok(_) => return Err("an unacknowledged cancel produced an outcome".to_string()),
+            Err(error) => error,
+        };
+        assert!(error.contains("session killed"), "{error}");
+        Ok(harness_runtime_contract::CycleConformanceOutcome {
+            interrupt: None,
+            control_unproven: true,
+            result: harness_runtime_contract::CycleConformanceResult::Failed(
+                harness_runtime_contract::CycleFailureDisposition::AcceptedOutcomeUnknown,
+            ),
+        })
+    }
+
+    fn run_host_interrupt(
+        &mut self,
+        timeouts: &harness_runtime_contract::CycleTimeouts,
+    ) -> Result<harness_runtime_contract::CycleConformanceOutcome, Self::Error> {
+        // The acknowledged-cancel path needs a real settle window so the
+        // scripted terminal answer lands before the kill.
+        let settle = harness_runtime_contract::CycleTimeouts {
+            control_settle: Duration::from_millis(500),
+            ..*timeouts
+        };
+        let mut first = true;
+        let outcome = drive_kimi_cycle(
+            &settle,
+            true,
+            Some(terminal_frame(2, "cancelled")),
+            false,
+            move || {
+                if std::mem::take(&mut first) {
+                    harness_runtime_contract::CycleControl {
+                        interrupt: true,
+                        ..Default::default()
+                    }
+                } else {
+                    harness_runtime_contract::CycleControl::default()
+                }
+            },
+        )?;
+        Ok(harness_runtime_contract::CycleConformanceOutcome {
+            interrupt: outcome.interrupt.clone(),
+            control_unproven: false,
+            result: harness_runtime_contract::CycleConformanceResult::Outcome(Box::new(outcome)),
+        })
+    }
+
+    fn run_adapter_policy_interrupt(
+        &mut self,
+        timeouts: &harness_runtime_contract::CycleTimeouts,
+        _reason: &str,
+    ) -> Result<harness_runtime_contract::CycleConformanceOutcome, Self::Error> {
+        // B4: silence after acceptance is never an adapter-initiated cancel.
+        self.run_receipt_then_silence(timeouts)
+    }
+}
+
+#[test]
+fn kimi_passes_the_s1_cycle_conformance_family() {
+    let timeouts = kimi_conformance_timeouts();
+    let mut fixture = KimiCycleConformanceFixture;
+    harness_runtime_contract::assert_a1_accepted_input_survives_silence(&mut fixture, &timeouts)
+        .expect("A1");
+    harness_runtime_contract::assert_a2_delivery_timeout_fails_closed(&mut fixture, &timeouts)
+        .expect("A2");
+    harness_runtime_contract::assert_a3_transport_death_fails_closed(&mut fixture, &timeouts)
+        .expect("A3");
+    harness_runtime_contract::assert_a5_control_settle_only_bounds_control(&mut fixture, &timeouts)
+        .expect("A5");
+    harness_runtime_contract::assert_b1_host_interrupt_attribution(&mut fixture, &timeouts)
+        .expect("B1");
+}
+
+#[test]
+fn kimi_b4_silence_after_acceptance_never_cancels() {
+    let outcome = drive_kimi_cycle(
+        &kimi_conformance_timeouts(),
+        true,
+        Some(terminal_frame(2, "end_turn")),
+        false,
+        harness_runtime_contract::CycleControl::default,
+    )
+    .expect("a silent accepted cycle completes");
+    assert_eq!(outcome.interrupt, None);
 }

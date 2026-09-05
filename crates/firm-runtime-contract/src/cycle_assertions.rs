@@ -193,7 +193,8 @@ pub fn assert_a3_transport_death_fails_closed<F: CycleConformanceFixture>(
 }
 
 /// A5 — control_settle bounds control only; an unacknowledged Interrupt ends
-/// unproven, never successful and never as a cycle failure.
+/// unproven (D3), never successful, never replay-safe (the input WAS
+/// accepted), and never as a cycle failure.
 pub fn assert_a5_control_settle_only_bounds_control<F: CycleConformanceFixture>(
     fixture: &mut F,
     timeouts: &CycleTimeouts,
@@ -211,13 +212,16 @@ pub fn assert_a5_control_settle_only_bounds_control<F: CycleConformanceFixture>(
             "an unacknowledged Interrupt did not end unproven after control_settle",
         );
     }
-    if let CycleConformanceResult::Failed(disposition) = outcome.result {
-        return fail(
+    match outcome.result {
+        // The honest fail-closed shapes: a control-level Unknown. The input
+        // was accepted, so a replay-safe disposition is always wrong here.
+        CycleConformanceResult::Failed(CycleFailureDisposition::AcceptedOutcomeUnknown)
+        | CycleConformanceResult::Outcome(_) => Ok(()),
+        CycleConformanceResult::Failed(CycleFailureDisposition::InputNeverAccepted) => fail(
             A,
-            format!("control_settle expiry was attributed to the cycle itself: {disposition:?}"),
-        );
+            "control_settle expiry was attributed to an unaccepted input (replay-safe)",
+        ),
     }
-    Ok(())
 }
 
 /// B1 — a Host control interrupt is attributed to the Host.

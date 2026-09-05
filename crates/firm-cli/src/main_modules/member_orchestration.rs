@@ -20,7 +20,7 @@ pub(super) struct MemberRuntimeContext {
     pub(super) project_id: Option<String>,
     pub(super) project_selector: Option<String>,
     pub(super) cwd: PathBuf,
-    pub(super) idle_timeout: Duration,
+    pub(super) timeouts: harness_runtime_contract::CycleTimeouts,
     pub(super) live_sink: Option<NativeSessionWakeSink>,
     pub(super) turn_leases: Arc<ActiveTurnLeasePool>,
     /// Unpersisted bearer capability that binds member-originated Role
@@ -838,7 +838,7 @@ pub(crate) fn drive_prepared_team_run(
     execution_space: Option<ExecutionSpace>,
     project_context: Option<ProjectContext>,
     max_concurrency: usize,
-    idle_timeout: Duration,
+    timeouts: harness_runtime_contract::CycleTimeouts,
     live_sink: Option<NativeSessionWakeSink>,
     serving_status: Option<Arc<Mutex<String>>>,
 ) -> CliResult<TeamRunDriveOutcome> {
@@ -1083,7 +1083,7 @@ pub(crate) fn drive_prepared_team_run(
                             project_id: member_project_id,
                             project_selector: member_project_selector,
                             cwd,
-                            idle_timeout,
+                            timeouts,
                             live_sink: member_live_sink,
                             turn_leases: member_turn_leases,
                             role_action_token: member_role_action_token,

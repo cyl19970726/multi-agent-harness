@@ -15,7 +15,6 @@
 //! - strict Quiesce/Release remain fail-closed because ACP exposes no complete
 //!   native queue, writable-child, or durable-flush proof.
 
-use std::time::Duration;
 
 use harness_core::agentfirm_api::{
     AgentSession, NativeContinuationActivation, RuntimeEffectCertainty, RuntimePostconditionStatus,
@@ -329,7 +328,7 @@ impl harness_runtime_contract::TeamRuntimeAdapter for KimiTeamRuntime<'_> {
     fn run_cycle(
         &mut self,
         input: &str,
-        idle_timeout: Duration,
+        timeouts: harness_runtime_contract::CycleTimeouts,
         on_input_accepted: &mut dyn FnMut(
             &harness_runtime_contract::ControlTransportReceipt,
         ) -> CliResult<()>,
@@ -343,7 +342,7 @@ impl harness_runtime_contract::TeamRuntimeAdapter for KimiTeamRuntime<'_> {
         let mut final_text = String::new();
         let mut tool_call_count = 0_u32;
         let mut accepted_receipt = None;
-        let mut interrupted = false;
+        let mut interrupt: Option<harness_runtime_contract::InterruptCause> = None;
         let mut close_requested = false;
         let mut cancel_requested = false;
         let mut control_error = None;
@@ -359,7 +358,7 @@ impl harness_runtime_contract::TeamRuntimeAdapter for KimiTeamRuntime<'_> {
         self.last_cycle_cancelled = false;
         let outcome = self.client.prompt(
             input,
-            idle_timeout,
+            timeouts,
             |receipt_id| {
                 let receipt = harness_runtime_contract::ControlTransportReceipt {
                     command: "prompt".to_string(),
@@ -410,7 +409,7 @@ impl harness_runtime_contract::TeamRuntimeAdapter for KimiTeamRuntime<'_> {
                     ?;
                 }
                 if control.close || control.interrupt {
-                    interrupted = true;
+                    interrupt = Some(harness_runtime_contract::InterruptCause::HostControl);
                     close_requested |= control.close;
                     cancel_requested = true;
                     Ok(PromptControl::Cancel)
@@ -461,7 +460,7 @@ impl harness_runtime_contract::TeamRuntimeAdapter for KimiTeamRuntime<'_> {
         Ok(harness_runtime_contract::ExecutionCycleOutcome {
             final_text,
             provider_terminal_failure: None,
-            interrupted,
+            interrupt,
             close_requested_by_harness: close_requested,
             tool_call_count,
             native_correlation: harness_runtime_contract::NativeCycleCorrelation {
@@ -585,7 +584,9 @@ impl harness_runtime_contract::RuntimeAdapter for KimiTeamRuntime<'_> {
                 let outcome = self
                     .run_cycle(
                         &input,
-                        Duration::from_secs(30 * 60),
+                        harness_runtime_contract::CycleTimeouts::control_path(
+                            harness_runtime_contract::CycleTimeouts::DEFAULT_CONTROL_SETTLE,
+                        ),
                         &mut |receipt| {
                             accepted = receipt.response_id.clone();
                             Ok(())

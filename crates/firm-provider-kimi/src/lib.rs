@@ -105,9 +105,6 @@ pub const DEFAULT_PROMPT_IDLE_TIMEOUT_SECS: u64 = 180;
 /// Handshake (`initialize` / `session/new`) response timeout.
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// Grace window between `session/cancel` and killing the process group.
-const CANCEL_GRACE: Duration = Duration::from_secs(15);
-
 /// Terminal result of one `session/prompt` round.
 pub struct PromptOutcome {
     /// Exact JSON-RPC id of the terminal `session/prompt` response.
@@ -169,15 +166,19 @@ pub struct KimiAcpCloseReceipt {
 
 #[derive(Clone, Copy)]
 struct PromptTimeouts {
-    idle: Duration,
+    /// Delivery boundary, valid only before the provider's acceptance
+    /// evidence (I1). After acceptance, silence is never a failure.
+    input_acceptance: Duration,
+    /// Control-settle boundary after `session/cancel` (D3), supplied by the
+    /// caller through `CycleTimeouts::control_settle`.
     cancel_grace: Duration,
 }
 
 impl PromptTimeouts {
-    fn production(idle: Duration) -> Self {
+    fn production(timeouts: harness_runtime_contract::CycleTimeouts) -> Self {
         Self {
-            idle,
-            cancel_grace: CANCEL_GRACE,
+            input_acceptance: timeouts.input_acceptance,
+            cancel_grace: timeouts.control_settle,
         }
     }
 }
@@ -706,14 +707,16 @@ impl KimiAcpClient {
     /// so a slow-but-streaming turn never times out. Frames for stale or other
     /// sessions are ignored and cannot keep a wedged prompt alive.
     ///
-    /// On `idle_timeout` (0 = default 180s) the client first sends
-    /// `session/cancel` and waits [`CANCEL_GRACE`] for the prompt response;
-    /// a still-silent session is then killed tree-wide and an error returned.
+    /// `timeouts.input_acceptance` fences only the unacknowledged delivery:
+    /// before the provider's acceptance evidence the client first sends
+    /// `session/cancel` and waits `timeouts.control_settle` for the prompt
+    /// response; a still-silent session is then killed tree-wide and an
+    /// error returned. After acceptance, silence is never a failure (I1).
     #[allow(clippy::too_many_arguments)]
     pub fn prompt(
         &mut self,
         text: &str,
-        idle_timeout: Duration,
+        timeouts: harness_runtime_contract::CycleTimeouts,
         mut on_accepted: impl FnMut(&str) -> CliResult<()>,
         mut on_update: impl FnMut(&serde_json::Value),
         mut on_request: impl FnMut(&serde_json::Value) -> CliResult<serde_json::Value>,
@@ -747,7 +750,7 @@ impl KimiAcpClient {
         };
         let outcome = self.drive_prompt(
             request,
-            PromptTimeouts::production(idle_timeout),
+            PromptTimeouts::production(timeouts),
             &mut on_accepted,
             &mut on_update,
             &mut on_request,
@@ -783,10 +786,10 @@ impl KimiAcpClient {
             .session_id
             .clone()
             .ok_or_else(|| CliError::Usage("kimi acp session not established".to_string()))?;
-        let idle_limit = if timeouts.idle.is_zero() {
+        let input_acceptance_limit = if timeouts.input_acceptance.is_zero() {
             Duration::from_secs(DEFAULT_PROMPT_IDLE_TIMEOUT_SECS)
         } else {
-            timeouts.idle
+            timeouts.input_acceptance
         };
         let provider_receipt_id = format!("kimi-acp-prompt:{prompt_id}");
         let mut accepted = false;
@@ -888,13 +891,15 @@ impl KimiAcpClient {
                     self.kill_quiet();
                     lock(&self.pending).remove(&prompt_id);
                     return Err(CliError::Usage(format!(
-                        "kimi acp prompt idle for {}s and ignored session/cancel; session killed{}",
-                        idle_limit.as_secs(),
+                        "kimi acp prompt idle: session/cancel ignored for {}s; session killed{}",
+                        timeouts.cancel_grace.as_secs(),
                         self.stderr_suffix(),
                     )));
                 }
-            } else if last_activity.elapsed() > idle_limit {
-                // First strike: ask the agent to cancel, keep waiting briefly.
+            } else if !accepted && last_activity.elapsed() > input_acceptance_limit {
+                // I1/B4: the cancel strike exists only before acceptance
+                // evidence; after acceptance a silent tool interval is never
+                // an adapter-initiated interrupt.
                 self.cancel()?;
                 cancelled_at = Some(Instant::now());
             }
