@@ -9,7 +9,10 @@ pub enum WorkLifecycleError {
     InvalidTransition { operation: WorkEventKind },
 }
 
-/// Pure lifecycle check shared by every application adapter and Store write.
+/// Pure reference statement of the Work lifecycle rules. The Store write path
+/// enforces transitions through each command's own guards and does not call
+/// this function yet; it is exercised by its unit tests only, so a rule here
+/// documents intent and must be mirrored by the command that writes it.
 /// Dependency changes are permitted only while the Work is non-terminal; the
 /// dependency kernel separately validates graph semantics.
 pub fn validate_work_transition(
@@ -78,6 +81,14 @@ pub fn validate_work_transition(
         | WorkEventKind::Updated
         | WorkEventKind::Rebound
         | WorkEventKind::ExecutionRetargeted => before == after,
+        // A lost execution returns an open or started Work to the dispatchable
+        // state; the responsibility fields are untouched by this rule.
+        WorkEventKind::ExecutionRecovered => {
+            matches!(before.0, WorkPhase::Open | WorkPhase::Active)
+                && before.1 == WorkCondition::Normal
+                && before.2.is_none()
+                && after == (WorkPhase::Open, WorkCondition::Normal, None)
+        }
         WorkEventKind::Created => false,
     };
 

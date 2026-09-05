@@ -71,6 +71,24 @@ impl WorkPersistence for HarnessStore {
         )
     }
 
+    fn recover_lost_work_execution(
+        &self,
+        work_id: &str,
+        expected_version: u64,
+        execution_space_id: &str,
+        reason: Option<&str>,
+        context: WorkCommandContext,
+    ) -> StoreResult<Work> {
+        HarnessStore::recover_lost_work_execution(
+            self,
+            work_id,
+            expected_version,
+            execution_space_id,
+            reason,
+            context,
+        )
+    }
+
     fn release_work_as_host(
         &self,
         work_id: &str,

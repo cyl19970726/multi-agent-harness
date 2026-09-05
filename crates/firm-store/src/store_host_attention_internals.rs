@@ -430,7 +430,8 @@ impl HarnessStore {
             | WorkEventKind::Rebound
             | WorkEventKind::Failed
             | WorkEventKind::DependenciesChanged
-            | WorkEventKind::ExecutionRetargeted => HostAttentionKind::WorkChanged,
+            | WorkEventKind::ExecutionRetargeted
+            | WorkEventKind::ExecutionRecovered => HostAttentionKind::WorkChanged,
         };
         Some(HostAttention {
             id: format!("host-attention-{}", operation.event.id),

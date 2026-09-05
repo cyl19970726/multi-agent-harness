@@ -99,7 +99,9 @@ resolution: Accepted | Cancelled | Failed       (exists only at Closed)
   one active Work.
 - An Open, never-started Work whose delivery is frozen on a member generation
   that no longer runs (typically after close-member + reopen-member) needs the
-  Host's `work redeliver`; nothing else revives it.
+  Host's `work redeliver`. A Work you had already started whose binding a
+  daemon drain or predecessor recovery invalidated needs the Host's `work
+  recover-lost-execution`; wait for its re-delivery and claim/start again.
 - **Provider "completed" is not Work "done."** Submission moves Work to
   `Review`. Ordinary Member Work needs exact Host acceptance; Host-owned Work
   needs one exact active non-owner Team peer in the same TeamRun because the

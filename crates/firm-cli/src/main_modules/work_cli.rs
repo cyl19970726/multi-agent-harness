@@ -619,6 +619,63 @@ pub(super) fn team_run_work_command(
             )?;
             print_json(&work)
         }
+        "recover-lost-execution" => {
+            reject_unknown_work_options(
+                args,
+                &[
+                    "--work-id",
+                    "--expected-version",
+                    "--reason",
+                    "--event-id",
+                    "--idempotency-key",
+                    "--caused-by-message-id",
+                    "--team-run-id",
+                ],
+                &["--duplicate-ok", "--json"],
+            )?;
+            let space_id = resolved
+                .execution_space_context
+                .as_ref()
+                .map(|space| space.id.clone())
+                .ok_or_else(|| {
+                    CliError::Usage(
+                        "Work execution recovery requires an explicitly selected --space"
+                            .to_string(),
+                    )
+                })?;
+            let work_id = required(args, "--work-id")?;
+            let team_run_id = team_run_id_for_work(store, &work_id)?;
+            if let Some(supplied_team_run_id) = value(args, "--team-run-id") {
+                if supplied_team_run_id != team_run_id {
+                    return Err(CliError::Usage(format!(
+                        "--team-run-id {supplied_team_run_id} does not match Work {work_id}'s TeamRun {team_run_id}"
+                    )));
+                }
+            }
+            let reason = value(args, "--reason");
+            let work = execute_work_action(
+                store,
+                harness_application::WorkAction::RecoverLostExecution {
+                    expected_version: required_work_version(args)?,
+                    context: host_work_context(store, &team_run_id, args)?,
+                    work_id,
+                    execution_space_id: space_id,
+                    reason: reason.clone(),
+                },
+            )?;
+            append_work_event(
+                store,
+                &work,
+                TeamRunEventSourceKind::Host,
+                None,
+                "execution_recovered",
+                &match reason {
+                    Some(reason) => format!("Work execution recovered by host: {reason}"),
+                    None => "Work execution recovered by host".to_string(),
+                },
+            )?;
+            print_json(&work)
+        }
         "migrate-responsibility" => {
             let space_id = resolved
                 .execution_space_context
