@@ -474,29 +474,34 @@ impl HarnessStore {
             )
         };
 
+        // At most two canonical mutations may legitimately move the session
+        // version past the prepared expectation: a close/resume of the kind
+        // this command applies (the predicate reads the current lifecycle, so
+        // a session already in that state contributes no bump), and the one
+        // write-once native-session bind that attached the provider's id after
+        // the command was prepared (GitHub #583). Each is exactly one version
+        // bump; they compose (a StopSession prepared before the bind sees both);
+        // nothing else may move the version, so anything past the tolerated
+        // range is fenced.
         let expected_version_advanced_by_this_command =
             !matches!(poststate, RuntimeCommandPoststate::None)
-                && precondition
-                    .expected_session_version
-                    .is_some_and(|expected| {
-                        session.version == expected.saturating_add(1)
-                            && matches!(
-                                (command, session.lifecycle),
-                                (RuntimeCommandKind::StopSession, AgentSessionStatus::Closed)
-                                    | (RuntimeCommandKind::ResumeSession, AgentSessionStatus::Cold)
-                            )
-                    });
+                && matches!(
+                    (command, session.lifecycle),
+                    (RuntimeCommandKind::StopSession, AgentSessionStatus::Closed)
+                        | (RuntimeCommandKind::ResumeSession, AgentSessionStatus::Cold)
+                );
         let expected_version_advanced_by_native_attachment = matches!(
             poststate,
             RuntimeCommandPoststate::CommandWithNativeSessionAttachment
-        ) && precondition
-            .expected_session_version
-            .is_some_and(|expected| session.version == expected.saturating_add(1));
+        );
+        let tolerated_advance = u64::from(expected_version_advanced_by_this_command)
+            + u64::from(expected_version_advanced_by_native_attachment);
         if precondition
             .expected_session_version
-            .is_some_and(|expected| expected != session.version)
-            && !expected_version_advanced_by_this_command
-            && !expected_version_advanced_by_native_attachment
+            .is_some_and(|expected| {
+                session.version < expected
+                    || session.version > expected.saturating_add(tolerated_advance)
+            })
         {
             return Err(fenced(
                 "RuntimeCommand expected_session_version no longer matches the canonical AgentSession",

@@ -384,15 +384,6 @@ fn runtime_command_requires_exact_binding(kind: RuntimeCommandKind) -> bool {
     !matches!(kind, RuntimeCommandKind::AuthorMessage)
 }
 
-fn runtime_command_allows_native_session_attachment(kind: RuntimeCommandKind) -> bool {
-    matches!(
-        kind,
-        RuntimeCommandKind::StartSession
-            | RuntimeCommandKind::OpenRuntime
-            | RuntimeCommandKind::StartCycle
-    )
-}
-
 fn runtime_binding_for_session(
     session: &AgentSession,
 ) -> firm_core::agentfirm_api::RuntimeCommandBinding {
@@ -781,6 +772,7 @@ mod fabric_scoped_work_projection;
 mod fabric_teams;
 mod fabric_work_execution;
 pub use fabric_work_execution::WorkExecutionBindingReconciliation;
+mod fabric_work_execution_evidence;
 mod fabric_work_execution_recovery;
 pub(crate) use fabric_work_execution_recovery::INVALIDATED_BY_LOST_RUNTIME_GENERATION;
 pub use fabric_work_execution_recovery::{

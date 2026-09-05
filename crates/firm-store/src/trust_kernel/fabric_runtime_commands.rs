@@ -743,8 +743,13 @@ impl HarnessStore {
                         &session,
                         &record.binding,
                         RuntimeBindingAdmission::RuntimeCommand {
-                            allow_native_session_attachment:
-                                runtime_command_allows_native_session_attachment(record.command),
+                            // An admitted command may have been prepared before
+                            // the first provider Open returned the native session
+                            // id; recovery re-validates that admission, and the
+                            // None -> exact same-generation attachment is durable
+                            // progress for every kind (GitHub #583). Replacement of
+                            // an existing native id stays fenced.
+                            allow_native_session_attachment: true,
                             settlement_only: false,
                         },
                         "runtime_command",
@@ -755,8 +760,9 @@ impl HarnessStore {
                         &session,
                         record.command,
                         &record.precondition,
-                        if record.command == RuntimeCommandKind::StartCycle
-                            && record.binding.native_session_ref.is_none()
+                        // Fires under exactly the condition the admission above
+                        // tolerated, whatever the command kind (GitHub #583).
+                        if record.binding.native_session_ref.is_none()
                             && session.native_session_ref.is_some()
                         {
                             RuntimeCommandPoststate::CommandWithNativeSessionAttachment
@@ -1012,8 +1018,13 @@ impl HarnessStore {
                 &session,
                 &record.binding,
                 RuntimeBindingAdmission::RuntimeCommand {
-                    allow_native_session_attachment:
-                        runtime_command_allows_native_session_attachment(record.command),
+                    // Settlement records the outcome of an already admitted
+                    // command. A command prepared before the native session id
+                    // was known must still settle after the id attaches to the
+                    // same exact session/runtime/driver generation, whatever its
+                    // kind (GitHub #583: an Interrupt fenced by the bind race left
+                    // an ambiguous command). Replacement stays fenced.
+                    allow_native_session_attachment: true,
                     settlement_only: true,
                 },
                 "runtime_command",
@@ -1024,8 +1035,9 @@ impl HarnessStore {
                 &session,
                 record.command,
                 &record.precondition,
-                if record.command == RuntimeCommandKind::StartCycle
-                    && record.binding.native_session_ref.is_none()
+                // Fires under exactly the condition the admission above
+                // tolerated, whatever the command kind (GitHub #583).
+                if record.binding.native_session_ref.is_none()
                     && session.native_session_ref.is_some()
                 {
                     RuntimeCommandPoststate::CommandWithNativeSessionAttachment
