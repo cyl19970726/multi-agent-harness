@@ -506,7 +506,7 @@ back at all, `team-run close-member` is the escape hatch and works on an
 
 ### Recovering a member left `blocked` over a dead lane
 
-`harness team-run recover --id <run>` is the verb for a member blocked by a
+`firm team-run recover --id <run>` is the verb for a member blocked by a
 runtime fence — the drain refusal above is the case it exists for. It is not a
 general unblock: each of the other gates that writes `blocked` clears its own
 block (a successful capacity probe clears a capacity block, the provider review
@@ -546,7 +546,7 @@ printed as `blocked, not restarted — <reason>`:
 
 | provenance | who clears it |
 | --- | --- |
-| `provider_compatibility` | the provider review gate (`harness member providers --fail-on-review`), which clears the typed cause with the status |
+| `provider_compatibility` | the provider review gate (`firm member providers --fail-on-review`), which clears the typed cause with the status |
 | `provider_capacity` | a successful capacity probe, through the preflight's own recovery |
 | `zero_output_degradation` | explicit Host reconciliation through `team-run close-member` + `team-run reopen-member`. Messaging a `Blocked` member cannot restart it: `claim_member_provider_start` admits only `Queued`/`Idle`/`Disconnected` and `decide_wake` keeps a streak-at-threshold member asleep, so a message never reaches the provider; the detached-blocked close (`close_detached_blocked_member_for_recovery`) is what resets `zero_output_streak`, and the reopened member returns to `Queued` |
 
