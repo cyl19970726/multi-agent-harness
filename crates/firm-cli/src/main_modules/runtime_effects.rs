@@ -541,6 +541,26 @@ pub(super) fn require_provider_session_authority(
     agent_member_id: &str,
     require_active: bool,
 ) -> CliResult<harness_core::agentfirm_api::AgentSession> {
+    require_provider_session_authority_inner(ledger, agent_member_id, require_active, true)
+}
+
+/// The same authority proof without the live-daemon half: the completed-run
+/// receipt-free Close (#812) admits a session still naming the settled
+/// predecessor NodeDaemon generation, proven separately by the
+/// predecessor-evidence generation gate.
+pub(super) fn require_provider_session_authority_for_settled_generation(
+    ledger: &TeamRunLedger,
+    agent_member_id: &str,
+) -> CliResult<harness_core::agentfirm_api::AgentSession> {
+    require_provider_session_authority_inner(ledger, agent_member_id, false, false)
+}
+
+fn require_provider_session_authority_inner(
+    ledger: &TeamRunLedger,
+    agent_member_id: &str,
+    require_active: bool,
+    require_live_daemon: bool,
+) -> CliResult<harness_core::agentfirm_api::AgentSession> {
     use harness_core::agentfirm_api::AgentSessionStatus;
     let members = latest_member_runs_in_append_order(&ledger.store)?
         .into_iter()
@@ -566,16 +586,18 @@ pub(super) fn require_provider_session_authority(
             session.id, session.lifecycle
         )));
     }
-    ledger
-        .store
-        .latest_node_daemon_lease(&session.node_id)?
-        .filter(|lease| {
-            lease.daemon_id == session.node_daemon_id
-                && lease.generation == session.node_daemon_generation
-                && lease.status == NodeDaemonLeaseStatus::Active
-                && lease.expires_unix_ms > current_unix_ms_u64()
-        })
-        .ok_or_else(|| CliError::Usage("NODE_DAEMON_GENERATION_FENCED".into()))?;
+    if require_live_daemon {
+        ledger
+            .store
+            .latest_node_daemon_lease(&session.node_id)?
+            .filter(|lease| {
+                lease.daemon_id == session.node_daemon_id
+                    && lease.generation == session.node_daemon_generation
+                    && lease.status == NodeDaemonLeaseStatus::Active
+                    && lease.expires_unix_ms > current_unix_ms_u64()
+            })
+            .ok_or_else(|| CliError::Usage("NODE_DAEMON_GENERATION_FENCED".into()))?;
+    }
     crate::provider_adapter::map_permission(
         &session.provider_kind,
         session.effective_permission_ceiling,

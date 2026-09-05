@@ -460,6 +460,7 @@ fn detached_blocked_member_recovery_close_is_exact_and_fail_closed() {
                 recovery_lease,
                 "host",
                 "explicit detached recovery",
+                DetachedRecoveryCloseMode::BlockedMemberExactGeneration,
                 |_| {
                     if !latched_once {
                         latched_once = true;

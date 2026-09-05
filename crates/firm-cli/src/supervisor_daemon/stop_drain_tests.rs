@@ -124,6 +124,7 @@ fn managed_context(
         supervisor_id: "stop-supervisor".into(),
         supervisor_generation: 1,
         heartbeat_valid: heartbeat,
+        serving_status: Arc::new(Mutex::new("running".into())),
         thread: Some(thread),
         started_at: Instant::now(),
     }

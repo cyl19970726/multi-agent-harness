@@ -15,6 +15,9 @@ use harness_store::HarnessStore;
 mod fake_provider;
 mod firm_env;
 
+#[path = "team_run_daemon/completed_run_close.rs"]
+mod completed_run_close;
+
 use firm_env::{
     create_canonical_agent_member, current_project_id, run_firm, run_firm_with_env, TempHome,
 };

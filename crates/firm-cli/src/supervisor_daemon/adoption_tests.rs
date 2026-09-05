@@ -336,6 +336,7 @@ fn status_remains_responsive_while_reap_joins_a_finished_supervisor() {
             supervisor_id: "reap-supervisor".into(),
             supervisor_generation: 1,
             heartbeat_valid: Arc::new(AtomicBool::new(false)),
+            serving_status: Arc::new(Mutex::new("running".into())),
             thread: Some(finished),
             started_at: Instant::now(),
         }]),

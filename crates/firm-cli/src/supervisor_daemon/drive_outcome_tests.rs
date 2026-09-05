@@ -17,6 +17,7 @@ impl AdoptionFixture {
             supervisor_id: "settle-supervisor".into(),
             supervisor_generation: 1,
             heartbeat_valid: Arc::new(AtomicBool::new(false)),
+            serving_status: Arc::new(Mutex::new("running".into())),
             thread: None,
             started_at: Instant::now(),
         }

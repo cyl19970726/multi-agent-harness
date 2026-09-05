@@ -1068,6 +1068,10 @@ impl MultiTeamDaemon {
                         .map(|ctx| {
                             let is_finished =
                                 ctx.thread.as_ref().map(|t| t.is_finished()).unwrap_or(true);
+                            let serving_status = ctx
+                                .serving_status
+                                .lock()
+                                .unwrap_or_else(|error| error.into_inner());
                             serde_json::json!({
                                 "execution_space_id": ctx.execution_space_id,
                                 "project_binding_id": ctx.project_binding_id,
@@ -1075,7 +1079,7 @@ impl MultiTeamDaemon {
                                 "daemon_generation": ctx.daemon_generation,
                                 "supervisor_id": ctx.supervisor_id,
                                 "supervisor_generation": ctx.supervisor_generation,
-                                "status": if is_finished { "finished" } else { "running" },
+                                "status": if is_finished { "finished" } else { serving_status.as_str() },
                                 "elapsed_secs": ctx.started_at.elapsed().as_secs(),
                             })
                         })
