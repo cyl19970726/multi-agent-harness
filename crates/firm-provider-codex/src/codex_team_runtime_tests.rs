@@ -453,6 +453,182 @@ fn started_and_terminal_frames_require_the_exact_owned_thread() {
     );
 }
 
+fn run_native_descendant_frames(frames: Vec<Value>) -> CliResult<ExecutionCycleOutcome> {
+    let mut bridge = FakeBridge::completed("completed");
+    bridge.frames = RefCell::new(frames.into_iter().map(Ok).collect());
+    let mut adapter = CodexTeamRuntime::new(bridge);
+    TeamRuntimeAdapter::run_cycle(
+        &mut adapter,
+        "hello",
+        Duration::from_secs(1),
+        &mut |_receipt| Ok(()),
+        &mut |_pending, _result| Ok(()),
+        &mut |_event| {},
+        &mut CycleControl::default,
+    )
+}
+
+fn native_thread_started(thread_id: &str, parent_thread_id: Option<&str>) -> Value {
+    serde_json::json!({
+        "method": "thread/started",
+        "params": {
+            "thread": {
+                "id": thread_id,
+                "parentThreadId": parent_thread_id
+            }
+        }
+    })
+}
+
+fn native_turn_completed(thread_id: &str, turn_id: &str, text: &str) -> Value {
+    serde_json::json!({
+        "method": "turn/completed",
+        "params": {
+            "threadId": thread_id,
+            "turn": {
+                "id": turn_id,
+                "status": "completed",
+                "items": [{"type": "agentMessage", "text": text}]
+            }
+        }
+    })
+}
+
+#[test]
+fn native_descendant_threads_are_observed_without_ending_the_owned_turn() {
+    let outcome = run_native_descendant_frames(vec![
+        native_thread_started("thread-child", Some("thread-1")),
+        serde_json::json!({
+            "method": "turn/started",
+            "params": {
+                "threadId": "thread-child",
+                "turn": {"id": "turn-child", "status": "inProgress"}
+            }
+        }),
+        serde_json::json!({
+            "method": "item/started",
+            "params": {
+                "threadId": "thread-child",
+                "turnId": "turn-child",
+                "item": {"id": "item-child", "type": "commandExecution"}
+            }
+        }),
+        native_turn_completed("thread-child", "turn-child", "child done"),
+        serde_json::json!({
+            "method": "item/agentMessage/delta",
+            "params": {"threadId": "thread-1", "turnId": "turn-1", "delta": "parent done"}
+        }),
+        native_turn_completed("thread-1", "turn-1", "parent fallback"),
+    ])
+    .unwrap();
+
+    assert_eq!(outcome.final_text, "parent done");
+    assert_eq!(outcome.tool_call_count, 0);
+    assert_eq!(
+        outcome.native_correlation.exact_terminal_ref.as_deref(),
+        Some("codex.turn.completed:turn-1:completed")
+    );
+}
+
+#[test]
+fn native_descendant_threads_register_recursively_even_when_grandchild_is_announced_first() {
+    let outcome = run_native_descendant_frames(vec![
+        native_thread_started("thread-grandchild", Some("thread-child")),
+        native_thread_started("thread-child", Some("thread-1")),
+        serde_json::json!({
+            "method": "turn/started",
+            "params": {
+                "threadId": "thread-grandchild",
+                "turn": {"id": "turn-grandchild", "status": "inProgress"}
+            }
+        }),
+        native_turn_completed("thread-grandchild", "turn-grandchild", "grandchild done"),
+        native_turn_completed("thread-1", "turn-1", "owned done"),
+    ])
+    .unwrap();
+
+    assert_eq!(outcome.final_text, "owned done");
+}
+
+#[test]
+fn native_descendant_threads_reject_a_provably_unrelated_thread() {
+    let error = run_native_descendant_frames(vec![native_thread_started("thread-foreign", None)])
+        .unwrap_err();
+
+    assert!(
+        error.to_string().contains("ONE_DRIVER_VIOLATION"),
+        "{error}"
+    );
+    assert!(error.to_string().contains("thread-foreign"), "{error}");
+}
+
+#[test]
+fn native_descendant_threads_defer_an_early_frame_until_its_spawn_notification() {
+    let outcome = run_native_descendant_frames(vec![
+        serde_json::json!({
+            "method": "turn/started",
+            "params": {
+                "threadId": "thread-child",
+                "turn": {"id": "turn-child", "status": "inProgress"}
+            }
+        }),
+        native_thread_started("thread-child", Some("thread-1")),
+        native_turn_completed("thread-child", "turn-child", "child done"),
+        native_turn_completed("thread-1", "turn-1", "owned done"),
+    ])
+    .unwrap();
+
+    assert_eq!(outcome.final_text, "owned done");
+}
+
+#[test]
+fn native_descendant_threads_reject_unresolved_ancestry_at_the_owned_terminal_boundary() {
+    let error = run_native_descendant_frames(vec![
+        serde_json::json!({
+            "method": "turn/started",
+            "params": {
+                "threadId": "thread-unknown",
+                "turn": {"id": "turn-unknown", "status": "inProgress"}
+            }
+        }),
+        native_turn_completed("thread-1", "turn-1", "owned done"),
+    ])
+    .unwrap_err();
+
+    assert!(
+        error.to_string().contains("ONE_DRIVER_VIOLATION"),
+        "{error}"
+    );
+    assert!(error.to_string().contains("thread-unknown"), "{error}");
+}
+
+#[test]
+fn native_descendant_threads_do_not_settle_the_owned_turn_during_close() {
+    let (profile, session) = close_profile_and_session();
+    let fence = admitted_fence(&session);
+    let mut bridge = FakeBridge::completed("completed");
+    bridge.thread_status_before_terminal = "active";
+    bridge.frames = RefCell::new(VecDeque::from([
+        Ok(native_thread_started("thread-child", Some("thread-1"))),
+        Ok(native_turn_completed(
+            "thread-child",
+            "turn-child",
+            "child done",
+        )),
+        Ok(native_turn_completed("thread-1", "turn-1", "owned done")),
+    ]));
+    let mut adapter = CodexTeamRuntime::new(bridge);
+    TeamRuntimeAdapter::bind_authority_session(&mut adapter, session, &profile).unwrap();
+
+    let receipt =
+        harness_runtime_contract::RuntimeAdapter::close_runtime(&mut adapter, fence).unwrap();
+
+    receipt.verify().unwrap();
+    let bridge = adapter.into_inner();
+    assert_eq!(bridge.interrupts, 1);
+    assert_eq!(bridge.shutdowns, 1);
+}
+
 #[test]
 fn failed_terminal_is_settled_and_close_does_not_interrupt_it_again() {
     let (profile, session) = close_profile_and_session();
