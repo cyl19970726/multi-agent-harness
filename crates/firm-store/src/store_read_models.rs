@@ -362,22 +362,11 @@ impl HarnessStore {
     }
 
     pub fn latest_works_for_team_run(&self, team_run_id: &str) -> StoreResult<Vec<Work>> {
-        let mut latest = latest_by_id(
-            self.work_operations_with_recovered_provenance_for_team_run_unlocked(team_run_id)?,
-            |operation| operation.work.id.clone(),
-        )
-        .into_iter()
-        .map(|(id, operation)| (id, operation.work))
-        .collect::<std::collections::BTreeMap<_, _>>();
-        for work in self.trust_work_projections_for_team_run_unlocked(Some(team_run_id))? {
-            match latest.get(&work.id) {
-                Some(current) if current.version >= work.version => {}
-                _ => {
-                    latest.insert(work.id.clone(), work);
-                }
-            }
-        }
-        Ok(latest.into_values().collect())
+        Ok(self
+            .latest_works_unlocked()?
+            .into_values()
+            .filter(|work| work.team_run_id == team_run_id)
+            .collect())
     }
 
     pub fn work_delegation_events(&self) -> StoreResult<Vec<WorkDelegationEvent>> {
@@ -567,9 +556,11 @@ impl HarnessStore {
 
     pub fn work_events_for_team_run(&self, team_run_id: &str) -> StoreResult<Vec<WorkEvent>> {
         let operations = self.work_operations_for_team_run_unlocked(Some(team_run_id))?;
-        let work_ids = operations
-            .iter()
-            .map(|operation| operation.work.id.clone())
+        let work_ids = self
+            .latest_works_unlocked()?
+            .into_values()
+            .filter(|work| work.team_run_id == team_run_id)
+            .map(|work| work.id)
             .collect::<std::collections::HashSet<_>>();
         let mut events = operations
             .into_iter()

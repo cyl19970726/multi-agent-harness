@@ -698,27 +698,14 @@ impl HarnessStore {
     }
 
     pub(crate) fn trust_work_projections_unlocked(&self) -> StoreResult<Vec<Work>> {
-        self.trust_work_projections_for_team_run_unlocked(None)
-    }
-
-    pub(crate) fn trust_work_projections_for_team_run_unlocked(
-        &self,
-        team_run_id: Option<&str>,
-    ) -> StoreResult<Vec<Work>> {
         let mut works = Vec::new();
         for envelope in self.trust_operation_envelopes_unlocked()? {
-            if envelope.operation.event.aggregate_kind == "work"
-                && team_run_id.is_none_or(|id| {
-                    envelope.operation.resulting_projection["team_run_id"].as_str() == Some(id)
-                })
-            {
+            if envelope.operation.event.aggregate_kind == "work" {
                 works.push(event_projection::<Work>(&envelope)?);
             }
             for record in envelope.operation.immutable_side_records {
-                if team_run_id.is_none_or(|id| record["team_run_id"].as_str() == Some(id)) {
-                    if let Ok(work) = serde_json::from_value::<Work>(record) {
-                        works.push(work);
-                    }
+                if let Ok(work) = serde_json::from_value::<Work>(record) {
+                    works.push(work);
                 }
             }
         }

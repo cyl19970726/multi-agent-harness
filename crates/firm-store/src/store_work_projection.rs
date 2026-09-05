@@ -349,23 +349,42 @@ impl HarnessStore {
     }
 
     pub(super) fn work_operations_unlocked(&self) -> StoreResult<Vec<WorkOperation>> {
-        self.work_operations_for_team_run_unlocked(None)
+        self.all_work_operations_unlocked()
     }
 
     pub(super) fn work_operations_for_team_run_unlocked(
         &self,
         team_run_id: Option<&str>,
     ) -> StoreResult<Vec<WorkOperation>> {
+        let operations = self.all_work_operations_unlocked()?;
+        let Some(team_run_id) = team_run_id else {
+            return Ok(operations);
+        };
+        // Work.team_run_id names the current execution attempt and may change
+        // on retarget. Select Work identities from the folded latest state,
+        // then retain every operation for those identities so event history
+        // and immutable provenance remain complete.
+        let work_ids = self
+            .latest_works_unlocked()?
+            .into_values()
+            .filter(|work| work.team_run_id == team_run_id)
+            .map(|work| work.id)
+            .collect::<std::collections::HashSet<_>>();
+        Ok(operations
+            .into_iter()
+            .filter(|operation| work_ids.contains(&operation.work.id))
+            .collect())
+    }
+
+    fn all_work_operations_unlocked(&self) -> StoreResult<Vec<WorkOperation>> {
         let mut operations: Vec<WorkOperation> = self
             .read_jsonl::<WorkOperation>("work_operations.jsonl")?
             .into_iter()
-            .filter(|operation| team_run_id.is_none_or(|id| operation.work.team_run_id == id))
             .collect();
         let mut delegated = self
             .read_jsonl::<WorkDelegationOperation>("work_delegation_operations.jsonl")?
             .into_iter()
             .map(|operation| operation.target_work_operation)
-            .filter(|operation| team_run_id.is_none_or(|id| operation.work.team_run_id == id))
             .collect::<Vec<_>>();
         // WorkDelegation creation is crash-atomic in a separate composite
         // ledger, while later target transitions use the ordinary Work ledger.
@@ -420,9 +439,10 @@ impl HarnessStore {
                 .filter(&belongs_to_run),
         );
         revisions.extend(
-            self.work_operations_for_team_run_unlocked(team_run_id)?
+            self.work_operations_unlocked()?
                 .into_iter()
-                .flat_map(|operation| operation.delegation_revisions),
+                .flat_map(|operation| operation.delegation_revisions)
+                .filter(&belongs_to_run),
         );
         revisions.extend(self.trust_work_delegation_revisions_for_team_run_unlocked(team_run_id)?);
         revisions.sort_by(|left, right| {
@@ -715,15 +735,6 @@ impl HarnessStore {
         &self,
     ) -> StoreResult<Vec<WorkOperation>> {
         self.recover_work_operation_provenance(self.work_operations_unlocked()?)
-    }
-
-    pub(super) fn work_operations_with_recovered_provenance_for_team_run_unlocked(
-        &self,
-        team_run_id: &str,
-    ) -> StoreResult<Vec<WorkOperation>> {
-        self.recover_work_operation_provenance(
-            self.work_operations_for_team_run_unlocked(Some(team_run_id))?,
-        )
     }
 
     fn recover_work_operation_provenance(

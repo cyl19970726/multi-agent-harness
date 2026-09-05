@@ -38,35 +38,4 @@ impl HarnessStore {
         }
         Ok(latest.into_values().collect())
     }
-
-    pub fn fabric_work_deliveries_for_works(
-        &self,
-        execution_space_id: &str,
-        work_ids: &std::collections::HashSet<String>,
-    ) -> StoreResult<Vec<CanonicalWorkDelivery>> {
-        let mut latest = BTreeMap::<String, CanonicalWorkDelivery>::new();
-        for envelope in self
-            .trust_operation_envelopes_unlocked()?
-            .into_iter()
-            .filter(|envelope| envelope.execution_space_id == execution_space_id)
-        {
-            for value in envelope
-                .operation
-                .initial_outbox_records
-                .iter()
-                .chain(&envelope.operation.immutable_side_records)
-                .filter(|value| {
-                    value["work_id"]
-                        .as_str()
-                        .is_some_and(|id| work_ids.contains(id))
-                })
-            {
-                if let Ok(delivery) = serde_json::from_value::<CanonicalWorkDelivery>(value.clone())
-                {
-                    latest.insert(delivery.id.clone(), delivery);
-                }
-            }
-        }
-        Ok(latest.into_values().collect())
-    }
 }

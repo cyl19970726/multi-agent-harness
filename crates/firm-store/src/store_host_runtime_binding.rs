@@ -7,26 +7,24 @@ use crate::*;
 
 impl HarnessStore {
     pub fn host_member_binding(&self, team_run_id: &str) -> StoreResult<HostMemberBinding> {
-        let run = latest_by_id(self.team_run_rows(team_run_id)?, |run| run.id.clone())
+        let run = latest_by_id(self.team_runs()?, |run| run.id.clone())
             .remove(team_run_id)
             .ok_or_else(|| StoreError::Conflict(format!("TeamRun not found: {team_run_id}")))?;
-        let execution_space_id = self.current_team_run_execution_space(&run)?;
         let team = self
-            .agent_team(&execution_space_id, &run.agent_team_id)?
+            .latest_teams()?
+            .remove(&run.agent_team_id)
             .ok_or_else(|| {
                 StoreError::Conflict(format!(
                     "HOST_RUNTIME_TEAM_MISSING: AgentTeam {} not found",
                     run.agent_team_id
                 ))
             })?;
-        self.host_team_execution_space(&team, &run)?;
-        let memberships = self.fabric_team_memberships_for_team(&execution_space_id, &team.id)?;
-        let member_runs = self.trust_member_runs_for_team_run(&execution_space_id, team_run_id)?;
-        let runtimes = latest_by_id(self.member_run_rows_for_team_run(team_run_id)?, |runtime| {
-            runtime.id.clone()
-        })
-        .into_values()
-        .collect::<Vec<_>>();
+        let execution_space_id = self.host_team_execution_space(&team, &run)?;
+        let memberships = self.fabric_team_memberships(&execution_space_id)?;
+        let member_runs = self.trust_member_runs(&execution_space_id)?;
+        let runtimes = latest_by_id(self.member_runs()?, |runtime| runtime.id.clone())
+            .into_values()
+            .collect::<Vec<_>>();
         resolve_host_member_binding(&HostRuntimeBindingFacts {
             team: &team,
             team_run: &run,
@@ -65,32 +63,25 @@ impl HarnessStore {
         team_run_id: &str,
         observed_unix_ms: u64,
     ) -> StoreResult<HostRuntimeBinding> {
-        let run = latest_by_id(self.team_run_rows(team_run_id)?, |run| run.id.clone())
+        let run = latest_by_id(self.team_runs()?, |run| run.id.clone())
             .remove(team_run_id)
             .ok_or_else(|| StoreError::Conflict(format!("TeamRun not found: {team_run_id}")))?;
-        let execution_space_id = self.current_team_run_execution_space(&run)?;
         let team = self
-            .agent_team(&execution_space_id, &run.agent_team_id)?
+            .latest_teams()?
+            .remove(&run.agent_team_id)
             .ok_or_else(|| {
                 StoreError::Conflict(format!(
                     "HOST_RUNTIME_TEAM_MISSING: AgentTeam {} not found",
                     run.agent_team_id
                 ))
             })?;
-        self.host_team_execution_space(&team, &run)?;
-        let memberships = self.fabric_team_memberships_for_team(&execution_space_id, &team.id)?;
-        let member_runs = self.trust_member_runs_for_team_run(&execution_space_id, team_run_id)?;
-        let runtimes = latest_by_id(self.member_run_rows_for_team_run(team_run_id)?, |runtime| {
-            runtime.id.clone()
-        })
-        .into_values()
-        .collect::<Vec<_>>();
-        let member_ids = member_runs
-            .iter()
-            .map(|run| run.agent_member_id.clone())
-            .collect::<std::collections::HashSet<_>>();
-        let agent_sessions =
-            self.fabric_agent_sessions_for_members(&execution_space_id, &member_ids)?;
+        let execution_space_id = self.host_team_execution_space(&team, &run)?;
+        let memberships = self.fabric_team_memberships(&execution_space_id)?;
+        let member_runs = self.trust_member_runs(&execution_space_id)?;
+        let runtimes = latest_by_id(self.member_runs()?, |runtime| runtime.id.clone())
+            .into_values()
+            .collect::<Vec<_>>();
+        let agent_sessions = self.fabric_agent_sessions(&execution_space_id)?;
         let team_supervisor = self.latest_team_supervisor_lease(&run.id)?;
         let node_daemon = self.latest_node_daemon_lease(&team.node_id)?;
         resolve_host_runtime_binding(HostRuntimeBindingFacts {
