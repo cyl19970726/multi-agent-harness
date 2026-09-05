@@ -36,6 +36,11 @@ fn recover_names_the_blocker_of_a_blocked_member_whose_lane_is_still_live() {
         blocker.contains("not at a terminal turn boundary"),
         "the first failing clause is the open cycle: {blocker}"
     );
+    // The report and the repair decision derive from one proof.
+    assert_eq!(
+        crate::member_lane_blocker(&fixture.store, DRAIN_SPACE_ID, &blocked).is_none(),
+        crate::member_lane_proves_runtime_gone(&fixture.store, DRAIN_SPACE_ID, &blocked)
+    );
 
     let report = crate::team_run_recover(&fixture.store, &fixture.run_id, true)
         .expect("recover reports without repairing");
@@ -109,4 +114,178 @@ fn recover_and_close_share_one_terminal_turn_boundary_predicate() {
             "{lifecycle:?}"
         );
     }
+}
+
+/// GitHub #755, the writer: `team-run recover` returns a reconciled
+/// `RecoveryRequired` lane to `Idle` before it returns the member to a
+/// startable status, so the next Supervisor start is admitted instead of being
+/// refused on a recovery-required lane (the churn the round-1 review named).
+#[test]
+fn recover_returns_a_recovery_required_lane_to_idle_before_restarting_the_member() {
+    let fixture = drain_fixture("recover-recovery-required");
+    let ledger = fixture.supervise("supervisor-rr-1", fixture.daemon_generation);
+    fixture.start_cycle_for(&ledger, "work-delivery:rr:1");
+    let member = member_named(&fixture.store, &fixture.run_id, MID_TURN_MEMBER);
+
+    // The runner records the unrecoverable provider error, the process is
+    // reaped (detached, idle), and the member is journaled Blocked.
+    crate::transition_provider_session_for_member(
+        &ledger,
+        &member,
+        AgentSessionStatus::RecoveryRequired,
+    )
+    .expect("the runner's RecoveryRequired write lands");
+    crate::transition_provider_session_runtime_control(
+        &ledger,
+        &member,
+        harness_core::agentfirm_api::RuntimeResidency::Detached,
+        RuntimeActivity::Idle,
+    )
+    .expect("the reaped process detaches the lane");
+    let expected = member_named(&fixture.store, &fixture.run_id, MID_TURN_MEMBER);
+    let mut blocked = expected.clone();
+    blocked.status = MemberRunStatus::Blocked;
+    blocked.last_event_at = Some("unix-ms:rr-blocked".into());
+    fixture
+        .store
+        .compare_and_append_member_run(&expected, &blocked)
+        .expect("journal the blocked member");
+    assert_eq!(
+        agent_session(&fixture.store, MID_TURN_MEMBER).lifecycle,
+        AgentSessionStatus::RecoveryRequired
+    );
+    assert!(
+        crate::member_lane_proves_runtime_gone(&fixture.store, DRAIN_SPACE_ID, &blocked),
+        "a detached, quiet RecoveryRequired lane proves its runtime gone"
+    );
+
+    let report = crate::team_run_recover(&fixture.store, &fixture.run_id, true)
+        .expect("recover repairs the lane and the member");
+    assert_eq!(
+        report["restarted_blocked_members"],
+        serde_json::json!(1),
+        "{report}"
+    );
+    assert_eq!(report["blocked_lanes_not_proven"], serde_json::json!([]));
+    let lane = agent_session(&fixture.store, MID_TURN_MEMBER);
+    assert_eq!(
+        lane.lifecycle,
+        AgentSessionStatus::Idle,
+        "the lane re-entered the ordinary lane before the member moved"
+    );
+    assert_eq!(lane.runtime_generation, expected.runtime_generation);
+    let repaired = member_named(&fixture.store, &fixture.run_id, MID_TURN_MEMBER);
+    assert_eq!(repaired.status, MemberRunStatus::Idle);
+    assert!(repaired.coordination_is_active());
+    assert_eq!(repaired.native_session, expected.native_session);
+
+    // The repaired member is startable again by the ordinary claim.
+    assert!(
+        matches!(
+            crate::claim_member_provider_start(&ledger, &repaired)
+                .expect("the start claim is readable"),
+            crate::MemberProviderStartClaim::Claimed(_)
+        ),
+        "recover must leave a lane and a status the Supervisor will actually start"
+    );
+}
+
+/// The same lane while its handle is still attached: recover names the clause
+/// and leaves the member Blocked; nothing is written to the lane.
+#[test]
+fn recover_names_the_clause_that_keeps_a_recovery_required_lane_shut() {
+    let fixture = drain_fixture("recover-recovery-required-shut");
+    let ledger = fixture.supervise("supervisor-rr-shut-1", fixture.daemon_generation);
+    fixture.start_cycle_for(&ledger, "work-delivery:rr-shut:1");
+    let member = member_named(&fixture.store, &fixture.run_id, MID_TURN_MEMBER);
+    crate::transition_provider_session_for_member(
+        &ledger,
+        &member,
+        AgentSessionStatus::RecoveryRequired,
+    )
+    .expect("the runner's RecoveryRequired write lands");
+    let expected = member_named(&fixture.store, &fixture.run_id, MID_TURN_MEMBER);
+    let mut blocked = expected.clone();
+    blocked.status = MemberRunStatus::Blocked;
+    fixture
+        .store
+        .compare_and_append_member_run(&expected, &blocked)
+        .expect("journal the blocked member");
+    let blocker = crate::member_lane_blocker(&fixture.store, DRAIN_SPACE_ID, &blocked)
+        .expect("the attached handle is named");
+    assert!(
+        blocker.contains("not at a terminal turn boundary") || blocker.contains("attached"),
+        "{blocker}"
+    );
+
+    let report = crate::team_run_recover(&fixture.store, &fixture.run_id, true)
+        .expect("recover reports without repairing");
+    assert_eq!(report["restarted_blocked_members"], serde_json::json!(0));
+    let lanes = report["blocked_lanes_not_proven"]
+        .as_array()
+        .expect("reported");
+    assert_eq!(lanes.len(), 1, "{report}");
+    assert_eq!(lanes[0]["blocker"], serde_json::json!(blocker));
+    assert_eq!(
+        agent_session(&fixture.store, MID_TURN_MEMBER).lifecycle,
+        AgentSessionStatus::RecoveryRequired
+    );
+    assert_eq!(
+        member_named(&fixture.store, &fixture.run_id, MID_TURN_MEMBER).status,
+        MemberRunStatus::Blocked
+    );
+}
+
+/// The detached-recovery Close accepts the same reconciled `RecoveryRequired`
+/// lane `recover` accepts, through the real Close path (BlockedMemberExactGeneration).
+#[test]
+fn close_member_for_recovery_accepts_a_reconciled_recovery_required_lane() {
+    let fixture = drain_fixture("close-recovery-required");
+    let ledger = fixture.supervise("supervisor-rr-close-1", fixture.daemon_generation);
+    fixture.start_cycle_for(&ledger, "work-delivery:rr-close:1");
+    let member = member_named(&fixture.store, &fixture.run_id, MID_TURN_MEMBER);
+    crate::transition_provider_session_for_member(
+        &ledger,
+        &member,
+        AgentSessionStatus::RecoveryRequired,
+    )
+    .expect("the runner's RecoveryRequired write lands");
+    crate::transition_provider_session_runtime_control(
+        &ledger,
+        &member,
+        harness_core::agentfirm_api::RuntimeResidency::Detached,
+        RuntimeActivity::Idle,
+    )
+    .expect("the reaped process detaches the lane");
+    let expected = member_named(&fixture.store, &fixture.run_id, MID_TURN_MEMBER);
+    let mut blocked = expected.clone();
+    blocked.status = MemberRunStatus::Blocked;
+    fixture
+        .store
+        .compare_and_append_member_run(&expected, &blocked)
+        .expect("journal the blocked member");
+    let lease = fixture
+        .store
+        .latest_team_supervisor_lease(&fixture.run_id)
+        .expect("lease read")
+        .expect("the fixture Supervisor holds the lease");
+
+    let closed = crate::close_detached_blocked_member_for_recovery(
+        &fixture.store,
+        &fixture.run_id,
+        &blocked,
+        &lease,
+        "host",
+        "the member should not come back at all",
+    )
+    .expect("a reconciled RecoveryRequired lane is closable")
+    .expect("the Close was applied, not skipped");
+    assert_eq!(closed["coordination_status"], serde_json::json!("closed"));
+    assert_eq!(
+        closed["runtime_effect"],
+        serde_json::json!("already_detached")
+    );
+    let after = member_named(&fixture.store, &fixture.run_id, MID_TURN_MEMBER);
+    assert_eq!(after.status, MemberRunStatus::Stopped);
+    assert!(!after.coordination_is_active());
 }

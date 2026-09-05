@@ -2,9 +2,10 @@ use super::*;
 
 /// GitHub #755 (DEV-232): `RecoveryRequired` had no outgoing transition, so a
 /// session that reached it from `Active` (an unrecoverable provider error on
-/// an open cycle, written best-effort by the runner) was wedged one state over
-/// from #748. It now exits to `Idle`, `Cold`, or `Closed` under exactly the
-/// terminated-lane proof the drain exit uses — never on the lifecycle alone.
+/// an open cycle) or from `Cold` (a failed open) was wedged one state over
+/// from #748. It now has exactly one exit, `Idle`, admitted only under the
+/// terminated-lane proof the drain exit uses — never on the lifecycle alone —
+/// and every other target stays an ordinary invalid transition.
 fn current(store: &HarnessStore, session_id: &str) -> AgentSession {
     store
         .fabric_agent_sessions("space-test")
@@ -14,15 +15,19 @@ fn current(store: &HarnessStore, session_id: &str) -> AgentSession {
         .expect("AgentSession")
 }
 
-/// An attached, mid-cycle lane: Active with an open turn.
-fn active_lane(store: &HarnessStore, suffix: &str) -> AgentSession {
-    let member = format!("recovery-{suffix}");
+fn create_identity(store: &HarnessStore, member: &str) {
     store
         .migrate_legacy_agent_identity_same_id(
             &context("host", "identity.create", &format!("identity-{member}"), 0),
-            identity(&member),
+            identity(member),
         )
         .unwrap();
+}
+
+/// An attached, mid-cycle lane: Active with an open turn.
+fn active_lane(store: &HarnessStore, suffix: &str) -> AgentSession {
+    let member = format!("recovery-{suffix}");
+    create_identity(store, &member);
     let mut lane = session(&format!("session-{member}"), &member);
     lane.native_session_ref = Some(settled_native_session(&format!("thread-{member}")));
     lane.control_state.runtime_residency = RuntimeResidency::Attached;
@@ -46,16 +51,34 @@ fn active_lane(store: &HarnessStore, suffix: &str) -> AgentSession {
     active
 }
 
+/// A lane whose provider never opened: Cold, detached, quiet.
+fn cold_lane(store: &HarnessStore, suffix: &str) -> AgentSession {
+    let member = format!("recovery-{suffix}");
+    create_identity(store, &member);
+    let mut lane = session(&format!("session-{member}"), &member);
+    lane.lifecycle = AgentSessionStatus::Cold;
+    lane.native_session_ref = Some(settled_native_session(&format!("thread-{member}")));
+    lane.control_state.runtime_residency = RuntimeResidency::Detached;
+    lane.control_state.activity = RuntimeActivity::Idle;
+    store
+        .create_agent_session(
+            &service_context("session.create", &format!("session-{member}"), 0),
+            lane.clone(),
+        )
+        .unwrap();
+    current(store, &lane.id)
+}
+
 /// The runner records an unrecoverable provider error on that lane.
-fn mark_recovery_required(store: &HarnessStore, active: &AgentSession) -> AgentSession {
+fn mark_recovery_required(store: &HarnessStore, lane: &AgentSession) -> AgentSession {
     let failed = store
         .transition_agent_session(
             &service_context(
                 "node_daemon.agent_session.provider_state",
-                &format!("recovery-required-{}", active.id),
-                active.version,
+                &format!("recovery-required-{}", lane.id),
+                lane.version,
             ),
-            &active.id,
+            &lane.id,
             AgentSessionStatus::RecoveryRequired,
             "t-recovery-required",
         )
@@ -64,12 +87,6 @@ fn mark_recovery_required(store: &HarnessStore, active: &AgentSession) -> AgentS
     assert_eq!(failed.lifecycle, AgentSessionStatus::RecoveryRequired);
     assert!(failed.current_turn_id.is_none());
     failed
-}
-
-/// An attached, mid-cycle lane that the runner just marked `RecoveryRequired`.
-fn recovery_required_lane(store: &HarnessStore, suffix: &str) -> AgentSession {
-    let active = active_lane(store, suffix);
-    mark_recovery_required(store, &active)
 }
 
 /// Record the operator's reconciliation: the handle is gone and the lane is
@@ -90,7 +107,7 @@ fn detach(store: &HarnessStore, lane: &AgentSession, key: &str) -> AgentSession 
         .projection
 }
 
-fn refused(store: &HarnessStore, lane: &AgentSession, next: AgentSessionStatus, key: &str) {
+fn resume_refused(store: &HarnessStore, lane: &AgentSession, key: &str) {
     let operations_before = store.canonical_operations().unwrap();
     let error = store
         .transition_agent_session(
@@ -100,7 +117,7 @@ fn refused(store: &HarnessStore, lane: &AgentSession, next: AgentSessionStatus, 
                 lane.version,
             ),
             &lane.id,
-            next,
+            AgentSessionStatus::Idle,
             "t-refused",
         )
         .expect_err("a RecoveryRequired lane that does not prove its runtime gone stays put");
@@ -121,89 +138,119 @@ fn refused(store: &HarnessStore, lane: &AgentSession, next: AgentSessionStatus, 
     );
 }
 
+fn ordinary_invalid(
+    store: &HarnessStore,
+    lane: &AgentSession,
+    next: AgentSessionStatus,
+    key: &str,
+) {
+    let error = store
+        .transition_agent_session(
+            &service_context(
+                "node_daemon.agent_session.provider_state",
+                key,
+                lane.version,
+            ),
+            &lane.id,
+            next,
+            "t-invalid",
+        )
+        .expect_err("RecoveryRequired has exactly one exit");
+    assert!(
+        error.to_string().contains(&format!(
+            "invalid AgentSession transition RecoveryRequired->{next:?}"
+        )),
+        "{error}"
+    );
+    assert_eq!(
+        current(store, &lane.id).lifecycle,
+        AgentSessionStatus::RecoveryRequired
+    );
+}
+
 #[test]
-fn recovery_required_lane_resumes_or_closes_only_after_reconciliation() {
+fn recovery_required_lane_resumes_only_after_reconciliation() {
     let (store, root) = fabric_store();
 
-    // Attached and mid-cycle: no exit yet, for any target.
-    let attached = recovery_required_lane(&store, "attached");
-    refused(
-        &store,
-        &attached,
-        AgentSessionStatus::Idle,
-        "rr-attached-idle",
-    );
-    refused(
+    // Attached and mid-cycle: the one exit is shut, and no other opens.
+    let attached = mark_recovery_required(&store, &active_lane(&store, "attached"));
+    resume_refused(&store, &attached, "rr-attached-idle");
+    ordinary_invalid(
         &store,
         &attached,
         AgentSessionStatus::Closed,
         "rr-attached-closed",
     );
-    refused(
+    ordinary_invalid(
         &store,
         &attached,
         AgentSessionStatus::Cold,
         "rr-attached-cold",
     );
+    ordinary_invalid(
+        &store,
+        &attached,
+        AgentSessionStatus::Active,
+        "rr-attached-active",
+    );
 
     // Detached and quiet, but a RuntimeCommand admitted on the lane is still
-    // ambiguous: a resume could replay it, so the lane stays put.
-    // The command is admitted while the cycle is still Active (a stop never
-    // targets a terminal lane); the provider failure then lands on top of it.
-    let ambiguous_active = active_lane(&store, "ambiguous");
-    let command_target = ambiguous_active.clone();
-    let (stop, stop_context) = runtime_command_fixture(
-        "runtime-rr-ambiguous-stop",
-        RuntimeCommandKind::StopSession,
-        &command_target,
-        "stop_session",
+    // ambiguous: the canonical #755 shape (a failed open leaves the lane Cold
+    // and detached, and `Cold -> RecoveryRequired` is admitted unconditionally)
+    // — a resume could replay that command, so the lane stays put until it
+    // is settled.
+    let cold = cold_lane(&store, "ambiguous");
+    let (inspect, inspect_context) = runtime_command_fixture(
+        "runtime-rr-ambiguous-inspect",
+        RuntimeCommandKind::InspectCommandEffect,
+        &cold,
+        "inspect_command_effect",
     );
+    let admitted = store
+        .prepare_runtime_command(&inspect_context, &inspect, current_unix_ms(), "t-inspect")
+        .expect("an operator command is admitted on the cold lane");
+    let ambiguous = mark_recovery_required(&store, &current(&store, &cold.id));
+    assert_eq!(
+        ambiguous.control_state.runtime_residency,
+        RuntimeResidency::Detached
+    );
+    resume_refused(&store, &ambiguous, "rr-ambiguous-idle");
     store
-        .prepare_runtime_command(&stop_context, &stop, current_unix_ms(), "t-stop")
-        .expect("an exact StopSession may be admitted on the active lane");
-    let ambiguous = mark_recovery_required(&store, &ambiguous_active);
-    // Reconciliation must come first: the control state cannot even record
-    // the dropped handle while the command's effect is ambiguous, and the
-    // lane's exits stay shut until it is settled.
-    let mut detached = ambiguous.control_state.clone();
-    detached.runtime_residency = RuntimeResidency::Detached;
-    detached.activity = RuntimeActivity::Idle;
-    let error = store
-        .bind_agent_session_control_state(
+        .settle_runtime_command_with_postcondition(
             &service_context(
-                "node_daemon.session.control",
-                "rr-ambiguous-detach",
-                ambiguous.version,
+                "runtime.inspect.settle",
+                "runtime-rr-ambiguous-inspect:settle",
+                admitted.projection.version,
             ),
-            &ambiguous.id,
-            ambiguous.runtime_generation,
-            detached,
-            "t-detach",
+            &inspect.id,
+            RuntimeCommandStatus::Applied,
+            RuntimeEffectCertainty::Applied,
+            RuntimePostconditionStatus::Satisfied,
+            Some(serde_json::json!({"inspected": true})),
+            None,
+            "t-inspect-applied",
         )
-        .expect_err("an ambiguous command blocks reconciliation of the control state");
-    assert!(
-        error
-            .to_string()
-            .contains("reconciliation of every ambiguous RuntimeCommand"),
-        "{error}"
-    );
-    let ambiguous = current(&store, &ambiguous.id);
-    refused(
-        &store,
-        &ambiguous,
-        AgentSessionStatus::Idle,
-        "rr-ambiguous-idle",
-    );
-    refused(
-        &store,
-        &ambiguous,
-        AgentSessionStatus::Closed,
-        "rr-ambiguous-closed",
-    );
+        .expect("the operator settles the ambiguous command");
+    let settled = current(&store, &ambiguous.id);
+    let resumed = store
+        .transition_agent_session(
+            &service_context(
+                "node_daemon.agent_session.provider_state",
+                "rr-ambiguous-resumed",
+                settled.version,
+            ),
+            &settled.id,
+            AgentSessionStatus::Idle,
+            "t-resumed-after-settle",
+        )
+        .expect("once the command is settled the reconciled lane resumes")
+        .projection;
+    assert_eq!(resumed.lifecycle, AgentSessionStatus::Idle);
 
-    // Reconciled: detached, idle, disarmed, no turn, no queued input, no
-    // ambiguous command — the ordinary lane reopens.
-    let resumable = recovery_required_lane(&store, "resumable");
+    // Reconciled after an open-cycle failure: detached, idle, disarmed, no
+    // turn, no queued input, no ambiguous command — the ordinary lane reopens
+    // on the same runtime generation, and the native locator is retained.
+    let resumable = mark_recovery_required(&store, &active_lane(&store, "resumable"));
     let resumable = detach(&store, &resumable, "rr-resumable-detach");
     let resumed = store
         .transition_agent_session(
@@ -221,65 +268,21 @@ fn recovery_required_lane_resumes_or_closes_only_after_reconciliation() {
     assert_eq!(resumed.lifecycle, AgentSessionStatus::Idle);
     assert_eq!(resumed.runtime_generation, resumable.runtime_generation);
     assert!(resumed.current_turn_id.is_none());
-
-    // ...or closes, retaining the native session locator as history.
-    let closable = recovery_required_lane(&store, "closable");
-    let closable = detach(&store, &closable, "rr-closable-detach");
+    assert!(resumed.native_session_ref.is_some());
+    // From Idle the ordinary paths apply again, e.g. an ordinary Close.
     let closed = store
         .transition_agent_session(
             &service_context(
                 "node_daemon.agent_session.provider_state",
-                "rr-closable-closed",
-                closable.version,
+                "rr-resumable-closed",
+                resumed.version,
             ),
-            &closable.id,
+            &resumed.id,
             AgentSessionStatus::Closed,
             "t-closed",
         )
-        .expect("a reconciled RecoveryRequired lane closes")
+        .expect("the resumed lane closes through the ordinary Idle -> Closed edge")
         .projection;
     assert_eq!(closed.lifecycle, AgentSessionStatus::Closed);
-    assert!(closed.closed_at.is_some());
-    assert!(closed.native_session_ref.is_some());
-
-    // ...or goes Cold for an explicit ResumeSession.
-    let coldable = recovery_required_lane(&store, "coldable");
-    let coldable = detach(&store, &coldable, "rr-coldable-detach");
-    let cold = store
-        .transition_agent_session(
-            &service_context(
-                "node_daemon.agent_session.provider_state",
-                "rr-coldable-cold",
-                coldable.version,
-            ),
-            &coldable.id,
-            AgentSessionStatus::Cold,
-            "t-cold",
-        )
-        .expect("a reconciled RecoveryRequired lane may go Cold")
-        .projection;
-    assert_eq!(cold.lifecycle, AgentSessionStatus::Cold);
-
-    // The exits are exactly Idle / Cold / Closed: nothing else opens up.
-    let stuck = recovery_required_lane(&store, "stuck");
-    let stuck = detach(&store, &stuck, "rr-stuck-detach");
-    let error = store
-        .transition_agent_session(
-            &service_context(
-                "node_daemon.agent_session.provider_state",
-                "rr-stuck-active",
-                stuck.version,
-            ),
-            &stuck.id,
-            AgentSessionStatus::Active,
-            "t-active-again",
-        )
-        .expect_err("RecoveryRequired never jumps straight back into a cycle");
-    assert!(
-        error
-            .to_string()
-            .contains("invalid AgentSession transition RecoveryRequired->Active"),
-        "{error}"
-    );
     fs::remove_dir_all(root).unwrap();
 }

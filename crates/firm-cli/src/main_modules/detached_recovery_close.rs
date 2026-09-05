@@ -91,6 +91,14 @@ pub(super) fn close_detached_blocked_member_for_recovery_with_hooks(
             member.id, session.id
         )));
     }
+    // The same proof `team-run recover` evaluates (handoff, continuation,
+    // queued input, ambiguous command), so the two verbs agree (GitHub #841).
+    if let Some(blocker) = lane_termination_blocker(store, &execution_space_id, &session)? {
+        return Err(CliError::RuntimeRecoveryRequired(format!(
+            "DETACHED_MEMBER_RECOVERY_FENCED: member {} does not prove its runtime gone: {blocker}",
+            member.id
+        )));
+    }
     let native_session_matches_and_resumable = match (
         member.native_session.as_ref(),
         session.native_session_ref.as_ref(),

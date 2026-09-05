@@ -282,6 +282,14 @@ pub(super) fn transition_provider_session_for_member(
         | (AgentSessionStatus::Waiting, AgentSessionStatus::Idle)
         | (AgentSessionStatus::Interrupted, AgentSessionStatus::Idle)
         | (AgentSessionStatus::Idle, AgentSessionStatus::Active) => vec![desired],
+        // The runner records an unrecoverable provider error on an open cycle
+        // or a failed open; the Store admits exactly these two entries.
+        (AgentSessionStatus::Cold, AgentSessionStatus::RecoveryRequired)
+        | (AgentSessionStatus::Active, AgentSessionStatus::RecoveryRequired) => vec![desired],
+        // The one exit (GitHub #755): `team-run recover` returns a reconciled
+        // lane to the ordinary lane; the Store admits the hop only under the
+        // terminated-lane proof, so this never resumes a live cycle.
+        (AgentSessionStatus::RecoveryRequired, AgentSessionStatus::Idle) => vec![desired],
         _ => {
             return Err(CliError::Usage(format!(
                 "AGENT_SESSION_RECOVERY_REQUIRED: cannot project {:?}->{desired:?}",

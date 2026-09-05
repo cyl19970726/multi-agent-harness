@@ -400,6 +400,7 @@ pub(super) fn team_run_recover(
     let mut restarted = 0u64;
     let mut blocked_by_typed_provenance = 0u64;
     let mut blocked_by_provenance: Vec<serde_json::Value> = Vec::new();
+    let mut blocked_lanes_not_proven: Vec<serde_json::Value> = Vec::new();
     let ledger = TeamRunLedger::without_supervisor(store, team_run_id);
     for (member, path) in &recovery_plan {
         match path {
@@ -433,14 +434,10 @@ pub(super) fn team_run_recover(
             // required — the lane's own detached, disarmed, unambiguous state
             // is the proof that nothing is driving it.
             MemberRecoveryPath::RestartBlockedDetachedLane => {
-                restart_blocked_member_on_dead_lane(store, &ledger, member, &now_str)?;
-                if !json {
-                    println!(
-                        "  {} ({}): blocked member returned to idle; its lane is detached and idle",
-                        member.name, member.provider
-                    );
+                match restart_or_explain_blocked_member(store, &ledger, member, &now_str, json)? {
+                    None => restarted += 1,
+                    Some(entry) => blocked_lanes_not_proven.push(entry),
                 }
-                restarted += 1;
             }
             MemberRecoveryPath::ResumeCompatible => {
                 // Reopen the member using the existing reopen path.
@@ -535,8 +532,13 @@ pub(super) fn team_run_recover(
 
     let lost_execution_scan =
         report_lost_execution_works(store, execution_space_id.as_deref(), team_run_id, json)?;
-    let blocked_lanes_not_proven =
-        report_blocked_lanes_not_proven(store, execution_space_id.as_deref(), &members, json);
+    blocked_lanes_not_proven.extend(report_blocked_lanes_not_proven(
+        store,
+        execution_space_id.as_deref(),
+        team_run_id,
+        &blocked_lanes_not_proven,
+        json,
+    )?);
 
     let supervisor_diagnosis = supervisor.as_ref().map(|lease| {
         let (live, diagnosis) = supervisor_lease_live_diagnosis(lease);

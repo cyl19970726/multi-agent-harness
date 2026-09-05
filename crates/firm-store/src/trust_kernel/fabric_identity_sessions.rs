@@ -877,15 +877,13 @@ impl HarnessStore {
             && interrupted_runtime_is_terminated;
         // A lane that reached `RecoveryRequired` (an unrecoverable provider
         // error on an open cycle, or a Cold session that could not open) had no
-        // exit at all (GitHub #755). After operator reconciliation it may
-        // resume, go Cold for a ResumeSession, or close — each admitted only
-        // under the same terminated-lane proof as the drain exit above, never
-        // on the lifecycle alone.
+        // exit at all (GitHub #755). After operator reconciliation it re-enters
+        // the ordinary lane through `Idle` — the one exit, admitted only under
+        // the same terminated-lane proof as the drain exit above, never on the
+        // lifecycle alone; `team-run recover` is its writer, and Close or a
+        // fresh start then proceed from `Idle` through the ordinary paths.
         let recovers_reconciled_lane = session.lifecycle == AgentSessionStatus::RecoveryRequired
-            && matches!(
-                next_status,
-                AgentSessionStatus::Idle | AgentSessionStatus::Cold | AgentSessionStatus::Closed
-            )
+            && next_status == AgentSessionStatus::Idle
             && interrupted_runtime_is_terminated;
         let allowed = matches!(
             (session.lifecycle, next_status),
@@ -923,12 +921,7 @@ impl HarnessStore {
             {
                 firm_core::agentfirm_api::AGENT_SESSION_DRAIN_RESUME_NOT_YET_RESUMABLE.to_string()
             } else if session.lifecycle == AgentSessionStatus::RecoveryRequired
-                && matches!(
-                    next_status,
-                    AgentSessionStatus::Idle
-                        | AgentSessionStatus::Cold
-                        | AgentSessionStatus::Closed
-                )
+                && next_status == AgentSessionStatus::Idle
             {
                 firm_core::agentfirm_api::AGENT_SESSION_RECOVERY_REQUIRED_NOT_YET_RESUMABLE
                     .to_string()

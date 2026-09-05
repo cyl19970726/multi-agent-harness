@@ -322,6 +322,28 @@ pub struct AgentSession {
     pub closed_at: Option<String>,
 }
 
+impl AgentSession {
+    /// Whether this lane sits at a terminal turn boundary with no cycle open:
+    /// a lifecycle that owns no executing turn (`Cold`, `Idle`, `Interrupted`,
+    /// or a `RecoveryRequired` lane awaiting reconciliation), idle runtime
+    /// activity, and no current turn id. This is the one definition the
+    /// Store's detached-recovery fence, `team-run recover`, and `close-member`
+    /// all evaluate, so no two of them can disagree about the same lane
+    /// (GitHub #841). It says nothing about residency, handoff, continuation,
+    /// queued input, or ambiguous RuntimeCommands — those are the rest of the
+    /// terminated-lane proof and are checked separately by each writer.
+    pub fn is_at_terminal_turn_boundary(&self) -> bool {
+        matches!(
+            self.lifecycle,
+            AgentSessionStatus::Cold
+                | AgentSessionStatus::Idle
+                | AgentSessionStatus::Interrupted
+                | AgentSessionStatus::RecoveryRequired
+        ) && self.control_state.activity == RuntimeActivity::Idle
+            && self.current_turn_id.is_none()
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TeamMembershipStatus {
