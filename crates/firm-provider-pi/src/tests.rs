@@ -365,10 +365,20 @@ mod cycle_conformance {
     }
 
     fn pi_timeouts() -> harness_runtime_contract::CycleTimeouts {
+        // A generous acceptance bound keeps the scripted prompt answer
+        // deterministic under build load; only the A2 no-receipt fixture
+        // uses the tiny bound (it is the fixture that must expire).
         harness_runtime_contract::CycleTimeouts {
-            input_acceptance: Duration::from_millis(1),
+            input_acceptance: Duration::from_secs(2),
             transport_liveness: Duration::from_millis(1),
             control_settle: Duration::ZERO,
+        }
+    }
+
+    fn pi_no_receipt_timeouts() -> harness_runtime_contract::CycleTimeouts {
+        harness_runtime_contract::CycleTimeouts {
+            input_acceptance: Duration::from_millis(1),
+            ..pi_timeouts()
         }
     }
 
@@ -532,7 +542,7 @@ mod cycle_conformance {
 
         fn run_no_receipt(
             &mut self,
-            timeouts: &harness_runtime_contract::CycleTimeouts,
+            _timeouts: &harness_runtime_contract::CycleTimeouts,
         ) -> Result<harness_runtime_contract::CycleConformanceOutcome, Self::Error> {
             let error = match drive_pi_cycle(
                 PiScript {
@@ -545,7 +555,7 @@ mod cycle_conformance {
                     delay_events_ms: 0,
                     disconnect_after: false,
                 },
-                timeouts,
+                &pi_no_receipt_timeouts(),
                 harness_runtime_contract::CycleControl::default,
             ) {
                 Ok(_) => return Err("a never-accepted cycle produced an outcome".to_string()),
@@ -753,6 +763,7 @@ mod cycle_conformance {
         .expect("a silent accepted cycle completes");
         assert_eq!(outcome.interrupt, None);
         let written = std::fs::read_to_string(&log).expect("stdin log");
+        std::fs::remove_file(&log).expect("remove A4 stdin log");
         assert!(
             !written.contains("\"type\": \"abort\"") && !written.contains("\"type\":\"abort\""),
             "no abort frame may be written during silence: {written}"

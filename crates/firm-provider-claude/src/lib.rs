@@ -544,9 +544,9 @@ impl ClaudeRunnerTransport {
                 // provider tool may be silent while it does real work. The
                 // caller's timeout therefore fences only the unacknowledged
                 // delivery boundary; it is not a hidden wall-clock limit on
-                // an already accepted provider cycle. After `consumed`, child
-                // exit and stdout disconnect remain fail-closed transport
-                // errors, while Interrupt and Close keep polling normally.
+                // an accepted cycle. `transport_liveness` (Spec D2) is proven
+                // by `ensure_alive()` and by child-exit/stdout-disconnect
+                // failing closed — never by a silence verdict.
                 self.ensure_alive()?;
                 // A5/D3: an issued Interrupt that the provider never
                 // acknowledges expires after control_settle — Unknown, never

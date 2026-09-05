@@ -1056,10 +1056,20 @@ fn terminal_frame(id: u64, stop_reason: &str) -> serde_json::Value {
 struct KimiCycleConformanceFixture;
 
 fn kimi_conformance_timeouts() -> harness_runtime_contract::CycleTimeouts {
+    // A generous acceptance bound keeps the scripted acceptance update
+    // deterministic under build load; only the A2 no-receipt fixture uses
+    // the tiny bound (it is the fixture that must expire).
     harness_runtime_contract::CycleTimeouts {
-        input_acceptance: Duration::from_millis(1),
+        input_acceptance: Duration::from_secs(2),
         transport_liveness: Duration::from_millis(1),
         control_settle: Duration::ZERO,
+    }
+}
+
+fn kimi_no_receipt_timeouts() -> harness_runtime_contract::CycleTimeouts {
+    harness_runtime_contract::CycleTimeouts {
+        input_acceptance: Duration::from_millis(1),
+        ..kimi_conformance_timeouts()
     }
 }
 
@@ -1157,11 +1167,11 @@ impl harness_runtime_contract::CycleConformanceFixture for KimiCycleConformanceF
 
     fn run_no_receipt(
         &mut self,
-        timeouts: &harness_runtime_contract::CycleTimeouts,
+        _timeouts: &harness_runtime_contract::CycleTimeouts,
     ) -> Result<harness_runtime_contract::CycleConformanceOutcome, Self::Error> {
         // No acceptance evidence ever; the pre-receipt cancel strike fires
         // and the session is killed after control_settle.
-        let error = match drive_kimi_cycle(timeouts, false, None, false, || {
+        let error = match drive_kimi_cycle(&kimi_no_receipt_timeouts(), false, None, false, || {
             harness_runtime_contract::CycleControl::default()
         }) {
             Ok(_) => return Err("a never-accepted prompt produced an outcome".to_string()),
