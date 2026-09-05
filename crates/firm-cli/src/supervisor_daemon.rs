@@ -87,6 +87,9 @@ struct MultiTeamContext {
     supervisor_id: String,
     supervisor_generation: u64,
     heartbeat_valid: Arc<AtomicBool>,
+    /// Process-local display projection updated by the owning Supervisor.
+    /// Keeping it beside the context lets `daemon status` stay Store-free.
+    serving_status: Arc<Mutex<String>>,
     thread: Option<std::thread::JoinHandle<CliResult<TeamRunDriveOutcome>>>,
     started_at: Instant,
 }

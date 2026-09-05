@@ -1051,6 +1051,19 @@ pub(super) fn team_run_board_summary_text(
         ),
         format!("assigned={assigned} unassigned={unassigned} ready={ready}"),
     ];
+    if run.status == TeamRunStatus::Completed {
+        let unclosed = members
+            .iter()
+            .filter(|member| !member.is_external_interactive())
+            .count();
+        lines.insert(
+            0,
+            format!(
+                "run={}",
+                crate::completed_run_members::completed_serving_label(unclosed)
+            ),
+        );
+    }
     for member in &members {
         let owned = works.iter().filter(|work| {
             work.owner_member_id.as_deref() == Some(member.agent_member_id.as_str())

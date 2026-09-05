@@ -282,10 +282,40 @@ pub(super) fn team_run_command(
         "complete" => {
             let id = required(args, "--id")?;
             let run = transition_team_run(store, &id, TeamRunStatus::Completed)?;
+            let unclosed = crate::completed_run_members::unclosed_managed_members(store, &id)?;
             if json {
-                print_json(&serde_json::json!(run))?;
+                let mut output = serde_json::to_value(&run)?;
+                if let Some(object) = output.as_object_mut() {
+                    object.insert(
+                        "unclosed_managed_members".into(),
+                        serde_json::json!(unclosed
+                            .iter()
+                            .map(|member| serde_json::json!({
+                                "member_run_id": member.id,
+                                "name": member.name,
+                            }))
+                            .collect::<Vec<_>>()),
+                    );
+                    object.insert(
+                        "close_commands".into(),
+                        serde_json::json!(unclosed
+                            .iter()
+                            .map(|member| format!(
+                                "firm team-run close-member --id {} --member-run-id {} --reason 'completed TeamRun cleanup'",
+                                run.id, member.id
+                            ))
+                            .collect::<Vec<_>>()),
+                    );
+                }
+                print_json(&output)?;
             } else {
                 println!("{}\t{}", run.id, serde_snake_label(&run.status));
+                for member in &unclosed {
+                    println!(
+                        "unclosed member: {} ({})\nclose with: firm team-run close-member --id {} --member-run-id {} --reason 'completed TeamRun cleanup'",
+                        member.name, member.id, run.id, member.id
+                    );
+                }
             }
         }
         "cancel" => {

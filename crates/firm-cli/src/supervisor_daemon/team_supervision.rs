@@ -296,6 +296,8 @@ impl MultiTeamDaemon {
 
         let execution_space_id = space.id.clone();
         let callback_space_id = execution_space_id.clone();
+        let serving_status = Arc::new(Mutex::new("running".to_string()));
+        let thread_serving_status = Arc::clone(&serving_status);
         let thread = std::thread::spawn(move || {
             let live_sink = Arc::new(move |update: NativeSessionWakeUpdate| {
                 let agent_member_id = match &update {
@@ -338,6 +340,7 @@ impl MultiTeamDaemon {
                 max_concurrency,
                 Duration::from_secs(idle_timeout_secs),
                 Some(live_sink),
+                Some(thread_serving_status),
             )
         });
 
@@ -355,6 +358,7 @@ impl MultiTeamDaemon {
                 supervisor_id,
                 supervisor_generation,
                 heartbeat_valid,
+                serving_status,
                 thread: Some(thread),
                 started_at: Instant::now(),
             });

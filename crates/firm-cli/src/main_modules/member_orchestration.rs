@@ -848,6 +848,7 @@ pub(crate) fn drive_prepared_team_run(
     max_concurrency: usize,
     idle_timeout: Duration,
     live_sink: Option<NativeSessionWakeSink>,
+    serving_status: Option<Arc<Mutex<String>>>,
 ) -> CliResult<TeamRunDriveOutcome> {
     let PreparedTeamRunStart {
         run_id,
@@ -1115,10 +1116,29 @@ pub(crate) fn drive_prepared_team_run(
             }
         }
 
+        let mut current_run_status = None;
+        let mut completed_unclosed = 0usize;
         if lease_lost {
             pending_members.clear();
         } else {
-            let rescanned = latest_member_runs_in_append_order(&ledger.store)?
+            let latest_members = latest_member_runs_in_append_order(&ledger.store)?;
+            let run_status = latest_team_run(&ledger.store, &run_id)?.status;
+            current_run_status = Some(run_status);
+            if run_status == TeamRunStatus::Completed {
+                completed_unclosed = latest_members
+                    .iter()
+                    .filter(|member| {
+                        member.team_run_id == run_id
+                            && !member.is_external_interactive()
+                            && member.coordination_is_active()
+                    })
+                    .count();
+                if let Some(status) = &serving_status {
+                    *status.lock().unwrap_or_else(|error| error.into_inner()) =
+                        crate::completed_run_members::completed_serving_label(completed_unclosed);
+                }
+            }
+            let rescanned = latest_members
                 .into_iter()
                 .filter(|member| {
                     member.team_run_id == run_id
@@ -1171,10 +1191,17 @@ pub(crate) fn drive_prepared_team_run(
             continue;
         }
 
-        // A TeamRun decision never closes a Member. Keep supervising live
-        // handles after Wave/TeamRun/Mission progress; exit only once every
-        // runtime has ended explicitly (or a test-only idle bound retires it).
+        // A TeamRun decision never closes a Member. A Completed attempt keeps
+        // its Supervisor/control lane until every managed member is explicitly
+        // Closed or Retired, even when a member adapter has already returned.
+        // The registration Drop below then releases the lease after the last
+        // member leaves. Other statuses preserve the existing empty-handle
+        // exit behavior.
         if handles.is_empty() {
+            if current_run_status == Some(TeamRunStatus::Completed) && completed_unclosed > 0 {
+                std::thread::sleep(Duration::from_millis(50));
+                continue;
+            }
             break;
         }
         // GitHub linkage CI poll (issue #369 Phase 2): throttled, best-effort,

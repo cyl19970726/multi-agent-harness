@@ -167,6 +167,9 @@ mod member_lifecycle;
 use member_lifecycle::*;
 #[path = "main_modules/member_orchestration.rs"]
 mod member_orchestration;
+
+#[path = "main_modules/completed_run_members.rs"]
+mod completed_run_members;
 use member_orchestration::*;
 #[path = "main_modules/member_start_fabric.rs"]
 mod member_start_fabric;
