@@ -17,8 +17,7 @@ impl HarnessStore {
         supervisor_generation: u64,
     ) -> StoreResult<()> {
         use firm_core::agentfirm_api::{
-            AgentSessionStatus, RuntimeActivity, RuntimeCommandStatus, RuntimeDriverRef,
-            RuntimeEffectCertainty, RuntimeResidency,
+            RuntimeCommandStatus, RuntimeDriverRef, RuntimeEffectCertainty, RuntimeResidency,
         };
 
         let Some(fence) = value.detached_recovery_fence.as_deref() else {
@@ -66,17 +65,14 @@ impl HarnessStore {
             && session.control_state.driver_generation == fence.agent_session_driver_generation
             && session.node_daemon_id == fence.node_daemon_id
             && session.node_daemon_generation == fence.node_daemon_generation
-            // `Interrupted` counts alongside `Idle`: it records only that a
-            // drain cut the cycle before its own end, while the residency,
-            // activity and turn checks below still prove no live runtime owns
-            // this lane. Close must not be fenced on the label alone.
-            && matches!(
-                session.lifecycle,
-                AgentSessionStatus::Idle | AgentSessionStatus::Interrupted
-            )
+            // `Interrupted` and a reconciled `RecoveryRequired` count alongside
+            // `Idle`: the label records only how the cycle ended, while the
+            // residency, activity and turn checks still prove no live runtime
+            // owns this lane. Close must not be fenced on the label alone; the
+            // shared `AgentSession::is_at_terminal_turn_boundary` is the one
+            // definition `team-run recover` and `close-member` evaluate too.
+            && session.is_at_terminal_turn_boundary()
             && session.control_state.runtime_residency == RuntimeResidency::Detached
-            && session.control_state.activity == RuntimeActivity::Idle
-            && session.current_turn_id.is_none()
             && session.native_session_ref.as_ref().is_some_and(|native| {
                 native.native_session_id == fence.native_session_id
                     && member.native_session.as_ref().is_some_and(|member_native| {

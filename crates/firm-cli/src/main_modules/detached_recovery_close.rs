@@ -76,8 +76,8 @@ pub(super) fn close_detached_blocked_member_for_recovery_with_hooks(
     mut after_terminal_cas: impl FnMut(&ProviderRuntimeProjection) -> CliResult<()>,
 ) -> CliResult<Option<serde_json::Value>> {
     use harness_core::agentfirm_api::{
-        NativeSessionAvailability as AgentNativeSessionAvailability, RuntimeCommandStatus,
-        RuntimeDriverRef, RuntimeEffectCertainty, RuntimeResidency, WorkDeliveryStatus,
+        AgentSessionStatus, NativeSessionAvailability as AgentNativeSessionAvailability,
+        RuntimeDriverRef, RuntimeResidency, WorkDeliveryStatus,
     };
 
     let ledger = TeamRunLedger::without_supervisor(store, team_run_id);
@@ -89,6 +89,22 @@ pub(super) fn close_detached_blocked_member_for_recovery_with_hooks(
         return Err(CliError::RuntimeRecoveryRequired(format!(
             "DETACHED_MEMBER_RECOVERY_FENCED: member {} session {} is not detached+idle at a terminal turn boundary",
             member.id, session.id
+        )));
+    }
+    // The same proof `team-run recover` evaluates (handoff, continuation,
+    // queued input, ambiguous command), so the two verbs agree (GitHub #841).
+    // A Completed TeamRun's member may carry dormant input nothing will ever
+    // consume; it is recorded on the receipt instead of stranding the member.
+    let proof = lane_termination_proof(
+        store,
+        &execution_space_id,
+        &session,
+        mode == DetachedRecoveryCloseMode::CompletedRunMember,
+    )?;
+    if let Some(blocker) = proof.blocker {
+        return Err(CliError::RuntimeRecoveryRequired(format!(
+            "DETACHED_MEMBER_RECOVERY_FENCED: member {} does not prove its runtime gone: {blocker}",
+            member.id
         )));
     }
     let native_session_matches_and_resumable = match (
@@ -178,26 +194,54 @@ pub(super) fn close_detached_blocked_member_for_recovery_with_hooks(
         }
     }
 
-    let ambiguous_command = store
-        .runtime_commands(&execution_space_id)?
-        .into_iter()
-        .any(|command| {
-            command.target_session_id.as_deref() == Some(session.id.as_str())
-                && command.target_session_generation == Some(session.runtime_generation)
-                && matches!(
-                    command.status,
-                    RuntimeCommandStatus::Accepted
-                        | RuntimeCommandStatus::Quiesced
-                        | RuntimeCommandStatus::RecoveryRequired
-                )
-                && command.effect_certainty == RuntimeEffectCertainty::Unknown
-        });
-    if ambiguous_command {
+    // A lane the runner left in `RecoveryRequired` re-enters the ordinary lane
+    // before its member is closed (the Store re-proves the same lane under its
+    // lock), so a later Reopen finds an ordinary Idle lane instead of a
+    // lifecycle with no writer left (GitHub #755). The hop sits after every
+    // authority and generation gate above, so a Close this Host may not
+    // perform leaves no durable trace. A completed run's member may still
+    // name a settled predecessor NodeDaemon generation, where the hop is
+    // fenced; the next adoption reattaches that lane and performs this same
+    // hop at its seam (`resume_drained_lane_for_adoption`), before any
+    // provider effect is prepared for the reopened member.
+    let session = if session.lifecycle == AgentSessionStatus::RecoveryRequired {
+        // The Host actor only attributes the hop. A Host-authority mismatch is
+        // an integrity fault in the run's own provenance, so the Close fails
+        // closed on it instead of attributing the hop to an unverifiable Host.
+        match transition_provider_session_for_member_as(
+            &ledger,
+            member,
+            AgentSessionStatus::Idle,
+            team_run_host_authority(store, team_run_id)?,
+            "host.member_close.agent_session.resume",
+        ) {
+            Ok(()) => provider_session_for_member(&ledger, member)?.1,
+            Err(CliError::Usage(message))
+                if mode == DetachedRecoveryCloseMode::CompletedRunMember
+                    && message.starts_with("NODE_DAEMON_GENERATION_FENCED") =>
+            {
+                session
+            }
+            Err(error) => return Err(error),
+        }
+    } else {
+        session
+    };
+    // The proof is re-read with the lane as it stands now; the latch fence and
+    // the terminal CAS pin this exact version.
+    let proof = lane_termination_proof(
+        store,
+        &execution_space_id,
+        &session,
+        mode == DetachedRecoveryCloseMode::CompletedRunMember,
+    )?;
+    if let Some(blocker) = proof.blocker {
         return Err(CliError::RuntimeRecoveryRequired(format!(
-            "DETACHED_MEMBER_RECOVERY_FENCED: member {} still has an ambiguous RuntimeCommand",
+            "DETACHED_MEMBER_RECOVERY_FENCED: member {} does not prove its runtime gone: {blocker}",
             member.id
         )));
     }
+    let dormant_residue = proof.dormant_residue;
 
     // A provider receipt proves that the old runtime consumed this exact Work
     // revision even when the adapter failed before persisting its ordinary
@@ -476,6 +520,7 @@ pub(super) fn close_detached_blocked_member_for_recovery_with_hooks(
         "coordination_status": "closed",
         "runtime": "not_live",
         "runtime_effect": "already_detached",
+        "dormant_residue": dormant_residue,
         "coordination_effect": "member_closed_for_recovery",
         "provider_close_receipt": "not_fabricated",
         "idempotent": false,

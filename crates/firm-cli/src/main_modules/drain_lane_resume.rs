@@ -30,6 +30,7 @@ use harness_core::agentfirm_api::{
     ActorKind, ActorRef, AgentSession, AgentSessionStatus, DriverHandoffState, MutationContext,
     NativeContinuationActivation, RuntimeActivity, RuntimeCommandStatus, RuntimeEffectCertainty,
     RuntimeResidency, TrustErrorCode, AGENT_SESSION_DRAIN_RESUME_NOT_YET_RESUMABLE,
+    AGENT_SESSION_RECOVERY_REQUIRED_NOT_YET_RESUMABLE,
 };
 
 /// Whether this exact error is the drain fence saying the lane is not
@@ -50,29 +51,110 @@ pub(super) fn is_drain_resume_not_yet_resumable(error: &CliError) -> bool {
     })
 }
 
-/// Whether a lane still proves the runtime that owned it is gone.
+/// Whether this exact error is the `RecoveryRequired` fence saying the lane
+/// is not resumable *yet* (typed first, like the drain fence above).
+pub(super) fn is_recovery_required_not_yet_resumable(error: &CliError) -> bool {
+    let CliError::Store(store_error) = error else {
+        return false;
+    };
+    store_error.trust_error().is_some_and(|trust_error| {
+        trust_error.code == TrustErrorCode::InvalidStateTransition
+            && trust_error.resource_kind == "agent_session"
+            && trust_error.message == AGENT_SESSION_RECOVERY_REQUIRED_NOT_YET_RESUMABLE
+    })
+}
+
+/// The terminated-lane proof as one reading: the first clause the lane fails,
+/// plus the dormant residue a caller chose to tolerate.
+pub(super) struct LaneTerminationProof {
+    /// The first failing clause, or `None` when the lane proves its runtime
+    /// gone (modulo the tolerated residue).
+    pub blocker: Option<String>,
+    /// Residue that nothing will ever consume and the caller accepted instead
+    /// of refusing: an armed native continuation or queued native input on a
+    /// lane whose TeamRun is Completed. Always empty unless tolerated.
+    pub dormant_residue: Vec<String>,
+}
+
+/// The terminated-lane proof. This is the Store fence's own predicate
+/// (residency, activity, handoff, continuation, turn, queued input, ambiguous
+/// RuntimeCommand), read from outside the writer lock so a caller can decide
+/// *whether to try* and can say *why not*. It never grants a transition: the
+/// Store re-proves all of it under its lock. Every reader of the proof
+/// derives from this one function, so the reason named and the decision
+/// taken cannot drift apart (GitHub #841).
 ///
-/// This is the Store fence's own predicate, read from outside the writer lock
-/// so a caller can decide *whether to try* without guessing. It never grants
-/// the transition: the Store re-proves all of it under its lock.
-pub(super) fn lane_proves_runtime_is_terminated(
+/// `tolerate_dormant_continuation` is for the coordination Close of a Completed
+/// TeamRun's member (#812): an armed native continuation on that lane will
+/// never be driven, so refusing the Close on it would strand the member
+/// forever; the residue is recorded on the Close receipt instead. A driver
+/// handoff, an open turn, queued input, or an ambiguous command is never
+/// tolerated.
+pub(super) fn lane_termination_proof(
     store: &HarnessStore,
     execution_space_id: &str,
     session: &AgentSession,
-) -> CliResult<bool> {
-    if session.control_state.runtime_residency != RuntimeResidency::Detached
-        || session.control_state.activity != RuntimeActivity::Idle
-        || session.control_state.handoff_state != DriverHandoffState::None
-        || session.control_state.continuation.activation != NativeContinuationActivation::Disarmed
-        || session.current_turn_id.is_some()
-        || session.queued_input_count != 0
-    {
-        return Ok(false);
+    tolerate_dormant_continuation: bool,
+) -> CliResult<LaneTerminationProof> {
+    let mut dormant_residue = Vec::new();
+    let blocked = |blocker: String| {
+        Ok(LaneTerminationProof {
+            blocker: Some(blocker),
+            dormant_residue: Vec::new(),
+        })
+    };
+    if session.control_state.runtime_residency != RuntimeResidency::Detached {
+        return blocked(format!(
+            "AgentSession {} still holds an attached runtime handle",
+            session.id
+        ));
     }
-    Ok(!store
+    if session.control_state.activity != RuntimeActivity::Idle {
+        return blocked(format!(
+            "AgentSession {} runtime activity is {:?}, not idle",
+            session.id, session.control_state.activity
+        ));
+    }
+    if session.control_state.handoff_state != DriverHandoffState::None {
+        return blocked(format!(
+            "AgentSession {} is mid driver handoff ({:?})",
+            session.id, session.control_state.handoff_state
+        ));
+    }
+    if session.control_state.continuation.activation != NativeContinuationActivation::Disarmed {
+        let residue = format!(
+            "AgentSession {} still has an armed native continuation",
+            session.id
+        );
+        if tolerate_dormant_continuation {
+            // A record, not a latch: the next Supervisor bind at adoption sets
+            // the activation back to Disarmed before any reopened cycle
+            // (`member_orchestration.rs`, the driver bind), and a detached
+            // lane has no process that could drive the continuation meanwhile.
+            dormant_residue.push(residue);
+        } else {
+            return blocked(residue);
+        }
+    }
+    if let Some(turn) = session.current_turn_id.as_deref() {
+        return blocked(format!(
+            "AgentSession {} still has an open turn {turn}",
+            session.id
+        ));
+    }
+    // Nothing in the tree increments `queued_input_count` today (it is only
+    // reset and decremented), so this clause is a fail-closed guard for a
+    // future writer, never a tolerated residue.
+    if session.queued_input_count != 0 {
+        return blocked(format!(
+            "AgentSession {} still has {} queued native input(s)",
+            session.id, session.queued_input_count
+        ));
+    }
+    let ambiguous = store
         .runtime_commands(execution_space_id)?
         .into_iter()
-        .any(|command| {
+        .find(|command| {
             command.target_session_id.as_deref() == Some(session.id.as_str())
                 && command.target_session_generation == Some(session.runtime_generation)
                 && matches!(
@@ -82,15 +164,88 @@ pub(super) fn lane_proves_runtime_is_terminated(
                         | RuntimeCommandStatus::RecoveryRequired
                 )
                 && command.effect_certainty == RuntimeEffectCertainty::Unknown
-        }))
+        })
+        .map(|command| {
+            format!(
+                "ambiguous RuntimeCommand {} ({:?}) still has an unknown provider effect; reconcile it first",
+                command.id, command.command
+            )
+        });
+    Ok(LaneTerminationProof {
+        blocker: ambiguous,
+        dormant_residue,
+    })
+}
+
+/// The first clause of the terminated-lane proof this lane fails, or `None`
+/// when the lane proves the runtime that owned it is gone (nothing tolerated).
+pub(super) fn lane_termination_blocker(
+    store: &HarnessStore,
+    execution_space_id: &str,
+    session: &AgentSession,
+) -> CliResult<Option<String>> {
+    Ok(lane_termination_proof(store, execution_space_id, session, false)?.blocker)
+}
+
+/// Whether a lane still proves the runtime that owned it is gone.
+pub(super) fn lane_proves_runtime_is_terminated(
+    store: &HarnessStore,
+    execution_space_id: &str,
+    session: &AgentSession,
+) -> CliResult<bool> {
+    Ok(lane_termination_blocker(store, execution_space_id, session)?.is_none())
+}
+
+/// The one definition of "this lane sits at a terminal turn boundary with no
+/// cycle open" shared by `team-run recover` (may a coordination-only repair
+/// touch it?) and the detached-recovery Close fence (may the Host close it?).
+/// Both verbs must agree, or recover reports a lane as repairable that Close
+/// then refuses (GitHub #841). `RecoveryRequired` belongs here since GitHub
+/// #755: the Store admits its exit to `Idle` under the terminated-lane proof.
+pub(super) fn lane_is_at_terminal_turn_boundary(session: &AgentSession) -> bool {
+    session.is_at_terminal_turn_boundary()
+}
+
+/// Why this member's one current AgentSession does NOT prove that no runtime
+/// can be driving it, or `None` when it does. Fail closed on every
+/// uncertainty: no current session, more than one, a lifecycle that still
+/// claims a live or closing lane, or an unreadable Store all name a blocker.
+pub(super) fn member_lane_blocker(
+    store: &HarnessStore,
+    execution_space_id: &str,
+    member: &ProviderRuntimeProjection,
+) -> Option<String> {
+    let sessions = match store.fabric_agent_sessions(execution_space_id) {
+        Ok(sessions) => sessions,
+        Err(error) => return Some(format!("the Execution Space could not be read: {error}")),
+    };
+    let mut current = sessions.into_iter().filter(|session| {
+        session.agent_member_id == member.agent_member_id
+            && session.lifecycle != AgentSessionStatus::Closed
+    });
+    let Some(session) = current.next() else {
+        return Some("no current AgentSession".into());
+    };
+    if current.next().is_some() {
+        return Some("more than one current AgentSession".into());
+    }
+    if !lane_is_at_terminal_turn_boundary(&session) {
+        return Some(format!(
+            "AgentSession {} is not at a terminal turn boundary (lifecycle {:?}, activity {:?}, turn {})",
+            session.id,
+            session.lifecycle,
+            session.control_state.activity,
+            session.current_turn_id.as_deref().unwrap_or("none")
+        ));
+    }
+    match lane_termination_blocker(store, execution_space_id, &session) {
+        Ok(blocker) => blocker,
+        Err(error) => Some(format!("RuntimeCommands could not be read: {error}")),
+    }
 }
 
 /// Whether this member's one current AgentSession proves no runtime can be
-/// driving it right now.
-///
-/// Fail closed on every uncertainty: no current session, more than one, a
-/// lifecycle that still claims a live or closing lane, or an unreadable Store
-/// all answer `false`. This is a read-only Host-side proof used to decide
+/// driving it right now. This is a read-only Host-side proof used to decide
 /// whether a coordination-only correction is admissible; it grants nothing by
 /// itself and every durable write still passes the Store's own fences.
 pub(super) fn member_lane_proves_runtime_gone(
@@ -98,26 +253,7 @@ pub(super) fn member_lane_proves_runtime_gone(
     execution_space_id: &str,
     member: &ProviderRuntimeProjection,
 ) -> bool {
-    let Ok(sessions) = store.fabric_agent_sessions(execution_space_id) else {
-        return false;
-    };
-    let mut current = sessions.into_iter().filter(|session| {
-        session.agent_member_id == member.agent_member_id
-            && session.lifecycle != AgentSessionStatus::Closed
-    });
-    let Some(session) = current.next() else {
-        return false;
-    };
-    if current.next().is_some() {
-        return false;
-    }
-    if !matches!(
-        session.lifecycle,
-        AgentSessionStatus::Cold | AgentSessionStatus::Idle | AgentSessionStatus::Interrupted
-    ) {
-        return false;
-    }
-    lane_proves_runtime_is_terminated(store, execution_space_id, &session).unwrap_or(false)
+    member_lane_blocker(store, execution_space_id, member).is_none()
 }
 
 /// Re-read one AgentSession by id after a write that bumped its version.
@@ -140,29 +276,40 @@ pub(super) fn current_agent_session(
 /// What the adoption seam did about one drained lane.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum DrainedLaneResume {
-    /// The lane was not left `Interrupted` by a drain. Nothing was written.
+    /// The lane was left neither `Interrupted` by a drain nor
+    /// `RecoveryRequired` by a runner. Nothing was written.
     NotDrained,
     /// The lane re-entered the ordinary lane as `Idle` under this generation.
     Resumed,
-    /// The lane is still `Interrupted` because it does not yet prove the killed
+    /// The lane keeps its lifecycle because it does not yet prove the killed
     /// runtime is gone. Nothing was written; a later pass retries.
     NotYetResumable,
 }
 
-/// Return one drained lane to `Idle` at the adoption seam.
+/// Return one drained or reconciled lane to `Idle` at the adoption seam.
 ///
-/// This is the only correct moment for the hop. The drain settlement already
-/// detached the lane, disarmed its continuation, cleared its turn and settled
-/// every RuntimeCommand of the dead generation, and
-/// `reattach_agent_session_to_node_daemon` has just moved it onto this live
-/// NodeDaemon generation — so every clause of the DEV-171 fence holds and is
-/// re-proved by the Store under its own lock. Nothing has been spawned yet, so
-/// no provider handle can be attached, no cycle can be open, and no killed
-/// cycle can be replayed: the successor generation simply opens a fresh cycle
-/// on the same provider-native session, which is exactly what ADR 0032
-/// requires of resume.
+/// This is the only correct moment for the hop: `reattach_agent_session_to_node_daemon`
+/// has just moved the lane onto this live NodeDaemon generation, and nothing
+/// has been spawned yet, so no provider handle can be attached, no cycle can be
+/// open, and no killed cycle can be replayed — the successor generation simply
+/// opens a fresh cycle on the same provider-native session, which is exactly
+/// what ADR 0032 requires of resume. The Store re-proves every clause of the
+/// DEV-171 fence under its own lock either way.
 ///
-/// A lane that does not yet prove its runtime dead is left `Interrupted`
+/// For a lane a drain left `Interrupted`, the drain settlement already
+/// detached it, disarmed its continuation, cleared its turn and settled every
+/// RuntimeCommand of the dead generation, so the proof holds by construction.
+///
+/// For a lane a runner left `RecoveryRequired` (#755), the drain skipped it as
+/// already settled, so none of that is guaranteed: the hop rests on the
+/// operator's reconciliation (detached, quiet, no ambiguous RuntimeCommand of
+/// the dead generation) and on the Store's re-proof, which refuses with
+/// `AGENT_SESSION_RECOVERY_REQUIRED_NOT_YET_RESUMABLE` while any clause fails —
+/// an unsettled ambiguous command of that generation still fails it. An armed
+/// continuation on such a lane is disarmed by the Supervisor bind later in the
+/// same adoption, so the next pass hops it.
+///
+/// A lane that does not yet prove its runtime dead keeps its lifecycle
 /// untouched. That is an attempt-scoped observation, not a verdict about the
 /// member, so it never fails adoption.
 pub(super) fn resume_drained_lane_for_adoption(
@@ -172,12 +319,29 @@ pub(super) fn resume_drained_lane_for_adoption(
     session: &AgentSession,
     timestamp: &str,
 ) -> CliResult<DrainedLaneResume> {
-    if session.lifecycle != AgentSessionStatus::Interrupted {
+    if !matches!(
+        session.lifecycle,
+        AgentSessionStatus::Interrupted | AgentSessionStatus::RecoveryRequired
+    ) {
         return Ok(DrainedLaneResume::NotDrained);
     }
     if !lane_proves_runtime_is_terminated(store, execution_space_id, session)? {
         return Ok(DrainedLaneResume::NotYetResumable);
     }
+    // The canonical operation is the durable record: a reconciliation after a
+    // runner failure (#755) must stay distinguishable from a drain recovery
+    // (DEV-171) in `canonical_operations`.
+    let (command_name, key_prefix) = if session.lifecycle == AgentSessionStatus::RecoveryRequired {
+        (
+            "node_daemon.agent_session.resume_after_recovery_required",
+            "session-recovery-resume",
+        )
+    } else {
+        (
+            "node_daemon.agent_session.resume_after_drain",
+            "session-drain-resume",
+        )
+    };
     let context = MutationContext {
         execution_space_id: execution_space_id.to_string(),
         authenticated_actor: ActorRef {
@@ -185,9 +349,9 @@ pub(super) fn resume_drained_lane_for_adoption(
             id: daemon_id.to_string(),
         },
         authority_actor: None,
-        command_name: "node_daemon.agent_session.resume_after_drain".into(),
+        command_name: command_name.into(),
         idempotency_key: format!(
-            "session-drain-resume:{}:{}:{}",
+            "{key_prefix}:{}:{}:{}",
             session.id, session.node_daemon_generation, session.version
         ),
         expected_version: session.version,
@@ -201,7 +365,9 @@ pub(super) fn resume_drained_lane_for_adoption(
             // The lane changed under us, or the Store's own re-proof disagrees
             // with the read above. Either way this attempt learned nothing
             // durable about the member; the next pass observes the lane again.
-            if is_drain_resume_not_yet_resumable(&error) {
+            if is_drain_resume_not_yet_resumable(&error)
+                || is_recovery_required_not_yet_resumable(&error)
+            {
                 Ok(DrainedLaneResume::NotYetResumable)
             } else {
                 Err(error)
@@ -421,6 +587,102 @@ pub(crate) fn zero_output_degradation_threshold() -> u32 {
 /// It lives here, next to the two proofs that authorize it, rather than in the
 /// recovery command: the authority is the drain-lane reasoning, not the shape
 /// of the CLI verb that happens to expose it.
+/// The exact Host of this TeamRun as a trust actor, for a Host verb's own
+/// canonical writes. `None` only when the run records no Host actor at all
+/// (legacy rows); a Host-authority mismatch or an unreadable store is an
+/// error, never a silent fall-back to daemon-attributed writes.
+pub(super) fn team_run_host_authority(
+    store: &HarnessStore,
+    team_run_id: &str,
+) -> CliResult<Option<harness_core::agentfirm_api::ActorRef>> {
+    match store.exact_team_run_host_actor(team_run_id) {
+        Ok(actor) => Ok(Some(harness_core::agentfirm_api::ActorRef {
+            kind: harness_core::agentfirm_api::ActorKind::AgentMember,
+            id: actor.id,
+        })),
+        Err(harness_store::StoreError::Conflict(message))
+            if message.starts_with("TEAM_RUN_HOST_AUTHORITY_REQUIRED:") =>
+        {
+            Ok(None)
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+
+/// Return one Blocked member on a dead lane to a startable status, or say
+/// exactly why not. A lane the runner left in `RecoveryRequired` first
+/// re-enters the ordinary lane through `Idle` — the Store admits that hop only
+/// under the terminated-lane proof (GitHub #755) — and only then does the
+/// member's status move, so a member is never restarted onto a lane the next
+/// start would be refused on (GitHub #841).
+pub(super) fn restart_or_explain_blocked_member(
+    store: &HarnessStore,
+    ledger: &TeamRunLedger,
+    member: &ProviderRuntimeProjection,
+    now: &str,
+    json: bool,
+) -> CliResult<Option<serde_json::Value>> {
+    let (_, session) = provider_session_for_member(ledger, member)?;
+    if session.lifecycle == AgentSessionStatus::RecoveryRequired {
+        match transition_provider_session_for_member_as(
+            ledger,
+            member,
+            AgentSessionStatus::Idle,
+            team_run_host_authority(store, &ledger.run_id)?,
+            "host.team_run_recover.agent_session.resume",
+        ) {
+            Ok(()) => {}
+            Err(error)
+                if is_recovery_required_not_yet_resumable(&error)
+                    || matches!(&error, CliError::Usage(message) if message.starts_with("NODE_DAEMON_GENERATION_FENCED")) =>
+            {
+                let blocker = error.to_string();
+                if !json {
+                    println!(
+                        "  {} ({}): blocked, not restarted — {blocker}",
+                        member.name, member.provider
+                    );
+                }
+                return Ok(Some(serde_json::json!({
+                    "member_run_id": member.id,
+                    "name": member.name,
+                    "blocker": blocker,
+                })));
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    if let Err(error) = restart_blocked_member_on_dead_lane(store, ledger, member, now) {
+        // The lane already re-entered the ordinary lane; only the member row
+        // moved under us. Report it and let the next recover finish the flip
+        // instead of aborting every remaining member.
+        if matches!(&error, CliError::Usage(message) if message.contains("changed concurrently")) {
+            let blocker = format!(
+                "member row changed concurrently after its lane resumed; run recover again ({error})"
+            );
+            if !json {
+                println!(
+                    "  {} ({}): blocked, not restarted — {blocker}",
+                    member.name, member.provider
+                );
+            }
+            return Ok(Some(serde_json::json!({
+                "member_run_id": member.id,
+                "name": member.name,
+                "blocker": blocker,
+            })));
+        }
+        return Err(error);
+    }
+    if !json {
+        println!(
+            "  {} ({}): blocked member returned to idle; its lane is detached and idle",
+            member.name, member.provider
+        );
+    }
+    Ok(None)
+}
+
 pub(super) fn restart_blocked_member_on_dead_lane(
     store: &HarnessStore,
     ledger: &TeamRunLedger,

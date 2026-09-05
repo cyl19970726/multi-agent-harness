@@ -875,6 +875,16 @@ impl HarnessStore {
             == AgentSessionStatus::Interrupted
             && next_status == AgentSessionStatus::Idle
             && interrupted_runtime_is_terminated;
+        // A lane that reached `RecoveryRequired` (an unrecoverable provider
+        // error on an open cycle, or a Cold session that could not open) had no
+        // exit at all (GitHub #755). After operator reconciliation it re-enters
+        // the ordinary lane through `Idle` — the one exit, admitted only under
+        // the same terminated-lane proof as the drain exit above, never on the
+        // lifecycle alone; `team-run recover` is its writer, and Close or a
+        // fresh start then proceed from `Idle` through the ordinary paths.
+        let recovers_reconciled_lane = session.lifecycle == AgentSessionStatus::RecoveryRequired
+            && next_status == AgentSessionStatus::Idle
+            && interrupted_runtime_is_terminated;
         let allowed = matches!(
             (session.lifecycle, next_status),
             (AgentSessionStatus::Cold, AgentSessionStatus::Idle)
@@ -901,7 +911,8 @@ impl HarnessStore {
             AgentSessionStatus::Cold | AgentSessionStatus::Active
         ) && next_status == AgentSessionStatus::Closed
             && authorized_stop)
-            || resumes_terminated_interrupted_lane;
+            || resumes_terminated_interrupted_lane
+            || recovers_reconciled_lane;
         if !allowed {
             // Name the exact fence for the drain-recovery case so an operator
             // reads "the lane is not proven dead yet", not a bare table miss.
@@ -909,6 +920,11 @@ impl HarnessStore {
                 && next_status == AgentSessionStatus::Idle
             {
                 firm_core::agentfirm_api::AGENT_SESSION_DRAIN_RESUME_NOT_YET_RESUMABLE.to_string()
+            } else if session.lifecycle == AgentSessionStatus::RecoveryRequired
+                && next_status == AgentSessionStatus::Idle
+            {
+                firm_core::agentfirm_api::AGENT_SESSION_RECOVERY_REQUIRED_NOT_YET_RESUMABLE
+                    .to_string()
             } else {
                 format!(
                     "invalid AgentSession transition {:?}->{next_status:?}",
@@ -1069,9 +1085,17 @@ impl HarnessStore {
                 Some(session.version),
             ));
         }
+        // A reconciled `RecoveryRequired` lane (detached, turn-free) is skipped
+        // by both drain settlements, so it can outlive its daemon generation;
+        // the successor must be able to reattach it, or no writer could ever
+        // reach it again (GitHub #755). The clauses below plus the released
+        // predecessor lease are the same terminated-lane proof.
         let lane_is_quiescent = matches!(
             session.lifecycle,
-            AgentSessionStatus::Cold | AgentSessionStatus::Idle | AgentSessionStatus::Interrupted
+            AgentSessionStatus::Cold
+                | AgentSessionStatus::Idle
+                | AgentSessionStatus::Interrupted
+                | AgentSessionStatus::RecoveryRequired
         ) && session.current_turn_id.is_none()
             && session.queued_input_count == 0
             && matches!(

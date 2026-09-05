@@ -134,6 +134,9 @@ use team_recovery_work::*;
 #[path = "main_modules/team_recovery_lost_execution.rs"]
 mod team_recovery_lost_execution;
 use team_recovery_lost_execution::*;
+#[path = "main_modules/team_recovery_lane_blockers.rs"]
+mod team_recovery_lane_blockers;
+use team_recovery_lane_blockers::*;
 #[path = "main_modules/work_cli.rs"]
 mod work_cli;
 use work_cli::*;

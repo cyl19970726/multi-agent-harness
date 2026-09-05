@@ -338,7 +338,8 @@ pub(super) fn print_help() {
       EXECUTION_SPACE_SCOPE_MISMATCH. A binding a Member Close released is never
       lost (the reopened member resubmits against it). `team-run recover` lists
       candidates as lost_execution_works and unreadable Works as
-      lost_execution_scan_errors.
+      lost_execution_scan_errors, and Blocked members whose lane does not prove
+      its runtime gone as blocked_lanes_not_proven (with the exact clause).
   team-run work release --work-id <id> --expected-version <n> [--member-run-id <id>]
       --team-run-id is optional; the TeamRun is derived from the Work.
   team-run work list [--brief] [--since <cursor>] --team-run-id <id> [--status <status>] [--member-run-id <id>]

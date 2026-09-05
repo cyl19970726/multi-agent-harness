@@ -244,6 +244,25 @@ pub(super) fn transition_provider_session_for_member(
     member: &ProviderRuntimeProjection,
     desired: harness_core::agentfirm_api::AgentSessionStatus,
 ) -> CliResult<()> {
+    transition_provider_session_for_member_as(
+        ledger,
+        member,
+        desired,
+        None,
+        "node_daemon.agent_session.provider_state",
+    )
+}
+
+/// The same projection with an explicit authority and command name, for a
+/// Host verb that drives a lane (`team-run recover`, `close-member`) so the
+/// canonical operation records who asked, not only which NodeDaemon wrote.
+pub(super) fn transition_provider_session_for_member_as(
+    ledger: &TeamRunLedger,
+    member: &ProviderRuntimeProjection,
+    desired: harness_core::agentfirm_api::AgentSessionStatus,
+    authority: Option<harness_core::agentfirm_api::ActorRef>,
+    command_name: &str,
+) -> CliResult<()> {
     use harness_core::agentfirm_api::AgentSessionStatus;
     let (space_id, mut session) = provider_session_for_member(ledger, member)?;
     let daemon = ledger
@@ -282,6 +301,21 @@ pub(super) fn transition_provider_session_for_member(
         | (AgentSessionStatus::Waiting, AgentSessionStatus::Idle)
         | (AgentSessionStatus::Interrupted, AgentSessionStatus::Idle)
         | (AgentSessionStatus::Idle, AgentSessionStatus::Active) => vec![desired],
+        // The runner records an unrecoverable provider error on an open cycle
+        // or a failed open; the Store admits exactly these two entries.
+        (AgentSessionStatus::Cold, AgentSessionStatus::RecoveryRequired)
+        | (AgentSessionStatus::Active, AgentSessionStatus::RecoveryRequired) => vec![desired],
+        // The one exit (GitHub #755): `team-run recover` returns a reconciled
+        // lane to the ordinary lane; the Store admits the hop only under the
+        // terminated-lane proof, so this never resumes a live cycle.
+        (AgentSessionStatus::RecoveryRequired, AgentSessionStatus::Idle) => vec![desired],
+        // A reopened member whose lane is still `RecoveryRequired` re-enters
+        // through the same proved hop before its first cycle, exactly as an
+        // `Interrupted` lane does; the Store refuses the hop while the old
+        // runtime is not provably gone, so this never resumes a live cycle.
+        (AgentSessionStatus::RecoveryRequired, AgentSessionStatus::Active) => {
+            vec![AgentSessionStatus::Idle, AgentSessionStatus::Active]
+        }
         _ => {
             return Err(CliError::Usage(format!(
                 "AGENT_SESSION_RECOVERY_REQUIRED: cannot project {:?}->{desired:?}",
@@ -327,14 +361,16 @@ pub(super) fn transition_provider_session_for_member(
         } else {
             format!("session:{}:{}:{next:?}", session.id, session.version)
         };
+        let mut transition_context = canonical_delivery_context(
+            &space_id,
+            &daemon.daemon_id,
+            command_name,
+            transition_idempotency_key,
+            session.version,
+        );
+        transition_context.authority_actor = authority.clone();
         let result = ledger.store.transition_agent_session(
-            &canonical_delivery_context(
-                &space_id,
-                &daemon.daemon_id,
-                "node_daemon.agent_session.provider_state",
-                transition_idempotency_key,
-                session.version,
-            ),
+            &transition_context,
             &session.id,
             next,
             &now_string(),

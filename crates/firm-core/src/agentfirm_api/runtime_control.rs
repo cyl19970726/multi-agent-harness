@@ -419,6 +419,14 @@ pub const WORK_DELIVERY_SUPERSEDED_BY_HOST_LOST_EXECUTION_RECOVERY: &str =
 pub const AGENT_SESSION_DRAIN_RESUME_NOT_YET_RESUMABLE: &str =
     "AgentSession interrupted by a NodeDaemon drain may resume only from a detached, disarmed lane at a terminal turn boundary with no ambiguous RuntimeCommand; reconcile the runtime first";
 
+/// The exact refusal the Store returns when a Session in `RecoveryRequired` is
+/// asked to resume before its lane proves the runtime that failed it is gone.
+/// Same proof as the drain fence, same admitted response:
+/// reconcile the runtime (detach the handle, settle every ambiguous
+/// RuntimeCommand), then retry; never bypass.
+pub const AGENT_SESSION_RECOVERY_REQUIRED_NOT_YET_RESUMABLE: &str =
+    "AgentSession in RecoveryRequired may resume only from a detached, disarmed lane at a terminal turn boundary with no ambiguous RuntimeCommand; reconcile the runtime first";
+
 /// Every failure code that records an in-flight delivery invalidated because
 /// its exact runtime generation is provably gone. None of them asserts a
 /// provider turn outcome: they say the attempt can never be settled by that
