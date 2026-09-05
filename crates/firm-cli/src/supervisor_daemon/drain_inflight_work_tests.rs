@@ -232,9 +232,11 @@ fn drained_in_flight_work_is_redelivered_under_the_successor_generation() {
         "the fresh delivery generation is a new binding, never a revived one"
     );
 
-    // Settlement plus ordinary re-delivery minted no extra StartCycle row; the
-    // killed cycle remains the one settled terminal fact on the dead daemon
-    // generation.
+    // Settlement plus ordinary re-delivery minted no extra StartCycle row,
+    // and the killed cycle stays the one settled terminal fact on the dead
+    // daemon generation. This does NOT prove a later driven cycle would not
+    // replay — no cycle is driven after readopt, so that question is simply
+    // not exercised here.
     let after = fixture.start_cycles();
     assert_eq!(
         after.len(),

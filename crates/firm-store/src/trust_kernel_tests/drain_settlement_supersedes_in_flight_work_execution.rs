@@ -412,3 +412,128 @@ fn drain_settlement_cannot_reach_the_successor_generation_binding() {
         WorkDeliveryStatus::ProviderReceived
     );
 }
+
+/// #777 item 1: a `Claimed` (pre-receipt) delivery is superseded exactly like
+/// a `ProviderReceived` one. The claim may have reached the provider before
+/// the crash without leaving a receipt row; superseding it is still safe
+/// because the settlement writer already proved this generation's provider
+/// process groups terminated, the killed turn is never replayed, and the
+/// next dispatch mints a fresh binding generation.
+#[test]
+fn drain_settlement_supersedes_a_claimed_delivery_that_never_got_a_receipt() {
+    let (store, _root) = fabric_store();
+    let membership = drain_scope(&store, "drain-claimed");
+    let lane = open_lane(&store, "drain-claimed", &membership);
+    // Claim only: the delivery is assigned to this daemon generation's
+    // provider lane, but no receipt row proves the provider ever answered.
+    store
+        .claim_work_for_provider(
+            &daemon_context("daemon-1", "work.claim", "claim-claimed", 0),
+            &lane.binding.delivery_id,
+            NODE_ID,
+            "daemon-1",
+            1,
+            "claim-claimed",
+            firm_core::agentfirm_api::RuntimeDispatchMode::QueueOnly,
+            "t-claim",
+        )
+        .unwrap();
+    assert_eq!(
+        current_delivery(&store, &lane.binding.delivery_id).status,
+        WorkDeliveryStatus::Claimed,
+        "fixture must park the delivery in the pre-receipt Claimed lane"
+    );
+
+    let commands_before = store.runtime_commands("space-test").unwrap().len();
+    store
+        .settle_node_daemon_shutdown_sessions(
+            &daemon_context(
+                "daemon-1",
+                "node_daemon.shutdown.settle_sessions",
+                "drain",
+                1,
+            ),
+            NODE_ID,
+            "daemon-1",
+            1,
+            "instance-1",
+            true,
+            "t-drain",
+        )
+        .expect("the exact daemon settles its own generation");
+
+    let invalidated = current_binding(&store, &lane.binding.id);
+    assert_eq!(
+        invalidated.status,
+        WorkExecutionBindingStatus::Released,
+        "the killed generation's binding must not stay Active and current"
+    );
+    assert_eq!(invalidated.ended_at.as_deref(), Some("t-drain"));
+    let events = binding_events(&store, &lane.binding.id);
+    let [bound, ended] = events.as_slice() else {
+        panic!("expected exactly one bind and one end event: {events:?}");
+    };
+    assert_eq!(bound.transition, "bound");
+    assert_eq!(
+        ended.transition, "invalidated_by_lost_runtime_generation",
+        "the recorded reason must say the binding was invalidated, never that the turn completed"
+    );
+    assert_eq!(
+        ended.payload["lost_runtime_generation"]["cause"],
+        serde_json::json!("node_daemon_drain")
+    );
+    assert_eq!(
+        ended.payload["superseded_delivery"]["status_before_supersession"],
+        serde_json::json!("claimed"),
+        "the event names the pre-receipt lane it actually cut"
+    );
+
+    let superseded = current_delivery(&store, &lane.binding.delivery_id);
+    assert_eq!(superseded.status, WorkDeliveryStatus::Failed);
+    assert_eq!(
+        superseded.failure_code.as_deref(),
+        Some(firm_core::agentfirm_api::WORK_DELIVERY_SUPERSEDED_BY_NODE_DAEMON_DRAIN),
+        "the Claimed lane gets the same explicit failure code as ProviderReceived"
+    );
+    assert!(
+        superseded.provider_receipt_id.is_none(),
+        "no receipt was ever recorded for this delivery"
+    );
+    assert_eq!(
+        superseded.claim_id.as_deref(),
+        Some("claim-claimed"),
+        "the claim id stays immutable evidence of what was assigned to the dead generation"
+    );
+
+    // The Work itself keeps its responsibility and revision, so the ordinary
+    // dispatch path can mint a fresh binding generation for it.
+    let work = store
+        .latest_works()
+        .unwrap()
+        .into_iter()
+        .find(|candidate| candidate.id == lane.work.id)
+        .unwrap();
+    assert_eq!(work.phase, firm_core::WorkPhase::Open);
+    assert_eq!(work.version, lane.work.version);
+    assert_eq!(
+        work.assignee_membership_id.as_deref(),
+        Some(membership.id.as_str())
+    );
+
+    // Settlement minted no new RuntimeCommand at all: this fixture creates
+    // none at bind time, and the count must be exactly the same after —
+    // the killed turn is never replayed.
+    let commands = store.runtime_commands("space-test").unwrap();
+    assert_eq!(
+        commands.len(),
+        commands_before,
+        "settlement must not mint a RuntimeCommand row"
+    );
+    assert!(
+        commands
+            .iter()
+            .all(|command| command.command != RuntimeCommandKind::StartCycle
+                || command.status != RuntimeCommandStatus::Accepted),
+        "no new accepted StartCycle may appear from settlement"
+    );
+}
