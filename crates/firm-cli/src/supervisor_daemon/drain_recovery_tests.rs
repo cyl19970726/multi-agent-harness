@@ -9,6 +9,7 @@
 
 use super::tests::TestTree;
 use super::*;
+use crate::ProviderEffectSettlement;
 
 use harness_core::agentfirm_api::{
     AgentSessionStatus, RuntimeActivity, RuntimeCommandKind, RuntimeCommandStatus,
@@ -316,7 +317,7 @@ impl DrainFixture {
         crate::settle_provider_effect(
             ledger,
             &admission,
-            true,
+            ProviderEffectSettlement::APPLIED_SATISFIED,
             Some(serde_json::json!({
                 "phase": "input_accepted",
                 "provider_receipt": {

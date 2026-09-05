@@ -20,12 +20,12 @@ use serde_json::{json, Value};
 use harness_runtime_contract::{
     AdmissionDecision, CapabilityBinding, CapabilityStatus, ControlIntent, ControlRequest,
     ControlTransportReceipt, CycleControl, CycleRuntimeObservation as CycleObservation,
-    CycleTimeouts, EffectInspection, EffectReceipt, ExecutionCycleOutcome, InterruptCause,
-    MemberRuntimeCloseReceipt, NativeControlPrimitive, ProviderControlAction, ProviderControlPlan,
-    ProviderNativeControl, ProviderTerminalFailure, QuiesceReceipt, QuiesceReceiptBuilder,
-    QuiesceStep, ReconcileReceipt, ReleaseReceipt, RuntimeAdapter, RuntimeBindingFence,
-    RuntimeContractError, RuntimeDescription, SemanticCapability, SteerProviderResult,
-    SteerRequest, TeamRuntimeAdapter,
+    CycleSettlement, CycleTimeouts, EffectInspection, EffectReceipt, ExecutionCycleOutcome,
+    InterruptCause, MemberRuntimeCloseReceipt, NativeControlPrimitive, ProviderControlAction,
+    ProviderControlPlan, ProviderNativeControl, ProviderTerminalFailure, QuiesceReceipt,
+    QuiesceReceiptBuilder, QuiesceStep, ReconcileReceipt, ReleaseReceipt, RuntimeAdapter,
+    RuntimeBindingFence, RuntimeContractError, RuntimeDescription, SemanticCapability,
+    SteerProviderResult, SteerRequest, TeamRuntimeAdapter,
 };
 
 mod cycle_correlation;
@@ -465,35 +465,34 @@ impl RuntimeAdapter for ClaudeTeamRuntime {
                 let provider_receipt = accepted.ok_or_else(|| {
                     contract_bridge_error("cycle completed without consumed input receipt")
                 })?;
-                Ok(EffectReceipt {
-                    effect_id: request.effect_id,
-                    certainty: RuntimeEffectCertainty::Applied,
-                    postcondition: RuntimePostconditionStatus::Satisfied,
-                    admission: admission.admission,
-                    native_evidence: vec![
-                        provider_receipt,
-                        format!(
-                            "claude.turn_complete:session={}",
-                            self.transport.native_session_id
-                        ),
-                        format!(
-                            "claude.terminal:settled={}",
-                            outcome.terminal_observation.settled_boundary_observed
-                        ),
-                    ],
-                })
+                Ok(EffectReceipt::for_cycle(
+                    request.effect_id,
+                    admission.admission,
+                    CycleSettlement::from_cycle_outcome(&outcome),
+                )
+                .with_native_evidence([
+                    provider_receipt,
+                    format!(
+                        "claude.turn_complete:session={}",
+                        self.transport.native_session_id
+                    ),
+                    format!(
+                        "claude.terminal:settled={}",
+                        outcome.terminal_observation.settled_boundary_observed
+                    ),
+                ]))
             }
             ControlIntent::Interrupt => {
                 self.transport.interrupt().map_err(contract_bridge_error)?;
-                Ok(EffectReceipt {
-                    effect_id: request.effect_id,
-                    certainty: RuntimeEffectCertainty::Applied,
+                Ok(EffectReceipt::for_control(
+                    request.effect_id,
+                    RuntimeEffectCertainty::Applied,
                     // The write is not terminal proof; run_cycle waits for
                     // interrupted + same-session resume before satisfying it.
-                    postcondition: RuntimePostconditionStatus::Unknown,
-                    admission: admission.admission,
-                    native_evidence: vec!["claude.query.interrupt dispatched".into()],
-                })
+                    RuntimePostconditionStatus::Unknown,
+                    admission.admission,
+                    vec!["claude.query.interrupt dispatched".into()],
+                ))
             }
             _ => unreachable!("unsupported Claude control must fail canonical preflight"),
         }

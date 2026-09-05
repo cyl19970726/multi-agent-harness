@@ -18,7 +18,7 @@
 use std::time::Duration;
 
 use harness_core::agentfirm_api::{
-    AgentSession, NativeContinuationActivation, RuntimeEffectCertainty, RuntimePostconditionStatus,
+    AgentSession, NativeContinuationActivation, RuntimePostconditionStatus,
 };
 use serde_json::Value;
 
@@ -422,6 +422,13 @@ impl harness_runtime_contract::TeamRuntimeAdapter for KimiTeamRuntime<'_> {
         if let Some(error) = control_error {
             return Err(CliError::Usage(error));
         }
+        // Kimi keeps its pre-S3 recovery semantics (ADR 0041, pinned by the
+        // team_run_api recovery tests): a provider failure — before OR after
+        // acceptance — stops at RecoveryRequired through this Err, never at
+        // a fabricated failed-but-Idle round. The StartCycle receipt path is
+        // equally fail-closed: execute_control propagates this Err, so no
+        // receipt is produced and none can settle Satisfied/Applied (#709).
+        // Unifying failure handling across adapters is a tracked follow-up.
         if let Some(provider_error) = outcome.provider_error {
             return Err(CliError::Usage(format!(
                 "KIMI_CYCLE_PROVIDER_ERROR: {provider_error}"
@@ -600,19 +607,18 @@ impl harness_runtime_contract::RuntimeAdapter for KimiTeamRuntime<'_> {
                 let receipt = accepted.ok_or_else(|| {
                     kimi_contract_bridge_error("prompt completed without acceptance receipt")
                 })?;
-                Ok(harness_runtime_contract::EffectReceipt {
-                    effect_id: request.effect_id,
-                    certainty: RuntimeEffectCertainty::Applied,
-                    postcondition: RuntimePostconditionStatus::Satisfied,
-                    admission: admission.admission,
-                    native_evidence: vec![
-                        format!("kimi.session_prompt.accepted:{receipt}"),
-                        format!(
-                            "kimi.session_prompt.terminal:settled={}",
-                            outcome.terminal_observation.settled_boundary_observed
-                        ),
-                    ],
-                })
+                Ok(harness_runtime_contract::EffectReceipt::for_cycle(
+                    request.effect_id,
+                    admission.admission,
+                    harness_runtime_contract::CycleSettlement::from_cycle_outcome(&outcome),
+                )
+                .with_native_evidence([
+                    format!("kimi.session_prompt.accepted:{receipt}"),
+                    format!(
+                        "kimi.session_prompt.terminal:settled={}",
+                        outcome.terminal_observation.settled_boundary_observed
+                    ),
+                ]))
             }
             ControlIntent::Interrupt => {
                 // The live Team loop compiles Interrupt inside `run_cycle`,

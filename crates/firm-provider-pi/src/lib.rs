@@ -137,6 +137,10 @@ pub struct PiSpawnOptions<'a> {
 
 pub struct PiTurnOutcome {
     pub final_text: String,
+    /// Set when the provider ended the turn with a failure `stopReason`
+    /// (`error` or `length`) on its last `turn_end` message — settlement
+    /// evidence for I5/C1, never a timeout or interrupt verdict.
+    pub provider_terminal_failure: Option<harness_runtime_contract::ProviderTerminalFailure>,
     pub interrupt: Option<harness_runtime_contract::InterruptCause>,
     pub close_requested_by_harness: bool,
     pub tool_call_count: u32,
@@ -762,6 +766,8 @@ impl PiRpcClient {
         let mut tool_call_count: u32 = 0;
         let mut final_text = String::new();
         let mut control_receipts = Vec::new();
+        let mut turn_stop_reason: Option<String> = None;
+        let mut turn_error_message: Option<String> = None;
 
         loop {
             match self.incoming.recv_timeout(Duration::from_millis(500)) {
@@ -796,6 +802,22 @@ impl PiRpcClient {
                             let extracted = Self::extract_turn_end_text(&frame);
                             if !extracted.trim().is_empty() {
                                 final_text = extracted;
+                            }
+                            // The last turn_end's stopReason is the provider's
+                            // own terminal verdict (I5): `error` / `length`
+                            // become a terminal failure below.
+                            if let Some(reason) = frame
+                                .get("message")
+                                .and_then(|message| message.get("stopReason"))
+                                .and_then(|value| value.as_str())
+                            {
+                                turn_stop_reason = Some(reason.to_string());
+                                turn_error_message = frame
+                                    .get("message")
+                                    .and_then(|message| message.get("errorMessage"))
+                                    .and_then(|value| value.as_str())
+                                    .filter(|value| !value.trim().is_empty())
+                                    .map(str::to_string);
                             }
                             on_event(&frame);
                         }
@@ -858,6 +880,19 @@ impl PiRpcClient {
                 if !extracted.trim().is_empty() {
                     final_text = extracted;
                 }
+                if let Some(reason) = frame
+                    .get("message")
+                    .and_then(|message| message.get("stopReason"))
+                    .and_then(|value| value.as_str())
+                {
+                    turn_stop_reason = Some(reason.to_string());
+                    turn_error_message = frame
+                        .get("message")
+                        .and_then(|message| message.get("errorMessage"))
+                        .and_then(|value| value.as_str())
+                        .filter(|value| !value.trim().is_empty())
+                        .map(str::to_string);
+                }
                 on_event(&frame);
             } else if event_type != "agent_settled" {
                 on_event(&frame);
@@ -873,8 +908,23 @@ impl PiRpcClient {
             .response_id
             .clone()
             .expect("validated Pi prompt response id");
+        // I5/C1: the provider's own failure stopReason (`error`, or the
+        // truncated-turn `length`) on the last turn_end is a terminal failure
+        // the settlement plane must see — never a timeout verdict and never
+        // an interrupt (`aborted` stays on the interrupt axis).
+        let provider_terminal_failure = match turn_stop_reason.as_deref() {
+            Some(reason @ ("error" | "length")) => {
+                Some(harness_runtime_contract::ProviderTerminalFailure {
+                    reason: turn_error_message
+                        .unwrap_or_else(|| format!("pi turn ended with stopReason {reason}")),
+                    http_status: None,
+                })
+            }
+            _ => None,
+        };
         Ok(PiTurnOutcome {
             final_text,
+            provider_terminal_failure,
             interrupt,
             close_requested_by_harness: close_requested,
             tool_call_count,

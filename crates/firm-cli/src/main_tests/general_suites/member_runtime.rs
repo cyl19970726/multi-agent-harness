@@ -102,6 +102,8 @@ mod provider_tool_status_is_a_closed_display_safe_vocabulary;
 mod rejected_provider_callback_leaves_a_durable_trace;
 #[path = "../general/reopen_unchanged_profile_does_not_drift_last_event_at.rs"]
 mod reopen_unchanged_profile_does_not_drift_last_event_at;
+#[path = "../general/runtime_adapter_cycle_terminal_mismatch_rejected_for_all_five_adapters.rs"]
+mod runtime_adapter_cycle_terminal_mismatch_rejected_for_all_five_adapters;
 #[path = "../general/runtime_anchor_accepts_owned_progress_but_rejects_authority_drift.rs"]
 mod runtime_anchor_accepts_owned_progress_but_rejects_authority_drift;
 #[path = "../general/runtime_command_admission_revalidates_same_daemon_renewal.rs"]

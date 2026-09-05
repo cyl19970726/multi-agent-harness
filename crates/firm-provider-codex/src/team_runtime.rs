@@ -31,7 +31,9 @@ use harness_runtime_contract::{
     CycleRuntimeObservation, ExecutionCycleOutcome, SteerProviderResult, SteerRequest,
     TeamRuntimeAdapter,
 };
-use harness_runtime_contract::{CycleTimeouts, InterruptCause, ProviderTerminalFailure};
+use harness_runtime_contract::{
+    CycleSettlement, CycleTimeouts, InterruptCause, ProviderTerminalFailure,
+};
 use harness_runtime_contract::{
     NativeControlPrimitive, ProviderControlAction, ProviderControlPlan, ProviderNativeControl,
 };
@@ -1143,17 +1145,20 @@ impl<'a, B: CodexAppServerBridge> harness_runtime_contract::RuntimeAdapter
                 .map_err(bridge_error)?;
                 let turn_id = accepted
                     .ok_or_else(|| bridge_error("turn/start succeeded without an exact turn id"))?;
-                (
-                    RuntimeEffectCertainty::Applied,
-                    RuntimePostconditionStatus::Satisfied,
-                    vec![
-                        format!("codex.turn/start:{turn_id}"),
-                        format!(
-                            "codex.turn/completed:settled={}",
-                            outcome.terminal_observation.settled_boundary_observed
-                        ),
-                    ],
+                // The StartCycle receipt derives from the typed cycle
+                // settlement (D5); it never asserts a postcondition directly.
+                return Ok(EffectReceipt::for_cycle(
+                    request.effect_id,
+                    admission.admission,
+                    CycleSettlement::from_cycle_outcome(&outcome),
                 )
+                .with_native_evidence([
+                    format!("codex.turn/start:{turn_id}"),
+                    format!(
+                        "codex.turn/completed:settled={}",
+                        outcome.terminal_observation.settled_boundary_observed
+                    ),
+                ]));
             }
             ControlIntent::InjectCurrentCycle { input } => {
                 let turn_id = match self.active_turn_id.clone() {
@@ -1252,13 +1257,13 @@ impl<'a, B: CodexAppServerBridge> harness_runtime_contract::RuntimeAdapter
                 unreachable!("unsupported Codex queue must fail canonical preflight")
             }
         };
-        Ok(EffectReceipt {
-            effect_id: request.effect_id,
+        Ok(EffectReceipt::for_control(
+            request.effect_id,
             certainty,
             postcondition,
-            admission: admission.admission,
-            native_evidence: evidence,
-        })
+            admission.admission,
+            evidence,
+        ))
     }
 
     fn observe(

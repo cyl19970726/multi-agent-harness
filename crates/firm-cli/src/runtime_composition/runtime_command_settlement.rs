@@ -1,5 +1,44 @@
 use super::*;
 
+/// The three orthogonal settlement dimensions of one provider effect (D1).
+/// The caller derives each dimension from typed evidence — the receipt's
+/// certainty/postcondition and the correlated cycle outcome — and states
+/// them explicitly; nothing here is derived from a bare `applied` boolean.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ProviderEffectSettlement {
+    pub(crate) status: harness_core::agentfirm_api::RuntimeCommandStatus,
+    pub(crate) certainty: harness_core::agentfirm_api::RuntimeEffectCertainty,
+    pub(crate) postcondition: harness_core::agentfirm_api::RuntimePostconditionStatus,
+}
+
+impl ProviderEffectSettlement {
+    /// The effect is proven applied and its postcondition is satisfied.
+    pub(crate) const APPLIED_SATISFIED: Self = Self {
+        status: harness_core::agentfirm_api::RuntimeCommandStatus::Applied,
+        certainty: harness_core::agentfirm_api::RuntimeEffectCertainty::Applied,
+        postcondition: harness_core::agentfirm_api::RuntimePostconditionStatus::Satisfied,
+    };
+    /// The effect may have crossed the provider boundary but its outcome is
+    /// unproven: recovery is required and nothing is satisfied.
+    pub(crate) const UNPROVEN: Self = Self {
+        status: harness_core::agentfirm_api::RuntimeCommandStatus::RecoveryRequired,
+        certainty: harness_core::agentfirm_api::RuntimeEffectCertainty::Unknown,
+        postcondition: harness_core::agentfirm_api::RuntimePostconditionStatus::Unknown,
+    };
+}
+
+/// Free-constant aliases for the two canned settlements. Associated
+/// constants cannot be `use`-imported, so files near the maintained-file
+/// size gate import these short names instead of the full
+/// `ProviderEffectSettlement::…` paths.
+pub(crate) mod settlements {
+    use super::ProviderEffectSettlement;
+
+    pub(crate) const APPLIED_SATISFIED: ProviderEffectSettlement =
+        ProviderEffectSettlement::APPLIED_SATISFIED;
+    pub(crate) const UNPROVEN: ProviderEffectSettlement = ProviderEffectSettlement::UNPROVEN;
+}
+
 pub(crate) fn settle_prepared_runtime_command_recovery(
     store: &harness_store::HarnessStore,
     context: &harness_core::agentfirm_api::MutationContext,
@@ -24,33 +63,18 @@ pub(crate) fn settle_prepared_runtime_command_recovery(
 pub(crate) fn settle_provider_effect(
     ledger: &TeamRunLedger,
     admission: &ProviderEffectAdmission,
-    applied: bool,
+    settlement: ProviderEffectSettlement,
     result: Option<serde_json::Value>,
     failure_code: Option<String>,
 ) -> CliResult<()> {
-    use harness_core::agentfirm_api::{
-        RuntimeCommandStatus, RuntimeEffectCertainty, RuntimePostconditionStatus,
-    };
     ledger
         .store
         .settle_runtime_command_with_postcondition(
             &admission.settle_context,
             &admission.command_id,
-            if applied {
-                RuntimeCommandStatus::Applied
-            } else {
-                RuntimeCommandStatus::RecoveryRequired
-            },
-            if applied {
-                RuntimeEffectCertainty::Applied
-            } else {
-                RuntimeEffectCertainty::Unknown
-            },
-            if applied {
-                RuntimePostconditionStatus::Satisfied
-            } else {
-                RuntimePostconditionStatus::Unknown
-            },
+            settlement.status,
+            settlement.certainty,
+            settlement.postcondition,
             result,
             failure_code,
             &now_string(),
@@ -126,4 +150,48 @@ pub(crate) fn record_provider_cycle_correlation(
             ))
         })
         .map(|_| ())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// D1: the settlement dimensions are stated explicitly and stay
+    /// orthogonal. A settlement carrying Unknown certainty settles as
+    /// not-Applied on every axis; a satisfied settlement settles Applied on
+    /// every axis — and the two never share a dimension value, so no single
+    /// input can silently steer the other two.
+    #[test]
+    fn provider_effect_settlement_dimensions_are_explicit() {
+        use harness_core::agentfirm_api::{
+            RuntimeCommandStatus, RuntimeEffectCertainty, RuntimePostconditionStatus,
+        };
+        let applied = ProviderEffectSettlement::APPLIED_SATISFIED;
+        assert_eq!(applied.status, RuntimeCommandStatus::Applied);
+        assert_eq!(applied.certainty, RuntimeEffectCertainty::Applied);
+        assert_eq!(applied.postcondition, RuntimePostconditionStatus::Satisfied);
+
+        let unproven = ProviderEffectSettlement::UNPROVEN;
+        assert_ne!(unproven.status, RuntimeCommandStatus::Applied);
+        assert_ne!(unproven.certainty, RuntimeEffectCertainty::Applied);
+        assert_ne!(
+            unproven.postcondition,
+            RuntimePostconditionStatus::Satisfied
+        );
+        assert_eq!(unproven.status, RuntimeCommandStatus::RecoveryRequired);
+        assert_eq!(unproven.certainty, RuntimeEffectCertainty::Unknown);
+        assert_eq!(unproven.postcondition, RuntimePostconditionStatus::Unknown);
+
+        // The dimensions are independent: mixing one UNPROVEN axis with the
+        // APPLIED_SATISFIED axes yields a different, also-expressible
+        // settlement — the type does not collapse them to one flag.
+        let mixed = ProviderEffectSettlement {
+            postcondition: unproven.postcondition,
+            ..applied
+        };
+        assert_ne!(mixed, applied);
+        assert_ne!(mixed, unproven);
+        assert_eq!(mixed.status, RuntimeCommandStatus::Applied);
+        assert_eq!(mixed.postcondition, RuntimePostconditionStatus::Unknown);
+    }
 }

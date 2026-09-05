@@ -20,6 +20,7 @@ use super::drain_recovery_tests::{
     MID_TURN_MEMBER,
 };
 use super::*;
+use crate::ProviderEffectSettlement;
 
 use crate::claim_canonical_work_for_member;
 use harness_core::agentfirm_api::{
@@ -114,7 +115,7 @@ fn drive_first_resumed_cycle(
     crate::settle_provider_effect(
         ledger,
         &effect,
-        true,
+        ProviderEffectSettlement::APPLIED_SATISFIED,
         Some(serde_json::json!({
             "provider": "codex",
             "phase": "runtime_attached",

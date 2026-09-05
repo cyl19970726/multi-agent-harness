@@ -621,7 +621,7 @@ pub(super) fn run_codex_member_shared(
             settle_provider_effect(
                 ledger,
                 &process_effect,
-                false,
+                ProviderEffectSettlement::UNPROVEN,
                 None,
                 Some(error.to_string()),
             )?;
@@ -633,7 +633,7 @@ pub(super) fn run_codex_member_shared(
     settle_provider_effect(
         ledger,
         &process_effect,
-        true,
+        ProviderEffectSettlement::APPLIED_SATISFIED,
         Some(serde_json::json!({
             "provider": "codex",
             "phase": "runtime_attached",
@@ -856,7 +856,7 @@ pub(super) fn run_claude_agent_sdk_team_member_shared(
             settle_provider_effect(
                 ledger,
                 &process_effect,
-                false,
+                ProviderEffectSettlement::UNPROVEN,
                 None,
                 Some(error.to_string()),
             )?;
@@ -868,7 +868,7 @@ pub(super) fn run_claude_agent_sdk_team_member_shared(
     settle_provider_effect(
         ledger,
         &process_effect,
-        true,
+        ProviderEffectSettlement::APPLIED_SATISFIED,
         Some(serde_json::json!({
             "provider": "claude",
             "phase": "runtime_attached",
@@ -1114,7 +1114,7 @@ pub(super) fn run_deepseek_harness_team_member_shared(
             settle_provider_effect(
                 ledger,
                 &process_effect,
-                false,
+                ProviderEffectSettlement::UNPROVEN,
                 None,
                 Some(error.to_string()),
             )?;
@@ -1126,7 +1126,7 @@ pub(super) fn run_deepseek_harness_team_member_shared(
     settle_provider_effect(
         ledger,
         &process_effect,
-        true,
+        ProviderEffectSettlement::APPLIED_SATISFIED,
         Some(serde_json::json!({
             "provider": "deepseek_harness",
             "phase": "runtime_attached",
@@ -1256,7 +1256,13 @@ pub(super) fn run_kimi_member_shared(
             profile.provider_version,
             client.provider_version()
         );
-        settle_provider_effect(ledger, &process_effect, false, None, Some(detail.clone()))?;
+        settle_provider_effect(
+            ledger,
+            &process_effect,
+            ProviderEffectSettlement::UNPROVEN,
+            None,
+            Some(detail.clone()),
+        )?;
         return Err(CliError::RuntimeRecoveryRequired(detail));
     }
     let effective_model = client.model().map(str::to_string);
@@ -1375,7 +1381,7 @@ pub(super) fn run_kimi_member_shared(
             settle_provider_effect(
                 ledger,
                 &process_effect,
-                false,
+                ProviderEffectSettlement::UNPROVEN,
                 None,
                 Some(error.to_string()),
             )?;
@@ -1387,7 +1393,7 @@ pub(super) fn run_kimi_member_shared(
     settle_provider_effect(
         ledger,
         &process_effect,
-        true,
+        ProviderEffectSettlement::APPLIED_SATISFIED,
         Some(serde_json::json!({
             "provider": "kimi",
             "phase": "runtime_attached",

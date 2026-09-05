@@ -38,6 +38,7 @@ use harness_application::{
 use harness_core::agentfirm_api::{AgentSessionStatus, PermissionCeiling};
 
 use crate::provider_adapter::{self, PendingProviderControl, ProviderControlDispatch};
+use crate::settlements::{APPLIED_SATISFIED, UNPROVEN};
 use crate::supervisor_wake::{WakeBackoff, WakePolicy};
 use crate::{
     active_work_continuation_prompt, emit_native_session_wake, mark_message_delivered,
@@ -55,6 +56,10 @@ use crate::{
 
 #[path = "runtime_adapter/native_session_binding.rs"]
 mod native_session_binding;
+
+#[path = "runtime_adapter/cycle_input.rs"]
+mod cycle_input;
+use cycle_input::{await_next_cycle, CycleInput};
 
 /// Deterministic integration hook: pause after the provider terminal boundary
 /// is observed but before the current Supervisor/session authority is
@@ -130,16 +135,6 @@ impl Drop for PendingSteerSettlement {
 // Generic member loop
 // ---------------------------------------------------------------------------
 
-/// One cycle's input, projected from an idle wake.
-struct CycleInput {
-    prompt: String,
-    active_work: Option<ClaimedWork>,
-    accepted_messages: Vec<TeamMessageProjection>,
-    host_attentions: Vec<HostAttention>,
-    /// New `last_consumed_work_version`; None leaves the tracker unchanged.
-    consumed_work_version: Option<u64>,
-}
-
 struct PendingControlReply {
     action: provider_adapter::ProviderControlAction,
     reply: Option<SyncSender<CliResult<Value>>>,
@@ -168,150 +163,6 @@ fn fail_pending_control_replies(replies: &mut Vec<PendingControlReply>, detail: 
     let detail = detail.into();
     for pending in replies.drain(..) {
         pending.send(Err(CliError::Usage(detail.clone())));
-    }
-}
-
-/// The two previously per-loop, twice-per-loop wake match blocks collapsed
-/// into one shared projection.
-fn idle_wake_into_cycle<A: TeamRuntimeAdapter<Error = CliError>>(
-    wake: IdleMemberWake,
-    ledger: &TeamRunLedger,
-    objective: &str,
-    context: &MemberRuntimeContext,
-    member_row: &mut ProviderRuntimeProjection,
-    adapter: &mut A,
-) -> CliResult<Result<CycleInput, MemberOutcome>> {
-    match wake {
-        IdleMemberWake::Work(claimed) => {
-            let envelope = member_work_collaboration_envelope(
-                ledger,
-                context.execution_space_id.as_deref(),
-                context.project_id.as_deref(),
-                context.project_selector.as_deref(),
-                member_row,
-                Some(&claimed.work),
-            )?;
-            let consumed = claimed.work.version;
-            let prompt = work_contract_prompt(objective, member_row, &claimed.work, &envelope);
-            Ok(Ok(CycleInput {
-                prompt,
-                active_work: Some(*claimed),
-                accepted_messages: Vec::new(),
-                host_attentions: Vec::new(),
-                consumed_work_version: Some(consumed),
-            }))
-        }
-        IdleMemberWake::ActiveWorkContinuation(work) => {
-            let envelope = member_work_collaboration_envelope(
-                ledger,
-                context.execution_space_id.as_deref(),
-                context.project_id.as_deref(),
-                context.project_selector.as_deref(),
-                member_row,
-                Some(&work),
-            )?;
-            let consumed = work.version;
-            let prompt = active_work_continuation_prompt(objective, member_row, &work, &envelope);
-            Ok(Ok(CycleInput {
-                prompt,
-                active_work: None,
-                accepted_messages: Vec::new(),
-                host_attentions: Vec::new(),
-                consumed_work_version: Some(consumed),
-            }))
-        }
-        IdleMemberWake::Messages {
-            messages,
-            host_attentions,
-        } => {
-            let mut prompt = team_messages_prompt(
-                "TEAM MESSAGES arrived. They are conversation, not Work ownership. \
-                 Address the question or coordination request, and use the Works \
-                 board for any durable responsibility.",
-                &messages,
-            );
-            if !host_attentions.is_empty() {
-                prompt.push_str(
-                    "\n\nBATCHED TEAM STATUS (coordination facts, not Work ownership):\n",
-                );
-                for attention in &host_attentions {
-                    prompt.push_str(&format!(
-                        "- {:?}: work={} version={} source={}\n",
-                        attention.kind,
-                        attention.work_id,
-                        attention.work_version,
-                        attention.source_event_ref
-                    ));
-                }
-            }
-            Ok(Ok(CycleInput {
-                prompt,
-                active_work: None,
-                accepted_messages: messages,
-                host_attentions,
-                consumed_work_version: None,
-            }))
-        }
-        IdleMemberWake::HostAttentions(attentions) => {
-            let mut prompt = String::from(
-                "TEAM STATUS ATTENTION arrived for the Host. These are durable coordination facts, not new Work ownership. Review, respond, or route only when a decision is required.\n\n",
-            );
-            for attention in &attentions {
-                prompt.push_str(&format!(
-                    "- {:?}: work={} version={} source={} member_run={}\n",
-                    attention.kind,
-                    attention.work_id,
-                    attention.work_version,
-                    attention.source_event_ref,
-                    attention.member_run_id.as_deref().unwrap_or("none")
-                ));
-            }
-            Ok(Ok(CycleInput {
-                prompt,
-                active_work: None,
-                accepted_messages: Vec::new(),
-                host_attentions: attentions,
-                consumed_work_version: None,
-            }))
-        }
-        IdleMemberWake::CloseRequested { close, reply } => {
-            let result = close_idle_runtime(ledger, member_row, adapter, &close);
-            match result {
-                Ok((outcome, close_receipt)) => {
-                    if let Some(reply) = reply {
-                        let _ = reply.send(Ok(serde_json::json!({
-                            "member_run_id": member_row.id,
-                            "status": "closed",
-                            "provider_ack": "member_runtime_close_applied",
-                            "provider_terminal_evidence": {
-                                "provider_terminal_event": "idle_before_close",
-                                "member_runtime_close": close_receipt,
-                            },
-                        })));
-                    }
-                    Ok(Err(outcome))
-                }
-                Err(error) => {
-                    if let Some(reply) = reply {
-                        let _ = reply.send(Err(CliError::Usage(error.to_string())));
-                    }
-                    Err(error)
-                }
-            }
-        }
-        IdleMemberWake::TestRetired => Ok(Err(MemberOutcome::new(
-            member_row,
-            MemberRunStatus::Idle,
-            format!(
-                "{} member test runtime retired while idle",
-                adapter.display_name()
-            ),
-        ))),
-        IdleMemberWake::Degraded(reason) => Ok(Err(MemberOutcome::new(
-            member_row,
-            MemberRunStatus::Blocked,
-            format!("{} member degraded: {reason}", adapter.display_name()),
-        ))),
     }
 }
 
@@ -416,7 +267,7 @@ fn execute_member_runtime_close<A: TeamRuntimeAdapter<Error = CliError>>(
             )));
         }
         Err(error) => {
-            settle_provider_effect(ledger, &effect, false, None, Some(error.to_string()))?;
+            settle_provider_effect(ledger, &effect, UNPROVEN, None, Some(error.to_string()))?;
             return Err(CliError::RuntimeRecoveryRequired(format!(
                 "{} {boundary} Close is unproven: {error}",
                 adapter.provider()
@@ -424,7 +275,7 @@ fn execute_member_runtime_close<A: TeamRuntimeAdapter<Error = CliError>>(
         }
     };
     if let Err(error) = close_receipt.verify() {
-        settle_provider_effect(ledger, &effect, false, None, Some(error.to_string()))?;
+        settle_provider_effect(ledger, &effect, UNPROVEN, None, Some(error.to_string()))?;
         return Err(CliError::RuntimeRecoveryRequired(format!(
             "{} {boundary} Close receipt is incomplete: {error}",
             adapter.provider()
@@ -433,7 +284,7 @@ fn execute_member_runtime_close<A: TeamRuntimeAdapter<Error = CliError>>(
     settle_provider_effect(
         ledger,
         &effect,
-        true,
+        APPLIED_SATISFIED,
         Some(serde_json::json!({
             "phase": "member_runtime_closed",
             "receipt": &close_receipt,
@@ -441,40 +292,6 @@ fn execute_member_runtime_close<A: TeamRuntimeAdapter<Error = CliError>>(
         None,
     )?;
     Ok(close_receipt)
-}
-
-/// Wait for the next wake and project it into a cycle input (or a terminal
-/// outcome). Shared by the first wait and the loop-tail wait.
-#[allow(clippy::too_many_arguments)]
-fn await_next_cycle<A: TeamRuntimeAdapter<Error = CliError>>(
-    ledger: &TeamRunLedger,
-    objective: &str,
-    context: &MemberRuntimeContext,
-    member_row: &mut ProviderRuntimeProjection,
-    adapter: &mut A,
-    live_control: &ControlReceiver<MemberControlCommand>,
-    zero_output_streak: u32,
-    last_consumed_work_version: Option<u64>,
-    wake_policy: &WakePolicy,
-    wake_backoff: &mut WakeBackoff,
-) -> CliResult<Result<CycleInput, MemberOutcome>> {
-    let wake = {
-        let agent_member_id = member_row.agent_member_id.clone();
-        wait_for_idle_member_wake(
-            ledger,
-            member_row,
-            live_control,
-            || {
-                require_provider_session_authority(ledger, &agent_member_id, false)?;
-                adapter.ensure_alive()
-            },
-            zero_output_streak,
-            last_consumed_work_version,
-            wake_policy,
-            wake_backoff,
-        )?
-    };
-    idle_wake_into_cycle(wake, ledger, objective, context, member_row, adapter)
 }
 
 struct RuntimeSupervisorState<'a, A> {
@@ -708,7 +525,7 @@ pub(crate) fn run_team_member_with_adapter<A: TeamRuntimeAdapter<Error = CliErro
                     settle_provider_effect(
                         ledger,
                         &effect,
-                        true,
+                        APPLIED_SATISFIED,
                         Some(serde_json::json!({
                             "provider": provider,
                             "round": round,
@@ -766,7 +583,7 @@ pub(crate) fn run_team_member_with_adapter<A: TeamRuntimeAdapter<Error = CliErro
                             settle_provider_effect(
                                 ledger,
                                 &pending.admission,
-                                true,
+                                APPLIED_SATISFIED,
                                 Some(serde_json::json!({
                                     "phase": "provider_input_accepted",
                                     "provider_receipt": receipt,
@@ -786,7 +603,7 @@ pub(crate) fn run_team_member_with_adapter<A: TeamRuntimeAdapter<Error = CliErro
                             settle_provider_effect(
                                 ledger,
                                 &pending.admission,
-                                false,
+                                UNPROVEN,
                                 None,
                                 Some(detail.clone()),
                             )?;
@@ -1073,7 +890,13 @@ pub(crate) fn run_team_member_with_adapter<A: TeamRuntimeAdapter<Error = CliErro
                     let error = CliError::Usage(format!(
                         "{provider} cycle returned without a provider input-acceptance receipt"
                     ));
-                    settle_provider_effect(ledger, &effect, false, None, Some(error.to_string()))?;
+                    settle_provider_effect(
+                        ledger,
+                        &effect,
+                        UNPROVEN,
+                        None,
+                        Some(error.to_string()),
+                    )?;
                     requeue_managed_host_attentions(
                         ledger,
                         &cycle.host_attentions,
@@ -1185,7 +1008,7 @@ pub(crate) fn run_team_member_with_adapter<A: TeamRuntimeAdapter<Error = CliErro
                 },
                 turn.native_correlation.clone(),
                 cycle_terminal_observed,
-                turn.interrupt.is_some(),
+                turn.interrupt.clone(),
             )
             .map_err(CliError::RuntimeRecoveryRequired)?;
             if matches!(

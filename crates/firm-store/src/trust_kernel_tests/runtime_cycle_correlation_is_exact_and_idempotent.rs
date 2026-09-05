@@ -95,6 +95,7 @@ fn runtime_cycle_correlation_is_exact_and_idempotent() {
         native_session_id: "native-cycle-correlation".into(),
         agent_session_generation: target.runtime_generation,
         provider_attempt: 2,
+        interrupt_cause: None,
     };
     let correlation_context = service_context(
         "node_daemon.provider_cycle.correlate",

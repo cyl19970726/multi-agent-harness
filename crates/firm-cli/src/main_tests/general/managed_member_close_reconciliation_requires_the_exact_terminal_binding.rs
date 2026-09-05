@@ -112,7 +112,7 @@ fn managed_member_close_reconciliation_requires_the_exact_terminal_binding() {
             settle_provider_effect(
                 &ledger,
                 &effect,
-                true,
+                ProviderEffectSettlement::APPLIED_SATISFIED,
                 Some(serde_json::json!({"fixture": format!("{case:?}")})),
                 None,
             )
