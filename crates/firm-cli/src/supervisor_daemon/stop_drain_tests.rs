@@ -98,6 +98,7 @@ fn stop_fixture(
         control_worker_failed: AtomicBool::new(false),
         recovery_blocked_runs: Mutex::new(HashMap::new()),
         settling_runs: Mutex::new(HashSet::new()),
+        capacity_waits: Mutex::new(HashMap::new()),
         lease_ttl_override_ms: Some(600_000),
         deferred_stop_responses: Mutex::new(Vec::new()),
         drain_timeout_override_ms: Some(drain_ms),

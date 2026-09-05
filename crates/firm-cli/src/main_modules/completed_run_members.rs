@@ -12,7 +12,134 @@
 
 use super::*;
 
-pub(super) const COMPLETED_RUN_SERVING_POLL_INTERVAL: Duration = Duration::from_secs(1);
+/// Idle cadence for a Completed run that is served only so `close-member`
+/// keeps a live provider-loop authority (#836).
+///
+/// The former 1 s poll re-decoded `member_runs.jsonl` and `team_runs.jsonl` in
+/// full on every tick. In a long-lived Execution Space that is tens of
+/// megabytes of JSON per second, per served run, on the same machine as the
+/// daemon's own Supervisor heartbeat — and a heartbeat that misses three
+/// renewals loses machine authority and self-stops the NodeDaemon. Nothing in
+/// this loop drives Close: Close is a CLI CAS write, so the loop only has to
+/// notice that the last member left. The interval is therefore the Supervisor
+/// scan-interval default; `CompletedRunServingIdler` still wakes earlier when
+/// the ledgers it decodes actually changed on disk.
+pub(super) const COMPLETED_RUN_SERVING_POLL_INTERVAL: Duration = Duration::from_secs(10);
+
+/// Longest an idle serving tick sleeps before re-reading the cheap ledger
+/// watermark. This bounds how fast a Close is observed, never how often the
+/// full ledgers are decoded.
+const SERVING_IDLE_WATERMARK_POLL: Duration = Duration::from_millis(100);
+
+/// The ledger files one supervisor-loop rescan decodes in full.
+const SERVED_LEDGERS: [&str; 2] = ["member_runs.jsonl", "team_runs.jsonl"];
+
+/// Byte-level identity of the ledgers a rescan decodes: `(length, mtime_nanos)`
+/// per file, `None` when the file does not exist yet. Both ledgers are
+/// append-only, so an unchanged watermark means a fresh decode would rebuild
+/// the identical projection.
+type ServedLedgerWatermark = [Option<(u64, u128)>; 2];
+
+/// Metadata-only probe. It takes no store lock and decodes nothing.
+fn served_ledger_watermark(store: &HarnessStore) -> ServedLedgerWatermark {
+    SERVED_LEDGERS.map(|name| {
+        std::fs::metadata(store.root().join(name))
+            .ok()
+            .map(|metadata| {
+                let modified = metadata
+                    .modified()
+                    .ok()
+                    .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+                    .map(|since_epoch| since_epoch.as_nanos())
+                    .unwrap_or_default();
+                (metadata.len(), modified)
+            })
+    })
+}
+
+/// Full-ledger decodes performed through [`CompletedRunServingIdler::observe`].
+/// Test-only: it is what proves the idle serving loop decodes nothing.
+#[cfg(test)]
+pub(super) static SERVED_LEDGER_DECODES: AtomicU64 = AtomicU64::new(0);
+
+/// What one supervisor pass observed about the run it serves.
+pub(super) enum ServingObservation {
+    /// Every ledger the rescan reads is byte-identical to the last decode, so
+    /// the caller keeps the projection it already has.
+    Unchanged,
+    Rescanned {
+        members: Vec<ProviderRuntimeProjection>,
+        run_status: TeamRunStatus,
+    },
+}
+
+/// Rescan gate and idle wait for the supervisor loop (#836).
+///
+/// It suppresses a decode in exactly one state — a Completed run with no
+/// member handle left to drive and at least one unclosed member — and only
+/// while the decoded ledgers are provably unchanged. Every other pass rescans
+/// unconditionally, exactly as before.
+pub(super) struct CompletedRunServingIdler {
+    interval: Duration,
+    watermark: Option<ServedLedgerWatermark>,
+}
+
+impl CompletedRunServingIdler {
+    pub(super) fn new(interval: Duration) -> Self {
+        Self {
+            interval,
+            watermark: None,
+        }
+    }
+
+    /// Observe the coordination state one supervisor pass needs.
+    ///
+    /// The watermark is taken *before* the decode: an append that lands
+    /// between the two is included in this decode and re-observed by the next
+    /// pass, so a write can never be missed in either order.
+    pub(super) fn observe(
+        &mut self,
+        store: &HarnessStore,
+        run_id: &str,
+        idle_completed_serving: bool,
+    ) -> CliResult<ServingObservation> {
+        let watermark = served_ledger_watermark(store);
+        if idle_completed_serving && self.watermark.as_ref() == Some(&watermark) {
+            return Ok(ServingObservation::Unchanged);
+        }
+        self.watermark = Some(watermark);
+        #[cfg(test)]
+        SERVED_LEDGER_DECODES.fetch_add(1, Ordering::Relaxed);
+        let members = latest_member_runs_in_append_order(store)?;
+        let run_status = latest_team_run(store, run_id)?.status;
+        Ok(ServingObservation::Rescanned {
+            members,
+            run_status,
+        })
+    }
+
+    /// Idle wait between serving ticks: sleep up to the configured interval,
+    /// returning as soon as a decoded ledger changes on disk. A Close writes
+    /// `member_runs.jsonl`, so it is served within one watermark poll while a
+    /// quiet store is left alone for the whole interval.
+    pub(super) fn wait_for_ledger_change(&self, store: &HarnessStore) {
+        let deadline = Instant::now() + self.interval;
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return;
+            }
+            std::thread::sleep(remaining.min(SERVING_IDLE_WATERMARK_POLL));
+            if self
+                .watermark
+                .as_ref()
+                .is_some_and(|observed| observed != &served_ledger_watermark(store))
+            {
+                return;
+            }
+        }
+    }
+}
 
 pub(super) fn is_unclosed_managed_member(
     member: &ProviderRuntimeProjection,

@@ -1121,6 +1121,23 @@ impl MultiTeamDaemon {
                             },
                         }))
                         .collect::<Vec<_>>(),
+                    // Adoptions this generation is deliberately holding back
+                    // until a concurrency slot frees (#836). Process-local by
+                    // construction: capacity is a property of this daemon, not
+                    // of any TeamRun, so nothing durable is written for it.
+                    "waiting_for_capacity": self.capacity_waits
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner())
+                        .iter()
+                        .map(|((space, run), wait)| serde_json::json!({
+                            "execution_space_id": space,
+                            "run_id": run,
+                            "managed_runs": wait.occupancy,
+                            "max_concurrency": self.max_concurrency,
+                            "waiting_secs": wait.since.elapsed().as_secs(),
+                            "detail": wait.detail,
+                        }))
+                        .collect::<Vec<_>>(),
                     "runs": runs
                 });
                 Self::write_control_response(stream, &resp)?;

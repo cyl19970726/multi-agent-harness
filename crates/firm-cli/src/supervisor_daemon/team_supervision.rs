@@ -48,6 +48,14 @@ impl MultiTeamDaemon {
                 {
                     continue;
                 }
+                // A run already refused for capacity cannot start until a slot
+                // frees, and every step below it — the adoption-hold read, the
+                // whole-ledger member scan, the Supervisor lease read, and the
+                // machine-lease renewal inside `start_supervising` — is store
+                // work that competes with this daemon's own heartbeat (#836).
+                if self.adoption_defers_for_capacity(&space.id, &run.id) {
+                    continue;
+                }
                 // A durable adoption hold means the last generation already
                 // proved what this canonical state produces. Honour it until
                 // canonical state changes or an explicit recovery/start
@@ -106,15 +114,30 @@ impl MultiTeamDaemon {
                     match self.start_supervising(space.clone(), store.clone(), &run.id) {
                         Ok(()) => {
                             managed_ids.insert((space.id.clone(), run.id.clone()));
+                            self.clear_capacity_wait(&space.id, &run.id);
                         }
                         Err(error) => {
                             self.block_start_failure_if_unresolved(
                                 &space.id, &store, &run.id, &error,
                             );
-                            eprintln!(
-                                "[node-daemon] failed to adopt {}/{}: {error}",
-                                space.id, run.id
-                            );
+                            if refused_for_capacity(&error) {
+                                // Capacity is a property of this daemon, never
+                                // of the run, so the classifier above writes
+                                // nothing durable. Record the wait once and
+                                // let the next scan interval — or a freed
+                                // slot — retry it (#836).
+                                self.note_waiting_for_capacity(
+                                    &space.id,
+                                    &run.id,
+                                    &error.to_string(),
+                                );
+                            } else {
+                                self.clear_capacity_wait(&space.id, &run.id);
+                                eprintln!(
+                                    "[node-daemon] failed to adopt {}/{}: {error}",
+                                    space.id, run.id
+                                );
+                            }
                         }
                     }
                 }
@@ -130,6 +153,8 @@ impl MultiTeamDaemon {
         store: HarnessStore,
         run_id: &str,
     ) -> CliResult<()> {
+        #[cfg(test)]
+        ADOPTION_START_ATTEMPTS.fetch_add(1, Ordering::Relaxed);
         let _start_guard = self
             .supervisor_start_gate
             .lock()
@@ -174,7 +199,7 @@ impl MultiTeamDaemon {
             }
             if contexts.len() >= self.max_concurrency {
                 return Err(CliError::Usage(format!(
-                    "NodeDaemon at capacity ({}/{} runs); cannot start {}/{run_id}",
+                    "{AT_CAPACITY_REFUSAL} ({}/{} runs); cannot start {}/{run_id}",
                     contexts.len(),
                     self.max_concurrency,
                     space.id,
@@ -489,6 +514,75 @@ impl MultiTeamDaemon {
             }
         }
     }
+
+    /// TeamRuns this daemon currently drives. Registry-lock only; no store IO.
+    fn managed_run_count(&self) -> usize {
+        self.contexts
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .len()
+    }
+
+    /// True while this TeamRun stays deferred at `--max-concurrency` (#836).
+    ///
+    /// The deferral ends at the next scan interval or as soon as the managed
+    /// run count differs from the count observed when the refusal was
+    /// recorded, whichever comes first — so a freed slot is retried on the
+    /// very next pass rather than after the interval.
+    pub(super) fn adoption_defers_for_capacity(
+        &self,
+        execution_space_id: &str,
+        run_id: &str,
+    ) -> bool {
+        let occupancy = self.managed_run_count();
+        self.capacity_waits
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .get(&(execution_space_id.to_string(), run_id.to_string()))
+            .is_some_and(|wait| wait.occupancy == occupancy && Instant::now() < wait.not_before)
+    }
+
+    /// Record one at-capacity refusal, refreshing an existing wait in place.
+    ///
+    /// The log line is written only on the first observation of a waiting
+    /// episode, or when occupancy changed and the refusal therefore says
+    /// something new: a permanently over-subscribed daemon must not reprint
+    /// the same refusal on every scan.
+    fn note_waiting_for_capacity(&self, execution_space_id: &str, run_id: &str, detail: &str) {
+        let occupancy = self.managed_run_count();
+        let now = Instant::now();
+        let key = (execution_space_id.to_string(), run_id.to_string());
+        let mut waits = self
+            .capacity_waits
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if let Some(existing) = waits.get_mut(&key) {
+            if existing.occupancy == occupancy {
+                existing.not_before = now + self.scan_interval;
+                existing.detail = detail.to_string();
+                return;
+            }
+        }
+        waits.insert(
+            key,
+            CapacityWait {
+                occupancy,
+                not_before: now + self.scan_interval,
+                since: now,
+                detail: detail.to_string(),
+            },
+        );
+        eprintln!("[node-daemon] {execution_space_id}/{run_id} waiting_for_capacity: {detail}");
+    }
+
+    /// Drop any recorded wait: the run either started or was refused for a
+    /// reason capacity does not explain.
+    fn clear_capacity_wait(&self, execution_space_id: &str, run_id: &str) {
+        self.capacity_waits
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .remove(&(execution_space_id.to_string(), run_id.to_string()));
+    }
 }
 
 /// Releases one settling claim however the reap of that context ends, so a
@@ -506,6 +600,18 @@ impl Drop for SettlingGuard<'_> {
             .unwrap_or_else(|error| error.into_inner())
             .remove(&self.key);
     }
+}
+
+/// Adoption attempts that actually entered `start_supervising`. Test-only: it
+/// is what proves an at-capacity run is retried per scan tick, not per pass.
+#[cfg(test)]
+pub(super) static ADOPTION_START_ATTEMPTS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+/// The at-capacity refusal, recognised by its own leading prefix exactly as
+/// the adoption classifier recognises it.
+fn refused_for_capacity(error: &CliError) -> bool {
+    matches!(error, CliError::Usage(message) if message.starts_with(AT_CAPACITY_REFUSAL))
 }
 
 fn team_run_has_active_member(store: &HarnessStore, run_id: &str) -> CliResult<bool> {

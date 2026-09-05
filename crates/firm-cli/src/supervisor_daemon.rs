@@ -133,6 +133,33 @@ pub(crate) const NODE_DAEMON_STOP_DRAIN_BOUND: Duration = Duration::from_secs(
         + FORCED_PROCESS_GROUP_DRAIN_TIMEOUT.as_secs(),
 );
 
+/// The exact refusal `start_supervising` writes when this NodeDaemon already
+/// drives `--max-concurrency` TeamRuns. Named once so the adoption classifier
+/// and the at-capacity backoff cannot drift from the message.
+const AT_CAPACITY_REFUSAL: &str = "NodeDaemon at capacity";
+
+/// One TeamRun the discovery scan deferred because the daemon is already at
+/// `--max-concurrency` (#836).
+///
+/// Retrying that adoption on every pass is not free: the start path decodes
+/// the whole TeamRun and MemberRun ledgers and renews the machine lease —
+/// two store write-lock acquisitions — before it ever reaches the capacity
+/// check. A run that provably cannot start therefore competed with the
+/// daemon's own Supervisor heartbeat for that lock, and three missed renewals
+/// cost the daemon its machine authority.
+#[derive(Debug, Clone)]
+struct CapacityWait {
+    /// Managed-run count observed when the refusal was recorded. Any change
+    /// may have opened a slot, so it ends the deferral immediately.
+    occupancy: usize,
+    /// Earliest retry: one scan interval after the refusal.
+    not_before: Instant,
+    /// When this waiting episode started, for `daemon status`.
+    since: Instant,
+    /// The refusal itself, reported verbatim rather than re-derived.
+    detail: String,
+}
+
 /// A process-local adoption hold, used only when the durable marker could not
 /// be written. It is deliberately liftable wherever possible: an unliftable
 /// hold would strand a run for this daemon's whole lifetime, including legacy
@@ -208,6 +235,11 @@ pub(crate) struct MultiTeamDaemon {
     /// dead generation is still deciding what durable marker to write, and
     /// that marker would land on the live successor.
     settling_runs: Mutex<HashSet<(String, String)>>,
+    /// TeamRuns deferred at `--max-concurrency`, keyed by (Execution Space,
+    /// TeamRun). Recorded once per waiting episode, retried no earlier than
+    /// the next scan interval or a change in managed-run count, and surfaced
+    /// by `daemon status` as `waiting_for_capacity` (#836).
+    capacity_waits: Mutex<HashMap<(String, String), CapacityWait>>,
     /// Accepted `stop` client sockets held open until the drain result is
     /// known. Stop is answered from that result rather than from acceptance,
     /// so a caller can never read `ok:true` while this process still spins.
@@ -351,6 +383,7 @@ impl MultiTeamDaemon {
             control_worker_failed: AtomicBool::new(false),
             recovery_blocked_runs: Mutex::new(HashMap::new()),
             settling_runs: Mutex::new(HashSet::new()),
+            capacity_waits: Mutex::new(HashMap::new()),
             deferred_stop_responses: Mutex::new(Vec::new()),
             #[cfg(test)]
             lease_ttl_override_ms: None,

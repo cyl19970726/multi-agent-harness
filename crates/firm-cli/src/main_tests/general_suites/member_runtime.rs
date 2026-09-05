@@ -34,6 +34,8 @@ mod five_provider_native_control_seam_is_durable_replay_safe_and_fail_closed;
 mod host_bound_runtime_interrupt_targets_member_through_supervisor;
 #[path = "../general/host_owned_work_requires_exact_peer_reviewer.rs"]
 mod host_owned_work_requires_exact_peer_reviewer;
+#[path = "../general/idle_completed_run_serving_decodes_no_ledger_until_a_close_lands.rs"]
+mod idle_completed_run_serving_decodes_no_ledger_until_a_close_lands;
 #[path = "../general/idle_wake_loop_sleeps_on_every_mispredicted_arm.rs"]
 mod idle_wake_loop_sleeps_on_every_mispredicted_arm;
 #[path = "../general/initial_member_admission_rejects_foreign_only_identity_without_any_durable_write.rs"]
