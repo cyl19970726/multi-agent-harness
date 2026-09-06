@@ -371,6 +371,10 @@ fn completed_run_close_after_kill_requires_predecessor_recovery() {
     // Without predecessor recovery evidence the Close must be refused: the
     // dead generation's Supervisor lease has expired with no live successor,
     // so there is no current provider-loop authority to Close through.
+    let close_request_count = store
+        .team_member_close_requests()
+        .expect("read Close requests before refused Close")
+        .len();
     let refused = run_firm_with_env(
         &home,
         &fixture.project_root,
@@ -394,14 +398,27 @@ fn completed_run_close_after_kill_requires_predecessor_recovery() {
         "close-member without predecessor recovery must be refused: {refused:?}"
     );
     // Whichever fence fires first is honest: the dead Supervisor's transport
-    // is unreachable, or there is no current provider-loop authority. The
+    // is unreachable, its durable lease already expired, or there is no
+    // current provider-loop authority. Node and Supervisor expiry order is not
+    // synchronized, so any of these existing refusal paths is valid. The
     // typed DETACHED_MEMBER_RECOVERY_FENCED generation gate is covered by the
     // unit tests of the coordination Close.
     let refused_stderr = String::from_utf8_lossy(&refused.stderr);
     assert!(
         refused_stderr.contains("RUNTIME_COMMAND_RECOVERY_REQUIRED")
-            || refused_stderr.contains("cannot reach team run"),
+            || refused_stderr.contains("cannot reach team run")
+            || refused_stderr.contains(&format!(
+                "team run {run_id} Supervisor lease moved to another owner"
+            )),
         "refusal must name the missing Supervisor authority: {refused_stderr}"
+    );
+    assert_eq!(
+        store
+            .team_member_close_requests()
+            .expect("read Close requests after refusal")
+            .len(),
+        close_request_count,
+        "refused Close must not enqueue a control request"
     );
 
     let recovered = run_firm_with_env(
