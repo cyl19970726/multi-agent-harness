@@ -580,11 +580,8 @@ fn publish_team_message_with_draft(
         issued_at: format!("runtime-command:{}", message.id),
     };
     let firm_home = execution_space::firm_home().map_err(execution_space_err)?;
-    let response = supervisor_daemon::runtime_command_via_socket(
-        &firm_home,
-        &run.execution_node_id,
-        &command,
-    )?;
+    let response =
+        daemon_client::runtime_command_via_socket(&firm_home, &run.execution_node_id, &command)?;
     if response["ok"].as_bool() != Some(true) {
         return Err(CliError::Usage(format!(
             "NodeDaemon rejected Message: {}",
@@ -1144,13 +1141,7 @@ pub(super) fn resolve_team_message_lineage(
 }
 
 /// Load the latest row for a team run id, or a clear not-found error.
-pub(super) fn latest_team_run(store: &HarnessStore, id: &str) -> CliResult<AgentTeamRun> {
-    store
-        .latest_team_runs()?
-        .into_iter()
-        .find(|run| run.id == id)
-        .ok_or_else(|| CliError::Usage(format!("team run not found: {id}")))
-}
+pub(crate) use crate::daemon_support::latest_team_run;
 
 /// Resolve the optional legacy Mission provenance of a TeamRun's durable
 /// AgentTeam. Post-DEV-35 Teams never require a Mission, so this returns

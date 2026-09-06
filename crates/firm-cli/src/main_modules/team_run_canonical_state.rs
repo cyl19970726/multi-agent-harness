@@ -45,10 +45,6 @@ use harness_store::HarnessStore;
 
 use crate::CliResult;
 
-/// Evidence-ref prefix that binds a durable adoption outcome to the exact
-/// canonical state it was observed under.
-pub(super) const CANONICAL_STATE_EVIDENCE_PREFIX: &str = "team-run-canonical-state:";
-
 // TODO(#726 follow-up): each call re-reads `member_runs`, `work_operations`,
 // `fabric_messages`, `runtime_commands` and — since #779 — `fabric_agent_sessions`
 // for the whole Store. A scan that holds N runs therefore pays N whole-Store
@@ -207,16 +203,12 @@ pub(super) fn team_run_canonical_state_fingerprint(
 }
 
 /// Build the evidence ref that binds a durable outcome to one fingerprint.
-pub(super) fn canonical_state_evidence_ref(fingerprint: &str) -> String {
-    format!("{CANONICAL_STATE_EVIDENCE_PREFIX}{fingerprint}")
-}
+#[cfg(test)]
+use crate::daemon_support::canonical_state_evidence_ref;
 
 /// Recover the fingerprint a durable outcome was bound to, if any.
-pub(super) fn canonical_state_from_evidence(evidence_refs: &[String]) -> Option<&str> {
-    evidence_refs
-        .iter()
-        .find_map(|reference| reference.strip_prefix(CANONICAL_STATE_EVIDENCE_PREFIX))
-}
+#[cfg(test)]
+use crate::daemon_support::canonical_state_from_evidence;
 
 #[cfg(test)]
 mod tests {

@@ -819,7 +819,7 @@ fn read_persisted_session_projection(
     };
     let firm_home = crate::execution_space::firm_home().ok()?;
     Some(
-        match crate::supervisor_daemon::native_session_read_via_socket(
+        match crate::daemon_client::native_session_read_via_socket(
             &firm_home,
             &team.node_id,
             &request,

@@ -1,21 +1,6 @@
 use super::*;
 
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
-#[serde(tag = "reason", rename_all = "snake_case", deny_unknown_fields)]
-pub(crate) enum NativeSessionWakeUpdate {
-    MayHaveAdvanced {
-        team_run_id: String,
-        agent_member_id: String,
-        member_run_id: String,
-        member_run_generation: u64,
-    },
-    TurnTerminal {
-        team_run_id: String,
-        agent_member_id: String,
-        member_run_id: String,
-        member_run_generation: u64,
-    },
-}
+pub(crate) use crate::daemon_protocol::NativeSessionWakeUpdate;
 
 pub(super) fn require_live_member_run_generation(
     member_run_id: &str,
@@ -31,7 +16,7 @@ pub(super) fn require_live_member_run_generation(
     Ok(())
 }
 
-pub(super) type NativeSessionWakeSink = Arc<dyn Fn(NativeSessionWakeUpdate) + Send + Sync>;
+pub(crate) use crate::daemon_application_port::NativeSessionWakeSink;
 
 pub(super) fn emit_native_session_wake(
     sink: &NativeSessionWakeSink,

@@ -109,7 +109,7 @@ impl MultiTeamDaemon {
                 entity_id: self.instance_id.clone(),
                 operation: "self_stopped".to_string(),
                 summary: summary.clone(),
-                occurred_at: crate::now_string(),
+                occurred_at: crate::daemon_support::now_string(),
             };
 
             let mut last_error = None;

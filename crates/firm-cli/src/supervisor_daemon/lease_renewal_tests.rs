@@ -7,9 +7,10 @@ fn enrolled_fixture(label: &str) -> AdoptionFixture {
     // Product defaults: five-second scan, Node TTL = max(scan * 4, 15s).
     fixture.daemon.scan_interval = Duration::from_secs(5);
     fixture.daemon.lease_ttl_override_ms = None;
-    fixture.daemon.node_id = crate::latest_team_run(&fixture.store, &fixture.run_id)
-        .unwrap()
-        .execution_node_id;
+    fixture.daemon.node_id =
+        crate::daemon_support::latest_team_run(&fixture.store, &fixture.run_id)
+            .unwrap()
+            .execution_node_id;
     fixture.daemon.daemon_id = format!("node-daemon:{}", fixture.daemon.node_id);
     let daemon = &fixture.daemon;
     if !fixture
@@ -219,7 +220,7 @@ fn supervisor_transient_failure_stops_at_confirmed_expiry() {
 #[test]
 fn completed_run_supervisor_loss_does_not_latch_machine_authority() {
     let fixture = enrolled_fixture("completed-run-lease-loss");
-    let mut run = crate::latest_team_run(&fixture.store, &fixture.run_id).unwrap();
+    let mut run = crate::daemon_support::latest_team_run(&fixture.store, &fixture.run_id).unwrap();
     let expected = run.clone();
     run.status = harness_core::TeamRunStatus::Completed;
     fixture

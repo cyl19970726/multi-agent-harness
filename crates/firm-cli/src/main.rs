@@ -10,7 +10,9 @@ use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{sync_channel, Receiver as ControlReceiver, SyncSender};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+#[cfg(test)]
+use std::time::SystemTime;
+use std::time::{Duration, Instant, UNIX_EPOCH};
 
 use harness_core::{
     build_launch_spec, content_hash_hex16, provider_interaction_response_id, AgentTeam,
@@ -49,13 +51,18 @@ use harness_store::{
 // Mission/MissionStatus remain only for cfg(test) legacy-history fixtures.
 #[cfg(test)]
 use harness_core::{Mission, MissionStatus};
-use thiserror::Error;
 
 mod agentfirm_api;
 mod claude_team_runtime;
 mod codex_app_server;
 mod codex_team_runtime;
 mod collaboration;
+mod daemon_application;
+mod daemon_application_port;
+mod daemon_client;
+mod daemon_error;
+mod daemon_protocol;
+mod daemon_support;
 mod deepseek_team_runtime;
 mod execution_space;
 mod execution_space_commands;
@@ -275,76 +282,7 @@ use execution_space_commands::{
 use project_commands::project_command;
 use store_resolution::*;
 
-#[derive(Debug, Error)]
-enum CliError {
-    #[error(transparent)]
-    ProviderProcessAdmissionClosed(#[from] harness_runtime_host::ProcessGroupRegistrationError),
-    #[error("{0}")]
-    Usage(String),
-    #[error("{0}")]
-    SupervisorLeaseLost(String),
-    #[error("RUNTIME_COMMAND_RECOVERY_REQUIRED: {0}")]
-    RuntimeRecoveryRequired(String),
-    #[error("PROVIDER_ADMISSION_REJECTED_NO_EFFECT: {0}")]
-    ProviderAdmissionRejected(String),
-    #[error("PROVIDER_ADMISSION_CONTENTION_NO_EFFECT: {0}")]
-    ProviderAdmissionContention(harness_store::StoreError),
-    #[error("PROVIDER_EFFECT_ACCEPTED: {0}")]
-    ProviderEffectAccepted(String),
-    #[error("store error: {0}")]
-    Store(#[from] harness_store::StoreError),
-    #[error("io error: {0}")]
-    Io(#[from] std::io::Error),
-    #[error("json error: {0}")]
-    Json(#[from] serde_json::Error),
-}
-
-type CliResult<T> = Result<T, CliError>;
-
-impl CliError {
-    fn is_supervisor_lease_lost(&self) -> bool {
-        matches!(self, Self::SupervisorLeaseLost(_))
-    }
-
-    fn is_provider_process_admission_closed(&self) -> bool {
-        matches!(self, Self::ProviderProcessAdmissionClosed(_))
-    }
-
-    fn is_provider_compatibility_blocked(&self) -> bool {
-        matches!(self, Self::Usage(message) if message.starts_with("PROVIDER_COMPATIBILITY_BLOCKED:"))
-    }
-
-    fn provider_effect_outcome(&self) -> harness_application::ProviderEffectOutcome {
-        match self {
-            Self::RuntimeRecoveryRequired(recovery_ref) => {
-                harness_application::ProviderEffectOutcome::Unknown {
-                    recovery_ref: recovery_ref.clone(),
-                }
-            }
-            Self::Store(error)
-                if matches!(
-                    error.trust_error().map(|error| error.code),
-                    Some(harness_core::agentfirm_api::TrustErrorCode::RuntimeEffectUnknown)
-                ) =>
-            {
-                harness_application::ProviderEffectOutcome::Unknown {
-                    recovery_ref: error
-                        .trust_error()
-                        .map(|error| format!("{}:{}", error.resource_kind, error.resource_id))
-                        .unwrap_or_else(|| "runtime-command:unknown".to_string()),
-                }
-            }
-            Self::ProviderEffectAccepted(receipt_id) => {
-                harness_application::ProviderEffectOutcome::Accepted {
-                    receipt_id: receipt_id.clone(),
-                }
-            }
-            _ => harness_application::ProviderEffectOutcome::NotApplied {
-                reason: self.to_string(),
-            },
-        }
-    }
-}
+use daemon_error::{DaemonError as CliError, DaemonResult as CliResult};
 
 /// Whether canonical Message fabric still exposes a Host delivery that has not
 /// reached acknowledgement. The compatibility TeamMessage delivery policy is

@@ -54,7 +54,7 @@ pub(crate) fn validate_daemon_predecessor_recovery(
     node_id: &str,
     expected: Option<(&str, &str, u64)>,
 ) -> Result<PredecessorRecoveryIntent, (String, String)> {
-    if supervisor_daemon::daemon_status_via_socket(firm_home, node_id).is_some() {
+    if daemon_client::daemon_status_via_socket(firm_home, node_id).is_some() {
         return Err((
             "NODE_DAEMON_PREDECESSOR_RECOVERY_LIVE".into(),
             "a NodeDaemon socket is still live; Stop it before predecessor recovery".into(),

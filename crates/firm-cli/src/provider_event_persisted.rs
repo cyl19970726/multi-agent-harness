@@ -4,77 +4,19 @@ use harness_core::agentfirm_api::{ActorKind, ActorRef, TeamMembershipRole, TeamM
 use harness_core::{NativeSessionRef, NodeDaemonLeaseStatus};
 use harness_provider_events::{
     read_persisted_file_page, read_persisted_file_page_after, read_persisted_jsonl_snapshot,
-    read_persisted_jsonl_snapshot_after, PersistedFileBoundary, PersistedOrderingKey,
-    PersistedProjectionContext, PersistedReaderSource, ProviderKind, ProviderNativeEventRecord,
+    read_persisted_jsonl_snapshot_after, PersistedFileBoundary, PersistedProjectionContext,
+    PersistedReaderSource, ProviderKind,
 };
-use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::{current_unix_ms_u64, CliError, CliResult, HarnessStore};
 
 const PERSISTED_SESSION_READ_SCHEMA: &str = "agentfirm.native_session_read.v1";
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum PersistedSessionReadMode {
-    Snapshot,
-    Older,
-    After,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct PersistedSessionCursor {
-    pub source_generation: String,
-    pub ordering_key: PersistedOrderingKey,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct PersistedSessionViewer {
-    pub actor: ActorRef,
-    #[serde(default)]
-    pub authority_actors: Vec<ActorRef>,
-    /// Valid only on the machine-local AF_UNIX control path. Remote fabric
-    /// callers must present an exact AgentMember or Team Host identity.
-    #[serde(default)]
-    pub local_operator: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct PersistedSessionReadRequest {
-    pub execution_space_id: String,
-    pub project_binding_id: String,
-    pub team_id: String,
-    pub team_run_id: String,
-    pub agent_member_id: String,
-    pub agent_session_id: String,
-    pub agent_session_generation: u64,
-    pub native_session_fingerprint: String,
-    pub node_id: String,
-    pub node_daemon_id: String,
-    pub node_daemon_generation: u64,
-    pub mode: PersistedSessionReadMode,
-    #[serde(default)]
-    pub cursor: Option<PersistedSessionCursor>,
-    pub limit: usize,
-    pub viewer: PersistedSessionViewer,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct PersistedSessionReadResponse {
-    pub schema_version: String,
-    pub native_source_ref: String,
-    pub source_generation: String,
-    pub snapshot_watermark: Option<PersistedOrderingKey>,
-    pub records: Vec<ProviderNativeEventRecord>,
-    pub has_more: bool,
-    pub next_before: Option<PersistedSessionCursor>,
-    pub incomplete_tail: bool,
-    pub source_reset: bool,
-}
+pub(crate) use crate::daemon_protocol::{
+    PersistedSessionCursor, PersistedSessionReadMode, PersistedSessionReadRequest,
+    PersistedSessionReadResponse, PersistedSessionViewer,
+};
 
 pub(crate) fn native_session_fingerprint(
     session: &harness_core::agentfirm_api::NativeSessionRef,

@@ -28,14 +28,7 @@ pub(crate) struct ProviderCapabilities {
     pub reconcile_effect: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub(crate) struct ProviderPermissionMapping {
-    pub provider: String,
-    pub requested: PermissionCeiling,
-    pub effective: PermissionCeiling,
-    pub native_sandbox: String,
-    pub native_approval: String,
-}
+pub(crate) use crate::daemon_application_port::ProviderPermissionMapping;
 
 pub(crate) use harness_runtime_contract::{
     NativeControlPrimitive, ProviderControlAction, ProviderControlPlan, ProviderNativeControl,
@@ -69,13 +62,7 @@ pub(crate) struct ProviderAvailability {
     pub version_probe: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-pub(crate) struct NodeSessionCapabilities {
-    pub start: bool,
-    pub resume: bool,
-    pub cancel_turn: bool,
-    pub stop: bool,
-}
+pub(crate) use crate::daemon_application_port::NodeSessionCapabilities;
 
 /// Live provider handle owned by the machine NodeDaemon, never by a Team.
 /// New provider variants enter only after they implement the same start / stop

@@ -22,6 +22,34 @@ machine-wide drain. A partial first acquisition rolls back only leases that
 this instance acquired before provider admission opened. Lease expiry alone is
 never a provider-drain receipt and never permits a successor to steal authority.
 
+## Daemon application boundary in firm-cli
+
+The daemon currently remains in `firm-cli`. Its `DaemonApplicationPort` is a
+finite application boundary: the CLI prepares and drives TeamRuns, constructs
+provider handles, resolves Execution Space configuration, reads native Sessions
+with the existing authorization checks, and composes recovery records and wake
+callbacks. The daemon keeps its contexts, admission gate, control dispatch,
+authority renewal and shutdown ordering. This is not another runtime driver or
+an additional persisted authority.
+
+`PreparedRun` is a non-Clone, Send owned handle consumed by `drive`; its CLI
+implementation owns the original `PreparedTeamRunStart` and registration.
+Preparation and thread joins remain outside the contexts mutex. Registration
+Drop still stops and joins control, stops and joins heartbeat, releases the
+Supervisor lease, then invalidates local authority under its gate. Opaque
+NodeSession handles likewise retain their original provider adapter's Drop.
+
+`daemon_error` preserves the finite typed errors and their Display text;
+provider-effect classification stays a CLI application helper. Registry errors
+cross the port as their existing displayed configuration error, at the same
+Usage-mapping call sites; Store/CAS errors remain typed. `daemon_protocol` owns
+one definition of the native-read and wake DTOs. `daemon_client` owns socket
+requests, single-send start delegation and bounded start observation. No wire
+shape, timeout, replay policy, or native-transcript authority changes here.
+The neutral coordination helpers, diagnostics and start-failure classifier are
+shared implementation dependencies for the later package extraction; no
+`firm-node-daemon` package has been introduced by this boundary step.
+
 ## Canonical separation
 
 ```text

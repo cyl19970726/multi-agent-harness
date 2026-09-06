@@ -873,7 +873,7 @@ impl HttpExchange<'_> {
                 issued_at: now,
             };
             let firm_home = execution_space::firm_home().map_err(execution_space_err)?;
-            match supervisor_daemon::runtime_command_via_socket(
+            match daemon_client::runtime_command_via_socket(
                 &firm_home,
                 &envelope.target_node_id,
                 &envelope,

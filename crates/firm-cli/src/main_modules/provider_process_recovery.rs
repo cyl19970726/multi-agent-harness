@@ -127,7 +127,7 @@ pub(super) fn provider_retry_authority_after_failure(
     if error.is_provider_process_admission_closed() {
         return harness_application::ProviderRetryAuthority::StopNoRetry;
     }
-    let error_outcome = error.provider_effect_outcome();
+    let error_outcome = provider_effect_outcome(error);
     match (&error_outcome, durable_process_outcome) {
         (harness_application::ProviderEffectOutcome::Unknown { .. }, _) => {
             harness_application::provider_retry_authority(
@@ -181,6 +181,37 @@ pub(super) fn provider_process_idempotency_key(
         supervisor_generation,
         transport_attempt,
     )
+}
+
+fn provider_effect_outcome(error: &CliError) -> harness_application::ProviderEffectOutcome {
+    match error {
+        CliError::RuntimeRecoveryRequired(recovery_ref) => {
+            harness_application::ProviderEffectOutcome::Unknown {
+                recovery_ref: recovery_ref.clone(),
+            }
+        }
+        CliError::Store(error)
+            if matches!(
+                error.trust_error().map(|error| error.code),
+                Some(harness_core::agentfirm_api::TrustErrorCode::RuntimeEffectUnknown)
+            ) =>
+        {
+            harness_application::ProviderEffectOutcome::Unknown {
+                recovery_ref: error
+                    .trust_error()
+                    .map(|error| format!("{}:{}", error.resource_kind, error.resource_id))
+                    .unwrap_or_else(|| "runtime-command:unknown".to_string()),
+            }
+        }
+        CliError::ProviderEffectAccepted(receipt_id) => {
+            harness_application::ProviderEffectOutcome::Accepted {
+                receipt_id: receipt_id.clone(),
+            }
+        }
+        _ => harness_application::ProviderEffectOutcome::NotApplied {
+            reason: error.to_string(),
+        },
+    }
 }
 
 #[cfg(test)]
@@ -260,7 +291,7 @@ mod tests {
     fn cli_provider_errors_preserve_effect_certainty_without_message_parsing() {
         let unknown = CliError::RuntimeRecoveryRequired("runtime-command:uncertain".into());
         assert_eq!(
-            unknown.provider_effect_outcome(),
+            provider_effect_outcome(&unknown),
             harness_application::ProviderEffectOutcome::Unknown {
                 recovery_ref: "runtime-command:uncertain".into()
             }
@@ -268,7 +299,7 @@ mod tests {
 
         let not_applied = CliError::Usage("spawn failed before provider input".into());
         assert_eq!(
-            not_applied.provider_effect_outcome(),
+            provider_effect_outcome(&not_applied),
             harness_application::ProviderEffectOutcome::NotApplied {
                 reason: "spawn failed before provider input".into()
             }
@@ -286,7 +317,7 @@ mod tests {
             serde_json::to_string(&trust_error).expect("TrustError serializes"),
         ));
         assert_eq!(
-            store_unknown.provider_effect_outcome(),
+            provider_effect_outcome(&store_unknown),
             harness_application::ProviderEffectOutcome::Unknown {
                 recovery_ref: "runtime_command:runtime-command:1".into()
             }
@@ -305,28 +336,28 @@ mod tests {
         );
         let accepted = CliError::ProviderEffectAccepted("runtime-command:applied".into());
         assert_eq!(
-            accepted.provider_effect_outcome(),
+            provider_effect_outcome(&accepted),
             harness_application::ProviderEffectOutcome::Accepted {
                 receipt_id: "runtime-command:applied".into()
             }
         );
         assert_eq!(
             harness_application::provider_retry_authority(
-                &accepted.provider_effect_outcome(),
+                &provider_effect_outcome(&accepted),
                 1,
                 3,
             ),
             harness_application::ProviderRetryAuthority::StopNoRetry
         );
         assert_eq!(
-            harness_application::provider_retry_authority(&unknown.provider_effect_outcome(), 1, 3,),
+            harness_application::provider_retry_authority(&provider_effect_outcome(&unknown), 1, 3,),
             harness_application::ProviderRetryAuthority::RequireReconciliation {
                 recovery_ref: "runtime-command:uncertain".into()
             }
         );
         assert_eq!(
             harness_application::provider_retry_authority(
-                &not_applied.provider_effect_outcome(),
+                &provider_effect_outcome(&not_applied),
                 1,
                 3,
             ),
@@ -334,7 +365,7 @@ mod tests {
         );
         assert_eq!(
             harness_application::provider_retry_authority(
-                &not_applied.provider_effect_outcome(),
+                &provider_effect_outcome(&not_applied),
                 3,
                 3,
             ),

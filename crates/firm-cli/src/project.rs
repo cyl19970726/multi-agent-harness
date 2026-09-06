@@ -128,18 +128,7 @@ pub fn active_project_path(firm_home: &Path) -> PathBuf {
 /// Canonicalize a path, falling back to a lexical absolutization when the path
 /// does not yet exist (e.g. a project we are about to `init`). This keeps id
 /// derivation stable whether or not the dir is materialized.
-pub fn canonicalize_best_effort(path: &Path) -> PathBuf {
-    if let Ok(canon) = std::fs::canonicalize(path) {
-        return canon;
-    }
-    if path.is_absolute() {
-        return path.to_path_buf();
-    }
-    match std::env::current_dir() {
-        Ok(cwd) => cwd.join(path),
-        Err(_) => path.to_path_buf(),
-    }
-}
+pub(crate) use crate::daemon_support::canonicalize_best_effort;
 
 /// The explicit operator override that lets a registry `store_root` outside
 /// the current FIRM_HOME load (with a WARNING line per startup).

@@ -10,6 +10,7 @@
 use super::tests::TestTree;
 use super::*;
 use crate::ProviderEffectSettlement;
+use crate::{bind_team_runtime_supervisor, ensure_team_message_fabric, TeamRunLedger};
 
 use harness_core::agentfirm_api::{
     AgentSessionStatus, RuntimeActivity, RuntimeCommandKind, RuntimeCommandPhase,
@@ -55,7 +56,8 @@ pub(super) fn member_named(
     run_id: &str,
     agent_member_id: &str,
 ) -> ProviderRuntimeProjection {
-    crate::latest_member_runs_in_append_order(store)
+    store
+        .latest_member_runs()
         .expect("member runs")
         .into_iter()
         .find(|member| member.team_run_id == run_id && member.agent_member_id == agent_member_id)
@@ -199,6 +201,7 @@ pub(super) fn drain_fixture(label: &str) -> DrainFixture {
         contexts: Mutex::new(Vec::new()),
         supervisor_start_gate: Mutex::new(()),
         session_runtimes: Mutex::new(HashMap::new()),
+        application: Arc::new(DaemonApplication),
         native_session_wake_endpoint: Arc::new(Mutex::new(HashMap::new())),
         max_concurrency: 1,
         input_acceptance_secs: 1,
@@ -260,7 +263,8 @@ impl DrainFixture {
                 600_000,
             )
             .expect("acquire Supervisor lease");
-        let run = crate::latest_team_run(&self.store, &self.run_id).expect("TeamRun");
+        let run =
+            crate::daemon_support::latest_team_run(&self.store, &self.run_id).expect("TeamRun");
         let members = crate::latest_member_runs_in_append_order(&self.store)
             .expect("member runs")
             .into_iter()
