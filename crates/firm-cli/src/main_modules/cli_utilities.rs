@@ -303,7 +303,7 @@ pub(super) fn print_help() {
   mission list|show (read-only legacy rows; Mission writers retired by DOC-108)
   mission log show --mission-id <id> [--tail <n>] (read-only legacy)
   legacy wave list|show|history (historical reads only)
-  team-run create|list|status|recover|host-inbox|message|bind-host|host-lease-status|renew-host-lease|release-host-lease|inbox|add-member|rename-member|interrupt-member|close-member|reopen-member|deactivate-member|start|answer-message|events|complete|cancel
+  team-run create|list|status|recover|host-inbox|message|validate-host-session|bind-host|host-lease-status|renew-host-lease|release-host-lease|inbox|add-member|rename-member|interrupt-member|close-member|reopen-member|deactivate-member|start|answer-message|events|complete|cancel
   team-run create --no-initial-work
       Create MemberRuns without per-member bootstrap Work; Host assignment can follow directly.
   team-run host-inbox --surface <surface> --thread-id <id> [--all] [--json]

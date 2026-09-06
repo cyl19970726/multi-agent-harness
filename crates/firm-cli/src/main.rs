@@ -541,6 +541,12 @@ fn run() -> CliResult<()> {
     if args.first().map(String::as_str) == Some("cheatsheet") {
         return cheatsheet_command(&args[1..]);
     }
+    // Native Host discovery is metadata-only and must not initialize a Store.
+    if args.first().map(String::as_str) == Some("team-run")
+        && args.get(1).map(String::as_str) == Some("validate-host-session")
+    {
+        return validate_host_session_command(&args[2..]);
+    }
     // Resolve the store root FIRST (strips a global `--store`/`--project` from
     // `args` so the subcommand parsers never see them). Commands started from
     // different working directories converge on one coordination store through

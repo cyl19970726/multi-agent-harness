@@ -281,3 +281,22 @@ pub(super) fn dispatch_headless_host_once(
             .to_string(),
     ))
 }
+
+/// Read-only metadata discovery for offline evidence verification. Never binds
+/// a Host or acquires/renews a lease, and never returns native transcript data.
+pub(super) fn validate_host_session_command(args: &[String]) -> CliResult<()> {
+    let surface = required(args, "--surface")?;
+    let thread_id = required(args, "--thread-id")?;
+    let receipt = RuntimeHostSessionValidator::default()
+        .validate(&HostSessionValidationRequest {
+            host_surface: &surface,
+            host_thread_id: &thread_id,
+        })
+        .map_err(CliError::Usage)?;
+    print_json(&serde_json::json!({
+        "host_surface": receipt.host_surface,
+        "host_thread_id": receipt.host_thread_id,
+        "owner_id": receipt.owner_id,
+        "discovery_source": receipt.discovery_source,
+    }))
+}

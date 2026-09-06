@@ -18,6 +18,8 @@ mod firm_env;
 mod completed_run_close;
 #[path = "team_run_daemon/startcycle_shutdown.rs"]
 mod startcycle_shutdown;
+#[path = "team_run_daemon/verifier_review_message.rs"]
+mod verifier_review_message;
 
 use firm_env::{
     create_canonical_agent_member, current_project_id, run_firm, run_firm_with_env, TempHome,
