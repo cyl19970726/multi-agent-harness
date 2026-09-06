@@ -405,6 +405,7 @@ pub(crate) fn prepare_provider_effect(
     content: &str,
     provider_attempt: u64,
 ) -> CliResult<ProviderEffectAdmission> {
+    ledger.require_supervisor_lease()?;
     prepare_provider_effect_kind(
         ledger,
         member,

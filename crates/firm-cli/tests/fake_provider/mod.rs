@@ -199,6 +199,13 @@ while IFS= read -r line; do
           sleep 0.02
         done
       fi
+      if [ "${FAKE_KIMI_TERMINAL_ON_FIRST_RELEASE:-0}" = "1" ] && [ "$prompt_count" = "1" ]; then
+        printf '{"jsonrpc":"2.0","id":%s,"result":{"stopReason":"cancelled"}}\n' "$prompt_id"
+        if [ -n "${FAKE_KIMI_TERMINAL_SENT_MARKER:-}" ]; then
+          : > "$FAKE_KIMI_TERMINAL_SENT_MARKER"
+        fi
+        continue
+      fi
       if [ "${FAKE_KIMI_WAIT:-0}" = "1" ]; then
         continue
       fi
@@ -368,6 +375,12 @@ while IFS= read -r line; do
       printf '{"jsonrpc":"2.0","id":%s,"result":{"stopReason":"end_turn"}}\n' "$prompt_id"
       ;;
     *'"method":"session/cancel"'*)
+      if [ "${FAKE_KIMI_IGNORE_CANCEL:-0}" = "1" ]; then
+        if [ -n "${FAKE_KIMI_IGNORED_CANCEL_MARKER:-}" ]; then
+          : > "$FAKE_KIMI_IGNORED_CANCEL_MARKER"
+        fi
+        continue
+      fi
       if [ -n "${FAKE_KIMI_CANCEL_MARKER:-}" ]; then
         printf '%s\n' "$line" >> "$FAKE_KIMI_CANCEL_MARKER"
       fi
