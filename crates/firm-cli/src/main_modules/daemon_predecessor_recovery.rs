@@ -119,6 +119,10 @@ pub(crate) fn validate_daemon_predecessor_recovery(
 /// projection. `provider_process_groups_terminated_confirmed` is the
 /// Operator's external-fact confirmation; the CLI passes `true` after its own
 /// pid probe, the HTTP action passes its reviewed request field.
+/// On partial failure, the error detail is a JSON receipt retaining successful
+/// settlements; both CLI and HTTP preserve this detail in their error envelope.
+/// `evidence_ref` identifies this request. Repeating recovery does not replace
+/// the evidence ref on rows settled by an earlier successful attempt.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn recover_daemon_predecessor_spaces(
     firm_home: &Path,
@@ -177,6 +181,7 @@ pub(crate) fn recover_daemon_predecessor_spaces(
             Ok(recovery) => {
                 space_settlements.push(serde_json::json!({
                     "execution_space_id": space.id,
+                    "already_released": recovery.already_released,
                     "supervisors_released": recovery.supervisors_released,
                     "sessions_detached": recovery.sessions_detached,
                     "sessions_already_settled": recovery.sessions_already_settled,
@@ -186,13 +191,7 @@ pub(crate) fn recover_daemon_predecessor_spaces(
             Err(error) => failures.push(format!("{}: {error}", space.id)),
         }
     }
-    if !failures.is_empty() {
-        return Err((
-            "NODE_DAEMON_PREDECESSOR_RECOVERY_INCOMPLETE".into(),
-            failures.join("; "),
-        ));
-    }
-    Ok(serde_json::json!({
+    let mut receipt = serde_json::json!({
         "node_id": node_id,
         "daemon_id": intent.daemon_id,
         "instance_id": intent.instance_id,
@@ -201,7 +200,16 @@ pub(crate) fn recover_daemon_predecessor_spaces(
         "recovered_spaces": recovered_spaces,
         "space_settlements": space_settlements,
         "evidence_ref": evidence_ref,
-    }))
+    });
+    if !failures.is_empty() {
+        receipt["status"] = serde_json::json!("partial");
+        receipt["failures"] = serde_json::json!(failures);
+        return Err((
+            "NODE_DAEMON_PREDECESSOR_RECOVERY_INCOMPLETE".into(),
+            receipt.to_string(),
+        ));
+    }
+    Ok(receipt)
 }
 
 fn execution_space_error_pair(

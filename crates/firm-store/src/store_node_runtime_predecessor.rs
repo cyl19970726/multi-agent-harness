@@ -16,6 +16,9 @@ use super::*;
 pub struct NodeDaemonPredecessorRecovery {
     /// The predecessor lease as it stands after recovery.
     pub lease: NodeDaemonLease,
+    /// True only when the exact lease was already Released at admission.
+    /// This is a response projection, not an additional durable lease field.
+    pub already_released: bool,
     /// TeamRun ids whose Supervisor lease this recovery released.
     pub supervisors_released: Vec<String>,
     /// AgentSession ids this recovery detached.
@@ -87,6 +90,7 @@ impl HarnessStore {
         if lease.status == NodeDaemonLeaseStatus::Released {
             return Ok(NodeDaemonPredecessorRecovery {
                 lease,
+                already_released: true,
                 supervisors_released: Vec::new(),
                 sessions_detached: Vec::new(),
                 sessions_already_settled: Vec::new(),
@@ -266,6 +270,7 @@ impl HarnessStore {
         self.append_jsonl_unlocked("node_daemon_leases.jsonl", &lease)?;
         Ok(NodeDaemonPredecessorRecovery {
             lease,
+            already_released: false,
             supervisors_released,
             sessions_detached,
             sessions_already_settled,
