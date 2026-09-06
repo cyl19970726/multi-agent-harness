@@ -48,16 +48,24 @@ depends on it.
    `CanonicalWorkDelivery` and `CanonicalMessageDelivery`: three authority
    planes, three delivery ledgers. Its source facts are derived from the
    planes; its lifecycle is transport state.
-3. **It authorizes nothing, with one documented exception.** An
-   un-acknowledged HostAttention is the Host-intake precondition of exactly
-   one Work verb, `retarget_work_execution`, and a `WorkReviewRequested` row is
-   provenance evidence for a terminal Work. Both facts are stated in
-   `docs/current/architecture/agent-runtime.md` instead of the previous
-   absolute "delivery does not authorize Work mutation".
-4. A follow-up slice (S9 in SPEC-ADAPTATION-REFACTOR-01) re-expresses those
-   two gates on Work state itself, removes the three producer-less kinds and
-   the unreachable escalation path, and only then may folding Host
-   notifications into the Message plane be re-evaluated.
+3. **It authorizes nothing.** S9 removes the two historical readers described
+   above. The exact Host's versioned `ExecutionRetargeted` expresses its Work
+   disposition; notification ACK is not a prerequisite and no Work ACK state
+   or extra operation is introduced. Terminal execution provenance comes from
+   immutable Work submission operations or the atomic Result and its exact
+   execution binding/admission. Missing or ambiguous provenance fails closed.
+4. The three producer-less kinds are historical decode-only values, rejected
+   by current creation; old rows and `EscalationRequired` remain readable. The
+   unreachable escalation writer is removed. Folding Host notifications into
+   Messages remains a separate future decision.
+
+S9 clarification (2026-09-06): accepted
+[DEV-235-SPEC-v1](https://app.notion.com/p/3d349a4fa3798151a2d0cd6c104b1e1d)
+records the Owner-delegated decision. It replaces the old Task's illustrative
+ACK field and un-ACKed-refusal test, while retaining A-narrow. The local CLI
+remains a trusted same-user operator proxy, with exact Host membership and
+Work CAS checks; the old HTTP ACK's target-run-derived surface/thread was not
+independent caller authentication. S9 introduces no HTTP retarget endpoint.
 
 Rejected: declaring a fourth authority plane (it would legitimize a second
 inbox ledger, which the AgentInbox invariant forbids); folding HostAttention
@@ -66,10 +74,9 @@ against Hard Invariant 2).
 
 ## Consequences
 
-- Documentation is repaired: Notion `02` carries the delivery-ledger sentence,
-  SPEC-ARCH-BOUNDARY-01 carries an errata note, and `agent-runtime.md` names
-  the exception. No code changes in this ADR.
-- `http_team_actions.rs` is the attention claim/acknowledge writer; a change
-  to it is a kernel-tier change because it feeds the retarget gate.
-- ADR 0060's fold rules are unchanged; this ADR only names what the folded
-  projection is.
+- Work decisions no longer read notification lifecycle records. Existing
+  Work version, exact Host, successor Team scope, nonterminal state, and
+  claimed-delivery reconciliation checks remain in force.
+- Historical enum decoding is preserved rather than narrowing persistent
+  schemas. HostAttention remains a delivery ledger, not a second Work ledger.
+- ADR 0060's notification fold rules are unchanged.

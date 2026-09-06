@@ -283,6 +283,16 @@ impl HarnessStore {
         &self,
         attention: &HostAttention,
     ) -> StoreResult<HostAttention> {
+        if matches!(
+            attention.kind,
+            HostAttentionKind::WorkDeliveryFailed
+                | HostAttentionKind::MemberStoppedWithOwnedReadyWork
+                | HostAttentionKind::MemberFailedWithOwnedReadyWork
+        ) {
+            return Err(StoreError::Conflict(
+                "LEGACY_HOST_ATTENTION_KIND: historical notification kind is read-only".into(),
+            ));
+        }
         if attention.kind == HostAttentionKind::HostBindingStale {
             return Err(StoreError::Conflict(
                 "HostBindingStale attention is derived by lease reconciliation".to_string(),

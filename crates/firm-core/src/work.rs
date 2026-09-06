@@ -926,17 +926,20 @@ pub enum HostAttentionKind {
     WorkCancelled,
     WorkPrerequisiteCompleted,
     WorkPrerequisiteNeedsReconciliation,
+    /// Historical decode-only kind; current Store creation rejects it.
     WorkDeliveryFailed,
+    /// Historical decode-only kind; current Store creation rejects it.
     MemberStoppedWithOwnedReadyWork,
+    /// Historical decode-only kind; current Store creation rejects it.
     MemberFailedWithOwnedReadyWork,
 }
 
 /// Transport/intake state for one Host attention row.
 ///
 /// `Delivered` proves only that the exact provider-native Host task accepted
-/// the notification. `Acknowledged` proves Host intake. `EscalationRequired`
-/// is set by a headless host dispatcher when the attention needs explicit human
-/// decision (accept/merge/cancel) that the triage-only host cannot make.
+/// the notification. `Acknowledged` records notification intake only.
+/// `EscalationRequired` remains readable historical transport state; there is
+/// no current escalation writer.
 /// Neither `Acknowledged` nor `EscalationRequired` mutates the referenced Work.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

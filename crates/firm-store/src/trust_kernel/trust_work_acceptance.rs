@@ -287,6 +287,87 @@ impl HarnessStore {
             side_records,
         )
     }
+    /// Resolve execution provenance from the immutable Result transaction, never
+    /// from its independently delivered Host notification or a latest runtime.
+    pub(crate) fn result_submission_member_run_unlocked(
+        &self,
+        submitted: &Work,
+    ) -> StoreResult<Option<String>> {
+        let run = self.require_team_run_unlocked(&submitted.team_run_id)?;
+        let space = self.current_team_run_execution_space_unlocked(&run)?;
+        let envelopes = self.trust_operation_envelopes_unlocked()?;
+        let mut candidates = Vec::new();
+        for row in &envelopes {
+            if row.execution_space_id != space
+                || row.operation.event.aggregate_kind != "work_report"
+            {
+                continue;
+            }
+            let report = event_projection::<WorkReport>(row)?;
+            if report.work_id == submitted.id
+                && report.kind == WorkReportKind::Result
+                && self.result_revision_is_current_unlocked(&report, submitted)?
+            {
+                candidates.push(row);
+            }
+        }
+        if candidates.is_empty() {
+            return Ok(None);
+        }
+        // Reuse acceptance's immutable, unique, atomic Result checks.
+        let report = self.current_result_report_unlocked(&space, submitted)?;
+        let [envelope] = candidates.as_slice() else {
+            return Err(report_acceptance_error(
+                submitted,
+                "ambiguous Result provenance",
+            ));
+        };
+        let bindings = envelope
+            .operation
+            .immutable_side_records
+            .iter()
+            .filter_map(|record| {
+                serde_json::from_value::<WorkExecutionBinding>(record.clone()).ok()
+            })
+            .filter(|binding| binding.work_id == submitted.id)
+            .collect::<Vec<_>>();
+        let [binding] = bindings.as_slice() else {
+            return Err(report_acceptance_error(
+                submitted,
+                "Result lacks a unique exact submitted execution binding",
+            ));
+        };
+        if binding.status != WorkExecutionBindingStatus::Released
+            || binding.work_revision >= report.work_revision
+            || binding.agent_member_id != report.authored_by.id
+            || Some(binding.team_id.as_str()) != submitted.accountable_team_id.as_deref()
+            || Some(binding.team_membership_id.as_str())
+                != submitted.assignee_membership_id.as_deref()
+            || self.work_responsibility_changed_after_revision_unlocked(
+                &submitted.id,
+                binding.work_revision,
+            )?
+        {
+            return Err(report_acceptance_error(
+                submitted,
+                "Result execution responsibility mismatch",
+            ));
+        }
+        let admission = self.work_execution_runtime_binding(&space, &binding.id)?;
+        if admission.target_member_run_generation.is_none()
+            || admission.target_session_id.as_deref() != Some(binding.agent_session_id.as_str())
+            || admission.target_runtime_generation != Some(binding.agent_session_generation)
+        {
+            return Err(report_acceptance_error(
+                submitted,
+                "Result runtime admission is incomplete",
+            ));
+        }
+        admission.target_member_run_id.map(Some).ok_or_else(|| {
+            report_acceptance_error(submitted, "Result runtime admission lacks MemberRun")
+        })
+    }
+
     fn current_result_report_unlocked(
         &self,
         space: &str,
@@ -362,10 +443,18 @@ impl HarnessStore {
         report: &WorkReport,
         current: &Work,
     ) -> StoreResult<bool> {
-        if report.work_revision == current.version {
+        self.work_submission_revision_is_current_unlocked(report.work_revision, current)
+    }
+
+    pub(crate) fn work_submission_revision_is_current_unlocked(
+        &self,
+        revision: u64,
+        current: &Work,
+    ) -> StoreResult<bool> {
+        if revision == current.version {
             return Ok(true);
         }
-        if report.work_revision > current.version {
+        if revision > current.version {
             return Ok(false);
         }
         let mut updates = self
@@ -373,28 +462,25 @@ impl HarnessStore {
             .into_iter()
             .filter(|operation| {
                 operation.work.id == current.id
-                    && operation.event.resulting_version > report.work_revision
+                    && operation.event.resulting_version > revision
                     && operation.event.resulting_version <= current.version
             })
             .collect::<Vec<_>>();
         updates.sort_by_key(|operation| operation.event.resulting_version);
-        Ok(
-            updates.len() as u64 == current.version - report.work_revision
-                && updates.iter().enumerate().all(|(offset, operation)| {
-                    operation.event.expected_version == report.work_revision + offset as u64
-                        && operation.event.resulting_version
-                            == report.work_revision + offset as u64 + 1
-                        && operation.event.kind == firm_core::WorkEventKind::Updated
-                        && operation
-                            .event
-                            .payload
-                            .get("reason")
-                            .and_then(Value::as_str)
-                            == Some("github_evidence_refresh")
-                        && operation.work.phase == firm_core::WorkPhase::Review
-                        && operation.work.condition == firm_core::WorkCondition::Normal
-                }),
-        )
+        Ok(updates.len() as u64 == current.version - revision
+            && updates.iter().enumerate().all(|(offset, operation)| {
+                operation.event.expected_version == revision + offset as u64
+                    && operation.event.resulting_version == revision + offset as u64 + 1
+                    && operation.event.kind == firm_core::WorkEventKind::Updated
+                    && operation
+                        .event
+                        .payload
+                        .get("reason")
+                        .and_then(Value::as_str)
+                        == Some("github_evidence_refresh")
+                    && operation.work.phase == firm_core::WorkPhase::Review
+                    && operation.work.condition == firm_core::WorkCondition::Normal
+            }))
     }
 }
 

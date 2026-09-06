@@ -657,6 +657,20 @@ impl HarnessStore {
             work_id,
             WorkEventKind::ExecutionRetargeted,
         )? {
+            require_host_actor(&context.performed_by_actor)?;
+            if existing.event.performed_by_actor.id != context.performed_by_actor.id
+                || existing.event.expected_version != expected_version
+                || existing
+                    .event
+                    .payload
+                    .get("successor_team_run_id")
+                    .and_then(serde_json::Value::as_str)
+                    != Some(successor_team_run_id)
+            {
+                return Err(StoreError::Conflict(
+                    "IDEMPOTENCY_KEY_REUSED: retarget replay must match Host, Work version and successor".into(),
+                ));
+            }
             return Ok(existing.work);
         }
         require_host_actor(&context.performed_by_actor)?;
@@ -675,21 +689,8 @@ impl HarnessStore {
                 "work {work_id} is terminal and cannot be retargeted"
             )));
         }
-        self.reconcile_work_host_attentions_unlocked()?;
-        if self
-            .latest_host_attentions_unlocked()?
-            .values()
-            .any(|attention| {
-                attention.work_id == current.id
-                    && attention.team_run_id == current.team_run_id
-                    && attention.needs_host_action()
-            })
-        {
-            return Err(StoreError::Conflict(format!(
-                "HOST_ATTENTION_PENDING: Work {work_id} has unresolved attention owned by TeamRun {}; the exact Host must ACK intake before execution retarget",
-                current.team_run_id
-            )));
-        }
+        // The versioned Host decision is the intake action. Notification
+        // transport/ACK state never gates a Work transition (ADR 0064, S9).
         let team_id = current.accountable_team_id.clone().ok_or_else(|| {
             StoreError::Conflict(format!(
                 "WORK_NOT_TEAM_SCOPED: run responsibility migration for Work {work_id} before retargeting execution"

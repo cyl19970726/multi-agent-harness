@@ -113,11 +113,14 @@ Work events and Messages remain independent canonical planes; runtime and
 recovery attentions (`HostAttention`) are the Host-notification delivery
 ledger derived from them, the peer of `CanonicalWorkDelivery` and
 `CanonicalMessageDelivery`, not a fourth plane (ADR 0064). The daemon may
-batch them into the next Host cycle. Delivery does not authorize Work
-mutation, with exactly one documented exception: an un-acknowledged
-HostAttention is the Host-intake precondition of `retarget_work_execution`,
-and a `WorkReviewRequested` attention row is provenance evidence for a
-terminal Work. Provider completion does not mean Host acceptance. Ordinary
+batch them into the next Host cycle. Delivery never authorizes Work mutation.
+The exact Host's versioned `ExecutionRetargeted` is the Work intake decision;
+notification delivery or ACK is not a prerequisite. The local CLI acts as a
+trusted same-user operator proxy for the configured Host; this is not proof of
+an authenticated Host executor. Terminal Work provenance comes from the exact
+Work submission operation or atomic Result and execution admission, never a
+notification row. No Work ACK field or second intake operation exists (S9).
+Provider completion does not mean Host acceptance. Ordinary
 progress is batched; decisions, blocked Work,
 submission, direct Messages, and recovery facts can wake an idle managed Host.
 Host-authored status updates do not recursively wake that same Host.

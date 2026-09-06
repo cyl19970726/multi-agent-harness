@@ -579,54 +579,6 @@ impl HarnessStore {
         Ok(attention)
     }
 
-    /// Mark a Host attention as requiring explicit human escalation. Only valid
-    /// from `Actionable` or `Claimed` states. This is a terminal state set by
-    /// the headless host dispatcher when an attention needs human decision
-    /// (accept/merge/cancel) that the triage-only host cannot make.
-    pub fn escalate_host_attention(
-        &self,
-        attention_id: &str,
-        reason: &str,
-        updated_at: &str,
-    ) -> StoreResult<HostAttention> {
-        require_non_empty_store(attention_id, "Host attention id")?;
-        require_non_empty_store(reason, "Host attention escalation reason")?;
-        require_non_empty_store(updated_at, "Host attention updated_at")?;
-        self.init()?;
-        let _lock = self.acquire_write_lock()?;
-        self.reconcile_work_host_attentions_unlocked()?;
-        let mut attention = self.require_host_attention_unlocked(attention_id)?;
-        if attention.status == HostAttentionStatus::EscalationRequired {
-            return Ok(attention);
-        }
-        if attention.status != HostAttentionStatus::Actionable
-            && attention.status != HostAttentionStatus::Claimed
-        {
-            return Err(StoreError::Conflict(format!(
-                "HostAttention {attention_id} is not in a state that can be escalated (current: {:?})",
-                attention.status
-            )));
-        }
-        // Release any stale claim so the attention is cleanly terminal.
-        attention.status = HostAttentionStatus::EscalationRequired;
-        attention.claim_id = None;
-        attention.claimed_host_surface = None;
-        attention.claimed_host_thread_id = None;
-        attention.claimed_host_lease_id = None;
-        attention.claimed_host_lease_generation = None;
-        attention.claimed_host_lease_owner_id = None;
-        attention.claimed_recipient_member_run_id = None;
-        attention.claimed_recipient_session_id = None;
-        attention.claimed_recipient_session_generation = None;
-        attention.claimed_node_daemon_id = None;
-        attention.claimed_node_daemon_generation = None;
-        attention.provider_receipt_id = None;
-        attention.last_failure_reason = Some(reason.to_string());
-        attention.updated_at = updated_at.to_string();
-        self.append_jsonl_unlocked("host_attentions.jsonl", &attention)?;
-        Ok(attention)
-    }
-
     /// Return actionable Host attentions whose `created_at` timestamp is older
     /// than `older_than_unix_ms`. Used by the host dispatcher to find attentions
     /// eligible for headless triage.
