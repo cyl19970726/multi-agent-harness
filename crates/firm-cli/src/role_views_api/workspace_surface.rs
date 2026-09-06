@@ -858,9 +858,9 @@ mod runtime_truth_tests {
         })
     }
 
-    fn command(status: &str, failure_code: Option<&str>) -> Value {
+    fn command(phase: &str, failure_code: Option<&str>) -> Value {
         json!({
-            "id":"runtime-command-1","command":"start_cycle","status":status,
+            "id":"runtime-command-1","command":"start_cycle","phase":phase,
             "failure_code":failure_code,"updated_at":"2026-08-31T10:01:00Z",
             "binding":{"target_member_run_id":"member-run-1","target_member_run_generation":2,
                 "target_session_id":"agent-session-1","target_runtime_generation":4}
@@ -930,7 +930,7 @@ mod runtime_truth_tests {
         let member = member("idle", "active");
         let session = session("active", "idle");
         let recovery = command("recovery_required", Some("PROVIDER_IDLE_TIMEOUT"));
-        let mut applied = command("applied", None);
+        let mut applied = command("settled", None);
         applied["id"] = json!("runtime-command-2");
         applied["updated_at"] = json!("2026-08-31T10:02:00Z");
         let truth = agent_workspace_runtime_truth(
@@ -955,7 +955,7 @@ mod runtime_truth_tests {
     fn partial_runtime_command_bindings_cannot_override_exact_settlement() {
         let member = member("idle", "active");
         let session = session("active", "idle");
-        let mut applied = command("applied", None);
+        let mut applied = command("settled", None);
         applied["updated_at"] = json!("2026-08-31T10:01:00Z");
 
         for (mismatched_field, mismatched_value) in [
