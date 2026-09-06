@@ -374,3 +374,89 @@ fn ordinary_candidate_acceptance_retains_verifier_payload() {
     assert_eq!(accepted.event.payload["candidate_fingerprint"], fingerprint);
     assert_eq!(accepted.event.payload["work_report_id"], "candidate-report");
 }
+
+#[test]
+fn ordinary_acceptance_replays_after_two_outer_misses_with_different_generated_times() {
+    let harness = TestStore::new("accept-replay-interleaving");
+    let team = seed_active_team_work(&harness.store, "accept-replay-interleaving", "work-1");
+    submit_report_only(&harness, &team);
+    let ctx = context(human("reviewer"), "work.accept", "concurrent-accept", 4);
+
+    // Deterministically schedule both public service replay lookups before
+    // either transaction. Each caller therefore proceeds with its own server time.
+    for _ in 0..2 {
+        assert!(!harness
+            .store
+            .canonical_operations_for_space(SPACE)
+            .unwrap()
+            .iter()
+            .any(|operation| operation.event.idempotency_key == ctx.idempotency_key));
+    }
+    let first = harness
+        .store
+        .accept_current_trust_work(&ctx, &team, "work-1", "unix-ms:1000")
+        .unwrap();
+    let committed = harness.store.canonical_operations().unwrap();
+    let attentions = harness.store.host_attentions().unwrap();
+    let second = harness
+        .store
+        .accept_current_trust_work(&ctx, &team, "work-1", "unix-ms:1001")
+        .expect("time generated after an outer replay miss is not new request semantics");
+    assert!(!first.replayed);
+    assert!(
+        second.replayed,
+        "CLI must suppress its auxiliary effects for the losing retry"
+    );
+    assert_eq!(first.event, second.event);
+    assert_eq!(first.projection, second.projection);
+    assert_eq!(second.event.payload["updated_at"], "unix-ms:1000");
+    assert_eq!(harness.store.canonical_operations().unwrap(), committed);
+    assert_eq!(harness.store.host_attentions().unwrap(), attentions);
+
+    let mut different_version = ctx.clone();
+    different_version.expected_version = 5;
+    assert_eq!(
+        trust_code(
+            harness
+                .store
+                .accept_current_trust_work(&different_version, &team, "work-1", "unix-ms:1002",)
+                .unwrap_err()
+        ),
+        TrustErrorCode::IdempotencyKeyReused
+    );
+    assert_eq!(
+        trust_code(
+            harness
+                .store
+                .accept_current_trust_work(&ctx, "another-team", "work-1", "unix-ms:1002",)
+                .unwrap_err()
+        ),
+        TrustErrorCode::IdempotencyKeyReused
+    );
+    assert_eq!(
+        trust_code(
+            harness
+                .store
+                .accept_current_trust_work(&ctx, &team, "another-work", "unix-ms:1002",)
+                .unwrap_err()
+        ),
+        TrustErrorCode::IdempotencyKeyReused
+    );
+    for changed_scope in ["actor", "space", "action"] {
+        let mut changed = ctx.clone();
+        match changed_scope {
+            "actor" => changed.authenticated_actor = human("different-reviewer"),
+            "space" => changed.execution_space_id = "another-space".into(),
+            _ => changed.command_name = "work.another_action".into(),
+        }
+        assert!(
+            harness
+                .store
+                .accept_current_trust_work(&changed, &team, "work-1", "unix-ms:1002",)
+                .is_err(),
+            "changed {changed_scope} must not become an ordinary replay"
+        );
+    }
+    assert_eq!(harness.store.canonical_operations().unwrap(), committed);
+    assert_eq!(harness.store.host_attentions().unwrap(), attentions);
+}

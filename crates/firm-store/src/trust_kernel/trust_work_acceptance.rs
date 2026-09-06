@@ -61,7 +61,16 @@ impl HarnessStore {
                         && envelope.operation.event.idempotency_key == context.idempotency_key
                 })
         {
-            if replay.operation.event.canonical_request_fingerprint != request_fingerprint
+            let mut replay_request = request_payload.clone();
+            if exact_candidate.is_none() {
+                // Both ordinary callers may miss the service's unlocked replay
+                // check. Compare using the committed server time under this lock;
+                // a later generated time is not a different public Work request.
+                // Explicit Candidate callers retain their original full identity.
+                replay_request["updated_at"] = replay.operation.event.payload["updated_at"].clone();
+            }
+            if replay.operation.event.canonical_request_fingerprint
+                != canonical_json_fingerprint(&replay_request)
                 || replay.operation.event.aggregate_kind != "work"
                 || replay.operation.event.aggregate_id != work_id
                 || replay.operation.event.expected_version != context.expected_version

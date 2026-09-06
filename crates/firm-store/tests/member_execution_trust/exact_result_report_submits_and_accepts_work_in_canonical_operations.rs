@@ -99,4 +99,25 @@ fn exact_result_report_submits_and_accepts_work_in_canonical_operations() {
         .expect("accept replay");
     assert!(replay.replayed);
     assert_eq!(replay.event.id, accepted.event.id);
+    let committed = harness.store.canonical_operations().unwrap();
+    for (report_id, fingerprint, time) in [
+        (
+            "report-accept",
+            candidate_fingerprint.as_str(),
+            "different-explicit-time",
+        ),
+        ("other-report", candidate_fingerprint.as_str(), "t5"),
+        ("report-accept", "other-explicit-candidate", "t5"),
+    ] {
+        assert_eq!(
+            trust_code(
+                harness
+                    .store
+                    .accept_trust_work(&command, &team_id, "work-1", report_id, fingerprint, time,)
+                    .unwrap_err()
+            ),
+            TrustErrorCode::IdempotencyKeyReused
+        );
+    }
+    assert_eq!(harness.store.canonical_operations().unwrap(), committed);
 }
