@@ -57,7 +57,7 @@ the returned execution/member roots are the members' worlds:
 
 ```bash
 firm team-run create --agent-team-id <team-id> --objective "<one-sentence run objective>" \
-  --member <name>:<provider>:<execution_mode> ... \
+  --member <name>:<role>:<provider>/<execution_mode> ... \
   [--member-worktree <name>:<path>] [--member-owned-path <name>:<path>] \
   [--resume-member <name>:<native-session-id>] \
   [--no-initial-work] \
@@ -65,11 +65,17 @@ firm team-run create --agent-team-id <team-id> --objective "<one-sentence run ob
 firm team-run start --id <team-run-id>
 ```
 
+The member grammar is `name:role:provider[/mode][:model]`; `name` identifies
+an existing AgentMember. With `--host-runtime-mode managed`, a Host example is
+`--member host-id:host:claude/claude_agent_sdk` and a Kimi member example is
+`--member kimi-id:member:kimi/kimi_acp`; replace both IDs with your actual
+members. The role is a separate colon field; the execution mode follows `/`.
+
 `--no-initial-work` (#728) creates the MemberRuns without the per-member
 bootstrap Work so your explicit assignment can follow. Assign Works **after**
 `team-run start`: a Work bound before the first provider Open is frozen against
 runtime facts the member's first round invalidates. `team-run add-member --id
-<run> --member <name>:<provider>:<mode> [--initial-work "<brief>"]` joins a
+<run> --member <name>:<role>:<provider>/<mode> [--initial-work "<brief>"]` joins a
 member to a running run and provisions its AgentSession (#749).
 
 ## 2. Decompose into bounded Works
