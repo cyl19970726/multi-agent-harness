@@ -624,26 +624,27 @@ for (const token of authorityWriterTokens) {
   }
 }
 
-const teamLifecycleTokens = [
-  "fn scan_and_adopt(",
-  "fn start_supervising(",
-  "TeamSupervisorRegistration::start(",
-  "fn reap_finished(",
-];
-for (const path of productionRustPaths) {
-  const content = read(path);
-  for (const token of teamLifecycleTokens) {
-    if (path !== teamSupervisionPath && content.includes(token)) {
-      failures.push(
-        `${path}: Team supervisor lifecycle escaped ${teamSupervisionPath}: ${token}`,
-      );
+const daemonApplicationPath = "crates/firm-cli/src/daemon_application.rs";
+const teamLifecycleOwners = new Map([
+  [
+    teamSupervisionPath,
+    ["fn scan_and_adopt(", "fn start_supervising(", "fn reap_finished("],
+  ],
+  [daemonApplicationPath, ["TeamSupervisorRegistration::start("]],
+]);
+for (const [ownerPath, tokens] of teamLifecycleOwners) {
+  const owner = read(ownerPath);
+  for (const token of tokens) {
+    if (!owner.includes(token)) {
+      failures.push(`${ownerPath}: missing lifecycle operation ${token}`);
     }
-  }
-}
-const teamSupervision = read(teamSupervisionPath);
-for (const token of teamLifecycleTokens) {
-  if (!teamSupervision.includes(token)) {
-    failures.push(`${teamSupervisionPath}: missing lifecycle operation ${token}`);
+    for (const path of productionRustPaths) {
+      if (path !== ownerPath && read(path).includes(token)) {
+        failures.push(
+          `${path}: Team supervisor lifecycle escaped ${ownerPath}: ${token}`,
+        );
+      }
+    }
   }
 }
 
@@ -653,7 +654,7 @@ const countOccurrences = (content, token) => content.split(token).length - 1;
 for (const path of productionRustPaths) {
   const count = countOccurrences(read(path), "drive_prepared_team_run(");
   const expected =
-    path === driveDefinitionPath || path === teamSupervisionPath ? 1 : 0;
+    path === driveDefinitionPath || path === daemonApplicationPath ? 1 : 0;
   if (count !== expected) {
     failures.push(
       `${path}: expected ${expected} drive_prepared_team_run definition/call occurrence(s), found ${count}`,
