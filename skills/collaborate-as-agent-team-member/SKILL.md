@@ -240,10 +240,17 @@ A member with no standing Work waits for an assigned Work instead of creating on
 
 For both managed and external Hosts and every Member, choose a completion
 condition, wall-clock limit, and concurrency/resource limit before running a
-command. Keep ordinary builds, tests, and load simulations in the foreground;
-stop and reap the processes you started before returning control. Use bounded
-test fixtures for load simulation. Do not launch detached load loops with
-`nohup`, `setsid`, `&`, or a script waiting indefinitely for a stop file.
+command. Keep ordinary commands in the foreground by default. A provider-managed
+asynchronous tool job is permitted only with those finite limits, a native job
+handle, and verified support for handle-scoped stop and cleanup. Retain ownership
+and join every job to a terminal exit result before submitting Work or handing
+back final control at the end of the turn; an asynchronous tool return alone is
+not that boundary. On cancellation, stop the owned job and verify its exit and
+cleanup. If verification is unavailable, report unresolved cleanup and do not
+claim completion. A wait timeout is not job termination; a PID alone does not
+authorize cleanup. Use bounded test fixtures for load simulation. This exception
+does not permit detached shell jobs, `nohup`/`setsid`/`&` load loops, or scripts
+waiting indefinitely for a stop file.
 
 When a Work actually requires a long-running service, record its owner,
 purpose, exact process/service handle, resource limits, stop command, and
