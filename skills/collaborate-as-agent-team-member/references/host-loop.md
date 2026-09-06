@@ -176,15 +176,20 @@ immediately but does not interrupt your current reasoning.
   firm team-run message send --team-run-id <run> --to-membership <membership-id> \
     --body "<markdown>" --surface <surface> --thread-id <id> \
     [--work-id <id>] [--response-required] [--idempotency-key <key>]
+
+  firm team-run message reply --team-run-id <run> --to-membership <membership-id> \
+    --body "<markdown>" --surface <surface> --thread-id <id> \
+    --correlation-id <incoming-correlation-id> --causation-id <incoming-message-id> \
+    [--work-id <id>] [--response-required] [--idempotency-key <key>]
   ```
 
-  Current limitation #864: this external Host command sends ordinary mail
-  but does not forward canonical correlation/causation fields. Do not add
-  `--correlation-id` / `--causation-id` and assume they create a reply. The
-  peer-Team `team message send` flags are not an intra-Team substitute.
-  If a Work requires an exact correlated external Host reply, report that
-  capability gap; do not use `answer-message` for ordinary conversation or
-  claim canonical linkage from a message ID written only in the body.
+  `reply` persists the exact incoming correlation and causation in the stored
+  canonical Message; both ids come from `team-run host-inbox --json`. Unknown,
+  mismatched, or cross-run lineage is refused, and retrying with the same
+  idempotency key replays the same Message instead of duplicating it. The
+  peer-Team `team message send` flags are not an intra-Team substitute, and
+  `answer-message` remains only for provider-native questions — never for
+  ordinary conversation.
 
   A managed Host uses the same `member message send|reply|request-decision`
   Role Actions as any member.

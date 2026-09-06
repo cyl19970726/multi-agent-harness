@@ -336,7 +336,11 @@ AgentSession generation, TeamMembership, Work scope, and NodeDaemon generation
 from the envelope; you never supply them. An `external_interactive` Host
 authors intra-Team mail with `firm team-run message send --team-run-id <run>
 --to-membership <membership> --body <markdown> --surface <surface>
---thread-id <id> [--work-id <id>] [--response-required]`, and answers a
+--thread-id <id> [--work-id <id>] [--response-required]`, and replies on an
+exact incoming lineage with `firm team-run message reply` — the same
+arguments plus `--correlation-id <incoming-correlation-id> --causation-id
+<incoming-message-id>`, both listed per message in `team-run host-inbox
+--json`; unknown, mismatched, or cross-run lineage is refused. It answers a
 provider question with `firm team-run answer-message --id <run> --message-id
 <id> (--option-id <id> | --response-text <text>)`. Legacy TeamRun send/ACK
 commands are retired because they let a caller select another identity.
@@ -373,7 +377,9 @@ Harness has no Plan Gate and it blocks headless members indefinitely (ADR
   `report_only: true` marker, and report-contract items 1 and 3 do not
   apply; a Git diff is not applicable when no code changed. Identify the
   report and include the checks required by the Work. Host review follows the
-  same exception (host-loop §5), including the current #862 accept limitation.
+  same exception (host-loop §5): current builds accept an ordinary report-only
+  submission with the normal accept command; only an older installed build may
+  still refuse that acceptance over a missing candidate fingerprint (#862).
   Naming neither flag is refused with `REPORT_EVIDENCE_MISSING`,
   except for a submission that carries a structured GitHub link
   (`--github-pr owner/repo#N`): that link is the evidence, and the candidate

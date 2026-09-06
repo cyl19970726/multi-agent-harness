@@ -217,8 +217,9 @@ team-run start      --id <id> [--max-concurrency <n>]
 team-run status     --id <id> [--dashboard-base <url>] [--json]
 team-run wait       --id <id> [--after-seq <n>] [--timeout-secs <n>] [--json]
 team-run host-inbox --surface <s> --thread-id <id> [--all] [--json]  (both required)
-team-run message send --team-run-id <id> --to-membership <membership-id> --body <md>
+team-run message send|reply --team-run-id <id> --to-membership <id> --body <md>
                     --surface <s> --thread-id <id> [--work-id <id>] [--response-required]
+                    reply +--correlation-id/--causation-id
 team-run events     --id <id> [--after-seq <n>] [--json]
 team-run board-summary --id <id>
 team message send   (peer-Team only) --from-team <id> --from-member <id> --to-team <id>
@@ -257,8 +258,9 @@ team-run start --id <id> [--max-concurrency <n>]
 team-run status --id <id> [--dashboard-base <url>] [--json]
 team-run wait --id <id> [--after-seq <n>] [--timeout-secs <n>] [--json]
 team-run host-inbox --surface <s> --thread-id <id> [--all] [--json]  (both required)
-team-run message send --team-run-id <id> --to-membership <membership-id> --body <md>
+team-run message send|reply --team-run-id <id> --to-membership <id> --body <md>
   --surface <s> --thread-id <id> [--work-id <id>] [--response-required]
+  reply +--correlation-id/--causation-id
 team-run events --id <id> [--json]
 team-run board-summary --id <id>
 
@@ -312,6 +314,13 @@ pub(super) fn print_help() {
       --body <markdown> --surface <surface> --thread-id <id>
       [--work-id <id>] [--response-required] [--idempotency-key <key>]
       Author an intra-Team Message as the exact external_interactive Host binding.
+  team-run message reply --team-run-id <team-run-id> --to-membership <membership-id>
+      --body <markdown> --surface <surface> --thread-id <id>
+      --correlation-id <incoming-correlation-id> --causation-id <incoming-message-id>
+      [--work-id <id>] [--response-required] [--idempotency-key <key>]
+      Reply as the exact external_interactive Host binding; the stored canonical
+      Message preserves the exact incoming correlation and causation. Unknown,
+      mismatched, or cross-run lineage is refused; same-key retry replays.
   team-run board-summary --id <team-run-id>
       <=500-char plain-text board digest: counts by status, assigned/unassigned,
       ready, and one idle|working|awaiting-review line per active member.

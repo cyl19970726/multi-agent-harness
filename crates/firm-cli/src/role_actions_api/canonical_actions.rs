@@ -89,6 +89,15 @@ pub(super) fn execute_canonical_role_action(
                     replayed: true,
                 });
             }
+            if prepared.draft.kind == harness_core::agentfirm_api::MessageKind::Reply {
+                validate_reply_lineage(
+                    store,
+                    &auth.execution_space_id,
+                    team_run_id,
+                    &prepared.draft.correlation_id,
+                    prepared.draft.causation_id.as_deref().unwrap_or_default(),
+                )?;
+            }
             let published = crate::publish_prepared_team_message(
                 store,
                 prepared,
