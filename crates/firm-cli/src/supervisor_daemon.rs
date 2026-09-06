@@ -37,7 +37,10 @@ mod team_supervision;
 #[cfg(test)]
 use machine_authority::node_authority_refresh_interval;
 use machine_authority::{daemon_control_generation_authorized, AuthorityReleaseReport};
-pub(crate) use recovery::reconcile_team_run_start_postcondition;
+pub(crate) use recovery::{
+    reconcile_team_run_start_postcondition, reconcile_team_run_start_with_observation,
+    TEAM_RUN_START_OBSERVATION_INTERVAL, TEAM_RUN_START_OBSERVATION_TIMEOUT,
+};
 use self_stop_events::MachineAuthorityLoss;
 
 const SIGINT: i32 = 2;
@@ -852,6 +855,161 @@ pub(crate) fn daemon_status_via_socket(firm_home: &Path, node_id: &str) -> Optio
     Some(response)
 }
 
+/// Wait for one fd readiness event, with the wait always computed from the
+/// SAME original deadline the caller passes in — never a fresh relative
+/// timeout per syscall. A spurious wakeup or EINTR simply waits again for
+/// what is actually left; the deadline expiring yields no observation.
+#[cfg(unix)]
+fn poll_fd_ready(
+    fd: std::os::unix::io::RawFd,
+    events: libc::c_short,
+    deadline: std::time::Instant,
+) -> Option<()> {
+    loop {
+        let remaining = deadline.checked_duration_since(std::time::Instant::now())?;
+        if remaining.is_zero() {
+            return None;
+        }
+        let mut pollfd = libc::pollfd {
+            fd,
+            events,
+            revents: 0,
+        };
+        let timeout_ms =
+            i32::try_from(remaining.as_millis().min(i32::MAX as u128)).unwrap_or(i32::MAX);
+        // SAFETY: `pollfd` points at one valid pollfd for this call only.
+        let polled = unsafe { libc::poll(&mut pollfd, 1, timeout_ms) };
+        if polled < 0 {
+            if std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted {
+                continue;
+            }
+            return None;
+        }
+        if polled == 0 {
+            return None;
+        }
+        return Some(());
+    }
+}
+
+/// Connect a Unix-domain socket with the wait governed by the caller's
+/// deadline (`Instant`, computed once by the caller). socket2 owns the fd
+/// lifecycle and provides the mature semantics this boundary needs: the fd
+/// is created non-blocking with CLOEXEC so it cannot leak into a provider
+/// exec, and `SockAddr::unix` validates the actual platform `sun_path`
+/// length. Interior NUL bytes are rejected explicitly below before the
+/// socket is even created — the library only length-checks and copies
+/// bytes, so without this check a crafted `path\0suffix` could reach the
+/// truncated prefix endpoint. Only EINPROGRESS proceeds to a writability
+/// wait plus the SO_ERROR check: a backlog EAGAIN is NOT a connection in
+/// progress, and SO_ERROR==0 after one would prove nothing, so any other
+/// connect error returns no observation rather than an uncertain
+/// connection.
+#[cfg(unix)]
+fn control_socket_connect_deadline(
+    socket_path: &Path,
+    deadline: std::time::Instant,
+) -> Option<UnixStream> {
+    use std::os::unix::ffi::OsStrExt as _;
+    use std::os::unix::io::AsRawFd as _;
+    if socket_path.as_os_str().as_bytes().contains(&0) {
+        return None;
+    }
+    let socket = socket2::Socket::new(socket2::Domain::UNIX, socket2::Type::STREAM, None).ok()?;
+    socket.set_nonblocking(true).ok()?;
+    socket.set_cloexec(true).ok()?;
+    let address = socket2::SockAddr::unix(socket_path).ok()?;
+    match socket.connect(&address) {
+        Ok(()) => {}
+        Err(error) if error.raw_os_error() == Some(libc::EINPROGRESS) => {
+            poll_fd_ready(socket.as_raw_fd(), libc::POLLOUT, deadline)?;
+            let socket_error = socket.take_error().ok()?;
+            match socket_error {
+                None => {}
+                Some(error) if error.raw_os_error() == Some(libc::EINPROGRESS) => {
+                    poll_fd_ready(socket.as_raw_fd(), libc::POLLOUT, deadline)?;
+                    if socket.take_error().ok()?.is_some() {
+                        return None;
+                    }
+                }
+                Some(_) => return None,
+            }
+        }
+        Err(_) => return None,
+    }
+    Some(UnixStream::from(std::os::fd::OwnedFd::from(socket)))
+}
+
+/// One monotonic deadline across connect, write, and read of a single-line
+/// control response, computed once from `io_budget` and shared by every
+/// wait. The socket stays non-blocking throughout: the request is written
+/// with an explicit offset and the response read in chunks, each preceded
+/// by a readiness wait recomputed from the same original `Instant` — no
+/// `writeln!`/`write_all`/`read_line` loop whose per-syscall relative
+/// timeout a partial write or drip could re-arm indefinitely. A frame that
+/// is incomplete when the deadline passes is discarded, and the completed
+/// frame is checked against the socket deadline once more before return:
+/// bytes that complete only after it are never parsed as proof. The
+/// deadline governs socket waiting only; arbitrary OS scheduling delay
+/// around the calls is outside any cancellable budget, so this is not a
+/// hard process wall-clock limit.
+pub(crate) fn control_socket_request_line_bounded(
+    socket_path: &Path,
+    request: &str,
+    io_budget: Duration,
+) -> Option<String> {
+    use std::io::{Read as _, Write as _};
+    use std::os::unix::io::AsRawFd as _;
+    let deadline = std::time::Instant::now().checked_add(io_budget)?;
+    let mut stream = control_socket_connect_deadline(socket_path, deadline)?;
+    let mut frame = request.as_bytes().to_vec();
+    frame.push(b'\n');
+    let mut offset = 0;
+    while offset < frame.len() {
+        poll_fd_ready(stream.as_raw_fd(), libc::POLLOUT, deadline)?;
+        match stream.write(&frame[offset..]) {
+            Ok(0) => return None,
+            Ok(written) => offset += written,
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => continue,
+            Err(_) => return None,
+        }
+    }
+    let mut response = Vec::new();
+    let mut chunk = [0u8; 4096];
+    loop {
+        poll_fd_ready(stream.as_raw_fd(), libc::POLLIN, deadline)?;
+        match stream.read(&mut chunk) {
+            Ok(0) => return None,
+            Ok(n) => {
+                response.extend_from_slice(&chunk[..n]);
+                if chunk[..n].contains(&b'\n') {
+                    break;
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => continue,
+            Err(_) => return None,
+        }
+    }
+    if std::time::Instant::now() > deadline {
+        return None;
+    }
+    let response = String::from_utf8(response).ok()?;
+    let response = response.trim().to_string();
+    (!response.is_empty()).then_some(response)
+}
+
+/// Status request whose socket I/O is bounded by the caller's remaining
+/// budget. The reserved status lane stays responsive while other lanes are
+/// busy, so a bounded read observes instead of waiting on the start gate.
+pub(crate) fn daemon_status_via_socket_bounded(
+    firm_home: &Path,
+    node_id: &str,
+    io_budget: Duration,
+) -> Option<String> {
+    let socket_path = node_daemon_socket_path(firm_home, node_id);
+    control_socket_request_line_bounded(&socket_path, r#"{"cmd":"status"}"#, io_budget)
+}
+
 #[derive(Debug)]
 enum NativeSessionWakePostError {
     Unavailable(std::io::Error),
@@ -1265,6 +1423,8 @@ fn daemon_stop_via_socket_with_policy(
 
 #[cfg(test)]
 mod adoption_tests;
+#[cfg(test)]
+mod bounded_status_tests;
 #[cfg(test)]
 mod drain_blocked_member_tests;
 #[cfg(test)]
