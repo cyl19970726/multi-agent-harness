@@ -14,9 +14,8 @@
 #
 #   --agent   which agent's skill dir to install into       (default: claude)
 #             claude | codex | both  → copy skills to the respective fixed dirs.
-#             kimi                   → prints the Kimi Code skill model and exits;
-#                                      Kimi loads skills from cwd/--skills-dir, not
-#                                      a fixed install directory.
+#             kimi                   → prints version-bound discovery guidance;
+#                                      does not install or modify skill packages.
 #   --scope   project = <cwd>, user = $HOME                  (default: project)
 #   --dest    explicit base dir (overrides --scope)
 #   --skill   install an explicit current skill directory (repeatable)
@@ -136,25 +135,32 @@ install_into() {
 
 if [ "$AGENT" = "kimi" ]; then
   cat >&2 <<'KIMIEOF'
-Kimi Code skill model (divergence from Claude Code / Codex)
+Kimi Code 0.39.0 skill discovery (guidance only; no installation)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Kimi CLI does not currently expose a generic plugin-management command.
-It discovers skills from one of two locations:
+Verified against release commit 52e8d19dbd17efebc2e73f8e1a879bef7f23c2b1:
+https://github.com/MoonshotAI/kimi-code/blob/52e8d19dbd17efebc2e73f8e1a879bef7f23c2b1/docs/en/customization/skills.md
 
-  1. The current working directory (cwd) when a session starts.
-  2. An explicit --skills-dir <path> argument.
+Default user discovery includes:
+  • $KIMI_CODE_HOME/skills under the configured Kimi home.
+  • ~/.agents/skills under the OS user's home (shared skill packages).
 
-There is no fixed per-agent install directory like ~/.kimi/skills/.
-To use Star Harness skills with Kimi:
+Project discovery uses .kimi-code/skills or .agents/skills at the nearest
+.git project root. Project skills take precedence over user skills;
+Kimi-specific user or project copies can shadow shared packages.
+An explicit --skills-dir <path> replaces default user/project discovery.
+Do not place skill directories directly in an arbitrary working directory.
 
-  • Place the skill directories directly in your project root.
-  • Start a Kimi Code session inside that directory.
-  • Or pass --skills-dir <path> pointing at the skills root.
+To install Star Harness's complete collaboration and shared-references
+packages into the shared user library, use the existing installer target:
+  bash scripts/install-skill.sh --agent codex --scope user --suite collaboration
+This copies both packages and their references into ~/.agents/skills.
+Alternatively, --skills-dir can select a checkout's skills/ directory.
 
+--agent kimi prints guidance only and writes no skill packages.
 Star Harness ships no Kimi plugin (ADR 0063 retired the plugin package).
-Copy or symlink skills/collaborate-as-agent-team-member and
-skills/shared-references into the directory you start Kimi from, or pass
---skills-dir pointing at a checkout's skills/ directory.
+These discovery paths do not prove that a native session loaded the skill;
+verify the effective package and native loading evidence before coding Work.
+
 KIMIEOF
   exit 0
 fi

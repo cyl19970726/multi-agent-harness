@@ -68,14 +68,36 @@ else
   bad "failed suite preflight partially wrote a target"
 fi
 
-echo "== A4: Kimi guidance remains current =="
-kimi_output="$(bash "$repo_root/scripts/install-skill.sh" --agent kimi 2>&1)" || true
-if [[ "$kimi_output" == *"--skills-dir"* ]] \
-  && [[ "$kimi_output" == *"skills/collaborate-as-agent-team-member"* ]]; then
-  ok "Kimi guidance points to current discovery paths"
-else
-  bad "Kimi guidance is incomplete"
-fi
+echo "== A4: Kimi guidance is version-bound and does not install =="
+kimi_dest="$work/kimi-dest"
+kimi_home="$work/kimi-home"
+mkdir -p "$kimi_dest/.agents/skills" "$kimi_home/skills"
+printf '%s\n' 'preserve shared package' > "$kimi_dest/.agents/skills/sentinel"
+printf '%s\n' 'preserve Kimi package' > "$kimi_home/skills/sentinel"
+cp -R "$kimi_dest" "$work/kimi-dest-before"
+cp -R "$kimi_home" "$work/kimi-home-before"
+for scope in project user; do
+  kimi_output="$(KIMI_CODE_HOME="$kimi_home" bash "$repo_root/scripts/install-skill.sh" \
+    --agent kimi --scope "$scope" --dest "$kimi_dest" 2>&1)"
+  kimi_status=$?
+  if [ "$kimi_status" -eq 0 ] \
+    && [[ "$kimi_output" == *"Kimi Code 0.39.0"* ]] \
+    && [[ "$kimi_output" == *'$KIMI_CODE_HOME/skills'* ]] \
+    && [[ "$kimi_output" == *"~/.agents/skills"* ]] \
+    && [[ "$kimi_output" == *"Project skills take precedence over user skills"* ]] \
+    && [[ "$kimi_output" == *"--skills-dir <path> replaces default user/project discovery"* ]] \
+    && [[ "$kimi_output" == *"--agent codex --scope user --suite collaboration"* ]]; then
+    ok "Kimi $scope guidance describes verified discovery and shared installation"
+  else
+    bad "Kimi $scope guidance is incomplete or failed"
+  fi
+  if diff -r "$work/kimi-dest-before" "$kimi_dest" >/dev/null \
+    && diff -r "$work/kimi-home-before" "$kimi_home" >/dev/null; then
+    ok "Kimi $scope guidance leaves destination and Kimi home untouched"
+  else
+    bad "Kimi $scope guidance wrote skill packages"
+  fi
+done
 
 echo ""
 echo "acceptance: $pass passed, $fail failed"
