@@ -211,17 +211,79 @@ fn bounded_connect_marks_the_fd_close_on_exec() {
 }
 
 #[test]
-fn bounded_request_rejects_nul_and_overlong_paths() {
+fn bounded_request_rejects_nul_before_reaching_a_prefix_listener() {
     use std::os::unix::ffi::OsStringExt as _;
-    let nul_path = PathBuf::from(std::ffi::OsString::from_vec(
-        b"/tmp/firm-bst-nul\0x.sock".to_vec(),
-    ));
+    // A live listener at the prefix path P proves disposition: a crafted
+    // P+NUL+suffix must be refused before any connection attempt reaches P,
+    // while the valid P control still connects. Bounded and always reaped.
+    let prefix = bounded_request_socket_path("nul-prefix");
+    let listener = UnixListener::bind(&prefix).expect("bind prefix listener");
+    listener
+        .set_nonblocking(true)
+        .expect("nonblocking prefix listener");
+    let (accepted_tx, accepted_rx) = std::sync::mpsc::channel();
+    let accept_handle = std::thread::spawn(move || {
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            match listener.accept() {
+                Ok((stream, _)) => {
+                    drop(stream);
+                    let _ = accepted_tx.send(true);
+                    return;
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    if std::time::Instant::now() > deadline {
+                        return;
+                    }
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(_) => return,
+            }
+        }
+    });
+    let mut crafted = prefix.clone().into_os_string().into_vec();
+    crafted.push(0);
+    crafted.extend_from_slice(b"-suffix");
+    let crafted = PathBuf::from(std::ffi::OsString::from_vec(crafted));
     let started = std::time::Instant::now();
-    assert!(
-        control_socket_request_line_bounded(&nul_path, "{}", Duration::from_secs(5)).is_none(),
-        "an interior NUL must be rejected, never truncated into another endpoint"
+    let response = control_socket_request_line_bounded(
+        &crafted,
+        r#"{"cmd":"status"}"#,
+        Duration::from_secs(5),
     );
+    assert!(response.is_none());
+    assert!(
+        started.elapsed() < Duration::from_secs(1),
+        "NUL rejection must be prompt: {:?}",
+        started.elapsed()
+    );
+    std::thread::sleep(Duration::from_millis(200));
+    assert!(
+        accepted_rx.try_recv().is_err(),
+        "the crafted NUL path reached the prefix listener — truncation connected to a different endpoint"
+    );
+
+    // Valid-path control: the same listener is reachable on the exact path.
+    // It writes nothing, so the helper ends without a response, but the
+    // accept proves the endpoint itself works.
+    let control =
+        control_socket_request_line_bounded(&prefix, r#"{"cmd":"status"}"#, Duration::from_secs(2));
+    let accepted = accepted_rx
+        .recv_timeout(Duration::from_secs(3))
+        .expect("prefix listener accept outcome");
+    accept_handle.join().expect("join prefix accept thread");
+    let _ = std::fs::remove_file(&prefix);
+    assert!(accepted, "valid-path control did not reach the listener");
+    assert!(
+        control.is_none(),
+        "the silent control listener cannot produce a response"
+    );
+}
+
+#[test]
+fn bounded_request_refuses_an_overlong_path() {
     let overlong = Path::new("/tmp").join("firm-bst-long-".repeat(20));
+    let started = std::time::Instant::now();
     assert!(
         control_socket_request_line_bounded(&overlong, "{}", Duration::from_secs(5)).is_none(),
         "a path beyond the platform sun_path must be refused, not truncated"

@@ -896,18 +896,25 @@ fn poll_fd_ready(
 /// deadline (`Instant`, computed once by the caller). socket2 owns the fd
 /// lifecycle and provides the mature semantics this boundary needs: the fd
 /// is created non-blocking with CLOEXEC so it cannot leak into a provider
-/// exec; `SockAddr::unix` validates the actual platform `sun_path` length
-/// and rejects interior NUL bytes instead of truncating the endpoint
-/// identity. Only EINPROGRESS proceeds to a writability wait plus the
-/// SO_ERROR check: a backlog EAGAIN is NOT a connection in progress, and
-/// SO_ERROR==0 after one would prove nothing, so any other connect error
-/// returns no observation rather than an uncertain connection.
+/// exec, and `SockAddr::unix` validates the actual platform `sun_path`
+/// length. Interior NUL bytes are rejected explicitly below before the
+/// socket is even created — the library only length-checks and copies
+/// bytes, so without this check a crafted `path\0suffix` could reach the
+/// truncated prefix endpoint. Only EINPROGRESS proceeds to a writability
+/// wait plus the SO_ERROR check: a backlog EAGAIN is NOT a connection in
+/// progress, and SO_ERROR==0 after one would prove nothing, so any other
+/// connect error returns no observation rather than an uncertain
+/// connection.
 #[cfg(unix)]
 fn control_socket_connect_deadline(
     socket_path: &Path,
     deadline: std::time::Instant,
 ) -> Option<UnixStream> {
+    use std::os::unix::ffi::OsStrExt as _;
     use std::os::unix::io::AsRawFd as _;
+    if socket_path.as_os_str().as_bytes().contains(&0) {
+        return None;
+    }
     let socket = socket2::Socket::new(socket2::Domain::UNIX, socket2::Type::STREAM, None).ok()?;
     socket.set_nonblocking(true).ok()?;
     socket.set_cloexec(true).ok()?;
