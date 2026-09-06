@@ -486,15 +486,6 @@ impl HarnessStore {
             .as_ref()
             .map_err(|error| StoreError::Conflict(error.clone()))?;
         for (downstream, attention) in attentions {
-            if *downstream {
-                if projected.contains_key(&attention.id) {
-                    continue;
-                }
-                self.ensure_host_attention_unlocked(attention)?;
-                projected.insert(attention.id.clone(), attention.clone());
-                reconciled.push(attention.clone());
-                continue;
-            }
             if let Some(existing) = projected.get(&attention.id) {
                 if !Self::same_host_attention_fact(existing, attention) {
                     return Err(StoreError::Conflict(format!(
@@ -503,6 +494,12 @@ impl HarnessStore {
                     )));
                 }
                 reconciled.push(existing.clone());
+                continue;
+            }
+            if *downstream {
+                self.ensure_host_attention_unlocked(attention)?;
+                projected.insert(attention.id.clone(), attention.clone());
+                reconciled.push(attention.clone());
                 continue;
             }
             attention
