@@ -123,9 +123,7 @@ pub(super) fn run_supervisor_heartbeat_loop(
     }
 }
 
-pub(super) fn current_unix_ms_u64() -> u64 {
-    current_unix_ms().min(u64::MAX as u128) as u64
-}
+pub(crate) use crate::daemon_support::current_unix_ms_u64;
 
 pub(super) fn team_supervisor_lease_ttl_ms() -> u64 {
     std::env::var("FIRM_TEAM_SUPERVISOR_LEASE_MS")
@@ -977,7 +975,7 @@ fn send_live_member_control_request(
     stream.flush()?;
     let mut line = String::new();
     let mut reader = BufReader::new(stream).take(262_145);
-    supervisor_daemon::read_control_response_line(
+    daemon_client::read_control_response_line(
         &mut reader,
         &mut line,
         transient_read_retries,

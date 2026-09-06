@@ -553,7 +553,7 @@ pub(crate) fn delegate_team_run_to_node_daemon_in_space(
                 body.run.execution_node_id
             )));
         }
-        let response = match crate::supervisor_daemon::try_delegate_to_node_daemon(
+        let response = match crate::daemon_client::try_delegate_to_node_daemon(
             &firm_home,
             &local_node_id,
             execution_space_id,
@@ -561,19 +561,19 @@ pub(crate) fn delegate_team_run_to_node_daemon_in_space(
         ) {
             Ok(response) => response,
             Err(error) if error.request_may_have_been_accepted() => {
-                let reconciled = crate::supervisor_daemon::reconcile_team_run_start_with_observation(
+                let reconciled = crate::daemon_client::reconcile_team_run_start_with_observation(
                     &local_node_id,
-                    crate::supervisor_daemon::TEAM_RUN_START_OBSERVATION_TIMEOUT,
-                    crate::supervisor_daemon::TEAM_RUN_START_OBSERVATION_INTERVAL,
+                    crate::daemon_client::TEAM_RUN_START_OBSERVATION_TIMEOUT,
+                    crate::daemon_client::TEAM_RUN_START_OBSERVATION_INTERVAL,
                     &mut |io_budget| {
-                        crate::supervisor_daemon::daemon_status_via_socket_bounded(
+                        crate::daemon_client::daemon_status_via_socket_bounded(
                             &firm_home,
                             &local_node_id,
                             io_budget,
                         )
                     },
                     &mut |status| {
-                        crate::supervisor_daemon::reconcile_team_run_start_postcondition(
+                        crate::daemon_client::reconcile_team_run_start_postcondition(
                             store,
                             status,
                             &local_node_id,
@@ -812,21 +812,7 @@ fn prepare_member_workspace_for_spawn_with_hooks(
 /// adoption. Naming that outcome is what lets the NodeDaemon stop re-adopting
 /// an unchanged run under a fresh Supervisor generation (#704, #671). A
 /// failure stays an `Err` and keeps its existing recovery-marker handling.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum TeamRunDriveOutcome {
-    /// The TeamRun left `Running`, or its canonical TeamRun/MemberRun/Work/
-    /// Message/RuntimeCommand state changed under this generation. A later
-    /// adoption would start from a different canonical state.
-    Progressed { team_run_status: TeamRunStatus },
-    /// The Supervisor returned with the TeamRun still `Running` and not one
-    /// canonical row changed. Re-adopting this exact `canonical_state` can
-    /// only repeat this outcome, so the daemon holds adoption until the state
-    /// changes or an explicit recovery/start intent arrives.
-    NoProgress {
-        canonical_state: String,
-        detail: String,
-    },
-}
+pub(crate) use crate::daemon_application_port::TeamRunDriveOutcome;
 
 /// Decide what one Supervisor generation proved, from the TeamRun status it
 /// left behind and the canonical state it entered and exited on.

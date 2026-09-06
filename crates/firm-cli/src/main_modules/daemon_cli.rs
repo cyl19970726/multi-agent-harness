@@ -336,10 +336,11 @@ pub(super) fn daemon_command(args: &[String]) -> CliResult<()> {
                 max_concurrency,
                 idle_timeout_secs,
                 scan_interval_secs,
+                Arc::new(crate::daemon_application::DaemonApplication),
             )?;
         }
         "start" => {
-            if supervisor_daemon::daemon_status_via_socket(&firm_home, &node_id).is_some() {
+            if daemon_client::daemon_status_via_socket(&firm_home, &node_id).is_some() {
                 println!(
                     "NodeDaemon already running for Node {node_id}; log: {}",
                     log_path.display()
@@ -389,7 +390,7 @@ pub(super) fn daemon_command(args: &[String]) -> CliResult<()> {
             // have no latent daemon effect.
             let deadline = Instant::now() + Duration::from_secs(60);
             loop {
-                if supervisor_daemon::daemon_status_via_socket(&firm_home, &node_id).is_some() {
+                if daemon_client::daemon_status_via_socket(&firm_home, &node_id).is_some() {
                     println!(
                         "NodeDaemon started for Node {node_id} (pid {}); log: {}",
                         child.id(),
@@ -416,7 +417,7 @@ pub(super) fn daemon_command(args: &[String]) -> CliResult<()> {
                 std::thread::sleep(Duration::from_millis(50));
             }
         }
-        "status" => match supervisor_daemon::daemon_status_via_socket(&firm_home, &node_id) {
+        "status" => match daemon_client::daemon_status_via_socket(&firm_home, &node_id) {
             Some(response) => println!("{}", daemon_status_with_log_path(&response, &log_path)?),
             None => println!("{}", daemon_absent_status(&firm_home, &node_id, &log_path)?),
         },
@@ -448,12 +449,11 @@ pub(super) fn daemon_command(args: &[String]) -> CliResult<()> {
                         "no current NodeDaemon lease is available for Node {node_id}"
                     ))
                 })?;
-            let response = supervisor_daemon::daemon_stop_via_socket(
-                &firm_home, &node_id, &space_id, generation,
-            )
-            .ok_or_else(|| {
-                CliError::Usage(format!("no NodeDaemon is running for Node {node_id}"))
-            })?;
+            let response =
+                daemon_client::daemon_stop_via_socket(&firm_home, &node_id, &space_id, generation)
+                    .ok_or_else(|| {
+                        CliError::Usage(format!("no NodeDaemon is running for Node {node_id}"))
+                    })?;
             println!("{response}");
             // Stop now answers with its drain result. Printing that result and
             // exiting 0 would put the honest `NODE_DAEMON_DRAIN_INCOMPLETE`

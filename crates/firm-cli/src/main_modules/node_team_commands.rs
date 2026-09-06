@@ -736,8 +736,7 @@ pub(super) fn team_message_send(
         // RuntimeCommand record.
         issued_at: format!("runtime-command:{idempotency_key}"),
     };
-    let response =
-        supervisor_daemon::runtime_command_via_socket(&firm_home, &local_node_id, &command)?;
+    let response = daemon_client::runtime_command_via_socket(&firm_home, &local_node_id, &command)?;
     if response["ok"].as_bool() != Some(true) {
         let daemon_error = response["error"].as_str().unwrap_or("unknown error");
         // A resubmitted key arrives with a fresh expiry and therefore a new

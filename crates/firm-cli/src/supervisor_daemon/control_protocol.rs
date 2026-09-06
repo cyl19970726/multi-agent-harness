@@ -311,7 +311,7 @@ impl MultiTeamDaemon {
                 )?;
             }
             "read_native_session" => {
-                let request: crate::provider_event_api::PersistedSessionReadRequest =
+                let request: crate::daemon_protocol::PersistedSessionReadRequest =
                     match serde_json::from_value(cmd["request"].clone()) {
                         Ok(value) => value,
                         Err(error) => {
@@ -325,7 +325,7 @@ impl MultiTeamDaemon {
                             return Ok(());
                         }
                     };
-                match crate::provider_event_api::read_persisted_session_for_daemon(
+                match self.application.read_native_session(
                     &self.firm_home,
                     &self.node_id,
                     &self.daemon_id,
@@ -370,11 +370,10 @@ impl MultiTeamDaemon {
                     )?;
                     return Ok(());
                 }
-                let space = match crate::execution_space::context_for_id(
-                    &self.firm_home,
-                    &envelope.execution_space_id,
-                )
-                .map_err(|error| CliError::Usage(error.to_string()))?
+                let space = match self
+                    .application
+                    .execution_space(&self.firm_home, &envelope.execution_space_id)
+                    .map_err(|error| CliError::Usage(error.to_string()))?
                 {
                     Some(space) => space,
                     None => {
@@ -460,7 +459,7 @@ impl MultiTeamDaemon {
                             })
                             .and_then(|draft| {
                                 if let Some(team_run_id) = draft.team_run_id.as_deref() {
-                                    ensure_team_message_fabric(
+                                    self.application.ensure_team_message_fabric(
                                         &store,
                                         team_run_id,
                                         &envelope.execution_space_id,
@@ -497,7 +496,7 @@ impl MultiTeamDaemon {
                                             let team_run_id = draft.team_run_id.as_deref().ok_or_else(|| {
                                                 CliError::Usage("AGENT_SESSION_AMBIGUOUS: sessionless AgentMember author requires an exact external Host TeamRun".into())
                                             })?;
-                                            let run = crate::latest_team_run(&store, team_run_id)?;
+                                            let run = crate::daemon_support::latest_team_run(&store, team_run_id)?;
                                             let exact_host = store.exact_team_run_host_actor(team_run_id)?;
                                             if run.host_control_mode
                                                 != harness_core::HostControlMode::ExternalInteractive
@@ -648,7 +647,7 @@ impl MultiTeamDaemon {
                                     .ok_or_else(|| {
                                         CliError::Usage("AGENT_IDENTITY_NOT_FOUND".into())
                                     })?;
-                                let opened = crate::provider_adapter::open_node_session(
+                                let opened = self.application.open_node_session(
                                     &session,
                                     &space.store_root,
                                     &display_name,
@@ -725,7 +724,7 @@ impl MultiTeamDaemon {
                                 .into_iter()
                                 .find(|session| session.id == session_id)
                                 .ok_or_else(|| CliError::Usage("AGENT_SESSION_NOT_FOUND".into()))?;
-                            let capabilities = crate::provider_adapter::node_session_capabilities(
+                            let capabilities = self.application.node_session_capabilities(
                                 &session.provider_kind,
                             )
                             .ok_or_else(|| {
@@ -776,7 +775,7 @@ impl MultiTeamDaemon {
                                     .ok_or_else(|| {
                                         CliError::Usage("AGENT_IDENTITY_NOT_FOUND".into())
                                     })?;
-                                let opened = crate::provider_adapter::open_node_session(
+                                let opened = self.application.open_node_session(
                                     &session,
                                     &space.store_root,
                                     &display_name,
@@ -861,12 +860,12 @@ impl MultiTeamDaemon {
                                 .into_iter()
                                 .find(|session| session.id == session_id)
                                 .ok_or_else(|| CliError::Usage("AGENT_SESSION_NOT_FOUND".into()))?;
-                            crate::provider_adapter::map_permission(
+                            self.application.map_permission(
                                 &session.provider_kind,
                                 session.effective_permission_ceiling,
                             )
                             .map_err(CliError::Usage)?;
-                            let dispatch_mode = crate::provider_adapter::effective_delivery_mode(
+                            let dispatch_mode = self.application.effective_delivery_mode(
                                 &session.provider_kind,
                                 requested_mode,
                                 session.lifecycle,
@@ -977,18 +976,17 @@ impl MultiTeamDaemon {
                     Self::write_control_response(stream, &response)?;
                     return Ok(());
                 }
-                let space =
-                    crate::execution_space::context_for_id(&self.firm_home, execution_space_id)
-                        .map_err(|error| {
-                            CliError::Usage(format!(
-                                "cannot resolve Execution Space {execution_space_id}: {error}"
-                            ))
-                        })?
-                        .ok_or_else(|| {
-                            CliError::Usage(format!(
-                                "Execution Space not found: {execution_space_id}"
-                            ))
-                        })?;
+                let space = self
+                    .application
+                    .execution_space(&self.firm_home, execution_space_id)
+                    .map_err(|error| {
+                        CliError::Usage(format!(
+                            "cannot resolve Execution Space {execution_space_id}: {error}"
+                        ))
+                    })?
+                    .ok_or_else(|| {
+                        CliError::Usage(format!("Execution Space not found: {execution_space_id}"))
+                    })?;
                 let store = HarnessStore::new(space.store_root.clone());
                 match self.start_supervising(space, store.clone(), run_id) {
                     Ok(()) => {
@@ -1091,7 +1089,7 @@ impl MultiTeamDaemon {
                     "daemon_id": self.daemon_id,
                     "instance_id": self.instance_id,
                     "process_id": std::process::id(),
-                    "log_path": crate::daemon_cli::node_daemon_log_path(
+                    "log_path": self.application.daemon_log_path(
                         &self.firm_home,
                         &self.node_id,
                     ),
@@ -1204,7 +1202,9 @@ impl MultiTeamDaemon {
             )?;
             return Ok(None);
         }
-        let space = crate::execution_space::context_for_id(&self.firm_home, execution_space_id)
+        let space = self
+            .application
+            .execution_space(&self.firm_home, execution_space_id)
             .map_err(|error| CliError::Usage(error.to_string()))?
             .ok_or_else(|| {
                 CliError::Usage(format!("Execution Space not found: {execution_space_id}"))

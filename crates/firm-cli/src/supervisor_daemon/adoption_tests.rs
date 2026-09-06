@@ -78,6 +78,7 @@ pub(super) fn adoption_fixture(label: &str) -> AdoptionFixture {
         contexts: Mutex::new(Vec::new()),
         supervisor_start_gate: Mutex::new(()),
         session_runtimes: Mutex::new(HashMap::new()),
+        application: Arc::new(DaemonApplication),
         native_session_wake_endpoint: Arc::new(Mutex::new(HashMap::new())),
         max_concurrency: 1,
         input_acceptance_secs: 1,
@@ -124,7 +125,8 @@ impl AdoptionFixture {
     /// One real canonical change: the TeamRun lifecycle transition a Host or
     /// Supervisor performs. Nothing about the durable marker is touched.
     fn advance_team_run_status(&self, next: harness_core::TeamRunStatus) {
-        let current = crate::latest_team_run(&self.store, &self.run_id).expect("read TeamRun");
+        let current = crate::daemon_support::latest_team_run(&self.store, &self.run_id)
+            .expect("read TeamRun");
         let mut advanced = current.clone();
         advanced.status = next;
         advanced.updated_at = crate::now_string();
@@ -345,6 +347,7 @@ fn status_remains_responsive_while_reap_joins_a_finished_supervisor() {
         }]),
         supervisor_start_gate: Mutex::new(()),
         session_runtimes: Mutex::new(HashMap::new()),
+        application: Arc::new(DaemonApplication),
         native_session_wake_endpoint: Arc::new(Mutex::new(HashMap::new())),
         max_concurrency: 1,
         input_acceptance_secs: 1,

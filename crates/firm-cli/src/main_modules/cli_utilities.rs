@@ -136,10 +136,7 @@ pub(super) fn provider_status_label(status: &ProviderExecutionStatus) -> &'stati
     }
 }
 
-pub(super) fn now_string() -> String {
-    let millis = current_unix_ms();
-    format!("unix-ms:{millis}")
-}
+pub(crate) use crate::daemon_support::now_string;
 
 /// The commit this binary was built from, embedded by `build.rs` at compile
 /// time (issue #307 — `/v1/meta` must never shell out to `git` per-request).
@@ -157,12 +154,7 @@ pub(super) fn build_built_at() -> Option<String> {
         .map(|millis| format!("unix-ms:{millis}"))
 }
 
-pub(super) fn current_unix_ms() -> u128 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis()
-}
+pub(crate) use crate::daemon_support::current_unix_ms;
 
 pub(super) fn generated_id(prefix: &str) -> String {
     let millis = current_unix_ms();

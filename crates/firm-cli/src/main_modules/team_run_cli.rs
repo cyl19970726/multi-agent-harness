@@ -434,7 +434,7 @@ pub(super) fn team_run_command(
             let node_daemon = execution_space::firm_home()
                 .ok()
                 .and_then(|home| {
-                    supervisor_daemon::daemon_status_via_socket(&home, &run.execution_node_id)
+                    daemon_client::daemon_status_via_socket(&home, &run.execution_node_id)
                 })
                 .and_then(|response| serde_json::from_str::<serde_json::Value>(&response).ok());
             #[cfg(not(unix))]

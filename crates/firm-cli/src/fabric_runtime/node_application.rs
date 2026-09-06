@@ -399,7 +399,7 @@ pub(super) fn dispatch_resolved_runtime_command(
         target_node_daemon_id,
         target_node_daemon_generation,
     )?;
-    let transport = crate::supervisor_daemon::runtime_command_via_socket(
+    let transport = crate::daemon_client::runtime_command_via_socket(
         firm_home,
         &envelope.target_node_id,
         envelope,

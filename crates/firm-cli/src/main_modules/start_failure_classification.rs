@@ -1,5 +1,5 @@
 //! Shared attempt-scoped failure classification for adoption and admission.
-use crate::CliError;
+use crate::daemon_error::DaemonError as CliError;
 
 /// Codes that describe this daemon generation or a lost race, never a durable
 /// property of the TeamRun. They are matched as the error's own leading code
@@ -20,7 +20,7 @@ const TRANSIENT_START_FAILURE_CODES: &[&str] = &[
 /// The two capacity/ownership rejections `start_supervising` writes as prose
 /// rather than as a code. Matched as a prefix for the same reason.
 const TRANSIENT_START_FAILURE_PREFIXES: &[&str] = &[
-    crate::supervisor_daemon::AT_CAPACITY_REFUSAL,
+    crate::daemon_protocol::AT_CAPACITY_REFUSAL,
     "NodeDaemon already manages",
 ];
 

@@ -84,12 +84,15 @@ impl MultiTeamDaemon {
     pub(super) fn ensure_stale_socket_reclaimable(
         firm_home: &Path,
         node_id: &str,
+        application: &dyn DaemonApplicationPort,
     ) -> CliResult<()> {
-        let spaces = crate::execution_space::list_spaces(firm_home).map_err(|error| {
-            CliError::Usage(format!(
-                "NODE_DAEMON_SOCKET_RECLAIM_UNSAFE: cannot list Execution Spaces: {error}"
-            ))
-        })?;
+        let spaces = application
+            .list_execution_spaces(firm_home)
+            .map_err(|error| {
+                CliError::Usage(format!(
+                    "NODE_DAEMON_SOCKET_RECLAIM_UNSAFE: cannot list Execution Spaces: {error}"
+                ))
+            })?;
         let now_ms = current_unix_ms_u64();
         for space in spaces {
             let store = HarnessStore::new(space.store_root.clone());
@@ -119,11 +122,14 @@ impl MultiTeamDaemon {
     pub(super) fn registered_spaces(
         &self,
     ) -> CliResult<Vec<(harness_core::ExecutionSpace, HarnessStore)>> {
-        let spaces = crate::execution_space::list_spaces(&self.firm_home).map_err(|error| {
-            CliError::Usage(format!(
-                "cannot list Execution Spaces for NodeDaemon: {error}"
-            ))
-        })?;
+        let spaces = self
+            .application
+            .list_execution_spaces(&self.firm_home)
+            .map_err(|error| {
+                CliError::Usage(format!(
+                    "cannot list Execution Spaces for NodeDaemon: {error}"
+                ))
+            })?;
         Ok(spaces
             .into_iter()
             .map(|space| {

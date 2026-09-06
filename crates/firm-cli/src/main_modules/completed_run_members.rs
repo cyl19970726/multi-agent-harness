@@ -143,14 +143,7 @@ impl CompletedRunServingIdler {
     }
 }
 
-pub(super) fn is_unclosed_managed_member(
-    member: &ProviderRuntimeProjection,
-    team_run_id: &str,
-) -> bool {
-    member.team_run_id == team_run_id
-        && !member.is_external_interactive()
-        && member.coordination_is_active()
-}
+pub(crate) use crate::daemon_support::is_unclosed_managed_member;
 
 pub(super) fn unclosed_managed_member_count(
     members: &[ProviderRuntimeProjection],

@@ -3,6 +3,7 @@
 //! response, with post-deadline bytes never parsed as proof.
 
 use super::*;
+use std::{os::unix::net::UnixListener, path::PathBuf};
 
 fn bounded_request_socket_path(label: &str) -> PathBuf {
     Path::new("/tmp").join(format!(

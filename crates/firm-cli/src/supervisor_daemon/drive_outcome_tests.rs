@@ -38,7 +38,8 @@ impl AdoptionFixture {
     /// One real Work operation for this run: the canonical progress that must
     /// always re-enable adoption.
     fn add_work_operation(&self, id: &str) {
-        let run = crate::latest_team_run(&self.store, &self.run_id).expect("read TeamRun");
+        let run = crate::daemon_support::latest_team_run(&self.store, &self.run_id)
+            .expect("read TeamRun");
         let host_actor = run.host_actor.clone().expect("exact fixture Host");
         self.store
             .insert_work(
@@ -270,7 +271,8 @@ fn a_settling_run_is_not_adopted_while_its_dead_generation_writes_its_outcome() 
 #[test]
 fn every_start_path_store_conflict_is_typed_and_records_no_hold() {
     let fixture = adoption_fixture("start-path-conflicts");
-    let run = crate::latest_team_run(&fixture.store, &fixture.run_id).expect("read TeamRun");
+    let run = crate::daemon_support::latest_team_run(&fixture.store, &fixture.run_id)
+        .expect("read TeamRun");
 
     // Site 1 — the MemberRun write-back `prepare_team_run_start_body` performs
     // for a refreshed provider profile, driven through the named production

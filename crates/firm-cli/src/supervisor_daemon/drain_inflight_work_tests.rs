@@ -26,7 +26,8 @@ pub(super) fn assign_work(
     title: &str,
     created_at: &str,
 ) -> Work {
-    let run = crate::latest_team_run(&fixture.store, &fixture.run_id).expect("TeamRun");
+    let run =
+        crate::daemon_support::latest_team_run(&fixture.store, &fixture.run_id).expect("TeamRun");
     let membership = fixture
         .store
         .fabric_team_memberships(DRAIN_SPACE_ID)

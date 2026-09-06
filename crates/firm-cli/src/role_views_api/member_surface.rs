@@ -467,7 +467,7 @@ pub(crate) fn operator_view(
     ));
     let firm_home = crate::execution_space::firm_home().ok();
     let daemon_live = firm_home.as_ref().is_some_and(|home| {
-        crate::supervisor_daemon::daemon_status_via_socket(home, node_id).is_some()
+        crate::daemon_client::daemon_status_via_socket(home, node_id).is_some()
     });
     let local_machine_proven =
         crate::read_local_node_id().ok().as_deref() == Some(node_id) && firm_home.is_some();

@@ -457,7 +457,7 @@ pub(super) fn execute_operator_action(
                     Some(current_generation),
                 ));
             }
-            if crate::supervisor_daemon::daemon_status_via_socket(&firm_home, node_id).is_some() {
+            if crate::daemon_client::daemon_status_via_socket(&firm_home, node_id).is_some() {
                 return Err(encoded_error(
                     "ACTION_UNAVAILABLE",
                     "NodeDaemon is already live; refresh the Operator RoleView",
@@ -467,7 +467,7 @@ pub(super) fn execute_operator_action(
                 ));
             }
             execute_receipted_operator_action(&firm_home, node_id, &auth, || {
-                let status = crate::supervisor_daemon::start_daemon_process_fenced(
+                let status = crate::daemon_client::start_daemon_process_fenced(
                     &firm_home,
                     node_id,
                     max_concurrency,
@@ -521,7 +521,7 @@ pub(super) fn execute_operator_action(
                 ));
             }
             execute_receipted_operator_action(&firm_home, node_id, &auth, || {
-                let response = crate::supervisor_daemon::daemon_stop_via_socket(
+                let response = crate::daemon_client::daemon_stop_via_socket(
                     &firm_home,
                     node_id,
                     &auth.execution_space_id,

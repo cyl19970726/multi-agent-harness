@@ -685,7 +685,7 @@ fn initialize_persisted_session_read(
     };
     let firm_home =
         crate::execution_space::firm_home().map_err(|error| CliError::Usage(error.to_string()))?;
-    let Ok(response) = crate::supervisor_daemon::native_session_read_via_socket(
+    let Ok(response) = crate::daemon_client::native_session_read_via_socket(
         &firm_home,
         &request.node_id,
         &request,
@@ -717,7 +717,7 @@ fn emit_persisted_session_advance(
     let firm_home =
         crate::execution_space::firm_home().map_err(|error| CliError::Usage(error.to_string()))?;
     if request.mode == provider_event_api::PersistedSessionReadMode::Snapshot {
-        let response = crate::supervisor_daemon::native_session_read_via_socket(
+        let response = crate::daemon_client::native_session_read_via_socket(
             &firm_home,
             &request.node_id,
             request,
@@ -742,12 +742,9 @@ fn emit_persisted_session_advance(
     if request.cursor.is_none() {
         return Ok(());
     }
-    let response = crate::supervisor_daemon::native_session_read_via_socket(
-        &firm_home,
-        &request.node_id,
-        request,
-    )
-    .map_err(CliError::Io)?;
+    let response =
+        crate::daemon_client::native_session_read_via_socket(&firm_home, &request.node_id, request)
+            .map_err(CliError::Io)?;
     if response.source_reset {
         sse::write_sse_frame(
             stream,
@@ -756,7 +753,7 @@ fn emit_persisted_session_advance(
         )?;
         request.mode = provider_event_api::PersistedSessionReadMode::Snapshot;
         request.cursor = None;
-        let snapshot = crate::supervisor_daemon::native_session_read_via_socket(
+        let snapshot = crate::daemon_client::native_session_read_via_socket(
             &firm_home,
             &request.node_id,
             request,

@@ -87,6 +87,7 @@ fn stop_fixture(
         contexts: Mutex::new(context.into_iter().collect()),
         supervisor_start_gate: Mutex::new(()),
         session_runtimes: Mutex::new(HashMap::new()),
+        application: Arc::new(DaemonApplication),
         native_session_wake_endpoint: Arc::new(Mutex::new(HashMap::new())),
         max_concurrency: 1,
         input_acceptance_secs: 1,

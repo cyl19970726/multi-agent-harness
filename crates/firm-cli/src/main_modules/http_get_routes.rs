@@ -526,7 +526,7 @@ impl HttpExchange<'_> {
                     ) {
                         if let Ok(node_id) = read_local_node_id() {
                             let daemon_instance_id =
-                                supervisor_daemon::daemon_status_via_socket(firm_home, &node_id)
+                                daemon_client::daemon_status_via_socket(firm_home, &node_id)
                                     .and_then(|raw| {
                                         serde_json::from_str::<serde_json::Value>(&raw).ok()
                                     })
@@ -534,10 +534,10 @@ impl HttpExchange<'_> {
                                         status["instance_id"].as_str().map(ToString::to_string)
                                     });
                             if let Some(daemon_instance_id) = daemon_instance_id {
-                                match supervisor_daemon::register_native_session_wake_via_socket(
+                                match daemon_client::register_native_session_wake_via_socket(
                                     firm_home,
                                     &node_id,
-                                    supervisor_daemon::NativeSessionWakeRegistration {
+                                    daemon_client::NativeSessionWakeRegistration {
                                         authority: &callback.authority,
                                         token: &callback.token,
                                         agent_member_id,

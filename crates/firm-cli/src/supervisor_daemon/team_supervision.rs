@@ -38,7 +38,7 @@ impl MultiTeamDaemon {
             if !authority_spaces.contains(&space.id) {
                 continue;
             }
-            let runs = match crate::latest_team_runs_in_append_order(&store) {
+            let runs = match store.latest_team_runs().map_err(CliError::Store) {
                 Ok(runs) => runs,
                 Err(error) => {
                     eprintln!(
@@ -181,7 +181,7 @@ impl MultiTeamDaemon {
         // physical Execution Space. The machine daemon opens stores from the
         // space registry rather than through CLI resolution, so recover that
         // scope from the canonical TeamRun before provider preflight.
-        let run_scope = crate::latest_team_run(&store, run_id)?;
+        let run_scope = crate::daemon_support::latest_team_run(&store, run_id)?;
         if !team_run_has_active_member(&store, run_id)? {
             return Err(CliError::Usage(format!(
                 "TEAM_RUN_DORMANT: TeamRun {run_id} has no Active MemberRun; Reopen a member before runtime adoption"
@@ -240,106 +240,34 @@ impl MultiTeamDaemon {
 
         // Validate and create registration outside the context lock. Store and
         // provider admission must never run while the registry mutex is held.
-        let body = prepare_team_run_start_body(&store, &run_id, max_concurrency)?;
-        if body.run.execution_node_id != self.node_id {
-            return Err(CliError::Usage(format!(
-                "REMOTE_TEAM_RUN_NOT_ADOPTED: TeamRun {run_id} belongs to Node {}, local Node is {}",
-                body.run.execution_node_id, self.node_id
-            )));
-        }
-        let project_binding_id = body.run.project_binding_id.clone();
-        let daemon_generation = store
-            .latest_node_daemon_lease(&self.node_id)?
-            .filter(|lease| {
-                lease.daemon_id == self.daemon_id && lease.instance_id == self.instance_id
-            })
-            .ok_or_else(|| {
-                CliError::Usage("NODE_DAEMON_GENERATION_FENCED: current lease is missing".into())
-            })?
-            .generation;
-        ensure_team_runtime_fabric(&store, &body, &space.id, &self.daemon_id, daemon_generation)?;
-        let registration = TeamSupervisorRegistration::start(&store, &run_id, Some(&space.id))?;
-        let supervisor_id = registration.supervisor_id.clone();
-        let supervisor_generation = registration.generation;
-        bind_team_runtime_supervisor(
+        let prepared = self.application.prepare_team_run(
             &store,
-            &body,
-            &space.id,
+            &run_id,
+            &space,
+            &self.node_id,
             &self.daemon_id,
-            &registration.supervisor_id,
-            registration.generation,
+            &self.instance_id,
+            max_concurrency,
         )?;
-        let heartbeat_valid = Arc::clone(&registration.heartbeat_valid);
-
-        // Transition Planning→Running only after the child Supervisor is
-        // admitted under this exact daemon generation.
-        use crate::now_string;
-        use harness_core::TeamRunStatus;
-
-        let running = if body.run.status == TeamRunStatus::Planning {
-            let mut running = body.run.clone();
-            running.status = TeamRunStatus::Running;
-            running.updated_at = now_string();
-            // Keep the typed Store error. Flattening a CAS conflict into
-            // `CliError::Usage` hides it from the adoption-hold classifier,
-            // which would then read an ordinary lost race as a structural
-            // defect and wedge a healthy run until canonical state changed.
-            store
-                .compare_and_append_team_run_lifecycle(&body.run, &running)
-                .map_err(CliError::Store)?;
-            running
-        } else {
-            body.run.clone()
-        };
-
-        let ledger = Arc::new(TeamRunLedger::new(
-            &store,
-            &run_id,
-            &registration.supervisor_id,
-            registration.generation,
-            Arc::clone(&registration.heartbeat_valid),
-        ));
-
-        ledger.fold_event(
-            harness_core::TeamRunEventSourceKind::Host,
-            None,
-            "team_run",
-            &run_id,
-            "updated",
-            &format!(
-                "member supervisor {} generation {} {} ({} unclosed member(s), max-concurrency {max_concurrency})",
-                registration.supervisor_id,
-                registration.generation,
-                if body.run.status == TeamRunStatus::Planning {
-                    "started"
-                } else {
-                    "reattached"
-                },
-                body.members.len(),
-            ),
-        )?;
-
-        let prepared = PreparedTeamRunStart {
-            run_id: body.run_id,
-            objective: body.objective,
-            running,
-            members: body.members,
-            ledger,
-            supervisor_registration: registration,
-        };
+        let project_binding_id = prepared.project_binding_id.clone();
+        let supervisor_id = prepared.supervisor_id.clone();
+        let supervisor_generation = prepared.supervisor_generation;
+        let heartbeat_valid = Arc::clone(&prepared.heartbeat_valid);
+        let daemon_generation = prepared.daemon_generation;
 
         eprintln!(
             "[node-daemon] {}/{}: serving (pid {}, gen {})",
             space.id,
             run_id,
             std::process::id(),
-            prepared.supervisor_registration.generation,
+            prepared.supervisor_generation,
         );
 
         let execution_space_id = space.id.clone();
         let callback_space_id = execution_space_id.clone();
         let serving_status = Arc::new(Mutex::new("running".to_string()));
         let thread_serving_status = Arc::clone(&serving_status);
+        let application = Arc::clone(&self.application);
         let thread = std::thread::spawn(move || {
             let live_sink = Arc::new(move |update: NativeSessionWakeUpdate| {
                 let agent_member_id = match &update {
@@ -357,7 +285,7 @@ impl MultiTeamDaemon {
                     .cloned();
                 if let Some(endpoint) = endpoint {
                     if let Err(error) =
-                        post_native_session_wake(&endpoint, &callback_space_id, &update)
+                        application.post_native_wake(&endpoint, &callback_space_id, &update)
                     {
                         if error.clears_registered_endpoint() {
                             let mut endpoints = native_session_wake_endpoint
@@ -375,16 +303,12 @@ impl MultiTeamDaemon {
                     }
                 }
             });
-            drive_prepared_team_run(
-                prepared,
-                Some(space),
-                None,
+            prepared.handle.drive(
+                space,
                 max_concurrency,
-                harness_runtime_contract::CycleTimeouts::with_input_acceptance(
-                    Duration::from_secs(input_acceptance_secs),
-                ),
-                Some(live_sink),
-                Some(thread_serving_status),
+                input_acceptance_secs,
+                live_sink,
+                thread_serving_status,
             )
         });
 
@@ -628,7 +552,8 @@ fn refused_for_capacity(error: &CliError) -> bool {
 }
 
 fn team_run_has_active_member(store: &HarnessStore, run_id: &str) -> CliResult<bool> {
-    Ok(crate::latest_member_runs_in_append_order(store)?
+    Ok(store
+        .latest_member_runs()?
         .into_iter()
-        .any(|member| crate::completed_run_members::is_unclosed_managed_member(&member, run_id)))
+        .any(|member| crate::daemon_support::is_unclosed_managed_member(&member, run_id)))
 }
