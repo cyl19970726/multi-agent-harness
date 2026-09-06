@@ -236,6 +236,28 @@ matching the declared gates).
 
 A member with no standing Work waits for an assigned Work instead of creating one.
 
+### Bound commands and own long-running services
+
+For both managed and external Hosts and every Member, choose a completion
+condition, wall-clock limit, and concurrency/resource limit before running a
+command. Keep ordinary builds, tests, and load simulations in the foreground;
+stop and reap the processes you started before returning control. Use bounded
+test fixtures for load simulation. Do not launch detached load loops with
+`nohup`, `setsid`, `&`, or a script waiting indefinitely for a stop file.
+
+When a Work actually requires a long-running service, record its owner,
+purpose, exact process/service handle, resource limits, stop command, and
+cleanup responsibility in the Work evidence before starting it. The owner
+stops it and verifies exit before closeout, or records an explicit handoff to
+a continuing owner. Do not leave an unowned service behind at a turn boundary.
+
+Interrupt stops a provider turn; it does not mean all tools or descendants
+have exited. Close and daemon shutdown clean up the runtime's registered
+process groups and directly owned children, but do not guarantee reclamation
+of descendants that escaped those groups. Never infer cleanup from provider
+completion alone or kill a process merely by its name, cwd, or a reused PID.
+Report unresolved cleanup with the evidence available and the next owner.
+
 **Both fail without the shared model above** — that is why it comes first.
 
 ## Part III — Operating loops
