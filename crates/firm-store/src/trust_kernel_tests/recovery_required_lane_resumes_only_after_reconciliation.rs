@@ -202,9 +202,9 @@ fn recovery_required_lane_resumes_only_after_reconciliation() {
     let cold = cold_lane(&store, "ambiguous");
     let (inspect, inspect_context) = runtime_command_fixture(
         "runtime-rr-ambiguous-inspect",
-        RuntimeCommandKind::InspectCommandEffect,
+        RuntimeCommandKind::InspectContinuation,
         &cold,
-        "inspect_command_effect",
+        "inspect_continuation",
     );
     let admitted = store
         .prepare_runtime_command(&inspect_context, &inspect, current_unix_ms(), "t-inspect")

@@ -1,6 +1,25 @@
 use super::fabric_foundation::{RuntimeBindingAdmission, RuntimeCommandPoststate};
 use super::*;
 
+// These persisted names have no production effect handler. Keep their wire
+// values and exact historical replay; reject only new admission, including
+// callers that dynamically deserialize an otherwise valid command envelope.
+const RUNTIME_COMMAND_KIND_FROZEN: &str = "RUNTIME_COMMAND_KIND_FROZEN";
+const FROZEN_RUNTIME_COMMAND_KINDS: &[RuntimeCommandKind] = &[
+    RuntimeCommandKind::ReopenMember,
+    RuntimeCommandKind::RetireMember,
+    RuntimeCommandKind::DeleteNativeSession,
+    RuntimeCommandKind::CancelPendingInput,
+    RuntimeCommandKind::ActivateContinuation,
+    RuntimeCommandKind::ReplaceContinuationCondition,
+    RuntimeCommandKind::ClearContinuation,
+    RuntimeCommandKind::StopBackgroundTask,
+    RuntimeCommandKind::TransferExecutionDriver,
+    RuntimeCommandKind::InspectCommandEffect,
+    RuntimeCommandKind::ReconcileUnknownEffect,
+    RuntimeCommandKind::AbortIfNotApplied,
+];
+
 impl HarnessStore {
     /// A prepared command is publicly recoverable only after its exact
     /// TeamSupervisor generation has demonstrably lost authority. This keeps
@@ -202,6 +221,18 @@ impl HarnessStore {
                 event: latest.operation.event,
                 replayed: true,
             });
+        }
+        if FROZEN_RUNTIME_COMMAND_KINDS.contains(&command.command) {
+            return Err(trust_error(
+                TrustErrorCode::InvalidStateTransition,
+                format!(
+                    "{RUNTIME_COMMAND_KIND_FROZEN}: {:?} has no production effect handler",
+                    command.command
+                ),
+                "runtime_command",
+                &command.id,
+                None,
+            ));
         }
         self.validate_runtime_command(command, now_unix_ms)?;
         if command.execution_space_id != context.execution_space_id
