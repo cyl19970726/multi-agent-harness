@@ -11,7 +11,7 @@ output, or private session detail beyond the `host_member_public` scope.
 | Mode | How you run | What wakes you | What you must do yourself |
 | --- | --- | --- | --- |
 | `managed` (default for automated Teams) | one MemberRun → AgentSession under the NodeDaemon, same path as every Member | response-required deliveries, blocked/submitted Work, recovery attentions start your next cycle | nothing special — the Supervisor batches ordinary progress into your next cycle |
-| `external_interactive` (a Claude Code / Codex / Kimi window bound with `--host-surface … --host-thread-id …`) | your own interactive session; Harness creates no AgentSession, receipt, or timely wake | nothing pushes into the window (ADR 0063 retired the plugin hook); read `host-inbox` at the start of every turn | inside a long turn, block on `team-run wait`; read `host-inbox`; answer with `answer-message` |
+| `external_interactive` (a Claude Code / Codex / Kimi window bound with `--host-surface … --host-thread-id …`) | your own interactive session; Harness creates no AgentSession, receipt, or timely wake | nothing pushes into the window (ADR 0063 retired the plugin hook); read `host-inbox` at the start of every turn | inside a long turn, block on `team-run wait`; read `host-inbox`; choose ordinary reply or provider-question answer in §4 |
 
 Mode changes are explicit Close/Reopen operations with generation fencing;
 nothing falls back silently between them.
@@ -154,8 +154,9 @@ external_interactive Host reads `host-inbox`. Mail from members is durable
 immediately but does not interrupt your current reasoning.
 
 - A member's decision-shaped question arrives as a correlated Message with
-  exact ids. Answer **on the same correlation**; a fresh uncorrelated reply
-  strands the member's pause. A provider-native question
+  exact ids. Answer **on the same correlation**, with the incoming message as
+  causation. Ordinary planning conversation is not a provider-native pause.
+  Only a provider-native question
   (`ProviderInteractionRequest`) is answered with:
 
   ```bash
@@ -169,6 +170,16 @@ immediately but does not interrupt your current reasoning.
   firm team-run message send --team-run-id <run> --to-membership <membership-id> \
     --body "<markdown>" --surface <surface> --thread-id <id> \
     [--work-id <id>] [--response-required] [--idempotency-key <key>]
+  ```
+
+  To reply to ordinary mail, preserve correlation and identify the message
+  being answered; do not use `answer-message`:
+
+  ```bash
+  firm team-run message send --team-run-id <run> --to-membership <sender-membership-id> \
+    --body "<reply>" --surface <surface> --thread-id <host-thread-id> \
+    --correlation-id <incoming-correlation-id> --causation-id <incoming-message-id> \
+    --idempotency-key <stable-reply-key> [--work-id <id>] [--response-required]
   ```
 
   A managed Host uses the same `member message send|reply|request-decision`
@@ -190,8 +201,8 @@ Submission moves Work to `Review` — that is a request for judgment, not a
 result. Review means: open the artifact refs (the PR diff, the file), rerun
 or read the named check refs, and walk the completion criteria line by line.
 
-Before trusting a submission's report at all, apply the submission report
-contract (SKILL.md):
+Apply the submission report contract (SKILL.md) for the actual submission
+type and the Work's explicit requirements. For a commit-producing submission:
 
 - **Verify the SHA, never trust it.** `git cat-file -t <reported-sha>` must
   answer `commit` and the object must equal the submitted candidate revision
@@ -204,6 +215,17 @@ contract (SKILL.md):
   output, and every named gate's command with verbatim result line(s) and
   exit code, do not reconstruct the evidence yourself — request changes and
   name the missing section.
+
+For `report_only: true`, review the report and its artifact/check refs against
+Work criteria. Do not require a commit SHA, Git diff or porcelain proof merely
+because the code-delivery template lists them. Identify the exact report under
+review; never fabricate a candidate revision.
+
+Known implementation gap #862: some builds allow report-only submit but reject
+Host acceptance because it requires a candidate fingerprint. If encountered,
+preserve the report and Review state and report the acceptance blocker. Do not
+cancel the Work, fabricate a SHA or request unrelated code to make it pass.
+The normal accept command below does not claim this gap is fixed.
 
 ```bash
 firm team-run work show --work-id <work-id> --json        # report, artifact/check refs, deliveries
