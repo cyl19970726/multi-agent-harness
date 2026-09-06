@@ -5,7 +5,6 @@
 
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
-use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -211,18 +210,11 @@ fn wait_for_socket(child: &mut std::process::Child, socket: &Path) {
     }
 }
 
+#[path = "team_run_daemon/socket_request.rs"]
+mod socket_requests;
+
 fn socket_request(socket: &Path, request: &str) -> serde_json::Value {
-    let mut stream = std::os::unix::net::UnixStream::connect(socket).expect("connect daemon");
-    stream
-        .set_read_timeout(Some(Duration::from_secs(3)))
-        .unwrap();
-    writeln!(stream, "{request}").unwrap();
-    stream.flush().unwrap();
-    let mut response = String::new();
-    std::io::BufReader::new(&mut stream)
-        .read_line(&mut response)
-        .expect("read daemon response");
-    serde_json::from_str(response.trim()).expect("daemon response JSON")
+    socket_requests::request(socket, request).unwrap_or_else(|error| panic!("{error}"))
 }
 
 fn stop_daemon(
