@@ -6,10 +6,11 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 const ORDINARY_BUDGET: Duration = Duration::from_secs(3);
-// Production stop replies only after 30 s cooperative + 5 s forced drain.
-// Keep five seconds for socket scheduling/response delivery; do not apply this
-// to start/status, whose hang would otherwise be hidden by the stop allowance.
-const STOP_BUDGET: Duration = Duration::from_secs(40);
+// Match the production stop client: NODE_DAEMON_STOP_DRAIN_BOUND covers
+// 20 s control workers + 20 s scanner + 30 s Supervisor + 5 s forced drain,
+// then the client allows another 25 s for scheduling/response delivery.
+// Do not apply this to start/status, whose hang must retain its short bound.
+const STOP_BUDGET: Duration = Duration::from_secs(100);
 
 struct Context<'a> {
     socket: &'a Path,
@@ -226,7 +227,7 @@ mod tests {
 
     #[test]
     fn stop_waits_for_delayed_drain_beyond_the_ordinary_deadline() {
-        assert_eq!(STOP_BUDGET, Duration::from_secs(40));
+        assert_eq!(STOP_BUDGET, Duration::from_secs(20 + 20 + 30 + 5 + 25));
         let response = serve(
             b"{\"ok\":true}\n",
             ORDINARY_BUDGET + Duration::from_millis(150),
