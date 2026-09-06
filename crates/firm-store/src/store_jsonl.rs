@@ -256,11 +256,20 @@ impl HarnessStore {
         poll_interval: Duration,
     ) -> StoreResult<StoreWriteLock> {
         let lock_path = self.root.join(".store.lock");
-        let deadline = Instant::now() + timeout;
+        let started = Instant::now();
+        let deadline = started + timeout;
+        let timeout_error = || {
+            StoreError::LockTimeout(format!(
+                "{}; lock_wait_ms={}; lock_budget_ms={}",
+                lock_path.display(),
+                started.elapsed().as_millis(),
+                timeout.as_millis()
+            ))
+        };
         let process_write_permit = self
             .process_write_lock
             .acquire(deadline)
-            .ok_or_else(|| StoreError::LockTimeout(lock_path.display().to_string()))?;
+            .ok_or_else(&timeout_error)?;
         let file = OpenOptions::new()
             .create(true)
             .read(true)
@@ -277,7 +286,7 @@ impl HarnessStore {
                 }
                 Err(error) if would_block_lock(&error) => {
                     if Instant::now() >= deadline {
-                        return Err(StoreError::LockTimeout(lock_path.display().to_string()));
+                        return Err(timeout_error());
                     }
                     thread::sleep(
                         poll_interval.min(deadline.saturating_duration_since(Instant::now())),

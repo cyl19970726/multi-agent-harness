@@ -13,7 +13,7 @@ fn heartbeat_latches_immediately_on_terminal_parent_fence() {
         generation: 7,
         ttl_ms: 600_000,
         heartbeat_interval_ms: 5,
-        max_transient_failures: 3,
+        initial_expires_unix_ms: current_unix_ms_u64() + 600_000,
     };
     let stop = Arc::new(AtomicBool::new(false));
     let valid = Arc::new(AtomicBool::new(true));

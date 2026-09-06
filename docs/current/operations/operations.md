@@ -369,6 +369,11 @@ the lease state and the recovery command `firm daemon recover-predecessor
 that cannot be read is reported by Execution Space without hiding readable
 Spaces or changing the absent status exit code.
 
+Live `firm daemon status` exposes `lease_renewals` as volatile diagnostics.
+`attempt_elapsed_ms` measures the whole latest renewal attempt; a retained
+`last_error` includes `lock_wait_ms` for the actual failed lock wait. These
+observations are not durable lease authority and do not authorize execution.
+
 If the NodeDaemon loses its machine authority and self-stops, it records the
 loss on every TeamRun it was serving through the ordinary TeamRun event log.
 The service-authored `node_daemon` / `self_stopped` events carry the first
@@ -387,8 +392,16 @@ this Node and prints the recovery projection (`daemon_id`, `instance_id`,
 `generation`, `recovered_spaces`, `space_settlements`, `status=released`).
 `space_settlements` names, per Execution Space, the AgentSessions this recovery
 detached, the ones it skipped because the dying generation's own incomplete
-drain had already settled them, and the Supervisor leases it released. Recovery
-writes are keyed to the exact predecessor generation and instance, so recovering
+drain had already settled them, and the Supervisor leases it released. It
+marks an already released exact predecessor with `already_released=true` in
+its per-Space settlement. A multi-Space failure remains an error, with a JSON
+receipt in its detail (`status=partial`, `failures`, `recovered_spaces`, and
+`space_settlements`); successful releases are not rolled back or discarded.
+The receipt's `evidence_ref` is the current request's reference. Durable rows
+retain the first reference that settled them; a retry does not rewrite their
+history. The exact-predecessor key removes the old duplicate-row collision
+(#837); it does not add an operator bypass for unrelated recovery refusals.
+Recovery writes are keyed to the exact predecessor generation and instance, so recovering
 one Node twice never collides with an earlier recovery's rows. It refuses when there is
 no predecessor, when the confirmation literal is missing or wrong, or when the
 predecessor process still exists, and a second run reports the already

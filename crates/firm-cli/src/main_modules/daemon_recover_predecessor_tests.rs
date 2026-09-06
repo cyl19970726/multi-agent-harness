@@ -119,6 +119,7 @@ fn recover_predecessor_releases_dead_instance_and_is_idempotent() {
         projection["space_settlements"],
         serde_json::json!([{
             "execution_space_id": "space-recover",
+            "already_released": false,
             "supervisors_released": [],
             "sessions_detached": [],
             "sessions_already_settled": [],
@@ -138,6 +139,97 @@ fn recover_predecessor_releases_dead_instance_and_is_idempotent() {
     assert_eq!(second["already_released"], true);
     assert_eq!(second["status"], "released");
     assert_eq!(second["generation"], dead_lease.generation);
+}
+
+#[test]
+fn recover_predecessor_partial_failure_preserves_releases_and_retry_markers() {
+    let (_tree, firm_home, store) = seed_recover_test_node("partial-receipt");
+    let second_space = crate::execution_space::register_and_activate(
+        &firm_home,
+        "space-second",
+        "Second space",
+        None,
+        None,
+        "unix-ms:1",
+    )
+    .expect("register second space");
+    let second = HarnessStore::new(second_space.store_root);
+    second.init().expect("initialize second store");
+    second
+        .insert_execution_node(&harness_core::ExecutionNode {
+            id: RECOVER_TEST_NODE_ID.into(),
+            display_name: "Recover Test Node".into(),
+            status: harness_core::ExecutionNodeStatus::Active,
+            created_at: "unix-ms:1".into(),
+            updated_at: "unix-ms:1".into(),
+        })
+        .expect("insert node in second space");
+    let instance = "2147483647:partial:dead-daemon";
+    let lease = store
+        .acquire_node_daemon_lease(RECOVER_TEST_NODE_ID, "dead-daemon", instance, 1, 1)
+        .expect("seed expired predecessor in first space");
+
+    // The second space belongs to this Node but has no recoverable lease.
+    // It must not hide the first space's irreversible release in the CLI error.
+    let error = daemon_recover_predecessor(&firm_home, RECOVER_TEST_NODE_ID, &recover_args(true))
+        .expect_err("one space fails while another releases");
+    let detail = error.to_string();
+    assert!(detail.contains("NODE_DAEMON_PREDECESSOR_RECOVERY_INCOMPLETE"));
+    let receipt: serde_json::Value =
+        serde_json::from_str(&detail[detail.find('{').expect("JSON partial receipt")..])
+            .expect("CLI preserves structured partial receipt");
+    assert_eq!(receipt["status"], "partial");
+    assert_eq!(
+        receipt["recovered_spaces"],
+        serde_json::json!(["space-recover"])
+    );
+    assert_eq!(receipt["space_settlements"][0]["already_released"], false);
+    assert!(receipt["failures"][0]
+        .as_str()
+        .unwrap()
+        .contains("space-second"));
+    assert_eq!(
+        store
+            .latest_node_daemon_lease(RECOVER_TEST_NODE_ID)
+            .unwrap()
+            .unwrap()
+            .status,
+        NodeDaemonLeaseStatus::Released
+    );
+
+    // Repair only the failed fixture, then use the same seam as the HTTP
+    // action. An empty repeat settlement is now explicitly distinguished.
+    second
+        .acquire_node_daemon_lease(RECOVER_TEST_NODE_ID, "dead-daemon", instance, 1, 1)
+        .expect("seed second space predecessor");
+    let actor = harness_core::agentfirm_api::ActorRef {
+        kind: harness_core::agentfirm_api::ActorKind::Service,
+        id: RECOVER_TEST_NODE_ID.into(),
+    };
+    let repeated = recover_daemon_predecessor_spaces(
+        &firm_home,
+        RECOVER_TEST_NODE_ID,
+        &PredecessorRecoveryIntent {
+            daemon_id: "dead-daemon".into(),
+            instance_id: instance.into(),
+            generation: lease.generation,
+        },
+        &actor,
+        true,
+        "test:second-request-evidence",
+        "test:partial-retry",
+        None,
+    )
+    .expect("retry preserves already released space and recovers second");
+    assert_eq!(repeated["status"], "released");
+    let settlements = repeated["space_settlements"].as_array().unwrap();
+    assert_eq!(settlements.len(), 2);
+    for row in settlements {
+        assert_eq!(
+            row["already_released"],
+            row["execution_space_id"] == "space-recover"
+        );
+    }
 }
 
 #[test]

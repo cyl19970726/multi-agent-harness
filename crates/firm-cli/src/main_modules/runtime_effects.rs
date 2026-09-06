@@ -999,7 +999,7 @@ impl TeamSupervisorRegistration {
             generation,
             ttl_ms,
             heartbeat_interval_ms: (ttl_ms / 3).clamp(50, 1_000),
-            max_transient_failures: MAX_TRANSIENT_SUPERVISOR_RENEWAL_FAILURES,
+            initial_expires_unix_ms: lease.expires_unix_ms,
         };
         let heartbeat_thread = std::thread::spawn(move || {
             let heartbeat_store = heartbeat_store;
@@ -1018,7 +1018,7 @@ impl TeamSupervisorRegistration {
                             current_unix_ms_u64(),
                             heartbeat_policy.ttl_ms,
                         )
-                        .map(|_lease| ())
+                        .map(|lease| lease.expires_unix_ms)
                 },
                 supervisor_test_heartbeat_failure_marker,
             );

@@ -209,7 +209,10 @@ const api = createHttpServer((request, response) => {
     if (url.pathname !== "/v1/snapshot") state.boundedReads += 1;
     const barrier = state.snapshotBarriers.get(scopeKey(space, company));
     barrier?.markStarted();
-    const respond = () => jsonResponse(response, plan.status, plan.status === 200 ? captured : { error: "planned failure" });
+    const respond = () => {
+      jsonResponse(response, plan.status, plan.status === 200 ? captured : { error: "planned failure" });
+      barrier?.markResponded();
+    };
     const gates = [plan.gate, barrier?.gate].filter(Boolean);
     if (gates.length > 0) {
       Promise.all(gates).then(() => { if (plan.delay) setTimeout(respond, plan.delay); else respond(); });
@@ -285,6 +288,8 @@ function holdScope(map, space = "space-a", company = "company-a") {
     gate,
     started,
     startedCount: 0,
+    respondedCount: 0,
+    markResponded() { this.respondedCount += 1; },
     markStarted() {
       this.startedCount += 1;
       acknowledgeStart();
@@ -464,11 +469,13 @@ try {
   check(state.streamSerial >= 2, "EventSource reconnects with a new stream epoch");
 
   // An old-scope response cannot cross a Company boundary. The B snapshot wins
-  // while the delayed A response and old stream become harmless.
+  // while the held A response and old stream become harmless. Keep the
+  // response held until after observation and switching, independent of load.
   state.titles.set(scopeKey("space-a", "company-a"), "late old company A");
   state.titles.set(scopeKey("space-a", "company-b"), "authoritative company B");
-  state.responsePlan.push({ delay: 500, status: 200 });
+  const oldCompanyRead = holdSnapshots("space-a", "company-a");
   emitInvalidation({ revision: 6 });
+  await waitFor(() => Promise.resolve(oldCompanyRead.startedCount > 0), "old Company read held before scope switch");
   await freshness(page, "stale");
   // The Company selector left the navigation (DOC-107); Company remains a
   // URL-owned scope param, so the boundary crossing is driven by location.
@@ -476,7 +483,8 @@ try {
   await page.goto(`${appBase}/?${companySwitch}`, { waitUntil: "domcontentloaded", timeout: 15_000 });
   await freshness(page, "live");
   await page.getByText("authoritative company B", { exact: true }).waitFor({ timeout: 8_000 });
-  await new Promise((resolveWait) => setTimeout(resolveWait, 650));
+  oldCompanyRead.release();
+  await waitFor(() => Promise.resolve(oldCompanyRead.respondedCount > 0), "old Company response released after Company B is installed");
   check(!(await page.locator("body").innerText()).includes("late old company A"), "late Company A response cannot overwrite Company B");
   check(state.reads.some((read) => read.company === "company-b" && read.space === "space-a"), "Company switch scopes the authoritative request");
   // DOC-108 removed the whole /v1/companies* route tree and the frontend no

@@ -348,14 +348,26 @@ impl HarnessStore {
         now_unix_ms: u64,
         ttl_ms: u64,
     ) -> StoreResult<NodeDaemonLease> {
+        let started = Instant::now();
         self.init()?;
-        let _lock = self.acquire_write_lock()?;
+        // The pre-read only budgets waiting. Ownership is checked again under
+        // the existing global lock; no second authority or lock domain exists.
+        let observed_expiry = self
+            .latest_node_daemon_lease(node_id)?
+            .map(|lease| lease.expires_unix_ms)
+            .unwrap_or(now_unix_ms);
+        let elapsed_ms = || started.elapsed().as_millis().min(u64::MAX as u128) as u64;
+        let renewal_now = || now_unix_ms.saturating_add(elapsed_ms());
+        let remaining = observed_expiry.saturating_sub(now_unix_ms.saturating_add(elapsed_ms()));
+        let budget = Duration::from_millis((remaining / 4).min(250));
+        let _lock = self.acquire_write_lock_with_policy(budget, Duration::from_millis(2))?;
         let mut lease = latest_by_id(
             self.read_jsonl::<NodeDaemonLease>("node_daemon_leases.jsonl")?,
             |lease| lease.node_id.clone(),
         )
         .remove(node_id)
         .ok_or_else(|| StoreError::Conflict(format!("NODE_DAEMON_GENERATION_FENCED: {node_id}")))?;
+        let now_unix_ms = renewal_now();
         if lease.status != NodeDaemonLeaseStatus::Active
             || lease.daemon_id != daemon_id
             || lease.generation != generation
@@ -366,13 +378,17 @@ impl HarnessStore {
                 "NODE_DAEMON_GENERATION_FENCED: {daemon_id} generation {generation} no longer owns Node {node_id}"
             )));
         }
-        lease.renewed_unix_ms = now_unix_ms;
-        lease.expires_unix_ms = now_unix_ms.saturating_add(ttl_ms.max(1));
         // Renewals are ~1/s per node while heartbeats are frequent, so this is
         // where compaction belongs: every renewal append is preceded by a
         // collapse to one row per node, keeping every machine-authority read
         // bounded at #nodes + 1 rows instead of growing without bound (#811).
         self.compact_node_daemon_leases_unlocked()?;
+        let now_unix_ms = renewal_now();
+        if lease.expires_unix_ms <= now_unix_ms {
+            return Err(StoreError::Conflict(format!("NODE_DAEMON_GENERATION_FENCED: {daemon_id} generation {generation} expired during renewal")));
+        }
+        lease.renewed_unix_ms = now_unix_ms;
+        lease.expires_unix_ms = now_unix_ms.saturating_add(ttl_ms.max(1));
         self.append_jsonl_unlocked("node_daemon_leases.jsonl", &lease)?;
         Ok(lease)
     }
@@ -589,8 +605,19 @@ impl HarnessStore {
         now_unix_ms: u64,
         ttl_ms: u64,
     ) -> StoreResult<TeamSupervisorLease> {
+        let started = Instant::now();
         self.init()?;
-        let _lock = self.acquire_write_lock()?;
+        // The pre-read only budgets waiting. Ownership is checked again under
+        // the existing global lock; no second authority or lock domain exists.
+        let observed_expiry = self
+            .latest_lease_for_run_unlocked(team_run_id)?
+            .map(|lease| lease.expires_unix_ms)
+            .unwrap_or(now_unix_ms);
+        let elapsed_ms = || started.elapsed().as_millis().min(u64::MAX as u128) as u64;
+        let renewal_now = || now_unix_ms.saturating_add(elapsed_ms());
+        let remaining = observed_expiry.saturating_sub(now_unix_ms.saturating_add(elapsed_ms()));
+        let budget = Duration::from_millis((remaining / 4).min(250));
+        let _lock = self.acquire_write_lock_with_policy(budget, Duration::from_millis(2))?;
         let mut lease = self
             .latest_lease_for_run_unlocked(team_run_id)?
             .ok_or_else(|| {
@@ -598,6 +625,7 @@ impl HarnessStore {
                     "team run {team_run_id} has no Supervisor lease to renew"
                 ))
             })?;
+        let now_unix_ms = renewal_now();
         if lease.status != TeamSupervisorLeaseStatus::Active
             || lease.supervisor_id != supervisor_id
             || lease.generation != generation
@@ -618,6 +646,10 @@ impl HarnessStore {
                 lease.node_id
             ))
         })?;
+        let now_unix_ms = renewal_now();
+        if lease.expires_unix_ms <= now_unix_ms {
+            return Err(StoreError::Conflict(format!("Supervisor lease for team run {team_run_id} is no longer owned by {supervisor_id} generation {generation}")));
+        }
         if parent.status != NodeDaemonLeaseStatus::Active
             || parent.daemon_id != lease.node_daemon_id
             || parent.generation != lease.node_daemon_generation

@@ -27,14 +27,16 @@ use crate::{
 // ---------------------------------------------------------------------------
 
 mod control_protocol;
+#[cfg(test)]
+mod lease_renewal_tests;
 mod machine_authority;
 pub(crate) mod recovery;
 mod self_stop_events;
 mod shutdown;
 mod team_supervision;
-use machine_authority::{
-    daemon_control_generation_authorized, node_authority_refresh_interval, AuthorityReleaseReport,
-};
+#[cfg(test)]
+use machine_authority::node_authority_refresh_interval;
+use machine_authority::{daemon_control_generation_authorized, AuthorityReleaseReport};
 pub(crate) use recovery::reconcile_team_run_start_postcondition;
 use self_stop_events::MachineAuthorityLoss;
 
@@ -142,11 +144,9 @@ const AT_CAPACITY_REFUSAL: &str = "NodeDaemon at capacity";
 /// `--max-concurrency` (#836).
 ///
 /// Retrying that adoption on every pass is not free: the start path decodes
-/// the whole TeamRun and MemberRun ledgers and renews the machine lease —
-/// two store write-lock acquisitions — before it ever reaches the capacity
-/// check. A run that provably cannot start therefore competed with the
-/// daemon's own Supervisor heartbeat for that lock, and three missed renewals
-/// cost the daemon its machine authority.
+/// the whole TeamRun and MemberRun ledgers before it reaches the capacity
+/// check. A run that provably cannot start must not repeatedly consume that
+/// work. Held machine leases are renewed separately from discovery.
 #[derive(Debug, Clone)]
 struct CapacityWait {
     /// Managed-run count observed when the refusal was recorded. Any change
@@ -222,6 +222,8 @@ pub(crate) struct MultiTeamDaemon {
     /// this instance's exact lease, no Space may admit another provider
     /// effect and this process may only drain/settle its predecessor bundle.
     authority_lost: AtomicBool,
+    // Last successful leases bound retry time only; Store fences own all drives.
+    confirmed_node_leases: Mutex<HashMap<String, (HarnessStore, harness_core::NodeDaemonLease)>>,
     /// First machine-authority failure plus the TeamRuns served when it was
     /// latched. Shutdown drains `contexts`, so this snapshot keeps the
     /// Host-visible self-stop journal complete through the final phase.
@@ -383,6 +385,7 @@ impl MultiTeamDaemon {
             authority_shutdown: Arc::new(AtomicBool::new(false)),
             authority_lost: AtomicBool::new(false),
             machine_authority_loss: Mutex::new(None),
+            confirmed_node_leases: Mutex::new(HashMap::new()),
             control_worker_failed: AtomicBool::new(false),
             recovery_blocked_runs: Mutex::new(HashMap::new()),
             settling_runs: Mutex::new(HashSet::new()),
@@ -432,10 +435,9 @@ impl MultiTeamDaemon {
                 // unrelated historical Spaces. Keep already-acquired machine
                 // authority alive on an independent cadence so a slow scan
                 // cannot fence the AgentSessions currently being supervised.
-                let interval = node_authority_refresh_interval(self.scan_interval);
                 while !self.authority_shutdown.load(Ordering::SeqCst) {
                     self.refresh_held_node_authorities()?;
-                    let next_refresh = Instant::now() + interval;
+                    let next_refresh = Instant::now() + self.next_node_authority_refresh_delay();
                     while !self.authority_shutdown.load(Ordering::SeqCst)
                         && Instant::now() < next_refresh
                     {
