@@ -225,11 +225,12 @@ Work criteria. Do not require a commit SHA, Git diff or porcelain proof merely
 because the code-delivery template lists them. Identify the exact report under
 review; never fabricate a candidate revision.
 
-Known implementation gap #862: some builds allow report-only submit but reject
-Host acceptance because it requires a candidate fingerprint. If encountered,
-preserve the report and Review state and report the acceptance blocker. Do not
-cancel the Work, fabricate a SHA or request unrelated code to make it pass.
-The normal accept command below does not claim this gap is fixed.
+Use the normal accept command with the current Work version. The Store resolves
+its unique immutable Result; no extra report identity or acceptance mode is
+needed. A bound integration-plan or Candidate requirement cannot be bypassed
+by report-only acceptance. If an older installed build rejects acceptance for
+a missing candidate fingerprint (#862), preserve the report and Review state
+and report the blocker; never cancel the Work or fabricate a SHA to work around it.
 
 ```bash
 firm team-run work show --work-id <work-id> --json        # report, artifact/check refs, deliveries

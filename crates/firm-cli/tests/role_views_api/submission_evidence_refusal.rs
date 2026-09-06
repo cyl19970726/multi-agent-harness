@@ -107,6 +107,7 @@ pub(super) fn assert_report_only_refusals(serve: &ServeHandle, run_id: &str, pro
 /// path with candidate_revision null and report_only true on the record. It
 /// runs on its own Work after the store-live Work was accepted (the worker
 /// is idle then) and before the matrix section seeds its duplicate MemberRun.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn assert_report_only_submission_succeeds(
     serve: &ServeHandle,
     store: &HarnessStore,
@@ -115,7 +116,10 @@ pub(super) fn assert_report_only_submission_succeeds(
     project_id: &str,
     team: &harness_core::AgentTeam,
     worker_id: &str,
+    cli: Option<(&TempHome, &std::path::Path)>,
 ) {
+    let suffix = if cli.is_some() { "cli" } else { "1" };
+    let work_id = format!("work-store-live-report-only-{suffix}");
     let run = store
         .team_runs()
         .expect("TeamRuns for the report-only Work")
@@ -156,31 +160,30 @@ pub(super) fn assert_report_only_submission_succeeds(
         &action_route,
         &serde_json::json!({
             "action":"create_work",
-            "work_id":"work-store-live-report-only-1",
+            "work_id":work_id,
             "title":"Verify without producing a commit",
             "completion_criteria_markdown":"Report-only submission is accepted with candidate_revision null and report_only true",
             "claim_mode":"team_claim"
         }),
-        &action_headers(TOKEN, "create-report-only-1", "0"),
+        &action_headers(TOKEN, &format!("create-report-only-{suffix}"), "0"),
     );
     assert_eq!(status, 200, "create report-only Work: {created}");
-    let assign_route = format!(
-        "/v1/agentfirm/team-runs/{run_id}/works/work-store-live-report-only-1/assign?project={project_id}"
-    );
+    let assign_route =
+        format!("/v1/agentfirm/team-runs/{run_id}/works/{work_id}/assign?project={project_id}");
     let (status, assigned) = serve.post_json_with_headers(
         &assign_route,
         &serde_json::json!({
             "action":"assign_work",
             "membership_id":worker_membership.id
         }),
-        &action_headers(TOKEN, "assign-report-only-1", "1"),
+        &action_headers(TOKEN, &format!("assign-report-only-{suffix}"), "1"),
     );
     assert_eq!(status, 200, "assign report-only Work: {assigned}");
     let assigned_work = store
         .latest_works()
         .expect("Works after report-only assignment")
         .into_iter()
-        .find(|work| work.id == "work-store-live-report-only-1")
+        .find(|work| work.id == work_id)
         .expect("assigned report-only Work");
     admit_provider_received_work_attempt(ProviderReceivedWorkAttemptInput {
         store,
@@ -195,18 +198,16 @@ pub(super) fn assert_report_only_submission_succeeds(
         session: &worker_session,
         binding_generation: 1,
     });
-    let start_route = format!(
-        "/v1/agentfirm/team-runs/{run_id}/works/work-store-live-report-only-1/start?project={project_id}"
-    );
+    let start_route =
+        format!("/v1/agentfirm/team-runs/{run_id}/works/{work_id}/start?project={project_id}");
     let (status, started) = serve.post_json_with_headers(
         &start_route,
         &serde_json::json!({"action":"start_work"}),
-        &action_headers(MEMBER_TOKEN, "start-report-only-1", "2"),
+        &action_headers(MEMBER_TOKEN, &format!("start-report-only-{suffix}"), "2"),
     );
     assert_eq!(status, 200, "start report-only Work: {started}");
-    let submit_route = format!(
-        "/v1/agentfirm/team-runs/{run_id}/works/work-store-live-report-only-1/submit?project={project_id}"
-    );
+    let submit_route =
+        format!("/v1/agentfirm/team-runs/{run_id}/works/{work_id}/submit?project={project_id}");
     let (status, submitted) = serve.post_json_with_headers(
         &submit_route,
         &serde_json::json!({
@@ -215,7 +216,7 @@ pub(super) fn assert_report_only_submission_succeeds(
             "report_only":true,
             "check_refs":["check:role-action-loop"]
         }),
-        &action_headers(MEMBER_TOKEN, "submit-report-only-1", "3"),
+        &action_headers(MEMBER_TOKEN, &format!("submit-report-only-{suffix}"), "3"),
     );
     assert_eq!(status, 200, "report-only submit: {submitted}");
     assert_eq!(submitted["projection"]["kind"], "result");
@@ -229,6 +230,52 @@ pub(super) fn assert_report_only_submission_succeeds(
         submitted["projection"]["report_only"], true,
         "the submission record carries the report_only marker: {submitted}"
     );
+    let accept_route = format!(
+        "/v1/agentfirm/teams/{}/works/{work_id}/accept?project={project_id}",
+        team.id
+    );
+    let headers = [
+        ("X-AgentFirm-Token", TOKEN),
+        ("Idempotency-Key", &format!("accept-report-only-{suffix}")),
+        ("If-Match", "4"),
+        ("X-AgentFirm-Confirm", "accept"),
+    ];
+    let body = serde_json::json!({"action":"accept_work"});
+    if let Some((home, root)) = cli {
+        let output = run_firm(
+            home,
+            root,
+            &[
+                "--space",
+                space_id,
+                "--project",
+                project_id,
+                "team-run",
+                "work",
+                "accept",
+                "--work-id",
+                &work_id,
+                "--expected-version",
+                "4",
+                "--idempotency-key",
+                &format!("accept-report-only-{suffix}"),
+            ],
+        );
+        assert!(
+            output.status.success(),
+            "first CLI report-only accept: {output:?}"
+        );
+        let projection: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(projection["resolution"], "accepted");
+        assert_eq!(projection["version"], 5);
+    }
+    let (status, accepted) = serve.post_json_with_headers(&accept_route, &body, &headers);
+    assert_eq!(status, 200, "ordinary report-only acceptance: {accepted}");
+    assert_eq!(accepted["projection"]["resolution"], "accepted");
+    let (status, replay) = serve.post_json_with_headers(&accept_route, &body, &headers);
+    assert_eq!(status, 200, "report-only acceptance replay: {replay}");
+    assert_eq!(replay["event_id"], accepted["event_id"]);
+    assert_eq!(replay["replayed"], true);
 }
 
 /// The compliant Result submission, its exact idempotent replay, and the two

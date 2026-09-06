@@ -1416,6 +1416,54 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
         &project_id,
         &team,
         worker_id,
+        None,
+    );
+    submission_evidence_refusal::assert_report_only_submission_succeeds(
+        &serve,
+        &store,
+        &space_id,
+        run_id,
+        &project_id,
+        &team,
+        worker_id,
+        Some((&home, &root)),
+    );
+
+    let before_report_cli_retry = ledger_digest(store.root());
+    for _ in 0..2 {
+        let retry = run_firm(
+            &home,
+            &root,
+            &[
+                "--space",
+                &space_id,
+                "--project",
+                &project_id,
+                "team-run",
+                "work",
+                "accept",
+                "--work-id",
+                "work-store-live-report-only-1",
+                "--expected-version",
+                "4",
+                "--idempotency-key",
+                "accept-report-only-1",
+            ],
+        );
+        assert!(retry.status.success(), "CLI report-only retry: {retry:?}");
+        let projection: serde_json::Value = serde_json::from_slice(&retry.stdout).unwrap();
+        assert_eq!(projection["resolution"], "accepted");
+        assert_eq!(projection["version"], 5);
+    }
+    let after_report_cli_retry = ledger_digest(store.root());
+    let changed = after_report_cli_retry
+        .iter()
+        .filter(|entry| !before_report_cli_retry.contains(entry))
+        .map(|entry| entry.0.as_str())
+        .collect::<Vec<_>>();
+    assert!(
+        changed.is_empty(),
+        "CLI acceptance replay changed ledgers: {changed:?}"
     );
 
     let operator_route = format!("/v1/views/operator/{node_id}?project={project_id}");

@@ -58,7 +58,28 @@ impl HarnessStore {
             &report.id,
             &request_fingerprint,
         )? {
+            if replay.projection != report {
+                return Err(trust_error(
+                    TrustErrorCode::IdempotencyKeyReused,
+                    "report replay must preserve the original immutable content",
+                    "work_report",
+                    &report.id,
+                    Some(replay.event.resulting_version),
+                ));
+            }
             return Ok(replay);
+        }
+        if self
+            .latest_trust_envelopes_unlocked(&context.execution_space_id, "work_report")?
+            .contains_key(&report.id)
+        {
+            return Err(trust_error(
+                TrustErrorCode::VersionConflict,
+                "WorkReport is immutable: an existing ID cannot be created again",
+                "work_report",
+                &report.id,
+                Some(1),
+            ));
         }
         let source_work_revision = if report.kind == WorkReportKind::Result {
             report.work_revision.checked_sub(1).ok_or_else(|| {
@@ -959,244 +980,5 @@ impl HarnessStore {
             }
         }
         Ok(())
-    }
-
-    pub fn accept_trust_work(
-        &self,
-        context: &MutationContext,
-        team_id: &str,
-        work_id: &str,
-        report_id: &str,
-        candidate_fingerprint: &str,
-        updated_at: &str,
-    ) -> StoreResult<CanonicalMutationResult<Work>> {
-        self.init()?;
-        let _trust_lock = self.acquire_write_lock()?;
-        let request_payload = serde_json::json!({
-            "team_id": team_id,
-            "work_id": work_id,
-            "work_report_id": report_id,
-            "candidate_fingerprint": candidate_fingerprint,
-            "updated_at": updated_at,
-        });
-        let request_fingerprint = canonical_json_fingerprint(&request_payload);
-        if let Some(replay) =
-            self.trust_operation_envelopes_unlocked()?
-                .into_iter()
-                .find(|envelope| {
-                    envelope.execution_space_id == context.execution_space_id
-                        && envelope.authenticated_actor_kind == context.authenticated_actor.kind
-                        && envelope.authenticated_actor_id == context.authenticated_actor.id
-                        && envelope.command_name == context.command_name
-                        && envelope.operation.event.idempotency_key == context.idempotency_key
-                })
-        {
-            if replay.operation.event.canonical_request_fingerprint != request_fingerprint
-                || replay.operation.event.aggregate_kind != "work"
-                || replay.operation.event.aggregate_id != work_id
-            {
-                return Err(trust_error(
-                    TrustErrorCode::IdempotencyKeyReused,
-                    "idempotency key was already used for a different Work acceptance",
-                    "work",
-                    work_id,
-                    Some(replay.operation.event.resulting_version),
-                ));
-            }
-            return Ok(CanonicalMutationResult {
-                projection: event_projection(&replay)?,
-                event: replay.operation.event,
-                replayed: true,
-            });
-        }
-        let current = self.trust_team_work_unlocked(team_id, work_id, context.expected_version)?;
-        if current.phase != firm_core::WorkPhase::Review
-            || current.condition != firm_core::WorkCondition::Normal
-        {
-            return Err(trust_error(
-                TrustErrorCode::InvalidStateTransition,
-                "Work must be in normal review before acceptance",
-                "work",
-                work_id,
-                Some(current.version),
-            ));
-        }
-        if current.owner_member_id.as_deref() == Some(context.authenticated_actor.id.as_str()) {
-            return Err(trust_error(
-                TrustErrorCode::UnauthorizedActor,
-                "the accountable Work owner cannot accept its own candidate",
-                "work",
-                work_id,
-                Some(current.version),
-            ));
-        }
-        let report = self
-            .latest_trust_envelopes_unlocked(&context.execution_space_id, "work_report")?
-            .remove(report_id)
-            .ok_or_else(|| {
-                trust_error(
-                    TrustErrorCode::ReportEvidenceMissing,
-                    "exact result WorkReport not found",
-                    "work",
-                    work_id,
-                    Some(current.version),
-                )
-            })
-            .and_then(|envelope| event_projection::<WorkReport>(&envelope))?;
-        let report_revision_is_current = if report.work_revision == current.version {
-            true
-        } else if report.work_revision < current.version {
-            let mut evidence_updates = self
-                .work_operations_unlocked()?
-                .into_iter()
-                .filter(|operation| {
-                    operation.work.id == current.id
-                        && operation.event.resulting_version > report.work_revision
-                        && operation.event.resulting_version <= current.version
-                })
-                .collect::<Vec<_>>();
-            evidence_updates.sort_by_key(|operation| operation.event.resulting_version);
-            evidence_updates.len() as u64 == current.version - report.work_revision
-                && evidence_updates
-                    .iter()
-                    .enumerate()
-                    .all(|(offset, operation)| {
-                        operation.event.expected_version == report.work_revision + offset as u64
-                            && operation.event.resulting_version
-                                == report.work_revision + offset as u64 + 1
-                            && operation.event.kind == firm_core::WorkEventKind::Updated
-                            && operation
-                                .event
-                                .payload
-                                .get("reason")
-                                .and_then(Value::as_str)
-                                == Some("github_evidence_refresh")
-                            && operation.work.phase == firm_core::WorkPhase::Review
-                            && operation.work.condition == firm_core::WorkCondition::Normal
-                    })
-        } else {
-            false
-        };
-        if report.kind != WorkReportKind::Result
-            || report.work_id != current.id
-            || !report_revision_is_current
-            || report.candidate.is_none()
-            || report.candidate_fingerprint.as_deref() != Some(candidate_fingerprint)
-            || report.evidence_refs.is_empty()
-        {
-            return Err(trust_error(
-                TrustErrorCode::ReportEvidenceMissing,
-                "acceptance requires the exact result Report, Candidate and evidence",
-                "work",
-                work_id,
-                Some(current.version),
-            ));
-        }
-        self.trust_gate_satisfied(
-            &context.execution_space_id,
-            work_id,
-            report.work_revision,
-            report_id,
-            candidate_fingerprint,
-        )?;
-        let requirements = self
-            .trust_gate_requirements_unlocked(&context.execution_space_id)?
-            .into_values()
-            .filter(|requirement| {
-                requirement.work_id == work_id
-                    && requirement.work_revision == report.work_revision
-                    && requirement.work_report_id == report_id
-                    && requirement.candidate_fingerprint == candidate_fingerprint
-            })
-            .collect::<Vec<_>>();
-        let requirement_ids = requirements
-            .iter()
-            .map(|requirement| requirement.id.as_str())
-            .collect::<BTreeSet<_>>();
-        let evaluations = self
-            .latest_trust_envelopes_unlocked(&context.execution_space_id, "gate_evaluation")?
-            .into_values()
-            .map(|envelope| event_projection::<GateEvaluation>(&envelope))
-            .collect::<StoreResult<Vec<_>>>()?
-            .into_iter()
-            .filter(|evaluation| requirement_ids.contains(evaluation.requirement_id.as_str()))
-            .collect::<Vec<_>>();
-        let waivers = self
-            .latest_trust_envelopes_unlocked(&context.execution_space_id, "gate_waiver")?
-            .into_values()
-            .map(|envelope| event_projection::<GateWaiver>(&envelope))
-            .collect::<StoreResult<Vec<_>>>()?
-            .into_iter()
-            .filter(|waiver| requirement_ids.contains(waiver.requirement_id.as_str()))
-            .collect::<Vec<_>>();
-        let mut next = current;
-        next.phase = firm_core::WorkPhase::Closed;
-        next.condition = firm_core::WorkCondition::Normal;
-        next.resolution = Some(firm_core::WorkResolution::Accepted);
-        next.result_summary = Some(report.summary.clone());
-        next.version += 1;
-        next.updated_at = updated_at.to_string();
-        let actor_kind = match context.authenticated_actor.kind {
-            ActorKind::Human => TeamActorKind::Operator,
-            ActorKind::AgentMember => TeamActorKind::AgentMember,
-            ActorKind::External => TeamActorKind::Operator,
-            ActorKind::Service => TeamActorKind::Service,
-        };
-        let rollup_context = WorkCommandContext {
-            event_id: format!("trust-accept:{}", context.idempotency_key),
-            performed_by_actor: TeamActorRef {
-                kind: actor_kind,
-                id: context.authenticated_actor.id.clone(),
-                display_name: None,
-                authn_source: Some("agentfirm-trust-kernel".into()),
-            },
-            authority_actor: context
-                .authority_actor
-                .as_ref()
-                .map(|authority| TeamActorRef {
-                    kind: match authority.kind {
-                        ActorKind::Human => TeamActorKind::Operator,
-                        ActorKind::AgentMember => TeamActorKind::AgentMember,
-                        ActorKind::External => TeamActorKind::Operator,
-                        ActorKind::Service => TeamActorKind::Service,
-                    },
-                    id: authority.id.clone(),
-                    display_name: None,
-                    authn_source: Some("agentfirm-trust-kernel".into()),
-                }),
-            causation_ref: None,
-            idempotency_key: context.idempotency_key.clone(),
-            created_at: updated_at.to_string(),
-            duplicate_ok: false,
-        };
-        let delegation_revisions =
-            self.work_delegation_rollup_revisions_unlocked(&next, &rollup_context)?;
-        let side_records = std::iter::once(serde_json::to_value(&report)?)
-            .chain(
-                requirements
-                    .iter()
-                    .map(serde_json::to_value)
-                    .collect::<Result<Vec<_>, _>>()?,
-            )
-            .chain(
-                evaluations
-                    .iter()
-                    .map(serde_json::to_value)
-                    .collect::<Result<Vec<_>, _>>()?,
-            )
-            .chain(
-                waivers
-                    .iter()
-                    .map(serde_json::to_value)
-                    .collect::<Result<Vec<_>, _>>()?,
-            )
-            .chain(
-                delegation_revisions
-                    .iter()
-                    .map(serde_json::to_value)
-                    .collect::<Result<Vec<_>, _>>()?,
-            )
-            .collect();
-        self.commit_trust_work_acceptance_unlocked(context, request_payload, &next, side_records)
     }
 }

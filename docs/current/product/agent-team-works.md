@@ -155,3 +155,21 @@ former Company task ledger.
 | Message delivery | `CanonicalMessageDelivery`: per-recipient queued/routed/claimed/provider-received/acknowledged/failed/expired/invalidated state |
 | runtime command | `RuntimeCommand`: fenced provider effects and live controls |
 | identity | `AgentMember` identity and its `TeamMembership` participation |
+
+## Result submission and acceptance
+
+A Result report is immutable content subordinate to its Work submission.
+Publishing it atomically advances Work to Review; ordinary acceptance uses
+Work's expected version and resolves the unique original Result in the Store.
+Report IDs are create-only within their Execution Space; exact idempotent
+retries preserve the original operation. Acceptance retains the Report snapshot.
+Only a continuous sequence of GitHub evidence refreshes may advance Review
+versions while retaining the same Result; semantic changes require a new submission.
+
+A report-only Result carries no Candidate and can be accepted through the same
+CLI or HTTP/Role Action as other Work. The Host reviews its content and evidence
+against Work criteria. Existing integration-plan bindings and Candidate Gate
+requirements still apply and cannot be bypassed by a report-only submission.
+Ambiguous historical report sources are readable but cannot be selected by
+latest report revision for a new acceptance. Harness coordination MCP remains
+retired under ADR 0061.
