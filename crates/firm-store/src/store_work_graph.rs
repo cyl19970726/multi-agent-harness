@@ -27,57 +27,46 @@ impl HarnessStore {
         &self,
         work: &Work,
     ) -> StoreResult<String> {
-        let submitted_revision = work.version.saturating_sub(1);
-        let work_operations = self.work_operations_unlocked()?;
-        let submitted_attentions = self
-            .latest_host_attentions_unlocked()?
-            .into_values()
-            .filter(|attention| {
-                attention.work_id == work.id
-                    && attention.work_version <= submitted_revision
-                    && attention.kind == HostAttentionKind::WorkReviewRequested
-            })
-            .filter(|attention| {
-                if attention.work_version == submitted_revision {
-                    return true;
-                }
-                let mut intervening = work_operations
-                    .iter()
-                    .filter(|operation| {
-                        operation.work.id == work.id
-                            && operation.event.resulting_version > attention.work_version
-                            && operation.event.resulting_version <= submitted_revision
-                    })
-                    .collect::<Vec<_>>();
-                intervening.sort_by_key(|operation| operation.event.resulting_version);
-                intervening.len() as u64 == submitted_revision - attention.work_version
-                    && intervening.iter().enumerate().all(|(offset, operation)| {
-                        operation.event.expected_version == attention.work_version + offset as u64
-                            && operation.event.resulting_version
-                                == attention.work_version + offset as u64 + 1
-                            && operation.event.kind == WorkEventKind::Updated
-                            && operation
-                                .event
-                                .payload
-                                .get("reason")
-                                .and_then(serde_json::Value::as_str)
-                                == Some("github_evidence_refresh")
-                    })
-            })
-            .collect::<Vec<_>>();
-        if !submitted_attentions.is_empty() {
-            let [attention] = submitted_attentions.as_slice() else {
-                return Err(StoreError::Conflict(format!(
-                    "MEMBER_RUN_GENERATION_FENCED: terminal member Work {} has ambiguous submitted execution provenance",
-                    work.id
-                )));
+        let mut submitted_work = work.clone();
+        submitted_work.version = work.version.saturating_sub(1);
+        let mut sources = Vec::new();
+        for operation in self.work_operations_unlocked()? {
+            if operation.work.id != work.id
+                || operation.event.kind != WorkEventKind::Submitted
+                || !self.work_submission_revision_is_current_unlocked(
+                    operation.event.resulting_version,
+                    &submitted_work,
+                )?
+            {
+                continue;
+            }
+            if operation.event.performed_by_actor.kind != TeamActorKind::ProviderRuntimeProjection
+                || operation.event.performed_by_actor.id.is_empty()
+                || operation.event.work_id != work.id
+                || operation.event.team_run_id != work.team_run_id
+                || operation.work.team_run_id != work.team_run_id
+                || operation.work.version != operation.event.resulting_version
+                || operation.event.expected_version.checked_add(1)
+                    != Some(operation.event.resulting_version)
+                || operation.work.phase != WorkPhase::Review
+            {
+                return Err(StoreError::Conflict(
+                    "MEMBER_RUN_GENERATION_FENCED: submitted Work operation lacks exact runtime provenance".into(),
+                ));
+            }
+            sources.push(operation.event.performed_by_actor.id);
+        }
+        if let Some(member_run_id) = self.result_submission_member_run_unlocked(&submitted_work)? {
+            sources.push(member_run_id);
+        }
+        if !sources.is_empty() {
+            let [source] = sources.as_slice() else {
+                return Err(StoreError::Conflict(
+                    "MEMBER_RUN_GENERATION_FENCED: ambiguous submitted Work execution provenance"
+                        .into(),
+                ));
             };
-            return attention.member_run_id.clone().ok_or_else(|| {
-                StoreError::Conflict(format!(
-                    "MEMBER_RUN_GENERATION_FENCED: terminal member Work {} has submitted execution provenance without an exact MemberRun",
-                    work.id
-                ))
-            });
+            return Ok(source.clone());
         }
 
         let run = self.require_team_run_unlocked(&work.team_run_id)?;

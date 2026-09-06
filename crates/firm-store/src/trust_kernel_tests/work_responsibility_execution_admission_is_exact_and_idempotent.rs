@@ -1170,10 +1170,55 @@ fn membership_work_binding_authorizes_message_and_result_without_accepting_work(
         .find(|work| work.id == active.id)
         .unwrap();
     assert_eq!(submitted.phase, firm_core::WorkPhase::Review);
+    let attention_path = root.join("host_attentions.jsonl");
+    let saved_attention = std::fs::read(&attention_path).ok();
+    std::fs::write(&attention_path, "not-json\n").unwrap();
+    let mut terminal = submitted.clone();
+    terminal.phase = firm_core::WorkPhase::Closed;
+    terminal.resolution = Some(firm_core::WorkResolution::Accepted);
+    terminal.version += 1;
+    assert_eq!(
+        store
+            .terminal_work_member_run_provenance_unlocked(&terminal)
+            .unwrap(),
+        "member-run-admission",
+        "Result provenance survives atomic execution release"
+    );
+
     assert_eq!(
         submitted.resolution, None,
         "WorkReport is not Host acceptance"
     );
+    match saved_attention {
+        Some(bytes) => std::fs::write(&attention_path, bytes).unwrap(),
+        None => std::fs::remove_file(&attention_path).unwrap(),
+    }
+    let trust_path = root.join("agentfirm_trust_operations.jsonl");
+    let trust_bytes = std::fs::read_to_string(&trust_path).unwrap();
+    let without_binding = trust_bytes
+        .lines()
+        .map(|line| {
+            let mut row: serde_json::Value = serde_json::from_str(line).unwrap();
+            if row["operation"]["event"]["aggregate_kind"] == "work_report"
+                && row["operation"]["event"]["aggregate_id"] == report.id
+            {
+                row["operation"]["immutable_side_records"]
+                    .as_array_mut()
+                    .unwrap()
+                    .retain(|record| record.get("binding_generation").is_none());
+            }
+            serde_json::to_string(&row).unwrap()
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    std::fs::write(&trust_path, format!("{without_binding}\n")).unwrap();
+    assert!(
+        store
+            .terminal_work_member_run_provenance_unlocked(&terminal)
+            .is_err(),
+        "missing atomic binding cannot be inferred from a latest runtime or notification"
+    );
+    std::fs::write(&trust_path, trust_bytes).unwrap();
     let released_binding = store
         .fabric_work_execution_bindings("space-test")
         .unwrap()
@@ -1393,89 +1438,6 @@ fn membership_work_binding_authorizes_message_and_result_without_accepting_work(
         .expect_err("released binding cannot authorize more Work evidence");
     assert!(error.to_string().contains("WORK_EXECUTION_BINDING_ACTIVE"));
     assert_eq!(store.canonical_operations().unwrap(), before_released);
-}
-
-#[test]
-fn submitted_attention_provenance_missing_or_duplicated_fails_closed() {
-    let (store, _root) = fabric_store();
-    append_runtime_team(&store, "team-provenance", "run-provenance");
-    let work = insert_runtime_work(
-        &store,
-        "work-provenance",
-        "team-provenance",
-        "run-provenance",
-    );
-    store
-        .migrate_legacy_agent_identity_same_id(
-            &context(
-                "operator",
-                "identity.create",
-                "identity-worker-provenance",
-                0,
-            ),
-            identity("worker-provenance"),
-        )
-        .unwrap();
-    join_runtime_membership(
-        &store,
-        "membership-worker-provenance",
-        "team-provenance",
-        "worker-provenance",
-        TeamMembershipRole::Member,
-    );
-    admit_member_run(
-        &store,
-        canonical_member_run(
-            "member-run-provenance",
-            "worker-provenance",
-            "run-provenance",
-        ),
-    );
-    let mut terminal = work.clone();
-    terminal.phase = firm_core::WorkPhase::Closed;
-    terminal.resolution = Some(firm_core::WorkResolution::Accepted);
-    terminal.version = work.version + 1;
-    let attention = |id: &str, member_run_id: Option<&str>| HostAttention {
-        id: id.into(),
-        team_run_id: work.team_run_id.clone(),
-        kind: HostAttentionKind::WorkReviewRequested,
-        work_id: work.id.clone(),
-        work_version: work.version,
-        source_event_ref: format!("source-{id}"),
-        member_run_id: member_run_id.map(str::to_string),
-        status: HostAttentionStatus::Actionable,
-        attempt: 0,
-        claim_id: None,
-        claimed_host_surface: None,
-        claimed_host_thread_id: None,
-        claimed_host_lease_id: None,
-        claimed_host_lease_generation: None,
-        claimed_host_lease_owner_id: None,
-        claimed_recipient_member_run_id: None,
-        claimed_recipient_session_id: None,
-        claimed_recipient_session_generation: None,
-        claimed_node_daemon_id: None,
-        claimed_node_daemon_generation: None,
-        provider_receipt_id: None,
-        last_failure_reason: None,
-        created_at: "t-attention".into(),
-        updated_at: "t-attention".into(),
-    };
-    store
-        .ensure_host_attention(&attention("attention-missing", None))
-        .unwrap();
-    let error = store
-        .terminal_work_member_run_provenance_unlocked(&terminal)
-        .expect_err("submitted attention without provenance must not fall back to a binding");
-    assert!(error.to_string().contains("MEMBER_RUN_GENERATION_FENCED"));
-
-    store
-        .ensure_host_attention(&attention("attention-valid", Some("member-run-provenance")))
-        .unwrap();
-    let error = store
-        .terminal_work_member_run_provenance_unlocked(&terminal)
-        .expect_err("mixed valid and missing submitted attentions are ambiguous");
-    assert!(error.to_string().contains("MEMBER_RUN_GENERATION_FENCED"));
 }
 
 #[path = "work_responsibility_execution_admission_edge_tests.rs"]

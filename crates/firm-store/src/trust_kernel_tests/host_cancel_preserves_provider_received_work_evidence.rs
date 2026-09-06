@@ -270,3 +270,21 @@ fn host_cancel_keeps_an_unsettled_provider_claim_fail_closed() {
     );
     std::fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn retarget_keeps_claimed_delivery_reconciliation_fence() {
+    let (store, _root) = fabric_store();
+    let (work, _, _, _) = claimed_work_fixture(&store, "retarget-claimed");
+    append_runtime_team(&store, "team-a", "run-successor");
+    let before = store.work_operations().unwrap();
+    let error = store
+        .retarget_work_execution(
+            &work.id,
+            work.version,
+            "run-successor",
+            host_context(&store, &work.team_run_id, "retarget", "retarget"),
+        )
+        .unwrap_err();
+    assert!(error.to_string().contains("RECONCILIATION_REQUIRED"));
+    assert_eq!(store.work_operations().unwrap(), before);
+}
