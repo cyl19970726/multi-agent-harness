@@ -253,14 +253,6 @@ fn host_owned_work_requires_exact_active_peer_while_member_work_remains_host_rev
                 && action["target_ref"]["id"] == host_review.id
                 && action["disabled_reason"].is_null()
         })));
-    let host_report = store
-        .trust_work_reports(&lease.execution_space_id)
-        .expect("Host Work reports")
-        .into_iter()
-        .find(|report| {
-            report.work_id == host_review.id && report.work_revision == host_review.version
-        })
-        .expect("exact Host Work report");
     for (kind, id) in [
         (harness_core::agentfirm_api::ActorKind::Human, "operator"),
         (
@@ -285,11 +277,6 @@ fn host_owned_work_requires_exact_active_peer_while_member_work_remains_host_rev
             crate::agentfirm_api::TrustCommand::AcceptWork {
                 team_id: created.team_run.agent_team_id.clone(),
                 work_id: host_review.id.clone(),
-                work_report_id: host_report.id.clone(),
-                candidate_fingerprint: host_report
-                    .candidate_fingerprint
-                    .clone()
-                    .expect("candidate fingerprint"),
                 updated_at: now_string(),
             },
         )

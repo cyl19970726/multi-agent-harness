@@ -533,6 +533,8 @@ fn accept(
                 )
             })?;
         if operation.event.aggregate_kind != "work"
+            || operation.event.transition != "accepted"
+            || operation.event.expected_version != auth.expected_version
             || operation.event.aggregate_id != work_id
             || operation.event.performed_by_actor != auth.actor
             || accepted.accountable_team_id.as_deref() != Some(team_id)
@@ -554,44 +556,12 @@ fn accept(
             replayed: true,
         });
     }
-    let current = current_work(store, &auth.execution_space_id, work_id)?;
-    if current.accountable_team_id.as_deref() != Some(team_id)
-        || current.version != auth.expected_version
-    {
-        return Err(conflict(
-            "VERSION_CONFLICT",
-            "accept requires the exact current Team-scoped Work revision",
-        ));
-    }
-    let report = store
-        .trust_work_reports(&auth.execution_space_id)?
-        .into_iter()
-        .filter(|report| {
-            report.kind == WorkReportKind::Result
-                && report.work_id == work_id
-                && report.work_revision == current.version
-        })
-        .max_by_key(|report| report.report_revision)
-        .ok_or_else(|| {
-            conflict(
-                "REPORT_EVIDENCE_MISSING",
-                "accept requires the exact current result WorkReport",
-            )
-        })?;
-    let candidate_fingerprint = report.candidate_fingerprint.clone().ok_or_else(|| {
-        conflict(
-            "REPORT_EVIDENCE_MISSING",
-            "result WorkReport has no candidate fingerprint",
-        )
-    })?;
     let execution_space_id = auth.execution_space_id.clone();
     let result = TrustApplication::new(store).execute(
         auth,
         TrustCommand::AcceptWork {
             team_id: team_id.to_string(),
             work_id: work_id.to_string(),
-            work_report_id: report.id,
-            candidate_fingerprint,
             updated_at: crate::role_views_api::now(),
         },
     )?;

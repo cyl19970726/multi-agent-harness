@@ -974,3 +974,6 @@ mod workspace_binding_rejects_relative_and_parent_traversal_without_side_effects
 mod workspace_binding_requires_exact_member_run_and_project_placement;
 #[path = "member_execution_trust/workspace_transitions_reobserve_git_links_dirty_state_and_cleanup_safety.rs"]
 mod workspace_transitions_reobserve_git_links_dirty_state_and_cleanup_safety;
+
+#[path = "member_execution_trust/report_only_acceptance.rs"]
+mod report_only_acceptance;

@@ -233,8 +233,6 @@ fn http_console_delegates_native_team_run_to_node_daemon() {
         "command": "accept_work",
         "team_id": "team-console",
         "work_id": work_id,
-        "work_report_id": report_id,
-        "candidate_fingerprint": candidate_fingerprint,
         "updated_at": "unix-ms:2"
     })
     .to_string();

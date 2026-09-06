@@ -149,8 +149,6 @@ pub enum TrustCommand {
     AcceptWork {
         team_id: String,
         work_id: String,
-        work_report_id: String,
-        candidate_fingerprint: String,
         updated_at: String,
     },
     EvaluateGate {
@@ -758,17 +756,8 @@ pub fn execute(
         TrustCommand::AcceptWork {
             team_id,
             work_id,
-            work_report_id,
-            candidate_fingerprint,
             updated_at,
-        } => result(store.accept_trust_work(
-            &context,
-            &team_id,
-            &work_id,
-            &work_report_id,
-            &candidate_fingerprint,
-            &updated_at,
-        )?),
+        } => result(store.accept_current_trust_work(&context, &team_id, &work_id, &updated_at)?),
         TrustCommand::EvaluateGate { mut evaluation } => {
             evaluation.performed_by = auth.actor;
             result(store.create_trust_gate_evaluation(&context, evaluation)?)

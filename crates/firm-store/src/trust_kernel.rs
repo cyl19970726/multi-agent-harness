@@ -782,6 +782,7 @@ pub use fabric_work_execution_recovery::{
 mod trust_deliveries;
 mod trust_foundation;
 mod trust_members;
+mod trust_work_acceptance;
 mod trust_work_evidence;
 mod trust_workspace;
 

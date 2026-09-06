@@ -1053,15 +1053,17 @@ pub(super) fn team_run_work_command(
                 },
             )?;
             let work = outcome.work;
-            append_work_event(
-                store,
-                &work,
-                TeamRunEventSourceKind::Host,
-                None,
-                "accepted",
-                &format!("Work accepted: {}", work.title),
-            )?;
-            roll_up_target_work_delegations(store, &work, args)?;
+            if !outcome.replayed {
+                append_work_event(
+                    store,
+                    &work,
+                    TeamRunEventSourceKind::Host,
+                    None,
+                    "accepted",
+                    &format!("Work accepted: {}", work.title),
+                )?;
+                roll_up_target_work_delegations(store, &work, args)?;
+            }
             print_json(&work)
         }
         "cancel" => {

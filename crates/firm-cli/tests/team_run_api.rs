@@ -497,18 +497,10 @@ fn team_run_json(home: &TempHome, project_id: &str, args: &[&str]) -> serde_json
             .accountable_team_id
             .clone()
             .unwrap_or_else(|| FIXTURE_TEAM_ID.to_string());
-        let report_id = format!("report-{work_id}-v{expected_version}");
-        let candidate = serde_json::json!({
-            "kind": "content_digest",
-            "value": format!("{work_id}-v{expected_version}")
-        });
-        let fingerprint = harness_store::canonical_json_fingerprint(&candidate);
         let accept = serde_json::json!({
             "command": "accept_work",
             "team_id": team_id,
             "work_id": work_id,
-            "work_report_id": report_id,
-            "candidate_fingerprint": fingerprint,
             "updated_at": "unix-ms:2"
         })
         .to_string();
