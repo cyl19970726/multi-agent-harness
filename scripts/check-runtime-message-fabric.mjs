@@ -1,5 +1,22 @@
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { basename, join } from "node:path";
+import assert from "node:assert/strict";
+import { isAppliedRuntimeCommand } from "./lib/runtime-command-evidence.mjs";
+
+for (const [command, applied] of [
+  [{phase: "settled", effect_certainty: "applied"}, true],
+  [{status: "applied", effect_certainty: "applied"}, true],
+  [{phase: "settled", status: "applied", effect_certainty: "applied"}, true],
+  [{phase: "unknown", status: "applied", effect_certainty: "applied"}, false],
+  [{phase: "settled", status: "accepted", effect_certainty: "applied"}, false],
+  [{phase: "settled", effect_certainty: "unknown"}, false],
+  [{phase: "settled", effect_certainty: "not_applied"}, false],
+  [{status: "accepted", effect_certainty: "unknown"}, false],
+  [{phase: null, status: "applied", effect_certainty: "applied"}, false],
+  [{status: "applied"}, false],
+]) {
+  assert.equal(isAppliedRuntimeCommand(command), applied, JSON.stringify(command));
+}
 
 function stripCfgItems(source, cfgName) {
   const lines = source.split("\n");

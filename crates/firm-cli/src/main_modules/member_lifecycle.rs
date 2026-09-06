@@ -315,14 +315,7 @@ fn detached_recovery_session_matches_current_authority(
         .any(|command| {
             command.target_session_id.as_deref() == Some(session.id.as_str())
                 && command.target_session_generation == Some(session.runtime_generation)
-                && matches!(
-                    command.phase,
-                    harness_core::agentfirm_api::RuntimeCommandPhase::Prepared
-                        | harness_core::agentfirm_api::RuntimeCommandPhase::Observed
-                        | harness_core::agentfirm_api::RuntimeCommandPhase::RecoveryRequired
-                )
-                && command.effect_certainty
-                    == harness_core::agentfirm_api::RuntimeEffectCertainty::Unknown
+                && command.has_unresolved_effect()
         });
     let same_authorizer = ledger.supervisor_generation == fence.authorizing_supervisor_generation
         && ledger.supervisor_id == fence.authorizing_supervisor_id;

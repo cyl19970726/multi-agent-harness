@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { dirname, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
+import { isAppliedRuntimeCommand } from "./lib/runtime-command-evidence.mjs";
 
 const failures = [];
 const read = (path) => readFileSync(path, "utf8");
@@ -394,7 +395,7 @@ if (realEvidencePath) {
             !transcript.terminal_ack_digest ||
             !transcript.transcript_digest ||
             !command ||
-            command.status !== "applied" ||
+            !isAppliedRuntimeCommand(command) ||
             transcript.secret_material_recorded !== false
           ) {
             throw new Error(`${side} provider transcript is not bound to an applied RuntimeCommand/AgentSession/terminal ack`);
