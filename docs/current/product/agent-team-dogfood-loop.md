@@ -80,8 +80,12 @@ through `member message send|reply`; its `sender_session_id` must name the
 claimed reviewer Session. A managed Host also needs a genuine Session at the
 acceptance boundary. Review and Host acceptance are checked separately even
 when one Member holds both roles: a later acceptance generation cannot be
-credited with an earlier Review. A single Session claim that does not prove
-both role boundaries is refused. Managed Host selection comes from the
+credited with an earlier Review. Session claims are unique by `(agent_session_id, session_generation)`, so one
+Member may provide both its Review generation and its later acceptance
+generation. The verifier derives each role from canonical facts before
+selecting its exact claim; a shared exact tuple may serve two roles. Missing,
+duplicate or conflicting tuples refuse. Only the exact WorkExecutionBinding
+generation supplies the implementer tool-count checks. Managed Host selection comes from the
 historical Session's TeamSupervisor TeamRun association at acceptance, before
 comparing the claimed Session/native ID; its node and Space must match the
 TeamRun. Missing or ambiguous associations are evidence gaps. These are

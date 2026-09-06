@@ -184,28 +184,38 @@ export function verifyAttributionV2(evidence, records, sources, expectedSpaceId)
     equal(actualTeam.node_id, run.execution_node_id, 'Team/TeamRun node');
     membershipAt(records, host.team_membership_id, team.host_agent_member_id, team.agent_team_id, sequence(accept), 'host');
     const { binding, start } = deliveryAt(records, evidence, report);
-    const implementer = one(evidence.sessions.filter(s => s.agent_member_id === team.implementer_agent_member_id), 'implementer Session');
-    equal(implementer.agent_session_id, binding.agent_session_id, 'implementer binding Session');
-    equal(implementer.session_generation, binding.agent_session_generation, 'implementer binding generation');
-    const reviewer = one(evidence.sessions.filter(s => s.agent_member_id === work.reviewer_agent_member_id), 'reviewer native Session');
-    equal(projection(review).sender_session_id, reviewer.agent_session_id, 'review Message sender Session');
+    const tuple = s => JSON.stringify([s.agent_session_id, s.session_generation]);
+    requireFact(new Set(evidence.sessions.map(tuple)).size === evidence.sessions.length,
+      'duplicate or conflicting exact Session tuple (Session ID, generation)');
+    const claimFor = (id, generation, member, role) => {
+      requireFact(typeof id === 'string' && id.length > 0 && Number.isSafeInteger(generation) && generation > 0,
+        `missing canonical ${role} Session boundary`);
+      const claim = one(evidence.sessions.filter(s => s.agent_session_id === id && s.session_generation === generation),
+        `${role} Session claim for ${id} generation ${generation}`);
+      equal(claim.agent_member_id, member, `${role} Session Member`);
+      return claim;
+    };
+    const implementer = claimFor(binding.agent_session_id, binding.agent_session_generation,
+      team.implementer_agent_member_id, 'implementer binding');
+    requireFact(implementer.tool_started >= 1, 'exact implementer binding requires a tool start');
+    requireFact(implementer.tool_terminal >= 1, 'exact implementer binding requires a terminal tool result');
+    const reviewerId = projection(review).sender_session_id;
+    requireFact(typeof reviewerId === 'string' && reviewerId.length > 0, 'review Message sender Session is missing');
+    const reviewerSource = latest(records.filter(r => event(r).aggregate_kind === 'agent_session'
+      && event(r).aggregate_id === reviewerId && sequence(r) <= sequence(review))
+      .map(record => ({ row: projection(record), record })), 'review Message sender Session canonical boundary');
+    const reviewer = claimFor(reviewerId, reviewerSource.runtime_generation,
+      work.reviewer_agent_member_id, 'reviewer native');
     requireFact(implementer.agent_member_id !== reviewer.agent_member_id, 'reviewer must be independent');
-    requireFact(new Set(evidence.sessions.map(s => s.agent_session_id)).size === evidence.sessions.length, 'duplicate Session identity');
-    requireFact(new Set(evidence.sessions.map(s => s.agent_member_id)).size === evidence.sessions.length, 'duplicate Session Member');
     sessionAt(records, implementer, sequence(report), start);
-    // One Member may hold both roles. Acceptance must never substitute for
-    // Review's earlier generation boundary. A single claim that cannot prove
-    // both boundaries refuses rather than crediting a later executor.
+    // Resolve each role's canonical generation before selecting a claim. A
+    // shared tuple can serve two roles; a successor cannot satisfy an earlier
+    // role or lend its tool counters to the actual implementing generation.
     sessionAt(records, reviewer, sequence(review));
-    for (const session of evidence.sessions.filter(s => s !== implementer && s !== reviewer
-      && s.agent_member_id !== team.host_agent_member_id)) {
-      sessionAt(records, session, sequence(review));
-    }
     if (host.mode === 'managed') {
       const actualHost = managedHostAt(records, team.host_agent_member_id, run, sequence(accept), expectedSpaceId);
-      const claimedHost = one(evidence.sessions.filter(s => s.agent_member_id === team.host_agent_member_id), 'managed Host Session');
-      equal(claimedHost.agent_session_id, actualHost.id, 'managed Host associated Session');
-      equal(claimedHost.session_generation, actualHost.runtime_generation, 'managed Host acceptance generation');
+      const claimedHost = claimFor(actualHost.id, actualHost.runtime_generation,
+        team.host_agent_member_id, 'managed Host associated');
       sessionAt(records, claimedHost, sequence(accept));
     } else {
       requireFact(!evidence.sessions.some(s => s.agent_member_id === team.host_agent_member_id), 'external Host must not fabricate an AgentSession');

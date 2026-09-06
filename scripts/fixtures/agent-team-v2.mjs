@@ -41,3 +41,25 @@ export function fixture(external = false) {
   const validateHost=(surface,thread)=>({host_surface:surface,host_thread_id:thread,owner_id:`interactive:codex:${thread}`,discovery_source:'codex_rollout_session_meta'});
   return {evidence,records,sources:{teamRuns,hostLeases,validateHost}};
 }
+
+// Exact completion-recheck sequence: Review84, resumed85, native binding86,
+// Accept88. The same Member/Session has two independently evidenced roles.
+export function overlapGenerationsFixture() {
+  const f=fixture(false);
+  f.records.forEach(r=>{r.operation.event.store_sequence*=4;});
+  const first=f.evidence.sessions.find(s=>s.agent_member_id==='host-fixture');
+  const source=f.records.find(r=>r.operation.event.aggregate_id===first.agent_session_id);
+  const resumed=structuredClone(source);
+  resumed.operation.event.id='host-resumed';resumed.operation.event.store_sequence=85;
+  resumed.operation.event.transition='resumed';resumed.operation.resulting_projection.runtime_generation=2;
+  resumed.operation.resulting_projection.native_session_ref=null;
+  resumed.operation.event.payload={runtime_generation:2};
+  const bound=structuredClone(source);
+  bound.operation.event.id='host-bound-gen2';bound.operation.event.store_sequence=86;
+  bound.operation.event.payload.runtime_generation=2;bound.operation.resulting_projection.runtime_generation=2;
+  bound.operation.event.payload.native_session_ref.native_session_id='native-host-gen2';
+  bound.operation.resulting_projection.native_session_ref.native_session_id='native-host-gen2';
+  f.records.push(resumed,bound);
+  f.evidence.sessions.push({...first,session_generation:2,native_session_id:'native-host-gen2'});
+  return f;
+}

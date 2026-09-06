@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { fixture, spaceId } from './fixtures/agent-team-v2.mjs';
+import { fixture, overlapGenerationsFixture, spaceId } from './fixtures/agent-team-v2.mjs';
 import { verifyAttributionV2 } from './lib/agent-team-attribution-v2.mjs';
 const verify = f => verifyAttributionV2(f.evidence,f.records,f.sources,spaceId);
 const native = f => f.records.find(r=>r.operation.event.aggregate_id==='agent-session-member');
@@ -81,8 +81,8 @@ function advanceHostBetweenRoles(f, claimGeneration) {
   successor.operation.resulting_projection.runtime_generation=2;f.records.push(successor);
   host.session_generation=claimGeneration;
 }
-check('B1 overlap Review gen1 cannot borrow Host acceptance gen2',f=>advanceHostBetweenRoles(f,2),/execution Session generation/);
-check('overlap older generation cannot claim later acceptance',f=>advanceHostBetweenRoles(f,1),/acceptance generation/);
+check('B1 overlap Review gen1 cannot borrow Host acceptance gen2',f=>advanceHostBetweenRoles(f,2),/reviewer native Session claim.*generation 1/);
+check('overlap older generation cannot claim later acceptance',f=>advanceHostBetweenRoles(f,1),/managed Host associated Session claim.*generation 2/);
 check('overlap unchanged generation remains positive',()=>{});
 check('separate reviewer and managed Host remain positive',separateManaged,null,true);
 check('Host canonical successor after acceptance preserves history',f=>{
@@ -123,4 +123,28 @@ check('closed predecessor does not make current Host ambiguous',f=>{
   old.operation.event.store_sequence=7;old.operation.event.aggregate_id='closed-session';old.operation.resulting_projection.id='closed-session';
   old.operation.event.payload.session_id='closed-session';old.operation.resulting_projection.lifecycle='closed';f.records.push(old);
 },null,true);
+function tupleCase(name, mutate, pattern) {
+  const f=overlapGenerationsFixture();mutate(f);const errors=verify(f);
+  if(pattern)assert.match(errors.join('\n'),pattern,name);else assert.deepEqual(errors,[],name);cases++;
+}
+tupleCase('Review84 gen1 and acceptance88 gen2 both prove exact tuples',()=>{});
+tupleCase('role tuple selection is independent of evidence order',f=>f.evidence.sessions.reverse());
+tupleCase('missing reviewer generation claim refuses',f=>{f.evidence.sessions=f.evidence.sessions.filter(s=>s.agent_member_id!=='host-fixture'||s.session_generation!==1);},/reviewer native Session claim.*generation 1/);
+tupleCase('missing Host acceptance generation claim refuses',f=>{f.evidence.sessions=f.evidence.sessions.filter(s=>s.agent_member_id!=='host-fixture'||s.session_generation!==2);},/managed Host associated Session claim.*generation 2/);
+tupleCase('duplicate exact tuple refuses',f=>f.evidence.sessions.push({...f.evidence.sessions[0]}),/duplicate or conflicting exact Session tuple/);
+tupleCase('conflicting duplicate tuple refuses before choosing',f=>f.evidence.sessions.push({...f.evidence.sessions[0],native_session_id:'conflicting'}),/duplicate or conflicting exact Session tuple/);
+tupleCase('wrong member cannot occupy exact tuple',f=>{f.evidence.sessions.find(s=>s.session_generation===2).agent_member_id='other';},/managed Host associated Session Member/);
+tupleCase('swapped generation native identities refuse',f=>{for(const s of f.evidence.sessions.filter(s=>s.agent_member_id==='host-fixture'))s.session_generation=s.session_generation===1?2:1;},/native identity/);
+tupleCase('missing canonical reviewer boundary refuses',f=>{f.records=f.records.filter(r=>r.operation.event.aggregate_id!=='agent-session-host'||r.operation.event.store_sequence>84);},/review Message sender Session canonical boundary/);
+tupleCase('missing new-generation native binding refuses',f=>{f.records=f.records.filter(r=>r.operation.event.store_sequence!==86);},/missing native binding/);
+tupleCase('old role native conflict cannot be hidden by successor',f=>{const r=structuredClone(f.records.find(r=>r.operation.event.aggregate_id==='agent-session-host'));r.operation.event.store_sequence=83;r.operation.event.payload.native_session_ref.native_session_id='wrong';f.records.push(r);},/native identity/);
+tupleCase('later successor after acceptance preserves both role claims',f=>{const r=structuredClone(f.records.find(r=>r.operation.event.store_sequence===86));r.operation.event.store_sequence=89;r.operation.resulting_projection.runtime_generation=3;r.operation.event.payload.runtime_generation=3;f.records.push(r);});
+for(const field of ['tool_started','tool_terminal'])tupleCase(`other generation cannot lend ${field} to implementer`,f=>{
+  const actual=f.evidence.sessions.find(s=>s.agent_member_id==='member-fixture');
+  f.evidence.sessions.unshift({...actual,session_generation:2,tool_started:99,tool_terminal:99});actual[field]=0;
+},/exact implementer binding requires/);
+tupleCase('first unrelated generation zero counters does not hide actual implementer',f=>{
+  const actual=f.evidence.sessions.find(s=>s.agent_member_id==='member-fixture');
+  f.evidence.sessions.unshift({...actual,session_generation:2,tool_started:0,tool_terminal:0});
+});
 console.log(`v2 attribution PASS: ${cases} deterministic cases; fixtures are not live dogfood`);

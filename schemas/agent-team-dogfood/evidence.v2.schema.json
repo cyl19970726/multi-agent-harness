@@ -212,7 +212,8 @@
             "minimum": 1
           }
         }
-      }
+      },
+      "description": "Claims keyed by exact (agent_session_id, session_generation); one Member may have multiple generations. Canonical Work binding, Review boundary and Host acceptance select their own exact claims. A shared tuple may serve multiple roles."
     },
     "transcript_persisted_to_harness_store": {
       "const": false

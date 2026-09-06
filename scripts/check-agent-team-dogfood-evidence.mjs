@@ -22,6 +22,11 @@ export function verifyAgentTeamDogfoodEvidence(evidence) {
     failures.push(ajv.errorsText(validateSchema.errors, { separator: "\n" }));
     return failures;
   }
+  const v2 = evidence.schema_version === "agentfirm.agent_team_dogfood_evidence.v2";
+  if (v2) {
+    const tuples = evidence.sessions.map(s => JSON.stringify([s.agent_session_id, s.session_generation]));
+    if (new Set(tuples).size !== tuples.length) failures.push("v2 requires unique exact Session ID/generation tuples");
+  }
   if (evidence.scenario_class !== "coding_dogfood") return failures;
 
   if (evidence.revision.base === evidence.revision.candidate) {
@@ -35,11 +40,17 @@ export function verifyAgentTeamDogfoodEvidence(evidence) {
     failures.push("coding_dogfood acceptance must bind to the exact Team Host");
   }
   const sessionMemberIds = evidence.sessions.map((session) => session.agent_member_id);
-  if (new Set(sessionMemberIds).size !== sessionMemberIds.length) {
+  if (!v2 && new Set(sessionMemberIds).size !== sessionMemberIds.length) {
     failures.push("coding_dogfood Session evidence must contain one row per AgentMember");
   }
   if (evidence.host?.mode !== "external_interactive" && !sessionMemberIds.includes(evidence.team.host_agent_member_id)) {
     failures.push("coding_dogfood requires a provider-native Session for the exact Team Host");
+  }
+  if (v2) {
+    if (!sessionMemberIds.includes(implementer)) failures.push("coding_dogfood requires a provider-native Session for the implementer");
+    // Only trusted WorkExecutionBinding can select which generation's counters
+    // matter. verifyAttributionV2 performs that check after source resolution.
+    return failures;
   }
   const implementerSession = evidence.sessions.find(
     (session) => session.agent_member_id === implementer,
@@ -331,10 +342,11 @@ if (evidencePaths.length) {
   }), /structure PASS; trusted attribution and native execution were not checked/u);
   const { fixture } = await import("./fixtures/agent-team-v2.mjs");
   for (const external of [false, true]) {
-    const value = fixture(external).evidence;
+    const bundle = fixture(external), value = bundle.evidence;
     assert.deepEqual(verifyAgentTeamDogfoodEvidence(value), []);
     value.sessions.find(s => s.agent_member_id === value.team.implementer_agent_member_id).tool_terminal = 0;
-    assert.ok(verifyAgentTeamDogfoodEvidence(value).length, "v2 retains tool terminal requirement");
+    assert.ok(verifyAttributionV2(value, bundle.records, bundle.sources, "space-fixture").length,
+      "v2 retains exact implementer generation tool terminal requirement");
   }
   await import("./check-agent-team-attribution-v2.mjs");
   await import("./check-agent-team-evidence-sources.mjs");
