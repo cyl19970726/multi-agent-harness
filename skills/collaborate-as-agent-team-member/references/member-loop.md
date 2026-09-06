@@ -29,6 +29,11 @@ These hard invariants apply to every Host and Member. The full shared text lives
 
 ## Quick Start: First Turn
 
+Choose each idempotency key once per logical operation and reuse the same
+request on retries; do not generate timestamp keys. If no Work is assigned
+in this turn, skip Work show/start and read the inbox/board first. A message
+does not grant ownership of an unclaimed Work.
+
 When you wake up as a new member with a Work assignment, the daemon has already
 delivered your Work context and set these env vars. Run these exact commands
 (paste them — do not retype):
@@ -41,7 +46,7 @@ delivered your Work context and set these env vars. Run these exact commands
 "$FIRM_BIN" member work start \
   --work-id "$FIRM_WORK_ID" \
   --expected-version <version-from-step-1> \
-  --idempotency-key "start-$(date +%s)"
+  --idempotency-key "<stable-key-for-this-work-start>"
 
 # 3. Check for messages from Host or peers
 "$FIRM_BIN" member inbox --all --json
@@ -86,7 +91,7 @@ Read the board and exact Work:
   --work-id "$FIRM_WORK_ID"
 ```
 
-The board is the sole responsibility/status authority. TeamMessage is conversation only — see shared hard invariants §1 (no Assignment Message compatibility path) and §4 (messages never change Work state).
+The board is the sole responsibility/status authority. Message is conversation only — see shared hard invariants §1 (no Assignment Message compatibility path) and §4 (messages never change Work state).
 
 For a compact board overview when context is limited:
 
@@ -276,39 +281,43 @@ Work; never keep executing a Work already in `Review`, `Blocked`, or
 
 ## Submit Work, Not A Handoff Message
 
-- **RULE ZERO: done = merged PR with green CI.** Code-complete without commit,
-  push, and PR is NOT delivery. File changes sitting in a worktree or workspace
-  are work-in-progress, not a submission. Only a merged PR with passing CI
-  proves delivery for code and doc changes.
+- **Submit the candidate for review before treating it as accepted.** Commit
+  code changes and submit the exact revision with the Work's required evidence.
+  An unmerged candidate can be ready for independent review. Push, PR, CI,
+  merge and closeout requirements come from the Work and applicable development
+  procedure; this skill neither grants push/merge authority nor requires
+  merging before review.
 - **Submissions MUST carry artifact_refs and check_refs.** Every `work submit`
   must include `--artifact-ref` and `--check-ref` when the Work's declared
   gates (`artifact-exists`, `check-pass`) or completion criteria require them.
   Use `--artifact-ref <PR URL>` to attach a PR link when required by a gate.
   These are not optional decoration — they are
   the verifiable evidence the Host inspects during review.
-- **Non-trivial work defaults to plan-first.** Before implementing a multi-file
-  change or a design decision, present your plan as an ordinary Markdown
-  message to the Host and wait for approval before coding. Do NOT use
-  EnterPlanMode or ExitPlanMode — they block you indefinitely in headless
-  team context (ADR 0039: Harness has no Plan Gate). Implementation without
-  a reviewed plan on non-trivial work is treated as un-reviewed delivery.
+- **Plan-first when requested by the Host.** Follow the Work's decision
+  boundary. If the Host requests a plan, discuss it in ordinary correlated
+  Markdown and wait for that decision. Otherwise proceed within authorized
+  scope; a multi-file change alone does not add an approval step. Escalate an
+  actual unresolved scope or design decision.
 - **Never go silent.** When blocked, send a Work-linked message naming the
   specific blocker and the decision needed. Do not spin silently in a
   provider-native loop waiting for resolution — the Host cannot see a silent
   stall.
-- **Worktree discipline.** Create your own worktree OUTSIDE the repository
-  directory (e.g. `../multi-agent-harness-audit`). Never edit files in the
-  main checkout or in `.worktrees/`. Report the absolute worktree path, branch,
-  and commit in your submission.
+- **Workspace discipline.** Inspect the assigned workspace and preserve
+  other sessions' changes. Use a same-repository worktree when isolation helps
+  or the Work requires it; this skill mandates no directory layout. Coordinate
+  conflicting paths before editing. Report the actual absolute workspace,
+  branch and commit.
 
 - **Submission format — the submission report contract (SKILL.md) is
   authoritative.** Every `work submit --result-summary` for READY_FOR_REVIEW
-  starts with the **Verbatim evidence** section defined in SKILL.md
-  ("Submission report contract"): the exact full-40-hex commit SHA, the
+  follows the **Verbatim evidence** section defined in SKILL.md. For a
+  commit-producing Work ("Submission report contract"): the exact full-40-hex commit SHA, the
   three-dot `git diff --stat <base>...<sha>`, the literal
   `git status --porcelain` output (state `empty` explicitly), and for every
   gate the Work names the exact command line with its verbatim final result
-  line(s) and captured exit code. **A Work's explicit report requirement
+  line(s) and captured exit code. For report-only Work, use `--report-only`,
+  identify the actual report/artifacts and applicable checks; do not fabricate
+  a commit, diff or clean-worktree claim. **A Work's explicit report requirement
   always wins over this or any other template**; the sections below may only
   be ADDED after the evidence section, never replace it:
 

@@ -371,10 +371,15 @@ Harness has no Plan Gate and it blocks headless members indefinitely (ADR
   of `--candidate-revision`; the two flags are mutually exclusive. The
   submission then stores `candidate_revision` null with a
   `report_only: true` marker, and report-contract items 1 and 3 do not
-  apply. Naming neither flag is refused with `REPORT_EVIDENCE_MISSING`,
+  apply; a Git diff is not applicable when no code changed. Identify the
+  report and include the checks required by the Work. Host review follows the
+  same exception (host-loop §5), including the current #862 accept limitation.
+  Naming neither flag is refused with `REPORT_EVIDENCE_MISSING`,
   except for a submission that carries a structured GitHub link
   (`--github-pr owner/repo#N`): that link is the evidence, and the candidate
-  is derived from it (#369). Never fabricate a candidate revision to make a
+  is derived from it (#369). This link exception applies only to the Host
+  submit surface that accepts `--github-pr`; bound `member work submit` must
+  select one of the two flags. Never fabricate a candidate revision to make a
   report-only Work fit the commit-shaped path.
 
 Short example (one gate shown; list every gate the Work names):
@@ -396,7 +401,9 @@ submission section is in
 ## Part IV — Worked example: one Work, both sides
 
 The scenario: Host `hana` (Codex app-server, managed) runs Team `builders`
-with Member `kiwi` (Kimi ACP). The task: add a laundering-rejection check to
+with Member `kiwi` (Kimi ACP). In this example the Host explicitly requests
+a plan before implementation and the Member chooses a worktree for isolation.
+Neither is a default approval or workspace requirement. The task: add a laundering-rejection check to
 the legacy exporter's `verify`.
 
 ```
