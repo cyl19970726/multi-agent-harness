@@ -6,6 +6,7 @@ use std::any::Any;
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Read;
 use std::os::unix::fs::MetadataExt;
+mod source_fold;
 
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct StoreReadScanMetric {
@@ -52,12 +53,20 @@ impl From<fs::Metadata> for Stamp {
         }
     }
 }
-struct Latest<T> {
+struct Missing<D>(Arc<D>);
+struct Latest<T, D> {
     stamp: Stamp,
     bytes: Vec<u8>,
     values: BTreeMap<String, (u64, T)>,
     next_row: u64,
     groups: BTreeSet<String>,
+    derived: Arc<D>,
+}
+
+struct ReadPolicy<'a, T, D> {
+    selection: CacheSelection<'a>,
+    group_key: Option<fn(&T) -> String>,
+    fold: fn(&mut D, &T),
 }
 
 #[derive(Clone, Copy)]
@@ -116,8 +125,11 @@ impl HarnessStore {
                 ignore_incomplete_tail,
                 &key,
                 validate,
-                CacheSelection::All,
-                None,
+                ReadPolicy {
+                    selection: CacheSelection::All,
+                    group_key: None,
+                    fold: |_: &mut (), _| {},
+                },
             )?
             .0
             .into_iter()
@@ -139,14 +151,18 @@ impl HarnessStore {
                 false,
                 key,
                 validate,
-                CacheSelection::AppendOrder,
-                None,
+                ReadPolicy {
+                    selection: CacheSelection::AppendOrder,
+                    group_key: None,
+                    fold: |_: &mut (), _| {},
+                },
             )?
             .0)
     }
 
     /// One typed cache with an optional group inventory and range selection.
     /// Every caller of this index must use the same row key and group key.
+    #[cfg(test)]
     pub(super) fn cached_latest_jsonl_indexed<
         T: DeserializeOwned + Clone + Send + Sync + 'static,
     >(
@@ -156,18 +172,56 @@ impl HarnessStore {
         group_key: fn(&T) -> String,
         selection: CacheSelection<'_>,
     ) -> StoreResult<(Vec<T>, Vec<String>)> {
-        self.cached_latest_jsonl_rows(ledger, true, key, |_| Ok(()), selection, Some(group_key))
+        let (rows, groups, _) = self.cached_latest_jsonl_derived(
+            ledger,
+            key,
+            group_key,
+            selection,
+            |_: &mut (), _| {},
+        )?;
+        Ok((rows, groups))
     }
 
-    fn cached_latest_jsonl_rows<T: DeserializeOwned + Clone + Send + Sync + 'static>(
+    pub(super) fn cached_latest_jsonl_derived<
+        T: DeserializeOwned + Clone + Send + Sync + 'static,
+        D: Default + Clone + Send + Sync + 'static,
+    >(
+        &self,
+        ledger: &str,
+        key: impl Fn(&T) -> String,
+        group_key: fn(&T) -> String,
+        selection: CacheSelection<'_>,
+        fold: fn(&mut D, &T),
+    ) -> StoreResult<(Vec<T>, Vec<String>, Arc<D>)> {
+        self.cached_latest_jsonl_rows(
+            ledger,
+            true,
+            key,
+            |_| Ok(()),
+            ReadPolicy {
+                selection,
+                group_key: Some(group_key),
+                fold,
+            },
+        )
+    }
+
+    fn cached_latest_jsonl_rows<
+        T: DeserializeOwned + Clone + Send + Sync + 'static,
+        D: Default + Clone + Send + Sync + 'static,
+    >(
         &self,
         ledger: &str,
         ignore_incomplete_tail: bool,
         key: impl Fn(&T) -> String,
         validate: impl Fn(&T) -> StoreResult<()>,
-        selection: CacheSelection<'_>,
-        group_key: Option<fn(&T) -> String>,
-    ) -> StoreResult<(Vec<T>, Vec<String>)> {
+        policy: ReadPolicy<'_, T, D>,
+    ) -> StoreResult<(Vec<T>, Vec<String>, Arc<D>)> {
+        let ReadPolicy {
+            selection,
+            group_key,
+            fold,
+        } = policy;
         let mut cache = self.read_cache.lock().unwrap_or_else(|e| e.into_inner());
         let path = self.root.join(ledger);
         let deadline = Instant::now() + Duration::from_secs(1);
@@ -176,9 +230,17 @@ impl HarnessStore {
             let mut file = match File::open(&path) {
                 Ok(file) => file,
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                    cache.entries.remove(ledger);
+                    let derived = cache
+                        .entries
+                        .get(ledger)
+                        .and_then(|e| e.downcast_ref::<Missing<D>>())
+                        .map(|m| m.0.clone())
+                        .unwrap_or_else(|| Arc::new(D::default()));
+                    cache
+                        .entries
+                        .insert(ledger.to_owned(), Box::new(Missing(derived.clone())));
                     record(&mut cache, ledger, 0, bytes_read, 0, 0, "missing");
-                    return Ok((Vec::new(), Vec::new()));
+                    return Ok((Vec::new(), Vec::new(), derived));
                 }
                 Err(e) => return Err(e.into()),
             };
@@ -186,15 +248,16 @@ impl HarnessStore {
             let old = cache
                 .entries
                 .get(ledger)
-                .and_then(|v| v.downcast_ref::<Latest<T>>());
+                .and_then(|v| v.downcast_ref::<Latest<T, D>>());
             if old.is_some_and(|old| old.stamp == stamp)
                 && fs::metadata(&path).map(Stamp::from).ok().as_ref() == Some(&stamp)
             {
                 let old = old.expect("checked above");
                 let result = selected_values(&old.values, &old.groups, selection);
+                let derived = old.derived.clone();
                 record(&mut cache, ledger, stamp.len, bytes_read, 0, 0, "unchanged");
                 record_clones(&mut cache, ledger, result.0.len() as u64);
-                return Ok(result);
+                return Ok((result.0, result.1, derived));
             }
             let mut bytes = Vec::new();
             file.read_to_end(&mut bytes)?;
@@ -254,6 +317,11 @@ impl HarnessStore {
             } else {
                 BTreeSet::new()
             };
+            let mut derived = if append {
+                (*old.expect("checked above").derived).clone()
+            } else {
+                D::default()
+            };
             let mut rows = 0;
             for row in bytes[offset..durable_len].split(|b| *b == b'\n') {
                 if row.iter().all(u8::is_ascii_whitespace) {
@@ -273,6 +341,7 @@ impl HarnessStore {
                 if let Some(group_key) = group_key {
                     groups.insert(group_key(&value));
                 }
+                fold(&mut derived, &value);
                 values.insert(key(&value), (next_row, value));
                 next_row += 1;
                 rows += 1;
@@ -287,6 +356,7 @@ impl HarnessStore {
             let decoded = durable_len.saturating_sub(offset) as u64;
             // Keep the full snapshot, including an ignored trust crash tail.
             // Such a tail prevents delta reuse until the next complete rebuild.
+            let derived = Arc::new(derived);
             cache.entries.insert(
                 ledger.to_owned(),
                 Box::new(Latest {
@@ -295,13 +365,14 @@ impl HarnessStore {
                     values,
                     next_row,
                     groups,
+                    derived: derived.clone(),
                 }),
             );
             record(
                 &mut cache, ledger, stamp.len, bytes_read, decoded, rows, reason,
             );
             record_clones(&mut cache, ledger, cloned_rows);
-            return Ok(result);
+            return Ok((result.0, result.1, derived));
         }
     }
 }
@@ -363,13 +434,15 @@ mod tests {
         value: u64,
     }
     fn fixture() -> HarnessStore {
+        static NEXT_FIXTURE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let root = std::env::temp_dir().join(format!(
-            "read-cache-{}-{}",
+            "read-cache-{}-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
-                .as_nanos()
+                .as_nanos(),
+            NEXT_FIXTURE.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
         ));
         fs::create_dir_all(&root).unwrap();
         HarnessStore::new(root)

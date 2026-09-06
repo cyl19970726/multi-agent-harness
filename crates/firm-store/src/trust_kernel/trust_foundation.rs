@@ -1,4 +1,7 @@
 use super::*;
+#[path = "trust_read_model.rs"]
+mod read_model;
+use read_model::TrustReadModel;
 
 impl HarnessStore {
     pub(crate) fn replay_current_work_mutation_unlocked(
@@ -682,11 +685,12 @@ impl HarnessStore {
 
     pub fn canonical_execution_space_ids(&self) -> StoreResult<Vec<String>> {
         Ok(self
-            .cached_latest_jsonl_indexed(
+            .cached_latest_jsonl_derived(
                 TRUST_OPERATIONS_LEDGER,
                 trust_cache_key,
                 |e| e.execution_space_id.clone(),
                 crate::store_read_cache::CacheSelection::Groups,
+                TrustReadModel::observe,
             )?
             .1)
     }
@@ -706,30 +710,10 @@ impl HarnessStore {
             .collect())
     }
 
-    pub(crate) fn trust_work_projections_unlocked(&self) -> StoreResult<Vec<Work>> {
-        let mut works = Vec::new();
-        for envelope in self.trust_operation_envelopes_unlocked()? {
-            if envelope.operation.event.aggregate_kind == "work" {
-                works.push(event_projection::<Work>(&envelope)?);
-            }
-            for record in envelope.operation.immutable_side_records {
-                if let Ok(work) = serde_json::from_value::<Work>(record) {
-                    works.push(work);
-                }
-            }
-        }
-        Ok(works)
-    }
-
     pub(crate) fn canonical_host_attention_outbox_unlocked(
         &self,
     ) -> StoreResult<Vec<HostAttention>> {
-        Ok(self
-            .trust_operation_envelopes_unlocked()?
-            .into_iter()
-            .flat_map(|envelope| envelope.operation.initial_outbox_records)
-            .filter_map(|record| serde_json::from_value::<HostAttention>(record).ok())
-            .collect())
+        self.cached_host_attention_outbox()
     }
 
     /// Decode-only compatibility view for callers that still resolve a
@@ -795,11 +779,12 @@ impl HarnessStore {
     ) -> StoreResult<Vec<TrustOperationEnvelope>> {
         let prefix = trust_cache_prefix(&[aggregate_kind]);
         Ok(self
-            .cached_latest_jsonl_indexed(
+            .cached_latest_jsonl_derived(
                 TRUST_OPERATIONS_LEDGER,
                 trust_cache_key,
                 |e| e.execution_space_id.clone(),
                 crate::store_read_cache::CacheSelection::Prefix(&prefix),
+                TrustReadModel::observe,
             )?
             .0)
     }
@@ -811,11 +796,12 @@ impl HarnessStore {
     ) -> StoreResult<BTreeMap<String, TrustOperationEnvelope>> {
         let prefix = trust_cache_prefix(&[aggregate_kind, execution_space_id]);
         Ok(self
-            .cached_latest_jsonl_indexed(
+            .cached_latest_jsonl_derived(
                 TRUST_OPERATIONS_LEDGER,
                 trust_cache_key,
                 |e| e.execution_space_id.clone(),
                 crate::store_read_cache::CacheSelection::Prefix(&prefix),
+                TrustReadModel::observe,
             )?
             .0
             .into_iter()
