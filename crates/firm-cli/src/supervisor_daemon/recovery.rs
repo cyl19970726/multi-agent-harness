@@ -252,6 +252,15 @@ pub(crate) const TEAM_RUN_START_OBSERVATION_INTERVAL: Duration = Duration::from_
 /// returns without retry. Every status I/O is bounded by the remaining
 /// budget, no poll launches once the deadline has passed, and each sleep is
 /// clamped to what remains.
+///
+/// The deadline bounds how long we look, never what we found: a
+/// postcondition that `prove_postcondition` already proved is returned
+/// without a post-proof clock check, because a store-verified proof must not
+/// decay into a false UNKNOWN merely because time passed while looking.
+/// Explicitly outside the cancellable budget: the synchronous canonical
+/// lease reads inside the proof are uncancellable local filesystem reads,
+/// and arbitrary OS scheduling delay surrounds every call — this is a named
+/// client observation policy, not a hard process wall-clock limit.
 pub(crate) fn reconcile_team_run_start_with_observation(
     node_id: &str,
     observation_budget: Duration,
