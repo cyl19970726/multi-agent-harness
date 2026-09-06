@@ -61,7 +61,7 @@ fn runtime_command_replay_and_ambiguous_effect_fail_closed() {
     let accepted = store
         .prepare_runtime_command(&admission_context, &command, current_unix_ms(), "t2")
         .unwrap();
-    assert_eq!(accepted.projection.status, RuntimeCommandStatus::Accepted);
+    assert_eq!(accepted.projection.phase, RuntimeCommandPhase::Prepared);
     assert_eq!(
         accepted.projection.effect_certainty,
         RuntimeEffectCertainty::Unknown
@@ -102,7 +102,7 @@ fn runtime_command_replay_and_ambiguous_effect_fail_closed() {
         .settle_runtime_command(
             &settle_context,
             "runtime-command-1",
-            RuntimeCommandStatus::RecoveryRequired,
+            RuntimeCommandPhase::RecoveryRequired,
             RuntimeEffectCertainty::Unknown,
             None,
             Some("PROVIDER_EFFECT_AMBIGUOUS".into()),

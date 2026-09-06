@@ -319,7 +319,6 @@ fn admitted_fence(session: &AgentSession) -> RuntimeBindingFence {
         required_capability: "cycle.start".to_string(),
         idempotency_key: "command-1".to_string(),
         request_fingerprint: "fingerprint-1".to_string(),
-        status: harness_core::agentfirm_api::RuntimeCommandStatus::Accepted,
         phase: harness_core::agentfirm_api::RuntimeCommandPhase::Prepared,
         effect_certainty: harness_core::agentfirm_api::RuntimeEffectCertainty::Unknown,
         postcondition_status: harness_core::agentfirm_api::RuntimePostconditionStatus::Unknown,

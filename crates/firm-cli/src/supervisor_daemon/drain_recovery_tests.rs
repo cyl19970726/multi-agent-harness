@@ -12,7 +12,7 @@ use super::*;
 use crate::ProviderEffectSettlement;
 
 use harness_core::agentfirm_api::{
-    AgentSessionStatus, RuntimeActivity, RuntimeCommandKind, RuntimeCommandStatus,
+    AgentSessionStatus, RuntimeActivity, RuntimeCommandKind, RuntimeCommandPhase,
     RuntimeEffectCertainty, RuntimeResidency,
 };
 use harness_core::{
@@ -470,7 +470,7 @@ fn drained_mid_turn_member_resumes_under_the_next_supervisor_generation() {
         "resume must open a new cycle, never replay the killed one"
     );
     assert_eq!(after[0].id, killed_cycle[0].id);
-    assert_eq!(after[0].status, RuntimeCommandStatus::Applied);
+    assert_eq!(after[0].phase, RuntimeCommandPhase::Settled);
     assert_eq!(after[0].effect_certainty, RuntimeEffectCertainty::Applied);
     assert_eq!(
         after[0].target_node_daemon_generation, fixture.daemon_generation,

@@ -475,7 +475,7 @@ fn pi_rpc_member_two_round_journey_via_canonical_message() {
     let applied = |kind| {
         commands.iter().filter(move |command| {
             command.command == kind
-                && command.status == harness_core::agentfirm_api::RuntimeCommandStatus::Applied
+                && command.phase == harness_core::agentfirm_api::RuntimeCommandPhase::Settled
                 && command.postcondition_status
                     == harness_core::agentfirm_api::RuntimePostconditionStatus::Satisfied
         })
@@ -689,7 +689,7 @@ fn pi_prompt_receipt_survives_disconnect_without_redelivery() {
         let deliveries = store.fabric_work_deliveries(&space_id).unwrap_or_default();
         commands.iter().any(|command| {
             command.command == harness_core::agentfirm_api::RuntimeCommandKind::StartCycle
-                && command.status == harness_core::agentfirm_api::RuntimeCommandStatus::Applied
+                && command.phase == harness_core::agentfirm_api::RuntimeCommandPhase::Settled
                 && command.effect_certainty
                     == harness_core::agentfirm_api::RuntimeEffectCertainty::Applied
         }) && deliveries.iter().any(|delivery| {
@@ -870,7 +870,7 @@ fn pi_full_access_busy_close_reopens_same_session_without_overclaiming_quiesce()
     assert!(
         commands.iter().any(|command| {
             command.command == harness_core::agentfirm_api::RuntimeCommandKind::CloseMember
-                && command.status == harness_core::agentfirm_api::RuntimeCommandStatus::Applied
+                && command.phase == harness_core::agentfirm_api::RuntimeCommandPhase::Settled
                 && command.postcondition_status
                     == harness_core::agentfirm_api::RuntimePostconditionStatus::Satisfied
         }),
@@ -995,7 +995,7 @@ fn pi_full_access_close_reaps_owned_group_without_claiming_strong_quiesce() {
         .expect("Pi quiesce RuntimeCommand evidence");
     assert!(commands.iter().any(|command| {
         command.command == harness_core::agentfirm_api::RuntimeCommandKind::CloseMember
-            && command.status == harness_core::agentfirm_api::RuntimeCommandStatus::Applied
+            && command.phase == harness_core::agentfirm_api::RuntimeCommandPhase::Settled
             && command.effect_certainty
                 == harness_core::agentfirm_api::RuntimeEffectCertainty::Applied
             && command.postcondition_status

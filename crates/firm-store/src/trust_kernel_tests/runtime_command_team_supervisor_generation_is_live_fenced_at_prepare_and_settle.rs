@@ -128,7 +128,7 @@ fn runtime_command_team_supervisor_generation_is_live_fenced_at_prepare_and_sett
                 accepted.projection.version,
             ),
             &command.id,
-            RuntimeCommandStatus::Applied,
+            RuntimeCommandPhase::Settled,
             RuntimeEffectCertainty::Applied,
             Some(serde_json::json!({"provider_receipt": "must-not-land"})),
             None,
@@ -185,7 +185,7 @@ fn runtime_command_team_supervisor_generation_is_live_fenced_at_prepare_and_sett
             "t-confirmed-not-applied",
         )
         .expect("exact Operator resolves the abandoned prepared command");
-    assert_eq!(resolved.projection.status, RuntimeCommandStatus::Failed);
+    assert_eq!(resolved.projection.phase, RuntimeCommandPhase::Rejected);
     assert_eq!(
         resolved.projection.effect_certainty,
         RuntimeEffectCertainty::NotApplied

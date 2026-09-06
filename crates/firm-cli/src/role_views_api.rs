@@ -665,7 +665,7 @@ fn record_summary(kind: &str, value: &Value) -> Value {
         "work_id":first_string(&["work_id"]),
         "member_run_id":first_string(&["member_run_id","recipient_member_run_id"]),
         "requirement_id":first_string(&["requirement_id"]),
-        "status":first_string(&["state","status","lifecycle","verdict","runtime_status"]),
+        "status":if kind == "runtime_command" {first_string(&["phase"])} else {first_string(&["state","status","lifecycle","verdict","runtime_status"])},
         "version":value.get("version").and_then(Value::as_u64),
         "actor_ref":actor_ref,
         "summary":first_string(&["summary","summary_markdown","detail_markdown","observed_failure","failure_code","reason"]),
@@ -774,7 +774,7 @@ fn team_activity(
             .as_str()
             .is_some_and(|id| team_work_ids.contains(id) || team_message_ids.contains(id))
     }) {
-        rows.push(json!({"source":"runtime_command","id":command["id"],"work_id":command["source_record_id"].as_str().filter(|id|team_work_ids.contains(id)),"actor_ref":role_actor_ref(facts,&command["authenticated_actor"]),"status":command["status"],"summary":display_text(command["failure_code"].as_str()),"created_at":command["updated_at"]}));
+        rows.push(json!({"source":"runtime_command","id":command["id"],"work_id":command["source_record_id"].as_str().filter(|id|team_work_ids.contains(id)),"actor_ref":role_actor_ref(facts,&command["authenticated_actor"]),"status":command["phase"],"summary":display_text(command["failure_code"].as_str()),"created_at":command["updated_at"]}));
     }
     rows.sort_by(|left, right| {
         right["created_at"]

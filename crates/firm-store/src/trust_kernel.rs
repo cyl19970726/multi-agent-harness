@@ -15,13 +15,13 @@ use firm_core::agentfirm_api::{
     MessageSubscription, MessageSubscriptionKind, MessageSubscriptionStatus, MutationContext,
     NativeContinuationActivation, NativeContinuationPhase, NativeSessionRef, PermissionCeiling,
     ProviderCycleCorrelation, ProviderInvocation, RuntimeActivity, RuntimeCommandKind,
-    RuntimeCommandPhase, RuntimeCommandPrecondition, RuntimeCommandRecord, RuntimeCommandStatus,
-    RuntimeDriverRef, RuntimeEffectCertainty, RuntimePostconditionStatus,
-    RuntimeRecoveryResolution, RuntimeResidency, RuntimeSafePointRequirement, SubscriptionCursor,
-    TeamMembership, TeamMembershipRole, TeamMembershipStatus, TeamMessageDeliveryClaim, TrustError,
-    TrustErrorCode, WorkDeliveryStatus, WorkExecutionBinding, WorkExecutionBindingStatus,
-    WorkFinding, WorkModuleBinding, WorkModuleId, WorkReport, WorkReportKind, WorkspaceLifecycle,
-    WorkspaceMode, WorkspaceOwnership, WorkspaceSafetyProof,
+    RuntimeCommandPhase, RuntimeCommandPrecondition, RuntimeCommandRecord, RuntimeDriverRef,
+    RuntimeEffectCertainty, RuntimePostconditionStatus, RuntimeRecoveryResolution,
+    RuntimeResidency, RuntimeSafePointRequirement, SubscriptionCursor, TeamMembership,
+    TeamMembershipRole, TeamMembershipStatus, TeamMessageDeliveryClaim, TrustError, TrustErrorCode,
+    WorkDeliveryStatus, WorkExecutionBinding, WorkExecutionBindingStatus, WorkFinding,
+    WorkModuleBinding, WorkModuleId, WorkReport, WorkReportKind, WorkspaceLifecycle, WorkspaceMode,
+    WorkspaceOwnership, WorkspaceSafetyProof,
 };
 use firm_core::collaboration::{
     CollaborationMessageAuthority, MessageAdmissionAuthority, PeerTeamMessageAdmissionAuthority,
@@ -767,6 +767,7 @@ mod fabric_foundation;
 mod fabric_identity_sessions;
 mod fabric_message_authoring;
 mod fabric_message_delivery;
+mod fabric_runtime_command_settlement;
 mod fabric_runtime_commands;
 mod fabric_scoped_work_projection;
 mod fabric_teams;

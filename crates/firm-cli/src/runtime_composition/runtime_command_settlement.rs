@@ -6,7 +6,7 @@ use super::*;
 /// them explicitly; nothing here is derived from a bare `applied` boolean.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ProviderEffectSettlement {
-    pub(crate) status: harness_core::agentfirm_api::RuntimeCommandStatus,
+    pub(crate) phase: harness_core::agentfirm_api::RuntimeCommandPhase,
     pub(crate) certainty: harness_core::agentfirm_api::RuntimeEffectCertainty,
     pub(crate) postcondition: harness_core::agentfirm_api::RuntimePostconditionStatus,
 }
@@ -14,14 +14,14 @@ pub(crate) struct ProviderEffectSettlement {
 impl ProviderEffectSettlement {
     /// The effect is proven applied and its postcondition is satisfied.
     pub(crate) const APPLIED_SATISFIED: Self = Self {
-        status: harness_core::agentfirm_api::RuntimeCommandStatus::Applied,
+        phase: harness_core::agentfirm_api::RuntimeCommandPhase::Settled,
         certainty: harness_core::agentfirm_api::RuntimeEffectCertainty::Applied,
         postcondition: harness_core::agentfirm_api::RuntimePostconditionStatus::Satisfied,
     };
     /// The effect may have crossed the provider boundary but its outcome is
     /// unproven: recovery is required and nothing is satisfied.
     pub(crate) const UNPROVEN: Self = Self {
-        status: harness_core::agentfirm_api::RuntimeCommandStatus::RecoveryRequired,
+        phase: harness_core::agentfirm_api::RuntimeCommandPhase::RecoveryRequired,
         certainty: harness_core::agentfirm_api::RuntimeEffectCertainty::Unknown,
         postcondition: harness_core::agentfirm_api::RuntimePostconditionStatus::Unknown,
     };
@@ -72,7 +72,7 @@ pub(crate) fn settle_provider_effect(
         .settle_runtime_command_with_postcondition(
             &admission.settle_context,
             &admission.command_id,
-            settlement.status,
+            settlement.phase,
             settlement.certainty,
             settlement.postcondition,
             result,
@@ -98,7 +98,7 @@ pub(crate) fn settle_provider_effect_not_applied(
         .settle_runtime_command_with_postcondition(
             &admission.settle_context,
             &admission.command_id,
-            harness_core::agentfirm_api::RuntimeCommandStatus::Failed,
+            harness_core::agentfirm_api::RuntimeCommandPhase::Rejected,
             harness_core::agentfirm_api::RuntimeEffectCertainty::NotApplied,
             harness_core::agentfirm_api::RuntimePostconditionStatus::Unsatisfied,
             None,
@@ -164,21 +164,21 @@ mod tests {
     #[test]
     fn provider_effect_settlement_dimensions_are_explicit() {
         use harness_core::agentfirm_api::{
-            RuntimeCommandStatus, RuntimeEffectCertainty, RuntimePostconditionStatus,
+            RuntimeCommandPhase, RuntimeEffectCertainty, RuntimePostconditionStatus,
         };
         let applied = ProviderEffectSettlement::APPLIED_SATISFIED;
-        assert_eq!(applied.status, RuntimeCommandStatus::Applied);
+        assert_eq!(applied.phase, RuntimeCommandPhase::Settled);
         assert_eq!(applied.certainty, RuntimeEffectCertainty::Applied);
         assert_eq!(applied.postcondition, RuntimePostconditionStatus::Satisfied);
 
         let unproven = ProviderEffectSettlement::UNPROVEN;
-        assert_ne!(unproven.status, RuntimeCommandStatus::Applied);
+        assert_ne!(unproven.phase, RuntimeCommandPhase::Settled);
         assert_ne!(unproven.certainty, RuntimeEffectCertainty::Applied);
         assert_ne!(
             unproven.postcondition,
             RuntimePostconditionStatus::Satisfied
         );
-        assert_eq!(unproven.status, RuntimeCommandStatus::RecoveryRequired);
+        assert_eq!(unproven.phase, RuntimeCommandPhase::RecoveryRequired);
         assert_eq!(unproven.certainty, RuntimeEffectCertainty::Unknown);
         assert_eq!(unproven.postcondition, RuntimePostconditionStatus::Unknown);
 
@@ -191,7 +191,7 @@ mod tests {
         };
         assert_ne!(mixed, applied);
         assert_ne!(mixed, unproven);
-        assert_eq!(mixed.status, RuntimeCommandStatus::Applied);
+        assert_eq!(mixed.phase, RuntimeCommandPhase::Settled);
         assert_eq!(mixed.postcondition, RuntimePostconditionStatus::Unknown);
     }
 }

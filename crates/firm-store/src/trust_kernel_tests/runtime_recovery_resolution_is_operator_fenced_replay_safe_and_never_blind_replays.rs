@@ -88,7 +88,7 @@ fn runtime_recovery_resolution_is_operator_fenced_replay_safe_and_never_blind_re
         .settle_runtime_command(
             &settle_context,
             &command.id,
-            RuntimeCommandStatus::RecoveryRequired,
+            RuntimeCommandPhase::RecoveryRequired,
             RuntimeEffectCertainty::Unknown,
             None,
             Some("PROVIDER_EFFECT_AMBIGUOUS".into()),
@@ -147,7 +147,7 @@ fn runtime_recovery_resolution_is_operator_fenced_replay_safe_and_never_blind_re
             "t-resolved",
         )
         .unwrap();
-    assert_eq!(resolved.projection.status, RuntimeCommandStatus::Failed);
+    assert_eq!(resolved.projection.phase, RuntimeCommandPhase::Rejected);
     assert_eq!(
         resolved.projection.effect_certainty,
         RuntimeEffectCertainty::NotApplied
@@ -216,7 +216,7 @@ fn every_runtime_recovery_resolution_projects_exact_success_and_replays_without_
         (
             "applied",
             RuntimeRecoveryResolution::ConfirmApplied,
-            RuntimeCommandStatus::Applied,
+            RuntimeCommandPhase::Settled,
             RuntimeCommandPhase::Settled,
             RuntimeEffectCertainty::Applied,
             None,
@@ -224,7 +224,7 @@ fn every_runtime_recovery_resolution_projects_exact_success_and_replays_without_
         (
             "not-applied",
             RuntimeRecoveryResolution::ConfirmNotApplied,
-            RuntimeCommandStatus::Failed,
+            RuntimeCommandPhase::Rejected,
             RuntimeCommandPhase::Rejected,
             RuntimeEffectCertainty::NotApplied,
             Some("RECOVERY_CONFIRMED_NOT_APPLIED"),
@@ -232,7 +232,7 @@ fn every_runtime_recovery_resolution_projects_exact_success_and_replays_without_
         (
             "keep-required",
             RuntimeRecoveryResolution::KeepRecoveryRequired,
-            RuntimeCommandStatus::RecoveryRequired,
+            RuntimeCommandPhase::RecoveryRequired,
             RuntimeCommandPhase::RecoveryRequired,
             RuntimeEffectCertainty::Unknown,
             Some("RECOVERY_EVIDENCE_INSUFFICIENT"),
@@ -263,7 +263,7 @@ fn every_runtime_recovery_resolution_projects_exact_success_and_replays_without_
             .settle_runtime_command(
                 &settle_context,
                 &command.id,
-                RuntimeCommandStatus::RecoveryRequired,
+                RuntimeCommandPhase::RecoveryRequired,
                 RuntimeEffectCertainty::Unknown,
                 None,
                 Some("PROVIDER_EFFECT_AMBIGUOUS".into()),
@@ -293,7 +293,7 @@ fn every_runtime_recovery_resolution_projects_exact_success_and_replays_without_
                 &format!("t-{suffix}-resolved"),
             )
             .unwrap();
-        assert_eq!(resolved.projection.status, status, "{suffix}");
+        assert_eq!(resolved.projection.phase, status, "{suffix}");
         assert_eq!(resolved.projection.phase, phase, "{suffix}");
         assert_eq!(resolved.projection.effect_certainty, certainty, "{suffix}");
         assert_eq!(

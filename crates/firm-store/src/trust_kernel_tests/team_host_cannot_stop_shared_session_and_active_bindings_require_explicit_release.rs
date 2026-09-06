@@ -190,7 +190,7 @@ fn team_host_cannot_stop_shared_session_and_active_bindings_require_explicit_rel
             "t-stop-after-release",
         )
         .expect("explicit release makes the exact StopSession admissible");
-    assert_eq!(accepted.projection.status, RuntimeCommandStatus::Accepted);
+    assert_eq!(accepted.projection.phase, RuntimeCommandPhase::Prepared);
     assert!(store
         .fabric_work_execution_bindings("space-test")
         .unwrap()

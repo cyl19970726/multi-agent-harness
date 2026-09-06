@@ -7,6 +7,7 @@ mod identity_session;
 pub use identity_session::*;
 mod messaging;
 pub use messaging::*;
+mod runtime_command_legacy;
 mod runtime_control;
 pub use runtime_control::*;
 mod work_trust;

@@ -232,8 +232,6 @@ impl HarnessStore {
         supervisor_id: &str,
         supervisor_generation: u64,
     ) -> StoreResult<()> {
-        use firm_core::agentfirm_api::{RuntimeCommandStatus, RuntimeEffectCertainty};
-
         self.init()?;
         let _lock = self.acquire_write_lock()?;
         self.require_exact_supervisor_authority_unlocked(
@@ -300,13 +298,7 @@ impl HarnessStore {
                     command.target_session_id.as_deref() == Some(expected_session.id.as_str())
                         && command.target_session_generation
                             == Some(expected_session.runtime_generation)
-                        && matches!(
-                            command.status,
-                            RuntimeCommandStatus::Accepted
-                                | RuntimeCommandStatus::Quiesced
-                                | RuntimeCommandStatus::RecoveryRequired
-                        )
-                        && command.effect_certainty == RuntimeEffectCertainty::Unknown
+                        && command.has_unresolved_effect()
                 });
         if ambiguous_command {
             return Err(StoreError::Conflict(format!(

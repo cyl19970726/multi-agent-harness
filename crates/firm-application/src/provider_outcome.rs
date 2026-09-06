@@ -178,7 +178,7 @@ pub fn durable_provider_cycle_outcome(
     command: &firm_core::agentfirm_api::RuntimeCommandRecord,
 ) -> CycleOutcome {
     use firm_core::agentfirm_api::{
-        RuntimeCommandKind, RuntimeCommandStatus, RuntimeEffectCertainty,
+        RuntimeCommandKind, RuntimeCommandPhase, RuntimeEffectCertainty,
     };
     if command.command != RuntimeCommandKind::StartCycle {
         return CycleOutcome::Unknown {
@@ -186,17 +186,17 @@ pub fn durable_provider_cycle_outcome(
         };
     }
     if command.cycle_correlation.is_some()
-        && command.status == RuntimeCommandStatus::Applied
+        && command.phase == RuntimeCommandPhase::Settled
         && command.effect_certainty == RuntimeEffectCertainty::Applied
     {
         return CycleOutcome::Terminal {
             correlation_id: command.id.clone(),
         };
     }
-    if command.status == RuntimeCommandStatus::Accepted {
+    if command.phase == RuntimeCommandPhase::Prepared {
         return CycleOutcome::StillRunning;
     }
-    if command.status == RuntimeCommandStatus::Applied
+    if command.phase == RuntimeCommandPhase::Settled
         && command.effect_certainty == RuntimeEffectCertainty::Applied
     {
         return CycleOutcome::Unknown {

@@ -94,14 +94,14 @@ fn expired_predecessor_replays_and_settles_but_cannot_admit_a_new_effect() {
         .settle_runtime_command(
             &settle_context,
             "runtime-command-fence",
-            RuntimeCommandStatus::Applied,
+            RuntimeCommandPhase::Settled,
             RuntimeEffectCertainty::Applied,
             Some(serde_json::json!({"provider_receipt": "spoofed"})),
             None,
             "t4",
         )
         .expect("the exact expired predecessor retains settlement-only authority");
-    assert_eq!(settled.projection.status, RuntimeCommandStatus::Applied);
+    assert_eq!(settled.projection.phase, RuntimeCommandPhase::Settled);
     assert_eq!(
         settled.projection.effect_certainty,
         RuntimeEffectCertainty::Applied
@@ -207,14 +207,14 @@ fn draining_predecessor_settles_prepared_command_but_cannot_prepare_another() {
                 prepared.projection.version,
             ),
             &command.id,
-            RuntimeCommandStatus::Applied,
+            RuntimeCommandPhase::Settled,
             RuntimeEffectCertainty::Applied,
             Some(serde_json::json!({"provider_receipt": "receipt-before-drain"})),
             None,
             "t5",
         )
         .expect("draining predecessor retains settlement-only authority");
-    assert_eq!(settled.projection.status, RuntimeCommandStatus::Applied);
+    assert_eq!(settled.projection.phase, RuntimeCommandPhase::Settled);
     assert_eq!(
         settled.projection.effect_certainty,
         RuntimeEffectCertainty::Applied

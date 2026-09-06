@@ -35,7 +35,7 @@ fn recovery_cannot_confirm_applied_after_semantic_precondition_drift() {
                 1,
             ),
             &command.id,
-            RuntimeCommandStatus::RecoveryRequired,
+            RuntimeCommandPhase::RecoveryRequired,
             RuntimeEffectCertainty::Unknown,
             None,
             Some("PROVIDER_EFFECT_AMBIGUOUS".into()),
@@ -97,7 +97,7 @@ fn recovery_cannot_confirm_applied_after_semantic_precondition_drift() {
             "t-confirm-not-applied",
         )
         .expect("stale work must remain safely resolvable as NotApplied");
-    assert_eq!(resolved.projection.status, RuntimeCommandStatus::Failed);
+    assert_eq!(resolved.projection.phase, RuntimeCommandPhase::Rejected);
     assert_eq!(
         resolved.projection.effect_certainty,
         RuntimeEffectCertainty::NotApplied

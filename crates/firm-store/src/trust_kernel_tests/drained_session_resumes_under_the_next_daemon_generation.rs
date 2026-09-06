@@ -76,7 +76,7 @@ fn drained_session_resumes_under_the_next_daemon_generation() {
                 accepted.projection.version,
             ),
             &start.id,
-            RuntimeCommandStatus::Applied,
+            RuntimeCommandPhase::Settled,
             RuntimeEffectCertainty::Applied,
             RuntimePostconditionStatus::Satisfied,
             Some(serde_json::json!({
@@ -208,7 +208,7 @@ fn drained_session_resumes_under_the_next_daemon_generation() {
         1,
         "resume must open a new cycle, never replay the killed one"
     );
-    assert_eq!(start_cycles[0].status, RuntimeCommandStatus::Applied);
+    assert_eq!(start_cycles[0].phase, RuntimeCommandPhase::Settled);
     assert_eq!(
         start_cycles[0].effect_certainty,
         RuntimeEffectCertainty::Applied

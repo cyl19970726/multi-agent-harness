@@ -113,8 +113,8 @@ fn kimi_quota_like_failure_requires_recovery_without_fabricating_capacity() {
         .collect::<Vec<_>>();
     assert_eq!(dispatches.len(), 1);
     assert_eq!(
-        dispatches[0].status,
-        harness_core::agentfirm_api::RuntimeCommandStatus::Applied
+        dispatches[0].phase,
+        harness_core::agentfirm_api::RuntimeCommandPhase::Settled
     );
     assert_eq!(
         dispatches[0].postcondition_status,

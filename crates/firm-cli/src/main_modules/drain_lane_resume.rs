@@ -28,7 +28,7 @@ use super::*;
 
 use harness_core::agentfirm_api::{
     ActorKind, ActorRef, AgentSession, AgentSessionStatus, DriverHandoffState, MutationContext,
-    NativeContinuationActivation, RuntimeActivity, RuntimeCommandStatus, RuntimeEffectCertainty,
+    NativeContinuationActivation, RuntimeActivity, RuntimeCommandPhase, RuntimeEffectCertainty,
     RuntimeResidency, TrustErrorCode, AGENT_SESSION_DRAIN_RESUME_NOT_YET_RESUMABLE,
     AGENT_SESSION_RECOVERY_REQUIRED_NOT_YET_RESUMABLE,
 };
@@ -158,10 +158,10 @@ pub(super) fn lane_termination_proof(
             command.target_session_id.as_deref() == Some(session.id.as_str())
                 && command.target_session_generation == Some(session.runtime_generation)
                 && matches!(
-                    command.status,
-                    RuntimeCommandStatus::Accepted
-                        | RuntimeCommandStatus::Quiesced
-                        | RuntimeCommandStatus::RecoveryRequired
+                    command.phase,
+                    RuntimeCommandPhase::Prepared
+                        | RuntimeCommandPhase::Observed
+                        | RuntimeCommandPhase::RecoveryRequired | RuntimeCommandPhase::Unknown
                 )
                 && command.effect_certainty == RuntimeEffectCertainty::Unknown
         })

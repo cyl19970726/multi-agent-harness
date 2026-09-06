@@ -173,7 +173,7 @@ fn runtime_control_rejects_missing_turn_and_requires_explicit_binding_release_be
     let stopped = store
         .prepare_runtime_command(&stop_context, &stop, current_unix_ms(), "t4")
         .expect("StopSession is admitted after explicit release");
-    assert_eq!(stopped.projection.status, RuntimeCommandStatus::Accepted);
+    assert_eq!(stopped.projection.phase, RuntimeCommandPhase::Prepared);
     let released = store.fabric_work_execution_bindings("space-test").unwrap();
     assert_eq!(released.len(), 1);
     assert_eq!(released[0].status, WorkExecutionBindingStatus::Released);

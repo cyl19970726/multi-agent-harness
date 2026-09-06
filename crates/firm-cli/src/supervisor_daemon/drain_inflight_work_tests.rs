@@ -14,7 +14,7 @@ use super::drain_recovery_tests::{
 };
 use crate::claim_canonical_work_for_member;
 use harness_core::agentfirm_api::{
-    AgentSessionStatus, CanonicalWorkDelivery, RuntimeCommandStatus, RuntimeEffectCertainty,
+    AgentSessionStatus, CanonicalWorkDelivery, RuntimeCommandPhase, RuntimeEffectCertainty,
     WorkDeliveryStatus, WorkExecutionBinding, WorkExecutionBindingStatus,
 };
 use harness_core::{CurrentWorkDraft, Work, WorkClaimMode, WorkCommandContext, WorkPriority};
@@ -244,7 +244,7 @@ fn drained_in_flight_work_is_redelivered_under_the_successor_generation() {
         "settlement plus re-delivery must not mint an extra StartCycle row"
     );
     assert_eq!(after[0].id, killed_cycle[0].id);
-    assert_eq!(after[0].status, RuntimeCommandStatus::Applied);
+    assert_eq!(after[0].phase, RuntimeCommandPhase::Settled);
     assert_eq!(after[0].effect_certainty, RuntimeEffectCertainty::Applied);
     assert_eq!(
         after[0].target_node_daemon_generation, fixture.daemon_generation,

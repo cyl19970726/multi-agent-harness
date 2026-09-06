@@ -75,7 +75,7 @@ fn runtime_command_prepared_before_native_bind_settles_after_it() {
             "t-interrupt",
         )
         .expect("an exact interrupt compensates the in-flight StartCycle");
-    assert_eq!(admitted.projection.status, RuntimeCommandStatus::Accepted);
+    assert_eq!(admitted.projection.phase, RuntimeCommandPhase::Prepared);
 
     // The bind race: the provider's native session id arrives and attaches to
     // the same generation while the interrupt is still in flight.
@@ -100,7 +100,7 @@ fn runtime_command_prepared_before_native_bind_settles_after_it() {
                 admitted.projection.version,
             ),
             &interrupt.id,
-            RuntimeCommandStatus::Applied,
+            RuntimeCommandPhase::Settled,
             RuntimeEffectCertainty::Applied,
             RuntimePostconditionStatus::Satisfied,
             Some(serde_json::json!({"interrupted": true})),
@@ -108,7 +108,7 @@ fn runtime_command_prepared_before_native_bind_settles_after_it() {
             "t-interrupt-applied",
         )
         .expect("an interrupt prepared before the native bind settles after it");
-    assert_eq!(settled.projection.status, RuntimeCommandStatus::Applied);
+    assert_eq!(settled.projection.phase, RuntimeCommandPhase::Settled);
     assert_eq!(
         settled.projection.effect_certainty,
         RuntimeEffectCertainty::Applied

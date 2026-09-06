@@ -105,8 +105,8 @@ fn kimi_provider_error_after_receipt_requires_recovery_without_replay() {
         .collect::<Vec<_>>();
     assert_eq!(dispatches.len(), 1, "the failed effect must not replay");
     assert_eq!(
-        dispatches[0].status,
-        harness_core::agentfirm_api::RuntimeCommandStatus::Applied
+        dispatches[0].phase,
+        harness_core::agentfirm_api::RuntimeCommandPhase::Settled
     );
     assert_eq!(
         dispatches[0].effect_certainty,
@@ -417,7 +417,7 @@ fn kimi_provider_error_after_receipt_requires_recovery_without_replay() {
             })
             .collect::<Vec<_>>();
         let second_cycle_bound = follow_up_cycles.first().is_some_and(|command| {
-            command.status == harness_core::agentfirm_api::RuntimeCommandStatus::Applied
+            command.phase == harness_core::agentfirm_api::RuntimeCommandPhase::Settled
                 && command.effect_certainty
                     == harness_core::agentfirm_api::RuntimeEffectCertainty::Applied
                 && command.postcondition_status

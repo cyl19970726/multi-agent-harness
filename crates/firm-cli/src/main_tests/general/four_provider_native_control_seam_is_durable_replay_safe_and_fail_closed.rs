@@ -3,7 +3,7 @@ use super::*;
 #[test]
 fn five_provider_native_control_seam_is_durable_replay_safe_and_fail_closed() {
     use harness_core::agentfirm_api::{
-        AgentSessionStatus, PermissionCeiling, RuntimeCommandStatus, RuntimeDispatchMode,
+        AgentSessionStatus, PermissionCeiling, RuntimeCommandPhase, RuntimeDispatchMode,
         RuntimeEffectCertainty, RuntimePostconditionStatus,
     };
 
@@ -106,7 +106,7 @@ fn five_provider_native_control_seam_is_durable_replay_safe_and_fail_closed() {
             .rev()
             .find(|command| command.id == pending.command_id())
             .expect("durable provider control command");
-        assert_eq!(applied.status, RuntimeCommandStatus::Applied);
+        assert_eq!(applied.phase, RuntimeCommandPhase::Settled);
         assert_eq!(applied.effect_certainty, RuntimeEffectCertainty::Applied);
         assert_eq!(
             applied.postcondition_status,
@@ -143,7 +143,7 @@ fn five_provider_native_control_seam_is_durable_replay_safe_and_fail_closed() {
             .expect("runtime commands after transport loss")
             .into_iter()
             .find(|command| {
-                command.status == RuntimeCommandStatus::RecoveryRequired
+                command.phase == RuntimeCommandPhase::RecoveryRequired
                     && command.effect_certainty == RuntimeEffectCertainty::Unknown
             })
             .expect("uncertain provider control enters recovery inventory");
@@ -232,8 +232,8 @@ fn five_provider_native_control_seam_is_durable_replay_safe_and_fail_closed() {
             .find(|command| command.id == ack_lost_pending.command_id())
             .expect("durable ack-loss provider control command");
         assert_eq!(
-            ack_lost_command.status,
-            RuntimeCommandStatus::RecoveryRequired
+            ack_lost_command.phase,
+            RuntimeCommandPhase::RecoveryRequired
         );
         assert_eq!(
             ack_lost_command.effect_certainty,

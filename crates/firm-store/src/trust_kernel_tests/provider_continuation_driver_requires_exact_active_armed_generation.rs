@@ -77,8 +77,8 @@ fn provider_continuation_driver_requires_exact_active_armed_generation() {
         let result = store.prepare_runtime_command(&admission, &command, current_unix_ms(), "t");
         if case == "exact" {
             assert_eq!(
-                result.unwrap().projection.status,
-                RuntimeCommandStatus::Accepted
+                result.unwrap().projection.phase,
+                RuntimeCommandPhase::Prepared
             );
         } else {
             let error = result.expect_err("continuation fence must reject mismatch");

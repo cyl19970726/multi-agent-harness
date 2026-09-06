@@ -70,7 +70,7 @@ fn runtime_cycle_correlation_is_exact_and_idempotent() {
                 accepted.projection.version,
             ),
             &command.id,
-            RuntimeCommandStatus::Applied,
+            RuntimeCommandPhase::Settled,
             RuntimeEffectCertainty::Applied,
             RuntimePostconditionStatus::Satisfied,
             Some(serde_json::json!({

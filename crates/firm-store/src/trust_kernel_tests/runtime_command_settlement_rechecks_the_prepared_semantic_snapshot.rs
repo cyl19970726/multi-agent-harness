@@ -44,7 +44,7 @@ fn runtime_command_settlement_rechecks_the_prepared_semantic_snapshot() {
                 accepted.projection.version,
             ),
             &command.id,
-            RuntimeCommandStatus::Applied,
+            RuntimeCommandPhase::Settled,
             RuntimeEffectCertainty::Applied,
             Some(serde_json::json!({"provider_receipt": "stale"})),
             None,
@@ -54,8 +54,8 @@ fn runtime_command_settlement_rechecks_the_prepared_semantic_snapshot() {
     assert!(error.to_string().contains("expected_session_version"));
     assert_eq!(store.canonical_operations().unwrap(), before_settle);
     assert_eq!(
-        store.runtime_commands("space-test").unwrap()[0].status,
-        RuntimeCommandStatus::Accepted
+        store.runtime_commands("space-test").unwrap()[0].phase,
+        RuntimeCommandPhase::Prepared
     );
     fs::remove_dir_all(root).unwrap();
 }

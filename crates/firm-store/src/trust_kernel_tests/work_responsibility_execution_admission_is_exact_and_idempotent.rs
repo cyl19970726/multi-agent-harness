@@ -1345,7 +1345,7 @@ fn membership_work_binding_authorizes_message_and_result_without_accepting_work(
                 accepted_message_command.projection.version,
             ),
             &message_command.id,
-            RuntimeCommandStatus::Applied,
+            RuntimeCommandPhase::Settled,
             RuntimeEffectCertainty::Applied,
             Some(serde_json::json!({"message_id": "message-post-submit-owner"})),
             None,

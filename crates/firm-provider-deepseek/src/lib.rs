@@ -1127,14 +1127,7 @@ impl RuntimeAdapter for DeepSeekTeamRuntime {
         fence: RuntimeBindingFence,
         request: ControlRequest,
     ) -> Result<EffectReceipt, RuntimeContractError> {
-        let capability = match &request.intent {
-            ControlIntent::StartCycle { .. } => SemanticCapability::StartCycle,
-            ControlIntent::InjectCurrentCycle { .. } => SemanticCapability::InjectCurrentCycle,
-            ControlIntent::QueueNativeBoundary { .. } => SemanticCapability::QueueNativeBoundary,
-            ControlIntent::Interrupt => SemanticCapability::Interrupt,
-            ControlIntent::InhibitContinuation { .. } => SemanticCapability::InhibitContinuation,
-            ControlIntent::ResumeContinuation { .. } => SemanticCapability::ResumeContinuation,
-        };
+        let capability = request.intent.capability();
         let admission = self.contract_preflight(fence, capability)?;
         self.canonical_quiesced = false;
         match request.intent {

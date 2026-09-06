@@ -109,7 +109,7 @@ fn runtime_command_effect_matrix_is_exactly_replayable_and_fingerprint_closed() 
                 "t-accepted",
             )
             .unwrap();
-        assert_eq!(accepted.projection.status, RuntimeCommandStatus::Accepted);
+        assert_eq!(accepted.projection.phase, RuntimeCommandPhase::Prepared);
 
         let operations_after_accept = store.canonical_operations().unwrap();
         let accepted_replay = store
@@ -144,14 +144,14 @@ fn runtime_command_effect_matrix_is_exactly_replayable_and_fingerprint_closed() 
                     accepted.projection.version,
                 ),
                 &command_id,
-                RuntimeCommandStatus::Applied,
+                RuntimeCommandPhase::Settled,
                 RuntimeEffectCertainty::Applied,
                 Some(serde_json::json!({"operation": operation, "applied": true})),
                 None,
                 "t-applied",
             )
             .unwrap();
-        assert_eq!(settled.projection.status, RuntimeCommandStatus::Applied);
+        assert_eq!(settled.projection.phase, RuntimeCommandPhase::Settled);
         let operations_after_settle = store.canonical_operations().unwrap();
         let terminal_replay = store
             .prepare_runtime_command(
@@ -163,8 +163,8 @@ fn runtime_command_effect_matrix_is_exactly_replayable_and_fingerprint_closed() 
             .unwrap();
         assert!(terminal_replay.replayed, "{operation} terminal replay");
         assert_eq!(
-            terminal_replay.projection.status,
-            RuntimeCommandStatus::Applied
+            terminal_replay.projection.phase,
+            RuntimeCommandPhase::Settled
         );
         assert_eq!(
             store.canonical_operations().unwrap(),

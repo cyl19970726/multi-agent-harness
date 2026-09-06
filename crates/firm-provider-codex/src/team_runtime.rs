@@ -1117,14 +1117,7 @@ impl<'a, B: CodexAppServerBridge> harness_runtime_contract::RuntimeAdapter
         fence: RuntimeBindingFence,
         request: ControlRequest,
     ) -> Result<EffectReceipt, RuntimeContractError> {
-        let capability = match &request.intent {
-            ControlIntent::StartCycle { .. } => SemanticCapability::StartCycle,
-            ControlIntent::InjectCurrentCycle { .. } => SemanticCapability::InjectCurrentCycle,
-            ControlIntent::QueueNativeBoundary { .. } => SemanticCapability::QueueNativeBoundary,
-            ControlIntent::Interrupt => SemanticCapability::Interrupt,
-            ControlIntent::InhibitContinuation { .. } => SemanticCapability::InhibitContinuation,
-            ControlIntent::ResumeContinuation { .. } => SemanticCapability::ResumeContinuation,
-        };
+        let capability = request.intent.capability();
         let admission = self.preflight(fence, capability)?;
         self.canonical_quiesced = false;
         let (certainty, postcondition, evidence) = match request.intent {
