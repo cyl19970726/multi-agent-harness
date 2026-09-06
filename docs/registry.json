@@ -3391,7 +3391,7 @@
         "multi-team daemon control socket protocol"
       ],
       "dependsOn": [
-        "crates/firm-cli/src/supervisor_daemon.rs",
+        "crates/firm-node-daemon/src/supervisor_daemon.rs",
         "docs/current/architecture/cli-map.md",
         "docs/decisions/0025-agent-team-run-control-plane.md"
       ],
@@ -3401,7 +3401,7 @@
       ],
       "reviewAfter": "2026-09-08",
       "lastVerifiedWith": [
-        "crates/firm-cli/src/supervisor_daemon.rs"
+        "crates/firm-node-daemon/src/supervisor_daemon.rs"
       ],
       "reorgTrigger": "supervisor_daemon.rs multi-team 引擎、control socket 协议或 daemon CLI 入口接线发生变化",
       "authorityClass": "implementation_reference",
@@ -3409,7 +3409,7 @@
       "truthRefs": [
         {
           "kind": "api",
-          "ref": "crates/firm-cli/src/supervisor_daemon.rs"
+          "ref": "crates/firm-node-daemon/src/supervisor_daemon.rs"
         },
         {
           "kind": "test",

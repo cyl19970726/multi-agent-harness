@@ -17,9 +17,9 @@ use std::{
     path::Path,
     sync::{atomic::AtomicBool, Arc, Mutex},
 };
-pub(crate) type NativeSessionWakeSink = Arc<dyn Fn(NativeSessionWakeUpdate) + Send + Sync>;
+pub type NativeSessionWakeSink = Arc<dyn Fn(NativeSessionWakeUpdate) + Send + Sync>;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub(crate) struct ProviderPermissionMapping {
+pub struct ProviderPermissionMapping {
     pub provider: String,
     pub requested: PermissionCeiling,
     pub effective: PermissionCeiling,
@@ -27,14 +27,14 @@ pub(crate) struct ProviderPermissionMapping {
     pub native_approval: String,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-pub(crate) struct NodeSessionCapabilities {
+pub struct NodeSessionCapabilities {
     pub start: bool,
     pub resume: bool,
     pub cancel_turn: bool,
     pub stop: bool,
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum TeamRunDriveOutcome {
+pub enum TeamRunDriveOutcome {
     /// The TeamRun left `Running`, or its canonical TeamRun/MemberRun/Work/
     /// Message/RuntimeCommand state changed under this generation. A later
     /// adoption would start from a different canonical state.
@@ -50,7 +50,7 @@ pub(crate) enum TeamRunDriveOutcome {
 }
 
 /// Exactly one owner; consuming drive retains the original registration's Drop path.
-pub(crate) trait PreparedRun: Send {
+pub trait PreparedRun: Send {
     fn drive(
         self: Box<Self>,
         space: ExecutionSpace,
@@ -60,25 +60,27 @@ pub(crate) trait PreparedRun: Send {
         serving_status: Arc<Mutex<String>>,
     ) -> DaemonResult<TeamRunDriveOutcome>;
 }
-pub(crate) struct PreparedDaemonRun {
-    pub(crate) handle: Box<dyn PreparedRun>,
-    pub(crate) project_binding_id: String,
-    pub(crate) daemon_generation: u64,
-    pub(crate) supervisor_id: String,
-    pub(crate) supervisor_generation: u64,
-    pub(crate) heartbeat_valid: Arc<AtomicBool>,
+pub struct PreparedDaemonRun {
+    pub handle: Box<dyn PreparedRun>,
+    pub project_binding_id: String,
+    pub daemon_generation: u64,
+    pub supervisor_id: String,
+    pub supervisor_generation: u64,
+    pub heartbeat_valid: Arc<AtomicBool>,
 }
-pub(crate) trait NodeSessionHandle: Send {
+pub trait NodeSessionHandle: Send {
     fn provider(&self) -> &'static str;
     fn native_session_id(&self) -> &str;
 }
-pub(crate) struct OpenedSession {
-    pub(crate) runtime: Box<dyn NodeSessionHandle>,
-    pub(crate) native_session_ref: NativeSessionRef,
-    pub(crate) permission_mapping: ProviderPermissionMapping,
+pub struct OpenedSession {
+    pub runtime: Box<dyn NodeSessionHandle>,
+    pub native_session_ref: NativeSessionRef,
+    pub permission_mapping: ProviderPermissionMapping,
 }
 #[allow(clippy::too_many_arguments)]
-pub(crate) trait DaemonApplicationPort: Send + Sync {
+pub trait DaemonApplicationPort: Send + Sync {
+    /// Existing immutable Message transfer digest, composed by the application.
+    fn message_body_digest(&self, body: &str) -> String;
     fn prepare_team_run(
         &self,
         store: &HarnessStore,

@@ -2,16 +2,16 @@
 //! (#704, #671) and for keeping the control lane answerable while a finished
 //! Supervisor is reaped (#671).
 
-use super::team_supervision::ADOPTION_START_ATTEMPTS;
 use super::tests::TestTree;
 use super::*;
+use harness_node_daemon::test_support::adoption_start_attempts;
 
 pub(super) struct AdoptionFixture {
     _tree: TestTree,
     pub(super) execution_space_id: String,
     pub(super) store: HarnessStore,
     pub(super) run_id: String,
-    pub(super) daemon: MultiTeamDaemon,
+    pub(super) daemon: TestDaemon,
 }
 
 /// The unit-test AgentTeam fixture that `create_team_run` bootstraps binds
@@ -70,32 +70,21 @@ pub(super) fn adoption_fixture(label: &str) -> AdoptionFixture {
     )
     .expect("create adoption TeamRun");
 
-    let daemon = MultiTeamDaemon {
+    let daemon = TestDaemon::new(TestDaemonConfig {
         firm_home,
         node_id: "11111111-1111-4111-8111-111111111119".into(),
         daemon_id: "node-daemon:11111111-1111-4111-8111-111111111119".into(),
         instance_id: "adoption-instance".into(),
-        contexts: Mutex::new(Vec::new()),
-        supervisor_start_gate: Mutex::new(()),
-        session_runtimes: Mutex::new(HashMap::new()),
+        contexts: Vec::new(),
         application: Arc::new(DaemonApplication),
-        native_session_wake_endpoint: Arc::new(Mutex::new(HashMap::new())),
         max_concurrency: 1,
         input_acceptance_secs: 1,
         scan_interval: Duration::from_secs(1),
         stop_requested: Arc::new(AtomicBool::new(false)),
         authority_shutdown: Arc::new(AtomicBool::new(false)),
-        authority_lost: AtomicBool::new(false),
-        machine_authority_loss: Mutex::new(None),
-        confirmed_node_leases: Mutex::new(HashMap::new()),
-        control_worker_failed: AtomicBool::new(false),
-        recovery_blocked_runs: Mutex::new(HashMap::new()),
-        settling_runs: Mutex::new(HashSet::new()),
-        capacity_waits: Mutex::new(HashMap::new()),
         lease_ttl_override_ms: None,
-        deferred_stop_responses: Mutex::new(Vec::new()),
         drain_timeout_override_ms: None,
-    };
+    });
 
     AdoptionFixture {
         _tree: tree,
@@ -328,12 +317,12 @@ fn status_remains_responsive_while_reap_joins_a_finished_supervisor() {
         std::thread::yield_now();
     }
 
-    let daemon = MultiTeamDaemon {
+    let daemon = TestDaemon::new(TestDaemonConfig {
         firm_home,
         node_id: "reap-node".into(),
         daemon_id: "node-daemon:reap-node".into(),
         instance_id: "reap-instance".into(),
-        contexts: Mutex::new(vec![MultiTeamContext {
+        contexts: vec![OwnedTestContext::new(TestContextConfig {
             execution_space_id: "reap-space".into(),
             project_binding_id: "reap-project".into(),
             run_id: "reap-run".into(),
@@ -344,27 +333,16 @@ fn status_remains_responsive_while_reap_joins_a_finished_supervisor() {
             serving_status: Arc::new(Mutex::new("running".into())),
             thread: Some(finished),
             started_at: Instant::now(),
-        }]),
-        supervisor_start_gate: Mutex::new(()),
-        session_runtimes: Mutex::new(HashMap::new()),
+        })],
         application: Arc::new(DaemonApplication),
-        native_session_wake_endpoint: Arc::new(Mutex::new(HashMap::new())),
         max_concurrency: 1,
         input_acceptance_secs: 1,
         scan_interval: Duration::from_secs(60),
         stop_requested: Arc::new(AtomicBool::new(false)),
         authority_shutdown: Arc::new(AtomicBool::new(false)),
-        authority_lost: AtomicBool::new(false),
-        machine_authority_loss: Mutex::new(None),
-        confirmed_node_leases: Mutex::new(HashMap::new()),
-        control_worker_failed: AtomicBool::new(false),
-        recovery_blocked_runs: Mutex::new(HashMap::new()),
-        settling_runs: Mutex::new(HashSet::new()),
-        capacity_waits: Mutex::new(HashMap::new()),
         lease_ttl_override_ms: None,
-        deferred_stop_responses: Mutex::new(Vec::new()),
         drain_timeout_override_ms: None,
-    };
+    });
 
     std::thread::scope(|scope| {
         let reaper = scope.spawn(|| daemon.reap_finished());
@@ -460,19 +438,17 @@ fn at_capacity_adoption_is_attempted_once_per_scan_tick_not_once_per_pass() {
     let mut fixture = adoption_fixture("adoption-at-capacity");
     // The unit-test AgentTeam fixture places its run on this canonical Node,
     // already enrolled and project-registered in the adoption Store.
-    fixture.daemon.node_id = "00000000-0000-4000-8000-000000000001".to_string();
-    fixture.daemon.daemon_id = format!("node-daemon:{}", fixture.daemon.node_id);
+    fixture
+        .daemon
+        .set_node_identity("00000000-0000-4000-8000-000000000001".to_string());
     // Long enough that every pass below falls inside one scan tick.
-    fixture.daemon.scan_interval = Duration::from_secs(600);
+    fixture.daemon.set_scan_interval(Duration::from_secs(600));
     fixture.advance_team_run_status(harness_core::TeamRunStatus::Running);
 
     // Fill the daemon's one concurrency slot with an unrelated managed run.
     fixture
         .daemon
-        .contexts
-        .lock()
-        .expect("lock managed contexts")
-        .push(MultiTeamContext {
+        .push_context(OwnedTestContext::new(TestContextConfig {
             execution_space_id: fixture.execution_space_id.clone(),
             project_binding_id: "unit-test-project".to_string(),
             run_id: "team-run-occupying-the-only-slot".to_string(),
@@ -483,9 +459,9 @@ fn at_capacity_adoption_is_attempted_once_per_scan_tick_not_once_per_pass() {
             serving_status: Arc::new(Mutex::new("running".to_string())),
             thread: None,
             started_at: Instant::now(),
-        });
+        }));
 
-    let before = ADOPTION_START_ATTEMPTS.load(Ordering::Relaxed);
+    let before = adoption_start_attempts();
     for pass in 0..PASSES {
         fixture
             .daemon
@@ -493,29 +469,24 @@ fn at_capacity_adoption_is_attempted_once_per_scan_tick_not_once_per_pass() {
             .unwrap_or_else(|error| panic!("discovery pass {pass} failed: {error}"));
     }
     assert_eq!(
-        ADOPTION_START_ATTEMPTS.load(Ordering::Relaxed) - before,
+        adoption_start_attempts() - before,
         1,
         "{PASSES} passes inside one scan tick must produce one adoption attempt, not one per pass"
     );
 
     // The refusal is recorded exactly once and is what `daemon status` reports
     // as `waiting_for_capacity`.
-    let waits = fixture
+    let wait = fixture
         .daemon
-        .capacity_waits
-        .lock()
-        .expect("lock capacity waits");
-    let wait = waits
-        .get(&(fixture.execution_space_id.clone(), fixture.run_id.clone()))
+        .capacity_wait(&fixture.execution_space_id, &fixture.run_id)
         .expect("the deferred run is recorded as waiting for capacity");
-    assert_eq!(waits.len(), 1);
+    assert_eq!(fixture.daemon.capacity_wait_count(), 1);
     assert_eq!(wait.occupancy, 1);
     assert!(
         wait.detail.starts_with(AT_CAPACITY_REFUSAL),
         "the record carries the refusal verbatim: {}",
         wait.detail
     );
-    drop(waits);
     assert!(
         fixture
             .daemon
@@ -526,12 +497,7 @@ fn at_capacity_adoption_is_attempted_once_per_scan_tick_not_once_per_pass() {
     // A freed slot ends the deferral immediately, long before the scan
     // interval elapses. The retry itself is left to the daemon's own loop:
     // adopting here would start a real provider runtime.
-    fixture
-        .daemon
-        .contexts
-        .lock()
-        .expect("lock managed contexts")
-        .clear();
+    fixture.daemon.clear_contexts();
     assert!(
         !fixture
             .daemon

@@ -58,11 +58,11 @@ mod codex_app_server;
 mod codex_team_runtime;
 mod collaboration;
 mod daemon_application;
-mod daemon_application_port;
+use harness_node_daemon::daemon_application_port;
 mod daemon_client;
-mod daemon_error;
-mod daemon_protocol;
-mod daemon_support;
+use harness_node_daemon::daemon_error;
+use harness_node_daemon::daemon_protocol;
+use harness_node_daemon::daemon_support;
 mod deepseek_team_runtime;
 mod execution_space;
 mod execution_space_commands;
@@ -88,7 +88,7 @@ mod runtime_composition;
 mod sse;
 mod store_resolution;
 #[cfg(unix)]
-mod supervisor_daemon;
+use harness_node_daemon as supervisor_daemon;
 use harness_runtime_supervisor::wake as supervisor_wake;
 mod work_action_service;
 
@@ -165,9 +165,8 @@ use provider_admission_retry::*;
 use runtime_composition::*;
 #[path = "main_modules/runtime_effects.rs"]
 mod runtime_effects;
+use harness_node_daemon::lease_renewal_diagnostics;
 use runtime_effects::*;
-#[path = "main_modules/lease_renewal_diagnostics.rs"]
-mod lease_renewal_diagnostics;
 #[path = "main_modules/supervisor_control.rs"]
 mod supervisor_control;
 use supervisor_control::*;
@@ -184,11 +183,9 @@ use member_lifecycle::*;
 mod member_admission_drive;
 #[path = "main_modules/member_orchestration.rs"]
 mod member_orchestration;
-#[path = "main_modules/scan_diagnostics.rs"]
-mod scan_diagnostics;
+use harness_node_daemon::scan_diagnostics;
+use harness_node_daemon::start_failure_classification;
 use member_admission_drive::*;
-#[path = "main_modules/start_failure_classification.rs"]
-mod start_failure_classification;
 
 #[path = "main_modules/completed_run_members.rs"]
 mod completed_run_members;
@@ -722,3 +719,6 @@ mod sse_tests;
 #[cfg(test)]
 #[path = "main_tests/team_run_recover.rs"]
 mod tests_team_run_recover;
+
+#[cfg(all(test, unix))]
+mod daemon_integration_tests;

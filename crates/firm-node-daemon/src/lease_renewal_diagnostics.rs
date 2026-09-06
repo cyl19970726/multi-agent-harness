@@ -8,7 +8,7 @@ fn entries() -> &'static Mutex<BTreeMap<String, serde_json::Value>> {
     ENTRIES.get_or_init(Mutex::default)
 }
 
-pub(crate) fn record(id: &str, kind: &str, expires: u64, elapsed: Duration, error: Option<&str>) {
+pub fn record(id: &str, kind: &str, expires: u64, elapsed: Duration, error: Option<&str>) {
     let mut entries = entries().lock().unwrap_or_else(|error| error.into_inner());
     let previous = entries.get(id);
     let failure_count = previous
@@ -26,12 +26,12 @@ pub(crate) fn record(id: &str, kind: &str, expires: u64, elapsed: Duration, erro
             "id": id, "kind": kind, "confirmed_expires_unix_ms": expires,
             "attempt_elapsed_ms": elapsed.as_millis(), "failure_count": failure_count,
             "last_error": last_error, "retrying": error.is_some(),
-            "observed_unix_ms": crate::current_unix_ms_u64(),
+            "observed_unix_ms": crate::daemon_support::current_unix_ms_u64(),
         }),
     );
 }
 
-pub(crate) fn snapshot() -> Vec<serde_json::Value> {
+pub fn snapshot() -> Vec<serde_json::Value> {
     entries()
         .lock()
         .unwrap_or_else(|error| error.into_inner())

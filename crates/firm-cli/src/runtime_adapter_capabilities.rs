@@ -80,7 +80,7 @@ pub(crate) fn preflight_profile_effect(
 pub(crate) fn pi_tools_allowlist_for_ceiling(
     ceiling: PermissionCeiling,
 ) -> CliResult<Option<&'static str>> {
-    Ok(harness_provider_pi::tools_allowlist_for_ceiling(ceiling)?)
+    harness_provider_pi::tools_allowlist_for_ceiling(ceiling).map_err(crate::pi_rpc::provider_error)
 }
 
 /// The enforcement-locus claim matching `pi_tools_allowlist_for_ceiling`.
@@ -122,7 +122,8 @@ pub(crate) fn admit_pi_permission_ceiling(
     ceiling: PermissionCeiling,
     compiled_tools: Option<&str>,
 ) -> CliResult<harness_core::SecurityEnforcementLocus> {
-    harness_provider_pi::admit_permission_ceiling(ceiling, compiled_tools)?;
+    harness_provider_pi::admit_permission_ceiling(ceiling, compiled_tools)
+        .map_err(crate::pi_rpc::provider_error)?;
     Ok(pi_security_enforcement_locus(ceiling))
 }
 

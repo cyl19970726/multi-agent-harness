@@ -37,6 +37,9 @@ impl PreparedRun for CliPreparedRun {
 pub(crate) struct DaemonApplication;
 
 impl DaemonApplicationPort for DaemonApplication {
+    fn message_body_digest(&self, body: &str) -> String {
+        format!("sha256:{}", harness_fabric::sha256_hex(body.as_bytes()))
+    }
     #[allow(clippy::too_many_arguments)]
     fn prepare_team_run(
         &self,

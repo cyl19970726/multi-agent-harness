@@ -71,7 +71,7 @@ function rustTree(paths, transform = (path) => readFileSync(path, "utf8")) {
       return;
     }
     const name = basename(path);
-    if (path.endsWith(".rs") && name !== "tests.rs" && !name.includes("_tests")) files.push(path);
+    if (path.endsWith(".rs") && name !== "tests.rs" && path !== "crates/firm-node-daemon/src/supervisor_daemon/test_support.rs" && !name.includes("_tests")) files.push(path);
   };
   for (const path of paths) visit(path);
   return files.map((path) => transform(path)).join("\n");
@@ -114,8 +114,8 @@ const store = rustTree([
 ]);
 const storeProduction = productionRustTree(["crates/firm-store/src"]);
 const daemon = productionRustTree([
-  "crates/firm-cli/src/supervisor_daemon.rs",
-  "crates/firm-cli/src/supervisor_daemon",
+  "crates/firm-node-daemon/src/supervisor_daemon.rs",
+  "crates/firm-node-daemon/src/supervisor_daemon",
 ]);
 // S7a keeps clients and application composition outside the daemon owner.
 const daemonClientPath = "crates/firm-cli/src/daemon_client.rs";
@@ -123,10 +123,10 @@ const daemonClient = productionRust(daemonClientPath);
 const daemonSeamPaths = [
   daemonClientPath,
   "crates/firm-cli/src/daemon_application.rs",
-  "crates/firm-cli/src/daemon_application_port.rs",
-  "crates/firm-cli/src/daemon_error.rs",
-  "crates/firm-cli/src/daemon_protocol.rs",
-  "crates/firm-cli/src/daemon_support.rs",
+  "crates/firm-node-daemon/src/daemon_application_port.rs",
+  "crates/firm-node-daemon/src/daemon_error.rs",
+  "crates/firm-node-daemon/src/daemon_protocol.rs",
+  "crates/firm-node-daemon/src/daemon_support.rs",
 ];
 const server = productionRustTree([
   "crates/firm-cli/src/main.rs",
@@ -230,7 +230,7 @@ if (!storeProduction.includes("resolve_runtime_command_recovery")) {
 
 const activeRuntimeSources = [
   ["CLI command surface", server],
-  ["NodeDaemon", productionRust("crates/firm-cli/src/supervisor_daemon.rs")],
+  ["NodeDaemon", productionRust("crates/firm-node-daemon/src/supervisor_daemon.rs")],
   ...daemonSeamPaths.map((path) => [path, productionRust(path)]),
   ["Store runtime authority", storeProduction],
   ["core runtime contracts", core],
@@ -313,7 +313,7 @@ const retiredWave4AMessageTokens = [
 for (const path of [
   "crates/firm-store/src/trust_kernel.rs",
   "crates/firm-cli/src/main.rs",
-  "crates/firm-cli/src/supervisor_daemon.rs",
+  "crates/firm-node-daemon/src/supervisor_daemon.rs",
   ...daemonSeamPaths,
 ]) {
   const text = productionRust(path);
@@ -489,7 +489,7 @@ for (const [label, text] of activeRuntimeSources) {
 // are stripped before this production audit.
 for (const path of [
   "crates/firm-cli/src/main.rs",
-  "crates/firm-cli/src/supervisor_daemon.rs",
+  "crates/firm-node-daemon/src/supervisor_daemon.rs",
   "crates/firm-cli/src/fabric_runtime.rs",
   "crates/firm-cli/src/role_actions_api.rs",
   "crates/firm-cli/src/role_views_api.rs",

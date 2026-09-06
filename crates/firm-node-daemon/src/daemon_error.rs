@@ -3,7 +3,7 @@
 use thiserror::Error;
 
 #[derive(Debug, Error)]
-pub(crate) enum DaemonError {
+pub enum DaemonError {
     #[error(transparent)]
     ProviderProcessAdmissionClosed(#[from] harness_runtime_host::ProcessGroupRegistrationError),
     #[error("{0}")]
@@ -26,18 +26,18 @@ pub(crate) enum DaemonError {
     Json(#[from] serde_json::Error),
 }
 
-pub(crate) type DaemonResult<T> = Result<T, DaemonError>;
+pub type DaemonResult<T> = Result<T, DaemonError>;
 
 impl DaemonError {
-    pub(crate) fn is_supervisor_lease_lost(&self) -> bool {
+    pub fn is_supervisor_lease_lost(&self) -> bool {
         matches!(self, Self::SupervisorLeaseLost(_))
     }
 
-    pub(crate) fn is_provider_process_admission_closed(&self) -> bool {
+    pub fn is_provider_process_admission_closed(&self) -> bool {
         matches!(self, Self::ProviderProcessAdmissionClosed(_))
     }
 
-    pub(crate) fn is_provider_compatibility_blocked(&self) -> bool {
+    pub fn is_provider_compatibility_blocked(&self) -> bool {
         matches!(self, Self::Usage(message) if message.starts_with("PROVIDER_COMPATIBILITY_BLOCKED:"))
     }
 }

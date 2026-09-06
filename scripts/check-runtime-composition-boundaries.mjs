@@ -360,7 +360,7 @@ for (const forbidden of ["fn generic_command", "match action {"]) {
 
 const sourcePaths = execFileSync(
   "git",
-  ["ls-files", "-co", "--exclude-standard", "crates/firm-cli/src"],
+  ["ls-files", "-co", "--exclude-standard", "crates/firm-cli/src", "crates/firm-node-daemon/src"],
   { cwd: root },
 )
   .toString("utf8")
@@ -368,11 +368,11 @@ const sourcePaths = execFileSync(
   .split("\n")
   .filter((path) => path.endsWith(".rs") && existsSync(resolve(root, path)));
 
-const daemonRootPath = "crates/firm-cli/src/supervisor_daemon.rs";
+const daemonRootPath = "crates/firm-node-daemon/src/supervisor_daemon.rs";
 const machineAuthorityPath =
-  "crates/firm-cli/src/supervisor_daemon/machine_authority.rs";
+  "crates/firm-node-daemon/src/supervisor_daemon/machine_authority.rs";
 const teamSupervisionPath =
-  "crates/firm-cli/src/supervisor_daemon/team_supervision.rs";
+  "crates/firm-node-daemon/src/supervisor_daemon/team_supervision.rs";
 const daemonRoot = read(daemonRootPath);
 for (const moduleName of [
   "control_protocol",
@@ -394,6 +394,8 @@ const isTestRustPath = (path) => {
   return (
     segments.includes("tests") ||
     segments.includes("main_tests") ||
+    segments.includes("daemon_integration_tests") ||
+    path === "crates/firm-node-daemon/src/supervisor_daemon/test_support.rs" ||
     basename === "tests.rs" ||
     basename === "main_tests.rs" ||
     basename.endsWith("_tests.rs")

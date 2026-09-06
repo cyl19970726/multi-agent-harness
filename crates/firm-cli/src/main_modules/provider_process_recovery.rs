@@ -384,29 +384,29 @@ mod tests {
                 reap_timed_out: false,
             };
         let errors = vec![
-            CliError::from(
+            crate::codex_app_server::provider_error(
                 harness_provider_codex::CodexError::ProcessGroupAdmissionClosed(
                     admission_closed.clone(),
                 ),
             ),
-            CliError::from(
+            crate::claude_team_runtime::provider_error(
                 harness_provider_claude::ClaudeError::ProcessGroupAdmissionClosed(
                     admission_closed.clone(),
                 ),
             ),
-            CliError::from(
+            crate::kimi_acp::provider_error(
                 harness_provider_kimi::KimiError::ProcessGroupAdmissionClosed(
                     admission_closed.clone(),
                 ),
             ),
-            CliError::from(
+            crate::deepseek_team_runtime::provider_error(
                 harness_provider_deepseek::DeepSeekError::ProcessGroupAdmissionClosed(
                     admission_closed.clone(),
                 ),
             ),
-            CliError::from(harness_provider_pi::PiError::ProcessGroupAdmissionClosed(
-                admission_closed,
-            )),
+            crate::pi_rpc::provider_error(
+                harness_provider_pi::PiError::ProcessGroupAdmissionClosed(admission_closed),
+            ),
         ];
         let not_applied = harness_application::ProviderEffectOutcome::NotApplied {
             reason: "provider process was rejected before effect".into(),

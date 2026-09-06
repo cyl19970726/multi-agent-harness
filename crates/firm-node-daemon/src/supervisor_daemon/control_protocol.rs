@@ -265,7 +265,7 @@ impl MultiTeamDaemon {
 
         let cmd_name = cmd["cmd"].as_str().unwrap_or("");
         match cmd_name {
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             "test_block" => {
                 let delay_ms = cmd["delay_ms"].as_u64().unwrap_or(250).min(2_000);
                 std::thread::sleep(Duration::from_millis(delay_ms));
@@ -274,7 +274,7 @@ impl MultiTeamDaemon {
                     &serde_json::json!({"ok": true, "delay_ms": delay_ms}),
                 )?;
             }
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             "test_fail" => {
                 return Err(CliError::Usage(
                     "TEST_ACCEPTED_CONTROL_FAILURE: simulated unresolved accepted command".into(),
@@ -525,10 +525,7 @@ impl MultiTeamDaemon {
                                 // exact Message body bytes. Hashing a wrapper
                                 // JSON object here makes a valid source-authored
                                 // Message unverifiable on the target Node.
-                                let body_digest = format!(
-                                    "sha256:{}",
-                                    harness_fabric::sha256_hex(draft.body.as_bytes())
-                                );
+                                let body_digest = self.application.message_body_digest(&draft.body);
                                 let fingerprint = harness_store::canonical_json_fingerprint(
                                     &serde_json::json!({
                                         "sender_actor_ref": envelope.authenticated_actor,

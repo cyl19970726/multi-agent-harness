@@ -5,18 +5,16 @@
 
 pub(crate) use harness_provider_pi::{PiRpcClient, PiSpawnOptions};
 
-impl From<harness_provider_pi::PiError> for crate::CliError {
-    fn from(error: harness_provider_pi::PiError) -> Self {
-        match error {
-            harness_provider_pi::PiError::ProcessGroupAdmissionClosed(error) => {
-                crate::CliError::ProviderProcessAdmissionClosed(error)
-            }
-            harness_provider_pi::PiError::Callback {
-                detail,
-                supervisor_lease_lost: true,
-            } => crate::CliError::SupervisorLeaseLost(detail),
-            other => crate::CliError::Usage(other.to_string()),
+pub(crate) fn provider_error(error: harness_provider_pi::PiError) -> crate::CliError {
+    match error {
+        harness_provider_pi::PiError::ProcessGroupAdmissionClosed(error) => {
+            crate::CliError::ProviderProcessAdmissionClosed(error)
         }
+        harness_provider_pi::PiError::Callback {
+            detail,
+            supervisor_lease_lost: true,
+        } => crate::CliError::SupervisorLeaseLost(detail),
+        other => crate::CliError::Usage(other.to_string()),
     }
 }
 mod team_runtime;

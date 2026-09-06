@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum PersistedSessionReadMode {
+pub enum PersistedSessionReadMode {
     Snapshot,
     Older,
     After,
@@ -14,14 +14,14 @@ pub(crate) enum PersistedSessionReadMode {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct PersistedSessionCursor {
+pub struct PersistedSessionCursor {
     pub source_generation: String,
     pub ordering_key: PersistedOrderingKey,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct PersistedSessionViewer {
+pub struct PersistedSessionViewer {
     pub actor: ActorRef,
     #[serde(default)]
     pub authority_actors: Vec<ActorRef>,
@@ -33,7 +33,7 @@ pub(crate) struct PersistedSessionViewer {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct PersistedSessionReadRequest {
+pub struct PersistedSessionReadRequest {
     pub execution_space_id: String,
     pub project_binding_id: String,
     pub team_id: String,
@@ -54,7 +54,7 @@ pub(crate) struct PersistedSessionReadRequest {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct PersistedSessionReadResponse {
+pub struct PersistedSessionReadResponse {
     pub schema_version: String,
     pub native_source_ref: String,
     pub source_generation: String,
@@ -68,7 +68,7 @@ pub(crate) struct PersistedSessionReadResponse {
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "reason", rename_all = "snake_case", deny_unknown_fields)]
-pub(crate) enum NativeSessionWakeUpdate {
+pub enum NativeSessionWakeUpdate {
     MayHaveAdvanced {
         team_run_id: String,
         agent_member_id: String,
@@ -84,20 +84,20 @@ pub(crate) enum NativeSessionWakeUpdate {
 }
 
 #[derive(Clone)]
-pub(crate) struct NativeSessionWakeEndpoint {
-    pub(crate) authority: String,
-    pub(crate) token: String,
-    pub(crate) serve_instance_id: String,
+pub struct NativeSessionWakeEndpoint {
+    pub authority: String,
+    pub token: String,
+    pub serve_instance_id: String,
 }
 
 #[derive(Debug)]
-pub(crate) enum NativeSessionWakePostError {
+pub enum NativeSessionWakePostError {
     Unavailable(std::io::Error),
     Rejected(String),
 }
 
 impl NativeSessionWakePostError {
-    pub(crate) fn clears_registered_endpoint(&self) -> bool {
+    pub fn clears_registered_endpoint(&self) -> bool {
         matches!(self, Self::Unavailable(_))
     }
 }
@@ -119,7 +119,7 @@ impl From<std::io::Error> for NativeSessionWakePostError {
     }
 }
 
-pub(crate) const AT_CAPACITY_REFUSAL: &str = "NodeDaemon at capacity";
+pub const AT_CAPACITY_REFUSAL: &str = "NodeDaemon at capacity";
 
 #[cfg(test)]
 mod tests {
