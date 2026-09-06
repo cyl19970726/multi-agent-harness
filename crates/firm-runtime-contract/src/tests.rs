@@ -466,6 +466,7 @@ impl RuntimeAdapter for DeepSeekShapedAdapter {
 
 fn start_request() -> ControlRequest {
     ControlRequest {
+        timeouts: CycleTimeouts::default(),
         effect_id: "effect-1".to_string(),
         intent: ControlIntent::StartCycle {
             input: "implement the change".to_string(),
@@ -581,6 +582,7 @@ fn stale_revision_driver_composition_and_capability_have_zero_effect() {
             }
         }
         let request = ControlRequest {
+            timeouts: CycleTimeouts::default(),
             effect_id: "continuation-effect".to_string(),
             intent: ControlIntent::ResumeContinuation { expected },
         };
@@ -710,6 +712,7 @@ fn composable_shim_exercises_the_complete_operational_contract() {
             .execute_control(
                 fence_view(&durable_binding),
                 ControlRequest {
+                    timeouts: CycleTimeouts::default(),
                     effect_id: format!("effect-{index}"),
                     intent,
                 },

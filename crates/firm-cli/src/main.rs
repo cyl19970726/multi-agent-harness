@@ -82,7 +82,7 @@ mod sse;
 mod store_resolution;
 #[cfg(unix)]
 mod supervisor_daemon;
-mod supervisor_wake;
+use harness_runtime_supervisor::wake as supervisor_wake;
 mod work_action_service;
 
 #[path = "main_modules/http_protocol.rs"]

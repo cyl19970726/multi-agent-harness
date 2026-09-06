@@ -205,6 +205,7 @@ pub(super) enum MemberControlCommand {
 pub(super) enum IdleMemberWake {
     Work(Box<ClaimedWork>),
     ActiveWorkContinuation(Box<Work>),
+    Acceptance(harness_core::work_acceptance::AcceptanceWake),
     Messages {
         messages: Vec<TeamMessageProjection>,
         host_attentions: Vec<HostAttention>,

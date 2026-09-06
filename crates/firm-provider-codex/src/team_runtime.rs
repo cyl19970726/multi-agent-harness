@@ -1126,7 +1126,7 @@ impl<'a, B: CodexAppServerBridge> harness_runtime_contract::RuntimeAdapter
                 let outcome = TeamRuntimeAdapter::run_cycle(
                     self,
                     &input,
-                    CycleTimeouts::with_input_acceptance(Duration::from_secs(30 * 60)),
+                    request.timeouts,
                     &mut |receipt| {
                         accepted = receipt.response_id.clone();
                         Ok(())

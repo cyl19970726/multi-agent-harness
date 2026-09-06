@@ -468,6 +468,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "thiserror 1.0.69",
+ "time",
 ]
 
 [[package]]
@@ -594,6 +595,9 @@ dependencies = [
 [[package]]
 name = "firm-runtime-supervisor"
 version = "0.1.0"
+dependencies = [
+ "firm-core",
+]
 
 [[package]]
 name = "firm-store"

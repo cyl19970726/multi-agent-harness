@@ -235,6 +235,68 @@ fn supervisor_claims_and_records_provider_receipt_for_canonical_work_delivery() 
         preserved_delivery.provider_receipt_id.as_deref(),
         Some("provider-work-receipt")
     );
+    let host_context = |id: &str| WorkCommandContext {
+        event_id: id.into(),
+        performed_by_actor: compatibility_team_actor("host", "test"),
+        authority_actor: None,
+        causation_ref: None,
+        idempotency_key: id.into(),
+        created_at: "unix-ms:6".into(),
+        duplicate_ok: false,
+    };
+    let standing = store
+        .insert_work(
+            CurrentWorkDraft::new(
+                "standing-acceptance-wake".into(),
+                created.team_run.id.clone(),
+                created.team_run.agent_team_id.clone(),
+                "Standing Work".into(),
+                "Wait for own result acceptance".into(),
+                "Reconsider blocker".into(),
+                WorkClaimMode::HostAssign,
+                WorkPriority::Normal,
+                compatibility_team_actor("host", "test"),
+                "unix-ms:6".into(),
+            )
+            .into_work(),
+            host_context("standing-create"),
+        )
+        .unwrap();
+    let standing = store
+        .assign_work_to_membership(
+            &standing.id,
+            standing.version,
+            &membership.id,
+            "unit-test-space",
+            host_context("standing-assign"),
+        )
+        .unwrap();
+    let standing_claim = claim_canonical_work_for_member(&ledger, &member)
+        .unwrap()
+        .unwrap();
+    assert_eq!(standing_claim.work.id, standing.id);
+    ledger
+        .complete_work_delivery(&standing_claim, "standing-receipt")
+        .unwrap();
+    let standing = store
+        .start_work(
+            &standing.id,
+            standing.version,
+            &member.id,
+            WorkCommandContext {
+                performed_by_actor: compatibility_team_actor(&member.id, "test"),
+                ..host_context("standing-start")
+            },
+        )
+        .unwrap();
+    let standing = store
+        .block_work_as_host(
+            &standing.id,
+            standing.version,
+            "waiting for acceptance",
+            host_context("standing-block"),
+        )
+        .unwrap();
     let accepted = store
         .accept_trust_work(
             &harness_core::agentfirm_api::MutationContext {
@@ -257,6 +319,58 @@ fn supervisor_claims_and_records_provider_receipt_for_canonical_work_delivery() 
         )
         .expect("Host acceptance remains independent from provider receipt and Result");
     assert_eq!(accepted.projection.phase, WorkPhase::Closed);
+    let before_run = latest_team_run(&store, &created.team_run.id).unwrap();
+    let mut running = before_run.clone();
+    running.status = TeamRunStatus::Running;
+    store
+        .compare_and_append_team_run_lifecycle(&before_run, &running)
+        .unwrap();
+    bind_team_runtime_supervisor(
+        &store,
+        &PreparedTeamRunBody {
+            run_id: running.id.clone(),
+            objective: running.objective.clone(),
+            run: running,
+            members: created.member_runs.clone(),
+        },
+        &lease.execution_space_id,
+        &lease.node_daemon_id,
+        &lease.supervisor_id,
+        lease.generation,
+    )
+    .unwrap();
+    let mut idle_member = ledger.latest_member_run(&member.id).unwrap().unwrap();
+    let before_member = idle_member.clone();
+    idle_member.status = MemberRunStatus::Idle;
+    store
+        .compare_and_append_member_run(&before_member, &idle_member)
+        .unwrap();
+    let (_sender, controls) = std::sync::mpsc::channel();
+    let mut backoff = supervisor_wake::WakeBackoff::new();
+    let wake = poll_idle_member_wake(
+        &ledger,
+        &mut idle_member,
+        &controls,
+        &mut || Ok(()),
+        0,
+        None,
+        &supervisor_wake::WakePolicy::default(),
+        &mut backoff,
+    )
+    .unwrap();
+    assert!(
+        matches!(wake, IdleWakeStep::Ready(IdleMemberWake::Acceptance(ref wake))
+        if wake.accepted_work_id == submitted.id && wake.blocked_work_ids.as_slice() == std::slice::from_ref(&standing.id))
+    );
+    assert_eq!(
+        store
+            .latest_works()
+            .unwrap()
+            .into_iter()
+            .find(|w| w.id == standing.id)
+            .unwrap(),
+        standing
+    );
 
     let next_work = store
         .insert_work(

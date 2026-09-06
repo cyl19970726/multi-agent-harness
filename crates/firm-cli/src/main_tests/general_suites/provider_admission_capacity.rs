@@ -44,3 +44,20 @@ mod provider_version_drift_requires_adapter_review;
 mod recorded_provider_errors_expire_with_the_capacity_ttl;
 #[path = "../general/runtime_context_reports_proxy_routing_without_its_credentials.rs"]
 mod runtime_context_reports_proxy_routing_without_its_credentials;
+
+#[test]
+fn recover_classifier_and_wake_loop_read_one_threshold() {
+    // #795 item 2: the `team-run recover` blocked-member classifier
+    // (drain_lane_resume.rs) and the wake loop policy construction
+    // (runtime_adapter.rs) must never drift apart; both read the
+    // threshold through supervisor_wake::effective_wake_policy(). The shipped value is
+    // pinned so a silent change fails here.
+    assert_eq!(
+        crate::drain_lane_resume::zero_output_degradation_threshold(),
+        supervisor_wake::effective_wake_policy().zero_output_degradation_threshold
+    );
+    assert_eq!(
+        supervisor_wake::effective_wake_policy().zero_output_degradation_threshold,
+        3
+    );
+}

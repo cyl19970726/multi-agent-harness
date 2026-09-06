@@ -32,6 +32,7 @@ for (const provider of providerCrates) {
 const runtimeContractRoot = "crates/firm-runtime-contract/src";
 const runtimeContractLib = `${runtimeContractRoot}/lib.rs`;
 const runtimeContractModules = new Map([
+  ["timeouts", ["struct CycleTimeouts"]],
   ["cycle", [
     "struct CycleRuntimeObservation",
     "struct ControlTransportReceipt",
@@ -42,7 +43,6 @@ const runtimeContractModules = new Map([
     "struct SteerRequest",
     "struct CycleControl",
     "trait TeamRuntimeAdapter",
-    "struct CycleTimeouts",
     "enum InterruptCause",
     "enum CycleTerminalStatus",
     "enum CycleInterruptSettlement",
@@ -324,11 +324,12 @@ const itemOwner = new Map([
   ...privateItemOwner,
 ]);
 const allowedModuleEdges = new Map([
+  ["timeouts", new Set()],
   ["collaboration_capability", new Set()],
   ["conformance", new Set(["control", "provider_capabilities", "receipt_and_terminal"])],
-  ["control", new Set(["conformance", "provider_capabilities"])],
-  ["cycle", new Set(["conformance", "control", "provider_capabilities", "receipt_and_terminal"])],
-  ["cycle_assertions", new Set(["cycle", "receipt_and_terminal"])],
+  ["control", new Set(["conformance", "provider_capabilities", "timeouts"])],
+  ["cycle", new Set(["conformance", "control", "provider_capabilities", "receipt_and_terminal", "timeouts"])],
+  ["cycle_assertions", new Set(["cycle", "receipt_and_terminal", "timeouts"])],
   ["provider_capabilities", new Set(["conformance"])],
   ["receipt_and_terminal", new Set(["conformance"])],
 ]);

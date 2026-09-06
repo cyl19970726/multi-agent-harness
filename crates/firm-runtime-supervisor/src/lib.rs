@@ -5,6 +5,9 @@
 //! Message, Store, RuntimeCommand, and provider effects without taking
 //! ownership of loop order.
 
+pub mod policy;
+pub mod wake;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SupervisorWake<C, T> {
     Cycle(C),

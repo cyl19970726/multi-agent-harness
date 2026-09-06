@@ -121,4 +121,6 @@ impl ControlIntent {
 pub struct ControlRequest {
     pub effect_id: String,
     pub intent: ControlIntent,
+    /// Caller-selected budgets; adapters never choose cycle policy.
+    pub timeouts: crate::CycleTimeouts,
 }

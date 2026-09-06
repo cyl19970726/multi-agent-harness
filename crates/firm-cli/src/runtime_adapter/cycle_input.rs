@@ -7,6 +7,8 @@ use super::*;
 /// One cycle's input, projected from an idle wake.
 pub(super) struct CycleInput {
     pub(super) prompt: String,
+    /// Stable acceptance event reference; unlike ordinary input, it spans rounds.
+    pub(super) acceptance_source: Option<String>,
     pub(super) active_work: Option<ClaimedWork>,
     pub(super) accepted_messages: Vec<TeamMessageProjection>,
     pub(super) host_attentions: Vec<HostAttention>,
@@ -38,6 +40,7 @@ fn idle_wake_into_cycle<A: TeamRuntimeAdapter<Error = CliError>>(
             let prompt = work_contract_prompt(objective, member_row, &claimed.work, &envelope);
             Ok(Ok(CycleInput {
                 prompt,
+                acceptance_source: None,
                 active_work: Some(*claimed),
                 accepted_messages: Vec::new(),
                 host_attentions: Vec::new(),
@@ -57,12 +60,24 @@ fn idle_wake_into_cycle<A: TeamRuntimeAdapter<Error = CliError>>(
             let prompt = active_work_continuation_prompt(objective, member_row, &work, &envelope);
             Ok(Ok(CycleInput {
                 prompt,
+                acceptance_source: None,
                 active_work: None,
                 accepted_messages: Vec::new(),
                 host_attentions: Vec::new(),
                 consumed_work_version: Some(consumed),
             }))
         }
+        IdleMemberWake::Acceptance(wake) => Ok(Ok(CycleInput {
+            prompt: format!(
+                "WORK ACCEPTANCE: Work {} was accepted (event {}). Reconsider your blocked Work(s): {}. Read their current state and check whether the blocker is resolved. If appropriate, explicitly resume through the ordinary Work API. This notification does not resume Work, grant ownership, or require a new report. If the blocker remains, leave the Work blocked.",
+                wake.accepted_work_id, wake.acceptance_event_id, wake.blocked_work_ids.join(", "),
+            ),
+            acceptance_source: Some(wake.source_record_id()),
+            active_work: None,
+            accepted_messages: Vec::new(),
+            host_attentions: Vec::new(),
+            consumed_work_version: None,
+        })),
         IdleMemberWake::Messages {
             messages,
             host_attentions,
@@ -89,6 +104,7 @@ fn idle_wake_into_cycle<A: TeamRuntimeAdapter<Error = CliError>>(
             }
             Ok(Ok(CycleInput {
                 prompt,
+                acceptance_source: None,
                 active_work: None,
                 accepted_messages: messages,
                 host_attentions,
@@ -111,6 +127,7 @@ fn idle_wake_into_cycle<A: TeamRuntimeAdapter<Error = CliError>>(
             }
             Ok(Ok(CycleInput {
                 prompt,
+                acceptance_source: None,
                 active_work: None,
                 accepted_messages: Vec::new(),
                 host_attentions: attentions,
