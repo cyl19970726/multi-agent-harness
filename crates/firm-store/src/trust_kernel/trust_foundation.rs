@@ -639,6 +639,14 @@ impl HarnessStore {
             // append-style crash and is intentionally ignored above.
             envelopes.push(serde_json::from_slice(row)?);
         }
+        self.record_jsonl_read(
+            TRUST_OPERATIONS_LEDGER,
+            bytes.len() as u64,
+            bytes.len() as u64,
+            durable_len as u64,
+            envelopes.len() as u64,
+            "full_history",
+        );
         Ok(envelopes)
     }
 
@@ -674,8 +682,8 @@ impl HarnessStore {
 
     pub fn canonical_execution_space_ids(&self) -> StoreResult<Vec<String>> {
         Ok(self
-            .trust_operation_envelopes_unlocked()?
-            .into_iter()
+            .cached_latest_trust_envelopes()?
+            .into_values()
             .map(|envelope| envelope.execution_space_id)
             .collect::<BTreeSet<_>>()
             .into_iter()
@@ -778,13 +786,35 @@ impl HarnessStore {
         Ok(revisions)
     }
 
+    pub(super) fn cached_latest_trust_envelopes(
+        &self,
+    ) -> StoreResult<BTreeMap<String, TrustOperationEnvelope>> {
+        // A fresh descriptor stamp is checked on every call, including calls
+        // already holding the writer lock. Atomic trust commits replace the
+        // inode, so their next read rebuilds before returning any projection.
+        self.cached_latest_jsonl(
+            TRUST_OPERATIONS_LEDGER,
+            true,
+            |e: &TrustOperationEnvelope| {
+                serde_json::to_string(&(
+                    &e.execution_space_id,
+                    &e.operation.event.aggregate_kind,
+                    &e.operation.event.aggregate_id,
+                ))
+                .expect("string tuple serializes")
+            },
+            |_| Ok(()),
+        )
+    }
+
     pub(super) fn latest_trust_envelopes_unlocked(
         &self,
         execution_space_id: &str,
         aggregate_kind: &str,
     ) -> StoreResult<BTreeMap<String, TrustOperationEnvelope>> {
+        let envelopes = self.cached_latest_trust_envelopes()?;
         let mut latest = BTreeMap::new();
-        for envelope in self.trust_operation_envelopes_unlocked()? {
+        for envelope in envelopes.into_values() {
             if envelope.execution_space_id == execution_space_id
                 && envelope.operation.event.aggregate_kind == aggregate_kind
             {

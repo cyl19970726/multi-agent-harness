@@ -170,19 +170,16 @@ impl HarnessStore {
         execution_space_id: &str,
         member_ids: &std::collections::HashSet<String>,
     ) -> StoreResult<Vec<AgentSession>> {
-        let mut latest = BTreeMap::new();
-        for envelope in self.trust_operation_envelopes_unlocked()? {
-            let event = &envelope.operation.event;
-            if envelope.execution_space_id == execution_space_id
-                && event.aggregate_kind == "agent_session"
-                && envelope.operation.resulting_projection["agent_member_id"]
+        let latest = self.latest_trust_envelopes_unlocked(execution_space_id, "agent_session")?;
+        latest
+            .values()
+            .filter(|envelope| {
+                envelope.operation.resulting_projection["agent_member_id"]
                     .as_str()
                     .is_some_and(|id| member_ids.contains(id))
-            {
-                latest.insert(event.aggregate_id.clone(), envelope);
-            }
-        }
-        latest.values().map(event_projection).collect()
+            })
+            .map(event_projection)
+            .collect()
     }
 
     pub fn create_agent_session(

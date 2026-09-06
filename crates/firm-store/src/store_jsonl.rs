@@ -91,6 +91,14 @@ impl HarnessStore {
             }
             values.push(serde_json::from_str(&line)?);
         }
+        self.record_jsonl_read(
+            file_name,
+            len,
+            len - start + u64::from(start > 0),
+            len - start,
+            values.len() as u64,
+            "tail_window",
+        );
         Ok(values)
     }
 
@@ -314,8 +322,10 @@ impl HarnessStore {
         const INCOMPLETE_ROW_RETRY: Duration = Duration::from_secs(1);
         const INCOMPLETE_ROW_POLL: Duration = Duration::from_millis(5);
         let deadline = Instant::now() + INCOMPLETE_ROW_RETRY;
+        let mut bytes_read = 0;
         let snapshot = loop {
             let bytes = fs::read(&path)?;
+            bytes_read += bytes.len() as u64;
             if bytes.is_empty() || bytes.ends_with(b"\n") || Instant::now() >= deadline {
                 break bytes;
             }
@@ -329,6 +339,14 @@ impl HarnessStore {
             }
             values.push(serde_json::from_slice(line)?);
         }
+        self.record_jsonl_read(
+            file_name,
+            snapshot.len() as u64,
+            bytes_read,
+            snapshot.len() as u64,
+            values.len() as u64,
+            "full_history",
+        );
         Ok(values)
     }
 }

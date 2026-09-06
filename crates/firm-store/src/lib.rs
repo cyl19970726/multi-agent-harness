@@ -368,6 +368,7 @@ pub struct HarnessStore {
     root: PathBuf,
     provider_compatibility_scope: Option<(String, String)>,
     process_write_lock: Arc<ProcessWriteLock>,
+    read_cache: Arc<Mutex<store_read_cache::StoreReadCache>>,
 }
 
 mod store_current_work_delivery;
@@ -379,7 +380,9 @@ mod store_node_runtime;
 mod store_node_runtime_predecessor;
 pub use store_node_runtime_predecessor::NodeDaemonPredecessorRecovery;
 mod store_node_runtime_shutdown;
+mod store_read_cache;
 mod store_read_models;
+pub use store_read_cache::StoreReadScanMetric;
 mod store_store_base;
 mod store_team_admission;
 mod store_team_journal;

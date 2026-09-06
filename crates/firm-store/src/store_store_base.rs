@@ -5,6 +5,7 @@ impl HarnessStore {
         let root = root.into();
         Self {
             process_write_lock: process_write_lock_for(&root),
+            read_cache: Arc::new(Mutex::new(Default::default())),
             root,
             provider_compatibility_scope: None,
         }

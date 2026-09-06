@@ -215,6 +215,26 @@ impl HarnessStore {
         self.read_jsonl("workflow_artifact_manifests.jsonl")
     }
 
+    /// Latest observation only; history and mutation readers retain fresh reads.
+    pub fn latest_team_runs(&self) -> StoreResult<Vec<AgentTeamRun>> {
+        self.cached_latest_jsonl_in_append_order(
+            "team_runs.jsonl",
+            |r: &AgentTeamRun| r.id.clone(),
+            |_| Ok(()),
+        )
+    }
+
+    pub fn latest_member_runs(&self) -> StoreResult<Vec<ProviderRuntimeProjection>> {
+        self.cached_latest_jsonl_in_append_order(
+            "member_runs.jsonl",
+            |r: &ProviderRuntimeProjection| r.id.clone(),
+            |r| {
+                r.validate()
+                    .map_err(|e| StoreError::Conflict(e.to_string()))
+            },
+        )
+    }
+
     pub fn team_runs(&self) -> StoreResult<Vec<AgentTeamRun>> {
         self.read_jsonl("team_runs.jsonl")
     }
