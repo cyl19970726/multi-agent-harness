@@ -103,6 +103,8 @@ impl CompletedRunServingIdler {
         run_id: &str,
         idle_completed_serving: bool,
     ) -> CliResult<ServingObservation> {
+        let _scan =
+            crate::scan_diagnostics::ScanObservation::begin(format!("supervisor:{run_id}"), store);
         let watermark = served_ledger_watermark(store);
         if idle_completed_serving && self.watermark.as_ref() == Some(&watermark) {
             return Ok(ServingObservation::Unchanged);

@@ -14,7 +14,7 @@ impl HarnessStore {
         member_ids: &std::collections::HashSet<String>,
     ) -> StoreResult<Vec<AgentMember>> {
         let mut latest = BTreeMap::new();
-        for envelope in self.trust_operation_envelopes_unlocked()? {
+        for envelope in self.cached_latest_trust_envelopes_for_kind("agent_member")? {
             let event = &envelope.operation.event;
             if envelope.execution_space_id == execution_space_id
                 && event.aggregate_kind == "agent_member"
@@ -31,7 +31,7 @@ impl HarnessStore {
     /// only the physical store and must not resurrect a second identity ledger.
     pub fn all_trust_agent_members(&self) -> StoreResult<Vec<AgentMember>> {
         let mut latest = BTreeMap::new();
-        for envelope in self.trust_operation_envelopes_unlocked()? {
+        for envelope in self.cached_latest_trust_envelopes_for_kind("agent_member")? {
             if envelope.operation.event.aggregate_kind == "agent_member" {
                 latest.insert(
                     (
@@ -167,7 +167,7 @@ impl HarnessStore {
         team_run_id: &str,
     ) -> StoreResult<Vec<MemberRun>> {
         let mut latest = BTreeMap::new();
-        for envelope in self.trust_operation_envelopes_unlocked()? {
+        for envelope in self.cached_latest_trust_envelopes_for_kind("member_run")? {
             let event = &envelope.operation.event;
             if envelope.execution_space_id == execution_space_id
                 && event.aggregate_kind == "member_run"
@@ -185,7 +185,7 @@ impl HarnessStore {
         member_run_ids: &std::collections::BTreeSet<String>,
     ) -> StoreResult<Vec<(String, MemberRun)>> {
         let mut latest = BTreeMap::new();
-        for envelope in self.trust_operation_envelopes_unlocked()? {
+        for envelope in self.cached_latest_trust_envelopes_for_kind("member_run")? {
             let event = &envelope.operation.event;
             if event.aggregate_kind == "member_run" && member_run_ids.contains(&event.aggregate_id)
             {
@@ -545,6 +545,8 @@ impl HarnessStore {
         &self,
         prepared: PreparedCurrentMemberSync,
     ) -> StoreResult<CanonicalMutationResult<MemberRun>> {
+        let member_id = prepared.projection.id.clone();
+        let generation = prepared.projection.runtime_generation;
         self.commit_trust_projection_unlocked(
             &prepared.context,
             "member_run",
@@ -555,6 +557,20 @@ impl HarnessStore {
             prepared.side_records,
             Vec::new(),
         )
+        .map_err(|error| self.member_dual_ledger_commit_error(&member_id, generation, error))
+    }
+
+    fn member_dual_ledger_commit_error(
+        &self,
+        member_id: &str,
+        generation: u64,
+        error: StoreError,
+    ) -> StoreError {
+        StoreError::Conflict(format!(
+            "MEMBER_RUN_DUAL_LEDGER_COMMIT_INCOMPLETE: member_run_id={member_id} runtime_generation={generation}; runtime projection append completed; canonical settlement unknown; compare {} and {} before retry (mismatch remains fail-closed; no automatic repair): {error}",
+            self.root.join("member_runs.jsonl").display(),
+            self.root.join(TRUST_OPERATIONS_LEDGER).display(),
+        ))
     }
 
     /// Explicit reconstruction seam for Legacy/import tests. Current Team
@@ -899,7 +915,10 @@ impl HarnessStore {
     /// write. They are not backed by a cross-file crash journal; a storage
     /// failure between the Legacy JSONL append and canonical atomic replace is
     /// therefore detected as an incomplete current TeamRun on restart and
-    /// fails closed rather than being silently repaired.
+    /// fails closed rather than being silently repaired. A returned second-write
+    /// failure names MEMBER_RUN_DUAL_LEDGER_COMMIT_INCOMPLETE and both physical
+    /// records; it reports unknown settlement, since rename may have completed
+    /// before a later fsync failed. This diagnostic is not a recovery journal.
     pub fn compare_and_advance_member_run_generation(
         &self,
         expected: &ProviderRuntimeProjection,
@@ -1173,7 +1192,10 @@ impl HarnessStore {
             &canonical,
             Vec::new(),
             Vec::new(),
-        )?;
+        )
+        .map_err(|error| {
+            self.member_dual_ledger_commit_error(&next.id, next.runtime_generation, error)
+        })?;
         Ok(())
     }
 

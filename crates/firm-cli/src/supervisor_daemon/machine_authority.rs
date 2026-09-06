@@ -127,7 +127,17 @@ impl MultiTeamDaemon {
         Ok(spaces
             .into_iter()
             .map(|space| {
-                let store = HarnessStore::new(space.store_root.clone());
+                // The held lease already owns a long-lived Store handle.
+                // Reuse only its disposable read cache, never its lease as an
+                // authorization decision. Root changes still get a fresh handle.
+                let store = self
+                    .confirmed_node_leases
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .get(&space.id)
+                    .filter(|(store, _)| store.root() == space.store_root.as_path())
+                    .map(|(store, _)| store.clone())
+                    .unwrap_or_else(|| HarnessStore::new(space.store_root.clone()));
                 (space, store)
             })
             .collect())

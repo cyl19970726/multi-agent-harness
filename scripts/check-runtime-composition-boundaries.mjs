@@ -648,7 +648,7 @@ for (const token of teamLifecycleTokens) {
 }
 
 const driveDefinitionPath =
-  "crates/firm-cli/src/main_modules/member_orchestration.rs";
+  "crates/firm-cli/src/main_modules/member_admission_drive.rs";
 const countOccurrences = (content, token) => content.split(token).length - 1;
 for (const path of productionRustPaths) {
   const count = countOccurrences(read(path), "drive_prepared_team_run(");

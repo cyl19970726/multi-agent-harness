@@ -451,3 +451,210 @@ fn completed_run_close_after_kill_requires_predecessor_recovery() {
         member,
     });
 }
+
+#[test]
+fn completed_never_started_member_closes_through_real_cli() {
+    let home = TempHome::new("completed-cold-close");
+    let fixture = bootstrap_runtime(&home, "project");
+    let fake_bin = fake_provider::install_kimi_acp_shim(home.base());
+    let fake_path = format!(
+        "{}:{}",
+        fake_bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let kimi_bin = fake_bin.join("kimi").display().to_string();
+    let provider_env = [
+        ("PATH".to_string(), fake_path),
+        ("KIMI_CODE_BIN".to_string(), kimi_bin),
+        ("FAKE_KIMI_VERSION".to_string(), "0.36.1".to_string()),
+    ];
+    let env_refs: Vec<(&str, &str)> = provider_env
+        .iter()
+        .map(|(key, value)| (key.as_str(), value.as_str()))
+        .collect();
+    let run_id = create_run(&home, &fixture, "cold-before-start", &env_refs);
+    let store = HarnessStore::new(home.spaces_dir().join(&fixture.execution_space_id));
+    let work = store
+        .latest_works()
+        .unwrap()
+        .into_iter()
+        .find(|work| work.team_run_id == run_id)
+        .unwrap();
+    let work_version = work.version.to_string();
+    let cancelled = run_firm_with_env(
+        &home,
+        &fixture.project_root,
+        &selected(
+            &fixture,
+            &[
+                "team-run",
+                "work",
+                "cancel",
+                "--work-id",
+                &work.id,
+                "--expected-version",
+                &work_version,
+                "--reason",
+                "fixture never starts provider work",
+            ],
+        ),
+        &env_refs,
+    );
+    success(&cancelled, "cancel fixture work before execution");
+    // Construct the actual pre-spawn window: admission has written Running,
+    // but no Supervisor/provider effect exists yet. Complete and Close then
+    // go through the real CLI against a fresh, isolated daemon.
+    let planning = store
+        .team_runs()
+        .unwrap()
+        .into_iter()
+        .rev()
+        .find(|run| run.id == run_id)
+        .unwrap();
+    let mut running = planning.clone();
+    running.status = TeamRunStatus::Running;
+    running.updated_at = "unix-ms:pre-spawn-admission".into();
+    store
+        .compare_and_append_team_run_lifecycle(&planning, &running)
+        .unwrap();
+    let completed = run_firm_with_env(
+        &home,
+        &fixture.project_root,
+        &selected(&fixture, &["team-run", "complete", "--id", &run_id]),
+        &env_refs,
+    );
+    success(&completed, "complete never-started run");
+    let socket = node_daemon_socket_path(&home, &fixture.node_id);
+    let mut daemon = spawn_daemon(&home, &fixture, &env_refs);
+    wait_for_socket(&mut daemon, &socket);
+    wait_for_completed_run_status(&socket, &run_id, 1);
+    let mut member = store
+        .member_runs()
+        .unwrap()
+        .into_iter()
+        .rev()
+        .find(|member| member.team_run_id == run_id && !member.is_external_interactive())
+        .unwrap();
+    assert!(member.native_session.is_none());
+    let queued = member.clone();
+    member.status = harness_core::MemberRunStatus::Blocked;
+    store
+        .compare_and_append_member_run(&queued, &member)
+        .unwrap();
+    // Reproduce the admission-to-provider-start gap through the canonical
+    // session writer; no provider runtime or command is invented by fixture.
+    let supervisor = store
+        .latest_team_supervisor_lease(&run_id)
+        .unwrap()
+        .unwrap();
+    use harness_core::agentfirm_api::{
+        ActorKind, ActorRef, AgentSession, AgentSessionControlState, AgentSessionStatus,
+        MutationContext, PermissionCeiling, RuntimeDriverRef,
+    };
+    let cold = AgentSession {
+        id: format!("cold-fixture:{}", member.agent_member_id),
+        agent_member_id: member.agent_member_id.clone(),
+        node_id: fixture.node_id.clone(),
+        execution_space_id: fixture.execution_space_id.clone(),
+        node_daemon_id: supervisor.node_daemon_id.clone(),
+        node_daemon_generation: supervisor.node_daemon_generation,
+        provider_kind: member.provider.clone(),
+        provider_profile_ref: "fixture-reviewed-profile".into(),
+        permission_envelope_ref: format!("agent-member:{}:permission", member.agent_member_id),
+        effective_permission_ceiling: PermissionCeiling::FullAccess,
+        workspace_cwd: Some(
+            std::fs::canonicalize(&fixture.project_root)
+                .unwrap()
+                .to_string_lossy()
+                .into_owned(),
+        ),
+        lifecycle: AgentSessionStatus::Cold,
+        runtime_generation: member.runtime_generation,
+        control_state: AgentSessionControlState {
+            runtime_residency: harness_core::agentfirm_api::RuntimeResidency::Detached,
+            activity: harness_core::agentfirm_api::RuntimeActivity::Idle,
+            driver_generation: 1,
+            driver_ref: RuntimeDriverRef::TeamSupervisor {
+                team_run_id: run_id.clone(),
+                team_supervisor_id: supervisor.supervisor_id.clone(),
+                team_supervisor_generation: supervisor.generation,
+            },
+            composition_fingerprint: member
+                .provider_profile
+                .as_ref()
+                .and_then(|profile| profile.composition_fingerprint.clone()),
+            capability_fingerprint: member
+                .provider_profile
+                .as_ref()
+                .and_then(|profile| profile.capability_fingerprint.clone()),
+            ..Default::default()
+        },
+        native_session_ref: None,
+        current_turn_id: None,
+        queued_input_count: 0,
+        version: 1,
+        opened_at: "unix-ms:cold-fixture".into(),
+        last_active_at: "unix-ms:cold-fixture".into(),
+        closed_at: None,
+    };
+    store
+        .create_agent_session(
+            &MutationContext {
+                execution_space_id: fixture.execution_space_id.clone(),
+                authenticated_actor: ActorRef {
+                    kind: ActorKind::Service,
+                    id: supervisor.node_daemon_id.clone(),
+                },
+                authority_actor: None,
+                command_name: "fixture.pre-spawn-session".into(),
+                idempotency_key: cold.id.clone(),
+                expected_version: 0,
+                request_fingerprint: None,
+            },
+            cold,
+        )
+        .expect("materialize never-started Cold fixture");
+    let sessions = store
+        .fabric_agent_sessions(&fixture.execution_space_id)
+        .unwrap();
+    let session = sessions
+        .iter()
+        .find(|session| session.agent_member_id == member.agent_member_id)
+        .unwrap();
+    assert_eq!(
+        session.lifecycle,
+        harness_core::agentfirm_api::AgentSessionStatus::Cold
+    );
+    let commands = store.runtime_commands(&fixture.execution_space_id).unwrap();
+    assert!(!commands
+        .iter()
+        .any(|command| command.target_session_id.as_deref() == Some(session.id.as_str())));
+    let closed = run_firm_with_env(
+        &home,
+        &fixture.project_root,
+        &selected(
+            &fixture,
+            &[
+                "team-run",
+                "close-member",
+                "--id",
+                &run_id,
+                "--member-run-id",
+                &member.id,
+                "--reason",
+                "never-started completed member",
+            ],
+        ),
+        &env_refs,
+    );
+    success(&closed, "real CLI Cold Close");
+    let report: serde_json::Value = serde_json::from_slice(&closed.stdout).unwrap();
+    assert_eq!(report["coordination_status"], "closed");
+    assert_eq!(report["runtime_effect"], "never_started");
+    assert_eq!(report["provider_close_receipt"], "not_fabricated");
+    assert_eq!(
+        store.runtime_commands(&fixture.execution_space_id).unwrap(),
+        commands
+    );
+    stop_daemon(&home, &fixture, &mut daemon, &socket);
+}

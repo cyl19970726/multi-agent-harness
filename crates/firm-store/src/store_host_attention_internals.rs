@@ -53,7 +53,7 @@ impl HarnessStore {
 
     pub(super) fn require_team_run_unlocked(&self, team_run_id: &str) -> StoreResult<AgentTeamRun> {
         latest_by_id(
-            self.read_jsonl::<AgentTeamRun>("team_runs.jsonl")?
+            self.latest_team_runs()?
                 .into_iter()
                 .filter(|run| run.id == team_run_id)
                 .collect(),
@@ -478,30 +478,25 @@ impl HarnessStore {
     pub(super) fn reconcile_work_host_attentions_unlocked(
         &self,
     ) -> StoreResult<Vec<HostAttention>> {
-        let operations = self.work_operations_unlocked()?;
+        let sources = self.current_work_sources()?;
         let mut projected = self.latest_host_attentions_unlocked()?;
         let mut reconciled = Vec::new();
-        for operation in &operations {
-            for attention in Self::downstream_host_attentions_for_work_operation(operation)? {
-                if let Some(existing) = projected.get(&attention.id) {
-                    if !Self::same_host_attention_fact(existing, &attention) {
-                        return Err(StoreError::Conflict(format!(
-                            "HostAttention id {} already names a different causal fact",
-                            attention.id
-                        )));
-                    }
-                    reconciled.push(existing.clone());
+        let attentions = sources
+            .attention_sources
+            .as_ref()
+            .map_err(|error| StoreError::Conflict(error.clone()))?;
+        for (downstream, attention) in attentions {
+            if *downstream {
+                if projected.contains_key(&attention.id) {
                     continue;
                 }
-                self.ensure_host_attention_unlocked(&attention)?;
+                self.ensure_host_attention_unlocked(attention)?;
                 projected.insert(attention.id.clone(), attention.clone());
-                reconciled.push(attention);
-            }
-            let Some(attention) = Self::host_attention_for_work_operation(operation) else {
+                reconciled.push(attention.clone());
                 continue;
-            };
+            }
             if let Some(existing) = projected.get(&attention.id) {
-                if !Self::same_host_attention_fact(existing, &attention) {
+                if !Self::same_host_attention_fact(existing, attention) {
                     return Err(StoreError::Conflict(format!(
                         "HostAttention id {} already names a different causal fact",
                         attention.id
@@ -517,9 +512,9 @@ impl HarnessStore {
             if let Some(member_run_id) = attention.member_run_id.as_deref() {
                 self.require_member_run_unlocked(member_run_id, &attention.team_run_id)?;
             }
-            self.append_jsonl_unlocked("host_attentions.jsonl", &attention)?;
+            self.append_jsonl_unlocked("host_attentions.jsonl", attention)?;
             projected.insert(attention.id.clone(), attention.clone());
-            reconciled.push(attention);
+            reconciled.push(attention.clone());
         }
         for attention in self.canonical_host_attention_outbox_unlocked()? {
             if let Some(existing) = projected.get(&attention.id) {
@@ -584,52 +579,7 @@ impl HarnessStore {
     pub(super) fn latest_host_attentions_unlocked(
         &self,
     ) -> StoreResult<std::collections::BTreeMap<String, HostAttention>> {
-        // Canonical operations own the immutable source fact, while
-        // host_attentions.jsonl owns the later delivery lifecycle projection.
-        // Fold source records first so Claimed/Delivered/Acknowledged rows are
-        // not reset to their initial Actionable state on every read.
-        let mut sources = std::collections::BTreeMap::new();
-        for execution_space_id in self.canonical_execution_space_ids()? {
-            for attention in self.trust_side_records::<HostAttention>(&execution_space_id)? {
-                let decision = firm_application::fold_host_attention_source(
-                    sources.get(&attention.id),
-                    &attention,
-                )
-                .map_err(|error| {
-                    StoreError::Conflict(format!(
-                        "HOST_ATTENTION_SOURCE_FACT_CONFLICT: canonical source {}: {error}",
-                        attention.id
-                    ))
-                })?;
-                if decision != firm_application::ProjectionFoldDecision::Replay {
-                    sources.insert(attention.id.clone(), attention);
-                }
-            }
-        }
-        let mut latest = sources;
-        for attention in self.read_jsonl::<HostAttention>("host_attentions.jsonl")? {
-            let decision = firm_application::fold_host_attention_lifecycle(
-                latest.get(&attention.id),
-                &attention,
-            )
-            .map_err(|error| {
-                let code = if error
-                    == firm_application::ProjectionFoldViolation::ImmutableIdentityConflict
-                {
-                    "HOST_ATTENTION_SOURCE_FACT_CONFLICT"
-                } else {
-                    "HOST_ATTENTION_LIFECYCLE_FOLD_CONFLICT"
-                };
-                StoreError::Conflict(format!(
-                    "{code}: lifecycle projection {}: {error}",
-                    attention.id
-                ))
-            })?;
-            if decision != firm_application::ProjectionFoldDecision::Replay {
-                latest.insert(attention.id.clone(), attention);
-            }
-        }
-        Ok(latest)
+        Ok((*self.current_host_attention_projection()?).clone())
     }
 
     pub(super) fn require_host_attention_unlocked(

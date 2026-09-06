@@ -1,10 +1,14 @@
 use super::*;
 
+pub(super) const MEMBER_RECOVERY_CLOSED: &str = "MEMBER_RECOVERY_CLOSED";
+
 /// Per-member recovery classification returned by the pure decision function.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub(super) enum MemberRecoveryPath {
-    /// Member is already active with a current supervisor lease.
+    /// Active coordination needs no reopen, regardless of supervisor presence.
     AlreadyActive,
+    /// Explicitly closed coordination requires reopen-member, never recovery.
+    Closed,
     /// The member is Blocked with no typed provenance, while its AgentSession
     /// lane already proves the runtime that blocked it is gone — detached,
     /// disarmed, at a terminal turn boundary, with no ambiguous RuntimeCommand.
@@ -14,11 +18,7 @@ pub(super) enum MemberRecoveryPath {
     /// The member is Blocked by a gate that owns its own recovery. Reported
     /// with the reason, never restarted here.
     BlockedByTypedProvenance { provenance: BlockedMemberProvenance },
-    /// Native session exists and supports resume — reopen the member.
-    ResumeCompatible,
-    /// Session is incompatible or missing — rebind Works to a new generation.
-    RebindIncompatible { reason: String },
-    /// Member is in a terminal state (retired/completed/failed).
+    /// Retired coordination is permanently terminal.
     Terminal { reason: String },
 }
 
@@ -35,10 +35,9 @@ impl MemberRecoveryPath {
     pub(super) fn label(&self) -> &'static str {
         match self {
             Self::AlreadyActive => "already_active",
+            Self::Closed => "closed",
             Self::RestartBlockedDetachedLane => "restart_blocked_detached_lane",
             Self::BlockedByTypedProvenance { .. } => "blocked_by_typed_provenance",
-            Self::ResumeCompatible => "resume_compatible",
-            Self::RebindIncompatible { .. } => "rebind_incompatible",
             Self::Terminal { .. } => "terminal",
         }
     }
@@ -54,9 +53,13 @@ impl MemberRecoveryPath {
 /// own predicate rather than a second definition of "dead runtime".
 pub(super) fn classify_member_recovery_path(
     member: &ProviderRuntimeProjection,
-    supervisor_current: bool,
+    _supervisor_current: bool,
     lane_proves_runtime_gone: bool,
 ) -> MemberRecoveryPath {
+    // Only explicit reopen-member may reactivate Closed coordination.
+    if member.coordination_status == MemberCoordinationStatus::Closed {
+        return MemberRecoveryPath::Closed;
+    }
     // Retired members are permanently dead.
     if member.coordination_is_retired() {
         return MemberRecoveryPath::Terminal {
@@ -87,89 +90,21 @@ pub(super) fn classify_member_recovery_path(
             return MemberRecoveryPath::RestartBlockedDetachedLane;
         }
     }
-    // Already active — running coordination, regardless of supervisor.
-    if member.coordination_is_active() {
-        return MemberRecoveryPath::AlreadyActive;
-    }
-    // Terminal runtime status without an active coordinator.
-    if matches!(
-        member.status,
-        MemberRunStatus::Completed | MemberRunStatus::Failed
-    ) && !supervisor_current
-    {
-        return MemberRecoveryPath::Terminal {
-            reason: format!(
-                "member is {} with no active supervisor",
-                serde_snake_label(&member.status)
-            ),
-        };
-    }
-    // Closed/stopped members need inspection.
-    if !member.coordination_is_active()
-        && matches!(
-            member.status,
-            MemberRunStatus::Stopped
-                | MemberRunStatus::Completed
-                | MemberRunStatus::Failed
-                | MemberRunStatus::Idle
-                | MemberRunStatus::Queued
-        )
-    {
-        // External interactive members are always resumable (even if Stopped).
-        if member.is_external_interactive() {
-            return MemberRecoveryPath::ResumeCompatible;
-        }
-        // Check native session resumability.
-        if let Some(native_session) = member.native_session.as_ref() {
-            if native_session.supports_resume
-                && !matches!(
-                    native_session.availability,
-                    harness_core::NativeSessionAvailability::Missing
-                        | harness_core::NativeSessionAvailability::Incompatible
-                )
-            {
-                // Also check provider profile.
-                if let Some(profile) = member.provider_profile.as_ref() {
-                    if profile.supports_resume {
-                        return MemberRecoveryPath::ResumeCompatible;
-                    }
-                }
-            }
-            return MemberRecoveryPath::RebindIncompatible {
-                reason: format!(
-                    "native session {} is not resumable (availability: {})",
-                    native_session.native_session_id,
-                    serde_snake_label(&native_session.availability)
-                ),
-            };
-        }
-        // No native session for a non-external member: if stopped, rebind; otherwise can resume.
-        if member.status == MemberRunStatus::Stopped {
-            return MemberRecoveryPath::RebindIncompatible {
-                reason: "no native session and member is stopped".to_string(),
-            };
-        }
-        return MemberRecoveryPath::ResumeCompatible;
-    }
-    MemberRecoveryPath::Terminal {
-        reason: format!(
-            "member status {} coordination {} not recoverable",
-            serde_snake_label(&member.status),
-            serde_snake_label(&member.coordination_status)
-        ),
-    }
+    // Closed and Retired were handled above. Active coordination does not
+    // become a Reopen merely because its Supervisor ended.
+    MemberRecoveryPath::AlreadyActive
 }
 
-/// Recover a team run without minting new ids: reconcile deliveries, reopen
-/// compatible sessions, rebind incompatible ones. Always reads current state
-/// first; never creates new TeamRun ids or Work ids.
+/// Inspect execution recovery and repair only a proven detached Blocked lane.
+/// Closed coordination belongs to explicit reopen-member; recovery neither
+/// probes providers nor mints a runtime generation for those members.
 pub(super) fn team_run_recover(
     store: &HarnessStore,
     team_run_id: &str,
     json: bool,
 ) -> CliResult<serde_json::Value> {
     let run = latest_team_run(store, team_run_id)?;
-    let mut members: Vec<ProviderRuntimeProjection> = latest_member_runs_in_append_order(store)?
+    let members: Vec<ProviderRuntimeProjection> = latest_member_runs_in_append_order(store)?
         .into_iter()
         .filter(|member| member.team_run_id == team_run_id)
         .collect();
@@ -211,55 +146,6 @@ pub(super) fn team_run_recover(
                 Err(error) => println!("mission log unavailable: {error}"),
             }
             println!();
-        }
-    }
-
-    // Recovery must not mutate a ProviderRuntimeProjection generation, reconcile a delivery,
-    // or rebound Work until every candidate that would reopen/rebind has an
-    // adapter-reviewed installed version. Historical native-session locators
-    // remain untouched even when this gate records a refreshed profile.
-    for member in &mut members {
-        let recoverable_candidate = !member.coordination_is_active()
-            && !member.coordination_is_retired()
-            && (matches!(
-                member.status,
-                MemberRunStatus::Stopped | MemberRunStatus::Idle | MemberRunStatus::Queued
-            ) || (supervisor_current
-                && matches!(
-                    member.status,
-                    MemberRunStatus::Completed | MemberRunStatus::Failed
-                )));
-        if !recoverable_candidate || member.is_external_interactive() {
-            continue;
-        }
-        let expected = member.clone();
-        let (mut profile, probe_error) = refreshed_team_member_provider_profile(member)?;
-        let permission_ceiling = store
-            .all_trust_agent_members()?
-            .into_iter()
-            .find(|candidate| candidate.id == member.agent_member_id)
-            .ok_or_else(|| {
-                CliError::Usage(format!(
-                    "AGENT_IDENTITY_NOT_FOUND: MemberRun {} references missing AgentMember {}",
-                    member.id, member.agent_member_id
-                ))
-            })?
-            .permission_ceiling;
-        let permission_ceiling =
-            effective_member_permission_ceiling(store, permission_ceiling, &run, member)?;
-        apply_permission_enforcement_to_profile(&mut profile, permission_ceiling)?;
-        let resolution = resolve_provider_compatibility(store, &profile, probe_error.as_deref())?;
-        let refusal = provider_compatibility_block_reason(
-            member,
-            &profile,
-            &resolution,
-            "recover, reopen, or rebound durable Work",
-        );
-        if apply_refreshed_provider_profile(member, profile) {
-            store_conflict_as_usage(store.compare_and_append_member_run(&expected, member))?;
-        }
-        if let Some(refusal) = refusal {
-            return Err(CliError::Usage(refusal));
         }
     }
 
@@ -393,8 +279,8 @@ pub(super) fn team_run_recover(
     let reconciled = 0_u64;
     let now_str = now_string();
 
-    // ── Phase 3: reopen compatible sessions ──────────────────────────
-    let mut reopened = 0u64;
+    // ── Phase 3: repair proven blocked lanes ──────────────────────────
+    let reopened = 0u64;
     let rebound = 0u64;
     let mut skipped = 0u64;
     let mut restarted = 0u64;
@@ -404,7 +290,7 @@ pub(super) fn team_run_recover(
     let ledger = TeamRunLedger::without_supervisor(store, team_run_id);
     for (member, path) in &recovery_plan {
         match path {
-            MemberRecoveryPath::AlreadyActive => {
+            MemberRecoveryPath::AlreadyActive | MemberRecoveryPath::Closed => {
                 skipped += 1;
             }
             // Reported, never repaired: the gate that wrote this block owns
@@ -438,91 +324,6 @@ pub(super) fn team_run_recover(
                     None => restarted += 1,
                     Some(entry) => blocked_lanes_not_proven.push(entry),
                 }
-            }
-            MemberRecoveryPath::ResumeCompatible => {
-                // Reopen the member using the existing reopen path.
-                let mut reopened_member = (*member).clone();
-                reopened_member.runtime_generation =
-                    reopened_member.runtime_generation.saturating_add(1);
-                reopened_member.started_at = now_str.clone();
-                reopened_member.coordination_status = MemberCoordinationStatus::Active;
-                reopened_member.status = if reopened_member.is_external_interactive() {
-                    MemberRunStatus::Idle
-                } else {
-                    MemberRunStatus::Queued
-                };
-                reopened_member.finished_at = None;
-                reopened_member.last_event_at = Some(now_str.clone());
-                store_conflict_as_usage(
-                    store.compare_and_advance_member_run_generation(member, &reopened_member),
-                )?;
-                ledger.append_action(
-                    &member.id,
-                    "recovered",
-                    MemberActionStatus::Succeeded,
-                    "member recovered and reopened",
-                    &format!(
-                        "host: recovered after supervisor death; runtime generation {}",
-                        reopened_member.runtime_generation
-                    ),
-                )?;
-                ledger.fold_event(
-                    TeamRunEventSourceKind::Host,
-                    Some(member.id.clone()),
-                    "member_run",
-                    &member.id,
-                    "recovered",
-                    &format!(
-                        "member {} recovered at runtime generation {}",
-                        member.name, reopened_member.runtime_generation
-                    ),
-                )?;
-                reopened += 1;
-            }
-            MemberRecoveryPath::RebindIncompatible { reason } => {
-                // Runtime recovery advances only the MemberRun generation.
-                // Work responsibility remains the stable AgentMember /
-                // TeamMembership; the scheduler later admits the new exact
-                // runtime through WorkExecutionBinding.
-                let mut recovered_member = (*member).clone();
-                recovered_member.runtime_generation =
-                    recovered_member.runtime_generation.saturating_add(1);
-                recovered_member.started_at = now_str.clone();
-                recovered_member.coordination_status = MemberCoordinationStatus::Active;
-                recovered_member.status = MemberRunStatus::Queued;
-                recovered_member.finished_at = None;
-                recovered_member.last_event_at = Some(now_str.clone());
-                store_conflict_as_usage(
-                    store.compare_and_advance_member_run_generation(member, &recovered_member),
-                )?;
-                ledger.append_action(
-                    &member.id,
-                    "recovered",
-                    MemberActionStatus::Succeeded,
-                    "member recovered with stable Work responsibility",
-                    &format!(
-                        "host: recovered after supervisor death; runtime generation {} ({reason})",
-                        recovered_member.runtime_generation
-                    ),
-                )?;
-                ledger.fold_event(
-                    TeamRunEventSourceKind::Host,
-                    Some(member.id.clone()),
-                    "member_run",
-                    &member.id,
-                    "recovered",
-                    &format!(
-                        "member {} recovered at runtime generation {} with stable Work responsibility",
-                        member.name, recovered_member.runtime_generation
-                    ),
-                )?;
-                if !json {
-                    println!(
-                        "  {} ({}): recovered generation without mutating Work responsibility ({})",
-                        member.name, member.provider, reason
-                    );
-                }
-                reopened += 1;
             }
             MemberRecoveryPath::Terminal { .. } => {
                 // Already checked above.
@@ -559,6 +360,13 @@ pub(super) fn team_run_recover(
         "supervisor_current": supervisor_current,
         "supervisor_diagnosis": supervisor_diagnosis,
         "members": members.len(),
+        "closed_members_not_restarted": recovery_plan.iter().filter(|(_, path)| *path == MemberRecoveryPath::Closed).map(|(member, _)| {
+            serde_json::json!({
+                "member_run_id": member.id,
+                "code": MEMBER_RECOVERY_CLOSED,
+                "reason": "Closed coordination is unchanged; only explicit reopen-member can reactivate it"
+            })
+        }).collect::<Vec<_>>(),
         "works_total": works.len(),
         "reconciled_deliveries": reconciled,
         "canonical_claimed_deliveries": canonical_claimed_deliveries,

@@ -40,22 +40,13 @@ impl HarnessStore {
         execution_space_id: &str,
         binding_id: &str,
     ) -> StoreResult<firm_core::agentfirm_api::RuntimeCommandBinding> {
-        let matches = self
-            .trust_operation_envelopes_unlocked()?
-            .into_iter()
-            .filter(|envelope| {
-                envelope.execution_space_id == execution_space_id
-                    && envelope.operation.event.aggregate_kind == "work_execution_binding"
-                    && envelope.operation.event.aggregate_id == binding_id
-                    && envelope.operation.event.transition == "bound"
-            })
-            .collect::<Vec<_>>();
+        let matches = self.cached_work_runtime_binding_sources(execution_space_id, binding_id)?;
         let [envelope] = matches.as_slice() else {
             return Err(StoreError::Conflict(format!(
                 "WORK_EXECUTION_RUNTIME_BINDING_NOT_PROVABLE: WorkExecutionBinding {binding_id} must have exactly one canonical bound source fact"
             )));
         };
-        serde_json::from_value(envelope.operation.event.payload["runtime_binding"].clone())
+        serde_json::from_value(envelope.clone())
             .map_err(|error| {
                 StoreError::Conflict(format!(
                     "WORK_EXECUTION_RUNTIME_BINDING_INVALID: WorkExecutionBinding {binding_id}: {error}"
@@ -67,30 +58,7 @@ impl HarnessStore {
         &self,
         execution_space_id: &str,
     ) -> StoreResult<Vec<WorkExecutionBinding>> {
-        let mut latest = BTreeMap::<String, WorkExecutionBinding>::new();
-        for envelope in self.trust_operation_envelopes_unlocked()? {
-            if envelope.execution_space_id != execution_space_id {
-                continue;
-            }
-            if envelope.operation.event.aggregate_kind == "work_execution_binding" {
-                let binding = event_projection::<WorkExecutionBinding>(&envelope)?;
-                latest.insert(binding.id.clone(), binding);
-            }
-            // StopSession atomically quiesces active Work bindings in the same
-            // RuntimeCommand operation. Side records are full resulting
-            // projections and participate in latest-version selection.
-            for record in envelope.operation.immutable_side_records {
-                if let Ok(binding) = serde_json::from_value::<WorkExecutionBinding>(record) {
-                    let replace = latest
-                        .get(&binding.id)
-                        .is_none_or(|current| binding.version > current.version);
-                    if replace {
-                        latest.insert(binding.id.clone(), binding);
-                    }
-                }
-            }
-        }
-        Ok(latest.into_values().collect())
+        self.cached_canonical_work_bindings(execution_space_id)
     }
 
     pub fn fabric_work_deliveries(
@@ -288,23 +256,7 @@ impl HarnessStore {
         &self,
         execution_space_id: &str,
     ) -> StoreResult<BTreeMap<String, CanonicalWorkDelivery>> {
-        let mut deliveries = BTreeMap::<String, CanonicalWorkDelivery>::new();
-        for delivery in self.trust_side_records::<CanonicalWorkDelivery>(execution_space_id)? {
-            let decision = firm_application::fold_canonical_work_delivery(
-                deliveries.get(&delivery.id),
-                &delivery,
-            )
-            .map_err(|error| {
-                StoreError::Conflict(format!(
-                    "CANONICAL_WORK_DELIVERY_FOLD_CONFLICT: delivery {}: {error}",
-                    delivery.id
-                ))
-            })?;
-            if decision != firm_application::ProjectionFoldDecision::Replay {
-                deliveries.insert(delivery.id.clone(), delivery);
-            }
-        }
-        Ok(deliveries)
+        self.cached_canonical_work_deliveries(execution_space_id)
     }
 
     pub fn provider_received_work_requires_host_reauthorization(

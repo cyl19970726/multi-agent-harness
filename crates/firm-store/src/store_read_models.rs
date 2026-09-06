@@ -629,10 +629,7 @@ impl HarnessStore {
         &self,
         team_run_id: &str,
     ) -> StoreResult<Option<TeamSupervisorLease>> {
-        Ok(latest_by_id(self.team_supervisor_leases()?, |lease| {
-            lease.team_run_id.clone()
-        })
-        .remove(team_run_id))
+        self.latest_lease_for_run_unlocked(team_run_id)
     }
 
     pub fn team_member_close_requests(&self) -> StoreResult<Vec<TeamMemberCloseRequest>> {
@@ -654,10 +651,15 @@ impl HarnessStore {
         &self,
         member_run_id: &str,
     ) -> StoreResult<Option<TeamMemberCloseRequest>> {
-        Ok(latest_by_id(self.team_member_close_requests()?, |request| {
-            request.member_run_id.clone()
-        })
-        .remove(member_run_id))
+        let current = self.cached_jsonl_source_fold(
+            "team_member_close_requests.jsonl",
+            false,
+            |rows: &mut std::collections::BTreeMap<String, TeamMemberCloseRequest>,
+             request: &TeamMemberCloseRequest| {
+                rows.insert(request.member_run_id.clone(), request.clone());
+            },
+        )?;
+        Ok(current.get(member_run_id).cloned())
     }
 
     pub fn member_actions(&self) -> StoreResult<Vec<MemberAction>> {

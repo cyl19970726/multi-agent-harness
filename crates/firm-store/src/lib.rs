@@ -392,6 +392,7 @@ pub use store_work_execution_recovery::{
     LostExecutionEvidence, LostWorkExecution, LostWorkExecutionScan, LostWorkExecutionScanError,
     WorkExecutionLoss,
 };
+mod store_current_read_model;
 mod store_work_graph;
 mod store_work_mutations;
 mod store_work_projection;

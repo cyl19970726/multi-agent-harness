@@ -950,6 +950,8 @@ mod fanout_is_atomic_and_creates_exactly_one_delivery_per_recipient;
 mod gates_require_exact_evaluation_or_authorized_waiver_and_reject_self_cycles;
 #[path = "member_execution_trust/idempotency_is_scoped_payload_exact_and_cas_protected.rs"]
 mod idempotency_is_scoped_payload_exact_and_cas_protected;
+#[path = "member_execution_trust/latest_cache_tracks_atomic_commits.rs"]
+mod latest_cache_tracks_atomic_commits;
 #[cfg(any())]
 #[path = "member_execution_trust/linked_team_messages_reject_unknown_and_cross_team_work_without_side_effects.rs"]
 mod linked_team_messages_reject_unknown_and_cross_team_work_without_side_effects;
@@ -972,5 +974,3 @@ mod workspace_binding_rejects_relative_and_parent_traversal_without_side_effects
 mod workspace_binding_requires_exact_member_run_and_project_placement;
 #[path = "member_execution_trust/workspace_transitions_reobserve_git_links_dirty_state_and_cleanup_safety.rs"]
 mod workspace_transitions_reobserve_git_links_dirty_state_and_cleanup_safety;
-#[path = "member_execution_trust/latest_cache_tracks_atomic_commits.rs"]
-mod latest_cache_tracks_atomic_commits;

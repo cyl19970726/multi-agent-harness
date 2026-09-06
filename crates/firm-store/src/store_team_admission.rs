@@ -257,6 +257,42 @@ impl HarnessStore {
                 expected_session.id
             )));
         }
+        // The receipt-free Cold exception closes only a never-started managed
+        // lane. Revalidate absence of every command (not merely ambiguous
+        // ones) under this final CAS lock; a command can have arrived after
+        // the CLI observation without changing the Session revision.
+        if expected.native_session.is_none() {
+            use firm_core::agentfirm_api::{
+                AgentSessionStatus, DriverHandoffState, NativeContinuationActivation,
+                RuntimeResidency,
+            };
+            let completed = self
+                .require_team_run_unlocked(&expected.team_run_id)?
+                .status
+                == TeamRunStatus::Completed;
+            let safe_cold = completed
+                && !expected.is_external_interactive()
+                && expected_session.native_session_ref.is_none()
+                && expected_session.lifecycle == AgentSessionStatus::Cold
+                && expected_session.is_at_terminal_turn_boundary()
+                && expected_session.control_state.runtime_residency == RuntimeResidency::Detached
+                && expected_session.control_state.handoff_state == DriverHandoffState::None
+                && expected_session.control_state.continuation.activation
+                    == NativeContinuationActivation::Disarmed
+                && expected_session.queued_input_count == 0;
+            if !safe_cold
+                || self
+                    .runtime_commands(execution_space_id)?
+                    .iter()
+                    .any(|command| {
+                        command.target_session_id.as_deref() == Some(expected_session.id.as_str())
+                    })
+            {
+                return Err(StoreError::Conflict(format!(
+                    "DETACHED_MEMBER_RECOVERY_COLD_COMMAND_HISTORY: AgentSession {} no longer proves a never-started Completed-run lane", expected_session.id
+                )));
+            }
+        }
         let ambiguous_command =
             self.runtime_commands(execution_space_id)?
                 .into_iter()
@@ -533,7 +569,7 @@ impl HarnessStore {
         }
 
         let legacy_by_id = latest_by_id(
-            self.read_jsonl::<ProviderRuntimeProjection>("member_runs.jsonl")?
+            self.latest_member_runs()?
                 .into_iter()
                 .filter(|member| run.member_run_ids.contains(&member.id))
                 .collect(),
@@ -594,7 +630,7 @@ impl HarnessStore {
                 current_member_lifecycle_validation_mismatch_fields(canonical, legacy)?;
             if !mismatch_fields.is_empty() {
                 return Err(StoreError::Conflict(format!(
-                    "MEMBER_RUN_MATERIALIZATION_MISMATCH: TeamRun {} MemberRun {} legacy/canonical projection differs in Execution Space {} for fields {}; legacy_status={:?} canonical_status={:?} legacy_last_event_at={:?} canonical_last_event_at={:?}",
+                    "MEMBER_RUN_MATERIALIZATION_MISMATCH: TeamRun {} MemberRun {} legacy/canonical projection differs in Execution Space {} for fields {}; legacy_status={:?} canonical_status={:?} legacy_last_event_at={:?} canonical_last_event_at={:?}; runtime_generation={} canonical_generation={}; runtime_ledger={} canonical_ledger={}; incomplete cross-file commit requires explicit inspection, not automatic replay",
                     run.id,
                     member_run_id,
                     scope,
@@ -602,7 +638,11 @@ impl HarnessStore {
                     legacy.status,
                     canonical.runtime_status,
                     legacy.last_event_at,
-                    canonical.last_event_at
+                    canonical.last_event_at,
+                    legacy.runtime_generation,
+                    canonical.runtime_generation,
+                    self.root.join("member_runs.jsonl").display(),
+                    self.root.join("agentfirm_trust_operations.jsonl").display(),
                 )));
             }
             if let Some(expected) = resolved_scope.as_deref() {

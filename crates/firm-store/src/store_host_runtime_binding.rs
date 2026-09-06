@@ -7,7 +7,7 @@ use crate::*;
 
 impl HarnessStore {
     pub fn host_member_binding(&self, team_run_id: &str) -> StoreResult<HostMemberBinding> {
-        let run = latest_by_id(self.team_runs()?, |run| run.id.clone())
+        let run = latest_by_id(self.latest_team_runs()?, |run| run.id.clone())
             .remove(team_run_id)
             .ok_or_else(|| StoreError::Conflict(format!("TeamRun not found: {team_run_id}")))?;
         let team = self
@@ -22,7 +22,7 @@ impl HarnessStore {
         let execution_space_id = self.host_team_execution_space(&team, &run)?;
         let memberships = self.fabric_team_memberships(&execution_space_id)?;
         let member_runs = self.trust_member_runs(&execution_space_id)?;
-        let runtimes = latest_by_id(self.member_runs()?, |runtime| runtime.id.clone())
+        let runtimes = latest_by_id(self.latest_member_runs()?, |runtime| runtime.id.clone())
             .into_values()
             .collect::<Vec<_>>();
         resolve_host_member_binding(&HostRuntimeBindingFacts {
@@ -63,7 +63,7 @@ impl HarnessStore {
         team_run_id: &str,
         observed_unix_ms: u64,
     ) -> StoreResult<HostRuntimeBinding> {
-        let run = latest_by_id(self.team_runs()?, |run| run.id.clone())
+        let run = latest_by_id(self.latest_team_runs()?, |run| run.id.clone())
             .remove(team_run_id)
             .ok_or_else(|| StoreError::Conflict(format!("TeamRun not found: {team_run_id}")))?;
         let team = self
@@ -78,7 +78,7 @@ impl HarnessStore {
         let execution_space_id = self.host_team_execution_space(&team, &run)?;
         let memberships = self.fabric_team_memberships(&execution_space_id)?;
         let member_runs = self.trust_member_runs(&execution_space_id)?;
-        let runtimes = latest_by_id(self.member_runs()?, |runtime| runtime.id.clone())
+        let runtimes = latest_by_id(self.latest_member_runs()?, |runtime| runtime.id.clone())
             .into_values()
             .collect::<Vec<_>>();
         let agent_sessions = self.fabric_agent_sessions(&execution_space_id)?;

@@ -675,7 +675,7 @@ impl HarnessStore {
         team_id: &str,
     ) -> StoreResult<Option<AgentTeam>> {
         let mut latest = None;
-        for envelope in self.trust_operation_envelopes_unlocked()? {
+        for envelope in self.cached_latest_trust_envelopes_for_kind("agent_team")? {
             if envelope.execution_space_id == execution_space_id
                 && envelope.operation.event.aggregate_kind == "agent_team"
                 && envelope.operation.event.aggregate_id == team_id
@@ -697,7 +697,7 @@ impl HarnessStore {
     /// are retained as distinct rows and must never be used as mutation input.
     pub fn all_agent_teams(&self) -> StoreResult<Vec<AgentTeam>> {
         let mut latest = BTreeMap::new();
-        for envelope in self.trust_operation_envelopes_unlocked()? {
+        for envelope in self.cached_latest_trust_envelopes_for_kind("agent_team")? {
             if envelope.operation.event.aggregate_kind == "agent_team" {
                 latest.insert(
                     (
@@ -719,14 +719,6 @@ impl HarnessStore {
     }
 
     pub fn agent_team_scope(&self, team_id: &str) -> StoreResult<Option<String>> {
-        Ok(self
-            .trust_operation_envelopes_unlocked()?
-            .into_iter()
-            .rev()
-            .find(|envelope| {
-                envelope.operation.event.aggregate_kind == "agent_team"
-                    && envelope.operation.event.aggregate_id == team_id
-            })
-            .map(|envelope| envelope.execution_space_id))
+        self.cached_agent_team_scope(team_id)
     }
 }

@@ -270,14 +270,18 @@ if (!existsSync(resolve(root, projectionFoldPath))) {
     }
   }
 }
-const canonicalWorkDeliveryFoldPath = "crates/firm-store/src/trust_kernel/fabric_work_execution.rs";
-if (!read(canonicalWorkDeliveryFoldPath).includes("fold_canonical_work_delivery")) {
-  failures.push(`${canonicalWorkDeliveryFoldPath}: canonical WorkDelivery reads must use the immutable-fenced fold`);
-}
-const hostAttentionFoldPath = "crates/firm-store/src/store_host_attention_internals.rs";
-for (const required of ["fold_host_attention_source", "fold_host_attention_lifecycle"]) {
-  if (!read(hostAttentionFoldPath).includes(required)) {
-    failures.push(`${hostAttentionFoldPath}: HostAttention reads must use ${required}`);
+// Current readers delegate to the shared disposable source model; both the
+// caller edge and the original immutable/lifecycle fold remain mandatory.
+for (const [path, required] of [
+  ["crates/firm-store/src/trust_kernel/fabric_work_execution.rs", "self.cached_canonical_work_deliveries(execution_space_id)"],
+  ["crates/firm-store/src/trust_kernel/trust_read_model.rs", "fold_canonical_work_delivery"],
+  ["crates/firm-store/src/store_host_attention_internals.rs", "self.current_host_attention_projection()"],
+  ["crates/firm-store/src/store_current_read_model.rs", "trust.host_attention_sources()"],
+  ["crates/firm-store/src/trust_kernel/trust_read_model.rs", "fold_host_attention_source"],
+  ["crates/firm-store/src/store_current_read_model.rs", "fold_host_attention_lifecycle"],
+]) {
+  if (!read(path).includes(required)) {
+    failures.push(`${path}: current projection must retain ${required}`);
   }
 }
 

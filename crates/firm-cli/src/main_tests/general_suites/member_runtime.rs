@@ -130,3 +130,9 @@ mod transient_idle_work_delivery_snapshot_contention_retries_without_provider_re
 mod typed_pre_effect_provider_admission_contention_retries_with_fresh_fences;
 #[path = "../general/unknown_provider_runtime_start_fails_fast.rs"]
 mod unknown_provider_runtime_start_fails_fast;
+
+#[path = "../general/cold_completed_member_close.rs"]
+mod cold_completed_member_close;
+
+#[path = "../general/running_idle_scan_cost.rs"]
+mod running_idle_scan_cost;

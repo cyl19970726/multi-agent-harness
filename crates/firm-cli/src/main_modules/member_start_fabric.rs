@@ -27,11 +27,27 @@ pub(crate) fn prepare_member_provider_profile_for_start(
     run: &AgentTeamRun,
     member: &mut ProviderRuntimeProjection,
 ) -> CliResult<()> {
+    prepare_member_provider_profile_for_start_with_probe(
+        store,
+        run,
+        member,
+        refreshed_team_member_provider_profile,
+    )
+}
+
+fn prepare_member_provider_profile_for_start_with_probe(
+    store: &HarnessStore,
+    run: &AgentTeamRun,
+    member: &mut ProviderRuntimeProjection,
+    probe: impl FnOnce(
+        &ProviderRuntimeProjection,
+    ) -> CliResult<(ProviderIntegrationProfile, Option<String>)>,
+) -> CliResult<()> {
     if member.is_external_interactive() {
         return Ok(());
     }
     let expected = member.clone();
-    let (mut profile, probe_error) = refreshed_team_member_provider_profile(member)?;
+    let (mut profile, probe_error) = probe(member)?;
     let permission_ceiling = store
         .all_trust_agent_members()?
         .into_iter()
@@ -139,7 +155,7 @@ pub(crate) fn classify_member_fabric_failure(error: &CliError) -> MemberFabricFa
     if error.is_supervisor_lease_lost() {
         return MemberFabricFailure::LeaseLost;
     }
-    if crate::supervisor_daemon::recovery::start_failure_is_transient(error) {
+    if crate::start_failure_classification::start_failure_is_transient(error) {
         return MemberFabricFailure::Transient;
     }
     MemberFabricFailure::Structural
@@ -171,6 +187,22 @@ pub(crate) fn ensure_joined_member_runtime_fabric(
     ledger: &TeamRunLedger,
     member: &mut ProviderRuntimeProjection,
 ) -> CliResult<JoinedMemberRuntimeFabric> {
+    ensure_joined_member_runtime_fabric_with_probe(
+        ledger,
+        member,
+        refreshed_team_member_provider_profile,
+    )
+}
+
+/// Provider probing is the only replaceable I/O; tests still drive authority,
+/// profile admission/CAS, composition and AgentSession provisioning unchanged.
+pub(crate) fn ensure_joined_member_runtime_fabric_with_probe(
+    ledger: &TeamRunLedger,
+    member: &mut ProviderRuntimeProjection,
+    probe: impl FnOnce(
+        &ProviderRuntimeProjection,
+    ) -> CliResult<(ProviderIntegrationProfile, Option<String>)>,
+) -> CliResult<JoinedMemberRuntimeFabric> {
     // The Host appended a new AgentTeamRun row when it admitted this member,
     // so the roster the Supervisor started with is stale by construction.
     // Scope resolution refuses a stale run outright (`TEAM_RUN_CHANGED`).
@@ -180,7 +212,7 @@ pub(crate) fn ensure_joined_member_runtime_fabric(
         return Ok(JoinedMemberRuntimeFabric::AlreadyProvisioned);
     }
     let lease = supervisor_fabric_authority(ledger)?;
-    prepare_member_provider_profile_for_start(&ledger.store, &run, member)?;
+    prepare_member_provider_profile_for_start_with_probe(&ledger.store, &run, member, probe)?;
     provision_member_agent_session(ledger, &lease, &run, &execution_space_id, member)
 }
 

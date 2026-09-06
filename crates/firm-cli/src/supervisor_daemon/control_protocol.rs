@@ -1096,6 +1096,7 @@ impl MultiTeamDaemon {
                         &self.node_id,
                     ),
                     "lease_renewals": crate::lease_renewal_diagnostics::snapshot(),
+                    "scan_metrics": crate::scan_diagnostics::snapshot(),
                     "native_session_wake_sink_registered": !self
                         .native_session_wake_endpoint
                         .lock()

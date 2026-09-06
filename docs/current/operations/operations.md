@@ -133,6 +133,56 @@ packages; managed Hosts use the ordinary Team binding, and historical mode
 decoding cannot authorize either surface. Dynamic
 Workflow remains retired and has no runtime fallback.
 
+### Current-state scanning and recovery diagnostics
+
+`daemon status` includes `scan_metrics`: observation elapsed time, ledger size,
+actual bytes read, decoded rows, and cloned current rows. Counters cover
+successful cache, full-history and tail reads; metadata probes and failed reads
+are excluded. A pass's Store-handle counter window can include overlapping
+readers sharing that handle, so it is not a per-thread CPU attribution. Daemon
+entries cover per-Space discovery/adoption after machine-authority renewal;
+Supervisor entries cover the serving observation. Renewal and provider-loop
+work outside those windows are not included in their elapsed time.
+
+The volatile current-state cache checks file identity, length, modification and
+change timestamps on every observation, including when the caller holds the
+Store writer lock. Unchanged observations read and decode no ledger bytes;
+queries select their current aggregate kind before cloning. Changed append
+ledgers compare the complete old byte prefix before decoding the delta. This
+still costs history-sized I/O after an append. Atomic trust-ledger replacement
+requires a full rebuild. Neither path claims bounded mutation cost or removes
+canonical history, idempotency evidence, or lock-time generation checks.
+
+The shared source model retains historical Work side records, exact Work
+revisions, binding source counts, and the existing Work/attention/delivery
+fold checks. Current queries reuse those derived results; historical and
+idempotency APIs still read full history. Host lease expiry and current time
+are evaluated on each call, never memoized as a previous decision. Retained
+file bytes and source history use memory proportional to ledger size;
+combined scope projections retain at most 32 snapshots and may rebuild after
+eviction. This is not a constant-memory cache.
+
+`team-run recover` reports Closed members with `MEMBER_RECOVERY_CLOSED` and
+leaves their provider profiles and runtime generations unchanged. Only explicit
+`team-run reopen-member` can reactivate Closed coordination. Recovery can still
+repair a proven detached, untyped Blocked lane; it no longer automatically
+reopens or rebinds inactive members.
+
+A Completed run's managed Cold lane can Close without a provider receipt only
+when it has no native binding, no RuntimeCommand history, and passes the
+existing terminated-lane and generation proofs. The final Store CAS rechecks
+the exact Session and the absence of commands under its writer lock. The result
+says `runtime_effect=never_started` and never fabricates a provider receipt.
+
+A failed second half of a MemberRun projection/canonical write reports
+`MEMBER_RUN_DUAL_LEDGER_COMMIT_INCOMPLETE`, both ledger paths, member identity
+and generation, and **unknown** canonical settlement (rename may precede a
+failed fsync). A crash with no returned error is detected at the existing
+`MEMBER_RUN_MATERIALIZATION_MISMATCH` read boundary, which includes both
+observed generations and paths. Preserve both files and the error for explicit
+inspection. This is failure diagnosis, not a WAL, atomicity guarantee, automatic
+repair or permission to replay effects or manually rewrite ledger rows.
+
 Real self-hosting follows the canonical
 [Agent Team Dogfood Loop](../product/agent-team-dogfood-loop.md). A failed live
 scenario becomes a Host-triaged repair batch or tracked issue, then the original

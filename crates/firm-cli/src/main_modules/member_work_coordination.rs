@@ -844,7 +844,7 @@ impl TeamRunLedger {
 
     /// Latest-wins messages of this run, in append order.
     pub(super) fn canonical_team_messages(&self) -> CliResult<Vec<TeamMessageProjection>> {
-        canonical_team_messages_for_run(&self.store, &self.run_id)
+        current_team_messages_for_runtime(&self.store, &self.run_id)
     }
 
     pub(super) fn queued_works_for(

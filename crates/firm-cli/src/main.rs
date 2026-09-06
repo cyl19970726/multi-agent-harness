@@ -173,8 +173,15 @@ use managed_host_delivery::*;
 #[path = "main_modules/member_lifecycle.rs"]
 mod member_lifecycle;
 use member_lifecycle::*;
+#[path = "main_modules/member_admission_drive.rs"]
+mod member_admission_drive;
 #[path = "main_modules/member_orchestration.rs"]
 mod member_orchestration;
+#[path = "main_modules/scan_diagnostics.rs"]
+mod scan_diagnostics;
+use member_admission_drive::*;
+#[path = "main_modules/start_failure_classification.rs"]
+mod start_failure_classification;
 
 #[path = "main_modules/completed_run_members.rs"]
 mod completed_run_members;

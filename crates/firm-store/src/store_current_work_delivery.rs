@@ -22,14 +22,14 @@ fn insert_work_revision(
     Ok(())
 }
 
+struct CurrentWorkRevisionIndex {
+    revisions: std::collections::BTreeMap<(String, u64), Work>,
+    latest: std::collections::BTreeMap<String, Work>,
+}
+
 impl HarnessStore {
     fn current_work_delivery_store_sequence(&self, execution_space_id: &str) -> StoreResult<u64> {
-        Ok(self
-            .canonical_operations_for_space(execution_space_id)?
-            .into_iter()
-            .map(|operation| operation.event.store_sequence)
-            .max()
-            .unwrap_or(0))
+        self.canonical_store_sequence_for_space(execution_space_id)
     }
 
     pub fn current_work_deliveries_for_team_run(
@@ -37,7 +37,7 @@ impl HarnessStore {
         team_run_id: &str,
     ) -> StoreResult<Vec<CurrentWorkDeliveryView>> {
         let run = self
-            .team_runs()?
+            .latest_team_runs()?
             .into_iter()
             .rev()
             .find(|run| run.id == team_run_id)
@@ -105,7 +105,7 @@ impl HarnessStore {
         team_ids: Option<&std::collections::BTreeSet<String>>,
     ) -> StoreResult<Vec<CurrentWorkDeliveryView>> {
         let team_runs = self
-            .team_runs()?
+            .latest_team_runs()?
             .into_iter()
             .map(|run| (run.id.clone(), run))
             .collect::<std::collections::BTreeMap<_, _>>();
@@ -119,29 +119,34 @@ impl HarnessStore {
                     .map(|_| run.id.clone())
             })
             .collect::<std::collections::BTreeSet<_>>();
-        let mut work_revisions = std::collections::BTreeMap::<(String, u64), Work>::new();
-        for work in self
-            .work_operations_unlocked()?
-            .into_iter()
-            .map(|operation| operation.work)
-            .filter(|work| scoped_team_run_ids.contains(&work.team_run_id))
-        {
-            insert_work_revision(&mut work_revisions, work)?;
-        }
-        for operation in self.canonical_operations_for_space(execution_space_id)? {
-            if let Ok(work) = serde_json::from_value::<Work>(operation.resulting_projection) {
-                if scoped_team_run_ids.contains(&work.team_run_id) {
-                    insert_work_revision(&mut work_revisions, work)?;
-                }
-            }
-            for record in operation.immutable_side_records {
-                if let Ok(work) = serde_json::from_value::<Work>(record) {
-                    if scoped_team_run_ids.contains(&work.team_run_id) {
-                        insert_work_revision(&mut work_revisions, work)?;
+        let work_sources = self.current_work_sources()?;
+        let trust_sources = self.trust_read_model()?;
+        let scope_key = format!(
+            "current-work-revisions:{execution_space_id}:{}",
+            serde_json::to_string(&scoped_team_run_ids)?
+        );
+        let work_revisions = self.cached_combined_projection(
+            &scope_key,
+            vec![work_sources.clone(), trust_sources.clone()],
+            || {
+                let mut revisions = std::collections::BTreeMap::<(String, u64), Work>::new();
+                for operation in &work_sources.operations {
+                    if scoped_team_run_ids.contains(&operation.work.team_run_id) {
+                        insert_work_revision(&mut revisions, operation.work.clone())?;
                     }
                 }
-            }
-        }
+                for work in trust_sources.work_revisions_for_space(execution_space_id) {
+                    if scoped_team_run_ids.contains(&work.team_run_id) {
+                        insert_work_revision(&mut revisions, work)?;
+                    }
+                }
+                let mut latest = std::collections::BTreeMap::new();
+                for work in revisions.values() {
+                    latest.insert(work.id.clone(), work.clone());
+                }
+                Ok(CurrentWorkRevisionIndex { revisions, latest })
+            },
+        )?;
         let bindings = self
             .fabric_work_execution_bindings(execution_space_id)?
             .into_iter()
@@ -168,7 +173,7 @@ impl HarnessStore {
                 team_ids.is_none() || bindings.contains_key(&delivery.work_execution_binding_id)
             })
         {
-            let work = work_revisions
+            let work = work_revisions.revisions
                 .get(&(delivery.work_id.clone(), delivery.work_revision))
                 .ok_or_else(|| {
                 StoreError::Conflict(format!(
@@ -176,10 +181,7 @@ impl HarnessStore {
                     delivery.id, delivery.work_id, delivery.work_revision
                 ))
             })?;
-            let current_work = work_revisions
-                .values()
-                .filter(|candidate| candidate.id == delivery.work_id)
-                .max_by_key(|candidate| candidate.version)
+            let current_work = work_revisions.latest.get(&delivery.work_id)
                 .ok_or_else(|| {
                     StoreError::Conflict(format!(
                         "CURRENT_WORK_DELIVERY_WORK_MISSING: delivery {} references missing current Work {}",
