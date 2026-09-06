@@ -3,7 +3,7 @@
 //! cannot prove that an external writer only appended. Only decoding is O(delta).
 use super::*;
 use std::any::Any;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::Read;
 use std::os::unix::fs::MetadataExt;
 
@@ -14,6 +14,8 @@ pub struct StoreReadScanMetric {
     pub bytes_read: u64,
     pub decoded_bytes: u64,
     pub decoded_rows: u64,
+    pub cloned_rows: u64,
+    pub total_cloned_rows: u64,
     pub total_bytes_read: u64,
     pub total_decoded_rows: u64,
     pub reason: String,
@@ -55,6 +57,16 @@ struct Latest<T> {
     bytes: Vec<u8>,
     values: BTreeMap<String, (u64, T)>,
     next_row: u64,
+    groups: BTreeSet<String>,
+}
+
+#[derive(Clone, Copy)]
+pub(super) enum CacheSelection<'a> {
+    #[cfg(test)]
+    All,
+    AppendOrder,
+    Prefix(&'a str),
+    Groups,
 }
 impl HarnessStore {
     pub(super) fn record_jsonl_read(
@@ -90,6 +102,7 @@ impl HarnessStore {
             .collect()
     }
 
+    #[cfg(test)]
     pub(super) fn cached_latest_jsonl<T: DeserializeOwned + Clone + Send + Sync + 'static>(
         &self,
         ledger: &str,
@@ -98,7 +111,15 @@ impl HarnessStore {
         validate: impl Fn(&T) -> StoreResult<()>,
     ) -> StoreResult<BTreeMap<String, T>> {
         Ok(self
-            .cached_latest_jsonl_rows(ledger, ignore_incomplete_tail, &key, validate, false)?
+            .cached_latest_jsonl_rows(
+                ledger,
+                ignore_incomplete_tail,
+                &key,
+                validate,
+                CacheSelection::All,
+                None,
+            )?
+            .0
             .into_iter()
             .map(|v| (key(&v), v))
             .collect())
@@ -112,7 +133,30 @@ impl HarnessStore {
         key: impl Fn(&T) -> String,
         validate: impl Fn(&T) -> StoreResult<()>,
     ) -> StoreResult<Vec<T>> {
-        self.cached_latest_jsonl_rows(ledger, false, key, validate, true)
+        Ok(self
+            .cached_latest_jsonl_rows(
+                ledger,
+                false,
+                key,
+                validate,
+                CacheSelection::AppendOrder,
+                None,
+            )?
+            .0)
+    }
+
+    /// One typed cache with an optional group inventory and range selection.
+    /// Every caller of this index must use the same row key and group key.
+    pub(super) fn cached_latest_jsonl_indexed<
+        T: DeserializeOwned + Clone + Send + Sync + 'static,
+    >(
+        &self,
+        ledger: &str,
+        key: impl Fn(&T) -> String,
+        group_key: fn(&T) -> String,
+        selection: CacheSelection<'_>,
+    ) -> StoreResult<(Vec<T>, Vec<String>)> {
+        self.cached_latest_jsonl_rows(ledger, true, key, |_| Ok(()), selection, Some(group_key))
     }
 
     fn cached_latest_jsonl_rows<T: DeserializeOwned + Clone + Send + Sync + 'static>(
@@ -121,8 +165,9 @@ impl HarnessStore {
         ignore_incomplete_tail: bool,
         key: impl Fn(&T) -> String,
         validate: impl Fn(&T) -> StoreResult<()>,
-        append_order: bool,
-    ) -> StoreResult<Vec<T>> {
+        selection: CacheSelection<'_>,
+        group_key: Option<fn(&T) -> String>,
+    ) -> StoreResult<(Vec<T>, Vec<String>)> {
         let mut cache = self.read_cache.lock().unwrap_or_else(|e| e.into_inner());
         let path = self.root.join(ledger);
         let deadline = Instant::now() + Duration::from_secs(1);
@@ -133,7 +178,7 @@ impl HarnessStore {
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                     cache.entries.remove(ledger);
                     record(&mut cache, ledger, 0, bytes_read, 0, 0, "missing");
-                    return Ok(Vec::new());
+                    return Ok((Vec::new(), Vec::new()));
                 }
                 Err(e) => return Err(e.into()),
             };
@@ -145,8 +190,10 @@ impl HarnessStore {
             if old.is_some_and(|old| old.stamp == stamp)
                 && fs::metadata(&path).map(Stamp::from).ok().as_ref() == Some(&stamp)
             {
-                let result = ordered_values(&old.expect("checked above").values, append_order);
+                let old = old.expect("checked above");
+                let result = selected_values(&old.values, &old.groups, selection);
                 record(&mut cache, ledger, stamp.len, bytes_read, 0, 0, "unchanged");
+                record_clones(&mut cache, ledger, result.0.len() as u64);
                 return Ok(result);
             }
             let mut bytes = Vec::new();
@@ -202,6 +249,11 @@ impl HarnessStore {
             } else {
                 0
             };
+            let mut groups = if append {
+                old.expect("checked above").groups.clone()
+            } else {
+                BTreeSet::new()
+            };
             let mut rows = 0;
             for row in bytes[offset..durable_len].split(|b| *b == b'\n') {
                 if row.iter().all(u8::is_ascii_whitespace) {
@@ -218,11 +270,20 @@ impl HarnessStore {
                     cache.entries.remove(ledger);
                     return Err(e);
                 }
+                if let Some(group_key) = group_key {
+                    groups.insert(group_key(&value));
+                }
                 values.insert(key(&value), (next_row, value));
                 next_row += 1;
                 rows += 1;
             }
-            let result = ordered_values(&values, append_order);
+            let result = selected_values(&values, &groups, selection);
+            let cloned_rows = result.0.len() as u64
+                + if append {
+                    old.expect("checked above").values.len() as u64
+                } else {
+                    0
+                };
             let decoded = durable_len.saturating_sub(offset) as u64;
             // Keep the full snapshot, including an ignored trust crash tail.
             // Such a tail prevents delta reuse until the next complete rebuild.
@@ -233,21 +294,43 @@ impl HarnessStore {
                     bytes,
                     values,
                     next_row,
+                    groups,
                 }),
             );
             record(
                 &mut cache, ledger, stamp.len, bytes_read, decoded, rows, reason,
             );
+            record_clones(&mut cache, ledger, cloned_rows);
             return Ok(result);
         }
     }
 }
-fn ordered_values<T: Clone>(values: &BTreeMap<String, (u64, T)>, append_order: bool) -> Vec<T> {
-    let mut rows = values.values().collect::<Vec<_>>();
-    if append_order {
+fn selected_values<T: Clone>(
+    values: &BTreeMap<String, (u64, T)>,
+    groups: &BTreeSet<String>,
+    selection: CacheSelection<'_>,
+) -> (Vec<T>, Vec<String>) {
+    let mut rows = match selection {
+        CacheSelection::Groups => return (Vec::new(), groups.iter().cloned().collect()),
+        CacheSelection::Prefix(prefix) => values
+            .range(prefix.to_owned()..)
+            .take_while(|(key, _)| key.starts_with(prefix))
+            .map(|(_, row)| row)
+            .collect::<Vec<_>>(),
+        _ => values.values().collect::<Vec<_>>(),
+    };
+    if matches!(selection, CacheSelection::AppendOrder) {
         rows.sort_by_key(|(ordinal, _)| *ordinal);
     }
-    rows.into_iter().map(|(_, row)| row.clone()).collect()
+    (
+        rows.into_iter().map(|(_, row)| row.clone()).collect(),
+        Vec::new(),
+    )
+}
+fn record_clones(cache: &mut StoreReadCache, ledger: &str, cloned_rows: u64) {
+    let m = cache.metrics.entry(ledger.to_owned()).or_default();
+    m.cloned_rows = cloned_rows;
+    m.total_cloned_rows += cloned_rows;
 }
 
 fn record(
@@ -265,6 +348,7 @@ fn record(
     m.bytes_read = bytes_read;
     m.decoded_bytes = decoded_bytes;
     m.decoded_rows = decoded_rows;
+    m.cloned_rows = 0;
     m.reason = reason.to_owned();
     m.total_bytes_read += bytes_read;
     m.total_decoded_rows += decoded_rows;
@@ -433,6 +517,81 @@ mod tests {
         assert_eq!(ordered(), vec!["a", "b"]);
         assert_eq!(ordered(), vec!["a", "b"]);
         fs::remove_dir_all(s.root()).unwrap();
+    }
+
+    #[test]
+    fn scoped_lookup_clones_only_selected_rows_as_other_kinds_grow() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static CLONES: AtomicUsize = AtomicUsize::new(0);
+        #[derive(Deserialize)]
+        struct IndexedRow {
+            kind: String,
+            space: String,
+            id: String,
+        }
+        impl Clone for IndexedRow {
+            fn clone(&self) -> Self {
+                CLONES.fetch_add(1, Ordering::Relaxed);
+                Self {
+                    kind: self.kind.clone(),
+                    space: self.space.clone(),
+                    id: self.id.clone(),
+                }
+            }
+        }
+        let key = |r: &IndexedRow| serde_json::to_string(&(&r.kind, &r.space, &r.id)).unwrap();
+        for unrelated_rows in [100, 10_000] {
+            let s = fixture();
+            let mut body = (0..unrelated_rows)
+                .map(|i| {
+                    format!(
+                        "{{\"kind\":\"runtime_command\",\"space\":\"space-a\",\"id\":\"{i}\"}}\n"
+                    )
+                })
+                .collect::<String>();
+            for space in ["space-a", "space-b"] {
+                for id in ["session-1", "session-2"] {
+                    body.push_str(&format!(
+                        "{{\"kind\":\"agent_session\",\"space\":\"{space}\",\"id\":\"{id}\"}}\n"
+                    ));
+                }
+            }
+            fs::write(s.root.join("test.jsonl"), body).unwrap();
+            let query = |selection| {
+                s.cached_latest_jsonl_indexed("test.jsonl", key, |r| r.space.clone(), selection)
+                    .unwrap()
+            };
+            query(CacheSelection::Groups); // Warm the same typed index.
+            CLONES.store(0, Ordering::Relaxed);
+            let started = Instant::now();
+            for _ in 0..100 {
+                let rows = query(CacheSelection::Prefix("[\"agent_session\",\"space-a\",")).0;
+                assert_eq!(rows.len(), 2);
+                assert!(rows
+                    .iter()
+                    .all(|r| r.kind == "agent_session" && r.space == "space-a"));
+                let m = &s.read_scan_metrics()[0];
+                assert_eq!(m.decoded_rows, 0);
+                assert_eq!(m.bytes_read, 0);
+                assert_eq!(m.cloned_rows, 2);
+            }
+            eprintln!(
+                "unrelated_rows={unrelated_rows} lookups=100 cloned_rows={} elapsed_us={}",
+                CLONES.load(Ordering::Relaxed),
+                started.elapsed().as_micros()
+            );
+            assert_eq!(CLONES.load(Ordering::Relaxed), 200);
+            CLONES.store(0, Ordering::Relaxed);
+            assert_eq!(
+                query(CacheSelection::Prefix("[\"agent_session\",")).0.len(),
+                4
+            );
+            assert_eq!(CLONES.load(Ordering::Relaxed), 4);
+            CLONES.store(0, Ordering::Relaxed);
+            assert_eq!(query(CacheSelection::Groups).1, vec!["space-a", "space-b"]);
+            assert_eq!(CLONES.load(Ordering::Relaxed), 0);
+            fs::remove_dir_all(s.root()).unwrap();
+        }
     }
 
     #[test]

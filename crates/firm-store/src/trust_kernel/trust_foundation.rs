@@ -682,12 +682,13 @@ impl HarnessStore {
 
     pub fn canonical_execution_space_ids(&self) -> StoreResult<Vec<String>> {
         Ok(self
-            .cached_latest_trust_envelopes()?
-            .into_values()
-            .map(|envelope| envelope.execution_space_id)
-            .collect::<BTreeSet<_>>()
-            .into_iter()
-            .collect())
+            .cached_latest_jsonl_indexed(
+                TRUST_OPERATIONS_LEDGER,
+                trust_cache_key,
+                |e| e.execution_space_id.clone(),
+                crate::store_read_cache::CacheSelection::Groups,
+            )?
+            .1)
     }
 
     /// Scope-preserving canonical operation read for server-built RoleViews.
@@ -786,25 +787,21 @@ impl HarnessStore {
         Ok(revisions)
     }
 
-    pub(super) fn cached_latest_trust_envelopes(
+    /// Select by kind before cloning: settled RuntimeCommand history must not
+    /// inflate every current Session/MemberRun observation.
+    pub(super) fn cached_latest_trust_envelopes_for_kind(
         &self,
-    ) -> StoreResult<BTreeMap<String, TrustOperationEnvelope>> {
-        // A fresh descriptor stamp is checked on every call, including calls
-        // already holding the writer lock. Atomic trust commits replace the
-        // inode, so their next read rebuilds before returning any projection.
-        self.cached_latest_jsonl(
-            TRUST_OPERATIONS_LEDGER,
-            true,
-            |e: &TrustOperationEnvelope| {
-                serde_json::to_string(&(
-                    &e.execution_space_id,
-                    &e.operation.event.aggregate_kind,
-                    &e.operation.event.aggregate_id,
-                ))
-                .expect("string tuple serializes")
-            },
-            |_| Ok(()),
-        )
+        aggregate_kind: &str,
+    ) -> StoreResult<Vec<TrustOperationEnvelope>> {
+        let prefix = trust_cache_prefix(&[aggregate_kind]);
+        Ok(self
+            .cached_latest_jsonl_indexed(
+                TRUST_OPERATIONS_LEDGER,
+                trust_cache_key,
+                |e| e.execution_space_id.clone(),
+                crate::store_read_cache::CacheSelection::Prefix(&prefix),
+            )?
+            .0)
     }
 
     pub(super) fn latest_trust_envelopes_unlocked(
@@ -812,16 +809,18 @@ impl HarnessStore {
         execution_space_id: &str,
         aggregate_kind: &str,
     ) -> StoreResult<BTreeMap<String, TrustOperationEnvelope>> {
-        let envelopes = self.cached_latest_trust_envelopes()?;
-        let mut latest = BTreeMap::new();
-        for envelope in envelopes.into_values() {
-            if envelope.execution_space_id == execution_space_id
-                && envelope.operation.event.aggregate_kind == aggregate_kind
-            {
-                latest.insert(envelope.operation.event.aggregate_id.clone(), envelope);
-            }
-        }
-        Ok(latest)
+        let prefix = trust_cache_prefix(&[aggregate_kind, execution_space_id]);
+        Ok(self
+            .cached_latest_jsonl_indexed(
+                TRUST_OPERATIONS_LEDGER,
+                trust_cache_key,
+                |e| e.execution_space_id.clone(),
+                crate::store_read_cache::CacheSelection::Prefix(&prefix),
+            )?
+            .0
+            .into_iter()
+            .map(|e| (e.operation.event.aggregate_id.clone(), e))
+            .collect())
     }
 
     pub(super) fn replay_trust_projection_unlocked<T: for<'de> Deserialize<'de> + Clone>(
@@ -990,4 +989,20 @@ impl HarnessStore {
             Vec::new(),
         )
     }
+}
+
+// Only volatile index keys use this order. Persisted records are unchanged.
+fn trust_cache_key(e: &TrustOperationEnvelope) -> String {
+    serde_json::to_string(&(
+        &e.operation.event.aggregate_kind,
+        &e.execution_space_id,
+        &e.operation.event.aggregate_id,
+    ))
+    .expect("string tuple serializes")
+}
+fn trust_cache_prefix(parts: &[&str]) -> String {
+    let mut prefix = serde_json::to_string(parts).expect("string array serializes");
+    prefix.pop(); // Closing array delimiter, after fully escaped string values.
+    prefix.push(',');
+    prefix
 }
