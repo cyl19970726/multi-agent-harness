@@ -709,4 +709,5 @@ mod work_responsibility_execution_admission_is_exact_and_idempotent;
 
 use member_run_fixture::admit_fixture_member_run_for_session;
 
+mod runtime_command_frozen_admission;
 mod runtime_command_phase_compatibility;

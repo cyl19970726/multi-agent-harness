@@ -357,6 +357,18 @@ capabilities keep their existing fail-closed admission; queue does not fall
 back to inject, and interrupt does not imply session close. The real cycle,
 steering, interrupt and close paths retain their native adapter operations.
 
+New Store admission rejects `ReopenMember`, `RetireMember`,
+`DeleteNativeSession`, `CancelPendingInput`, `ActivateContinuation`,
+`ReplaceContinuationCondition`, `ClearContinuation`, `StopBackgroundTask`,
+`TransferExecutionDriver`, `InspectCommandEffect`, `ReconcileUnknownEffect`
+and `AbortIfNotApplied` with `RUNTIME_COMMAND_KIND_FROZEN`. These command names
+have no production effect handler; dynamic envelope decoding alone is not
+support. Their persisted values and exact historical replay remain readable,
+but changing the envelope or using a new key cannot create a fresh admission.
+Existing member lifecycle and Store recovery operations are unchanged. This
+restriction does not freeze the six control intents, adapter release,
+Drain/Quiesce/Reattach, or continuation observation.
+
 DEV-31 and DEV-68 tighten this into an exact binding fence for every
 provider/process effect: the prepared command records the target MemberRun id
 and adapter generation, AgentSession id and machine-runtime generation,
