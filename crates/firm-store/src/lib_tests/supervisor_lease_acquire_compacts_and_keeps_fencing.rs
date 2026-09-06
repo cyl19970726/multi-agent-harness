@@ -53,3 +53,31 @@ fn supervisor_lease_acquire_compacts_and_keeps_fencing() {
     assert_eq!(live.supervisor_id, "sup-2");
     assert_eq!(live.generation, 2);
 }
+
+#[test]
+fn supervisor_renewal_accounts_for_time_waiting_for_the_writer() {
+    let root = team_test_root("renewal-wait-clock");
+    let store = HarnessStore::new(&root);
+    seed_lease_run(&store, "run-clock");
+    store
+        .acquire_test_supervisor_lease("run-clock", "sup", 1, "a", 1_000, 15_000)
+        .unwrap();
+    let guard = store.acquire_exclusive_migration_guard().unwrap();
+    let (entered, waiting) = std::sync::mpsc::channel();
+    let renewed = std::thread::scope(|scope| {
+        let renewal = scope.spawn(|| {
+            entered.send(()).unwrap();
+            store.renew_team_supervisor_lease("run-clock", "sup", 1, 1_001, 15_000)
+        });
+        waiting.recv().unwrap();
+        std::thread::sleep(Duration::from_millis(80));
+        drop(guard);
+        renewal.join().unwrap().unwrap()
+    });
+    assert!(
+        renewed.heartbeat_unix_ms >= 1_051,
+        "renewal must not use the stale timestamp captured before waiting"
+    );
+    assert_eq!(renewed.expires_unix_ms - renewed.heartbeat_unix_ms, 15_000);
+    std::fs::remove_dir_all(root).unwrap();
+}

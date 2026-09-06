@@ -159,6 +159,8 @@ use runtime_composition::*;
 #[path = "main_modules/runtime_effects.rs"]
 mod runtime_effects;
 use runtime_effects::*;
+#[path = "main_modules/lease_renewal_diagnostics.rs"]
+mod lease_renewal_diagnostics;
 #[path = "main_modules/supervisor_control.rs"]
 mod supervisor_control;
 use supervisor_control::*;

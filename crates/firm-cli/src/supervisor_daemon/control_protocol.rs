@@ -1079,7 +1079,7 @@ impl MultiTeamDaemon {
                                 "daemon_generation": ctx.daemon_generation,
                                 "supervisor_id": ctx.supervisor_id,
                                 "supervisor_generation": ctx.supervisor_generation,
-                                "status": if is_finished { "finished" } else { serving_status.as_str() },
+                                "status": if is_finished { "finished" } else if !ctx.heartbeat_valid.load(Ordering::Acquire) { "authority_lost" } else { serving_status.as_str() },
                                 "elapsed_secs": ctx.started_at.elapsed().as_secs(),
                             })
                         })
@@ -1095,6 +1095,7 @@ impl MultiTeamDaemon {
                         &self.firm_home,
                         &self.node_id,
                     ),
+                    "lease_renewals": crate::lease_renewal_diagnostics::snapshot(),
                     "native_session_wake_sink_registered": !self
                         .native_session_wake_endpoint
                         .lock()

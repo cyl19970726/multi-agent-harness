@@ -12,7 +12,14 @@ impl MultiTeamDaemon {
     /// enrolled this Node participates in one machine-wide authority bundle;
     /// losing any member closes provider-effect admission for all of them.
     pub(super) fn scan_and_adopt(&self) -> CliResult<()> {
-        let authority_spaces = self.ensure_node_authority_bundle()?;
+        let authority_spaces = match self.ensure_node_authority_bundle() {
+            Ok(spaces) => spaces,
+            Err(error) if !self.authority_lost.load(Ordering::SeqCst) => {
+                eprintln!("[node-daemon] discovery deferred: {error}");
+                return Ok(());
+            }
+            Err(error) => return Err(error),
+        };
         let mut managed_ids: HashSet<(String, String)> = {
             let ctx = self
                 .contexts

@@ -38,7 +38,7 @@ fn node_authority_heartbeat_is_independent_of_a_long_discovery_scan() {
 }
 
 #[test]
-fn unreadable_space_latches_machine_wide_authority_loss() {
+fn unreadable_held_space_latches_only_after_confirmed_deadline() {
     const NODE_ID: &str = "11111111-1111-4111-8111-111111111112";
     let tree = TestTree::new("parallel-authority-refresh");
     let firm_home = tree.0.join("home");
@@ -114,6 +114,7 @@ fn unreadable_space_latches_machine_wide_authority_loss() {
         authority_shutdown: Arc::new(AtomicBool::new(false)),
         authority_lost: AtomicBool::new(false),
         machine_authority_loss: Mutex::new(None),
+        confirmed_node_leases: Mutex::new(HashMap::new()),
         control_worker_failed: AtomicBool::new(false),
         recovery_blocked_runs: Mutex::new(HashMap::new()),
         settling_runs: Mutex::new(HashSet::new()),
@@ -122,6 +123,17 @@ fn unreadable_space_latches_machine_wide_authority_loss() {
         deferred_stop_responses: Mutex::new(Vec::new()),
         drain_timeout_override_ms: None,
     };
+
+    // Seed the leases that this instance previously confirmed. Corruption in
+    // an unheld historical Space is not a machine authority-loss signal.
+    daemon.remember_node_lease(&healthy.id, &store, &lease);
+    for space in slow_spaces {
+        daemon.remember_node_lease(
+            &space.id,
+            &HarnessStore::new(space.store_root.clone()),
+            &lease,
+        );
+    }
 
     let command_actor = harness_core::agentfirm_api::ActorRef {
         kind: harness_core::agentfirm_api::ActorKind::Service,
@@ -301,6 +313,7 @@ fn authority_bundle_rolls_back_partial_acquisition_until_every_predecessor_is_re
         authority_shutdown: Arc::new(AtomicBool::new(false)),
         authority_lost: AtomicBool::new(false),
         machine_authority_loss: Mutex::new(None),
+        confirmed_node_leases: Mutex::new(HashMap::new()),
         control_worker_failed: AtomicBool::new(false),
         recovery_blocked_runs: Mutex::new(HashMap::new()),
         settling_runs: Mutex::new(HashSet::new()),
@@ -337,6 +350,7 @@ fn authority_bundle_rolls_back_partial_acquisition_until_every_predecessor_is_re
     let successor = MultiTeamDaemon {
         authority_lost: AtomicBool::new(false),
         machine_authority_loss: Mutex::new(None),
+        confirmed_node_leases: Mutex::new(HashMap::new()),
         stop_requested: Arc::new(AtomicBool::new(false)),
         instance_id: "successor-instance".into(),
         ..daemon
@@ -374,6 +388,7 @@ fn machine_local_live_sink_rejects_invalid_and_stale_registration_then_replaces_
         authority_shutdown: Arc::new(AtomicBool::new(false)),
         authority_lost: AtomicBool::new(false),
         machine_authority_loss: Mutex::new(None),
+        confirmed_node_leases: Mutex::new(HashMap::new()),
         control_worker_failed: AtomicBool::new(false),
         recovery_blocked_runs: Mutex::new(HashMap::new()),
         settling_runs: Mutex::new(HashSet::new()),
@@ -648,6 +663,7 @@ fn status_remains_responsive_while_execution_space_scan_is_blocked() {
         authority_shutdown: Arc::clone(&authority_shutdown),
         authority_lost: AtomicBool::new(false),
         machine_authority_loss: Mutex::new(None),
+        confirmed_node_leases: Mutex::new(HashMap::new()),
         control_worker_failed: AtomicBool::new(false),
         recovery_blocked_runs: Mutex::new(HashMap::new()),
         settling_runs: Mutex::new(HashSet::new()),
@@ -821,6 +837,7 @@ fn status_remains_responsive_while_a_control_mutation_is_blocked() {
         authority_shutdown: Arc::new(AtomicBool::new(false)),
         authority_lost: AtomicBool::new(false),
         machine_authority_loss: Mutex::new(None),
+        confirmed_node_leases: Mutex::new(HashMap::new()),
         control_worker_failed: AtomicBool::new(false),
         recovery_blocked_runs: Mutex::new(HashMap::new()),
         settling_runs: Mutex::new(HashSet::new()),
@@ -959,6 +976,7 @@ fn shutdown_renews_node_authority_until_accepted_worker_finishes() {
         authority_shutdown: Arc::new(AtomicBool::new(false)),
         authority_lost: AtomicBool::new(false),
         machine_authority_loss: Mutex::new(None),
+        confirmed_node_leases: Mutex::new(HashMap::new()),
         control_worker_failed: AtomicBool::new(false),
         recovery_blocked_runs: Mutex::new(HashMap::new()),
         settling_runs: Mutex::new(HashSet::new()),
@@ -1097,6 +1115,7 @@ fn shutdown_renews_node_authority_until_accepted_worker_finishes() {
         authority_shutdown: Arc::new(AtomicBool::new(false)),
         authority_lost: AtomicBool::new(false),
         machine_authority_loss: Mutex::new(None),
+        confirmed_node_leases: Mutex::new(HashMap::new()),
         control_worker_failed: AtomicBool::new(false),
         recovery_blocked_runs: Mutex::new(HashMap::new()),
         settling_runs: Mutex::new(HashSet::new()),

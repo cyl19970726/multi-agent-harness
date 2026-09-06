@@ -20,8 +20,9 @@ fn node_daemon_lease_renewal_compacts_and_keeps_latest() {
     let lease = store
         .acquire_node_daemon_lease(node_id, "daemon-1", "instance-1", 1_000, 1_000_000)
         .expect("acquire generation 1");
+    let mut last_renewal_expiry = lease.expires_unix_ms;
     for tick in 0..5_000u64 {
-        store
+        last_renewal_expiry = store
             .renew_node_daemon_lease(
                 node_id,
                 "daemon-1",
@@ -30,7 +31,8 @@ fn node_daemon_lease_renewal_compacts_and_keeps_latest() {
                 1_001 + tick,
                 1_000_000,
             )
-            .expect("renew");
+            .expect("renew")
+            .expires_unix_ms;
     }
 
     // Retention rule: per (node, daemon, generation) keep the group's first
@@ -54,7 +56,7 @@ fn node_daemon_lease_renewal_compacts_and_keeps_latest() {
     assert_eq!(latest.daemon_id, "daemon-1");
     assert_eq!(latest.instance_id, "instance-1");
     assert_eq!(latest.generation, lease.generation);
-    assert_eq!(latest.expires_unix_ms, 1_001 + 4_999 + 1_000_000);
+    assert_eq!(latest.expires_unix_ms, last_renewal_expiry);
 
     // The fenced-out generation must still be rejected after compaction.
     assert!(

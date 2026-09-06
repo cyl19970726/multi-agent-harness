@@ -145,9 +145,7 @@ impl MultiTeamDaemon {
         for (space, store) in spaces {
             let node = store
                 .latest_execution_nodes()
-                .map_err(|error| {
-                    self.latch_machine_authority_loss(&[format!("{}: {error}", space.id)])
-                })?
+                .map_err(CliError::Store)?
                 .into_iter()
                 .find(|node| node.id == self.node_id);
             let Some(node) = node else {
@@ -161,9 +159,7 @@ impl MultiTeamDaemon {
             }
             let registered = store
                 .latest_node_project_registrations()
-                .map_err(|error| {
-                    self.latch_machine_authority_loss(&[format!("{}: {error}", space.id)])
-                })?
+                .map_err(CliError::Store)?
                 .into_iter()
                 .any(|registration| {
                     registration.node_id == self.node_id
@@ -174,9 +170,7 @@ impl MultiTeamDaemon {
             if registered {
                 let previous = store
                     .latest_node_daemon_lease(&self.node_id)
-                    .map_err(|error| {
-                        self.latch_machine_authority_loss(&[format!("{}: {error}", space.id)])
-                    })?;
+                    .map_err(CliError::Store)?;
                 let newly_acquired = previous.as_ref().is_none_or(|lease| {
                     lease.status == harness_core::NodeDaemonLeaseStatus::Released
                 });
@@ -191,6 +185,16 @@ impl MultiTeamDaemon {
                 Err(error) => {
                     let mut failures = vec![format!("{}: {error}", space.id)];
                     self.rollback_unused_bundle_leases(&acquired, &mut failures);
+                    if matches!(
+                        &error,
+                        CliError::Store(
+                            harness_store::StoreError::Io(_)
+                                | harness_store::StoreError::LockTimeout(_)
+                                | harness_store::StoreError::Json(_)
+                        )
+                    ) {
+                        return Err(error);
+                    }
                     return Err(self.latch_machine_authority_loss(&failures));
                 }
             }
@@ -213,7 +217,10 @@ impl MultiTeamDaemon {
                     current.daemon_id, current.instance_id, current.generation, current.status
                 )),
                 Ok(None) => failures.push(format!("{space_id}: final bundle lease is missing")),
-                Err(error) => failures.push(format!("{space_id}: {error}")),
+                Err(error) => {
+                    self.rollback_unused_bundle_leases(&acquired, &mut failures);
+                    return Err(CliError::Store(error));
+                }
             }
         }
         if !failures.is_empty() {
@@ -266,72 +273,136 @@ impl MultiTeamDaemon {
     /// deliberately unable to steal or create authority in an unscanned Space.
     pub(super) fn refresh_held_node_authorities(&self) -> CliResult<()> {
         self.require_machine_authority_open()?;
-        let now_ms = current_unix_ms_u64();
-        let ttl_ms = self.node_lease_ttl_ms();
-        let spaces = self.registered_spaces()?;
-        // A malformed or concurrently incomplete JSONL tail in one historical
-        // Execution Space can consume the Store reader's bounded retry window.
-        // Renew each Space independently so those bounded waits do not add up
-        // and expire an unrelated live AgentSession's machine generation.
+        // Inventory and ordinary business reads cannot delay the heartbeat.
+        // Discovery records only successfully acquired exact leases here.
+        let held = self
+            .confirmed_node_leases
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone();
         let failures = std::thread::scope(|scope| {
-            let refreshes = spaces
-                .iter()
-                .map(|(space, store)| {
-                    scope.spawn(move || -> Result<(), String> {
-                        let lease = match store.latest_node_daemon_lease(&self.node_id) {
-                            Ok(Some(lease)) => lease,
-                            Ok(None) => return Ok(()),
-                            Err(error) => return Err(format!("{}: {error}", space.id)),
-                        };
-                        if lease.daemon_id == self.daemon_id
-                            && lease.instance_id == self.instance_id
-                            && lease.status == harness_core::NodeDaemonLeaseStatus::Draining
-                        {
-                            return Ok(());
-                        }
-                        if lease.daemon_id != self.daemon_id
-                            || lease.instance_id != self.instance_id
-                            || lease.status != harness_core::NodeDaemonLeaseStatus::Active
-                        {
-                            if lease.status == harness_core::NodeDaemonLeaseStatus::Released {
-                                return Ok(());
-                            }
-                            return Err(format!(
-                                "{}: exact Node authority moved to daemon {} instance {} generation {} ({:?})",
-                                space.id,
-                                lease.daemon_id,
-                                lease.instance_id,
-                                lease.generation,
-                                lease.status
-                            ));
-                        }
-                        store.renew_node_daemon_lease(
-                            &self.node_id,
-                            &lease.daemon_id,
-                            lease.generation,
-                            &lease.instance_id,
-                            now_ms,
-                            ttl_ms,
-                        )
-                        .map(|_| ())
-                        .map_err(|error| format!("{}: {error}", space.id))
-                    })
+            let workers = held
+                .into_iter()
+                .map(|(space, (store, lease))| {
+                    scope.spawn(move || self.renew_held_node_lease(&space, &store, lease))
                 })
                 .collect::<Vec<_>>();
-            let mut failures = Vec::new();
-            for refresh in refreshes {
-                match refresh.join() {
-                    Ok(Ok(())) => {}
-                    Ok(Err(error)) => failures.push(error),
-                    Err(_) => failures.push("authority refresh worker panicked".into()),
-                }
-            }
-            failures
+            workers
+                .into_iter()
+                .filter_map(|worker| match worker.join() {
+                    Ok(Ok(())) => None,
+                    Ok(Err(error)) => Some(error),
+                    Err(_) => Some("authority refresh worker panicked".into()),
+                })
+                .collect::<Vec<_>>()
         });
         if failures.is_empty() {
             Ok(())
         } else {
             Err(self.latch_machine_authority_loss(&failures))
+        }
+    }
+
+    pub(super) fn remember_node_lease(
+        &self,
+        space: &str,
+        store: &HarnessStore,
+        lease: &harness_core::NodeDaemonLease,
+    ) {
+        let mut held = self
+            .confirmed_node_leases
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if held.get(space).is_none_or(|(_, old)| {
+            old.generation < lease.generation
+                || (old.generation == lease.generation
+                    && old.expires_unix_ms <= lease.expires_unix_ms)
+        }) {
+            held.insert(space.to_owned(), (store.clone(), lease.clone()));
+        }
+    }
+
+    fn renew_held_node_lease(
+        &self,
+        space: &str,
+        store: &HarnessStore,
+        confirmed: harness_core::NodeDaemonLease,
+    ) -> Result<(), String> {
+        let expires = confirmed.expires_unix_ms;
+        loop {
+            let started = Instant::now();
+            let result = store
+                .latest_node_daemon_lease(&self.node_id)
+                .and_then(|current| {
+                    if let Some(current) = current.as_ref() {
+                        if current.daemon_id != confirmed.daemon_id
+                            || current.instance_id != confirmed.instance_id
+                            || current.generation != confirmed.generation {
+                            return Err(harness_store::StoreError::Conflict(format!(
+                                "NODE_DAEMON_GENERATION_FENCED: exact Node authority moved to daemon {} instance {} generation {} ({:?})",
+                                current.daemon_id, current.instance_id, current.generation, current.status
+                            )));
+                        }
+                    }
+                    if current.as_ref().is_some_and(|lease| {
+                        lease.daemon_id == confirmed.daemon_id
+                            && lease.instance_id == confirmed.instance_id
+                            && lease.generation == confirmed.generation
+                            && matches!(
+                                lease.status,
+                                harness_core::NodeDaemonLeaseStatus::Draining
+                                    | harness_core::NodeDaemonLeaseStatus::Released
+                            )
+                    }) {
+                        return Ok(None);
+                    }
+                    store
+                        .renew_node_daemon_lease(
+                            &self.node_id,
+                            &confirmed.daemon_id,
+                            confirmed.generation,
+                            &confirmed.instance_id,
+                            current_unix_ms_u64(),
+                            self.node_lease_ttl_ms(),
+                        )
+                        .map(Some)
+                });
+            match result {
+                Ok(Some(lease)) => {
+                    crate::lease_renewal_diagnostics::record(
+                        space,
+                        "node_daemon",
+                        lease.expires_unix_ms,
+                        started.elapsed(),
+                        None,
+                    );
+                    self.remember_node_lease(space, store, &lease);
+                    return Ok(());
+                }
+                Ok(None) => return Ok(()),
+                Err(error) => {
+                    let reason = error.to_string();
+                    crate::lease_renewal_diagnostics::record(
+                        space,
+                        "node_daemon",
+                        expires,
+                        started.elapsed(),
+                        Some(&reason),
+                    );
+                    let fenced = matches!(&error, harness_store::StoreError::Conflict(message)
+                        if message.starts_with("NODE_DAEMON_GENERATION_FENCED:"));
+                    let remaining = expires.saturating_sub(current_unix_ms_u64());
+                    if fenced || remaining == 0 {
+                        return Err(format!(
+                            "{space}: {reason}; confirmed_expires_unix_ms={expires}"
+                        ));
+                    }
+                    eprintln!(
+                        "[node-daemon] {space}: renewal retry within {remaining}ms: {reason}"
+                    );
+                    std::thread::sleep(Duration::from_millis(100.min(remaining / 4)));
+                }
+            }
         }
     }
 
@@ -377,6 +448,18 @@ impl MultiTeamDaemon {
         }
         let now_ms = current_unix_ms_u64();
         let ttl_ms = self.node_lease_ttl_ms();
+        if let Some(lease) = store.latest_node_daemon_lease(&self.node_id)? {
+            if daemon_control_generation_authorized(
+                Some(&lease),
+                &self.daemon_id,
+                &self.instance_id,
+                lease.generation,
+                now_ms,
+            ) {
+                self.remember_node_lease(&space.id, store, &lease);
+                return Ok(lease);
+            }
+        }
         let lease = store
             .acquire_node_daemon_lease(
                 &self.node_id,
@@ -386,16 +469,8 @@ impl MultiTeamDaemon {
                 ttl_ms,
             )
             .map_err(CliError::Store)?;
-        store
-            .renew_node_daemon_lease(
-                &self.node_id,
-                &lease.daemon_id,
-                lease.generation,
-                &lease.instance_id,
-                now_ms,
-                ttl_ms,
-            )
-            .map_err(CliError::Store)
+        self.remember_node_lease(&space.id, store, &lease);
+        Ok(lease)
     }
 
     #[cfg(test)]
