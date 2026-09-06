@@ -1475,6 +1475,8 @@ mod team_run_cli_message_reuses_conversation_lineage_only_within_its_run;
 mod team_run_create_without_initial_work;
 #[path = "team_run_api/team_run_dashboard_urls.rs"]
 mod team_run_dashboard_urls;
+#[path = "team_run_api/team_run_host_message_reply.rs"]
+mod team_run_host_message_reply;
 #[path = "team_run_api/team_run_host_message_revision.rs"]
 mod team_run_host_message_revision;
 #[path = "team_run_api/team_run_host_message_send.rs"]

@@ -102,6 +102,67 @@ pub(super) fn prepare_canonical_message(
         .map_err(|error| map_message_authoring_error(error, team_run_id, &team.id))
 }
 
+/// A reply must name exact incoming lineage: the causation message exists in
+/// this TeamRun, its conversation matches the supplied correlation, and the
+/// correlation identifies a conversation in this run. Unknown, mismatched, or
+/// cross-run lineage refuses before any canonical Message is authored. Runs
+/// after the idempotency replay/conflict check so a reused key with different
+/// Message semantics keeps its RUNTIME_COMMAND_REJECTED contract.
+pub(super) fn validate_reply_lineage(
+    store: &HarnessStore,
+    execution_space_id: &str,
+    team_run_id: &str,
+    correlation_id: &str,
+    causation_id: &str,
+) -> Result<(), StoreError> {
+    let run_messages = store
+        .fabric_messages(execution_space_id)?
+        .into_iter()
+        .filter(|message| message.team_run_id.as_deref() == Some(team_run_id))
+        .collect::<Vec<_>>();
+    let cause = run_messages
+        .iter()
+        .find(|message| message.id == causation_id)
+        .ok_or_else(|| {
+            encoded_error(
+                "INVALID_STATE_TRANSITION",
+                format!(
+                    "causation_id `{causation_id}` does not identify a message in team run {team_run_id}"
+                ),
+                "team_run",
+                team_run_id,
+                None,
+            )
+        })?;
+    if cause.correlation_id != correlation_id {
+        return Err(encoded_error(
+            "INVALID_STATE_TRANSITION",
+            format!(
+                "causation_id `{causation_id}` has correlation_id `{}`, not `{correlation_id}`",
+                cause.correlation_id
+            ),
+            "team_run",
+            team_run_id,
+            None,
+        ));
+    }
+    if !run_messages
+        .iter()
+        .any(|message| message.correlation_id == correlation_id)
+    {
+        return Err(encoded_error(
+            "INVALID_STATE_TRANSITION",
+            format!(
+                "correlation_id `{correlation_id}` does not identify a conversation in team run {team_run_id}"
+            ),
+            "team_run",
+            team_run_id,
+            None,
+        ));
+    }
+    Ok(())
+}
+
 fn message_route_mismatch(team_run_id: &str) -> StoreError {
     encoded_error(
         "INVALID_STATE_TRANSITION",
