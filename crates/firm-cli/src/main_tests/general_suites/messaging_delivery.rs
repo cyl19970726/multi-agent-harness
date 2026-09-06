@@ -69,3 +69,6 @@ mod supervisor_claims_and_records_provider_receipt_for_canonical_work_delivery;
 mod taskless_running_delivery_reconciliation_clears_member_without_fabricating_report;
 #[path = "../general/team_inbox_projection_lists_queued_then_all_with_claim_binding.rs"]
 mod team_inbox_projection_lists_queued_then_all_with_claim_binding;
+
+#[path = "../general/acceptance_wake.rs"]
+mod acceptance_wake;

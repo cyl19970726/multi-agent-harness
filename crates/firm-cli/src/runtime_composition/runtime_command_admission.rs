@@ -345,7 +345,16 @@ pub(crate) fn prepare_provider_effect_kind(
             current_unix_ms_u64(),
             &now_string(),
         )
-        .map_err(|error| CliError::ProviderAdmissionRejected(error.to_string()))?;
+        .map_err(|error| {
+            if command_kind == harness_core::agentfirm_api::RuntimeCommandKind::StartCycle
+                && source_record_id
+                    .starts_with(harness_core::work_acceptance::ACCEPTANCE_WAKE_SOURCE_PREFIX)
+            {
+                classify_pre_effect_provider_admission_error(error.into())
+            } else {
+                CliError::ProviderAdmissionRejected(error.to_string())
+            }
+        })?;
     if admission.replayed {
         let replay = match (
             admission.projection.phase,
@@ -404,16 +413,29 @@ pub(crate) fn prepare_provider_effect(
     content: &str,
     provider_attempt: u64,
 ) -> CliResult<ProviderEffectAdmission> {
-    ledger.require_supervisor_lease()?;
-    prepare_provider_effect_kind(
-        ledger,
-        member,
-        source_record_id,
-        content,
-        harness_core::agentfirm_api::RuntimeCommandKind::StartCycle,
-        "cycle.start",
-        Some(provider_attempt),
-    )
+    let prepare = || {
+        prepare_provider_effect_kind(
+            ledger,
+            member,
+            source_record_id,
+            content,
+            harness_core::agentfirm_api::RuntimeCommandKind::StartCycle,
+            "cycle.start",
+            Some(provider_attempt),
+        )
+    };
+    if source_record_id.starts_with(harness_core::work_acceptance::ACCEPTANCE_WAKE_SOURCE_PREFIX) {
+        // Only an acceptance preparation that created no command may retry.
+        // Each attempt reloads exact authority and the Store rechecks eligibility.
+        retry_pre_effect_provider_admission(
+            || ledger.require_supervisor_lease(),
+            prepare,
+            std::thread::sleep,
+        )
+    } else {
+        ledger.require_supervisor_lease()?;
+        prepare()
+    }
 }
 
 pub(crate) fn prepare_provider_process_effect(

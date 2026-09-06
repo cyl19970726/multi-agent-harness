@@ -1042,23 +1042,34 @@ pub(super) fn poll_idle_member_wake(
                 if member_view.is_idle
                     && zero_output_streak < policy.zero_output_degradation_threshold
                 {
-                    if let Some(space_id) = ledger.store.trust_member_run_scope(&member_row.id)? {
-                        if let Some(wake) = ledger
-                            .store
-                            .pending_work_acceptance_wake(&space_id, &member_row.id)?
+                    // The ordinary idle path must not read canonical history
+                    // merely to discover that there is no blocked responsibility.
+                    let has_blocked_work = ledger.store.latest_works()?.iter().any(|work| {
+                        work.owner_member_id.as_deref() == Some(member_row.agent_member_id.as_str())
+                            && work.phase != WorkPhase::Closed
+                            && work.condition == WorkCondition::Blocked
+                    });
+                    if has_blocked_work {
+                        if let Some(space_id) =
+                            ledger.store.trust_member_run_scope(&member_row.id)?
                         {
-                            backoff.reset();
-                            let expected = member_row.clone();
-                            member_row.status = MemberRunStatus::Running;
-                            member_row.finished_at = None;
-                            member_row.last_event_at = Some(now_string());
-                            ledger.save_member_run(&expected, member_row)?;
-                            transition_provider_session_for_member(
-                                ledger,
-                                member_row,
-                                harness_core::agentfirm_api::AgentSessionStatus::Active,
-                            )?;
-                            return Ok(IdleWakeStep::Ready(IdleMemberWake::Acceptance(wake)));
+                            if let Some(wake) = ledger
+                                .store
+                                .pending_work_acceptance_wake(&space_id, &member_row.id)?
+                            {
+                                backoff.reset();
+                                let expected = member_row.clone();
+                                member_row.status = MemberRunStatus::Running;
+                                member_row.finished_at = None;
+                                member_row.last_event_at = Some(now_string());
+                                ledger.save_member_run(&expected, member_row)?;
+                                transition_provider_session_for_member(
+                                    ledger,
+                                    member_row,
+                                    harness_core::agentfirm_api::AgentSessionStatus::Active,
+                                )?;
+                                return Ok(IdleWakeStep::Ready(IdleMemberWake::Acceptance(wake)));
+                            }
                         }
                     }
                 }
