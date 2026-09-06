@@ -199,6 +199,13 @@ while IFS= read -r line; do
           sleep 0.02
         done
       fi
+      if [ "${FAKE_KIMI_TERMINAL_ON_FIRST_RELEASE:-0}" = "1" ] && [ "$prompt_count" = "1" ]; then
+        printf '{"jsonrpc":"2.0","id":%s,"result":{"stopReason":"cancelled"}}\n' "$prompt_id"
+        if [ -n "${FAKE_KIMI_TERMINAL_SENT_MARKER:-}" ]; then
+          : > "$FAKE_KIMI_TERMINAL_SENT_MARKER"
+        fi
+        continue
+      fi
       if [ "${FAKE_KIMI_WAIT:-0}" = "1" ]; then
         continue
       fi

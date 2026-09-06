@@ -16,6 +16,8 @@ mod firm_env;
 
 #[path = "team_run_daemon/completed_run_close.rs"]
 mod completed_run_close;
+#[path = "team_run_daemon/startcycle_shutdown.rs"]
+mod startcycle_shutdown;
 
 use firm_env::{
     create_canonical_agent_member, current_project_id, run_firm, run_firm_with_env, TempHome,
@@ -182,7 +184,10 @@ fn spawn_daemon(
         .env_remove("FIRM_SPACE")
         .env_remove("FIRM_COMPANY")
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null());
+        .stderr(
+            std::fs::File::create(home.base().join("daemon-stderr.log"))
+                .expect("daemon evidence log"),
+        );
     for (key, value) in extra_env {
         command.env(key, value);
     }
