@@ -4,18 +4,28 @@ import { spawnSync } from "node:child_process";
 import { readFileSync, readdirSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 
+import { verifyAttributionV2 } from "./lib/agent-team-attribution-v2.mjs";
+import { loadSelectedSpaceSources } from "./lib/agent-team-evidence-sources.mjs";
+
 import { verifyCanonicalTrustLedgerJsonl } from "./lib/agent-team-trust-ledger.mjs";
 
 const root = "schemas/agent-team-dogfood";
 const schema = JSON.parse(readFileSync(join(root, "evidence.schema.json"), "utf8"));
 const ajv = new Ajv2020({ allErrors: true, strict: false });
-const validateSchema = ajv.compile(schema);
+const validateV1 = ajv.compile(schema);
+const validateV2 = ajv.compile(JSON.parse(readFileSync(join(root, "evidence.v2.schema.json"), "utf8")));
 
 export function verifyAgentTeamDogfoodEvidence(evidence) {
   const failures = [];
+  const validateSchema = evidence?.schema_version === "agentfirm.agent_team_dogfood_evidence.v2" ? validateV2 : validateV1;
   if (!validateSchema(evidence)) {
     failures.push(ajv.errorsText(validateSchema.errors, { separator: "\n" }));
     return failures;
+  }
+  const v2 = evidence.schema_version === "agentfirm.agent_team_dogfood_evidence.v2";
+  if (v2) {
+    const tuples = evidence.sessions.map(s => JSON.stringify([s.agent_session_id, s.session_generation]));
+    if (new Set(tuples).size !== tuples.length) failures.push("v2 requires unique exact Session ID/generation tuples");
   }
   if (evidence.scenario_class !== "coding_dogfood") return failures;
 
@@ -30,11 +40,17 @@ export function verifyAgentTeamDogfoodEvidence(evidence) {
     failures.push("coding_dogfood acceptance must bind to the exact Team Host");
   }
   const sessionMemberIds = evidence.sessions.map((session) => session.agent_member_id);
-  if (new Set(sessionMemberIds).size !== sessionMemberIds.length) {
+  if (!v2 && new Set(sessionMemberIds).size !== sessionMemberIds.length) {
     failures.push("coding_dogfood Session evidence must contain one row per AgentMember");
   }
-  if (!sessionMemberIds.includes(evidence.team.host_agent_member_id)) {
+  if (evidence.host?.mode !== "external_interactive" && !sessionMemberIds.includes(evidence.team.host_agent_member_id)) {
     failures.push("coding_dogfood requires a provider-native Session for the exact Team Host");
+  }
+  if (v2) {
+    if (!sessionMemberIds.includes(implementer)) failures.push("coding_dogfood requires a provider-native Session for the implementer");
+    // Only trusted WorkExecutionBinding can select which generation's counters
+    // matter. verifyAttributionV2 performs that check after source resolution.
+    return failures;
   }
   const implementerSession = evidence.sessions.find(
     (session) => session.agent_member_id === implementer,
@@ -50,6 +66,16 @@ export function verifyAgentTeamDogfoodEvidence(evidence) {
     }
   }
   return failures;
+}
+
+function evidenceSuccessMessage(path, evidence) {
+  if (evidence.schema_version !== "agentfirm.agent_team_dogfood_evidence.v2") {
+    return `${path}: ${evidence.scenario_class} evidence PASS`;
+  }
+  if (evidence.scenario_class === "coordination_canary") {
+    return `${path}: coordination_canary structure PASS; trusted attribution and native execution were not checked`;
+  }
+  return `${path}: structure and trusted attribution PASS; native implementer/reviewer execution and tool evidence require separate native-store review before full coding dogfood Pass`;
 }
 
 function verifyRepositoryEvidence(evidence) {
@@ -125,9 +151,16 @@ function parseCliArguments(args) {
   const evidencePaths = [];
   let trustLedgerPath = null;
   let expectedExecutionSpaceId = null;
+  let harnessBinary = "harness";
   for (let index = 0; index < args.length; index += 1) {
     const argument = args[index];
     if (argument === "--") continue;
+    if (argument === "--harness-bin") {
+      const supplied = args[++index];
+      if (!supplied || supplied.startsWith("--")) throw new Error("--harness-bin requires a binary path");
+      harnessBinary = supplied;
+      continue;
+    }
     if (argument === "--trust-ledger") {
       if (trustLedgerPath !== null) throw new Error("--trust-ledger may be supplied only once");
       const value = args[index + 1];
@@ -153,7 +186,7 @@ function parseCliArguments(args) {
     if (argument.startsWith("--")) throw new Error(`unknown option ${argument}`);
     evidencePaths.push(argument);
   }
-  return { evidencePaths, trustLedgerPath, expectedExecutionSpaceId };
+  return { evidencePaths, trustLedgerPath, expectedExecutionSpaceId, harnessBinary };
 }
 
 assert.deepEqual(
@@ -162,6 +195,7 @@ assert.deepEqual(
     evidencePaths: ["first.json", "second.json", "third.json"],
     trustLedgerPath: null,
     expectedExecutionSpaceId: null,
+    harnessBinary: "harness",
   },
 );
 assert.deepEqual(
@@ -176,6 +210,7 @@ assert.deepEqual(
     evidencePaths: ["first.json"],
     trustLedgerPath: "/space/agentfirm_trust_operations.jsonl",
     expectedExecutionSpaceId: "space-fixture",
+    harnessBinary: "harness",
   },
 );
 assert.throws(() => parseCliArguments(["--trust-ledger"]), /requires a path/u);
@@ -197,7 +232,7 @@ assert.throws(
   /only once/u,
 );
 
-function verifyTrustLedgerPath(evidence, trustLedgerPath, expectedExecutionSpaceId) {
+function verifyTrustLedgerPath(evidence, trustLedgerPath, expectedExecutionSpaceId, harnessBinary = "harness") {
   if (evidence.scenario_class !== "coding_dogfood") return [];
   if (!trustLedgerPath) return ["coding_dogfood requires --trust-ledger"];
   if (!expectedExecutionSpaceId) {
@@ -213,6 +248,10 @@ function verifyTrustLedgerPath(evidence, trustLedgerPath, expectedExecutionSpace
     ];
   }
   try {
+    if (evidence.schema_version === "agentfirm.agent_team_dogfood_evidence.v2") {
+      const sources = loadSelectedSpaceSources(expectedExecutionSpaceId, trustLedgerPath, harnessBinary);
+      return verifyAttributionV2(evidence, sources.records, sources, expectedExecutionSpaceId);
+    }
     return verifyCanonicalTrustLedgerJsonl(
       evidence,
       readFileSync(absoluteLedgerPath, "utf8"),
@@ -258,7 +297,7 @@ function verifyManifestFixtureSuite() {
   return manifest.cases.length;
 }
 
-const { evidencePaths, trustLedgerPath, expectedExecutionSpaceId } = parseCliArguments(
+const { evidencePaths, trustLedgerPath, expectedExecutionSpaceId, harnessBinary } = parseCliArguments(
   process.argv.slice(2),
 );
 if (evidencePaths.length) {
@@ -267,13 +306,13 @@ if (evidencePaths.length) {
     const failures = [
       ...verifyAgentTeamDogfoodEvidence(evidence),
       ...verifyRepositoryEvidence(evidence),
-      ...verifyTrustLedgerPath(evidence, trustLedgerPath, expectedExecutionSpaceId),
+      ...verifyTrustLedgerPath(evidence, trustLedgerPath, expectedExecutionSpaceId, harnessBinary),
     ];
     if (failures.length) {
       console.error(`${path}:\n${failures.join("\n")}`);
       process.exitCode = 1;
     } else {
-      console.log(`${path}: ${evidence.scenario_class} evidence PASS`);
+      console.log(evidenceSuccessMessage(path, evidence));
     }
   }
 } else {
@@ -298,6 +337,19 @@ if (evidencePaths.length) {
       throw new Error(`${name}: expected rejection`);
     }
   }
+  assert.match(evidenceSuccessMessage("canary", {
+    schema_version: "agentfirm.agent_team_dogfood_evidence.v2", scenario_class: "coordination_canary",
+  }), /structure PASS; trusted attribution and native execution were not checked/u);
+  const { fixture } = await import("./fixtures/agent-team-v2.mjs");
+  for (const external of [false, true]) {
+    const bundle = fixture(external), value = bundle.evidence;
+    assert.deepEqual(verifyAgentTeamDogfoodEvidence(value), []);
+    value.sessions.find(s => s.agent_member_id === value.team.implementer_agent_member_id).tool_terminal = 0;
+    assert.ok(verifyAttributionV2(value, bundle.records, bundle.sources, "space-fixture").length,
+      "v2 retains exact implementer generation tool terminal requirement");
+  }
+  await import("./check-agent-team-attribution-v2.mjs");
+  await import("./check-agent-team-evidence-sources.mjs");
   const manifestCases = verifyManifestFixtureSuite();
   const validFixtures = readdirSync(validDir).length;
   const summary = [

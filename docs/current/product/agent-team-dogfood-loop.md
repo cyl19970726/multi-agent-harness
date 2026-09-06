@@ -41,6 +41,76 @@ pnpm verify:agent-team-dogfood -- /path/to/evidence.json \
   --expected-execution-space-id <trusted-execution-space-id>
 ```
 
+For new managed/external Host attribution use
+`agentfirm.agent_team_dogfood_evidence.v2` and
+`schemas/agent-team-dogfood/evidence.v2.schema.json`. Keep the same explicit
+Space and ledger arguments; `--harness-bin /absolute/path/to/firm` selects the
+trusted operator-installed binary when it is not named `harness` on PATH.
+The verifier calls `space show <id>`, checks that exact ID, and derives the
+canonical ledger, `team_runs.jsonl`, and `host_binding_leases.jsonl` paths from
+the returned Store root. An evidence file cannot select a replacement source
+or provide a native discovery receipt.
+
+The v2 `host` branch declares `managed` plus `team_membership_id`, or
+`external_interactive` plus that membership, `surface`, `thread_id`, `lease_id`,
+`owner_id`, and `generation`. Every managed Session row adds
+`session_generation`. `work` adds `work_execution_binding_id` and `delivery_id`.
+These are claims checked against the selected Space records, not new authority
+objects. The exact implementer delivery and its released binding in the Result
+submission establish the execution interval. All native bindings in that Session
+generation up to its submission boundary are checked before comparing native
+IDs; consistent duplicates and locator metadata changes need no reattach event.
+A canonical successor after the interval leaves historical attribution intact.
+Missing binding history or an uncorrelated Result is an evidence gap, never an
+invitation to synthesize old records.
+
+One existing historical path remains an explicit evidence gap ([#879](https://github.com/cyl19970726/multi-agent-harness/issues/879)): submitting a
+Result after a formal Close/Reopen can use an already Released predecessor
+binding. The Store does not persist the selected binding in that Report
+operation again; Work/version/author and a HostAttention MemberRun ID do not
+identify its Session generation. V2 therefore refuses that uncorrelated Report,
+including when a reader sees only one apparent candidate. It neither chooses
+the latest predecessor nor repeats runtime recovery admission. This limitation
+is distinct from a normal Report followed by a later canonical generation,
+which remains verifiable. Preserve the old records; produce a new normally
+correlated delivery if complete fresh evidence is required.
+
+An independent managed reviewer must author its existing canonical Pass Message
+through `member message send|reply`; its `sender_session_id` must name the
+claimed reviewer Session. A managed Host also needs a genuine Session at the
+acceptance boundary. Review and Host acceptance are checked separately even
+when one Member holds both roles: a later acceptance generation cannot be
+credited with an earlier Review. Session claims are unique by `(agent_session_id, session_generation)`, so one
+Member may provide both its Review generation and its later acceptance
+generation. The verifier derives each role from canonical facts before
+selecting its exact claim; a shared exact tuple may serve two roles. Missing,
+duplicate or conflicting tuples refuse. Only the exact WorkExecutionBinding
+generation supplies the implementer tool-count checks. Managed Host selection comes from the
+historical Session's TeamSupervisor TeamRun association at acceptance, before
+comparing the claimed Session/native ID; its node and Space must match the
+TeamRun. Missing or ambiguous associations are evidence gaps. These are
+historical identity checks, not live lease/recovery admission revalidation.
+An external Host has no fabricated Session: v2 checks its
+historical TeamRun, Host membership and lease interval, then invokes the read-only
+`team-run validate-host-session --surface codex --thread-id <id>` bridge. This
+reuses canonical `<HOME>/.codex` metadata discovery, ignoring `CODEX_HOME`, and
+never binds a Host or writes a lease. Discovery proves same-user metadata
+existence, not an active window or cross-user authentication. A subsequent
+Released lease row does not erase a prior recorded valid interval; a future
+renewal cannot repair expiry at acceptance. Unsupported old Claude discovery
+cannot be retrospectively replaced with a Codex receipt.
+
+**A v2 success proves structure and trusted attribution only.** Counts remain
+necessary claims; they do not prove native tool execution. Before claiming full
+coding dogfood, separately inspect the real implementer and independent
+reviewer's provider-native records, including tool start/terminal evidence,
+actual checks and exact revision. The verifier never imports native transcript
+content into Harness or the evidence bundle. Deterministic fixtures do not
+constitute a live dogfood run.
+
+The following describes the preserved v1 contract. Old v1 files keep their
+original schema, checks and failure history; they are not silently upgraded.
+
 The evidence schema is
 `schemas/agent-team-dogfood/evidence.schema.json`; canonical ledger examples and
 adversarial cases are indexed by

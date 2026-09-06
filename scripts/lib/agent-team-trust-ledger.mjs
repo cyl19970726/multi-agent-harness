@@ -146,7 +146,7 @@ export function parseTrustOperationJsonl(jsonl) {
   return records;
 }
 
-export function verifyCanonicalTrustLedger(evidence, records, expectedExecutionSpaceId) {
+export function verifyCanonicalWorkFacts(evidence, records, expectedExecutionSpaceId) {
   const failures = [];
   if (!isObject(evidence) || !isObject(evidence.team) || !isObject(evidence.revision)
       || !isObject(evidence.work) || !Array.isArray(evidence.sessions)) {
@@ -305,6 +305,16 @@ export function verifyCanonicalTrustLedger(evidence, records, expectedExecutionS
     }
   }
 
+  checkExecutionSpaces(failures, matchedRecords, expectedExecutionSpaceId);
+
+  return failures;
+}
+
+export function verifyCanonicalTrustLedger(evidence, records, expectedExecutionSpaceId) {
+  const failures = verifyCanonicalWorkFacts(evidence, records, expectedExecutionSpaceId);
+  if (!Array.isArray(evidence?.sessions) || !Array.isArray(records)) return failures;
+  const { sessions } = evidence;
+  const matchedRecords = [];
   const seenMemberIds = new Set();
   const seenSessionIds = new Set();
   for (const session of sessions) {
@@ -364,7 +374,6 @@ export function verifyCanonicalTrustLedger(evidence, records, expectedExecutionS
   }
 
   checkExecutionSpaces(failures, matchedRecords, expectedExecutionSpaceId);
-
   return failures;
 }
 
