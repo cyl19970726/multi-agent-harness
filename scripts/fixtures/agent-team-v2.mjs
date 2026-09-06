@@ -10,6 +10,8 @@ export function fixture(external = false) {
   records.forEach((r, i) => { r.operation.event.store_sequence = i < 3 ? 20 + i : i + 1; });
   for (const r of records.slice(3)) {
     r.operation.event.payload.runtime_generation = 1; r.operation.resulting_projection.runtime_generation = 1;
+    Object.assign(r.operation.resulting_projection, {node_id:'node',execution_space_id:spaceId,lifecycle:'active',
+      control_state:{driver_ref:{kind:'team_supervisor',team_run_id:'team-run-fixture',team_supervisor_id:'supervisor',team_supervisor_generation:1}}});
   }
   const row = (seq, kind, data) => ({execution_space_id:spaceId, operation:{event:{id:`event-${seq}`,aggregate_kind:kind,
     aggregate_id:data.id,store_sequence:seq,created_at:'unix-ms:900',transition:'created'},resulting_projection:data,immutable_side_records:[],initial_outbox_records:[]}});
@@ -22,7 +24,7 @@ export function fixture(external = false) {
   records.push(row(11,'work_delivery_receipt',{id:'delivery',work_id:'work-fixture',work_revision:2,work_execution_binding_id:'binding',recipient_agent_member_id:'member-fixture',recipient_session_id:'agent-session-member',recipient_session_generation:1,status:'provider_received',provider_receipt_id:'receipt'}));
   records[0].operation.immutable_side_records.push({...binding,status:'released',version:2,ended_at:'unix-ms:1000'});
   const teamRuns = [{id:'team-run-fixture',agent_team_id:'team-fixture',execution_node_id:'node',host_control_mode:evidence.host.mode,
-    host_actor:{kind:'host',id:'host-fixture'},host_surface:'codex',host_thread_id:external?'native-external':'native-host',updated_at:'unix-ms:900'}];
+    host_actor:{kind:'host',id:'host-fixture'},host_surface:'codex',host_thread_id:external?'native-external':null,updated_at:'unix-ms:900'}];
   const hostLeases = [];
   if (external) {
     Object.assign(evidence.host,{surface:'codex',thread_id:'native-external',owner_id:'interactive:codex:native-external',lease_id:'lease',generation:1});

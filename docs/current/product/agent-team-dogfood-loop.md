@@ -78,7 +78,15 @@ correlated delivery if complete fresh evidence is required.
 An independent managed reviewer must author its existing canonical Pass Message
 through `member message send|reply`; its `sender_session_id` must name the
 claimed reviewer Session. A managed Host also needs a genuine Session at the
-acceptance boundary. An external Host has no fabricated Session: v2 checks its
+acceptance boundary. Review and Host acceptance are checked separately even
+when one Member holds both roles: a later acceptance generation cannot be
+credited with an earlier Review. A single Session claim that does not prove
+both role boundaries is refused. Managed Host selection comes from the
+historical Session's TeamSupervisor TeamRun association at acceptance, before
+comparing the claimed Session/native ID; its node and Space must match the
+TeamRun. Missing or ambiguous associations are evidence gaps. These are
+historical identity checks, not live lease/recovery admission revalidation.
+An external Host has no fabricated Session: v2 checks its
 historical TeamRun, Host membership and lease interval, then invokes the read-only
 `team-run validate-host-session --surface codex --thread-id <id>` bridge. This
 reuses canonical `<HOME>/.codex` metadata discovery, ignoring `CODEX_HOME`, and

@@ -57,6 +57,16 @@ export function verifyAgentTeamDogfoodEvidence(evidence) {
   return failures;
 }
 
+function evidenceSuccessMessage(path, evidence) {
+  if (evidence.schema_version !== "agentfirm.agent_team_dogfood_evidence.v2") {
+    return `${path}: ${evidence.scenario_class} evidence PASS`;
+  }
+  if (evidence.scenario_class === "coordination_canary") {
+    return `${path}: coordination_canary structure PASS; trusted attribution and native execution were not checked`;
+  }
+  return `${path}: structure and trusted attribution PASS; native implementer/reviewer execution and tool evidence require separate native-store review before full coding dogfood Pass`;
+}
+
 function verifyRepositoryEvidence(evidence) {
   if (evidence.scenario_class !== "coding_dogfood") return [];
   const failures = [];
@@ -291,9 +301,7 @@ if (evidencePaths.length) {
       console.error(`${path}:\n${failures.join("\n")}`);
       process.exitCode = 1;
     } else {
-      console.log(evidence.schema_version === "agentfirm.agent_team_dogfood_evidence.v2"
-        ? `${path}: structure and trusted attribution PASS; native implementer/reviewer execution and tool evidence require separate native-store review before full coding dogfood Pass`
-        : `${path}: ${evidence.scenario_class} evidence PASS`);
+      console.log(evidenceSuccessMessage(path, evidence));
     }
   }
 } else {
@@ -318,6 +326,9 @@ if (evidencePaths.length) {
       throw new Error(`${name}: expected rejection`);
     }
   }
+  assert.match(evidenceSuccessMessage("canary", {
+    schema_version: "agentfirm.agent_team_dogfood_evidence.v2", scenario_class: "coordination_canary",
+  }), /structure PASS; trusted attribution and native execution were not checked/u);
   const { fixture } = await import("./fixtures/agent-team-v2.mjs");
   for (const external of [false, true]) {
     const value = fixture(external).evidence;

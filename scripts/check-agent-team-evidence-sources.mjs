@@ -58,6 +58,11 @@ try {
     const other=join(root,'caller-codex');mkdirSync(join(other,'sessions'),{recursive:true});
     writeFileSync(join(other,'sessions','rollout-native-external.jsonl'),readFileSync(rollout));unlinkSync(rollout);env.CODEX_HOME=other;
     assert.notEqual(verify(join(selectedRoot,'agentfirm_trust_operations.jsonl')).status,0,'caller CODEX_HOME cannot repair missing canonical metadata');
+    const canary=structuredClone(f.evidence);canary.scenario_class='coordination_canary';canary.limitations=['Structure-only fixture'];
+    const canaryPath=join(root,'canary.json');writeFileSync(canaryPath,JSON.stringify(canary));
+    const canaryResult=spawnSync(process.execPath,['scripts/check-agent-team-dogfood-evidence.mjs',canaryPath],{env,encoding:'utf8',timeout:30000});
+    assert.equal(canaryResult.status,0,canaryResult.stderr);
+    assert.match(canaryResult.stdout,/coordination_canary structure PASS; trusted attribution and native execution were not checked/);
     console.log('v2 real CLI source integration PASS: selected Space, historical lease, canonical native discovery, forged path/refusal; deterministic fixtures only');
   }
   console.log('v2 selected-source unit checks PASS');

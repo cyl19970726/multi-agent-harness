@@ -70,6 +70,25 @@ function sessionAt(records, session, boundary, startBoundary = boundary) {
   }
 }
 
+// Historical association only: resolve all committed Sessions at acceptance,
+// independently of the evidence-selected Session/native ID. No live lease,
+// residency, permission or recovery admission predicates are replayed here.
+function managedHostAt(records, memberId, run, boundary, expectedSpaceId) {
+  const sessions = new Map();
+  for (const record of records.filter(r => event(r).aggregate_kind === 'agent_session'
+    && sequence(r) <= boundary).sort((a, b) => sequence(a) - sequence(b))) {
+    sessions.set(event(record).aggregate_id, projection(record));
+  }
+  const associated = [...sessions.values()].filter(row => row?.agent_member_id === memberId
+    && row.lifecycle !== 'closed'
+    && row.control_state?.driver_ref?.kind === 'team_supervisor'
+    && row.control_state.driver_ref.team_run_id === run.id);
+  const session = one(associated, 'historically associated managed Host Session (missing/ambiguous association is an evidence gap)');
+  equal(session.node_id, run.execution_node_id, 'managed Host Session node');
+  equal(session.execution_space_id, expectedSpaceId, 'managed Host Session Space');
+  return session;
+}
+
 function deliveryAt(records, evidence, reportRecord) {
   const { work, team } = evidence;
   const bounded = records.filter(r => sequence(r) <= sequence(reportRecord));
@@ -173,14 +192,21 @@ export function verifyAttributionV2(evidence, records, sources, expectedSpaceId)
     requireFact(implementer.agent_member_id !== reviewer.agent_member_id, 'reviewer must be independent');
     requireFact(new Set(evidence.sessions.map(s => s.agent_session_id)).size === evidence.sessions.length, 'duplicate Session identity');
     requireFact(new Set(evidence.sessions.map(s => s.agent_member_id)).size === evidence.sessions.length, 'duplicate Session Member');
-    for (const session of evidence.sessions) {
-      const isImplementer = session === implementer;
-      const boundary = isImplementer ? sequence(report) : session.agent_member_id === team.host_agent_member_id
-        ? sequence(accept) : sequence(review);
-      sessionAt(records, session, boundary, isImplementer ? start : boundary);
+    sessionAt(records, implementer, sequence(report), start);
+    // One Member may hold both roles. Acceptance must never substitute for
+    // Review's earlier generation boundary. A single claim that cannot prove
+    // both boundaries refuses rather than crediting a later executor.
+    sessionAt(records, reviewer, sequence(review));
+    for (const session of evidence.sessions.filter(s => s !== implementer && s !== reviewer
+      && s.agent_member_id !== team.host_agent_member_id)) {
+      sessionAt(records, session, sequence(review));
     }
     if (host.mode === 'managed') {
-      one(evidence.sessions.filter(s => s.agent_member_id === team.host_agent_member_id), 'managed Host Session');
+      const actualHost = managedHostAt(records, team.host_agent_member_id, run, sequence(accept), expectedSpaceId);
+      const claimedHost = one(evidence.sessions.filter(s => s.agent_member_id === team.host_agent_member_id), 'managed Host Session');
+      equal(claimedHost.agent_session_id, actualHost.id, 'managed Host associated Session');
+      equal(claimedHost.session_generation, actualHost.runtime_generation, 'managed Host acceptance generation');
+      sessionAt(records, claimedHost, sequence(accept));
     } else {
       requireFact(!evidence.sessions.some(s => s.agent_member_id === team.host_agent_member_id), 'external Host must not fabricate an AgentSession');
       equal(run.host_surface, host.surface, 'external Host surface'); equal(run.host_thread_id, host.thread_id, 'external Host thread');
