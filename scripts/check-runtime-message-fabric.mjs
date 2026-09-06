@@ -117,6 +117,17 @@ const daemon = productionRustTree([
   "crates/firm-cli/src/supervisor_daemon.rs",
   "crates/firm-cli/src/supervisor_daemon",
 ]);
+// S7a keeps clients and application composition outside the daemon owner.
+const daemonClientPath = "crates/firm-cli/src/daemon_client.rs";
+const daemonClient = productionRust(daemonClientPath);
+const daemonSeamPaths = [
+  daemonClientPath,
+  "crates/firm-cli/src/daemon_application.rs",
+  "crates/firm-cli/src/daemon_application_port.rs",
+  "crates/firm-cli/src/daemon_error.rs",
+  "crates/firm-cli/src/daemon_protocol.rs",
+  "crates/firm-cli/src/daemon_support.rs",
+];
 const server = productionRustTree([
   "crates/firm-cli/src/main.rs",
   "crates/firm-cli/src/main_modules",
@@ -158,7 +169,12 @@ for (const token of [
   if (!storeProduction.includes(token)) failures.push(`missing canonical Store authority: ${token}`);
 }
 if (!daemon.includes('"runtime" =>')) failures.push("NodeDaemon does not own RuntimeCommand admission");
-if (!daemon.includes("runtime_command_via_socket")) failures.push("runtime command socket transport missing");
+if (!daemonClient.includes("pub(crate) fn runtime_command_via_socket(")) {
+  failures.push(`${daemonClientPath}: runtime command socket transport missing`);
+}
+if (daemon.includes("fn runtime_command_via_socket(")) {
+  failures.push("runtime command socket transport escaped CLI client ownership into NodeDaemon");
+}
 if (!server.includes('/v1/agentfirm/runtime-commands')) failures.push("authenticated HTTP runtime command route missing");
 if (!server.includes("target_node_daemon_generation: lease.generation")) failures.push("server does not freeze current daemon generation");
 for (const token of [
@@ -215,6 +231,7 @@ if (!storeProduction.includes("resolve_runtime_command_recovery")) {
 const activeRuntimeSources = [
   ["CLI command surface", server],
   ["NodeDaemon", productionRust("crates/firm-cli/src/supervisor_daemon.rs")],
+  ...daemonSeamPaths.map((path) => [path, productionRust(path)]),
   ["Store runtime authority", storeProduction],
   ["core runtime contracts", core],
 ];
@@ -297,6 +314,7 @@ for (const path of [
   "crates/firm-store/src/trust_kernel.rs",
   "crates/firm-cli/src/main.rs",
   "crates/firm-cli/src/supervisor_daemon.rs",
+  ...daemonSeamPaths,
 ]) {
   const text = productionRust(path);
   for (const token of retiredWave4AMessageTokens) {
@@ -475,6 +493,7 @@ for (const path of [
   "crates/firm-cli/src/fabric_runtime.rs",
   "crates/firm-cli/src/role_actions_api.rs",
   "crates/firm-cli/src/role_views_api.rs",
+  ...daemonSeamPaths,
 ]) {
   const text = productionRust(path);
   for (const retiredReader of [
