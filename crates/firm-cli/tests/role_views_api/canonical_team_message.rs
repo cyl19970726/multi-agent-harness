@@ -382,7 +382,7 @@ fn canonical_team_message_journey_uses_node_daemon_sessions_deliveries_and_curso
     let (status, resolved) =
         serve.post_json_with_headers(&recovery_route, &recovery_intent, &recovery_headers);
     assert_eq!(status, 200, "resolve RecoveryRequired: {resolved}");
-    assert_eq!(resolved["projection"]["status"], "failed");
+    assert!(resolved["projection"].get("status").is_none());
     assert_eq!(resolved["projection"]["phase"], "rejected");
     assert_eq!(resolved["projection"]["effect_certainty"], "not_applied");
     assert_eq!(
@@ -408,18 +408,10 @@ fn canonical_team_message_journey_uses_node_daemon_sessions_deliveries_and_curso
         "replayed recovery resolution cannot repeat a provider or durable effect"
     );
 
-    for (
-        command_id,
-        resolution,
-        expected_status,
-        expected_phase,
-        expected_certainty,
-        failure_code,
-    ) in [
+    for (command_id, resolution, expected_phase, expected_certainty, failure_code) in [
         (
             "runtime-command-role-view-confirm-applied",
             "confirm_applied",
-            "applied",
             "settled",
             "applied",
             None,
@@ -427,7 +419,6 @@ fn canonical_team_message_journey_uses_node_daemon_sessions_deliveries_and_curso
         (
             "runtime-command-role-view-keep-required",
             "keep_recovery_required",
-            "recovery_required",
             "recovery_required",
             "unknown",
             Some("RECOVERY_EVIDENCE_INSUFFICIENT"),
@@ -453,7 +444,7 @@ fn canonical_team_message_journey_uses_node_daemon_sessions_deliveries_and_curso
         });
         let (status, outcome) = serve.post_json_with_headers(&route, &intent, &headers);
         assert_eq!(status, 200, "{resolution} outcome: {outcome}");
-        assert_eq!(outcome["projection"]["status"], expected_status);
+        assert!(outcome["projection"].get("status").is_none());
         assert_eq!(outcome["projection"]["phase"], expected_phase);
         assert_eq!(
             outcome["projection"]["effect_certainty"],
