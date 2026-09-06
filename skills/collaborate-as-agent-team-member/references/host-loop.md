@@ -44,6 +44,10 @@ Decide, explicitly and durably, before `team-run start`:
 - **Completion standards**: what evidence each kind of Work must carry (PR
   URL, named check command with exit code, artifact path). If you cannot name
   the evidence, the Work is not bounded yet.
+- **Command and service limits**: apply [Part II](../SKILL.md#bound-commands-and-own-long-running-services)
+  to your own commands and the assignment. Name limits for load tests and an
+  owner/stop procedure for any intentional service; inspect cleanup or handoff
+  evidence at closeout instead of assuming Member Close killed every descendant.
 
 Create the durable Team once; it persists across runs:
 

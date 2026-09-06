@@ -146,6 +146,10 @@ session. Explicitly separate Sessions may share a cwd with coordinated writes
 
 ## Own Your Internal Plan
 
+Apply [Part II's command and service rules](../SKILL.md#bound-commands-and-own-long-running-services)
+before running tools: bounded foreground work by default; an intentional
+service needs an owner and verified cleanup or handoff, including across turns.
+
 Translate the current Work into your own design, implementation, and verification plan. Provider-native plan/goal features are optional internal aids; they are not Harness state or Host acceptance — see shared hard invariants §8 (no Plan Mode/Gate). When the Host asks for a plan first, reply with concise Markdown in a Work-linked conversation, address revisions, and execute only after the Host says to proceed.
 
 Use the execution driver selected by the Host/adapter — see shared hard invariants §2 (one execution driver per MemberRun). The three drivers are `host_driven` (Harness starts each cycle, return control at safe boundaries), `provider_driven` (use the reviewed native continuation controller and report its terminal reason), and `user_driven` (only for `external_interactive` members).
