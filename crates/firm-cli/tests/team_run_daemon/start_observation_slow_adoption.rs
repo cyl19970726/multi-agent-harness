@@ -1,6 +1,51 @@
 use super::*;
 use std::io::Read as _;
 
+/// Reap every spawned process on any test outcome. The release file is
+/// created first so a shim still parked in its probe loop can exit before
+/// the kill, leaving no orphaned provider process behind.
+struct ProcessGuard {
+    release: PathBuf,
+    children: Vec<std::process::Child>,
+}
+
+impl ProcessGuard {
+    fn new(release: &Path) -> Self {
+        Self {
+            release: release.to_path_buf(),
+            children: Vec::new(),
+        }
+    }
+
+    fn watch(&mut self, child: std::process::Child) {
+        self.children.push(child);
+    }
+}
+
+impl Drop for ProcessGuard {
+    fn drop(&mut self) {
+        let _ = std::fs::File::create(&self.release);
+        for child in &mut self.children {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+}
+
+/// Read a finished child's piped output for diagnostics. Only call after the
+/// child exited; the pipes block while it runs.
+fn finished_child_output(child: &mut std::process::Child) -> (String, String) {
+    let mut stdout = String::new();
+    let mut stderr = String::new();
+    if let Some(mut out) = child.stdout.take() {
+        let _ = out.read_to_string(&mut stdout);
+    }
+    if let Some(mut err) = child.stderr.take() {
+        let _ = err.read_to_string(&mut stderr);
+    }
+    (stdout, stderr)
+}
+
 /// #773 expectation 2: an explicit `team-run start` competing with a slow
 /// boot-time adoption must eventually return proved success instead of
 /// TEAM_RUN_START_RESULT_UNKNOWN, with exactly one start request, no
@@ -15,6 +60,7 @@ fn start_during_slow_adoption_observes_and_proves_exact_postcondition_once() {
     // so boot adoption holds supervisor_start_gate until the test releases
     // it. Everything else delegates to the ordinary fake Kimi ACP shim.
     let release = home.base().join("kimi-probe-release");
+    let mut processes = ProcessGuard::new(&release);
     let wrapper_dir = home.base().join("fakebin-slow-kimi");
     std::fs::create_dir_all(&wrapper_dir).expect("wrapper bin dir");
     let wrapper_path = wrapper_dir.join("kimi");
@@ -33,7 +79,8 @@ fn start_during_slow_adoption_observes_and_proves_exact_postcondition_once() {
         std::fs::set_permissions(&wrapper_path, std::fs::Permissions::from_mode(0o755))
             .expect("chmod wrapper shim");
     }
-    let fake_path = format!(
+    let wrapper_path_string = wrapper_path.display().to_string();
+    let daemon_path = format!(
         "{}:{}:{}",
         wrapper_dir.display(),
         fake_bin.display(),
@@ -42,19 +89,30 @@ fn start_during_slow_adoption_observes_and_proves_exact_postcondition_once() {
 
     let run_id = create_run(&home, &fixture, "worker", &[]);
     let socket = node_daemon_socket_path(&home, &fixture.node_id);
-    let kimi_bin = wrapper_path.display().to_string();
-    let provider_env = [
-        ("PATH", fake_path.as_str()),
-        ("KIMI_CODE_BIN", kimi_bin.as_str()),
+    let daemon_env = [
+        ("PATH", daemon_path.as_str()),
+        ("KIMI_CODE_BIN", wrapper_path_string.as_str()),
         ("FAKE_KIMI_VERSION", "0.36.1"),
         ("FAKE_KIMI_WAIT", "1"),
     ];
-    let mut daemon = spawn_daemon(&home, &fixture, &provider_env);
-    wait_for_socket(&mut daemon, &socket);
+    let daemon = spawn_daemon(&home, &fixture, &daemon_env);
+    processes.watch(daemon);
+    let socket_wait_child_index = processes.children.len() - 1;
+    wait_for_socket(&mut processes.children[socket_wait_child_index], &socket);
 
-    // The explicit start competes with the blocked boot adoption. Spawn it as
-    // a child so the test can release the probe only after the start lane's
-    // read budget (3 x 5s same-socket reads) has provably expired.
+    // The explicit start competes with the blocked boot adoption. The start
+    // CLI itself probes the member's provider version in prepare before it
+    // may send, so its environment gets the FAST shim (never the gated
+    // wrapper): the start frame must reach the daemon while adoption still
+    // holds the gate. Spawn it as a child so the test can release the probe
+    // only after the start lane's read budget (3 x 5s same-socket reads) has
+    // provably expired.
+    let fast_kimi = fake_bin.join("kimi").display().to_string();
+    let client_path = format!(
+        "{}:{}",
+        fake_bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
     let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_firm"));
     command
         .args([
@@ -69,6 +127,9 @@ fn start_during_slow_adoption_observes_and_proves_exact_postcondition_once() {
         ])
         .current_dir(&fixture.project_root)
         .envs(home.envs())
+        .env("PATH", &client_path)
+        .env("KIMI_CODE_BIN", &fast_kimi)
+        .env("FAKE_KIMI_VERSION", "0.36.1")
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
     for key in [
@@ -98,13 +159,20 @@ fn start_during_slow_adoption_observes_and_proves_exact_postcondition_once() {
     ] {
         command.env_remove(key);
     }
-    let mut start = command.spawn().expect("spawn team-run start");
+    let start = command.spawn().expect("spawn team-run start");
+    processes.watch(start);
+    let start_index = processes.children.len() - 1;
 
     std::thread::sleep(Duration::from_secs(17));
-    assert!(
-        start.try_wait().expect("inspect team-run start").is_none(),
-        "team-run start resolved before the adoption probe was released"
-    );
+    if let Some(status) = processes.children[start_index]
+        .try_wait()
+        .expect("inspect team-run start")
+    {
+        let (stdout, stderr) = finished_child_output(&mut processes.children[start_index]);
+        panic!(
+            "team-run start resolved before the adoption probe was released (status {status})\nstdout: {stdout}\nstderr: {stderr}"
+        );
+    }
     let mid_status = socket_request(&socket, &serde_json::json!({"cmd":"status"}).to_string());
     assert_eq!(
         mid_status["ok"], true,
@@ -114,21 +182,11 @@ fn start_during_slow_adoption_observes_and_proves_exact_postcondition_once() {
     std::fs::File::create(&release).expect("release provider probe");
     let deadline = Instant::now() + Duration::from_secs(45);
     let output = loop {
-        if let Some(status) = start.try_wait().expect("inspect team-run start") {
-            let mut stdout = String::new();
-            start
-                .stdout
-                .take()
-                .expect("start stdout")
-                .read_to_string(&mut stdout)
-                .expect("read start stdout");
-            let mut stderr = String::new();
-            start
-                .stderr
-                .take()
-                .expect("start stderr")
-                .read_to_string(&mut stderr)
-                .expect("read start stderr");
+        if let Some(status) = processes.children[start_index]
+            .try_wait()
+            .expect("inspect team-run start")
+        {
+            let (stdout, stderr) = finished_child_output(&mut processes.children[start_index]);
             break std::process::Output {
                 status,
                 stdout: stdout.into_bytes(),
@@ -137,7 +195,8 @@ fn start_during_slow_adoption_observes_and_proves_exact_postcondition_once() {
         }
         assert!(
             Instant::now() < deadline,
-            "team-run start did not resolve after the adoption probe was released"
+            "team-run start did not resolve after the adoption probe was released; daemon evidence log: {}",
+            home.base().join("daemon-stderr.log").display()
         );
         std::thread::sleep(Duration::from_millis(50));
     };
@@ -166,5 +225,6 @@ fn start_during_slow_adoption_observes_and_proves_exact_postcondition_once() {
     assert_eq!(duplicate["already_managed"], true);
     assert_eq!(duplicate["supervisor_generation"], 1);
 
+    let mut daemon = processes.children.remove(socket_wait_child_index);
     stop_daemon(&home, &fixture, &mut daemon, &socket);
 }
