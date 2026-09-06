@@ -17,9 +17,10 @@ Own one shared-board Work end to end. This skill is a procedural capability, not
 product authority. You are a durable AgentMember participating through one
 exact active TeamMembership. The machine-local NodeDaemon owns your current
 AgentSession and provider thread; Work responsibility is frozen separately in
-WorkExecutionBinding. MemberRun and Workspace rows are coordination/history
-projections, not provider runtime authority. Your Provider-native subagents are
-implementation details.
+WorkExecutionBinding. MemberRun does not own the provider runtime, but its
+runtime_generation is the adapter-process fence (ADR 0065); AgentSession has
+the separate provider-session epoch. Workspace rows do not grant runtime
+authority. Your Provider-native subagents are implementation details.
 
 Use the exact `FIRM_BIN` and identifiers supplied by the collaboration
 envelope. Do not substitute another binary from `PATH` or infer identity from a
@@ -139,8 +140,9 @@ continuity may resume, but neither is Work ownership.
 
 V1 permits one `Active` Work per Member (`MEMBER_BUSY` refuses a second Start)
 unless a concrete capacity profile says otherwise. You may own several Open
-Works but must not start two top-level cycles in one native session or
-writable Workspace.
+Works but must not run competing top-level drivers for one MemberRun/native
+session. Explicitly separate Sessions may share a cwd with coordinated writes
+— see shared hard invariants §2.
 
 ## Own Your Internal Plan
 
@@ -148,7 +150,11 @@ Translate the current Work into your own design, implementation, and verificatio
 
 Use the execution driver selected by the Host/adapter — see shared hard invariants §2 (one execution driver per MemberRun). The three drivers are `host_driven` (Harness starts each cycle, return control at safe boundaries), `provider_driven` (use the reviewed native continuation controller and report its terminal reason), and `user_driven` (only for `external_interactive` members).
 
-Use Provider-native subagents for bounded internal lanes. They inherit your Workspace and permission ceiling, return evidence to you, and never become Harness Members or independent reviewers — see shared hard invariants §6.
+Use Provider-native subagents for authorized bounded internal lanes. They
+return evidence to you without automatically becoming Harness Members or
+gaining Work ownership or acceptance authority. Explicitly authorized
+independent Development Task review follows the applicable review procedure
+and reviewer qualifications — see shared hard invariants §6.
 
 ## Read And Send Work-Linked Conversation
 
