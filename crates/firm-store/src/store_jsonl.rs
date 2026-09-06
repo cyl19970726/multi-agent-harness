@@ -130,9 +130,9 @@ impl HarnessStore {
 
     /// Collapse the lease file to one row per run (latest wins).
     ///
-    /// Called on acquisition, which is rare (one per Supervisor generation),
-    /// while heartbeats are frequent. Bounds the file at ~#runs rows so the
-    /// tail window above always hits and the file stops growing without bound.
+    /// Called on acquisition and renewal. After the caller appends, the file
+    /// contains at most one latest row per run plus the new row, independent
+    /// of heartbeat history. Large run counts may still require tail fallback.
     /// Generation fencing is unaffected: the retained row is exactly the row a
     /// full-scan latest-wins projection would have produced.
     pub(super) fn compact_supervisor_leases_unlocked(&self) -> StoreResult<()> {
@@ -175,8 +175,7 @@ impl HarnessStore {
     /// readers rely on.
     ///
     /// Called on renewal: NodeDaemon heartbeats renew ~1/s while acquisition
-    /// is rare, so this is where compaction belongs (the Supervisor version
-    /// compacts on the rare acquisition instead). The retention rule mirrors
+    /// is rare, so this is where compaction belongs. The retention rule mirrors
     /// `compact_supervisor_leases_unlocked`'s "latest row per key wins", but
     /// the key is the lease LIFECYCLE, not the node: per
     /// `(node_id, daemon_id, generation)` group, keep the group's first row

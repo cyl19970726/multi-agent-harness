@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn reviewed_recovery_advances_runtime_without_mutating_stable_work_responsibility() {
+fn reviewed_recovery_preserves_closed_runtime_and_stable_work_responsibility() {
     let home = TempHome::new("team-run-reviewed-stable-id-recovery");
     let project_id = init_project(&home, "alpha");
     let fake_bin = fake_provider::install_kimi_acp_shim(home.base());
@@ -134,7 +134,12 @@ fn reviewed_recovery_advances_runtime_without_mutating_stable_work_responsibilit
 
     let first_report = recover(false);
     assert_eq!(first_report["rebound_works"].as_u64(), Some(0));
-    assert_eq!(first_report["reopened"].as_u64(), Some(1));
+    assert_eq!(first_report["reopened"].as_u64(), Some(0));
+    assert!(first_report["closed_members_not_restarted"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|row| row["member_run_id"] == member_id));
     assert!(
         !acp_marker.exists(),
         "recovery redelivery must not start the provider"
@@ -179,7 +184,11 @@ fn reviewed_recovery_advances_runtime_without_mutating_stable_work_responsibilit
         .find(|member| member.id == member_id)
         .expect("recovered ProviderRuntimeProjection");
     assert_eq!(latest_member.id, member_id);
-    assert_eq!(latest_member.runtime_generation, original_generation + 1);
+    assert_eq!(latest_member.runtime_generation, original_generation);
+    assert_eq!(
+        latest_member, stopped_member,
+        "recover cannot reopen or refresh an explicitly Closed lane"
+    );
     assert!(latest_member.native_session.is_none());
     assert_eq!(
         store
