@@ -247,12 +247,17 @@ firm team-run work request-changes --work-id <work-id> --expected-version <n> \
 - **Accept** → Work closes with resolution `Accepted`. Declared Work gates are
   a Store invariant; there is no bypass flag, so unmet gates mean
   request-changes, not a workaround.
-- **Acceptance does not wake the member.** After you accept the last
-  outstanding Work of a member that holds a parked (`blocked`) Work, send
-  the resume deliberately: a `response-required` Message naming what you
-  accepted and what should resume. The member then runs `member work
-  resume` on the next exact version itself. Without the message the member
-  stays asleep — it never wakes from acceptance itself.
+- **Acceptance may prompt one reconsideration; it never resumes Work.**
+  Under the shared contract in SKILL.md Part I, accepting a member's own
+  other Work after its current blocking interval can wake an eligible idle
+  managed member once, when no normal active/review Work remains. Let the
+  member check the blocker and explicitly run `member work resume` against
+  the current version if it is resolved. Do not send a second wake merely
+  because you accepted the Work. Preparation consumes this automatic wake
+  even if execution fails; it is not a retry guarantee. When another turn is
+  needed, use an ordinary `response-required` Message with the exact context
+  after checking current Work/runtime state; use explicit recovery for an
+  uncertain or unavailable runtime.
 - **Request changes** → Work returns Review → Open with your reasons recorded
   in WorkEvent history. Stable AgentMember/TeamMembership responsibility
   remains; the scheduler must create the next exact `WorkExecutionBinding`

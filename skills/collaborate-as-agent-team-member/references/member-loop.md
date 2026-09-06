@@ -226,17 +226,18 @@ When safe progress is impossible, preserve ownership and record the blocker:
 The Supervisor-bound Member Role Action derives your exact MemberRun and
 AgentSession scope. Never supply or override a sender or Member identity.
 
-**Never park to wait for acceptance.** Host acceptance of a Work does not
-wake you — the only wake sources are a delivery of an assigned/redelivered
-Work, a `response-required` Message, and your own active Work. Do not block
-your standing Work to run round Works and expect the last acceptance (or
-another Work's completion) to resume it: nothing wakes on acceptance, and
-you stay blocked until someone messages you. If the one-Active-Work rule
-allows, keep the standing Work active while running the round Works. When
-parking is genuinely unavoidable, the block `--reason` must name the exact
-Host action you are waiting for — e.g. "parked for W-123; resume me with a
-response-required message after W-123 is accepted" — so the Host can send
-the wake deliberately instead of discovering a silently parked member.
+**Acceptance can prompt reconsideration; it never resumes blocked Work.**
+Follow SKILL.md Part I's qualified, one-time acceptance wake contract.
+If the one-Active-Work rule allows useful progress, keep the standing Work
+active. When blocking is necessary, name the exact prerequisite in `--reason`
+— for example, "awaiting Host acceptance of W-123 before verifying its
+outcome." After a wake, read current Work facts and explicitly resume against
+the latest version only if that blocker is resolved. Another Work's provider
+completion is not acceptance, and an acceptance elsewhere is not a generic
+dependency notification. Preparation consumes the automatic wake even if
+execution fails; do not rely on retries. An ordinary response-required
+Message or explicit runtime recovery remains available when Host intervention
+is needed.
 
 Then send one concise linked Message with options and recommendation when Human,
 Host, or peer input is useful. Do not repeatedly resend or create duplicate
