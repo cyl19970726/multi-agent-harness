@@ -18,6 +18,16 @@ nothing falls back silently between them.
 
 ## 1. Compose the Team before starting anything
 
+For dogfood, first complete [SKILL.md Part 0](../SKILL.md)'s global skill
+refresh on every participating coding agent's machine/account, including your
+own Host session. Install the full collaboration and shared-reference packages
+from the same approved revision; verify global and project-shadowing copies,
+then have each agent load the shared contract and its role loop. Record any
+provider without a verified global install path and its verified explicit
+loading alternative. Recheck newly added Members and refresh old sessions at
+a safe boundary after a skill update. Repository symlinks, an installer success
+message, or a directory listing alone do not prove agents loaded this version.
+
 Decide, explicitly and durably, before `team-run start`:
 
 - **Roster**: which AgentMembers, which provider mode each runs. The five

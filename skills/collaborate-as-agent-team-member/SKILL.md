@@ -37,6 +37,48 @@ example traced from both sides.
   copies a snapshot that goes stale; refresh or remove such copies when a
   `references/` directory is missing beside them.
 
+### Dogfood: refresh every coding agent's global skill library
+
+Before a dogfood round, the Host must install or refresh this complete skill
+and `shared-references` in **every participating coding agent's user/global
+skill library**, on each execution machine and under the user account that
+runs that agent. This includes managed Hosts, external_interactive Hosts, and
+Members. A current copy in the repository alone does not satisfy this step.
+
+Use one latest approved source revision compatible with the round's exact
+`FIRM_BIN`. From that source checkout, the existing installer refreshes Claude
+Code's `~/.claude/skills` and Codex's `~/.agents/skills`:
+
+```bash
+bash scripts/install-skill.sh --agent both --scope user --suite collaboration
+```
+
+Copy the whole directories, including `references/` and other packaged files,
+not only `SKILL.md`. Preserve unrelated skills and any local edits to these
+packages before replacing them. Compare the installed files with the selected
+source, record its revision and the resolved global paths in the round's
+existing evidence, and check whether a project/worktree copy shadows them.
+The presence of `references/` proves layout completeness, not freshness.
+
+For Kimi, Pi, DeepSeek, or another coding agent, verify that exact provider
+version's supported global discovery directory and refresh the same complete
+packages there. Do not invent a directory or treat `--agent both` as an
+all-provider installer: today it covers Claude Code and Codex only, and
+`--agent kimi` prints guidance without installing anything. If a provider has
+no verified global installation path, record the distribution gap and use a
+verified explicit skill-directory or exact-path loading mechanism; report that
+exception rather than claiming global installation succeeded.
+
+Before the first Work, have each agent load this shared contract and its role
+reference from the verified copy: Host loop for either Host mode, Member loop
+for Members. Installation does not prove the running session has read it.
+Repeat the version check when adding a Member or when the approved skill
+changes; refresh resumed sessions at a safe boundary without discarding their
+native history. An external Host must perform this reload in its own session;
+Harness cannot inject or refresh that window automatically. Never silently
+hot-swap instructions during an active turn or broaden runtime capabilities
+because a newer skill describes them.
+
 ## Part I — Shared mental model (both roles hold this, verbatim)
 
 ### 1. Who you are: identity is three separate facts
