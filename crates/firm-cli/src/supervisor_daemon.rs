@@ -37,7 +37,10 @@ mod team_supervision;
 #[cfg(test)]
 use machine_authority::node_authority_refresh_interval;
 use machine_authority::{daemon_control_generation_authorized, AuthorityReleaseReport};
-pub(crate) use recovery::reconcile_team_run_start_postcondition;
+pub(crate) use recovery::{
+    reconcile_team_run_start_postcondition, reconcile_team_run_start_with_observation,
+    TEAM_RUN_START_OBSERVATION_INTERVAL, TEAM_RUN_START_OBSERVATION_TIMEOUT,
+};
 use self_stop_events::MachineAuthorityLoss;
 
 const SIGINT: i32 = 2;
@@ -831,12 +834,21 @@ pub(crate) fn try_delegate_to_node_daemon(
 
 /// Send a status request to the machine NodeDaemon.
 pub(crate) fn daemon_status_via_socket(firm_home: &Path, node_id: &str) -> Option<String> {
+    daemon_status_via_socket_bounded(firm_home, node_id, Duration::from_secs(5))
+}
+
+/// Status request whose socket I/O is bounded by the caller's remaining
+/// budget. The reserved status lane stays responsive while other lanes are
+/// busy, so a bounded read observes instead of waiting on the start gate.
+pub(crate) fn daemon_status_via_socket_bounded(
+    firm_home: &Path,
+    node_id: &str,
+    io_budget: Duration,
+) -> Option<String> {
     let socket_path = node_daemon_socket_path(firm_home, node_id);
     let mut stream = UnixStream::connect(&socket_path).ok()?;
-    stream.set_read_timeout(Some(Duration::from_secs(5))).ok()?;
-    stream
-        .set_write_timeout(Some(Duration::from_secs(5)))
-        .ok()?;
+    stream.set_read_timeout(Some(io_budget)).ok()?;
+    stream.set_write_timeout(Some(io_budget)).ok()?;
 
     let cmd = r#"{"cmd":"status"}"#;
     writeln!(stream, "{cmd}").ok()?;

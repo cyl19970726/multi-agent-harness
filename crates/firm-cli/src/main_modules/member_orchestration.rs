@@ -561,19 +561,30 @@ pub(crate) fn delegate_team_run_to_node_daemon_in_space(
         ) {
             Ok(response) => response,
             Err(error) if error.request_may_have_been_accepted() => {
-                let status = crate::supervisor_daemon::daemon_status_via_socket(
-                    &firm_home,
+                let reconciled = crate::supervisor_daemon::reconcile_team_run_start_with_observation(
                     &local_node_id,
+                    crate::supervisor_daemon::TEAM_RUN_START_OBSERVATION_TIMEOUT,
+                    crate::supervisor_daemon::TEAM_RUN_START_OBSERVATION_INTERVAL,
+                    &mut |io_budget| {
+                        crate::supervisor_daemon::daemon_status_via_socket_bounded(
+                            &firm_home,
+                            &local_node_id,
+                            io_budget,
+                        )
+                    },
+                    &mut |status| {
+                        crate::supervisor_daemon::reconcile_team_run_start_postcondition(
+                            store,
+                            status,
+                            &local_node_id,
+                            execution_space_id,
+                            run_id,
+                        )
+                    },
+                    &mut std::time::Instant::now,
+                    &mut std::thread::sleep,
                 );
-                if let Some(reconciled) = status.as_deref().and_then(|status| {
-                    crate::supervisor_daemon::reconcile_team_run_start_postcondition(
-                        store,
-                        status,
-                        &local_node_id,
-                        execution_space_id,
-                        run_id,
-                    )
-                }) {
+                if let Some(reconciled) = reconciled {
                     return reconciled;
                 }
                 return Err(CliError::Usage(format!(

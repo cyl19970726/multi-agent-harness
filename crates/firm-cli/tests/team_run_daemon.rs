@@ -16,6 +16,8 @@ mod firm_env;
 
 #[path = "team_run_daemon/completed_run_close.rs"]
 mod completed_run_close;
+#[path = "team_run_daemon/start_observation_slow_adoption.rs"]
+mod start_observation_slow_adoption;
 #[path = "team_run_daemon/startcycle_shutdown.rs"]
 mod startcycle_shutdown;
 #[path = "team_run_daemon/verifier_review_message.rs"]
