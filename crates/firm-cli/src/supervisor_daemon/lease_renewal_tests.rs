@@ -4,7 +4,9 @@ use std::sync::atomic::AtomicUsize;
 
 fn enrolled_fixture(label: &str) -> AdoptionFixture {
     let mut fixture = adoption_fixture(label);
-    fixture.daemon.lease_ttl_override_ms = Some(60_000);
+    // Product defaults: five-second scan, Node TTL = max(scan * 4, 15s).
+    fixture.daemon.scan_interval = Duration::from_secs(5);
+    fixture.daemon.lease_ttl_override_ms = None;
     fixture.daemon.node_id = crate::latest_team_run(&fixture.store, &fixture.run_id)
         .unwrap()
         .execution_node_id;
@@ -106,7 +108,25 @@ fn default_leases_survive_ten_second_writer_contention_without_extending_ttl() {
                 std::thread::sleep(Duration::from_millis(10));
             }
         });
-        let node_heartbeat = scope.spawn(|| daemon.refresh_held_node_authorities());
+        let node_heartbeat = scope.spawn(|| -> CliResult<()> {
+            let started = Instant::now();
+            loop {
+                daemon.refresh_held_node_authorities()?;
+                if store
+                    .latest_node_daemon_lease(&daemon.node_id)?
+                    .unwrap()
+                    .renewed_unix_ms
+                    > node.renewed_unix_ms
+                {
+                    return Ok(());
+                }
+                assert!(
+                    started.elapsed() < Duration::from_secs(15),
+                    "Node renewal must recover within its unchanged default TTL"
+                );
+                std::thread::sleep(daemon.next_node_authority_refresh_delay());
+            }
+        });
         let supervisor_heartbeat = scope.spawn(|| {
             crate::run_supervisor_heartbeat_loop(
                 &policy,
@@ -147,7 +167,7 @@ fn default_leases_survive_ten_second_writer_contention_without_extending_ttl() {
         .latest_node_daemon_lease(&daemon.node_id)
         .unwrap()
         .unwrap();
-    assert_eq!(node.expires_unix_ms - node.renewed_unix_ms, 60_000);
+    assert_eq!(node.expires_unix_ms - node.renewed_unix_ms, 20_000);
     let diagnostics = crate::lease_renewal_diagnostics::snapshot();
     let supervisor_diagnostic = diagnostics
         .iter()
@@ -265,4 +285,127 @@ fn completed_run_supervisor_loss_does_not_latch_machine_authority() {
         .team_member_close_requests()
         .unwrap()
         .is_empty());
+}
+
+#[test]
+fn contended_space_does_not_delay_healthy_space_to_expiry() {
+    let mut fixture = enrolled_fixture("multi-space-renewal-round");
+    // A still owns its original long lease. Renewed leases use a short test
+    // TTL so a full-TTL joined round would expire healthy B deterministically.
+    fixture.daemon.scan_interval = Duration::from_secs(1);
+    fixture.daemon.lease_ttl_override_ms = Some(1_200);
+    let daemon = &fixture.daemon;
+    let space = crate::execution_space::register_and_activate(
+        &daemon.firm_home,
+        "healthy-space",
+        "Healthy Space",
+        Some("healthy-project".into()),
+        None,
+        "unix-ms:1",
+    )
+    .unwrap();
+    let healthy = HarnessStore::new(space.store_root.clone());
+    healthy
+        .insert_execution_node(&harness_core::ExecutionNode {
+            id: daemon.node_id.clone(),
+            display_name: "healthy test node".into(),
+            status: harness_core::ExecutionNodeStatus::Active,
+            created_at: "unix-ms:1".into(),
+            updated_at: "unix-ms:1".into(),
+        })
+        .unwrap();
+    healthy
+        .register_node_project(
+            &harness_core::NodeProjectRegistration {
+                node_id: daemon.node_id.clone(),
+                execution_space_id: space.id.clone(),
+                project_binding_id: "healthy-project".into(),
+                status: harness_core::NodeProjectRegistrationStatus::Active,
+                created_at: "unix-ms:1".into(),
+                updated_at: "unix-ms:1".into(),
+            },
+            &space.id,
+        )
+        .unwrap();
+    daemon.ensure_node_authority(&space, &healthy).unwrap();
+    let lock = fixture.store.acquire_exclusive_migration_guard().unwrap();
+    std::thread::scope(|scope| {
+        let holder = scope.spawn(move || {
+            std::thread::sleep(Duration::from_millis(1_000));
+            drop(lock);
+        });
+        for _ in 0..4 {
+            daemon
+                .refresh_held_node_authorities()
+                .expect("healthy B cannot be starved by A's retry");
+            std::thread::sleep(daemon.next_node_authority_refresh_delay());
+        }
+        holder.join().unwrap();
+    });
+    assert!(!daemon.authority_lost.load(Ordering::Acquire));
+    for store in [&fixture.store, &healthy] {
+        assert!(
+            store
+                .latest_node_daemon_lease(&daemon.node_id)
+                .unwrap()
+                .unwrap()
+                .expires_unix_ms
+                > current_unix_ms_u64()
+        );
+    }
+}
+
+#[test]
+fn authority_shutdown_interrupts_contended_renewal_without_waiting_for_ttl() {
+    let fixture = enrolled_fixture("renewal-shutdown-bound");
+    let daemon = &fixture.daemon;
+    let lock = fixture.store.acquire_exclusive_migration_guard().unwrap();
+    let (sent, received) = std::sync::mpsc::channel();
+    std::thread::scope(|scope| {
+        let holder = scope.spawn(move || {
+            std::thread::sleep(Duration::from_millis(700));
+            drop(lock);
+        });
+        scope.spawn(|| sent.send(daemon.refresh_held_node_authorities()).unwrap());
+        std::thread::sleep(Duration::from_millis(50));
+        // stop_requested deliberately does not end renewal: accepted effects
+        // still need authority while draining. authority_shutdown ends it.
+        daemon.authority_shutdown.store(true, Ordering::SeqCst);
+        received
+            .recv_timeout(Duration::from_millis(500))
+            .expect("shutdown must not join a full-TTL retry loop")
+            .unwrap();
+        holder.join().unwrap();
+    });
+    assert!(!daemon.authority_lost.load(Ordering::Acquire));
+}
+
+#[test]
+fn expired_owned_space_still_latches_global_authority_loss() {
+    let fixture = enrolled_fixture("renewal-real-expiry");
+    let daemon = &fixture.daemon;
+    let lease = fixture
+        .store
+        .latest_node_daemon_lease(&daemon.node_id)
+        .unwrap()
+        .unwrap();
+    let short = fixture
+        .store
+        .renew_node_daemon_lease(
+            &daemon.node_id,
+            &daemon.daemon_id,
+            lease.generation,
+            &daemon.instance_id,
+            current_unix_ms_u64(),
+            80,
+        )
+        .unwrap();
+    // The durable row has really expired; retry scheduling cannot turn that
+    // into a transient success even when an older cached expiry was longer.
+    std::thread::sleep(Duration::from_millis(
+        short.expires_unix_ms.saturating_sub(current_unix_ms_u64()) + 10,
+    ));
+    assert!(daemon.refresh_held_node_authorities().is_err());
+    assert!(daemon.authority_lost.load(Ordering::Acquire));
+    assert!(daemon.stop_requested.load(Ordering::Acquire));
 }

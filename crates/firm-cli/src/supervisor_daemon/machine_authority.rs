@@ -268,6 +268,22 @@ impl MultiTeamDaemon {
             .max(15_000)
     }
 
+    /// Never add a full scan interval after a slow round when a confirmed
+    /// lease has less time left. This is a retry schedule, not drive authority.
+    pub(super) fn next_node_authority_refresh_delay(&self) -> Duration {
+        let now = current_unix_ms_u64();
+        self.confirmed_node_leases
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .values()
+            .map(|(_, lease)| {
+                Duration::from_millis((lease.expires_unix_ms.saturating_sub(now) / 4).max(1))
+            })
+            .min()
+            .unwrap_or_else(|| node_authority_refresh_interval(self.scan_interval))
+            .min(node_authority_refresh_interval(self.scan_interval))
+    }
+
     /// Renew only authority already owned by this exact daemon instance.
     /// Discovery remains responsible for first acquisition; this heartbeat is
     /// deliberately unable to steal or create authority in an unscanned Space.
@@ -296,7 +312,7 @@ impl MultiTeamDaemon {
                 })
                 .collect::<Vec<_>>()
         });
-        if failures.is_empty() {
+        if failures.is_empty() || self.authority_shutdown.load(Ordering::SeqCst) {
             Ok(())
         } else {
             Err(self.latch_machine_authority_loss(&failures))
@@ -328,10 +344,14 @@ impl MultiTeamDaemon {
         store: &HarnessStore,
         confirmed: harness_core::NodeDaemonLease,
     ) -> Result<(), String> {
+        if self.authority_shutdown.load(Ordering::SeqCst) {
+            return Ok(());
+        }
         let expires = confirmed.expires_unix_ms;
-        loop {
-            let started = Instant::now();
-            let result = store
+        // Exactly one bounded attempt per Space per round. Retrying here for
+        // an entire TTL would make the join starve every healthy Space.
+        let started = Instant::now();
+        let result = store
                 .latest_node_daemon_lease(&self.node_id)
                 .and_then(|current| {
                     if let Some(current) = current.as_ref() {
@@ -367,43 +387,57 @@ impl MultiTeamDaemon {
                         )
                         .map(Some)
                 });
-            match result {
-                Ok(Some(lease)) => {
-                    crate::lease_renewal_diagnostics::record(
-                        space,
-                        "node_daemon",
-                        lease.expires_unix_ms,
-                        started.elapsed(),
-                        None,
-                    );
-                    self.remember_node_lease(space, store, &lease);
+        match result {
+            Ok(Some(lease)) => {
+                crate::lease_renewal_diagnostics::record(
+                    space,
+                    "node_daemon",
+                    lease.expires_unix_ms,
+                    started.elapsed(),
+                    None,
+                );
+                self.remember_node_lease(space, store, &lease);
+                return Ok(());
+            }
+            Ok(None) => {
+                let mut held = self
+                    .confirmed_node_leases
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner());
+                if held.get(space).is_some_and(|(_, lease)| {
+                    lease.generation == confirmed.generation
+                        && lease.instance_id == confirmed.instance_id
+                }) {
+                    held.remove(space);
+                }
+                return Ok(());
+            }
+            Err(error) => {
+                if self.authority_shutdown.load(Ordering::SeqCst) {
                     return Ok(());
                 }
-                Ok(None) => return Ok(()),
-                Err(error) => {
-                    let reason = error.to_string();
-                    crate::lease_renewal_diagnostics::record(
-                        space,
-                        "node_daemon",
-                        expires,
-                        started.elapsed(),
-                        Some(&reason),
-                    );
-                    let fenced = matches!(&error, harness_store::StoreError::Conflict(message)
+                let reason = error.to_string();
+                crate::lease_renewal_diagnostics::record(
+                    space,
+                    "node_daemon",
+                    expires,
+                    started.elapsed(),
+                    Some(&reason),
+                );
+                let fenced = matches!(&error, harness_store::StoreError::Conflict(message)
                         if message.starts_with("NODE_DAEMON_GENERATION_FENCED:"));
-                    let remaining = expires.saturating_sub(current_unix_ms_u64());
-                    if fenced || remaining == 0 {
-                        return Err(format!(
-                            "{space}: {reason}; confirmed_expires_unix_ms={expires}"
-                        ));
-                    }
-                    eprintln!(
-                        "[node-daemon] {space}: renewal retry within {remaining}ms: {reason}"
-                    );
-                    std::thread::sleep(Duration::from_millis(100.min(remaining / 4)));
+                let remaining = expires.saturating_sub(current_unix_ms_u64());
+                if fenced || remaining == 0 {
+                    return Err(format!(
+                        "{space}: {reason}; confirmed_expires_unix_ms={expires}"
+                    ));
                 }
+                eprintln!("[node-daemon] {space}: renewal retry within {remaining}ms: {reason}");
+                // Keep the confirmed deadline unchanged. The scheduler
+                // retries next round, using the shortest remaining TTL.
             }
         }
+        Ok(())
     }
 
     /// Acquire or renew this process' parent authority in one registered
