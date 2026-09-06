@@ -172,15 +172,13 @@ immediately but does not interrupt your current reasoning.
     [--work-id <id>] [--response-required] [--idempotency-key <key>]
   ```
 
-  To reply to ordinary mail, preserve correlation and identify the message
-  being answered; do not use `answer-message`:
-
-  ```bash
-  firm team-run message send --team-run-id <run> --to-membership <sender-membership-id> \
-    --body "<reply>" --surface <surface> --thread-id <host-thread-id> \
-    --correlation-id <incoming-correlation-id> --causation-id <incoming-message-id> \
-    --idempotency-key <stable-reply-key> [--work-id <id>] [--response-required]
-  ```
+  Current limitation #864: this external Host command sends ordinary mail
+  but does not forward canonical correlation/causation fields. Do not add
+  `--correlation-id` / `--causation-id` and assume they create a reply. The
+  peer-Team `team message send` flags are not an intra-Team substitute.
+  If a Work requires an exact correlated external Host reply, report that
+  capability gap; do not use `answer-message` for ordinary conversation or
+  claim canonical linkage from a message ID written only in the body.
 
   A managed Host uses the same `member message send|reply|request-decision`
   Role Actions as any member.
