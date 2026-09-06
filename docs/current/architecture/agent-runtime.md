@@ -321,10 +321,41 @@ authenticate and resolve authority
   -> bind exact Node + NodeDaemon generation
   -> bind exact AgentSession generation and permission ceiling
   -> validate full command fingerprint and idempotency key
-  -> persist Accepted / effect=Unknown
+  -> persist Prepared / effect=Unknown
   -> touch process/provider
-  -> persist Applied, Failed/NotApplied, or RecoveryRequired/Unknown
+  -> persist Settled, Rejected/NotApplied, or RecoveryRequired/Unknown
 ```
+
+DEV-236 / S4 keeps one current phase alongside independent effect certainty
+and postcondition satisfaction. New records and settlement requests carry
+`phase`, never the retired `status`. Historical journal envelopes stay intact:
+consistent legacy status/phase pairs retain their phase; a missing phase folds
+Requested/Accepted to Unknown, Quiesced to Observed, Applied to Settled, Failed
+to Rejected, and RecoveryRequired to RecoveryRequired. An explicit Unknown or
+conflicting pair stays Unknown, without inventing certainty or postconditions.
+Unknown effects still block new drive and runtime replacement; Unknown phase
+authorizes neither settlement nor public recovery. Dispatched and
+ProviderAcknowledged remain readable vocabulary without new producers.
+Historical settlement request spelling is recognized only after the normal
+exact authority checks and returns the original event/fingerprint on replay.
+
+`ControlIntent` owns the six control mappings shared by all five adapters:
+
+| Intent | Durable command kind | Semantic capability |
+| --- | --- | --- |
+| StartCycle | StartCycle | start_cycle |
+| InjectCurrentCycle | InjectCurrentCycle | inject_current_cycle |
+| QueueNativeBoundary | QueueAtNativeBoundary | queue_at_native_boundary |
+| Interrupt | InterruptCurrentCycle | interrupt_current_cycle |
+| InhibitContinuation | InhibitContinuation | inhibit_continuation |
+| ResumeContinuation | ResumeContinuation | resume_continuation |
+
+The other RuntimeCommandKind values remain separate lifecycle, inspection,
+reconciliation or existing legacy-named handlers. There is no catch-all
+conversion of all 32 kinds into these six intents. Unsupported/Experimental
+capabilities keep their existing fail-closed admission; queue does not fall
+back to inject, and interrupt does not imply session close. The real cycle,
+steering, interrupt and close paths retain their native adapter operations.
 
 DEV-31 and DEV-68 tighten this into an exact binding fence for every
 provider/process effect: the prepared command records the target MemberRun id
@@ -335,7 +366,7 @@ fingerprint, capability fingerprint, preconditions, and postconditions. These
 generation domains are distinct types and may advance independently; in
 particular, Close→Reopen advances MemberRun without fabricating a new
 AgentSession generation. Provider adapters receive only a private-field
-`RuntimeBindingFence` constructed from the already Accepted/Prepared canonical
+`RuntimeBindingFence` constructed from the already Prepared canonical
 RuntimeCommand and the exact current leases. They cannot rebuild authority from
 a Session snapshot or public struct literal. A command whose binding cannot be
 proven is rejected before the provider boundary. Exactly one difference is

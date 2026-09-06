@@ -109,8 +109,8 @@ fn crashed_kimi_transport_requires_recovery_without_replaying_provider_effect() 
         .collect::<Vec<_>>();
     assert_eq!(dispatches.len(), 1, "no provider replay is permitted");
     assert_eq!(
-        dispatches[0].status,
-        harness_core::agentfirm_api::RuntimeCommandStatus::Applied
+        dispatches[0].phase,
+        harness_core::agentfirm_api::RuntimeCommandPhase::Settled
     );
     assert_eq!(
         dispatches[0].effect_certainty,

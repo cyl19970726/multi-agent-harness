@@ -237,20 +237,8 @@ pub struct ProviderInvocation {
     pub created_at: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum RuntimeCommandStatus {
-    Requested,
-    Accepted,
-    Quiesced,
-    Applied,
-    Failed,
-    RecoveryRequired,
-}
-
-/// Durable transport/effect phase. The legacy [`RuntimeCommandStatus`] remains
-/// a compatibility projection only and must not carry effect certainty or
-/// postcondition satisfaction.
+/// Durable transport/effect phase. Effect certainty and semantic
+/// postcondition satisfaction remain independent dimensions.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RuntimeCommandPhase {
@@ -304,7 +292,7 @@ pub struct ProviderCycleCorrelation {
 /// Durable machine-local command journal. The NodeDaemon records acceptance
 /// before touching a provider and records the observed effect afterwards.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(remote = "Self", deny_unknown_fields)]
 pub struct RuntimeCommandRecord {
     pub id: String,
     pub execution_space_id: String,
@@ -316,9 +304,6 @@ pub struct RuntimeCommandRecord {
     pub required_capability: String,
     pub idempotency_key: String,
     pub request_fingerprint: String,
-    /// Compatibility projection for existing callers. New control logic must
-    /// use `phase`, `effect_certainty`, and `postcondition_status` separately.
-    pub status: RuntimeCommandStatus,
     #[serde(default)]
     pub phase: RuntimeCommandPhase,
     pub effect_certainty: RuntimeEffectCertainty,
@@ -349,6 +334,18 @@ pub struct RuntimeCommandRecord {
     pub version: u64,
     pub created_at: String,
     pub updated_at: String,
+}
+
+impl RuntimeCommandRecord {
+    /// A blocker for successor effects and runtime replacement, never a grant
+    /// to drive or settle. Unknown historical phases remain conservative.
+    pub fn has_unresolved_effect(&self) -> bool {
+        self.effect_certainty == RuntimeEffectCertainty::Unknown
+            && !matches!(
+                self.phase,
+                RuntimeCommandPhase::Settled | RuntimeCommandPhase::Rejected
+            )
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

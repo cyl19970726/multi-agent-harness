@@ -931,7 +931,7 @@ impl HarnessStore {
                         .source_record_id
                         .as_deref()
                         .is_some_and(|source| source.starts_with(&format!("{close_request_id}:")))
-                    && command.status == RuntimeCommandStatus::Applied
+                    && command.phase == RuntimeCommandPhase::Settled
                     && command.effect_certainty == RuntimeEffectCertainty::Applied
                     && command.postcondition_status == RuntimePostconditionStatus::Satisfied
             });

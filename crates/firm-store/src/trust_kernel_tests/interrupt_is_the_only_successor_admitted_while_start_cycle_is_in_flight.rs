@@ -57,7 +57,7 @@ fn interrupt_is_the_only_successor_admitted_while_start_cycle_is_in_flight() {
             "t-interrupt",
         )
         .expect("an exact interrupt must be able to compensate an in-flight StartCycle");
-    assert_eq!(admitted.projection.status, RuntimeCommandStatus::Accepted);
+    assert_eq!(admitted.projection.phase, RuntimeCommandPhase::Prepared);
 
     let (quiesce, quiesce_context) = runtime_command_fixture(
         "runtime-compensating-quiesce",

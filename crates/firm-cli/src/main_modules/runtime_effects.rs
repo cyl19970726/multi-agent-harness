@@ -349,8 +349,8 @@ pub(super) fn transition_provider_session_for_member_as(
                         && command.target_session_generation == Some(session.runtime_generation)
                         && command.target_node_daemon_id == session.node_daemon_id
                         && command.target_node_daemon_generation == session.node_daemon_generation
-                        && command.status
-                            == harness_core::agentfirm_api::RuntimeCommandStatus::Applied
+                        && command.phase
+                            == harness_core::agentfirm_api::RuntimeCommandPhase::Settled
                         && command.effect_certainty
                             == harness_core::agentfirm_api::RuntimeEffectCertainty::Applied
                 })

@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use harness_core::agentfirm_api::{
     AgentSession, MemberCoordinationStatus, MemberRun, NativeContinuationActivation,
     NativeContinuationProjection, RuntimeCommandBinding, RuntimeCommandPhase, RuntimeCommandRecord,
-    RuntimeCommandStatus, RuntimeDriverRef, RuntimeEffectCertainty,
+    RuntimeDriverRef, RuntimeEffectCertainty,
 };
 use harness_core::{
     NodeDaemonLease, NodeDaemonLeaseStatus, ProviderBindingAdmission, ProviderCapabilityBinding,
@@ -446,8 +446,7 @@ impl RuntimeBindingFence {
         now_unix_ms: u64,
     ) -> Result<Self, RuntimeContractError> {
         let mut fields = Vec::new();
-        if command.status != RuntimeCommandStatus::Accepted
-            || command.phase != RuntimeCommandPhase::Prepared
+        if command.phase != RuntimeCommandPhase::Prepared
             || command.effect_certainty != RuntimeEffectCertainty::Unknown
         {
             fields.push("runtime_command.admission_state".to_string());

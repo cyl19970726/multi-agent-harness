@@ -390,7 +390,7 @@ pub(super) fn dispatch_resolved_runtime_command(
     target_node_daemon_id: &str,
     target_node_daemon_generation: u64,
 ) -> Result<(serde_json::Value, harness_fabric::EffectCertainty), FabricError> {
-    use harness_core::agentfirm_api::{RuntimeCommandStatus, RuntimeEffectCertainty};
+    use harness_core::agentfirm_api::{RuntimeCommandPhase, RuntimeEffectCertainty};
 
     crate::remote_fabric::validate_resolved_runtime_command(
         operation,
@@ -427,20 +427,20 @@ pub(super) fn dispatch_resolved_runtime_command(
     };
     match record {
         Some(record)
-            if record.status == RuntimeCommandStatus::Applied
+            if record.phase == RuntimeCommandPhase::Settled
                 && record.effect_certainty == RuntimeEffectCertainty::Applied =>
         {
             Ok((
                 serde_json::json!({
                     "runtime_command_id": record.id,
-                    "status": record.status,
+                    "phase": record.phase,
                     "result": record.result,
                 }),
                 harness_fabric::EffectCertainty::Applied,
             ))
         }
         Some(record)
-            if record.status == RuntimeCommandStatus::Failed
+            if record.phase == RuntimeCommandPhase::Rejected
                 && matches!(
                     record.effect_certainty,
                     RuntimeEffectCertainty::None | RuntimeEffectCertainty::NotApplied
@@ -452,7 +452,7 @@ pub(super) fn dispatch_resolved_runtime_command(
             ))
         }
         Some(record)
-            if record.status == RuntimeCommandStatus::RecoveryRequired
+            if record.phase == RuntimeCommandPhase::RecoveryRequired
                 || record.effect_certainty == RuntimeEffectCertainty::Unknown =>
         {
             let mut failure = FabricError::unknown(
@@ -472,7 +472,7 @@ pub(super) fn dispatch_resolved_runtime_command(
             operation.id.clone(),
             format!(
                 "RuntimeCommand remained non-terminal ({:?}/{:?}): {transport_detail}",
-                record.status, record.effect_certainty
+                record.phase, record.effect_certainty
             ),
         )),
         None => Err(FabricError::unknown(

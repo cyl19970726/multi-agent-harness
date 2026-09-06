@@ -259,7 +259,7 @@ pub(super) fn require_latched_close_runtime_postcondition(
     member: &ProviderRuntimeProjection,
 ) -> CliResult<()> {
     use harness_core::agentfirm_api::{
-        RuntimeActivity, RuntimeCommandKind, RuntimeCommandStatus, RuntimeEffectCertainty,
+        RuntimeActivity, RuntimeCommandKind, RuntimeCommandPhase, RuntimeEffectCertainty,
         RuntimePostconditionStatus, RuntimeResidency,
     };
 
@@ -280,7 +280,7 @@ pub(super) fn require_latched_close_runtime_postcondition(
         .any(|command| {
             command.command == RuntimeCommandKind::CloseMember
                 && command.binding == expected_binding
-                && command.status == RuntimeCommandStatus::Applied
+                && command.phase == RuntimeCommandPhase::Settled
                 && command.effect_certainty == RuntimeEffectCertainty::Applied
                 && command.postcondition_status == RuntimePostconditionStatus::Satisfied
         });
@@ -315,14 +315,7 @@ fn detached_recovery_session_matches_current_authority(
         .any(|command| {
             command.target_session_id.as_deref() == Some(session.id.as_str())
                 && command.target_session_generation == Some(session.runtime_generation)
-                && matches!(
-                    command.status,
-                    harness_core::agentfirm_api::RuntimeCommandStatus::Accepted
-                        | harness_core::agentfirm_api::RuntimeCommandStatus::Quiesced
-                        | harness_core::agentfirm_api::RuntimeCommandStatus::RecoveryRequired
-                )
-                && command.effect_certainty
-                    == harness_core::agentfirm_api::RuntimeEffectCertainty::Unknown
+                && command.has_unresolved_effect()
         });
     let same_authorizer = ledger.supervisor_generation == fence.authorizing_supervisor_generation
         && ledger.supervisor_id == fence.authorizing_supervisor_id;
@@ -448,8 +441,7 @@ fn release_closed_generation_work_bindings(
     close: &TeamMemberCloseRequest,
 ) -> CliResult<()> {
     use harness_core::agentfirm_api::{
-        RuntimeCommandKind, RuntimeCommandStatus, RuntimeEffectCertainty,
-        RuntimePostconditionStatus,
+        RuntimeCommandKind, RuntimeCommandPhase, RuntimeEffectCertainty, RuntimePostconditionStatus,
     };
     let (execution_space_id, session) = provider_session_for_member(ledger, member)?;
     let daemon = ledger
@@ -490,7 +482,7 @@ fn release_closed_generation_work_bindings(
                     .source_record_id
                     .as_deref()
                     .is_some_and(|source| source.starts_with(&format!("{}:", close.id)))
-                && command.status == RuntimeCommandStatus::Applied
+                && command.phase == RuntimeCommandPhase::Settled
                 && command.effect_certainty == RuntimeEffectCertainty::Applied
                 && command.postcondition_status == RuntimePostconditionStatus::Satisfied
         })

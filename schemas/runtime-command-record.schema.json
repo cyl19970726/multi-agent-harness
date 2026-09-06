@@ -4,7 +4,8 @@
   "title": "RuntimeCommandRecord",
   "type": "object",
   "additionalProperties": false,
-  "required": ["id", "execution_space_id", "target_node_id", "target_node_daemon_id", "target_node_daemon_generation", "authenticated_actor", "command", "required_capability", "idempotency_key", "request_fingerprint", "status", "effect_certainty", "version", "created_at", "updated_at"],
+  "anyOf": [{"required": ["phase"]}, {"required": ["status"]}],
+  "required": ["id", "execution_space_id", "target_node_id", "target_node_daemon_id", "target_node_daemon_generation", "authenticated_actor", "command", "required_capability", "idempotency_key", "request_fingerprint", "effect_certainty", "version", "created_at", "updated_at"],
   "properties": {
     "id": {"type": "string", "minLength": 1},
     "execution_space_id": {"type": "string", "minLength": 1},
@@ -16,7 +17,7 @@
     "required_capability": {"type": "string", "minLength": 1},
     "idempotency_key": {"type": "string", "minLength": 1},
     "request_fingerprint": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
-    "status": {"enum": ["requested", "accepted", "quiesced", "applied", "failed", "recovery_required"]},
+    "status": {"description": "Historical read compatibility only; current writers emit phase. Missing or conflicting phases are conservatively decoded.", "enum": ["requested", "accepted", "quiesced", "applied", "failed", "recovery_required"]},
     "phase": {"enum": ["prepared", "dispatched", "provider_acknowledged", "observed", "settled", "rejected", "recovery_required", "unknown"]},
     "effect_certainty": {"enum": ["none", "not_applied", "applied", "unknown"]},
     "postcondition_status": {"enum": ["satisfied", "unsatisfied", "unknown"]},

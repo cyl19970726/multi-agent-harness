@@ -335,7 +335,7 @@ fn member_close_releases_old_binding_but_preserves_provider_received_and_fences_
                 prepared.projection.version,
             ),
             &close_command.id,
-            RuntimeCommandStatus::Applied,
+            RuntimeCommandPhase::Settled,
             RuntimeEffectCertainty::Applied,
             RuntimePostconditionStatus::Satisfied,
             Some(serde_json::json!({"closed": true})),

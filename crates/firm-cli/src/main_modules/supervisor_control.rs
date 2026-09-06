@@ -1008,7 +1008,7 @@ pub(super) fn managed_member_runtime_close_is_settled(
     member: &ProviderRuntimeProjection,
 ) -> CliResult<bool> {
     use harness_core::agentfirm_api::{
-        AgentSessionStatus, RuntimeActivity, RuntimeCommandKind, RuntimeCommandStatus,
+        AgentSessionStatus, RuntimeActivity, RuntimeCommandKind, RuntimeCommandPhase,
         RuntimeDriverRef, RuntimeEffectCertainty, RuntimePostconditionStatus, RuntimeResidency,
     };
     if member.is_external_interactive() {
@@ -1112,7 +1112,7 @@ pub(super) fn managed_member_runtime_close_is_settled(
     let close_applied = commands.iter().any(|command| {
         command.command == RuntimeCommandKind::CloseMember
             && command.binding == expected_binding
-            && command.status == RuntimeCommandStatus::Applied
+            && command.phase == RuntimeCommandPhase::Settled
             && command.effect_certainty == RuntimeEffectCertainty::Applied
             && command.postcondition_status == RuntimePostconditionStatus::Satisfied
             && command.postcondition
@@ -1125,7 +1125,7 @@ pub(super) fn managed_member_runtime_close_is_settled(
     let interrupt_applied = commands.iter().any(|command| {
         command.command == RuntimeCommandKind::InterruptCurrentCycle
             && command.binding == expected_binding
-            && command.status == RuntimeCommandStatus::Applied
+            && command.phase == RuntimeCommandPhase::Settled
             && command.effect_certainty == RuntimeEffectCertainty::Applied
             && command.postcondition_status == RuntimePostconditionStatus::Satisfied
             && command.postcondition

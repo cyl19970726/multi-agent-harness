@@ -134,8 +134,8 @@ pub(super) fn team_run_has_unresolved_runtime_command(
                 })
                 .is_some_and(|(_, generation)| {
                     command.binding.target_member_run_generation == Some(*generation)
-                        && command.status
-                            == harness_core::agentfirm_api::RuntimeCommandStatus::Accepted
+                        && command.phase
+                            == harness_core::agentfirm_api::RuntimeCommandPhase::Prepared
                         && command.effect_certainty
                             == harness_core::agentfirm_api::RuntimeEffectCertainty::Unknown
                         && command.postcondition_status

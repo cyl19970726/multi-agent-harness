@@ -370,16 +370,9 @@ impl harness_runtime_contract::RuntimeAdapter for PiTeamRuntime {
         harness_runtime_contract::RuntimeContractError,
     > {
         use harness_core::agentfirm_api::{RuntimeEffectCertainty, RuntimePostconditionStatus};
-        use harness_runtime_contract::{ControlIntent, SemanticCapability};
+        use harness_runtime_contract::ControlIntent;
 
-        let capability = match &request.intent {
-            ControlIntent::StartCycle { .. } => SemanticCapability::StartCycle,
-            ControlIntent::InjectCurrentCycle { .. } => SemanticCapability::InjectCurrentCycle,
-            ControlIntent::QueueNativeBoundary { .. } => SemanticCapability::QueueNativeBoundary,
-            ControlIntent::Interrupt => SemanticCapability::Interrupt,
-            ControlIntent::InhibitContinuation { .. } => SemanticCapability::InhibitContinuation,
-            ControlIntent::ResumeContinuation { .. } => SemanticCapability::ResumeContinuation,
-        };
+        let capability = request.intent.capability();
         let admission = self.contract_preflight(fence, capability)?;
         self.canonical_quiesced = false;
 

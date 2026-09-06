@@ -5,17 +5,17 @@ fn runtime_command_failure_certainty_and_torn_rows_recover_without_duplicate_eff
     let outcomes = [
         (
             "socket-lost-before-effect",
-            RuntimeCommandStatus::Failed,
+            RuntimeCommandPhase::Rejected,
             RuntimeEffectCertainty::NotApplied,
         ),
         (
             "socket-lost-after-effect",
-            RuntimeCommandStatus::RecoveryRequired,
+            RuntimeCommandPhase::RecoveryRequired,
             RuntimeEffectCertainty::Unknown,
         ),
         (
             "provider-terminal-callback-race",
-            RuntimeCommandStatus::Applied,
+            RuntimeCommandPhase::Settled,
             RuntimeEffectCertainty::Applied,
         ),
     ];
@@ -81,14 +81,14 @@ fn runtime_command_failure_certainty_and_torn_rows_recover_without_duplicate_eff
         torn.sync_all().unwrap();
         let recovered = store.runtime_commands("space-test").unwrap();
         assert_eq!(recovered.len(), 1);
-        assert_eq!(recovered[0].status, status);
+        assert_eq!(recovered[0].phase, status);
         assert_eq!(recovered[0].effect_certainty, certainty);
         let operations_before_replay = store.canonical_operations().unwrap();
         let replay = store
             .prepare_runtime_command(&admission_context, &command, current_unix_ms(), "t-replay")
             .unwrap();
         assert!(replay.replayed);
-        assert_eq!(replay.projection.status, status);
+        assert_eq!(replay.projection.phase, status);
         assert_eq!(
             store.canonical_operations().unwrap(),
             operations_before_replay

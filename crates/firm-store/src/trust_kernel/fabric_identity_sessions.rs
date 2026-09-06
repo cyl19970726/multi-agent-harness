@@ -771,12 +771,12 @@ impl HarnessStore {
                     && command.target_node_daemon_id == session.node_daemon_id
                     && command.target_node_daemon_generation == session.node_daemon_generation
                     && matches!(
-                        (command.status, command.effect_certainty),
+                        (command.phase, command.effect_certainty),
                         (
-                            RuntimeCommandStatus::Accepted,
+                            RuntimeCommandPhase::Prepared,
                             RuntimeEffectCertainty::Unknown
                         ) | (
-                            RuntimeCommandStatus::Applied,
+                            RuntimeCommandPhase::Settled,
                             RuntimeEffectCertainty::Applied
                         )
                     )
@@ -785,19 +785,13 @@ impl HarnessStore {
         let executing_stop = authorized_stop
             && runtime_commands.iter().any(|command| {
                 executing_runtime_key == Some(command.idempotency_key.as_str())
-                    && command.status == RuntimeCommandStatus::Accepted
+                    && command.phase == RuntimeCommandPhase::Prepared
                     && command.effect_certainty == RuntimeEffectCertainty::Unknown
             });
         let ambiguous_effect_for_session = runtime_commands.iter().any(|command| {
             command.target_session_id.as_deref() == Some(session.id.as_str())
                 && command.target_session_generation == Some(session.runtime_generation)
-                && matches!(
-                    command.status,
-                    RuntimeCommandStatus::Accepted
-                        | RuntimeCommandStatus::Quiesced
-                        | RuntimeCommandStatus::RecoveryRequired
-                )
-                && command.effect_certainty == RuntimeEffectCertainty::Unknown
+                && command.has_unresolved_effect()
         });
         // A NodeDaemon drain or hard-crash recovery kills the owned provider
         // process groups and settles every mid-turn Session as `Interrupted`.
@@ -905,13 +899,7 @@ impl HarnessStore {
             let uncertain_command = runtime_commands.into_iter().any(|command| {
                 command.target_session_id.as_deref() == Some(session.id.as_str())
                     && command.target_session_generation == Some(session.runtime_generation)
-                    && matches!(
-                        command.status,
-                        RuntimeCommandStatus::Accepted
-                            | RuntimeCommandStatus::Quiesced
-                            | RuntimeCommandStatus::RecoveryRequired
-                    )
-                    && command.effect_certainty == RuntimeEffectCertainty::Unknown
+                    && command.has_unresolved_effect()
                     && !(executing_stop
                         && executing_runtime_key == Some(command.idempotency_key.as_str()))
             });
@@ -1077,13 +1065,7 @@ impl HarnessStore {
                     && command.target_session_generation == Some(session.runtime_generation)
                     && command.target_node_daemon_generation
                         == expected_predecessor_daemon_generation
-                    && command.effect_certainty == RuntimeEffectCertainty::Unknown
-                    && matches!(
-                        command.status,
-                        RuntimeCommandStatus::Accepted
-                            | RuntimeCommandStatus::Quiesced
-                            | RuntimeCommandStatus::RecoveryRequired
-                    )
+                    && command.has_unresolved_effect()
             });
         if ambiguous_effect {
             return Err(trust_error(
@@ -1317,13 +1299,7 @@ impl HarnessStore {
             .any(|command| {
                 command.target_session_id.as_deref() == Some(session.id.as_str())
                     && command.target_session_generation == Some(session.runtime_generation)
-                    && command.effect_certainty == RuntimeEffectCertainty::Unknown
-                    && matches!(
-                        command.status,
-                        RuntimeCommandStatus::Accepted
-                            | RuntimeCommandStatus::Quiesced
-                            | RuntimeCommandStatus::RecoveryRequired
-                    )
+                    && command.has_unresolved_effect()
             });
         if ambiguous {
             return Err(trust_error(

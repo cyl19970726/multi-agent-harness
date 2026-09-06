@@ -16,9 +16,7 @@ impl HarnessStore {
         supervisor_id: &str,
         supervisor_generation: u64,
     ) -> StoreResult<()> {
-        use firm_core::agentfirm_api::{
-            RuntimeCommandStatus, RuntimeDriverRef, RuntimeEffectCertainty, RuntimeResidency,
-        };
+        use firm_core::agentfirm_api::{RuntimeDriverRef, RuntimeResidency};
 
         let Some(fence) = value.detached_recovery_fence.as_deref() else {
             return Ok(());
@@ -39,13 +37,7 @@ impl HarnessStore {
             .any(|command| {
                 command.target_session_id.as_deref() == Some(session.id.as_str())
                     && command.target_session_generation == Some(session.runtime_generation)
-                    && matches!(
-                        command.status,
-                        RuntimeCommandStatus::Accepted
-                            | RuntimeCommandStatus::Quiesced
-                            | RuntimeCommandStatus::RecoveryRequired
-                    )
-                    && command.effect_certainty == RuntimeEffectCertainty::Unknown
+                    && command.has_unresolved_effect()
             });
         if ambiguous_command {
             return Err(StoreError::Conflict(format!(

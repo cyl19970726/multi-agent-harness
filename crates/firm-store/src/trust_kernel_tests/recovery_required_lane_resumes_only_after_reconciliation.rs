@@ -223,7 +223,7 @@ fn recovery_required_lane_resumes_only_after_reconciliation() {
                 admitted.projection.version,
             ),
             &inspect.id,
-            RuntimeCommandStatus::Applied,
+            RuntimeCommandPhase::Settled,
             RuntimeEffectCertainty::Applied,
             RuntimePostconditionStatus::Satisfied,
             Some(serde_json::json!({"inspected": true})),

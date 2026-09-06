@@ -31,8 +31,8 @@ fn partial_provider_lane_scope_exit_is_recovery_required_and_next_attempt_can_st
         .find(|command| command.id == abandoned_command_id)
         .expect("prepared command remains durable");
     assert_eq!(
-        abandoned.status,
-        harness_core::agentfirm_api::RuntimeCommandStatus::RecoveryRequired
+        abandoned.phase,
+        harness_core::agentfirm_api::RuntimeCommandPhase::RecoveryRequired
     );
     assert_eq!(
         abandoned.phase,
@@ -190,8 +190,8 @@ fn draining_after_durable_command_prepare_requires_exact_reconciliation() {
         .find(|command| command.id == admitted.command_id)
         .expect("the command is durable before revalidation failure");
     assert_eq!(
-        prepared.status,
-        harness_core::agentfirm_api::RuntimeCommandStatus::Accepted
+        prepared.phase,
+        harness_core::agentfirm_api::RuntimeCommandPhase::Prepared
     );
     assert_eq!(
         prepared.effect_certainty,
@@ -229,8 +229,8 @@ fn draining_after_durable_command_prepare_requires_exact_reconciliation() {
         .find(|command| command.id == command_id)
         .expect("prepared command remains durable after authority loss");
     assert_eq!(
-        recovered.status,
-        harness_core::agentfirm_api::RuntimeCommandStatus::RecoveryRequired
+        recovered.phase,
+        harness_core::agentfirm_api::RuntimeCommandPhase::RecoveryRequired
     );
     assert_eq!(
         recovered.effect_certainty,

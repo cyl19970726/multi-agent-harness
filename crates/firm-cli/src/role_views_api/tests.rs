@@ -340,3 +340,17 @@ fn work_graph_derives_hard_edges_and_canonical_ready_attention_sets() {
         ])
     );
 }
+
+#[test]
+fn runtime_command_summary_reads_the_current_phase() {
+    for phase in [
+        "prepared",
+        "settled",
+        "rejected",
+        "recovery_required",
+        "unknown",
+    ] {
+        let summary = record_summary("runtime_command", &json!({"id":"command", "phase":phase}));
+        assert_eq!(summary["status"], phase);
+    }
+}

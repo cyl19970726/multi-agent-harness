@@ -242,7 +242,7 @@ fn kimi_empty_terminal_rounds_trip_the_bounded_circuit_and_real_output_resets_it
         .into_iter()
         .filter(|command| {
             command.command == harness_core::agentfirm_api::RuntimeCommandKind::StartCycle
-                && command.status == harness_core::agentfirm_api::RuntimeCommandStatus::Applied
+                && command.phase == harness_core::agentfirm_api::RuntimeCommandPhase::Settled
                 && command.effect_certainty
                     == harness_core::agentfirm_api::RuntimeEffectCertainty::Applied
         })

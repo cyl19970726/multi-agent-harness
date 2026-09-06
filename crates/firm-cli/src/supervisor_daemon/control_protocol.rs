@@ -904,16 +904,16 @@ impl MultiTeamDaemon {
                 let settled_at = format!("unix-ms:{}", current_unix_ms_u64());
                 let (status, certainty, settled_result, failure_code) = match &result {
                     Ok(value) => (
-                        harness_core::agentfirm_api::RuntimeCommandStatus::Applied,
+                        harness_core::agentfirm_api::RuntimeCommandPhase::Settled,
                         harness_core::agentfirm_api::RuntimeEffectCertainty::Applied,
                         Some(value.clone()),
                         None,
                     ),
                     Err(error) => (
                         if provider_effect_started {
-                            harness_core::agentfirm_api::RuntimeCommandStatus::RecoveryRequired
+                            harness_core::agentfirm_api::RuntimeCommandPhase::RecoveryRequired
                         } else {
-                            harness_core::agentfirm_api::RuntimeCommandStatus::Failed
+                            harness_core::agentfirm_api::RuntimeCommandPhase::Rejected
                         },
                         if provider_effect_started {
                             harness_core::agentfirm_api::RuntimeEffectCertainty::Unknown

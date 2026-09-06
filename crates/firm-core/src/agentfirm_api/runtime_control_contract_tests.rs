@@ -210,3 +210,81 @@ fn emitted_runtime_command_record_matches_the_checked_in_schema() {
         assert!(keys.contains(&key), "emitted record misses required {key}");
     }
 }
+
+#[test]
+fn legacy_command_status_folds_without_inventing_effect_or_execution_authority() {
+    use RuntimeCommandPhase as Phase;
+    let base: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../../schemas/fixtures/runtime-command-record/valid/phase-only-start-cycle.json"
+    ))
+    .unwrap();
+    let phases = [
+        Phase::Prepared,
+        Phase::Dispatched,
+        Phase::ProviderAcknowledged,
+        Phase::Observed,
+        Phase::Settled,
+        Phase::Rejected,
+        Phase::RecoveryRequired,
+        Phase::Unknown,
+    ];
+    let statuses = [
+        ("requested", Phase::Unknown),
+        ("accepted", Phase::Prepared),
+        ("quiesced", Phase::Observed),
+        ("applied", Phase::Settled),
+        ("failed", Phase::Rejected),
+        ("recovery_required", Phase::RecoveryRequired),
+    ];
+    for (status, expected) in statuses {
+        for phase in std::iter::once(None).chain(phases.into_iter().map(Some)) {
+            let mut wire = base.clone();
+            wire["status"] = status.into();
+            match phase {
+                Some(phase) => wire["phase"] = serde_json::to_value(phase).unwrap(),
+                None => {
+                    wire.as_object_mut().unwrap().remove("phase");
+                }
+            }
+            let command: RuntimeCommandRecord = serde_json::from_value(wire).unwrap();
+            let wanted = match phase {
+                Some(phase) if phase == expected => phase,
+                Some(_) => Phase::Unknown,
+                None if status == "accepted" => Phase::Unknown,
+                None => expected,
+            };
+            assert_eq!(command.phase, wanted, "legacy {status} / {phase:?}");
+            assert_eq!(command.effect_certainty, RuntimeEffectCertainty::Unknown);
+            assert_eq!(
+                command.postcondition_status,
+                RuntimePostconditionStatus::Unknown
+            );
+            let emitted = serde_json::to_value(&command).unwrap();
+            assert!(
+                emitted.get("status").is_none(),
+                "current writers are phase-only"
+            );
+            let reread: RuntimeCommandRecord = serde_json::from_value(emitted).unwrap();
+            assert_eq!(reread, command);
+        }
+    }
+    for phase in phases {
+        let mut wire = base.clone();
+        wire["phase"] = serde_json::to_value(phase).unwrap();
+        let command: RuntimeCommandRecord = serde_json::from_value(wire).unwrap();
+        assert_eq!(
+            command.phase, phase,
+            "new phase-only rows retain their phase"
+        );
+    }
+    for (key, value) in [
+        ("status", serde_json::json!("future")),
+        ("status", serde_json::Value::Null),
+        ("phase", serde_json::json!("future")),
+        ("extra", serde_json::json!(true)),
+    ] {
+        let mut wire = base.clone();
+        wire[key] = value;
+        assert!(serde_json::from_value::<RuntimeCommandRecord>(wire).is_err());
+    }
+}

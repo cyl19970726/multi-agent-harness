@@ -7,8 +7,7 @@ use harness_core::agentfirm_api::{
     NativeContinuationActivation, NativeContinuationBudget, NativeContinuationDefinition,
     NativeContinuationPhase, NativeContinuationProjection, PermissionCeiling, RuntimeActivity,
     RuntimeCommandBinding, RuntimeCommandKind, RuntimeCommandPhase, RuntimeCommandRecord,
-    RuntimeCommandStatus, RuntimeDriverRef, RuntimeEffectCertainty, RuntimePostconditionStatus,
-    RuntimeResidency,
+    RuntimeDriverRef, RuntimeEffectCertainty, RuntimePostconditionStatus, RuntimeResidency,
 };
 use harness_core::{
     NodeDaemonLease, NodeDaemonLeaseStatus, ProviderBindingAdmission, ProviderCapabilityBinding,
@@ -153,6 +152,13 @@ fn binding(session: &AgentSession) -> RuntimeCommandBinding {
 fn try_fence_view(
     binding: &RuntimeCommandBinding,
 ) -> Result<RuntimeBindingFence, RuntimeContractError> {
+    try_fence_view_phase(binding, RuntimeCommandPhase::Prepared)
+}
+
+fn try_fence_view_phase(
+    binding: &RuntimeCommandBinding,
+    phase: RuntimeCommandPhase,
+) -> Result<RuntimeBindingFence, RuntimeContractError> {
     let session = session();
     let member = MemberRun {
         id: "member-run-1".to_string(),
@@ -214,8 +220,7 @@ fn try_fence_view(
         required_capability: "cycle.start".to_string(),
         idempotency_key: "command-1".to_string(),
         request_fingerprint: "fingerprint-1".to_string(),
-        status: RuntimeCommandStatus::Accepted,
-        phase: RuntimeCommandPhase::Prepared,
+        phase,
         effect_certainty: RuntimeEffectCertainty::Unknown,
         postcondition_status: RuntimePostconditionStatus::Unknown,
         binding: binding.clone(),
@@ -727,4 +732,80 @@ fn composable_shim_exercises_the_complete_operational_contract() {
     assert_eq!(adapter.continuation_bridge.calls, 2);
     assert_eq!(adapter.observation_bridge.calls, 3);
     assert_eq!(dispose_count.get(), 1);
+}
+
+#[test]
+fn control_intents_bind_exact_durable_kinds_without_queue_or_lifecycle_fallback() {
+    use harness_core::agentfirm_api::RuntimeCommandKind as Kind;
+    let expected = NativeContinuationProjection::default();
+    let cases = [
+        (
+            ControlIntent::StartCycle {
+                input: String::new(),
+            },
+            Kind::StartCycle,
+            SemanticCapability::StartCycle,
+        ),
+        (
+            ControlIntent::InjectCurrentCycle {
+                input: String::new(),
+            },
+            Kind::InjectCurrentCycle,
+            SemanticCapability::InjectCurrentCycle,
+        ),
+        (
+            ControlIntent::QueueNativeBoundary {
+                input: String::new(),
+            },
+            Kind::QueueAtNativeBoundary,
+            SemanticCapability::QueueNativeBoundary,
+        ),
+        (
+            ControlIntent::Interrupt,
+            Kind::InterruptCurrentCycle,
+            SemanticCapability::Interrupt,
+        ),
+        (
+            ControlIntent::InhibitContinuation {
+                expected: expected.clone(),
+            },
+            Kind::InhibitContinuation,
+            SemanticCapability::InhibitContinuation,
+        ),
+        (
+            ControlIntent::ResumeContinuation { expected },
+            Kind::ResumeContinuation,
+            SemanticCapability::ResumeContinuation,
+        ),
+    ];
+    for (intent, kind, capability) in cases {
+        assert_eq!(intent.command_kind(), kind);
+        assert_eq!(intent.capability(), capability);
+        assert!(!matches!(
+            intent.command_kind(),
+            Kind::StopSession | Kind::CloseMember | Kind::ReleaseRuntime
+        ));
+    }
+}
+
+#[test]
+fn only_prepared_phase_can_authorize_provider_drive() {
+    use RuntimeCommandPhase as Phase;
+    let binding = binding(&session());
+    for phase in [
+        Phase::Prepared,
+        Phase::Dispatched,
+        Phase::ProviderAcknowledged,
+        Phase::Observed,
+        Phase::Settled,
+        Phase::Rejected,
+        Phase::RecoveryRequired,
+        Phase::Unknown,
+    ] {
+        assert_eq!(
+            try_fence_view_phase(&binding, phase).is_ok(),
+            phase == Phase::Prepared,
+            "{phase:?} must not manufacture drive authority"
+        );
+    }
 }

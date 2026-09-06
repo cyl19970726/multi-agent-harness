@@ -74,7 +74,7 @@ fn admitted_stop_closes_exact_session_once_and_replays_after_terminal_state() {
                 admitted.projection.version,
             ),
             &command.id,
-            RuntimeCommandStatus::Applied,
+            RuntimeCommandPhase::Settled,
             RuntimeEffectCertainty::Applied,
             Some(serde_json::json!({"closed": true})),
             None,
@@ -86,7 +86,7 @@ fn admitted_stop_closes_exact_session_once_and_replays_after_terminal_state() {
         .prepare_runtime_command(&admission_context, &command, current_unix_ms(), "t4")
         .unwrap();
     assert!(replay.replayed);
-    assert_eq!(replay.projection.status, RuntimeCommandStatus::Applied);
+    assert_eq!(replay.projection.phase, RuntimeCommandPhase::Settled);
     assert_eq!(
         store.canonical_operations().unwrap(),
         operations_before_replay

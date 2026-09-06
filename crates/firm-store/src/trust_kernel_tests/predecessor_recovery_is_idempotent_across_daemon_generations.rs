@@ -148,7 +148,7 @@ fn predecessor_recovery_is_idempotent_across_daemon_generations() {
                 accepted.projection.version,
             ),
             &resume.id,
-            RuntimeCommandStatus::Applied,
+            RuntimeCommandPhase::Settled,
             RuntimeEffectCertainty::Applied,
             RuntimePostconditionStatus::Satisfied,
             Some(serde_json::json!({
@@ -240,7 +240,7 @@ fn predecessor_recovery_is_idempotent_across_daemon_generations() {
         .filter(|command| command.command == RuntimeCommandKind::ResumeNativeSession)
         .collect::<Vec<_>>();
     assert_eq!(resume_commands.len(), 1);
-    assert_eq!(resume_commands[0].status, RuntimeCommandStatus::Applied);
+    assert_eq!(resume_commands[0].phase, RuntimeCommandPhase::Settled);
     assert_eq!(
         resume_commands[0].effect_certainty,
         RuntimeEffectCertainty::Applied

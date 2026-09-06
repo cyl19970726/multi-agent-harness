@@ -708,3 +708,5 @@ mod work_intake_is_independent_of_notifications;
 mod work_responsibility_execution_admission_is_exact_and_idempotent;
 
 use member_run_fixture::admit_fixture_member_run_for_session;
+
+mod runtime_command_phase_compatibility;

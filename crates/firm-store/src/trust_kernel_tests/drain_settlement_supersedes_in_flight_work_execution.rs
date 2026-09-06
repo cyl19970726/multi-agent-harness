@@ -533,7 +533,7 @@ fn drain_settlement_supersedes_a_claimed_delivery_that_never_got_a_receipt() {
         commands
             .iter()
             .all(|command| command.command != RuntimeCommandKind::StartCycle
-                || command.status != RuntimeCommandStatus::Accepted),
+                || command.phase != RuntimeCommandPhase::Prepared),
         "no new accepted StartCycle may appear from settlement"
     );
 }

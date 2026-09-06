@@ -769,7 +769,7 @@ impl HttpExchange<'_> {
                                 "RUNTIME_COMMAND_RECOVERY_REQUIRED: accepted command {command_id} has no readable projection"
                             ))
                         })?;
-                    if record.status == harness_core::agentfirm_api::RuntimeCommandStatus::Applied
+                    if record.phase == harness_core::agentfirm_api::RuntimeCommandPhase::Settled
                         && record.effect_certainty
                             == harness_core::agentfirm_api::RuntimeEffectCertainty::Applied
                     {
@@ -790,7 +790,7 @@ impl HttpExchange<'_> {
                                 "ok": false,
                                 "error": format!(
                                     "RUNTIME_COMMAND_RECOVERY_REQUIRED: exact replay is {:?}/{:?}/{:?}",
-                                    record.status,
+                                    record.phase,
                                     record.effect_certainty,
                                     record.postcondition_status,
                                 ),

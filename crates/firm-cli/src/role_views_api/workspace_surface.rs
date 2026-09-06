@@ -602,7 +602,7 @@ fn agent_workspace_runtime_truth(
                 "Reopen the same verified native Session if continuation is required.",
             )
         } else if let Some(command) =
-            latest_command.filter(|command| command["status"] == "recovery_required")
+            latest_command.filter(|command| command["phase"] == "recovery_required")
         {
             (
                 "recovery_required",
@@ -612,7 +612,7 @@ fn agent_workspace_runtime_truth(
                 command["updated_at"].as_str(),
                 "Resolve the exact RuntimeCommand from evidence; do not replay blindly.",
             )
-        } else if latest_command.is_some_and(|command| command["status"] == "failed") {
+        } else if latest_command.is_some_and(|command| command["phase"] == "rejected") {
             (
                 "blocked",
                 latest_command
@@ -697,7 +697,7 @@ fn agent_workspace_runtime_truth(
     json!({
         "work":{"work_id":work.and_then(|value|value["work_id"].as_str()),"phase":work.and_then(|value|value["phase"].as_str()).unwrap_or("unavailable"),"condition":work.and_then(|value|value["condition"].as_str()).unwrap_or("unavailable"),"updated_at":work.and_then(|value|value["updated_at"].as_str())},
         "coordination":{"state":coordination,"member_run_id":member_run_id,"runtime_generation":member_generation,"runtime_status":member_runtime},
-        "harness_control":{"state":control_state,"reason_code":reason_code,"occurred_at":boundary_at,"last_command":latest_command.map(|command|json!({"id":command["id"],"command":command["command"],"status":command["status"],"updated_at":command["updated_at"],"failure_code":command["failure_code"]})),"next_action":next_action},
+        "harness_control":{"state":control_state,"reason_code":reason_code,"occurred_at":boundary_at,"last_command":latest_command.map(|command|json!({"id":command["id"],"command":command["command"],"status":command["phase"],"updated_at":command["updated_at"],"failure_code":command["failure_code"]})),"next_action":next_action},
         "provider_native_activity":{"state":native_state,"last_observed_at":last_native_observed_at,"observed_after_control_loss":observed_after_control_loss},
         "explanation":explanation,
     })
@@ -858,9 +858,9 @@ mod runtime_truth_tests {
         })
     }
 
-    fn command(status: &str, failure_code: Option<&str>) -> Value {
+    fn command(phase: &str, failure_code: Option<&str>) -> Value {
         json!({
-            "id":"runtime-command-1","command":"start_cycle","status":status,
+            "id":"runtime-command-1","command":"start_cycle","phase":phase,
             "failure_code":failure_code,"updated_at":"2026-08-31T10:01:00Z",
             "binding":{"target_member_run_id":"member-run-1","target_member_run_generation":2,
                 "target_session_id":"agent-session-1","target_runtime_generation":4}
@@ -930,7 +930,7 @@ mod runtime_truth_tests {
         let member = member("idle", "active");
         let session = session("active", "idle");
         let recovery = command("recovery_required", Some("PROVIDER_IDLE_TIMEOUT"));
-        let mut applied = command("applied", None);
+        let mut applied = command("settled", None);
         applied["id"] = json!("runtime-command-2");
         applied["updated_at"] = json!("2026-08-31T10:02:00Z");
         let truth = agent_workspace_runtime_truth(
@@ -955,7 +955,7 @@ mod runtime_truth_tests {
     fn partial_runtime_command_bindings_cannot_override_exact_settlement() {
         let member = member("idle", "active");
         let session = session("active", "idle");
-        let mut applied = command("applied", None);
+        let mut applied = command("settled", None);
         applied["updated_at"] = json!("2026-08-31T10:01:00Z");
 
         for (mismatched_field, mismatched_value) in [

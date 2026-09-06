@@ -603,7 +603,7 @@ pub(crate) fn team_view(
             .runtime_commands
             .iter()
             .filter(|command| {
-                command["status"] == "recovery_required"
+                command["phase"] == "recovery_required"
                     && command["source_record_id"].as_str().is_some_and(|id| {
                         team_work_ids.contains(id) || team_message_ids.contains(id)
                     })

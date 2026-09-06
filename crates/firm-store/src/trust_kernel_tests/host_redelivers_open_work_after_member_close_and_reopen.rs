@@ -212,7 +212,7 @@ fn close_and_reopen_member(
                 prepared.projection.version,
             ),
             &close_command.id,
-            RuntimeCommandStatus::Applied,
+            RuntimeCommandPhase::Settled,
             RuntimeEffectCertainty::Applied,
             RuntimePostconditionStatus::Satisfied,
             Some(serde_json::json!({"closed": true})),

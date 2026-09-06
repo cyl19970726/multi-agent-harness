@@ -67,8 +67,7 @@ impl Drop for ProviderEffectAdmission {
         else {
             return;
         };
-        if current.status != harness_core::agentfirm_api::RuntimeCommandStatus::Accepted
-            || current.phase != harness_core::agentfirm_api::RuntimeCommandPhase::Prepared
+        if current.phase != harness_core::agentfirm_api::RuntimeCommandPhase::Prepared
             || current.effect_certainty
                 != harness_core::agentfirm_api::RuntimeEffectCertainty::Unknown
         {
@@ -213,7 +212,7 @@ pub(crate) fn prepare_provider_effect_kind(
     provider_attempt: Option<u64>,
 ) -> CliResult<ProviderEffectAdmission> {
     use harness_core::agentfirm_api::{
-        ActorKind, ActorRef, AgentSessionStatus, ControlCommandEnvelope, RuntimeCommandStatus,
+        ActorKind, ActorRef, AgentSessionStatus, ControlCommandEnvelope, RuntimeCommandPhase,
         RuntimeEffectCertainty,
     };
 
@@ -349,15 +348,15 @@ pub(crate) fn prepare_provider_effect_kind(
         .map_err(|error| CliError::ProviderAdmissionRejected(error.to_string()))?;
     if admission.replayed {
         let replay = match (
-            admission.projection.status,
+            admission.projection.phase,
             admission.projection.effect_certainty,
         ) {
-            (RuntimeCommandStatus::Applied, RuntimeEffectCertainty::Applied) => {
+            (RuntimeCommandPhase::Settled, RuntimeEffectCertainty::Applied) => {
                 Err(CliError::ProviderEffectAccepted(
                     admission.projection.id.clone(),
                 ))
             }
-            (RuntimeCommandStatus::Failed, RuntimeEffectCertainty::NotApplied) => {
+            (RuntimeCommandPhase::Rejected, RuntimeEffectCertainty::NotApplied) => {
                 Err(CliError::Usage(format!(
                     "RUNTIME_COMMAND_REPLAY_FAILED: provider effect {} will not be repeated with the same attempt",
                     admission.projection.id
@@ -522,7 +521,7 @@ pub(crate) fn prepare_provider_process_effect(
         return Err(CliError::RuntimeRecoveryRequired(format!(
             "provider process command {} already exists as {:?}/{:?}; reconcile before spawn",
             admission.projection.id,
-            admission.projection.status,
+            admission.projection.phase,
             admission.projection.effect_certainty
         )));
     }

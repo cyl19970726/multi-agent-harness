@@ -143,8 +143,8 @@ fn kimi_prompt_rejected_before_any_prompt_update_never_burns_the_work() {
         })
         .expect("failed canonical provider dispatch");
     assert_eq!(
-        dispatch.status,
-        harness_core::agentfirm_api::RuntimeCommandStatus::Failed
+        dispatch.phase,
+        harness_core::agentfirm_api::RuntimeCommandPhase::Rejected
     );
     assert_eq!(
         dispatch.effect_certainty,

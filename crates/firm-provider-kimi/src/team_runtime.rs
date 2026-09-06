@@ -574,17 +574,10 @@ impl harness_runtime_contract::RuntimeAdapter for KimiTeamRuntime<'_> {
         harness_runtime_contract::EffectReceipt,
         harness_runtime_contract::RuntimeContractError,
     > {
+        use harness_runtime_contract::ControlIntent;
         use harness_runtime_contract::TeamRuntimeAdapter as _;
-        use harness_runtime_contract::{ControlIntent, SemanticCapability};
 
-        let capability = match &request.intent {
-            ControlIntent::StartCycle { .. } => SemanticCapability::StartCycle,
-            ControlIntent::InjectCurrentCycle { .. } => SemanticCapability::InjectCurrentCycle,
-            ControlIntent::QueueNativeBoundary { .. } => SemanticCapability::QueueNativeBoundary,
-            ControlIntent::Interrupt => SemanticCapability::Interrupt,
-            ControlIntent::InhibitContinuation { .. } => SemanticCapability::InhibitContinuation,
-            ControlIntent::ResumeContinuation { .. } => SemanticCapability::ResumeContinuation,
-        };
+        let capability = request.intent.capability();
         let admission = self.contract_preflight(fence, capability)?;
         match request.intent {
             ControlIntent::StartCycle { input } => {
@@ -1057,7 +1050,6 @@ mod tests {
             required_capability: "cycle.start".to_string(),
             idempotency_key: "command-kimi-test".to_string(),
             request_fingerprint: "fingerprint-kimi-test".to_string(),
-            status: harness_core::agentfirm_api::RuntimeCommandStatus::Accepted,
             phase: harness_core::agentfirm_api::RuntimeCommandPhase::Prepared,
             effect_certainty: harness_core::agentfirm_api::RuntimeEffectCertainty::Unknown,
             postcondition_status: harness_core::agentfirm_api::RuntimePostconditionStatus::Unknown,

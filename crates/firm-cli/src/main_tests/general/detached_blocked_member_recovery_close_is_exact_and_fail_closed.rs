@@ -700,6 +700,60 @@ fn detached_blocked_member_recovery_close_is_exact_and_fail_closed() {
             RuntimeActivity::Idle,
         )
         .expect("return Session to exact detached terminal authority");
+        // S4: an already Applied/Closed transaction cannot hide a historical
+        // Accepted command whose missing or contradictory phase folds Unknown.
+        let trust_path = root.join("agentfirm_trust_operations.jsonl");
+        let original = std::fs::read_to_string(&trust_path).expect("trust fixture");
+        for conflicting in [false, true] {
+            let mut changed = 0;
+            let historical = original
+                .lines()
+                .map(|line| {
+                    let mut row: serde_json::Value = serde_json::from_str(line).unwrap();
+                    if row["operation"]["event"]["aggregate_id"] == admission.command_id {
+                        let command = &mut row["operation"]["resulting_projection"];
+                        command["status"] = "accepted".into();
+                        command["effect_certainty"] = "unknown".into();
+                        if conflicting {
+                            command["phase"] = "settled".into();
+                        } else {
+                            command.as_object_mut().unwrap().remove("phase");
+                        }
+                        changed += 1;
+                    }
+                    serde_json::to_string(&row).unwrap()
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            assert!(changed > 0, "fixture must replace the historical command");
+            let historical = format!("{historical}\n");
+            std::fs::write(&trust_path, &historical).unwrap();
+            let applied_close = store
+                .latest_team_member_close_request(&probation_blocked.id)
+                .unwrap()
+                .unwrap();
+            assert_eq!(applied_close.status, TeamMemberCloseStatus::Applied);
+            let mut closed_member = successor_ledger
+                .latest_member_run(&probation_blocked.id)
+                .unwrap()
+                .unwrap();
+            let result = stop_member_for_latched_close_with_pending_hook(
+                &successor_ledger,
+                &mut closed_member,
+                &applied_close,
+                &mut |_| panic!("Applied close must not relatch pending work"),
+            );
+            let error = match result {
+                Err(error) => error,
+                Ok(_) => panic!("Applied Close ignored unknown historical effect"),
+            };
+            assert!(
+                error.to_string().contains("settled provider effects"),
+                "{error}"
+            );
+            assert_eq!(std::fs::read_to_string(&trust_path).unwrap(), historical);
+            std::fs::write(&trust_path, &original).unwrap();
+        }
         assert!(matches!(
             prepare_member_workspace_for_spawn(
                 &successor_ledger,

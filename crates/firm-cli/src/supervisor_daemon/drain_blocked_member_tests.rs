@@ -24,8 +24,8 @@ use crate::ProviderEffectSettlement;
 
 use crate::claim_canonical_work_for_member;
 use harness_core::agentfirm_api::{
-    ActorKind, ActorRef, AgentSessionStatus, MutationContext, RuntimeActivity,
-    RuntimeCommandStatus, RuntimeEffectCertainty, RuntimeResidency, WorkDeliveryStatus,
+    ActorKind, ActorRef, AgentSessionStatus, MutationContext, RuntimeActivity, RuntimeCommandPhase,
+    RuntimeEffectCertainty, RuntimeResidency, WorkDeliveryStatus,
 };
 use harness_core::{MemberRunStatus, ProviderRuntimeProjection};
 
@@ -305,7 +305,7 @@ fn drained_member_returns_to_a_startable_lane_without_any_host_verb() {
         "resume opens a new cycle and never replays the killed one"
     );
     assert_eq!(after[0].id, killed_cycle[0].id);
-    assert_eq!(after[0].status, RuntimeCommandStatus::Applied);
+    assert_eq!(after[0].phase, RuntimeCommandPhase::Settled);
     assert_eq!(after[0].effect_certainty, RuntimeEffectCertainty::Applied);
     assert_eq!(
         after[0].target_node_daemon_generation, fixture.daemon_generation,

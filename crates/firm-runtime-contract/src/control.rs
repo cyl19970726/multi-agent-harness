@@ -82,7 +82,21 @@ pub enum ControlIntent {
 }
 
 impl ControlIntent {
-    pub(crate) fn capability(&self) -> SemanticCapability {
+    /// Canonical durable command for this control intent. Lifecycle and
+    /// inspection commands are separate adapter operations, not control intents.
+    pub fn command_kind(&self) -> harness_core::agentfirm_api::RuntimeCommandKind {
+        use harness_core::agentfirm_api::RuntimeCommandKind;
+        match self {
+            Self::StartCycle { .. } => RuntimeCommandKind::StartCycle,
+            Self::InjectCurrentCycle { .. } => RuntimeCommandKind::InjectCurrentCycle,
+            Self::QueueNativeBoundary { .. } => RuntimeCommandKind::QueueAtNativeBoundary,
+            Self::Interrupt => RuntimeCommandKind::InterruptCurrentCycle,
+            Self::InhibitContinuation { .. } => RuntimeCommandKind::InhibitContinuation,
+            Self::ResumeContinuation { .. } => RuntimeCommandKind::ResumeContinuation,
+        }
+    }
+
+    pub fn capability(&self) -> SemanticCapability {
         match self {
             Self::StartCycle { .. } => SemanticCapability::StartCycle,
             Self::InjectCurrentCycle { .. } => SemanticCapability::InjectCurrentCycle,

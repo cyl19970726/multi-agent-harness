@@ -517,7 +517,7 @@ fn close_member_formally(
                 prepared.projection.version,
             ),
             &close_command.id,
-            RuntimeCommandStatus::Applied,
+            RuntimeCommandPhase::Settled,
             RuntimeEffectCertainty::Applied,
             RuntimePostconditionStatus::Satisfied,
             Some(serde_json::json!({"closed": true})),
