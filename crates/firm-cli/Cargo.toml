@@ -40,3 +40,4 @@ harness_store = { package = "firm-store", path = "../firm-store", features = ["t
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+socket2 = { version = "0.5", features = ["all"] }
