@@ -23,6 +23,8 @@ pub(super) struct ActiveTurnLeasePool {
     pub(super) active: Mutex<usize>,
     pub(super) available: Condvar,
     pub(super) limit: usize,
+    #[cfg(test)]
+    pub(super) waiting: std::sync::atomic::AtomicUsize,
 }
 
 impl ActiveTurnLeasePool {
@@ -31,16 +33,22 @@ impl ActiveTurnLeasePool {
             active: Mutex::new(0),
             available: Condvar::new(),
             limit,
+            #[cfg(test)]
+            waiting: std::sync::atomic::AtomicUsize::new(0),
         }
     }
 
     pub(super) fn acquire(self: &Arc<Self>) -> ActiveTurnLease {
         let mut active = self.active.lock().expect("active turn lease poisoned");
         while *active >= self.limit {
+            #[cfg(test)]
+            self.waiting.fetch_add(1, Ordering::Release);
             active = self
                 .available
                 .wait(active)
                 .expect("active turn lease poisoned");
+            #[cfg(test)]
+            self.waiting.fetch_sub(1, Ordering::Release);
         }
         *active += 1;
         ActiveTurnLease {

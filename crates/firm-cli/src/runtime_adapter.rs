@@ -317,6 +317,25 @@ struct DrivenRuntimeCycle {
     turn_result: CliResult<harness_runtime_contract::ExecutionCycleOutcome>,
 }
 
+/// Acquire the existing turn slot, then revalidate before any provider drive.
+/// Admission may have waited behind another member while local drain began.
+pub(crate) fn acquire_prepared_cycle_turn(
+    ledger: &TeamRunLedger,
+    effect: &crate::ProviderEffectAdmission,
+    pool: &std::sync::Arc<crate::ActiveTurnLeasePool>,
+    host_attentions: &[HostAttention],
+) -> CliResult<crate::ActiveTurnLease> {
+    let turn = pool.acquire();
+    if let Err(error) = ledger.require_supervisor_lease() {
+        // This command has not entered run_cycle. Store settlement still
+        // rejects successor/foreign durable bindings under its writer lock.
+        settle_provider_effect_not_applied(ledger, effect, error.to_string())?;
+        requeue_managed_host_attentions(ledger, host_attentions, &error.to_string())?;
+        return Err(error);
+    }
+    Ok(turn)
+}
+
 /// The provider-neutral persistent member loop: wake → claim → drive one
 /// ExecutionCycle → settle receipts → repeat. One implementation for every
 /// binding; provider differences live behind `TeamRuntimeAdapter`, not in a
@@ -490,7 +509,12 @@ pub(crate) fn run_team_member_with_adapter<A: TeamRuntimeAdapter<Error = CliErro
 
             let mut round_start = member_row.clone();
             let turn_result = {
-                let _turn_lease = context.turn_leases.acquire();
+                let _turn_lease = acquire_prepared_cycle_turn(
+                    ledger,
+                    &effect,
+                    &context.turn_leases,
+                    &cycle.host_attentions,
+                )?;
                 let _native_session_wake_guard = NativeSessionWakeGuard::new(
                     context.live_sink.clone(),
                     ledger.run_id.clone(),
