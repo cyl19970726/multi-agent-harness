@@ -91,6 +91,14 @@ impl HarnessStore {
             }
             values.push(serde_json::from_str(&line)?);
         }
+        self.record_jsonl_read(
+            file_name,
+            len,
+            len - start + u64::from(start > 0),
+            len - start,
+            values.len() as u64,
+            "tail_window",
+        );
         Ok(values)
     }
 
@@ -122,9 +130,9 @@ impl HarnessStore {
 
     /// Collapse the lease file to one row per run (latest wins).
     ///
-    /// Called on acquisition, which is rare (one per Supervisor generation),
-    /// while heartbeats are frequent. Bounds the file at ~#runs rows so the
-    /// tail window above always hits and the file stops growing without bound.
+    /// Called on acquisition and renewal. After the caller appends, the file
+    /// contains at most one latest row per run plus the new row, independent
+    /// of heartbeat history. Large run counts may still require tail fallback.
     /// Generation fencing is unaffected: the retained row is exactly the row a
     /// full-scan latest-wins projection would have produced.
     pub(super) fn compact_supervisor_leases_unlocked(&self) -> StoreResult<()> {
@@ -167,8 +175,7 @@ impl HarnessStore {
     /// readers rely on.
     ///
     /// Called on renewal: NodeDaemon heartbeats renew ~1/s while acquisition
-    /// is rare, so this is where compaction belongs (the Supervisor version
-    /// compacts on the rare acquisition instead). The retention rule mirrors
+    /// is rare, so this is where compaction belongs. The retention rule mirrors
     /// `compact_supervisor_leases_unlocked`'s "latest row per key wins", but
     /// the key is the lease LIFECYCLE, not the node: per
     /// `(node_id, daemon_id, generation)` group, keep the group's first row
@@ -314,8 +321,10 @@ impl HarnessStore {
         const INCOMPLETE_ROW_RETRY: Duration = Duration::from_secs(1);
         const INCOMPLETE_ROW_POLL: Duration = Duration::from_millis(5);
         let deadline = Instant::now() + INCOMPLETE_ROW_RETRY;
+        let mut bytes_read = 0;
         let snapshot = loop {
             let bytes = fs::read(&path)?;
+            bytes_read += bytes.len() as u64;
             if bytes.is_empty() || bytes.ends_with(b"\n") || Instant::now() >= deadline {
                 break bytes;
             }
@@ -329,6 +338,14 @@ impl HarnessStore {
             }
             values.push(serde_json::from_slice(line)?);
         }
+        self.record_jsonl_read(
+            file_name,
+            snapshot.len() as u64,
+            bytes_read,
+            snapshot.len() as u64,
+            values.len() as u64,
+            "full_history",
+        );
         Ok(values)
     }
 }

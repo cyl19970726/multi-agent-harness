@@ -1444,3 +1444,5 @@ mod work_transitions_dont_fail_for_unbound_run;
 mod write_lock_contention_exhaustion_is_bounded_and_typed;
 mod write_lock_contention_retries_until_the_owner_releases;
 mod write_lock_fifo_admission_skips_timed_out_waiters;
+
+mod downstream_host_attention_source_integrity;

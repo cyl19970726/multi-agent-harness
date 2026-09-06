@@ -256,7 +256,7 @@ pub(super) fn close_team_member_value(
             // close only that obsolete coordination generation, without
             // fabricating a provider Close receipt; ordinary attached/live
             // runtimes continue through the normal control path below.
-            if member.status == MemberRunStatus::Blocked {
+            if member.status == MemberRunStatus::Blocked && run.status != TeamRunStatus::Completed {
                 if let Some(result) = close_detached_blocked_member_for_recovery(
                     store,
                     &run.id,

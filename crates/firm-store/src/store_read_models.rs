@@ -215,6 +215,26 @@ impl HarnessStore {
         self.read_jsonl("workflow_artifact_manifests.jsonl")
     }
 
+    /// Latest observation only; history and mutation readers retain fresh reads.
+    pub fn latest_team_runs(&self) -> StoreResult<Vec<AgentTeamRun>> {
+        self.cached_latest_jsonl_in_append_order(
+            "team_runs.jsonl",
+            |r: &AgentTeamRun| r.id.clone(),
+            |_| Ok(()),
+        )
+    }
+
+    pub fn latest_member_runs(&self) -> StoreResult<Vec<ProviderRuntimeProjection>> {
+        self.cached_latest_jsonl_in_append_order(
+            "member_runs.jsonl",
+            |r: &ProviderRuntimeProjection| r.id.clone(),
+            |r| {
+                r.validate()
+                    .map_err(|e| StoreError::Conflict(e.to_string()))
+            },
+        )
+    }
+
     pub fn team_runs(&self) -> StoreResult<Vec<AgentTeamRun>> {
         self.read_jsonl("team_runs.jsonl")
     }
@@ -609,10 +629,7 @@ impl HarnessStore {
         &self,
         team_run_id: &str,
     ) -> StoreResult<Option<TeamSupervisorLease>> {
-        Ok(latest_by_id(self.team_supervisor_leases()?, |lease| {
-            lease.team_run_id.clone()
-        })
-        .remove(team_run_id))
+        self.latest_lease_for_run_unlocked(team_run_id)
     }
 
     pub fn team_member_close_requests(&self) -> StoreResult<Vec<TeamMemberCloseRequest>> {
@@ -634,10 +651,15 @@ impl HarnessStore {
         &self,
         member_run_id: &str,
     ) -> StoreResult<Option<TeamMemberCloseRequest>> {
-        Ok(latest_by_id(self.team_member_close_requests()?, |request| {
-            request.member_run_id.clone()
-        })
-        .remove(member_run_id))
+        let current = self.cached_jsonl_source_fold(
+            "team_member_close_requests.jsonl",
+            false,
+            |rows: &mut std::collections::BTreeMap<String, TeamMemberCloseRequest>,
+             request: &TeamMemberCloseRequest| {
+                rows.insert(request.member_run_id.clone(), request.clone());
+            },
+        )?;
+        Ok(current.get(member_run_id).cloned())
     }
 
     pub fn member_actions(&self) -> StoreResult<Vec<MemberAction>> {

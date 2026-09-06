@@ -129,3 +129,113 @@ fn formal_reopen_writer_is_exact_host_and_closed_generation_fenced() {
     );
     std::fs::remove_dir_all(root).expect("remove temp store");
 }
+
+#[test]
+fn member_dual_ledger_failure_names_both_records_and_restart_fails_closed() {
+    let (root, store, run, member, _) = work_test_fixture("member-dual-ledger-crash");
+    let canonical_before = std::fs::read(root.join("agentfirm_trust_operations.jsonl")).unwrap();
+    let mut next = member.clone();
+    next.runtime_generation += 1;
+    next.status = MemberRunStatus::Queued;
+    next.started_at = "unix-ms:2".into();
+    next.last_event_at = Some("unix-ms:2".into());
+    // Fail the second physical write after the MemberRun projection append.
+    std::fs::create_dir(root.join("agentfirm_trust_operations.jsonl.next")).unwrap();
+    let error = store
+        .compare_and_advance_member_run_generation(&member, &next)
+        .expect_err("canonical write fails")
+        .to_string();
+    assert!(
+        error.contains("MEMBER_RUN_DUAL_LEDGER_COMMIT_INCOMPLETE"),
+        "{error}"
+    );
+    assert!(
+        error.contains(&member.id) && error.contains("runtime_generation=2"),
+        "{error}"
+    );
+    assert!(error.contains("canonical settlement unknown"), "{error}");
+    assert!(
+        error.contains("member_runs.jsonl") && error.contains("agentfirm_trust_operations.jsonl")
+    );
+    assert_eq!(
+        std::fs::read(root.join("agentfirm_trust_operations.jsonl")).unwrap(),
+        canonical_before
+    );
+    let restarted = HarnessStore::new(&root);
+    assert_eq!(
+        restarted
+            .member_runs()
+            .unwrap()
+            .last()
+            .unwrap()
+            .runtime_generation,
+        2
+    );
+    let refusal = restarted
+        .current_team_run_execution_space(&run)
+        .expect_err("restarted admission detects divergence")
+        .to_string();
+    assert!(
+        refusal.contains("MEMBER_RUN_MATERIALIZATION_MISMATCH"),
+        "{refusal}"
+    );
+    assert_eq!(
+        std::fs::read(root.join("agentfirm_trust_operations.jsonl")).unwrap(),
+        canonical_before,
+        "detection never silently repairs authoritative history"
+    );
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn current_member_scope_scan_stays_decode_free_as_real_history_grows() {
+    let (root, store, run, mut member, _) = work_test_fixture("scope-scan-growth");
+    let mut revisions = 0;
+    for target in [10, 100, 500] {
+        while revisions < target {
+            let mut next = member.clone();
+            next.last_event_at = Some(format!("unix-ms:scan-{}", revisions + 2));
+            store.compare_and_append_member_run(&member, &next).unwrap();
+            member = next;
+            revisions += 1;
+        }
+        // First post-write read honestly pays for trust's atomic replacement.
+        let rebuild_started = std::time::Instant::now();
+        store.current_team_run_execution_space(&run).unwrap();
+        let rebuild_elapsed = rebuild_started.elapsed();
+        let before = store.read_scan_metrics();
+        let started = std::time::Instant::now();
+        for _ in 0..20 {
+            assert_eq!(
+                store.current_team_run_execution_space(&run).unwrap(),
+                "unit-test-space"
+            );
+        }
+        let elapsed = started.elapsed();
+        let after = store.read_scan_metrics();
+        for metric in &after {
+            if let Some(previous) = before.iter().find(|m| m.ledger == metric.ledger) {
+                assert_eq!(
+                    metric.total_decoded_rows, previous.total_decoded_rows,
+                    "{} still decodes idle history",
+                    metric.ledger
+                );
+                assert_eq!(
+                    metric.total_bytes_read, previous.total_bytes_read,
+                    "{} still reads idle history",
+                    metric.ledger
+                );
+            }
+        }
+        println!(
+            "{}",
+            serde_json::json!({
+                "real_member_revisions": target, "idle_passes": 20,
+                "idle_elapsed_us": elapsed.as_micros(), "first_post_write_elapsed_us": rebuild_elapsed.as_micros(),
+                "metrics": after,
+                "limitation": "first post-write observation rebuilds atomic trust replacement; append prefix bytes scale with history"
+            })
+        );
+    }
+    std::fs::remove_dir_all(root).unwrap();
+}

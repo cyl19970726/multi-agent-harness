@@ -1,4 +1,7 @@
 use super::*;
+#[path = "trust_read_model.rs"]
+mod read_model;
+use read_model::TrustReadModel;
 
 impl HarnessStore {
     pub(crate) fn replay_current_work_mutation_unlocked(
@@ -639,6 +642,14 @@ impl HarnessStore {
             // append-style crash and is intentionally ignored above.
             envelopes.push(serde_json::from_slice(row)?);
         }
+        self.record_jsonl_read(
+            TRUST_OPERATIONS_LEDGER,
+            bytes.len() as u64,
+            bytes.len() as u64,
+            durable_len as u64,
+            envelopes.len() as u64,
+            "full_history",
+        );
         Ok(envelopes)
     }
 
@@ -674,12 +685,14 @@ impl HarnessStore {
 
     pub fn canonical_execution_space_ids(&self) -> StoreResult<Vec<String>> {
         Ok(self
-            .trust_operation_envelopes_unlocked()?
-            .into_iter()
-            .map(|envelope| envelope.execution_space_id)
-            .collect::<BTreeSet<_>>()
-            .into_iter()
-            .collect())
+            .cached_latest_jsonl_derived(
+                TRUST_OPERATIONS_LEDGER,
+                trust_cache_key,
+                |e| e.execution_space_id.clone(),
+                crate::store_read_cache::CacheSelection::Groups,
+                TrustReadModel::observe,
+            )?
+            .1)
     }
 
     /// Scope-preserving canonical operation read for server-built RoleViews.
@@ -697,30 +710,10 @@ impl HarnessStore {
             .collect())
     }
 
-    pub(crate) fn trust_work_projections_unlocked(&self) -> StoreResult<Vec<Work>> {
-        let mut works = Vec::new();
-        for envelope in self.trust_operation_envelopes_unlocked()? {
-            if envelope.operation.event.aggregate_kind == "work" {
-                works.push(event_projection::<Work>(&envelope)?);
-            }
-            for record in envelope.operation.immutable_side_records {
-                if let Ok(work) = serde_json::from_value::<Work>(record) {
-                    works.push(work);
-                }
-            }
-        }
-        Ok(works)
-    }
-
     pub(crate) fn canonical_host_attention_outbox_unlocked(
         &self,
     ) -> StoreResult<Vec<HostAttention>> {
-        Ok(self
-            .trust_operation_envelopes_unlocked()?
-            .into_iter()
-            .flat_map(|envelope| envelope.operation.initial_outbox_records)
-            .filter_map(|record| serde_json::from_value::<HostAttention>(record).ok())
-            .collect())
+        self.cached_host_attention_outbox()
     }
 
     /// Decode-only compatibility view for callers that still resolve a
@@ -778,20 +771,42 @@ impl HarnessStore {
         Ok(revisions)
     }
 
+    /// Select by kind before cloning: settled RuntimeCommand history must not
+    /// inflate every current Session/MemberRun observation.
+    pub(super) fn cached_latest_trust_envelopes_for_kind(
+        &self,
+        aggregate_kind: &str,
+    ) -> StoreResult<Vec<TrustOperationEnvelope>> {
+        let prefix = trust_cache_prefix(&[aggregate_kind]);
+        Ok(self
+            .cached_latest_jsonl_derived(
+                TRUST_OPERATIONS_LEDGER,
+                trust_cache_key,
+                |e| e.execution_space_id.clone(),
+                crate::store_read_cache::CacheSelection::Prefix(&prefix),
+                TrustReadModel::observe,
+            )?
+            .0)
+    }
+
     pub(super) fn latest_trust_envelopes_unlocked(
         &self,
         execution_space_id: &str,
         aggregate_kind: &str,
     ) -> StoreResult<BTreeMap<String, TrustOperationEnvelope>> {
-        let mut latest = BTreeMap::new();
-        for envelope in self.trust_operation_envelopes_unlocked()? {
-            if envelope.execution_space_id == execution_space_id
-                && envelope.operation.event.aggregate_kind == aggregate_kind
-            {
-                latest.insert(envelope.operation.event.aggregate_id.clone(), envelope);
-            }
-        }
-        Ok(latest)
+        let prefix = trust_cache_prefix(&[aggregate_kind, execution_space_id]);
+        Ok(self
+            .cached_latest_jsonl_derived(
+                TRUST_OPERATIONS_LEDGER,
+                trust_cache_key,
+                |e| e.execution_space_id.clone(),
+                crate::store_read_cache::CacheSelection::Prefix(&prefix),
+                TrustReadModel::observe,
+            )?
+            .0
+            .into_iter()
+            .map(|e| (e.operation.event.aggregate_id.clone(), e))
+            .collect())
     }
 
     pub(super) fn replay_trust_projection_unlocked<T: for<'de> Deserialize<'de> + Clone>(
@@ -960,4 +975,20 @@ impl HarnessStore {
             Vec::new(),
         )
     }
+}
+
+// Only volatile index keys use this order. Persisted records are unchanged.
+fn trust_cache_key(e: &TrustOperationEnvelope) -> String {
+    serde_json::to_string(&(
+        &e.operation.event.aggregate_kind,
+        &e.execution_space_id,
+        &e.operation.event.aggregate_id,
+    ))
+    .expect("string tuple serializes")
+}
+fn trust_cache_prefix(parts: &[&str]) -> String {
+    let mut prefix = serde_json::to_string(parts).expect("string array serializes");
+    prefix.pop(); // Closing array delimiter, after fully escaped string values.
+    prefix.push(',');
+    prefix
 }

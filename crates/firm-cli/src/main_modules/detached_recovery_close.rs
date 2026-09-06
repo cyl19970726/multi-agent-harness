@@ -134,7 +134,27 @@ pub(super) fn close_detached_blocked_member_for_recovery_with_hooks(
         }
         _ => false,
     };
-    if !native_session_matches_and_resumable {
+    // A never-started managed lane has no native identity to resume. Close
+    // only its coordination; any command history means this exception cannot
+    // prove the lane never had a provider effect. The final Store CAS repeats
+    // this no-command proof under the same lock as Session/MemberRun fencing.
+    let never_bound_cold = mode == DetachedRecoveryCloseMode::CompletedRunMember
+        && !member.is_external_interactive()
+        && session.lifecycle == AgentSessionStatus::Cold
+        && member.native_session.is_none()
+        && session.native_session_ref.is_none()
+        && proof.dormant_residue.is_empty();
+    if never_bound_cold
+        && store
+            .runtime_commands(&execution_space_id)?
+            .iter()
+            .any(|command| command.target_session_id.as_deref() == Some(session.id.as_str()))
+    {
+        return Err(CliError::RuntimeRecoveryRequired(format!(
+            "DETACHED_MEMBER_RECOVERY_COLD_COMMAND_HISTORY: AgentSession {} has RuntimeCommand history; reconcile its recorded execution before Close", session.id
+        )));
+    }
+    if !native_session_matches_and_resumable && !never_bound_cold {
         return Err(CliError::RuntimeRecoveryRequired(format!(
             "DETACHED_MEMBER_RECOVERY_FENCED: member {} lacks an exact present, resumable native-session authority matching AgentSession {}",
             member.id, session.id
@@ -519,7 +539,7 @@ pub(super) fn close_detached_blocked_member_for_recovery_with_hooks(
         "status": "stopped",
         "coordination_status": "closed",
         "runtime": "not_live",
-        "runtime_effect": "already_detached",
+        "runtime_effect": if never_bound_cold { "never_started" } else { "already_detached" },
         "dormant_residue": dormant_residue,
         "coordination_effect": "member_closed_for_recovery",
         "provider_close_receipt": "not_fabricated",

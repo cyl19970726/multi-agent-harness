@@ -540,7 +540,7 @@ pub(super) fn latest_runtime(
 pub(super) fn latest_team_runs_in_append_order(
     store: &HarnessStore,
 ) -> CliResult<Vec<AgentTeamRun>> {
-    Ok(latest_team_runs_from_rows(store.team_runs()?))
+    Ok(store.latest_team_runs()?)
 }
 
 fn latest_team_runs_from_rows(rows: Vec<AgentTeamRun>) -> Vec<AgentTeamRun> {
@@ -557,7 +557,7 @@ fn latest_team_runs_from_rows(rows: Vec<AgentTeamRun>) -> Vec<AgentTeamRun> {
 pub(super) fn latest_member_runs_in_append_order(
     store: &HarnessStore,
 ) -> CliResult<Vec<ProviderRuntimeProjection>> {
-    Ok(latest_member_runs_from_rows(store.member_runs()?))
+    Ok(store.latest_member_runs()?)
 }
 
 fn latest_member_runs_from_rows(

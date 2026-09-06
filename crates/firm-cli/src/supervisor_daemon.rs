@@ -30,7 +30,7 @@ mod control_protocol;
 #[cfg(test)]
 mod lease_renewal_tests;
 mod machine_authority;
-pub(crate) mod recovery;
+mod recovery;
 mod self_stop_events;
 mod shutdown;
 mod team_supervision;
@@ -138,7 +138,7 @@ pub(crate) const NODE_DAEMON_STOP_DRAIN_BOUND: Duration = Duration::from_secs(
 /// The exact refusal `start_supervising` writes when this NodeDaemon already
 /// drives `--max-concurrency` TeamRuns. Named once so the adoption classifier
 /// and the at-capacity backoff cannot drift from the message.
-const AT_CAPACITY_REFUSAL: &str = "NodeDaemon at capacity";
+pub(crate) const AT_CAPACITY_REFUSAL: &str = "NodeDaemon at capacity";
 
 /// One TeamRun the discovery scan deferred because the daemon is already at
 /// `--max-concurrency` (#836).

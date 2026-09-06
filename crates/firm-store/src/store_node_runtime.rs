@@ -590,8 +590,8 @@ impl HarnessStore {
             expires_unix_ms: now_unix_ms.saturating_add(ttl_ms.max(1)),
             released_unix_ms: None,
         };
-        // Acquisition is rare (one per Supervisor generation) while heartbeats
-        // are ~1/s, so this is where compaction belongs.
+        // Keep prior runs latest-wins when a new generation is acquired.
+        // Renewal also compacts so one long-lived generation stays bounded.
         self.compact_supervisor_leases_unlocked()?;
         self.append_jsonl_unlocked("team_supervisor_leases.jsonl", &lease)?;
         Ok(lease)
@@ -646,6 +646,10 @@ impl HarnessStore {
                 lease.node_id
             ))
         })?;
+        // Reuse the existing latest-per-run retention rule on every heartbeat.
+        // Otherwise one long-lived generation grows the fresh 20 Hz lease
+        // reader's window forever. Recheck the clock after this I/O as well.
+        self.compact_supervisor_leases_unlocked()?;
         let now_unix_ms = renewal_now();
         if lease.expires_unix_ms <= now_unix_ms {
             return Err(StoreError::Conflict(format!("Supervisor lease for team run {team_run_id} is no longer owned by {supervisor_id} generation {generation}")));

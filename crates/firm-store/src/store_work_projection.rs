@@ -15,21 +15,10 @@ impl HarnessStore {
         revision: u64,
     ) -> StoreResult<bool> {
         Ok(self
-            .work_operations_unlocked()?
-            .into_iter()
-            .any(|operation| {
-                operation.work.id == work_id
-                    && operation.event.resulting_version > revision
-                    && matches!(
-                        operation.event.kind,
-                        WorkEventKind::Assigned
-                            | WorkEventKind::Claimed
-                            | WorkEventKind::Released
-                            | WorkEventKind::Rebound
-                            | WorkEventKind::ExecutionRetargeted
-                            | WorkEventKind::ExecutionRecovered
-                    )
-            }))
+            .current_work_sources()?
+            .responsibility_versions
+            .get(work_id)
+            .is_some_and(|latest| *latest > revision))
     }
 
     /// Versioned, append-only responsibility migration (DOC-106). Each legacy
@@ -365,35 +354,16 @@ impl HarnessStore {
     }
 
     fn all_work_operations_unlocked(&self) -> StoreResult<Vec<WorkOperation>> {
-        let mut operations: Vec<WorkOperation> = self
+        let operations: Vec<WorkOperation> = self
             .read_jsonl::<WorkOperation>("work_operations.jsonl")?
             .into_iter()
             .collect();
-        let mut delegated = self
+        let delegated = self
             .read_jsonl::<WorkDelegationOperation>("work_delegation_operations.jsonl")?
             .into_iter()
             .map(|operation| operation.target_work_operation)
             .collect::<Vec<_>>();
-        // WorkDelegation creation is crash-atomic in a separate composite
-        // ledger, while later target transitions use the ordinary Work ledger.
-        // Concatenating files would place every delegated Work's version 1
-        // after its later versions and make the projection regress. Preserve
-        // the ordinary ledger's exact append order (the durable `--since`
-        // cursor), then insert each composite creation at its temporal slot
-        // and always before any later revision of that same Work.
-        delegated.sort_by(|left, right| work_event_order(&left.event, &right.event));
-        for operation in delegated {
-            let same_work = operations
-                .iter()
-                .position(|existing| existing.work.id == operation.work.id)
-                .unwrap_or(operations.len());
-            let temporal = operations
-                .iter()
-                .position(|existing| work_event_order(&operation.event, &existing.event).is_lt())
-                .unwrap_or(operations.len());
-            operations.insert(same_work.min(temporal), operation);
-        }
-        Ok(operations)
+        Ok(crate::store_current_read_model::merge_work_operation_sources(operations, delegated))
     }
 
     pub(super) fn all_work_delegation_revisions_unlocked(
@@ -728,7 +698,7 @@ impl HarnessStore {
         self.recover_work_operation_provenance(self.work_operations_unlocked()?)
     }
 
-    fn recover_work_operation_provenance(
+    pub(super) fn recover_work_operation_provenance(
         &self,
         operations: Vec<WorkOperation>,
     ) -> StoreResult<Vec<WorkOperation>> {
@@ -913,14 +883,12 @@ impl HarnessStore {
     pub(super) fn latest_works_unlocked(
         &self,
     ) -> StoreResult<std::collections::BTreeMap<String, Work>> {
-        let mut latest = latest_by_id(
-            self.work_operations_with_recovered_provenance_unlocked()?,
-            |operation| operation.work.id.clone(),
-        )
-        .into_iter()
-        .map(|(id, operation)| (id, operation.work))
-        .collect::<std::collections::BTreeMap<_, _>>();
-        for work in self.trust_work_projections_unlocked()? {
+        let mut latest = self
+            .current_work_sources()?
+            .latest
+            .clone()
+            .map_err(StoreError::Conflict)?;
+        for work in self.cached_trust_work_latest_unlocked()? {
             match latest.get(&work.id) {
                 Some(current) if current.version >= work.version => {}
                 _ => {

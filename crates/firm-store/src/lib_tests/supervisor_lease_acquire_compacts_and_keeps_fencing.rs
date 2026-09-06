@@ -8,18 +8,18 @@ fn supervisor_lease_acquire_compacts_and_keeps_fencing() {
     let store = HarnessStore::new(&root);
     seed_lease_run(&store, "run-a");
     store
-        .acquire_test_supervisor_lease("run-a", "sup-1", 1, "a", 1_000, 10)
+        .acquire_test_supervisor_lease("run-a", "sup-1", 1, "a", 1_000, 15_000)
         .expect("acquire gen 1");
     for tick in 0..500u64 {
         store
-            .renew_team_supervisor_lease("run-a", "sup-1", 1, 1_001 + tick, 10)
+            .renew_team_supervisor_lease("run-a", "sup-1", 1, 1_001 + tick, 15_000)
             .expect("renew");
     }
     let before = store
         .read_jsonl::<TeamSupervisorLease>("team_supervisor_leases.jsonl")
         .expect("read")
         .len();
-    assert!(before > 500, "history should be long before compaction");
+    assert_eq!(before, 2, "renewal must also bound same-generation history");
 
     // The lease has expired, so a different Supervisor takes generation 2.
     let gen2 = store

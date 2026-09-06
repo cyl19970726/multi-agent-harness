@@ -204,8 +204,18 @@ fn a_lost_member_run_cas_is_retryable_and_the_member_still_provisions() {
         .save_member_run(&fixture.joined, &advanced)
         .expect("concurrent Host append");
 
-    let error = ensure_joined_member_runtime_fabric(&fixture.ledger, &mut stale_projection)
-        .expect_err("a stale MemberRun projection loses the profile CAS");
+    let probe = |_: &ProviderRuntimeProjection| {
+        let mut profile = fixture.joined.provider_profile.clone().expect("profile");
+        profile.compatibility_status = ProviderCompatibilityStatus::Current;
+        profile.compatibility_note = Some("deterministic version probe".into());
+        Ok((profile, None))
+    };
+    let error = ensure_joined_member_runtime_fabric_with_probe(
+        &fixture.ledger,
+        &mut stale_projection,
+        probe,
+    )
+    .expect_err("a stale MemberRun projection loses the profile CAS");
     assert!(
         matches!(error, CliError::Store(_)),
         "a lost CAS must keep the typed Store error: {error}"
@@ -229,8 +239,7 @@ fn a_lost_member_run_cas_is_retryable_and_the_member_still_provisions() {
         .latest_member_run(&fixture.joined.id)
         .expect("read the member back")
         .expect("member run");
-    match fixture
-        .provision(&mut retried)
+    match ensure_joined_member_runtime_fabric_with_probe(&fixture.ledger, &mut retried, probe)
         .expect("the retry provisions the member the lost race left alone")
     {
         JoinedMemberRuntimeFabric::Provisioned { .. } => {}

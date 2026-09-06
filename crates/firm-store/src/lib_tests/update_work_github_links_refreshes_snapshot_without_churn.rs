@@ -133,3 +133,102 @@ fn update_work_github_links_refreshes_only_evidence_without_churn() {
     assert_eq!(store.work_operations().unwrap(), operations);
     std::fs::remove_dir_all(root).expect("remove temp store");
 }
+
+#[test]
+fn idle_current_queries_keep_work_history_fold_out_of_each_poll() {
+    let (root, store, run, _, _) = work_test_fixture("idle-work-history");
+    let mut draft = unassigned_test_work(&run.id, "idle-work-history-work");
+    draft.github_links = vec![pull_request("OPEN")];
+    let mut work = store
+        .insert_work(
+            draft,
+            host_work_context("idle-create", "idle-create", "unix-ms:2"),
+        )
+        .unwrap();
+    let daemon = store
+        .acquire_node_daemon_lease(
+            &run.execution_node_id,
+            "idle-history-daemon",
+            "idle-history-instance",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_millis() as u64,
+            600_000,
+        )
+        .unwrap();
+    let mut written = 0;
+    for revisions in [10, 100] {
+        for n in written..revisions {
+            let context = WorkCommandContext {
+                event_id: format!("idle-work-{n}"),
+                performed_by_actor: TeamActorRef {
+                    kind: TeamActorKind::Service,
+                    id: daemon.daemon_id.clone(),
+                    display_name: None,
+                    authn_source: Some("test_node_daemon".into()),
+                },
+                authority_actor: run.host_actor.clone(),
+                causation_ref: None,
+                idempotency_key: format!("idle-work-{n}"),
+                created_at: format!("unix-ms:{}", n + 3),
+                duplicate_ok: false,
+            };
+            work = store
+                .update_work_github_links(
+                    &work.id,
+                    work.version,
+                    vec![pull_request(if n % 2 == 0 { "MERGED" } else { "OPEN" })],
+                    "unit-test-space",
+                    &daemon,
+                    context,
+                )
+                .unwrap();
+        }
+        written = revisions;
+        let query = || {
+            assert_eq!(
+                store
+                    .latest_works()
+                    .unwrap()
+                    .iter()
+                    .find(|w| w.id == work.id)
+                    .unwrap(),
+                &work
+            );
+            assert!(store
+                .current_work_deliveries_for_team_run(&run.id)
+                .unwrap()
+                .is_empty());
+            assert!(store.host_attentions().unwrap().is_empty());
+        };
+        query();
+        let before = store.read_scan_metrics();
+        let started = std::time::Instant::now();
+        for _ in 0..20 {
+            query();
+        }
+        let after = store.read_scan_metrics();
+        for ledger in [
+            "agentfirm_trust_operations.jsonl",
+            "member_runs.jsonl",
+            "work_operations.jsonl",
+        ] {
+            let a = after.iter().find(|m| m.ledger == ledger).unwrap();
+            let b = before.iter().find(|m| m.ledger == ledger).unwrap();
+            assert_eq!(
+                a.total_bytes_read, b.total_bytes_read,
+                "{ledger} N={revisions}"
+            );
+            assert_eq!(
+                a.total_decoded_rows, b.total_decoded_rows,
+                "{ledger} N={revisions}"
+            );
+        }
+        eprintln!(
+            "{}",
+            serde_json::json!({"real_work_revisions":revisions,"idle_query_batches":20,"elapsed_us":started.elapsed().as_micros(),"metrics":after})
+        );
+    }
+    std::fs::remove_dir_all(root).unwrap();
+}

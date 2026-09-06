@@ -111,7 +111,7 @@ fn active_with_supervisor_returns_already_active() {
 }
 
 #[test]
-fn compatible_session_returns_resume() {
+fn closed_compatible_session_requires_explicit_reopen() {
     let member = make_member(
         MemberRunStatus::Stopped,
         MemberCoordinationStatus::Closed,
@@ -122,12 +122,12 @@ fn compatible_session_returns_resume() {
     );
     assert_eq!(
         classify_member_recovery_path(&member, false, false),
-        MemberRecoveryPath::ResumeCompatible
+        MemberRecoveryPath::Closed
     );
 }
 
 #[test]
-fn incompatible_session_returns_rebind() {
+fn closed_incompatible_session_requires_explicit_reopen() {
     let member = make_member(
         MemberRunStatus::Stopped,
         MemberCoordinationStatus::Closed,
@@ -138,14 +138,14 @@ fn incompatible_session_returns_rebind() {
     );
     let result = classify_member_recovery_path(&member, false, false);
     assert!(
-        matches!(result, MemberRecoveryPath::RebindIncompatible { .. }),
-        "expected RebindIncompatible, got {:?}",
+        matches!(result, MemberRecoveryPath::Closed),
+        "expected Closed, got {:?}",
         result
     );
 }
 
 #[test]
-fn missing_session_returns_rebind() {
+fn closed_missing_session_requires_explicit_reopen() {
     let member = make_member(
         MemberRunStatus::Stopped,
         MemberCoordinationStatus::Closed,
@@ -156,8 +156,8 @@ fn missing_session_returns_rebind() {
     );
     let result = classify_member_recovery_path(&member, false, false);
     assert!(
-        matches!(result, MemberRecoveryPath::RebindIncompatible { .. }),
-        "expected RebindIncompatible, got {:?}",
+        matches!(result, MemberRecoveryPath::Closed),
+        "expected Closed, got {:?}",
         result
     );
 }
@@ -181,7 +181,7 @@ fn retired_member_returns_terminal() {
 }
 
 #[test]
-fn external_interactive_always_resume() {
+fn closed_external_interactive_requires_explicit_reopen() {
     let member = make_member(
         MemberRunStatus::Stopped,
         MemberCoordinationStatus::Closed,
@@ -192,7 +192,7 @@ fn external_interactive_always_resume() {
     );
     assert_eq!(
         classify_member_recovery_path(&member, false, false),
-        MemberRecoveryPath::ResumeCompatible
+        MemberRecoveryPath::Closed
     );
 }
 
@@ -446,7 +446,7 @@ fn blocked_member_on_a_dead_lane_is_restarted_and_nothing_else_is() {
 }
 
 #[test]
-fn completed_member_no_supervisor_returns_terminal() {
+fn completed_closed_member_still_requires_explicit_reopen() {
     let member = make_member(
         MemberRunStatus::Completed,
         MemberCoordinationStatus::Closed,
@@ -457,8 +457,8 @@ fn completed_member_no_supervisor_returns_terminal() {
     );
     let result = classify_member_recovery_path(&member, false, false);
     assert!(
-        matches!(result, MemberRecoveryPath::Terminal { .. }),
-        "expected Terminal, got {:?}",
+        matches!(result, MemberRecoveryPath::Closed),
+        "expected Closed, got {:?}",
         result
     );
 }

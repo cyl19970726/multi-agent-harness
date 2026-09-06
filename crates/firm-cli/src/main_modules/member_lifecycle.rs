@@ -752,7 +752,7 @@ pub(super) fn wait_for_idle_member_wake(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn poll_idle_member_wake(
+pub(super) fn poll_idle_member_wake(
     ledger: &TeamRunLedger,
     member_row: &mut ProviderRuntimeProjection,
     controls: &ControlReceiver<MemberControlCommand>,

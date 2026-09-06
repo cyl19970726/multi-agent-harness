@@ -31,6 +31,10 @@ impl MultiTeamDaemon {
         };
 
         for (space, store) in self.registered_spaces()? {
+            let _scan = crate::scan_diagnostics::ScanObservation::begin(
+                format!("daemon:{}:{}", self.node_id, space.id),
+                &store,
+            );
             if !authority_spaces.contains(&space.id) {
                 continue;
             }

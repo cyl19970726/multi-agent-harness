@@ -170,19 +170,16 @@ impl HarnessStore {
         execution_space_id: &str,
         member_ids: &std::collections::HashSet<String>,
     ) -> StoreResult<Vec<AgentSession>> {
-        let mut latest = BTreeMap::new();
-        for envelope in self.trust_operation_envelopes_unlocked()? {
-            let event = &envelope.operation.event;
-            if envelope.execution_space_id == execution_space_id
-                && event.aggregate_kind == "agent_session"
-                && envelope.operation.resulting_projection["agent_member_id"]
+        let latest = self.latest_trust_envelopes_unlocked(execution_space_id, "agent_session")?;
+        latest
+            .values()
+            .filter(|envelope| {
+                envelope.operation.resulting_projection["agent_member_id"]
                     .as_str()
                     .is_some_and(|id| member_ids.contains(id))
-            {
-                latest.insert(event.aggregate_id.clone(), envelope);
-            }
-        }
-        latest.values().map(event_projection).collect()
+            })
+            .map(event_projection)
+            .collect()
     }
 
     pub fn create_agent_session(
@@ -279,28 +276,7 @@ impl HarnessStore {
         &self,
         execution_space_id: &str,
     ) -> StoreResult<Vec<TeamMembership>> {
-        let mut latest = BTreeMap::new();
-        for envelope in self
-            .trust_operation_envelopes_unlocked()?
-            .into_iter()
-            .filter(|envelope| envelope.execution_space_id == execution_space_id)
-        {
-            if envelope.operation.event.aggregate_kind == "team_membership" {
-                let membership = event_projection::<TeamMembership>(&envelope)?;
-                latest.insert(membership.id.clone(), membership);
-            }
-            for value in envelope
-                .operation
-                .initial_outbox_records
-                .iter()
-                .chain(&envelope.operation.immutable_side_records)
-            {
-                if let Ok(membership) = serde_json::from_value::<TeamMembership>(value.clone()) {
-                    latest.insert(membership.id.clone(), membership);
-                }
-            }
-        }
-        Ok(latest.into_values().collect())
+        self.cached_team_memberships(execution_space_id, None)
     }
 
     pub fn fabric_team_memberships_for_team(
@@ -308,32 +284,7 @@ impl HarnessStore {
         execution_space_id: &str,
         team_id: &str,
     ) -> StoreResult<Vec<TeamMembership>> {
-        let mut latest = BTreeMap::new();
-        for envelope in self
-            .trust_operation_envelopes_unlocked()?
-            .into_iter()
-            .filter(|envelope| envelope.execution_space_id == execution_space_id)
-        {
-            let event = &envelope.operation.event;
-            if event.aggregate_kind == "team_membership"
-                && envelope.operation.resulting_projection["team_id"].as_str() == Some(team_id)
-            {
-                let membership = event_projection::<TeamMembership>(&envelope)?;
-                latest.insert(membership.id.clone(), membership);
-            }
-            for value in envelope
-                .operation
-                .initial_outbox_records
-                .iter()
-                .chain(&envelope.operation.immutable_side_records)
-                .filter(|value| value["team_id"].as_str() == Some(team_id))
-            {
-                if let Ok(membership) = serde_json::from_value::<TeamMembership>(value.clone()) {
-                    latest.insert(membership.id.clone(), membership);
-                }
-            }
-        }
-        Ok(latest.into_values().collect())
+        self.cached_team_memberships(execution_space_id, Some(team_id))
     }
 
     pub fn team_host_membership(

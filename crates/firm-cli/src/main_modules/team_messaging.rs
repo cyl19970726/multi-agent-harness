@@ -762,9 +762,31 @@ pub(super) fn canonical_team_messages_for_run(
     store: &HarnessStore,
     team_run_id: &str,
 ) -> CliResult<Vec<TeamMessageProjection>> {
+    project_team_messages_for_run(store, team_run_id, false)
+}
+
+pub(super) fn current_team_messages_for_runtime(
+    store: &HarnessStore,
+    team_run_id: &str,
+) -> CliResult<Vec<TeamMessageProjection>> {
+    project_team_messages_for_run(store, team_run_id, true)
+}
+
+fn project_team_messages_for_run(
+    store: &HarnessStore,
+    team_run_id: &str,
+    current_runtime: bool,
+) -> CliResult<Vec<TeamMessageProjection>> {
     let run = latest_team_run(store, team_run_id)?;
     let execution_space_id = team_run_execution_space_id(store, &run)?;
-    let member_runs = store.member_run_rows_for_team_run(team_run_id)?;
+    // Runtime wake needs current identity bindings. The diagnostic API keeps
+    // its historical, run-scoped validation rather than validating foreign
+    // rows through a new whole-Store current projection.
+    let member_runs = if current_runtime {
+        store.latest_member_runs()?
+    } else {
+        store.member_run_rows_for_team_run(team_run_id)?
+    };
     let identity_to_runtime = member_runs
         .iter()
         .filter(|member| member.team_run_id == team_run_id)
@@ -1124,9 +1146,9 @@ pub(super) fn resolve_team_message_lineage(
 /// Load the latest row for a team run id, or a clear not-found error.
 pub(super) fn latest_team_run(store: &HarnessStore, id: &str) -> CliResult<AgentTeamRun> {
     store
-        .team_run_rows(id)?
+        .latest_team_runs()?
         .into_iter()
-        .last()
+        .find(|run| run.id == id)
         .ok_or_else(|| CliError::Usage(format!("team run not found: {id}")))
 }
 
