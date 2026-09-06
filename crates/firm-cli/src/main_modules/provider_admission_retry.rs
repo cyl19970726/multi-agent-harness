@@ -1,7 +1,5 @@
 use super::*;
 
-pub(super) const MAX_PRE_EFFECT_PROVIDER_ADMISSION_RETRIES: u32 = 3;
-
 /// Keep the only retryable admission failure typed. This classifier is used
 /// exclusively before a RuntimeCommand exists; once a command is prepared,
 /// effect certainty and reconciliation remain authoritative.
@@ -15,24 +13,16 @@ pub(super) fn classify_pre_effect_provider_admission_error(error: CliError) -> C
 }
 
 pub(super) fn retry_pre_effect_provider_admission<T>(
-    mut revalidate: impl FnMut() -> CliResult<()>,
-    mut operation: impl FnMut() -> CliResult<T>,
-    mut wait: impl FnMut(Duration),
+    revalidate: impl FnMut() -> CliResult<()>,
+    operation: impl FnMut() -> CliResult<T>,
+    wait: impl FnMut(Duration),
 ) -> CliResult<T> {
-    let mut retries = 0u32;
-    loop {
-        revalidate()?;
-        match operation() {
-            Err(CliError::ProviderAdmissionContention(_))
-                if retries < MAX_PRE_EFFECT_PROVIDER_ADMISSION_RETRIES =>
-            {
-                let delay_ms = 50u64.saturating_mul(1u64 << retries.min(3));
-                retries += 1;
-                wait(Duration::from_millis(delay_ms));
-            }
-            result => return result,
-        }
-    }
+    harness_runtime_supervisor::policy::retry_pre_effect_admission(
+        revalidate,
+        operation,
+        |error| matches!(error, CliError::ProviderAdmissionContention(_)),
+        wait,
+    )
 }
 
 /// Re-run only the zero-effect provider-process admission. Every attempt first

@@ -790,3 +790,6 @@ mod trust_workspace;
 #[cfg(test)]
 #[path = "trust_kernel_tests/mod.rs"]
 mod tests;
+
+#[path = "trust_kernel/work_acceptance_wake.rs"]
+mod work_acceptance_wake;

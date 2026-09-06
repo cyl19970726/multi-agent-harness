@@ -301,7 +301,7 @@ hidden wall-clock limit after a cycle is accepted: a long reasoning turn or
 silent provider tool remains live while the owned runner process and transport
 remain intact, and Interrupt/Close keep polling. The only timeouts an adapter
 applies are the three physical quantities of
-`CycleTimeouts` (`crates/firm-runtime-contract/src/cycle.rs`):
+`CycleTimeouts` (`crates/firm-runtime-contract/src/timeouts.rs`):
 `input_acceptance` bounds only the delivery boundary from input written to the
 provider's exact acceptance receipt; `transport_liveness` bounds the proof
 that the owned process and transport are still alive; `control_settle` bounds
@@ -315,6 +315,28 @@ or stops the cycle at `RuntimeRecoveryRequired` before any receipt exists
 #857](https://github.com/cyl19970726/multi-agent-harness/issues/857)). Child
 exit, stdout disconnect, runner error, and unsettled durable effects remain
 explicit fail-closed recovery conditions.
+
+The pure wake priority, zero-output degradation/backoff, and bounded
+pre-effect admission contention retry are owned by
+`firm-runtime-supervisor`. The application supplies store observations and
+classifies errors; adapters retain transport observation and protocol control.
+`ControlRequest.timeouts` carries the caller's budget through all five semantic
+control adapters. That control request currently has no production constructor;
+ordinary Team cycles keep their configured `CycleTimeouts` and the unchanged
+300/30/15-second contract defaults.
+
+A managed Host-driven member may receive one reconsideration cycle when its
+own other Work is accepted after its current block, with no other owned Normal
+Active/Review Work remaining. Selection uses current membership and durable
+Team responsibility, reading native canonical acceptance events as well as
+historical Work events. Recorded `unix-ms` and RFC3339 times establish strict
+ordering; unprovable order produces no wake. The input never resumes Work or
+creates a Message. A stable acceptance event reference in RuntimeCommand is
+consumed at preparation, including subsequent NotApplied outcomes. Shared
+preparation rechecks eligibility and rejects a second automatic preparation
+across rounds or Session generations; explicit Host intervention remains
+available. Ordinary Work/Message delivery, Close, driver fencing and degradation
+retain priority.
 
 ```text
 authenticate and resolve authority

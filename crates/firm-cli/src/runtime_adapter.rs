@@ -442,7 +442,10 @@ pub(crate) fn run_team_member_with_adapter<A: TeamRuntimeAdapter<Error = CliErro
                 })
                 .map(str::to_string)
                 .unwrap_or_else(|| format!("continuation:{}:{round}", member_row.id));
-            let source_record_id = format!("{source_record_id}:turn:{round}");
+            let source_record_id = cycle
+                .acceptance_source
+                .clone()
+                .unwrap_or_else(|| format!("{source_record_id}:turn:{round}"));
             // A concrete cycle is the only boundary that activates the machine
             // AgentSession. Idle mailbox waiting and an attached process are not
             // an active provider turn.

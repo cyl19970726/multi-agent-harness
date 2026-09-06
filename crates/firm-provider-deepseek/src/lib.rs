@@ -1137,7 +1137,7 @@ impl RuntimeAdapter for DeepSeekTeamRuntime {
                     .transport
                     .run_cycle(
                         &input,
-                        CycleTimeouts::with_input_acceptance(Duration::from_secs(30 * 60)),
+                        request.timeouts,
                         &mut |receipt| {
                             accepted = receipt.response_id.clone();
                             Ok(())

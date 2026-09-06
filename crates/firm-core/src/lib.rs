@@ -16,6 +16,7 @@ mod team_events;
 mod team_runtime;
 mod validation_impls;
 mod work;
+pub mod work_acceptance;
 mod workflow;
 
 pub use legacy_mission::*;

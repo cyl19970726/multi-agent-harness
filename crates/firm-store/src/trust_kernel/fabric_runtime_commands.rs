@@ -353,6 +353,28 @@ impl HarnessStore {
                 &command.id,
                 Some(session.version),
             )?;
+            if let Some(source) = command.payload["delivery_id"].as_str().filter(|source| {
+                source.starts_with(firm_core::work_acceptance::ACCEPTANCE_WAKE_SOURCE_PREFIX)
+            }) {
+                let member_run_id = command.binding.target_member_run_id.as_deref();
+                let candidate = member_run_id
+                    .map(|member_run_id| {
+                        self.pending_work_acceptance_wake(
+                            &context.execution_space_id,
+                            member_run_id,
+                        )
+                    })
+                    .transpose()?
+                    .flatten();
+                if command.command != RuntimeCommandKind::StartCycle
+                    || session.control_state.execution_driver != MemberExecutionDriver::HostDriven
+                    || candidate.is_none_or(|wake| wake.source_record_id() != source)
+                {
+                    return Err(trust_error(TrustErrorCode::InvalidStateTransition,
+                        "WORK_ACCEPTANCE_WAKE_UNAVAILABLE: acceptance is stale, unrelated or already prepared; do not replay the effect",
+                        "runtime_command", &command.id, Some(session.version)));
+                }
+            }
             let actor = &command.authenticated_actor;
             let exact_self =
                 actor.kind == ActorKind::AgentMember && actor.id == session.agent_member_id;
