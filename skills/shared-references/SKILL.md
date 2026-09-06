@@ -31,13 +31,17 @@ responsibility, ownership, status, or a dependency mutation.
 
 ## 2. One Execution Driver Per MemberRun
 
-Each active MemberRun/native session/writable Workspace has exactly one
-top-level execution driver:
+Each active MemberRun/native session has exactly one top-level execution
+driver:
 
 - `host_driven`: Harness starts the next eligible Provider cycle.
 - `provider_driven`: a reviewed native continuation loop starts cycles.
 - `user_driven`: only for declared `external_interactive` members; a human
   drives their own session.
+
+Explicitly separate Sessions may share a cwd. Coordinate concurrent writes
+through separate worktrees or an explicit integration boundary; a shared cwd
+does not combine their execution drivers.
 
 Never activate a native Goal and also start ordinary Harness cycles for the
 same Work. Provider Goal satisfaction, Provider turn completion, transport
@@ -51,7 +55,7 @@ Never reconstruct a session from Harness messages.
 
 ## 4. Messages Never Change Work State
 
-TeamMessage is authored conversation only. A message may explain scope, a
+Message is authored conversation only. A message may explain scope, a
 blocker, a result, or a review decision, but it never changes Work owner or
 status. If conversation creates durable follow-up, create eligible unassigned
 Work explicitly, then use canonical membership assignment or claim.
@@ -68,10 +72,18 @@ completion.
 
 ## 6. Provider-Native Subagents Are Internal Only
 
-A Member may use Provider-native subagents for bounded internal lanes. They
-inherit the parent's Workspace and permission ceiling, return evidence to the
-parent, and never become Harness Members, own Work, or serve as independent
-reviewers.
+A Member may use Provider-native subagents for authorized bounded internal
+lanes. They operate within the parent's workspace arrangements and permission
+ceiling and return evidence to the parent. Invoking a subagent does not create
+Harness membership, assign Work ownership, or grant Work acceptance authority.
+
+An explicitly authorized subagent may independently review a repository
+Development Task when its applicable review procedure permits that reviewer.
+Bind the review to the exact submitted revision and keep implementer and
+reviewer separate. This does not waive required reviewer qualifications or
+substitute for an independent AgentMember when the Task requires live Agent
+Team evidence. Work acceptance still follows §5; a subagent's review alone
+never accepts Work.
 
 ## 7. Dependencies And Delegation Never Auto-Complete Responsibility
 
