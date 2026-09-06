@@ -234,7 +234,18 @@ fn stop_daemon(
         "execution_space_id":fixture.execution_space_id,
         "daemon_generation":generation,
     });
-    assert_eq!(socket_request(socket, &request.to_string())["ok"], true);
+    let response = socket_request(socket, &request.to_string());
+    let diagnostics = serde_json::json!({
+        "error": response.get("error"),
+        "failed_phase": response.get("failed_phase"),
+        "drained": response.get("drained"),
+        "authority_released": response.get("authority_released"),
+        "status": response.get("status"),
+    });
+    assert_eq!(
+        response["ok"], true,
+        "NodeDaemon stop failed: {diagnostics}"
+    );
     let deadline = Instant::now() + Duration::from_secs(10);
     while Instant::now() < deadline {
         if child.try_wait().expect("inspect daemon stop").is_some() {
