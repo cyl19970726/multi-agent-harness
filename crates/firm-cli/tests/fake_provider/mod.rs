@@ -375,6 +375,12 @@ while IFS= read -r line; do
       printf '{"jsonrpc":"2.0","id":%s,"result":{"stopReason":"end_turn"}}\n' "$prompt_id"
       ;;
     *'"method":"session/cancel"'*)
+      if [ "${FAKE_KIMI_IGNORE_CANCEL:-0}" = "1" ]; then
+        if [ -n "${FAKE_KIMI_IGNORED_CANCEL_MARKER:-}" ]; then
+          : > "$FAKE_KIMI_IGNORED_CANCEL_MARKER"
+        fi
+        continue
+      fi
       if [ -n "${FAKE_KIMI_CANCEL_MARKER:-}" ]; then
         printf '%s\n' "$line" >> "$FAKE_KIMI_CANCEL_MARKER"
       fi

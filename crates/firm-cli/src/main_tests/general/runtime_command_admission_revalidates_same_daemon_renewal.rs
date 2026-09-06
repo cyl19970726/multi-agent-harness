@@ -403,3 +403,31 @@ fn changed_agent_session_version_gets_a_distinct_resume_command_identity() {
             > first_record.precondition.expected_session_version
     );
 }
+
+#[test]
+fn local_quiesce_refuses_new_startcycle_without_preparing_a_command() {
+    let (store, root) = temp_store("quiesce-startcycle-admission");
+    let (ledger, member) =
+        persisted_native_test_member(&store, "codex", "codex_app_server", "thread-quiesce");
+    let space = store.trust_member_run_scope(&member.id).unwrap().unwrap();
+    let before = store.runtime_commands(&space).unwrap();
+    ledger.supervisor_valid.store(false, Ordering::Release);
+    assert!(
+        ledger.require_supervisor_lease().is_err(),
+        "outer drive remains fenced"
+    );
+    prepare_provider_effect(
+        &ledger,
+        &member,
+        "test:quiesced-new-cycle",
+        "must not run",
+        1,
+    )
+    .expect_err("new cycle preparation is forbidden during local quiesce");
+    assert_eq!(
+        store.runtime_commands(&space).unwrap(),
+        before,
+        "no command may be prepared for a quiesced driver"
+    );
+    std::fs::remove_dir_all(root).unwrap();
+}

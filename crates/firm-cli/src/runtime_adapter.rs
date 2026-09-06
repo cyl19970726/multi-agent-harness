@@ -61,17 +61,15 @@ mod native_session_binding;
 mod cycle_input;
 use cycle_input::{await_next_cycle, CycleInput};
 
-/// Deterministic integration hook: pause after the provider terminal boundary
-/// is observed but before the current Supervisor/session authority is
-/// revalidated. This proves that a successor lease fences every semantic
-/// write from the stale process-local handle. The hook is provider-neutral;
-/// provider names only select isolated test files.
-fn supervisor_test_terminal_receive_barrier(provider: &str) -> CliResult<()> {
+/// Bounded integration hook at two exact lifecycle boundaries: preparation
+/// before drive, and terminal receipt before semantic authority revalidation.
+/// Stage/provider select isolated test files; this grants no authority.
+fn supervisor_test_cycle_barrier(provider: &str, stage: &str) -> CliResult<()> {
     let provider = provider.to_ascii_uppercase();
-    let ready_key = format!("FIRM_TEST_{provider}_TERMINAL_RECEIVED_READY");
-    let legacy_ready_key = format!("HARNESS_TEST_{provider}_TERMINAL_RECEIVED_READY");
-    let release_key = format!("FIRM_TEST_{provider}_TERMINAL_RECEIVED_RELEASE");
-    let legacy_release_key = format!("HARNESS_TEST_{provider}_TERMINAL_RECEIVED_RELEASE");
+    let ready_key = format!("FIRM_TEST_{provider}_{stage}_READY");
+    let legacy_ready_key = format!("HARNESS_TEST_{provider}_{stage}_READY");
+    let release_key = format!("FIRM_TEST_{provider}_{stage}_RELEASE");
+    let legacy_release_key = format!("HARNESS_TEST_{provider}_{stage}_RELEASE");
     let Some(ready) = std::env::var_os(&ready_key).or_else(|| std::env::var_os(&legacy_ready_key))
     else {
         return Ok(());
@@ -83,10 +81,7 @@ fn supervisor_test_terminal_receive_barrier(provider: &str) -> CliResult<()> {
                 "{ready_key} requires the bounded test release selector {release_key}"
             ))
         })?;
-    std::fs::write(
-        std::path::PathBuf::from(ready),
-        b"terminal provider frame received",
-    )?;
+    std::fs::write(std::path::PathBuf::from(ready), stage.as_bytes())?;
     let release = std::path::PathBuf::from(release);
     let deadline = std::time::Instant::now() + Duration::from_secs(15);
     while !release.exists() {
@@ -464,7 +459,11 @@ pub(crate) fn run_team_member_with_adapter<A: TeamRuntimeAdapter<Error = CliErro
                 .bind_authority_session(effect.target_session.clone(), profile)
                 .and_then(|()| {
                     preflight_start_cycle(adapter, &effect.target_session, &effect.fence)
-                });
+                })
+                .and_then(|()| supervisor_test_cycle_barrier(provider, "PREPARED_CYCLE"))
+                // The provider drive has not been entered: a local quiesce here
+                // follows the existing proven-NotApplied preflight failure path.
+                .and_then(|()| ledger.require_supervisor_lease());
             if let Err(error) = adapter_admission {
                 settle_provider_effect_not_applied(ledger, &effect, error.to_string())?;
                 requeue_managed_host_attentions(
@@ -504,10 +503,10 @@ pub(crate) fn run_team_member_with_adapter<A: TeamRuntimeAdapter<Error = CliErro
                 &prompt,
                 context.timeouts,
                 &mut |acceptance| {
-                    // Prompt response success proves input acceptance only.
-                    // Settle this dispatch immediately so a later transport
-                    // loss cannot negative-ack or blindly redrive it.
-                    ledger.require_supervisor_lease()?;
+                    // Input receipt settlement belongs to this already-admitted
+                    // command. Local drain stops semantic work, but must not
+                    // discard an authentic receipt before the Store rechecks
+                    // its exact durable daemon/session/driver generations.
                     require_provider_session_authority(
                         ledger,
                         &member_row.agent_member_id,
@@ -535,6 +534,9 @@ pub(crate) fn run_team_member_with_adapter<A: TeamRuntimeAdapter<Error = CliErro
                         None,
                     )?;
                     accepted_provider_receipt = Some(provider_receipt.to_string());
+                    // Quiesce still fences every following Work/Message mutation
+                    // and later drive; an Applied input is not semantic success.
+                    ledger.require_supervisor_lease()?;
                     if let Some(claimed) = cycle.active_work.as_ref() {
                         ledger.complete_work_delivery(claimed, provider_receipt)?;
                     }
@@ -877,7 +879,7 @@ pub(crate) fn run_team_member_with_adapter<A: TeamRuntimeAdapter<Error = CliErro
                 round_start,
                 turn_result,
             } = driven;
-            supervisor_test_terminal_receive_barrier(provider)?;
+            supervisor_test_cycle_barrier(provider, "TERMINAL_RECEIVED")?;
             // A terminal callback can arrive after supervisor replacement. Fence
             // before every terminal settlement, delivery mutation, action, or
             // member/session transition; stale completions remain explicit

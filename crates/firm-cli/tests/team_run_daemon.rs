@@ -165,6 +165,15 @@ fn spawn_daemon(
     fixture: &RuntimeFixture,
     extra_env: &[(&str, &str)],
 ) -> std::process::Child {
+    spawn_daemon_with_acceptance_timeout(home, fixture, extra_env, "30")
+}
+
+fn spawn_daemon_with_acceptance_timeout(
+    home: &TempHome,
+    fixture: &RuntimeFixture,
+    extra_env: &[(&str, &str)],
+    input_acceptance_secs: &str,
+) -> std::process::Child {
     let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_firm"));
     command
         .args([
@@ -173,7 +182,7 @@ fn spawn_daemon(
             "--scan-interval-secs",
             "1",
             "--idle-timeout-secs",
-            "30",
+            input_acceptance_secs,
             "--max-concurrency",
             "8",
         ])
