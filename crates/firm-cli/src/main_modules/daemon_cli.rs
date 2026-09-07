@@ -217,57 +217,24 @@ fn daemon_recover_predecessor(
     let evidence_ref = value(args, "--evidence-ref")
         .unwrap_or_else(|| "cli:daemon-recover-predecessor".to_string());
 
-    // Read this Node's leases exactly like `daemon status` does.
-    let mut leases = Vec::new();
-    for space in execution_space::list_spaces(firm_home).map_err(execution_space_err)? {
-        let store = HarnessStore::new(space.store_root);
-        if let Some(lease) = store.latest_node_daemon_lease(node_id)? {
-            leases.push(lease);
-        }
-    }
-    let Some(reference) = leases.iter().max_by_key(|lease| lease.generation).cloned() else {
-        return Err(CliError::Usage(format!(
-            "no predecessor NodeDaemonLease exists for Node {node_id}; nothing to recover"
-        )));
-    };
-    if leases
-        .iter()
-        .all(|lease| lease.status == NodeDaemonLeaseStatus::Released)
-    {
-        return Ok(serde_json::json!({
-            "node_id": node_id,
-            "daemon_id": reference.daemon_id,
-            "instance_id": reference.instance_id,
-            "generation": reference.generation,
-            "status": "released",
-            "recovered_spaces": [],
-            "space_settlements": [],
-            "already_released": true,
-            "evidence_ref": evidence_ref,
-        }));
-    }
+    let intent = validate_daemon_predecessor_recovery(firm_home, node_id, None)
+        .map_err(|(code, detail)| CliError::Usage(format!("{code}: {detail}")))?;
 
     // Recovering inside the lease TTL is only ever a mistake or a live-daemon
     // race; name the expiry so the operator knows when recovery becomes
     // possible. The store's own refusal remains the backstop.
     let now = current_unix_ms_u64();
-    if let Some(unreleased) = leases
-        .iter()
-        .filter(|lease| lease.status != NodeDaemonLeaseStatus::Released)
-        .max_by_key(|lease| lease.generation)
-    {
-        if unreleased.expires_unix_ms > now {
-            return Err(CliError::Usage(format!(
+    if let Some((_, unreleased)) = intent.spaces.iter().find(|(_, lease)| {
+        lease.status != NodeDaemonLeaseStatus::Released && lease.expires_unix_ms > now
+    }) {
+        return Err(CliError::Usage(format!(
                 "predecessor lease generation {} has not expired (expires unix-ms:{}, in {}s); retry after expiry or stop the live daemon",
                 unreleased.generation,
                 unreleased.expires_unix_ms,
                 (unreleased.expires_unix_ms - now) / 1000
             )));
-        }
     }
 
-    let intent = validate_daemon_predecessor_recovery(firm_home, node_id, None)
-        .map_err(|(code, detail)| CliError::Usage(format!("{code}: {detail}")))?;
     let actor = harness_core::agentfirm_api::ActorRef {
         kind: harness_core::agentfirm_api::ActorKind::Service,
         id: node_id.to_string(),

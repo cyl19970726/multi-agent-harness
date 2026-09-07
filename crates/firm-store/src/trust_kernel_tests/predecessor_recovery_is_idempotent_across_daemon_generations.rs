@@ -321,3 +321,79 @@ fn daemon_context(daemon_id: &str, command: &str, key: &str, expected: u64) -> M
         request_fingerprint: None,
     }
 }
+
+#[test]
+fn predecessor_recovery_preserves_unknown_effect_refusal() {
+    let (store, root) = fabric_store();
+    store
+        .migrate_legacy_agent_identity_same_id(
+            &context("host", "identity.create", "unknown-agent", 0),
+            identity("unknown-agent"),
+        )
+        .unwrap();
+    let target = session("unknown-session", "unknown-agent");
+    store
+        .create_agent_session(
+            &service_context("session.create", "unknown-session", 0),
+            target.clone(),
+        )
+        .unwrap();
+    let (command, admission) = runtime_command_fixture(
+        "unknown-command",
+        RuntimeCommandKind::StopSession,
+        &target,
+        "stop_session",
+    );
+    store
+        .prepare_runtime_command(&admission, &command, current_unix_ms(), "t-prepare")
+        .unwrap();
+    let mut settle = service_context("node_daemon.runtime.settle", "unknown:settle", 1);
+    settle.authority_actor = Some(command.authenticated_actor.clone());
+    store
+        .settle_runtime_command(
+            &settle,
+            &command.id,
+            RuntimeCommandPhase::RecoveryRequired,
+            RuntimeEffectCertainty::Unknown,
+            None,
+            Some("PROVIDER_EFFECT_AMBIGUOUS".into()),
+            "t-unknown",
+        )
+        .unwrap();
+    let mut operator = service_context("node_daemon.predecessor_recover", "unknown:recover", 1);
+    operator.authenticated_actor = ActorRef {
+        kind: ActorKind::Service,
+        id: target.node_id.clone(),
+    };
+    let before = store.canonical_operations().unwrap();
+    let lease = store
+        .latest_node_daemon_lease(&target.node_id)
+        .unwrap()
+        .unwrap();
+    let error = store
+        .recover_node_daemon_predecessor(
+            &operator,
+            &target.node_id,
+            &target.node_daemon_id,
+            target.node_daemon_generation,
+            &lease.instance_id,
+            true,
+            true,
+            "test:process-absence",
+            current_unix_ms() + 61_000,
+            "t-recover",
+        )
+        .unwrap_err();
+    assert!(error
+        .to_string()
+        .contains("PREDECESSOR_RECOVERY_COMMAND_UNSETTLED"));
+    assert_eq!(store.canonical_operations().unwrap(), before);
+    assert_eq!(
+        store
+            .latest_node_daemon_lease(&target.node_id)
+            .unwrap()
+            .unwrap(),
+        lease
+    );
+    fs::remove_dir_all(root).unwrap();
+}

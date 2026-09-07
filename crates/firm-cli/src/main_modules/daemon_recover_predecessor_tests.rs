@@ -119,6 +119,9 @@ fn recover_predecessor_releases_dead_instance_and_is_idempotent() {
         projection["space_settlements"],
         serde_json::json!([{
             "execution_space_id": "space-recover",
+            "generation": dead_lease.generation,
+            "daemon_id": "dead-daemon",
+            "instance_id": dead_instance_id,
             "already_released": false,
             "supervisors_released": [],
             "sessions_detached": [],
@@ -165,55 +168,66 @@ fn recover_predecessor_partial_failure_preserves_releases_and_retry_markers() {
         })
         .expect("insert node in second space");
     let instance = "2147483647:partial:dead-daemon";
-    let lease = store
+    let _lease = store
         .acquire_node_daemon_lease(RECOVER_TEST_NODE_ID, "dead-daemon", instance, 1, 1)
         .expect("seed expired predecessor in first space");
 
-    // The second space belongs to this Node but has no recoverable lease.
-    // It must not hide the first space's irreversible release in the CLI error.
-    let error = daemon_recover_predecessor(&firm_home, RECOVER_TEST_NODE_ID, &recover_args(true))
-        .expect_err("one space fails while another releases");
-    let detail = error.to_string();
-    assert!(detail.contains("NODE_DAEMON_PREDECESSOR_RECOVERY_INCOMPLETE"));
-    let receipt: serde_json::Value =
-        serde_json::from_str(&detail[detail.find('{').expect("JSON partial receipt")..])
-            .expect("CLI preserves structured partial receipt");
-    assert_eq!(receipt["status"], "partial");
-    assert_eq!(
-        receipt["recovered_spaces"],
-        serde_json::json!(["space-recover"])
-    );
-    assert_eq!(receipt["space_settlements"][0]["already_released"], false);
-    assert!(receipt["failures"][0]
-        .as_str()
-        .unwrap()
-        .contains("space-second"));
-    assert_eq!(
-        store
-            .latest_node_daemon_lease(RECOVER_TEST_NODE_ID)
-            .unwrap()
-            .unwrap()
-            .status,
-        NodeDaemonLeaseStatus::Released
-    );
-
-    // Repair only the failed fixture, then use the same seam as the HTTP
-    // action. An empty repeat settlement is now explicitly distinguished.
-    second
+    // Change only the second Space after capture. Its old tuple is now
+    // deterministically fenced, independent of runner speed or wall-clock TTL.
+    let second_lease = second
         .acquire_node_daemon_lease(RECOVER_TEST_NODE_ID, "dead-daemon", instance, 1, 1)
-        .expect("seed second space predecessor");
+        .unwrap();
+    let intent =
+        validate_daemon_predecessor_recovery(&firm_home, RECOVER_TEST_NODE_ID, None).unwrap();
+    second
+        .release_node_daemon_lease(
+            RECOVER_TEST_NODE_ID,
+            "dead-daemon",
+            second_lease.generation,
+            instance,
+            3,
+        )
+        .unwrap();
+    let successor = second
+        .acquire_node_daemon_lease(RECOVER_TEST_NODE_ID, "dead-daemon", instance, 4, 1)
+        .unwrap();
     let actor = harness_core::agentfirm_api::ActorRef {
         kind: harness_core::agentfirm_api::ActorKind::Service,
         id: RECOVER_TEST_NODE_ID.into(),
     };
+    let error = recover_daemon_predecessor_spaces(
+        &firm_home,
+        RECOVER_TEST_NODE_ID,
+        &intent,
+        &actor,
+        true,
+        "test:first",
+        "test:partial",
+        None,
+    )
+    .unwrap_err();
+    let receipt: serde_json::Value = serde_json::from_str(&error.1).unwrap();
+    assert_eq!(receipt["status"], "partial");
+    assert_eq!(receipt["space_settlements"][0]["already_released"], false);
+    assert!(receipt["failures"][0]
+        .as_str()
+        .unwrap()
+        .contains("NODE_DAEMON_GENERATION_FENCED"));
+    assert_eq!(
+        second
+            .latest_node_daemon_lease(RECOVER_TEST_NODE_ID)
+            .unwrap()
+            .unwrap(),
+        successor
+    );
+    // A new request captures the changed same-instance local generation,
+    // retaining the successful first settlement as an idempotent skip.
+    let retry_intent =
+        validate_daemon_predecessor_recovery(&firm_home, RECOVER_TEST_NODE_ID, None).unwrap();
     let repeated = recover_daemon_predecessor_spaces(
         &firm_home,
         RECOVER_TEST_NODE_ID,
-        &PredecessorRecoveryIntent {
-            daemon_id: "dead-daemon".into(),
-            instance_id: instance.into(),
-            generation: lease.generation,
-        },
+        &retry_intent,
         &actor,
         true,
         "test:second-request-evidence",
@@ -329,5 +343,186 @@ fn absent_status_names_each_predecessor_lease_expiry() {
             expired_lease.expires_unix_ms
         )),
         "{status}"
+    );
+}
+
+fn second_recovery_store(home: &Path) -> HarnessStore {
+    let space = execution_space::register_and_activate(
+        home,
+        "space-second",
+        "Second",
+        None,
+        None,
+        "unix-ms:1",
+    )
+    .unwrap();
+    let store = HarnessStore::new(space.store_root);
+    store
+        .insert_execution_node(&harness_core::ExecutionNode {
+            id: RECOVER_TEST_NODE_ID.into(),
+            display_name: "Node".into(),
+            status: harness_core::ExecutionNodeStatus::Active,
+            created_at: "unix-ms:1".into(),
+            updated_at: "unix-ms:1".into(),
+        })
+        .unwrap();
+    store
+}
+
+fn seed_local_generation(store: &HarnessStore, generation: u64, instance: &str) {
+    for index in 1..=generation {
+        let lease = store
+            .acquire_node_daemon_lease(RECOVER_TEST_NODE_ID, "dead-daemon", instance, index * 2, 1)
+            .unwrap();
+        assert_eq!(lease.generation, index);
+        if index < generation {
+            store
+                .release_node_daemon_lease(
+                    RECOVER_TEST_NODE_ID,
+                    "dead-daemon",
+                    index,
+                    instance,
+                    index * 2 + 1,
+                )
+                .unwrap();
+        }
+    }
+}
+
+fn recover_captured(
+    home: &Path,
+    intent: &PredecessorRecoveryIntent,
+) -> Result<serde_json::Value, (String, String)> {
+    recover_daemon_predecessor_spaces(
+        home,
+        RECOVER_TEST_NODE_ID,
+        intent,
+        &harness_core::agentfirm_api::ActorRef {
+            kind: harness_core::agentfirm_api::ActorKind::Service,
+            id: RECOVER_TEST_NODE_ID.into(),
+        },
+        true,
+        "test:captured",
+        "test:captured",
+        None,
+    )
+}
+
+#[test]
+fn recovery_uses_space_local_generations_and_http_never_expands_its_tuple() {
+    let (_tree, home, first) = seed_recover_test_node("local-generations");
+    let second = second_recovery_store(&home);
+    let instance = "2147483647:local:dead-daemon";
+    seed_local_generation(&first, 4, instance);
+    seed_local_generation(&second, 26, instance);
+    // Existing HTTP intent can recover generation 4 despite a higher local
+    // counter elsewhere, but it cannot authorize generation 26 implicitly.
+    let http = validate_daemon_predecessor_recovery(
+        &home,
+        RECOVER_TEST_NODE_ID,
+        Some(("dead-daemon", instance, 4)),
+    )
+    .unwrap();
+    assert_eq!(http.spaces.len(), 1);
+    let result = recover_captured(&home, &http).unwrap();
+    assert_eq!(result["space_settlements"][0]["generation"], 4);
+    assert_ne!(
+        second
+            .latest_node_daemon_lease(RECOVER_TEST_NODE_ID)
+            .unwrap()
+            .unwrap()
+            .status,
+        NodeDaemonLeaseStatus::Released
+    );
+    // CLI retry includes the already released exact predecessor and remaining
+    // generation 26, each passed independently to the Store.
+    let result =
+        daemon_recover_predecessor(&home, RECOVER_TEST_NODE_ID, &recover_args(true)).unwrap();
+    assert!(
+        result["generation"].is_null(),
+        "no fabricated machine-wide generation"
+    );
+    let rows = result["space_settlements"].as_array().unwrap();
+    assert!(rows
+        .iter()
+        .any(|row| row["generation"] == 4 && row["already_released"] == true));
+    assert!(rows
+        .iter()
+        .any(|row| row["generation"] == 26 && row["already_released"] == false));
+    assert_eq!(
+        daemon_recover_predecessor(&home, RECOVER_TEST_NODE_ID, &recover_args(true)).unwrap()
+            ["already_released"],
+        true
+    );
+}
+
+#[test]
+fn recovery_refuses_same_generation_foreign_instance_and_fences_successor() {
+    let (_tree, home, first) = seed_recover_test_node("foreign-instance");
+    let second = second_recovery_store(&home);
+    let instance = "2147483647:first:dead-daemon";
+    seed_local_generation(&first, 1, instance);
+    seed_local_generation(&second, 1, "2147483647:foreign:dead-daemon");
+    assert!(
+        validate_daemon_predecessor_recovery(&home, RECOVER_TEST_NODE_ID, None)
+            .err()
+            .unwrap()
+            .1
+            .contains("different unreleased")
+    );
+    assert_ne!(
+        first
+            .latest_node_daemon_lease(RECOVER_TEST_NODE_ID)
+            .unwrap()
+            .unwrap()
+            .status,
+        NodeDaemonLeaseStatus::Released
+    );
+
+    let (_tree, home, store) = seed_recover_test_node("successor-after-validate");
+    seed_local_generation(&store, 1, instance);
+    let intent = validate_daemon_predecessor_recovery(&home, RECOVER_TEST_NODE_ID, None).unwrap();
+    store
+        .release_node_daemon_lease(RECOVER_TEST_NODE_ID, "dead-daemon", 1, instance, 3)
+        .unwrap();
+    let successor = store
+        .acquire_node_daemon_lease(
+            RECOVER_TEST_NODE_ID,
+            "dead-daemon",
+            "2147483647:successor:dead-daemon",
+            4,
+            1,
+        )
+        .unwrap();
+    let refusal = recover_captured(&home, &intent).unwrap_err();
+    assert!(refusal.1.contains("NODE_DAEMON_GENERATION_FENCED"));
+    assert_eq!(
+        store
+            .latest_node_daemon_lease(RECOVER_TEST_NODE_ID)
+            .unwrap()
+            .unwrap(),
+        successor
+    );
+}
+
+#[test]
+fn recovery_does_not_add_spaces_after_validation() {
+    let (_tree, home, first) = seed_recover_test_node("captured-spaces");
+    let instance = "2147483647:captured:dead-daemon";
+    seed_local_generation(&first, 1, instance);
+    let intent = validate_daemon_predecessor_recovery(&home, RECOVER_TEST_NODE_ID, None).unwrap();
+    let second = second_recovery_store(&home);
+    seed_local_generation(&second, 1, instance);
+    assert_eq!(
+        recover_captured(&home, &intent).unwrap()["recovered_spaces"],
+        serde_json::json!(["space-recover"])
+    );
+    assert_ne!(
+        second
+            .latest_node_daemon_lease(RECOVER_TEST_NODE_ID)
+            .unwrap()
+            .unwrap()
+            .status,
+        NodeDaemonLeaseStatus::Released
     );
 }
