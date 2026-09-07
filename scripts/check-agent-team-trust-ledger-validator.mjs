@@ -251,53 +251,75 @@ expectRejected("mixed review verdicts", clone(valid).map((record, index) => {
   }
   return record;
 }), () => {}, /canonical REVIEW_RESULT/u);
-for (const detail of [
-  "test result: ok. 6 passed; 0 failed",
-  "> test result: ok. 6 passed; 0 failed",
-  "```text\ntest result: ok. 6 passed; 0 failed\n```",
-  "The refusal test verifies that unauthorized requests are rejected.",
-  "Negative case: failed close leaves authority unreleased.",
-  "Failure cases are covered by passing regression tests.",
-  "Conclusion: Pass",
-]) {
-  const records = clone(valid);
-  records[1].operation.resulting_projection.body = `REVIEW_RESULT\nVerdict: Pass\n${detail}`;
-  assert.deepEqual(verifyCanonicalTrustLedger(evidence, records, executionSpaceId), [], detail);
-  // Passing prose cannot bypass sender, Work, or exact candidate checks.
-  expectRejected(`passing prose, forged author: ${detail}`, records, (value) => {
-    value.work.reviewer_agent_member_id = "forged-reviewer";
-  }, /review Message author mismatch/u);
-  expectRejected(`passing prose, wrong Work: ${detail}`, records, (value) => {
-    value.work.work_id = "wrong-work";
-  }, /Work id mismatch/u);
-  expectRejected(`passing prose, wrong SHA: ${detail}`, records, (value) => {
-    value.revision.candidate = "c".repeat(40);
-  }, /candidate/u);
+for (const header of ["REVIEW_RESULT\nVerdict: Pass", "REVIEW VERDICT: Pass"]) {
+  for (const detail of [
+    "test result: ok. 6 passed; 0 failed",
+    "> test result: ok. 6 passed; 0 failed",
+    "```text\ntest result: ok. 6 passed; 0 failed\n```",
+    "The refusal test verifies that unauthorized requests are rejected.",
+    "Negative case: failed close leaves authority unreleased.",
+    "Failure cases are covered by passing regression tests.",
+    "Conclusion: Pass",
+  ]) {
+    const records = clone(valid);
+    records[1].operation.resulting_projection.body = `${header}\n${detail}`;
+    assert.deepEqual(verifyCanonicalTrustLedger(evidence, records, executionSpaceId), [], detail);
+    // Passing prose cannot bypass sender, Work, or exact candidate checks.
+    expectRejected(`passing prose, forged author: ${detail}`, records, (value) => {
+      value.work.reviewer_agent_member_id = "forged-reviewer";
+    }, /review Message author mismatch/u);
+    expectRejected(`passing prose, wrong Work: ${detail}`, records, (value) => {
+      value.work.work_id = "wrong-work";
+    }, /Work id mismatch/u);
+    expectRejected(`passing prose, wrong SHA: ${detail}`, records, (value) => {
+      value.revision.candidate = "c".repeat(40);
+    }, /candidate/u);
+    expectRejected(`passing prose, wrong native session: ${detail}`, records, (value) => {
+      value.sessions[0].native_session_id = "native:wrong";
+    }, /native/u);
+  }
+  for (const detail of [
+    "Verdict: Pass",
+    "verdict: Changes Required",
+    "Verdict: Fail",
+    "REVIEW VERDICT: Pass",
+    "REVIEW VERDICT: Changes Required",
+    "Review Verdict: Fail",
+    "REVIEW_RESULT",
+    "Conclusion: Changes Required",
+    "Review result: Failed",
+    "Overall verdict: Pass or Changes Required",
+    "Decision: Pending",
+    "Changes Required: fix the race",
+    "Review failed.",
+    "This review is not Pass because the race remains.",
+    "Review failed because the shutdown invariant is broken.",
+    "Changes Required — fix the race",
+    "Changes Required – fix the race",
+    "Changes Required - fix the race",
+    "This review is not Pass since the fence is missing.",
+    "Review failed due to an unchecked authority change.",
+    "This review is not Pass given the unresolved race.",
+    "Changes Required to fix the race.",
+    "This is not Pass.",
+    "Rejected",
+  ]) {
+    const records = clone(valid);
+    records[1].operation.resulting_projection.body = `${header}\n${detail}`;
+    expectRejected(`competing conclusion: ${detail}`, records, () => {}, /canonical REVIEW_RESULT/u);
+  }
 }
-for (const detail of [
-  "Verdict: Pass",
-  "verdict: Changes Required",
-  "Conclusion: Changes Required",
-  "Review result: Failed",
-  "Overall verdict: Pass or Changes Required",
-  "Decision: Pending",
-  "Changes Required: fix the race",
-  "Review failed.",
-  "This review is not Pass because the race remains.",
-  "Review failed because the shutdown invariant is broken.",
-  "Changes Required — fix the race",
-  "Changes Required – fix the race",
-  "Changes Required - fix the race",
-  "This review is not Pass since the fence is missing.",
-  "Review failed due to an unchecked authority change.",
-  "This review is not Pass given the unresolved race.",
-  "Changes Required to fix the race.",
-  "This is not Pass.",
-  "Rejected",
+for (const body of [
+  "REVIEW VERDICT: Fail",
+  "REVIEW VERDICT: Pass or Changes Required",
+  "REVIEW VERDICT: Pass (conditional)",
+  "REVIEW VERDICT: Pass\nREVIEW VERDICT: Pass",
+  "Intro\nREVIEW VERDICT: Pass",
+  "review verdict: Pass",
 ]) {
   const records = clone(valid);
-  records[1].operation.resulting_projection.body = `REVIEW_RESULT\nVerdict: Pass\n${detail}`;
-  expectRejected(`competing conclusion: ${detail}`, records, () => {}, /canonical REVIEW_RESULT/u);
+  records[1].operation.resulting_projection.body = body;
+  expectRejected(`ambiguous or noncanonical review header: ${body}`, records, () => {}, /canonical REVIEW_RESULT/u);
 }
 expectRejected("missing acceptance", valid.filter((record) => record.command_name !== "work.accept"));
 expectRejected("wrong acceptance", valid, (value) => { value.work.acceptance_event_id = "trust-event:wrong"; });

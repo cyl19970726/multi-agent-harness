@@ -86,12 +86,17 @@ function transcriptMirrorPath(value, path = [], seen = new WeakSet()) {
 function isCanonicalPassReview(body) {
   if (typeof body !== "string") return false;
   const lines = body.split(/\r?\n/u).map((line) => line.trim()).filter(Boolean);
-  if (lines[0] !== "REVIEW_RESULT") return false;
+  const compact = lines[0] === "REVIEW VERDICT: Pass";
+  if (!compact && lines[0] !== "REVIEW_RESULT") return false;
 
-  const verdicts = lines.filter((line) => /^Verdict\s*:/iu.test(line));
-  if (verdicts.length !== 1 || verdicts[0] !== "Verdict: Pass") return false;
+  // Both explicit spellings declare exactly one verdict. Mixed or repeated
+  // declarations are ambiguous even when they all say Pass.
+  const verdicts = lines.filter((line) => /^(?:review\s+)?verdict\s*:/iu.test(line));
+  const declaration = compact ? "REVIEW VERDICT: Pass" : "Verdict: Pass";
+  if (verdicts.length !== 1 || verdicts[0] !== declaration) return false;
+  if (lines.filter((line) => line === "REVIEW_RESULT").length !== (compact ? 0 : 1)) return false;
 
-  const remainder = lines.filter((line) => line !== "REVIEW_RESULT" && line !== "Verdict: Pass");
+  const remainder = lines.filter((line) => line !== "REVIEW_RESULT" && line !== declaration);
   // Only review conclusions contradict the declaration. Test output ("0
   // failed"), quoted diagnostics, and descriptions of rejection behavior are
   // evidence, not competing verdicts; do not classify them by failure words.
@@ -310,7 +315,7 @@ export function verifyCanonicalWorkFacts(evidence, records, expectedExecutionSpa
         addFailure(failures, "review Message author must be independent from the implementer");
       }
       if (!isCanonicalPassReview(review.body)) {
-        addFailure(failures, "review Message must be canonical REVIEW_RESULT with exactly one unambiguous Verdict: Pass");
+        addFailure(failures, "review Message must be canonical REVIEW_RESULT with exactly one unambiguous Verdict: Pass, or start with a sole REVIEW VERDICT: Pass declaration");
       }
     }
   }
