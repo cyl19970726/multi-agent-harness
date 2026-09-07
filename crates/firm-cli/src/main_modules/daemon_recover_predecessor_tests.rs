@@ -172,19 +172,25 @@ fn recover_predecessor_partial_failure_preserves_releases_and_retry_markers() {
         .acquire_node_daemon_lease(RECOVER_TEST_NODE_ID, "dead-daemon", instance, 1, 1)
         .expect("seed expired predecessor in first space");
 
-    // A captured unexpired lease fails at the existing Store guard after
-    // another Space has settled, retaining a reconstructable partial receipt.
-    second
-        .acquire_node_daemon_lease(
-            RECOVER_TEST_NODE_ID,
-            "dead-daemon",
-            instance,
-            current_unix_ms_u64(),
-            100,
-        )
+    // Change only the second Space after capture. Its old tuple is now
+    // deterministically fenced, independent of runner speed or wall-clock TTL.
+    let second_lease = second
+        .acquire_node_daemon_lease(RECOVER_TEST_NODE_ID, "dead-daemon", instance, 1, 1)
         .unwrap();
     let intent =
         validate_daemon_predecessor_recovery(&firm_home, RECOVER_TEST_NODE_ID, None).unwrap();
+    second
+        .release_node_daemon_lease(
+            RECOVER_TEST_NODE_ID,
+            "dead-daemon",
+            second_lease.generation,
+            instance,
+            3,
+        )
+        .unwrap();
+    let successor = second
+        .acquire_node_daemon_lease(RECOVER_TEST_NODE_ID, "dead-daemon", instance, 4, 1)
+        .unwrap();
     let actor = harness_core::agentfirm_api::ActorRef {
         kind: harness_core::agentfirm_api::ActorKind::Service,
         id: RECOVER_TEST_NODE_ID.into(),
@@ -203,11 +209,25 @@ fn recover_predecessor_partial_failure_preserves_releases_and_retry_markers() {
     let receipt: serde_json::Value = serde_json::from_str(&error.1).unwrap();
     assert_eq!(receipt["status"], "partial");
     assert_eq!(receipt["space_settlements"][0]["already_released"], false);
-    std::thread::sleep(Duration::from_millis(110));
+    assert!(receipt["failures"][0]
+        .as_str()
+        .unwrap()
+        .contains("NODE_DAEMON_GENERATION_FENCED"));
+    assert_eq!(
+        second
+            .latest_node_daemon_lease(RECOVER_TEST_NODE_ID)
+            .unwrap()
+            .unwrap(),
+        successor
+    );
+    // A new request captures the changed same-instance local generation,
+    // retaining the successful first settlement as an idempotent skip.
+    let retry_intent =
+        validate_daemon_predecessor_recovery(&firm_home, RECOVER_TEST_NODE_ID, None).unwrap();
     let repeated = recover_daemon_predecessor_spaces(
         &firm_home,
         RECOVER_TEST_NODE_ID,
-        &intent,
+        &retry_intent,
         &actor,
         true,
         "test:second-request-evidence",
