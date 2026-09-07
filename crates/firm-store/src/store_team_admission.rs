@@ -218,8 +218,8 @@ impl HarnessStore {
         Ok(())
     }
 
-    /// Atomically close one detached blocked Member generation for explicit
-    /// recovery. The Supervisor and parent NodeDaemon leases, exact
+    /// Atomically close one detached Member generation for explicit recovery
+    /// (Blocked or completed-run mode). The Supervisor and parent NodeDaemon leases, exact
     /// AgentSession revision, absence of an ambiguous provider effect, and
     /// MemberRun CAS are one writer-lock linearization point.
     #[allow(clippy::too_many_arguments)]

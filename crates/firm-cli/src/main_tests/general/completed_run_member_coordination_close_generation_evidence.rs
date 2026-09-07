@@ -77,6 +77,14 @@ fn completed_run_close_fixture(
     idle.last_event_at = Some("unix-ms:completed-close-idle".into());
     ledger.save_member_run(&bound, &idle).expect("idle member");
 
+    let mut completed = run.clone();
+    completed.status = TeamRunStatus::Completed;
+    completed.completed_at = Some(now_string());
+    completed.updated_at = now_string();
+    store
+        .compare_and_append_team_run_lifecycle(&run, &completed)
+        .expect("complete run");
+
     (store, root, lease, idle)
 }
 
@@ -212,4 +220,114 @@ fn completed_run_coordination_close_superseded_generation_without_evidence_fails
         member.coordination_is_active() && member.status == MemberRunStatus::Idle,
         "a fenced Close must not persist any member mutation: {member:?}"
     );
+}
+
+#[test]
+fn completed_run_close_rejects_session_reattached_after_cli_proof() {
+    use harness_core::agentfirm_api::{RuntimeActivity, RuntimeResidency};
+    let (store, root, lease, idle) = completed_run_close_fixture("completed-close-session-race");
+    let commands_before = store.runtime_commands(&lease.execution_space_id).unwrap();
+    let ledger = TeamRunLedger::new(
+        &store,
+        &idle.team_run_id,
+        &lease.supervisor_id,
+        lease.generation,
+        Arc::new(AtomicBool::new(true)),
+    );
+    let error = close_detached_blocked_member_for_recovery_with_hooks(
+        &store,
+        &idle.team_run_id,
+        &idle,
+        &lease,
+        "host",
+        "reattach races final Store CAS",
+        DetachedRecoveryCloseMode::CompletedRunMember,
+        |_| {
+            transition_provider_session_runtime_control(
+                &ledger,
+                &idle,
+                RuntimeResidency::Attached,
+                RuntimeActivity::Idle,
+            )
+        },
+        |_| panic!("a stale proof must never commit the member Close"),
+    )
+    .expect_err("Store must fence a Session change after the last CLI read");
+    assert!(error
+        .to_string()
+        .contains("DETACHED_MEMBER_RECOVERY_SESSION_CHANGED"));
+    let latest = ledger.latest_member_run(&idle.id).unwrap().unwrap();
+    assert_eq!(latest, idle, "failed Close must leave MemberRun unchanged");
+    let (_, session) = provider_session_for_member(&ledger, &idle).unwrap();
+    assert_eq!(
+        session.control_state.runtime_residency,
+        RuntimeResidency::Attached
+    );
+    assert_eq!(
+        store.runtime_commands(&lease.execution_space_id).unwrap(),
+        commands_before
+    );
+    let close = store
+        .team_member_close_requests()
+        .unwrap()
+        .into_iter()
+        .find(|close| close.member_run_id == idle.id)
+        .unwrap();
+    assert_eq!(close.status, harness_core::TeamMemberCloseStatus::Pending);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn completed_run_close_rechecks_authority_after_cli_proof() {
+    for parent in [false, true] {
+        let (store, root, lease, idle) = completed_run_close_fixture(if parent {
+            "completed-close-parent-race"
+        } else {
+            "completed-close-supervisor-race"
+        });
+        let commands_before = store.runtime_commands(&lease.execution_space_id).unwrap();
+        let error = close_detached_blocked_member_for_recovery_with_hooks(
+            &store,
+            &idle.team_run_id,
+            &idle,
+            &lease,
+            "host",
+            "authority release races final Store CAS",
+            DetachedRecoveryCloseMode::CompletedRunMember,
+            |_| {
+                if parent {
+                    store.drain_node_daemon_lease(
+                        &lease.node_id,
+                        &lease.node_daemon_id,
+                        lease.node_daemon_generation,
+                        "test-node-daemon-instance",
+                        current_unix_ms_u64(),
+                        60_000,
+                    )?;
+                } else {
+                    store.release_team_supervisor_lease(
+                        &idle.team_run_id,
+                        &lease.supervisor_id,
+                        lease.generation,
+                        current_unix_ms_u64(),
+                    )?;
+                }
+                Ok(())
+            },
+            |_| panic!("lost authority must never commit the member Close"),
+        )
+        .expect_err("Store must fence authority lost after the last CLI read");
+        assert!(error.is_supervisor_lease_lost(), "{error}");
+        let latest = latest_member_runs_in_append_order(&store)
+            .unwrap()
+            .into_iter()
+            .find(|member| member.id == idle.id)
+            .unwrap();
+        assert_eq!(latest, idle);
+        assert_eq!(
+            store.runtime_commands(&lease.execution_space_id).unwrap(),
+            commands_before
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
 }

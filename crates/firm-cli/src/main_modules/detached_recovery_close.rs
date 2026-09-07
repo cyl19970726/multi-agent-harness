@@ -359,8 +359,10 @@ pub(super) fn close_detached_blocked_member_for_recovery_with_hooks(
         DetachedRecoveryCloseMode::CompletedRunMember => {
             // The store-side detached-recovery fence is typed for the DEV-184
             // exact-generation Blocked case only. The completed-run Close
-            // carries its CLI-side proofs (above) and the same terminal-CAS
-            // revalidation (below) under an ordinary Supervisor latch.
+            // uses an ordinary latch only to record intent. The final Store
+            // CAS below pins the entire observed Session and revalidates the
+            // current Supervisor/NodeDaemon leases and unresolved effects
+            // under its writer lock, just as the Blocked path does.
             latch_member_close_for_supervisor(
                 store,
                 team_run_id,
@@ -423,7 +425,9 @@ pub(super) fn close_detached_blocked_member_for_recovery_with_hooks(
                 // Re-verify the generation evidence against the session as it
                 // stands inside this CAS attempt, so a successor that changed
                 // session driver or daemon state between the CLI-side proof
-                // and the terminal write is fenced here, fail-closed (#812).
+                // and this observation is rejected here (#812). The final
+                // Store CAS also checks this exact Session and authority under
+                // the writer lock; this CLI check alone is not atomic proof.
                 let current_driver = match &current_session.control_state.driver_ref {
                     RuntimeDriverRef::TeamSupervisor {
                         team_run_id: driver_team_run_id,
