@@ -383,6 +383,12 @@ pub trait TeamRuntimeAdapter: RuntimeAdapter {
         on_event: &mut dyn FnMut(&serde_json::Value),
         poll_control: &mut dyn FnMut() -> CycleControl,
     ) -> Result<ExecutionCycleOutcome, Self::Error>;
+    /// Consume a diagnostic from the just-failed cycle. This is ephemeral
+    /// semantic evidence, never a runtime-idle or effect-settlement receipt.
+    /// Implementations must clear it before starting or rejecting another cycle.
+    fn take_cycle_terminal_failure(&mut self) -> Option<ProviderTerminalFailure> {
+        None
+    }
     fn native_control<'a>(
         close: &'a mut bool,
         interrupt: &'a mut bool,

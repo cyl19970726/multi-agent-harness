@@ -120,7 +120,7 @@ fn provider_terminal_failure(error: Option<&Value>) -> ProviderTerminalFailure {
     let info = error.and_then(|error| error.get("codexErrorInfo"));
     let (reason, http_status) = match info {
         Some(Value::String(reason)) if !reason.trim().is_empty() => (reason.clone(), None),
-        Some(Value::Object(fields)) => {
+        Some(Value::Object(fields)) if fields.len() == 1 => {
             let variant = fields
                 .keys()
                 .next()
@@ -132,15 +132,7 @@ fn provider_terminal_failure(error: Option<&Value>) -> ProviderTerminalFailure {
                 .and_then(Value::as_i64);
             (variant, http_status)
         }
-        _ => (
-            error
-                .and_then(|error| error.get("message"))
-                .and_then(Value::as_str)
-                .filter(|message| !message.trim().is_empty())
-                .unwrap_or("turn_failed")
-                .to_string(),
-            None,
-        ),
+        _ => ("turn_failed".to_string(), None),
     };
     ProviderTerminalFailure {
         reason,
@@ -155,6 +147,7 @@ pub struct CodexTeamRuntime<'a, B = CodexAppServerClient> {
     provider_request_handler: Option<ProviderRequestHandler<'a, B>>,
     active_turn_id: Option<String>,
     last_cycle_terminal: bool,
+    cycle_terminal_failure: Option<ProviderTerminalFailure>,
     last_control_acknowledged: bool,
     canonical_quiesced: bool,
     runtime_closed: bool,
@@ -177,6 +170,7 @@ impl<'a, B: CodexAppServerBridge> CodexTeamRuntime<'a, B> {
             provider_request_handler: None,
             active_turn_id: None,
             last_cycle_terminal: true,
+            cycle_terminal_failure: None,
             last_control_acknowledged: false,
             canonical_quiesced: false,
             runtime_closed: false,
@@ -694,6 +688,10 @@ impl<'a, B: CodexAppServerBridge> TeamRuntimeAdapter for CodexTeamRuntime<'a, B>
         self.bridge.ensure_transport_alive()
     }
 
+    fn take_cycle_terminal_failure(&mut self) -> Option<ProviderTerminalFailure> {
+        self.cycle_terminal_failure.take()
+    }
+
     fn native_session_locator(&self) -> &str {
         self.bridge.thread_id()
     }
@@ -770,6 +768,7 @@ impl<'a, B: CodexAppServerBridge> TeamRuntimeAdapter for CodexTeamRuntime<'a, B>
         on_event: &mut dyn FnMut(&Value),
         poll_control: &mut dyn FnMut() -> CycleControl,
     ) -> CliResult<ExecutionCycleOutcome> {
+        self.cycle_terminal_failure = None;
         if self.runtime_closed {
             return Err(CliError::Usage(
                 "codex app-server runtime was explicitly closed".to_string(),
@@ -1006,11 +1005,15 @@ impl<'a, B: CodexAppServerBridge> TeamRuntimeAdapter for CodexTeamRuntime<'a, B>
                                     "codex app-server ended turn {turn_id} as interrupted without a Harness control request"
                                 ));
                             }
+                            // Exact accepted turn/thread correlation was checked above.
+                            // Preserve semantic failure even if the independent idle
+                            // postcondition below is unknown (for example systemError).
+                            self.cycle_terminal_failure = (terminal.status == "failed")
+                                .then(|| provider_terminal_failure(terminal.error.as_ref()));
                             self.active_turn_id = None;
                             self.exact_thread_is_idle(false)?;
                             self.last_cycle_terminal = true;
-                            let provider_terminal_failure = (terminal.status == "failed")
-                                .then(|| provider_terminal_failure(terminal.error.as_ref()));
+                            let provider_terminal_failure = self.cycle_terminal_failure.take();
                             let exact_terminal_ref =
                                 format!("codex.turn.completed:{turn_id}:{}", terminal.status);
                             return Ok(ExecutionCycleOutcome {

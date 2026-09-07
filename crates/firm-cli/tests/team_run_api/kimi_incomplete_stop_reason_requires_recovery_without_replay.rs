@@ -1,10 +1,9 @@
 use super::*;
 
-/// `max_tokens`, `refusal`, and `max_turn_requests` all stop an already-started
-/// turn without proving whether provider-side effects completed. They must
-/// enter RecoveryRequired, never be recorded as success or auto-replayed.
+/// Known accepted stop reasons fail the semantic round, while their exact
+/// terminal response leaves the runtime idle. Input acceptance is immutable.
 #[test]
-fn kimi_incomplete_stop_reason_requires_recovery_without_replay() {
+fn kimi_known_incomplete_stop_reason_is_failed_idle_without_replay() {
     for stop_reason in ["max_tokens", "refusal", "max_turn_requests"] {
         let home = TempHome::new(&format!("team-run-kimi-stop-{stop_reason}"));
         let project_id = init_project(&home, "alpha");
@@ -42,7 +41,7 @@ fn kimi_incomplete_stop_reason_requires_recovery_without_replay() {
         );
         assert_eq!(status, 202, "body: {started}");
 
-        let mut recovery_required = false;
+        let mut failed_idle = false;
         for _ in 0..300 {
             let (_, snapshot) = serve.get_json("/v1/snapshot");
             let actions: Vec<&serde_json::Value> = snapshot["member_actions"]
@@ -68,27 +67,31 @@ fn kimi_incomplete_stop_reason_requires_recovery_without_replay() {
                 })
                 .count();
             assert_eq!(handoffs, 0, "{stop_reason} must never fabricate a handoff");
-            let action_requires_recovery = actions.iter().any(|action| {
-                action["action_type"].as_str() == Some("runtime_recovery_required")
+            let failed_round = actions.iter().any(|action| {
+                action["action_type"].as_str() == Some("provider_error")
                     && action["status"].as_str() == Some("failed")
+                    && action["provider_status"]
+                        .as_str()
+                        .and_then(harness_runtime_contract::ProviderTerminalFailure::parse)
+                        .is_some_and(|failure| failure.reason == stop_reason)
             });
-            let blocked = snapshot["member_runs"]
+            let idle = snapshot["member_runs"]
                 .as_array()
                 .into_iter()
                 .flatten()
                 .any(|member| {
                     member["id"].as_str() == Some(member_id.as_str())
-                        && member["status"].as_str() == Some("blocked")
+                        && member["status"].as_str() == Some("idle")
                 });
-            recovery_required = action_requires_recovery && blocked;
-            if recovery_required {
+            failed_idle = failed_round && idle;
+            if failed_idle {
                 break;
             }
             std::thread::sleep(Duration::from_millis(20));
         }
         assert!(
-            recovery_required,
-            "stopReason {stop_reason} must stop at RecoveryRequired"
+            failed_idle,
+            "stopReason {stop_reason} must remain failed and Idle"
         );
         let store = HarnessStore::new(home.spaces_dir().join(&project_id));
         let dispatches = store
