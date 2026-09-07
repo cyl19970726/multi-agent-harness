@@ -451,6 +451,10 @@ The receipt's `evidence_ref` is the current request's reference. Durable rows
 retain the first reference that settled them; a retry does not rewrite their
 history. The exact-predecessor key removes the old duplicate-row collision
 (#837); it does not add an operator bypass for unrelated recovery refusals.
+The confirmation also records the Operator's assertion that the predecessor's
+provider process groups have terminated. Checking the daemon PID alone does not
+prove that assertion, and the command does not automatically discover or verify
+arbitrary escaped descendants. Do not confirm while that termination is unknown.
 Recovery writes are keyed to the exact predecessor generation and instance, so recovering
 one Node twice never collides with an earlier recovery's rows. It refuses when there is
 no predecessor, when the confirmation literal is missing or wrong, or when the

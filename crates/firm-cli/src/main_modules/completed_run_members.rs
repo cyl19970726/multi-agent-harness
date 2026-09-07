@@ -243,7 +243,11 @@ pub(crate) fn members_to_drive_for_start(
 /// process groups before the release and revalidates settlement at release
 /// (`supervisor_daemon.rs` shutdown order) — or through an explicit
 /// `daemon recover-predecessor` (the Operator's confirmed
-/// `provider_process_groups_terminated_confirmed` fact).
+/// `provider_process_groups_terminated_confirmed` fact). The unused-bundle
+/// rollback can also release a freshly acquired lease, but only before any
+/// Session names that generation, so it cannot prove termination for this
+/// bound Session. Crash recovery is an Operator assertion, not an automatic
+/// verification that arbitrary escaped descendants have exited.
 ///
 /// A Supervisor lease `Released` row is deliberately NOT evidence:
 /// `TeamSupervisorRegistration::drop` writes it on every Supervisor exit —
