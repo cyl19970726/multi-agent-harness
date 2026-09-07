@@ -295,3 +295,35 @@ fn bounded_request_refuses_an_overlong_path() {
         started.elapsed()
     );
 }
+
+#[test]
+fn general_status_request_has_one_deadline_and_preserves_first_line() {
+    let home = bounded_request_socket_path("status-home");
+    std::fs::create_dir_all(&home).expect("home");
+    let socket = node_daemon_socket_path(&home, "test");
+    std::fs::create_dir_all(socket.parent().expect("socket parent")).expect("socket directory");
+    serve_once(&socket, |mut stream| {
+        let _ = stream.write_all(b"{\"ok\":true}\nsecond line\n");
+    });
+    assert_eq!(
+        daemon_status_via_socket(&home, "test").as_deref(),
+        Some("{\"ok\":true}")
+    );
+    std::fs::remove_file(&socket).expect("remove first socket");
+    serve_once(&socket, |mut stream| {
+        for _ in 0..20 {
+            if stream.write_all(b"x").is_err() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(400));
+        }
+    });
+    let started = Instant::now();
+    assert!(daemon_status_via_socket(&home, "test").is_none());
+    assert!(
+        started.elapsed() < Duration::from_secs(7),
+        "per-read resets exceeded 5s budget"
+    );
+    std::fs::remove_file(&socket).expect("remove drip socket");
+    std::fs::remove_dir_all(&home).expect("cleanup status home");
+}
