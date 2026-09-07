@@ -8,8 +8,8 @@ use super::adoption_tests::{adoption_fixture, AdoptionFixture};
 use super::*;
 
 impl AdoptionFixture {
-    fn context(&self) -> MultiTeamContext {
-        MultiTeamContext {
+    fn context(&self) -> OwnedTestContext {
+        OwnedTestContext::new(TestContextConfig {
             execution_space_id: self.execution_space_id.clone(),
             project_binding_id: "unit-test-project".into(),
             run_id: self.run_id.clone(),
@@ -20,7 +20,7 @@ impl AdoptionFixture {
             serving_status: Arc::new(Mutex::new("running".into())),
             thread: None,
             started_at: Instant::now(),
-        }
+        })
     }
 
     fn no_progress_markers(&self) -> usize {
@@ -206,15 +206,10 @@ fn a_volatile_hold_keyed_to_canonical_state_is_lifted_by_canonical_change() {
     let observed = fixture.canonical_state();
     // Model the durable-write failure path — for example a legacy run with no
     // Host MemberRun to project a marker onto.
-    fixture
-        .daemon
-        .recovery_blocked_runs
-        .lock()
-        .expect("volatile hold registry")
-        .insert(
-            (fixture.execution_space_id.clone(), fixture.run_id.clone()),
-            VolatileAdoptionHold::AtCanonicalState(observed),
-        );
+    fixture.daemon.insert_volatile_hold(
+        (fixture.execution_space_id.clone(), fixture.run_id.clone()),
+        Some(observed),
+    );
     assert!(fixture.adoption_is_held());
 
     fixture.add_work_operation("work-lifts-volatile-hold");
@@ -223,15 +218,10 @@ fn a_volatile_hold_keyed_to_canonical_state_is_lifted_by_canonical_change() {
         "a state-keyed volatile hold must not strand a run for the daemon's whole lifetime"
     );
 
-    fixture
-        .daemon
-        .recovery_blocked_runs
-        .lock()
-        .expect("volatile hold registry")
-        .insert(
-            (fixture.execution_space_id.clone(), fixture.run_id.clone()),
-            VolatileAdoptionHold::Unconditional,
-        );
+    fixture.daemon.insert_volatile_hold(
+        (fixture.execution_space_id.clone(), fixture.run_id.clone()),
+        None,
+    );
     assert!(
         fixture.adoption_is_held(),
         "an unreadable Store leaves nothing to prove change against, so that hold stays"
@@ -243,22 +233,12 @@ fn a_settling_run_is_not_adopted_while_its_dead_generation_writes_its_outcome() 
     let fixture = adoption_fixture("settling-window");
     let key = (fixture.execution_space_id.clone(), fixture.run_id.clone());
     assert!(!fixture.adoption_is_held());
-    fixture
-        .daemon
-        .settling_runs
-        .lock()
-        .expect("settling registry")
-        .insert(key.clone());
+    fixture.daemon.insert_settling_run(key.clone());
     assert!(
         fixture.adoption_is_held(),
         "a marker still being written must not land on a live successor generation"
     );
-    fixture
-        .daemon
-        .settling_runs
-        .lock()
-        .expect("settling registry")
-        .remove(&key);
+    fixture.daemon.remove_settling_run(&key);
     assert!(!fixture.adoption_is_held());
 }
 

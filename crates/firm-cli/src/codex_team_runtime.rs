@@ -47,7 +47,8 @@ impl<B: CodexAppServerBridge> rt::TeamRuntimeAdapter for CodexTeamRuntime<'_, B>
     }
 
     fn ensure_alive(&mut self) -> crate::CliResult<()> {
-        Ok(rt::TeamRuntimeAdapter::ensure_alive(&mut self.0)?)
+        rt::TeamRuntimeAdapter::ensure_alive(&mut self.0)
+            .map_err(crate::codex_app_server::provider_error)
     }
 
     fn native_session_locator(&self) -> &str {
@@ -63,11 +64,8 @@ impl<B: CodexAppServerBridge> rt::TeamRuntimeAdapter for CodexTeamRuntime<'_, B>
         session: harness_core::agentfirm_api::AgentSession,
         profile: &harness_core::ProviderIntegrationProfile,
     ) -> crate::CliResult<()> {
-        Ok(rt::TeamRuntimeAdapter::bind_authority_session(
-            &mut self.0,
-            session,
-            profile,
-        )?)
+        rt::TeamRuntimeAdapter::bind_authority_session(&mut self.0, session, profile)
+            .map_err(crate::codex_app_server::provider_error)
     }
 
     fn run_cycle(
@@ -82,7 +80,7 @@ impl<B: CodexAppServerBridge> rt::TeamRuntimeAdapter for CodexTeamRuntime<'_, B>
         on_event: &mut dyn FnMut(&serde_json::Value),
         poll_control: &mut dyn FnMut() -> rt::CycleControl,
     ) -> crate::CliResult<rt::ExecutionCycleOutcome> {
-        Ok(rt::TeamRuntimeAdapter::run_cycle(
+        rt::TeamRuntimeAdapter::run_cycle(
             &mut self.0,
             input,
             timeouts,
@@ -90,7 +88,8 @@ impl<B: CodexAppServerBridge> rt::TeamRuntimeAdapter for CodexTeamRuntime<'_, B>
             &mut |request, result| on_steer_result(request, result).map_err(callback_error),
             on_event,
             poll_control,
-        )?)
+        )
+        .map_err(crate::codex_app_server::provider_error)
     }
 
     fn native_control<'b>(

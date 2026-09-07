@@ -11,18 +11,16 @@ fn callback_error(error: crate::CliError) -> harness_provider_claude::ClaudeErro
     }
 }
 
-impl From<harness_provider_claude::ClaudeError> for crate::CliError {
-    fn from(error: harness_provider_claude::ClaudeError) -> Self {
-        match error {
-            harness_provider_claude::ClaudeError::ProcessGroupAdmissionClosed(error) => {
-                crate::CliError::ProviderProcessAdmissionClosed(error)
-            }
-            harness_provider_claude::ClaudeError::Callback {
-                detail,
-                supervisor_lease_lost: true,
-            } => crate::CliError::SupervisorLeaseLost(detail),
-            other => crate::CliError::Usage(other.to_string()),
+pub(crate) fn provider_error(error: harness_provider_claude::ClaudeError) -> crate::CliError {
+    match error {
+        harness_provider_claude::ClaudeError::ProcessGroupAdmissionClosed(error) => {
+            crate::CliError::ProviderProcessAdmissionClosed(error)
         }
+        harness_provider_claude::ClaudeError::Callback {
+            detail,
+            supervisor_lease_lost: true,
+        } => crate::CliError::SupervisorLeaseLost(detail),
+        other => crate::CliError::Usage(other.to_string()),
     }
 }
 
@@ -30,9 +28,10 @@ pub(crate) struct ClaudeTeamRuntime(harness_provider_claude::ClaudeTeamRuntime);
 
 impl ClaudeTeamRuntime {
     pub(crate) fn spawn(config: ClaudeTeamRuntimeConfig) -> crate::CliResult<Self> {
-        Ok(Self(harness_provider_claude::ClaudeTeamRuntime::spawn(
-            config,
-        )?))
+        Ok(Self(
+            harness_provider_claude::ClaudeTeamRuntime::spawn(config)
+                .map_err(crate::claude_team_runtime::provider_error)?,
+        ))
     }
 }
 
@@ -52,7 +51,8 @@ impl rt::TeamRuntimeAdapter for ClaudeTeamRuntime {
     }
 
     fn ensure_alive(&mut self) -> crate::CliResult<()> {
-        Ok(rt::TeamRuntimeAdapter::ensure_alive(&mut self.0)?)
+        rt::TeamRuntimeAdapter::ensure_alive(&mut self.0)
+            .map_err(crate::claude_team_runtime::provider_error)
     }
 
     fn native_session_locator(&self) -> &str {
@@ -68,11 +68,8 @@ impl rt::TeamRuntimeAdapter for ClaudeTeamRuntime {
         session: harness_core::agentfirm_api::AgentSession,
         profile: &harness_core::ProviderIntegrationProfile,
     ) -> crate::CliResult<()> {
-        Ok(rt::TeamRuntimeAdapter::bind_authority_session(
-            &mut self.0,
-            session,
-            profile,
-        )?)
+        rt::TeamRuntimeAdapter::bind_authority_session(&mut self.0, session, profile)
+            .map_err(crate::claude_team_runtime::provider_error)
     }
 
     fn run_cycle(
@@ -87,7 +84,7 @@ impl rt::TeamRuntimeAdapter for ClaudeTeamRuntime {
         on_event: &mut dyn FnMut(&serde_json::Value),
         poll_control: &mut dyn FnMut() -> rt::CycleControl,
     ) -> crate::CliResult<rt::ExecutionCycleOutcome> {
-        Ok(rt::TeamRuntimeAdapter::run_cycle(
+        rt::TeamRuntimeAdapter::run_cycle(
             &mut self.0,
             input,
             timeouts,
@@ -95,7 +92,8 @@ impl rt::TeamRuntimeAdapter for ClaudeTeamRuntime {
             &mut |request, result| on_steer_result(request, result).map_err(callback_error),
             on_event,
             poll_control,
-        )?)
+        )
+        .map_err(crate::claude_team_runtime::provider_error)
     }
 
     fn native_control<'a>(

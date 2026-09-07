@@ -14,6 +14,7 @@ members = [
   "crates/firm-fabric",
   "crates/firm-store",
   "crates/firm-governance",
+  "crates/firm-node-daemon",
   "crates/firm-cli"
 ]
 resolver = "2"

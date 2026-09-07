@@ -32,7 +32,7 @@ pub(super) struct DrainFixture {
     pub(super) run_id: String,
     node_id: String,
     project_binding_id: String,
-    daemon: MultiTeamDaemon,
+    daemon: TestDaemon,
     pub(super) daemon_generation: u64,
 }
 
@@ -193,32 +193,21 @@ pub(super) fn drain_fixture(label: &str) -> DrainFixture {
     )
     .expect("materialize canonical AgentSessions");
 
-    let daemon = MultiTeamDaemon {
+    let daemon = TestDaemon::new(TestDaemonConfig {
         firm_home,
         node_id: node_id.clone(),
         daemon_id,
         instance_id: "drain-instance".into(),
-        contexts: Mutex::new(Vec::new()),
-        supervisor_start_gate: Mutex::new(()),
-        session_runtimes: Mutex::new(HashMap::new()),
+        contexts: Vec::new(),
         application: Arc::new(DaemonApplication),
-        native_session_wake_endpoint: Arc::new(Mutex::new(HashMap::new())),
         max_concurrency: 1,
         input_acceptance_secs: 1,
         scan_interval: Duration::from_secs(1),
         stop_requested: Arc::new(AtomicBool::new(false)),
         authority_shutdown: Arc::new(AtomicBool::new(false)),
-        authority_lost: AtomicBool::new(false),
-        machine_authority_loss: Mutex::new(None),
-        confirmed_node_leases: Mutex::new(HashMap::new()),
-        control_worker_failed: AtomicBool::new(false),
-        recovery_blocked_runs: Mutex::new(HashMap::new()),
-        settling_runs: Mutex::new(HashSet::new()),
-        capacity_waits: Mutex::new(HashMap::new()),
         lease_ttl_override_ms: None,
-        deferred_stop_responses: Mutex::new(Vec::new()),
         drain_timeout_override_ms: None,
-    };
+    });
 
     DrainFixture {
         _tree: tree,
@@ -235,7 +224,7 @@ impl DrainFixture {
     /// This machine's one NodeDaemon identity, for a test that needs to take a
     /// successor generation itself instead of going through `readopt`.
     pub(super) fn daemon_id(&self) -> &str {
-        &self.daemon.daemon_id
+        self.daemon.daemon_id()
     }
 
     pub(super) fn node_id(&self) -> &str {
@@ -252,7 +241,7 @@ impl DrainFixture {
             .acquire_team_supervisor_under_node_lease(
                 &self.run_id,
                 &self.node_id,
-                &self.daemon.daemon_id,
+                self.daemon.daemon_id(),
                 daemon_generation,
                 DRAIN_SPACE_ID,
                 &self.project_binding_id,
@@ -279,7 +268,7 @@ impl DrainFixture {
                 members,
             },
             DRAIN_SPACE_ID,
-            &self.daemon.daemon_id,
+            self.daemon.daemon_id(),
             supervisor_id,
             lease.generation,
         )
@@ -376,7 +365,7 @@ impl DrainFixture {
             .store
             .acquire_node_daemon_lease(
                 &self.node_id,
-                &self.daemon.daemon_id,
+                self.daemon.daemon_id(),
                 "drain-instance-2",
                 current_unix_ms_u64(),
                 600_000,

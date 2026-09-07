@@ -60,6 +60,7 @@ flowchart TB
 | Messages | application-prepared identity-first authoring intent; NodeDaemon-frozen source/session authority; Store-atomic MessageSubscription authorization and per-recipient CanonicalMessageDelivery | Work lifecycle mutation, RuntimeCommand authority, or a second Message ledger |
 | Execution Spaces and Project Bindings | coordination storage vs provider cwd/instructions/Skills/plugins/MCP selection | each other's scope; `--project` never switches the coordination store |
 | Runtime | provider processes, native sessions, native activity readers/resume, plugins, MCP, and ephemeral projections | a second provider history or assignment inference |
+| Machine daemon package | `firm-node-daemon`: machine authority, control serving, Team supervision/recovery and shutdown through a finite application port | provider protocols, CLI/native-reader composition, a second binary or task ledger |
 | Runtime packages | `firm-runtime-contract` lifecycle language, `firm-runtime-supervisor` round progression, provider-neutral `firm-runtime-host` process mechanics, and one package per provider protocol | authoritative Work/Message/RuntimeCommand writes, Host acceptance, or a provider protocol implemented in CLI composition |
 | Remote Node Fabric | cross-machine RoutedOperation/Attempt/Receipt, mTLS gateway generations, reconcile, and bounded artifacts | a second Node identity, Message/Work/RuntimeCommand truth |
 

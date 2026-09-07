@@ -441,6 +441,7 @@ dependencies = [
  "firm-core",
  "firm-fabric",
  "firm-governance",
+ "firm-node-daemon",
  "firm-provider-claude",
  "firm-provider-codex",
  "firm-provider-deepseek",
@@ -501,6 +502,19 @@ dependencies = [
  "serde",
  "serde_json",
  "toml",
+]
+
+[[package]]
+name = "firm-node-daemon"
+version = "0.1.0"
+dependencies = [
+ "firm-core",
+ "firm-provider-events",
+ "firm-runtime-host",
+ "firm-store",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
 ]
 
 [[package]]

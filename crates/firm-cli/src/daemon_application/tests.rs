@@ -74,3 +74,20 @@ fn registration_drop_joins_control_before_heartbeat_and_invalidates_under_author
     assert!(!heartbeat_valid.load(Ordering::Acquire));
     std::fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn message_body_digest_preserves_exact_bytes() {
+    let application = DaemonApplication;
+    assert_eq!(
+        application.message_body_digest(""),
+        "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    );
+    assert_eq!(
+        application.message_body_digest("line one\r\n工具🧪\n"),
+        "sha256:75220eca60b72dae2854a12e14779b811edffeca854c7cf01be0c9ea384b1279"
+    );
+    assert_eq!(
+        application.message_body_digest(" a\0b "),
+        "sha256:9c8cfe894156d6cbf11a15bac2ebde16d03dadc9717a1daa0386151bc0731998"
+    );
+}

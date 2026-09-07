@@ -13,6 +13,7 @@ name = "firm"
 path = "src/main.rs"
 
 [dependencies]
+harness_node_daemon = { package = "firm-node-daemon", path = "../firm-node-daemon" }
 harness_core = { package = "firm-core", path = "../firm-core" }
 harness_application = { package = "firm-application", path = "../firm-application" }
 harness_runtime_contract = { package = "firm-runtime-contract", path = "../firm-runtime-contract" }
@@ -36,6 +37,7 @@ crossbeam = "0.8"
 notify = "6.1"
 
 [dev-dependencies]
+harness_node_daemon = { package = "firm-node-daemon", path = "../firm-node-daemon", features = ["test-support"] }
 harness_store = { package = "firm-store", path = "../firm-store", features = ["test-support"] }
 
 [target.'cfg(unix)'.dependencies]

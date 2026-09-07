@@ -7,8 +7,6 @@
 
 use std::collections::{hash_map::DefaultHasher, HashMap, HashSet};
 use std::hash::{Hash, Hasher};
-#[cfg(test)]
-use std::io::BufRead;
 use std::io::{Read, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -17,8 +15,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-#[cfg(test)]
-use crate::daemon_application::DaemonApplication;
 use crate::daemon_application_port::DaemonApplicationPort;
 use crate::daemon_application_port::TeamRunDriveOutcome;
 use crate::daemon_error::{DaemonError as CliError, DaemonResult as CliResult};
@@ -31,24 +27,18 @@ use harness_store::HarnessStore;
 // ---------------------------------------------------------------------------
 
 mod control_protocol;
-#[cfg(test)]
-mod lease_renewal_tests;
 mod machine_authority;
 mod recovery;
 mod self_stop_events;
 mod shutdown;
 mod team_supervision;
-#[cfg(test)]
-use crate::daemon_client::*;
-#[cfg(test)]
-use machine_authority::node_authority_refresh_interval;
 use machine_authority::{daemon_control_generation_authorized, AuthorityReleaseReport};
 use self_stop_events::MachineAuthorityLoss;
 
 const SIGINT: i32 = 2;
 const SIGTERM: i32 = 15;
-pub(crate) const CONTROL_TRANSIENT_READ_RETRIES: usize = 2;
-pub(crate) const CONTROL_TRANSIENT_READ_BACKOFF: Duration = Duration::from_millis(25);
+pub const CONTROL_TRANSIENT_READ_RETRIES: usize = 2;
+pub const CONTROL_TRANSIENT_READ_BACKOFF: Duration = Duration::from_millis(25);
 type SigHandler = extern "C" fn(i32);
 extern "C" {
     fn signal(signum: i32, handler: SigHandler) -> usize;
@@ -64,7 +54,7 @@ extern "C" {
 /// Socket path for the one NodeDaemon that owns a stable local Node identity.
 /// Uses a hash-based fallback under /tmp when the FIRM_HOME path exceeds
 /// the macOS AF_UNIX 104-byte limit.
-pub(crate) fn node_daemon_socket_path(firm_home: &Path, node_id: &str) -> PathBuf {
+pub fn node_daemon_socket_path(firm_home: &Path, node_id: &str) -> PathBuf {
     // FIRM_HOME may reach the same directory through filesystem aliases (for
     // example macOS exposes /tmp through /private/tmp). The daemon socket is
     // machine-scoped authority, so derive both the direct path and long-path
@@ -128,7 +118,7 @@ const FORCED_PROCESS_GROUP_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 /// runs them. Deriving it from the Supervisor drain alone understated it by
 /// the two unbounded joins that precede that drain, and a caller that timed
 /// out was then told no daemon was running while this one was still draining.
-pub(crate) const NODE_DAEMON_STOP_DRAIN_BOUND: Duration = Duration::from_secs(
+pub const NODE_DAEMON_STOP_DRAIN_BOUND: Duration = Duration::from_secs(
     CONTROL_WORKER_DRAIN_TIMEOUT.as_secs()
         + SCANNER_DRAIN_TIMEOUT.as_secs()
         + SUPERVISOR_DRAIN_TIMEOUT.as_secs()
@@ -251,17 +241,17 @@ pub(crate) struct MultiTeamDaemon {
     /// known. Stop is answered from that result rather than from acceptance,
     /// so a caller can never read `ok:true` while this process still spins.
     deferred_stop_responses: Mutex<Vec<DeferredStopResponse>>,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     lease_ttl_override_ms: Option<u64>,
     /// Bounded (cooperative, forced) drain deadlines in milliseconds. Tests
     /// use it to exercise the honest Stop answer without waiting the full
     /// production bound.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     drain_timeout_override_ms: Option<(u64, u64)>,
 }
 
 impl MultiTeamDaemon {
-    fn install_native_session_wake_endpoint(
+    pub(super) fn install_native_session_wake_endpoint(
         &self,
         authority: &str,
         token: &str,
@@ -395,9 +385,9 @@ impl MultiTeamDaemon {
             settling_runs: Mutex::new(HashSet::new()),
             capacity_waits: Mutex::new(HashMap::new()),
             deferred_stop_responses: Mutex::new(Vec::new()),
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             lease_ttl_override_ms: None,
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             drain_timeout_override_ms: None,
         });
 
@@ -415,7 +405,7 @@ impl MultiTeamDaemon {
     /// provider recovery scan every registered Execution Space. Store reads,
     /// stale-run validation and native-session recovery can take many seconds;
     /// none of them may head-of-line block status/start/runtime control.
-    fn serve_loop(self: &Arc<Self>, listener: &UnixListener) -> CliResult<()> {
+    pub(super) fn serve_loop(self: &Arc<Self>, listener: &UnixListener) -> CliResult<()> {
         const CONTROL_POLL_INTERVAL: Duration = Duration::from_millis(20);
         let mut pending = Vec::new();
         let mut control_workers = Vec::new();
@@ -666,7 +656,7 @@ impl MultiTeamDaemon {
     }
 
     fn control_worker_drain_timeout(&self) -> Duration {
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         if let Some((cooperative_ms, _)) = self.drain_timeout_override_ms {
             return Duration::from_millis(cooperative_ms);
         }
@@ -674,7 +664,7 @@ impl MultiTeamDaemon {
     }
 
     fn scanner_drain_timeout(&self) -> Duration {
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         if let Some((cooperative_ms, _)) = self.drain_timeout_override_ms {
             return Duration::from_millis(cooperative_ms);
         }
@@ -744,21 +734,5 @@ static mut MT_SIGNAL_FLAG: Option<&'static AtomicBool> = None;
 // Tests
 // ---------------------------------------------------------------------------
 
-#[cfg(test)]
-mod adoption_tests;
-#[cfg(test)]
-mod drain_blocked_member_tests;
-#[cfg(test)]
-mod drain_inflight_work_tests;
-#[cfg(test)]
-mod drain_recovery_tests;
-#[cfg(test)]
-mod drive_outcome_tests;
-#[cfg(test)]
-mod recover_blocked_lane_blocker_tests;
-#[cfg(test)]
-mod recover_lost_execution_tests;
-#[cfg(test)]
-mod stop_drain_tests;
-#[cfg(test)]
-mod tests;
+#[cfg(feature = "test-support")]
+pub mod test_support;

@@ -98,32 +98,21 @@ fn unreadable_held_space_latches_only_after_confirmed_deadline() {
         )
         .expect("acquire deliberately short test lease");
 
-    let daemon = MultiTeamDaemon {
+    let daemon = TestDaemon::new(TestDaemonConfig {
         firm_home,
         node_id: NODE_ID.into(),
         daemon_id: format!("node-daemon:{NODE_ID}"),
         instance_id: "parallel-refresh-instance".into(),
-        contexts: Mutex::new(Vec::new()),
-        supervisor_start_gate: Mutex::new(()),
-        session_runtimes: Mutex::new(HashMap::new()),
+        contexts: Vec::new(),
         application: Arc::new(DaemonApplication),
-        native_session_wake_endpoint: Arc::new(Mutex::new(HashMap::new())),
         max_concurrency: 1,
         input_acceptance_secs: 1,
         scan_interval: Duration::from_millis(50),
         stop_requested: Arc::new(AtomicBool::new(false)),
         authority_shutdown: Arc::new(AtomicBool::new(false)),
-        authority_lost: AtomicBool::new(false),
-        machine_authority_loss: Mutex::new(None),
-        confirmed_node_leases: Mutex::new(HashMap::new()),
-        control_worker_failed: AtomicBool::new(false),
-        recovery_blocked_runs: Mutex::new(HashMap::new()),
-        settling_runs: Mutex::new(HashSet::new()),
-        capacity_waits: Mutex::new(HashMap::new()),
         lease_ttl_override_ms: Some(3_000),
-        deferred_stop_responses: Mutex::new(Vec::new()),
         drain_timeout_override_ms: None,
-    };
+    });
 
     // Seed the leases that this instance previously confirmed. Corruption in
     // an unheld historical Space is not a machine authority-loss signal.
@@ -138,14 +127,14 @@ fn unreadable_held_space_latches_only_after_confirmed_deadline() {
 
     let command_actor = harness_core::agentfirm_api::ActorRef {
         kind: harness_core::agentfirm_api::ActorKind::Service,
-        id: daemon.daemon_id.clone(),
+        id: daemon.daemon_id().to_string(),
     };
     let command_payload = serde_json::json!({"draft": {}});
     let command = harness_core::agentfirm_api::ControlCommandEnvelope {
         id: "runtime-command-after-machine-loss".into(),
         execution_space_id: healthy.id.clone(),
         target_node_id: NODE_ID.into(),
-        target_node_daemon_id: daemon.daemon_id.clone(),
+        target_node_daemon_id: daemon.daemon_id().to_string(),
         target_node_daemon_generation: lease.generation,
         authenticated_actor: command_actor.clone(),
         command: harness_core::agentfirm_api::RuntimeCommandKind::AuthorMessage,
@@ -177,11 +166,11 @@ fn unreadable_held_space_latches_only_after_confirmed_deadline() {
     let error = std::thread::scope(|scope| {
         let refresh = scope.spawn(|| daemon.refresh_held_node_authorities());
         let deadline = Instant::now() + Duration::from_secs(3);
-        while !daemon.authority_lost.load(Ordering::SeqCst) && Instant::now() < deadline {
+        while !daemon.authority_lost() && Instant::now() < deadline {
             std::thread::yield_now();
         }
         assert!(
-            daemon.authority_lost.load(Ordering::SeqCst),
+            daemon.authority_lost(),
             "the unreadable Space must latch process authority loss"
         );
         let still_active = store
@@ -232,8 +221,8 @@ fn unreadable_held_space_latches_only_after_confirmed_deadline() {
             .contains("NODE_DAEMON_MACHINE_AUTHORITY_LOST"),
         "unexpected authority error: {error}"
     );
-    assert!(daemon.authority_lost.load(Ordering::SeqCst));
-    assert!(daemon.stop_requested.load(Ordering::SeqCst));
+    assert!(daemon.authority_lost());
+    assert!(daemon.stop_requested_flag().load(Ordering::SeqCst));
     let not_refreshed = store
         .latest_node_daemon_lease(NODE_ID)
         .expect("read fenced lease")
@@ -298,32 +287,21 @@ fn authority_bundle_rolls_back_partial_acquisition_until_every_predecessor_is_re
         .acquire_node_daemon_lease(NODE_ID, "predecessor", "crashed-instance", 1, 1)
         .expect("create expired unsettled predecessor");
 
-    let daemon = MultiTeamDaemon {
+    let daemon = TestDaemon::new(TestDaemonConfig {
         firm_home: firm_home.clone(),
         node_id: NODE_ID.into(),
         daemon_id: format!("node-daemon:{NODE_ID}"),
         instance_id: "candidate-instance".into(),
-        contexts: Mutex::new(Vec::new()),
-        supervisor_start_gate: Mutex::new(()),
-        session_runtimes: Mutex::new(HashMap::new()),
+        contexts: Vec::new(),
         application: Arc::new(DaemonApplication),
-        native_session_wake_endpoint: Arc::new(Mutex::new(HashMap::new())),
         max_concurrency: 1,
         input_acceptance_secs: 1,
         scan_interval: Duration::from_secs(1),
         stop_requested: Arc::new(AtomicBool::new(false)),
         authority_shutdown: Arc::new(AtomicBool::new(false)),
-        authority_lost: AtomicBool::new(false),
-        machine_authority_loss: Mutex::new(None),
-        confirmed_node_leases: Mutex::new(HashMap::new()),
-        control_worker_failed: AtomicBool::new(false),
-        recovery_blocked_runs: Mutex::new(HashMap::new()),
-        settling_runs: Mutex::new(HashSet::new()),
-        capacity_waits: Mutex::new(HashMap::new()),
         lease_ttl_override_ms: Some(60_000),
-        deferred_stop_responses: Mutex::new(Vec::new()),
         drain_timeout_override_ms: None,
-    };
+    });
     let error = daemon
         .ensure_node_authority_bundle()
         .expect_err("one unsettled predecessor blocks the entire bundle");
@@ -349,14 +327,7 @@ fn authority_bundle_rolls_back_partial_acquisition_until_every_predecessor_is_re
             current_unix_ms_u64(),
         )
         .expect("simulate explicit Operator predecessor recovery");
-    let successor = MultiTeamDaemon {
-        authority_lost: AtomicBool::new(false),
-        machine_authority_loss: Mutex::new(None),
-        confirmed_node_leases: Mutex::new(HashMap::new()),
-        stop_requested: Arc::new(AtomicBool::new(false)),
-        instance_id: "successor-instance".into(),
-        ..daemon
-    };
+    let successor = daemon.successor("successor-instance".into());
     let bundle = successor
         .ensure_node_authority_bundle()
         .expect("all Released predecessors permit one complete bundle");
@@ -374,32 +345,21 @@ fn authority_bundle_rolls_back_partial_acquisition_until_every_predecessor_is_re
 #[test]
 fn machine_local_live_sink_rejects_invalid_and_stale_registration_then_replaces_successor() {
     let tree = TestTree::new("private-live-sink");
-    let daemon = MultiTeamDaemon {
+    let daemon = TestDaemon::new(TestDaemonConfig {
         firm_home: tree.0.clone(),
         node_id: "node-live".into(),
         daemon_id: "node-daemon:node-live".into(),
         instance_id: "daemon-instance-current".into(),
-        contexts: Mutex::new(Vec::new()),
-        supervisor_start_gate: Mutex::new(()),
-        session_runtimes: Mutex::new(HashMap::new()),
+        contexts: Vec::new(),
         application: Arc::new(DaemonApplication),
-        native_session_wake_endpoint: Arc::new(Mutex::new(HashMap::new())),
         max_concurrency: 1,
         input_acceptance_secs: 1,
         scan_interval: Duration::from_secs(1),
         stop_requested: Arc::new(AtomicBool::new(false)),
         authority_shutdown: Arc::new(AtomicBool::new(false)),
-        authority_lost: AtomicBool::new(false),
-        machine_authority_loss: Mutex::new(None),
-        confirmed_node_leases: Mutex::new(HashMap::new()),
-        control_worker_failed: AtomicBool::new(false),
-        recovery_blocked_runs: Mutex::new(HashMap::new()),
-        settling_runs: Mutex::new(HashSet::new()),
-        capacity_waits: Mutex::new(HashMap::new()),
         lease_ttl_override_ms: None,
-        deferred_stop_responses: Mutex::new(Vec::new()),
         drain_timeout_override_ms: None,
-    };
+    });
     let first_token = "a".repeat(32);
     let first_instance = "b".repeat(32);
     assert!(!daemon.install_native_session_wake_endpoint(
@@ -416,11 +376,7 @@ fn machine_local_live_sink_rejects_invalid_and_stale_registration_then_replaces_
         "daemon-instance-stale",
         &first_instance,
     ));
-    assert!(daemon
-        .native_session_wake_endpoint
-        .lock()
-        .expect("live sink registry")
-        .is_empty());
+    assert!(daemon.wake_endpoint_count() == 0);
 
     assert!(daemon.install_native_session_wake_endpoint(
         "127.0.0.1:19001",
@@ -438,12 +394,10 @@ fn machine_local_live_sink_rejects_invalid_and_stale_registration_then_replaces_
         "daemon-instance-current",
         &successor_instance,
     ));
-    let endpoints = daemon
-        .native_session_wake_endpoint
-        .lock()
-        .expect("live sink registry");
-    assert_eq!(endpoints.len(), 1);
-    let current = endpoints.get("member-owner").expect("exact owner sink");
+    assert_eq!(daemon.wake_endpoint_count(), 1);
+    let current = daemon
+        .wake_endpoint("member-owner")
+        .expect("exact owner sink");
     assert_eq!(current.authority, "127.0.0.1:19002");
     assert_eq!(current.token, successor_token);
     assert_eq!(current.serve_instance_id, successor_instance);
@@ -460,7 +414,7 @@ fn control_response_is_one_complete_json_frame_under_backpressure() {
         "result": {"payload": "x".repeat(2 * 1024 * 1024)}
     });
     let writer = std::thread::spawn(move || {
-        MultiTeamDaemon::write_control_response(&mut server, &response)
+        TestDaemon::write_control_response(&mut server, &response)
             .expect("write one complete framed response");
     });
 
@@ -527,32 +481,21 @@ fn status_remains_responsive_while_execution_space_scan_is_blocked() {
         .expect("configure nonblocking test listener");
     let shutdown = Arc::new(AtomicBool::new(false));
     let authority_shutdown = Arc::new(AtomicBool::new(false));
-    let daemon = Arc::new(MultiTeamDaemon {
+    let daemon = Arc::new(TestDaemon::new(TestDaemonConfig {
         firm_home,
         node_id: "test-node".into(),
         daemon_id: "node-daemon:test-node".into(),
         instance_id: "test-instance".into(),
-        contexts: Mutex::new(Vec::new()),
-        supervisor_start_gate: Mutex::new(()),
-        session_runtimes: Mutex::new(HashMap::new()),
+        contexts: Vec::new(),
         application: Arc::new(DaemonApplication),
-        native_session_wake_endpoint: Arc::new(Mutex::new(HashMap::new())),
         max_concurrency: 1,
         input_acceptance_secs: 1,
         scan_interval: Duration::from_secs(60),
         stop_requested: Arc::clone(&shutdown),
         authority_shutdown: Arc::clone(&authority_shutdown),
-        authority_lost: AtomicBool::new(false),
-        machine_authority_loss: Mutex::new(None),
-        confirmed_node_leases: Mutex::new(HashMap::new()),
-        control_worker_failed: AtomicBool::new(false),
-        recovery_blocked_runs: Mutex::new(HashMap::new()),
-        settling_runs: Mutex::new(HashSet::new()),
-        capacity_waits: Mutex::new(HashMap::new()),
         lease_ttl_override_ms: None,
-        deferred_stop_responses: Mutex::new(Vec::new()),
         drain_timeout_override_ms: None,
-    });
+    }));
 
     // Unscoped spawn: when a phase exceeds its hard deadline the test must
     // fail fast instead of blocking on a scoped join against a thread that is
@@ -702,32 +645,21 @@ fn status_remains_responsive_while_a_control_mutation_is_blocked() {
         .set_nonblocking(true)
         .expect("configure nonblocking test listener");
     let shutdown = Arc::new(AtomicBool::new(false));
-    let daemon = Arc::new(MultiTeamDaemon {
+    let daemon = Arc::new(TestDaemon::new(TestDaemonConfig {
         firm_home,
         node_id: "test-node".into(),
         daemon_id: "node-daemon:test-node".into(),
         instance_id: "test-instance".into(),
-        contexts: Mutex::new(Vec::new()),
-        supervisor_start_gate: Mutex::new(()),
-        session_runtimes: Mutex::new(HashMap::new()),
+        contexts: Vec::new(),
         application: Arc::new(DaemonApplication),
-        native_session_wake_endpoint: Arc::new(Mutex::new(HashMap::new())),
         max_concurrency: 1,
         input_acceptance_secs: 1,
         scan_interval: Duration::from_secs(60),
         stop_requested: Arc::clone(&shutdown),
         authority_shutdown: Arc::new(AtomicBool::new(false)),
-        authority_lost: AtomicBool::new(false),
-        machine_authority_loss: Mutex::new(None),
-        confirmed_node_leases: Mutex::new(HashMap::new()),
-        control_worker_failed: AtomicBool::new(false),
-        recovery_blocked_runs: Mutex::new(HashMap::new()),
-        settling_runs: Mutex::new(HashSet::new()),
-        capacity_waits: Mutex::new(HashMap::new()),
         lease_ttl_override_ms: None,
-        deferred_stop_responses: Mutex::new(Vec::new()),
         drain_timeout_override_ms: None,
-    });
+    }));
 
     std::thread::scope(|scope| {
         let server = scope.spawn(|| daemon.serve_loop(&listener));
@@ -842,32 +774,21 @@ fn shutdown_renews_node_authority_until_accepted_worker_finishes() {
         .set_nonblocking(true)
         .expect("configure nonblocking test listener");
     let stop_requested = Arc::new(AtomicBool::new(false));
-    let daemon = Arc::new(MultiTeamDaemon {
+    let daemon = Arc::new(TestDaemon::new(TestDaemonConfig {
         firm_home,
         node_id: NODE_ID.into(),
         daemon_id: format!("node-daemon:{NODE_ID}"),
         instance_id: "test-instance".into(),
-        contexts: Mutex::new(Vec::new()),
-        supervisor_start_gate: Mutex::new(()),
-        session_runtimes: Mutex::new(HashMap::new()),
+        contexts: Vec::new(),
         application: Arc::new(DaemonApplication),
-        native_session_wake_endpoint: Arc::new(Mutex::new(HashMap::new())),
         max_concurrency: 1,
         input_acceptance_secs: 1,
         scan_interval: Duration::from_millis(50),
         stop_requested,
         authority_shutdown: Arc::new(AtomicBool::new(false)),
-        authority_lost: AtomicBool::new(false),
-        machine_authority_loss: Mutex::new(None),
-        confirmed_node_leases: Mutex::new(HashMap::new()),
-        control_worker_failed: AtomicBool::new(false),
-        recovery_blocked_runs: Mutex::new(HashMap::new()),
-        settling_runs: Mutex::new(HashSet::new()),
-        capacity_waits: Mutex::new(HashMap::new()),
         lease_ttl_override_ms: Some(1_500),
-        deferred_stop_responses: Mutex::new(Vec::new()),
         drain_timeout_override_ms: None,
-    });
+    }));
 
     std::thread::scope(|scope| {
         let server = scope.spawn(|| daemon.serve_loop(&listener));
@@ -982,32 +903,21 @@ fn shutdown_renews_node_authority_until_accepted_worker_finishes() {
     failure_listener
         .set_nonblocking(true)
         .expect("configure failure listener");
-    let failed_daemon = Arc::new(MultiTeamDaemon {
+    let failed_daemon = Arc::new(TestDaemon::new(TestDaemonConfig {
         firm_home: tree.0.join("home"),
         node_id: NODE_ID.into(),
         daemon_id: format!("node-daemon:{NODE_ID}"),
         instance_id: "test-failure-instance".into(),
-        contexts: Mutex::new(Vec::new()),
-        supervisor_start_gate: Mutex::new(()),
-        session_runtimes: Mutex::new(HashMap::new()),
+        contexts: Vec::new(),
         application: Arc::new(DaemonApplication),
-        native_session_wake_endpoint: Arc::new(Mutex::new(HashMap::new())),
         max_concurrency: 1,
         input_acceptance_secs: 1,
         scan_interval: Duration::from_millis(50),
         stop_requested: Arc::new(AtomicBool::new(false)),
         authority_shutdown: Arc::new(AtomicBool::new(false)),
-        authority_lost: AtomicBool::new(false),
-        machine_authority_loss: Mutex::new(None),
-        confirmed_node_leases: Mutex::new(HashMap::new()),
-        control_worker_failed: AtomicBool::new(false),
-        recovery_blocked_runs: Mutex::new(HashMap::new()),
-        settling_runs: Mutex::new(HashSet::new()),
-        capacity_waits: Mutex::new(HashMap::new()),
         lease_ttl_override_ms: Some(1_500),
-        deferred_stop_responses: Mutex::new(Vec::new()),
         drain_timeout_override_ms: None,
-    });
+    }));
     std::thread::scope(|scope| {
         let server = scope.spawn(|| failed_daemon.serve_loop(&failure_listener));
 
@@ -1023,7 +933,7 @@ fn shutdown_renews_node_authority_until_accepted_worker_finishes() {
         drop(abandoned_client);
         std::thread::sleep(Duration::from_millis(100));
         assert!(
-            !failed_daemon.control_worker_failed.load(Ordering::SeqCst),
+            !failed_daemon.control_worker_failed(),
             "response delivery failure after semantic completion is nonfatal"
         );
 
@@ -1036,13 +946,11 @@ fn shutdown_renews_node_authority_until_accepted_worker_finishes() {
         drop(failed_client);
 
         let failure_deadline = Instant::now() + Duration::from_secs(1);
-        while !failed_daemon.control_worker_failed.load(Ordering::SeqCst)
-            && Instant::now() < failure_deadline
-        {
+        while !failed_daemon.control_worker_failed() && Instant::now() < failure_deadline {
             std::thread::sleep(Duration::from_millis(5));
         }
         assert!(
-            failed_daemon.control_worker_failed.load(Ordering::SeqCst),
+            failed_daemon.control_worker_failed(),
             "accepted worker failure is latched before shutdown"
         );
 

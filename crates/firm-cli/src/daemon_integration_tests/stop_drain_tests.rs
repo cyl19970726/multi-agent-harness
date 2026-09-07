@@ -12,14 +12,14 @@ const STOP_TEST_NODE_ID: &str = "22222222-2222-4222-8222-222222222221";
 struct StopFixture {
     _tree: TestTree,
     socket_path: PathBuf,
-    daemon: Arc<MultiTeamDaemon>,
+    daemon: Arc<TestDaemon>,
     daemon_generation: u64,
     listener: UnixListener,
 }
 
 fn stop_fixture(
     label: &str,
-    context: Option<MultiTeamContext>,
+    context: Option<OwnedTestContext>,
     drain_ms: (u64, u64),
 ) -> StopFixture {
     let tree = TestTree::new(label);
@@ -79,32 +79,21 @@ fn stop_fixture(
         .set_nonblocking(true)
         .expect("configure nonblocking stop listener");
 
-    let daemon = Arc::new(MultiTeamDaemon {
+    let daemon = Arc::new(TestDaemon::new(TestDaemonConfig {
         firm_home,
         node_id: STOP_TEST_NODE_ID.into(),
         daemon_id,
         instance_id: "stop-instance".into(),
-        contexts: Mutex::new(context.into_iter().collect()),
-        supervisor_start_gate: Mutex::new(()),
-        session_runtimes: Mutex::new(HashMap::new()),
+        contexts: context.into_iter().collect(),
         application: Arc::new(DaemonApplication),
-        native_session_wake_endpoint: Arc::new(Mutex::new(HashMap::new())),
         max_concurrency: 1,
         input_acceptance_secs: 1,
         scan_interval: Duration::from_secs(60),
         stop_requested: Arc::new(AtomicBool::new(false)),
         authority_shutdown: Arc::new(AtomicBool::new(false)),
-        authority_lost: AtomicBool::new(false),
-        machine_authority_loss: Mutex::new(None),
-        confirmed_node_leases: Mutex::new(HashMap::new()),
-        control_worker_failed: AtomicBool::new(false),
-        recovery_blocked_runs: Mutex::new(HashMap::new()),
-        settling_runs: Mutex::new(HashSet::new()),
-        capacity_waits: Mutex::new(HashMap::new()),
         lease_ttl_override_ms: Some(600_000),
-        deferred_stop_responses: Mutex::new(Vec::new()),
         drain_timeout_override_ms: Some(drain_ms),
-    });
+    }));
 
     StopFixture {
         _tree: tree,
@@ -118,8 +107,8 @@ fn stop_fixture(
 fn managed_context(
     thread: std::thread::JoinHandle<CliResult<TeamRunDriveOutcome>>,
     heartbeat: Arc<AtomicBool>,
-) -> MultiTeamContext {
-    MultiTeamContext {
+) -> OwnedTestContext {
+    OwnedTestContext::new(TestContextConfig {
         execution_space_id: "stop-space".into(),
         project_binding_id: "stop-project".into(),
         run_id: "stop-run".into(),
@@ -130,7 +119,7 @@ fn managed_context(
         serving_status: Arc::new(Mutex::new("running".into())),
         thread: Some(thread),
         started_at: Instant::now(),
-    }
+    })
 }
 
 /// Read the lease this daemon generation actually left in the Store. The stop
@@ -138,7 +127,7 @@ fn managed_context(
 /// derived from whether some phase reported a failure (DEV-149-REVIEW-02).
 fn observed_lease_is_released(fixture: &StopFixture) -> bool {
     HarnessStore::new(
-        crate::execution_space::list_spaces(&fixture.daemon.firm_home)
+        crate::execution_space::list_spaces(fixture.daemon.firm_home())
             .expect("list stop Spaces")
             .remove(0)
             .store_root,

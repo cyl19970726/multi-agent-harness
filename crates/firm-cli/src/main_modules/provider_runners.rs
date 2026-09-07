@@ -543,7 +543,7 @@ pub(super) fn run_codex_member_shared(
         Ok(client) => client,
         Err(error) => {
             settle_provider_effect_not_applied(ledger, &process_effect, error.to_string())?;
-            return Err(error.into());
+            return Err(crate::codex_app_server::provider_error(error));
         }
     };
     let actual_model = app_server.model().to_string();
@@ -598,7 +598,9 @@ pub(super) fn run_codex_member_shared(
             let request_id = frame
                 .get("id")
                 .ok_or_else(|| CliError::Usage("Codex reverse request omitted id".to_string()))?;
-            client.respond(request_id, reply.result.clone())?;
+            client
+                .respond(request_id, reply.result.clone())
+                .map_err(crate::codex_app_server::provider_error)?;
             complete_provider_interaction_reply(
                 ledger,
                 &callback_member_id,
@@ -1247,7 +1249,7 @@ pub(super) fn run_kimi_member_shared(
         Ok(client) => client,
         Err(error) => {
             settle_provider_effect_not_applied(ledger, &process_effect, error.to_string())?;
-            return Err(error.into());
+            return Err(crate::kimi_acp::provider_error(error));
         }
     };
     if client.provider_version() != profile.provider_version.as_deref() {

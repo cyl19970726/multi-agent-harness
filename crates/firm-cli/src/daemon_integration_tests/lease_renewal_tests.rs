@@ -5,25 +5,25 @@ use std::sync::atomic::AtomicUsize;
 fn enrolled_fixture(label: &str) -> AdoptionFixture {
     let mut fixture = adoption_fixture(label);
     // Product defaults: five-second scan, Node TTL = max(scan * 4, 15s).
-    fixture.daemon.scan_interval = Duration::from_secs(5);
-    fixture.daemon.lease_ttl_override_ms = None;
-    fixture.daemon.node_id =
+    fixture.daemon.set_scan_interval(Duration::from_secs(5));
+    fixture.daemon.set_lease_ttl_override(None);
+    fixture.daemon.set_node_identity(
         crate::daemon_support::latest_team_run(&fixture.store, &fixture.run_id)
             .unwrap()
-            .execution_node_id;
-    fixture.daemon.daemon_id = format!("node-daemon:{}", fixture.daemon.node_id);
+            .execution_node_id,
+    );
     let daemon = &fixture.daemon;
     if !fixture
         .store
         .latest_execution_nodes()
         .unwrap()
         .iter()
-        .any(|node| node.id == daemon.node_id)
+        .any(|node| node.id == daemon.node_id())
     {
         fixture
             .store
             .insert_execution_node(&harness_core::ExecutionNode {
-                id: daemon.node_id.clone(),
+                id: daemon.node_id().to_string(),
                 display_name: "renewal test".into(),
                 status: harness_core::ExecutionNodeStatus::Active,
                 created_at: "unix-ms:1".into(),
@@ -35,7 +35,7 @@ fn enrolled_fixture(label: &str) -> AdoptionFixture {
         .store
         .register_node_project(
             &harness_core::NodeProjectRegistration {
-                node_id: daemon.node_id.clone(),
+                node_id: daemon.node_id().to_string(),
                 execution_space_id: fixture.execution_space_id.clone(),
                 project_binding_id: "unit-test-project".into(),
                 status: harness_core::NodeProjectRegistrationStatus::Active,
@@ -64,14 +64,14 @@ fn default_leases_survive_ten_second_writer_contention_without_extending_ttl() {
     let daemon = &fixture.daemon;
     let store = &fixture.store;
     let node = store
-        .latest_node_daemon_lease(&daemon.node_id)
+        .latest_node_daemon_lease(daemon.node_id())
         .unwrap()
         .unwrap();
     let supervisor = store
         .acquire_team_supervisor_under_node_lease(
             &fixture.run_id,
-            &daemon.node_id,
-            &daemon.daemon_id,
+            daemon.node_id(),
+            daemon.daemon_id(),
             node.generation,
             &fixture.execution_space_id,
             "unit-test-project",
@@ -114,7 +114,7 @@ fn default_leases_survive_ten_second_writer_contention_without_extending_ttl() {
             loop {
                 daemon.refresh_held_node_authorities()?;
                 if store
-                    .latest_node_daemon_lease(&daemon.node_id)?
+                    .latest_node_daemon_lease(daemon.node_id())?
                     .unwrap()
                     .renewed_unix_ms
                     > node.renewed_unix_ms
@@ -150,7 +150,7 @@ fn default_leases_survive_ten_second_writer_contention_without_extending_ttl() {
         });
         std::thread::sleep(Duration::from_secs(10));
         assert!(valid.load(Ordering::Acquire));
-        assert!(!daemon.authority_lost.load(Ordering::Acquire));
+        assert!(!daemon.authority_lost());
         drop(lock);
         node_heartbeat.join().unwrap().unwrap();
         supervisor_heartbeat.join().unwrap();
@@ -165,7 +165,7 @@ fn default_leases_survive_ten_second_writer_contention_without_extending_ttl() {
     assert!(renewed.heartbeat_unix_ms > supervisor.heartbeat_unix_ms + 9_000);
     assert_eq!(renewed.expires_unix_ms - renewed.heartbeat_unix_ms, 15_000);
     let node = store
-        .latest_node_daemon_lease(&daemon.node_id)
+        .latest_node_daemon_lease(daemon.node_id())
         .unwrap()
         .unwrap();
     assert_eq!(node.expires_unix_ms - node.renewed_unix_ms, 20_000);
@@ -229,10 +229,7 @@ fn completed_run_supervisor_loss_does_not_latch_machine_authority() {
         .unwrap();
     fixture
         .daemon
-        .contexts
-        .lock()
-        .unwrap()
-        .push(MultiTeamContext {
+        .push_context(OwnedTestContext::new(TestContextConfig {
             execution_space_id: fixture.execution_space_id.clone(),
             project_binding_id: "unit-test-project".into(),
             run_id: fixture.run_id.clone(),
@@ -245,20 +242,15 @@ fn completed_run_supervisor_loss_does_not_latch_machine_authority() {
                 Err(crate::supervisor_lease_lost_error("completed-run"))
             })),
             started_at: Instant::now(),
-        });
-    while !fixture.daemon.contexts.lock().unwrap()[0]
-        .thread
-        .as_ref()
-        .unwrap()
-        .is_finished()
-    {
+        }));
+    while !fixture.daemon.context_thread_finished(0) {
         std::thread::yield_now();
     }
     fixture.daemon.reap_finished().unwrap();
-    assert!(!fixture.daemon.authority_lost.load(Ordering::Acquire));
-    assert!(!fixture.daemon.stop_requested.load(Ordering::Acquire));
+    assert!(!fixture.daemon.authority_lost());
+    assert!(!fixture.daemon.stop_requested_flag().load(Ordering::Acquire));
     fixture.daemon.refresh_held_node_authorities().unwrap();
-    assert!(fixture.daemon.contexts.lock().unwrap().is_empty());
+    assert!(fixture.daemon.context_count() == 0);
     let member = fixture
         .store
         .member_runs()
@@ -293,11 +285,11 @@ fn contended_space_does_not_delay_healthy_space_to_expiry() {
     let mut fixture = enrolled_fixture("multi-space-renewal-round");
     // A still owns its original long lease. Renewed leases use a short test
     // TTL so a full-TTL joined round would expire healthy B deterministically.
-    fixture.daemon.scan_interval = Duration::from_secs(1);
-    fixture.daemon.lease_ttl_override_ms = Some(1_200);
+    fixture.daemon.set_scan_interval(Duration::from_secs(1));
+    fixture.daemon.set_lease_ttl_override(Some(1_200));
     let daemon = &fixture.daemon;
     let space = crate::execution_space::register_and_activate(
-        &daemon.firm_home,
+        daemon.firm_home(),
         "healthy-space",
         "Healthy Space",
         Some("healthy-project".into()),
@@ -308,7 +300,7 @@ fn contended_space_does_not_delay_healthy_space_to_expiry() {
     let healthy = HarnessStore::new(space.store_root.clone());
     healthy
         .insert_execution_node(&harness_core::ExecutionNode {
-            id: daemon.node_id.clone(),
+            id: daemon.node_id().to_string(),
             display_name: "healthy test node".into(),
             status: harness_core::ExecutionNodeStatus::Active,
             created_at: "unix-ms:1".into(),
@@ -318,7 +310,7 @@ fn contended_space_does_not_delay_healthy_space_to_expiry() {
     healthy
         .register_node_project(
             &harness_core::NodeProjectRegistration {
-                node_id: daemon.node_id.clone(),
+                node_id: daemon.node_id().to_string(),
                 execution_space_id: space.id.clone(),
                 project_binding_id: "healthy-project".into(),
                 status: harness_core::NodeProjectRegistrationStatus::Active,
@@ -343,11 +335,11 @@ fn contended_space_does_not_delay_healthy_space_to_expiry() {
         }
         holder.join().unwrap();
     });
-    assert!(!daemon.authority_lost.load(Ordering::Acquire));
+    assert!(!daemon.authority_lost());
     for store in [&fixture.store, &healthy] {
         assert!(
             store
-                .latest_node_daemon_lease(&daemon.node_id)
+                .latest_node_daemon_lease(daemon.node_id())
                 .unwrap()
                 .unwrap()
                 .expires_unix_ms
@@ -371,14 +363,16 @@ fn authority_shutdown_interrupts_contended_renewal_without_waiting_for_ttl() {
         std::thread::sleep(Duration::from_millis(50));
         // stop_requested deliberately does not end renewal: accepted effects
         // still need authority while draining. authority_shutdown ends it.
-        daemon.authority_shutdown.store(true, Ordering::SeqCst);
+        daemon
+            .authority_shutdown_flag()
+            .store(true, Ordering::SeqCst);
         received
             .recv_timeout(Duration::from_millis(500))
             .expect("shutdown must not join a full-TTL retry loop")
             .unwrap();
         holder.join().unwrap();
     });
-    assert!(!daemon.authority_lost.load(Ordering::Acquire));
+    assert!(!daemon.authority_lost());
 }
 
 #[test]
@@ -387,16 +381,16 @@ fn expired_owned_space_still_latches_global_authority_loss() {
     let daemon = &fixture.daemon;
     let lease = fixture
         .store
-        .latest_node_daemon_lease(&daemon.node_id)
+        .latest_node_daemon_lease(daemon.node_id())
         .unwrap()
         .unwrap();
     let short = fixture
         .store
         .renew_node_daemon_lease(
-            &daemon.node_id,
-            &daemon.daemon_id,
+            daemon.node_id(),
+            daemon.daemon_id(),
             lease.generation,
-            &daemon.instance_id,
+            daemon.instance_id(),
             current_unix_ms_u64(),
             80,
         )
@@ -407,6 +401,6 @@ fn expired_owned_space_still_latches_global_authority_loss() {
         short.expires_unix_ms.saturating_sub(current_unix_ms_u64()) + 10,
     ));
     assert!(daemon.refresh_held_node_authorities().is_err());
-    assert!(daemon.authority_lost.load(Ordering::Acquire));
-    assert!(daemon.stop_requested.load(Ordering::Acquire));
+    assert!(daemon.authority_lost());
+    assert!(daemon.stop_requested_flag().load(Ordering::Acquire));
 }

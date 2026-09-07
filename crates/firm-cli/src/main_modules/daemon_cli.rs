@@ -330,7 +330,7 @@ pub(super) fn daemon_command(args: &[String]) -> CliResult<()> {
                         .to_string(),
                 ));
             }
-            supervisor_daemon::MultiTeamDaemon::run(
+            supervisor_daemon::run(
                 firm_home,
                 node_id,
                 max_concurrency,

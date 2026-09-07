@@ -271,7 +271,7 @@ impl MultiTeamDaemon {
     }
 
     fn node_lease_ttl_ms(&self) -> u64 {
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         if let Some(ttl_ms) = self.lease_ttl_override_ms {
             return ttl_ms;
         }
@@ -523,7 +523,7 @@ impl MultiTeamDaemon {
         Ok(lease)
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub(super) fn supersede_node_authority_for_test(&self, store: &HarnessStore) -> CliResult<()> {
         let lease = store
             .latest_node_daemon_lease(&self.node_id)?

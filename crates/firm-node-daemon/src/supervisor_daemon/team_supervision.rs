@@ -164,7 +164,7 @@ impl MultiTeamDaemon {
         store: HarnessStore,
         run_id: &str,
     ) -> CliResult<()> {
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         ADOPTION_START_ATTEMPTS.fetch_add(1, Ordering::Relaxed);
         let _start_guard = self
             .supervisor_start_gate
@@ -541,7 +541,7 @@ impl Drop for SettlingGuard<'_> {
 
 /// Adoption attempts that actually entered `start_supervising`. Test-only: it
 /// is what proves an at-capacity run is retried per scan tick, not per pass.
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub(super) static ADOPTION_START_ATTEMPTS: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
 

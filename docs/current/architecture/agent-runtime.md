@@ -22,10 +22,10 @@ machine-wide drain. A partial first acquisition rolls back only leases that
 this instance acquired before provider admission opened. Lease expiry alone is
 never a provider-drain receipt and never permits a successor to steal authority.
 
-## Daemon application boundary in firm-cli
+## Daemon package and application boundary
 
-The daemon currently remains in `firm-cli`. Its `DaemonApplicationPort` is a
-finite application boundary: the CLI prepares and drives TeamRuns, constructs
+`firm-node-daemon` owns the machine daemon as a library, invoked by the existing
+`firm-cli` foreground command. Its `DaemonApplicationPort` is a finite boundary: the CLI prepares and drives TeamRuns, constructs
 provider handles, resolves Execution Space configuration, reads native Sessions
 with the existing authorization checks, and composes recovery records and wake
 callbacks. The daemon keeps its contexts, admission gate, control dispatch,
@@ -46,9 +46,32 @@ Usage-mapping call sites; Store/CAS errors remain typed. `daemon_protocol` owns
 one definition of the native-read and wake DTOs. `daemon_client` owns socket
 requests, single-send start delegation and bounded start observation. No wire
 shape, timeout, replay policy, or native-transcript authority changes here.
-The neutral coordination helpers, diagnostics and start-failure classifier are
-shared implementation dependencies for the later package extraction; no
-`firm-node-daemon` package has been introduced by this boundary step.
+The neutral coordination helpers, diagnostics and start-failure classifier also
+live in `firm-node-daemon`; CLI callers use the same definitions. Its public
+surface is foreground `run`, socket path/timeout constants, the finite
+application port and its owned handles/results, typed errors, shared protocol
+DTOs and these existing neutral helpers. Contexts, registries and locks remain
+private. The Message body digest is still computed by the CLI's existing fabric
+helper through the named application operation, preserving exact body bytes.
+Provider errors are converted by CLI functions retaining the original typed
+admission/lease-loss branches; the daemon does not import provider packages.
+
+| Package | Direct implementation dependencies and responsibility |
+| --- | --- |
+| `firm-node-daemon` | `firm-core`, `firm-store`, `firm-runtime-host`, neutral `firm-provider-events` DTOs; serde/JSON/error derivation |
+| `firm-cli` | Composes the daemon library, provider-specific adapters, prepared drive, native readers/auth, message/recovery composition and socket clients/binary spawning |
+| `firm-store` | No dependency on the daemon; canonical authority and CAS remain Store-owned |
+
+`check-node-daemon-package-boundaries.mjs` checks actual package dependencies,
+source imports and duplicate old owners. The structural gates independently
+require machine lease writes and registry lifecycle in daemon modules,
+registration/drive composition in CLI, and socket transport in the CLI client.
+The default-disabled `test-support` feature retains the existing coupled CLI
+fixtures against the same private daemon implementation. Only the CLI dev
+dependency enables it; normal builds expose no fixture adapter. The bounded
+owned inputs, operations and observations are mapped in the crate
+[testing inventory](../../../crates/firm-node-daemon/TEST-MIGRATION.md).
+This is a machine-lifecycle boundary, not a second consumer or another binary.
 
 ## Canonical separation
 
