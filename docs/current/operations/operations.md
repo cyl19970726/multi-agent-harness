@@ -615,10 +615,16 @@ MemberRun/AgentSession generation is provably gone (cause
 `WORK_DELIVERY_SUPERSEDED_BY_HOST_LOST_EXECUTION_RECOVERY`, receipt kept as
 evidence), returns the Work to `Open` with the same assignee in one
 `ExecutionRecovered` WorkOperation, and lets the next Supervisor pass deliver
-it again. It refuses with `WORK_EXECUTION_AUTHORITY_LIVE` while those
-generations are still the member's current authority — interrupt or close the
-member, or let daemon settlement invalidate the binding, first — with
-`WORK_EXECUTION_NOT_LOST` when nothing is lost (a started Work whose binding a
+it again. It refuses with `WORK_EXECUTION_AUTHORITY_LIVE` only while the complete
+existing Work/runtime fence, including the driver, native binding, permission,
+composition/capability fingerprints and NodeDaemon authority, still passes.
+`WORK_EXECUTION_AUTHORITY_UNPROVEN` means that fence failed or could not be
+verified without one of the existing durable loss proofs. This is neither Live
+nor permission to release: reconcile the exact original runtime, then use the
+existing Close or daemon settlement path before retrying recovery. Scans expose
+these Works in `lost_execution_scan_errors`. For a live binding, interrupt or
+close the member, or let daemon settlement invalidate the binding first.
+Recovery returns `WORK_EXECUTION_NOT_LOST` when nothing is lost (a started Work whose binding a
 Member Close released keeps its reopened-Result path and is never lost), and
 with `WORK_CONDITION_NOT_NORMAL` until a blocked Work is resumed. Its proof is
 weaker than a drain's: the old attempt can never be *recorded*, but its

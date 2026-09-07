@@ -21,9 +21,12 @@
 //!
 //! - a still-executable binding is lost only when its exact MemberRun
 //!   generation is no longer the member's current one, the MemberRun has no
-//!   live runtime authority, or its AgentSession is Closed — each of which is
+//!   live runtime authority, or its AgentSession is Closed or superseded — each of which is
 //!   a conjunct the runtime fence requires, so no settlement for that attempt
-//!   can ever be recorded again (`WORK_EXECUTION_AUTHORITY_LIVE` otherwise);
+//!   can ever be recorded again. Otherwise the complete existing Work/runtime
+//!   fence must pass before reporting `WORK_EXECUTION_AUTHORITY_LIVE`; a
+//!   failed or unreadable fence is `WORK_EXECUTION_AUTHORITY_UNPROVEN`, not
+//!   additional authority to release the binding;
 //! - a started Work with no executable binding is lost only when its latest
 //!   binding ended with `invalidated_by_lost_runtime_generation`. A binding
 //!   that a Member Close released keeps the reopened-Result settlement path
@@ -162,6 +165,36 @@ struct LostExecutionFacts {
 }
 
 impl HarnessStore {
+    fn classify_work_execution_loss_unlocked(
+        &self,
+        execution_space_id: &str,
+        work: &Work,
+        bindings: &[WorkExecutionBinding],
+        facts: &LostExecutionFacts,
+    ) -> StoreResult<WorkExecutionLoss> {
+        let classification = classify_work_execution_loss(work, bindings, facts)?;
+        if let WorkExecutionLoss::Live { binding_id, .. } = &classification {
+            let binding = bindings
+                .iter()
+                .find(|binding| binding.id == *binding_id)
+                .expect("classification selected this binding");
+            let detail = match self
+                .work_execution_binding_is_current_unlocked(execution_space_id, binding)
+            {
+                Ok(true) => return Ok(classification),
+                Ok(false) => "the complete current Work/runtime fence does not match".to_string(),
+                Err(error) => format!(
+                    "the complete current Work/runtime fence could not be verified: {error}"
+                ),
+            };
+            return Err(StoreError::Conflict(format!(
+                "WORK_EXECUTION_AUTHORITY_UNPROVEN: Work {} binding {binding_id}: {detail}; this does not prove a terminated provider effect or authorize release. Reconcile the exact runtime and use the existing Close or daemon settlement path before recovering",
+                work.id
+            )));
+        }
+        Ok(classification)
+    }
+
     fn load_lost_execution_facts(
         &self,
         execution_space_id: &str,
@@ -229,7 +262,12 @@ impl HarnessStore {
             .collect::<Vec<_>>();
         works.sort_by(|left, right| left.id.cmp(&right.id));
         for work in works {
-            match classify_work_execution_loss(&work, &bindings, &facts) {
+            match self.classify_work_execution_loss_unlocked(
+                execution_space_id,
+                &work,
+                &bindings,
+                &facts,
+            ) {
                 Ok(WorkExecutionLoss::Lost(evidence)) => scan.lost.push(LostWorkExecution {
                     work_id: work.id.clone(),
                     work_version: work.version,
@@ -326,7 +364,12 @@ impl HarnessStore {
         };
         let bindings = self.fabric_work_execution_bindings(&work_execution_space_id)?;
         let facts = self.load_lost_execution_facts(&work_execution_space_id)?;
-        let evidence = match classify_work_execution_loss(&current, &bindings, &facts)? {
+        let evidence = match self.classify_work_execution_loss_unlocked(
+            &work_execution_space_id,
+            &current,
+            &bindings,
+            &facts,
+        )? {
             WorkExecutionLoss::Live {
                 binding_id,
                 member_run_id,
