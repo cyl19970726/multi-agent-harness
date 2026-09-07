@@ -98,7 +98,11 @@ function isCanonicalPassReview(body) {
   return !remainder.some((line) => {
     const conclusion = /^(?:Conclusion|Review result|Overall verdict|Decision)\s*:\s*(.*)$/iu.exec(line);
     if (conclusion) return !/^Pass[.!]?$/iu.test(conclusion[1]);
-    return /^(?:(?:this|(?:this |the )?review) (?:is )?)?(?:not pass|changes? required|fail(?:ed|ure)?|reject(?:ed|ion)?)(?:[.!:]|$)/iu.test(line);
+    // An explicit review subject makes the negative clause a conclusion even
+    // when a reason follows it. Bare diagnostic nouns still need a delimiter.
+    return /^(?:this|(?:this |the )?review) (?:is )?(?:not pass|changes? required|fail(?:ed|ure)?|reject(?:ed|ion)?)\b/iu.test(line)
+      || /^(?:not pass|changes? required)\b/iu.test(line)
+      || /^(?:fail(?:ed|ure)?|reject(?:ed|ion)?)(?:[.!:]|\s+[—–-](?:\s|$)|\s+(?:because|since|due to)\b|$)/iu.test(line);
   });
 }
 
