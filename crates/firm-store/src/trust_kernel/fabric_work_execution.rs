@@ -71,7 +71,7 @@ impl HarnessStore {
             .collect())
     }
 
-    fn work_execution_binding_is_current_unlocked(
+    pub(crate) fn work_execution_binding_is_current_unlocked(
         &self,
         execution_space_id: &str,
         binding: &WorkExecutionBinding,

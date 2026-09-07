@@ -335,7 +335,8 @@ pub(super) fn print_help() {
       revision so the ordinary delivery path re-delivers it; never replays a
       provider effect. Refusal codes: WORK_TERMINAL_NOT_RECOVERABLE,
       WORK_IN_REVIEW_NOT_RECOVERABLE, WORK_CONDITION_NOT_NORMAL (resume first),
-      WORK_NOT_ASSIGNED, WORK_EXECUTION_AUTHORITY_LIVE, WORK_EXECUTION_NOT_LOST,
+      WORK_NOT_ASSIGNED, WORK_EXECUTION_AUTHORITY_LIVE, WORK_EXECUTION_AUTHORITY_UNPROVEN,
+      WORK_EXECUTION_NOT_LOST,
       EXECUTION_SPACE_SCOPE_MISMATCH. A binding a Member Close released is never
       lost (the reopened member resubmits against it). `team-run recover` lists
       candidates as lost_execution_works and unreadable Works as
