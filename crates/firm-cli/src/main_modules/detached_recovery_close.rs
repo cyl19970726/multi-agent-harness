@@ -16,9 +16,9 @@ pub(super) enum DetachedRecoveryCloseMode {
     BlockedMemberExactGeneration,
     /// #812: an unclosed member of a Completed TeamRun. After a daemon
     /// restart the recorded driver may be a superseded Supervisor/NodeDaemon
-    /// generation; the Close then requires the recorded predecessor evidence
-    /// (the driver Supervisor generation's Released lease) before the runtime
-    /// counts as provably over.
+    /// generation; the Close then requires a newer NodeDaemon generation,
+    /// whose admission proves predecessor daemon release. A released
+    /// Supervisor lease alone does not prove runtime termination.
     CompletedRunMember,
 }
 
