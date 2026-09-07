@@ -220,10 +220,41 @@ fn managed_member_close_reconciliation_requires_the_exact_terminal_binding() {
             matches!(case, Case::Exact),
             "{case:?}: {reconciled:?}"
         );
+        let observed = managed_member_runtime_close_is_settled(&store, &supplied)
+            .expect("evaluate durable managed Close postcondition");
         if matches!(case, Case::Exact) {
             assert_eq!(
                 reconciled.expect("same request settled")["close_request_id"],
                 close.id
+            );
+            let mixed = reconcile_close_response_with_hook(&store, &observation, false, || {
+                let current = store
+                    .fabric_agent_sessions(&lease.execution_space_id)
+                    .unwrap()
+                    .into_iter()
+                    .find(|session| session.id == observation.session.id)
+                    .unwrap();
+                let mut changed = current.control_state.clone();
+                changed.driver_generation += 1;
+                store
+                    .bind_agent_session_control_state(
+                        &canonical_delivery_context(
+                            &lease.execution_space_id,
+                            &lease.node_daemon_id,
+                            "node_daemon.agent_session.control.bind",
+                            "close-observation-interleaving".into(),
+                            current.version,
+                        ),
+                        &current.id,
+                        current.runtime_generation,
+                        changed,
+                        "unix-ms:close-drift",
+                    )
+                    .expect("change driver between observation reads");
+            });
+            assert!(
+                matches!(mixed, Err(CliError::RuntimeRecoveryRequired(_))),
+                "old observation must reject a driver change between reads: {mixed:?}"
             );
             observation.session.runtime_generation += 1;
             assert!(
@@ -237,8 +268,7 @@ fn managed_member_close_reconciliation_requires_the_exact_terminal_binding() {
                 "another request cannot satisfy this response"
             );
         }
-        let observed = managed_member_runtime_close_is_settled(&store, &supplied)
-            .expect("evaluate durable managed Close postcondition");
+
         std::fs::remove_dir_all(root).expect("cleanup close fixture");
         observed
     }

@@ -899,6 +899,15 @@ pub(super) fn reconcile_close_response(
     observation: &CloseResponseObservation,
     channel_ended: bool,
 ) -> CliResult<serde_json::Value> {
+    reconcile_close_response_with_hook(store, observation, channel_ended, || {})
+}
+
+pub(super) fn reconcile_close_response_with_hook(
+    store: &HarnessStore,
+    observation: &CloseResponseObservation,
+    channel_ended: bool,
+    before_terminal_read: impl FnOnce(),
+) -> CliResult<serde_json::Value> {
     use harness_core::agentfirm_api::{
         RuntimeCommandKind, RuntimeCommandPhase, RuntimeEffectCertainty, RuntimePostconditionStatus,
     };
@@ -933,8 +942,13 @@ pub(super) fn reconcile_close_response(
             "original MemberRun/AgentSession generation or binding changed",
         ));
     }
+    before_terminal_read();
     if close.status == TeamMemberCloseStatus::Applied
-        && managed_member_runtime_close_is_settled(store, member)?
+        && managed_member_runtime_close_is_settled_for_observation(
+            store,
+            member,
+            Some(observation),
+        )?
         && store
             .latest_team_member_close_request(&member.id)?
             .is_some_and(|latest| latest.id == close.id)
@@ -1165,19 +1179,28 @@ pub(super) fn managed_member_runtime_close_is_settled(
     store: &HarnessStore,
     member: &ProviderRuntimeProjection,
 ) -> CliResult<bool> {
+    managed_member_runtime_close_is_settled_for_observation(store, member, None)
+}
+
+fn managed_member_runtime_close_is_settled_for_observation(
+    store: &HarnessStore,
+    member: &ProviderRuntimeProjection,
+    observation: Option<&CloseResponseObservation>,
+) -> CliResult<bool> {
     use harness_core::agentfirm_api::{
         AgentSessionStatus, RuntimeActivity, RuntimeCommandKind, RuntimeCommandPhase,
         RuntimeDriverRef, RuntimeEffectCertainty, RuntimePostconditionStatus, RuntimeResidency,
     };
     if member.is_external_interactive() {
-        return Ok(true);
+        return Ok(observation.is_none());
     }
     let required_interrupt = member.status == MemberRunStatus::Running;
     let latest_member = latest_member_runs_in_append_order(store)?
         .into_iter()
         .find(|candidate| candidate.id == member.id)
         .ok_or_else(|| CliError::Usage(format!("member run not found: {}", member.id)))?;
-    if member.native_session.is_none()
+    if observation.is_none()
+        && member.native_session.is_none()
         && matches!(
             member.status,
             MemberRunStatus::Completed | MemberRunStatus::Failed | MemberRunStatus::Stopped
@@ -1197,6 +1220,9 @@ pub(super) fn managed_member_runtime_close_is_settled(
     else {
         return Ok(false);
     };
+    if observation.is_some_and(|expected| expected.close_id != close_request.id) {
+        return Ok(false);
+    }
     let run = latest_team_run(store, &member.team_run_id)?;
     let execution_space_id = team_run_execution_space_id(store, &run)?;
     let sessions = store
@@ -1210,6 +1236,18 @@ pub(super) fn managed_member_runtime_close_is_settled(
     let [session] = sessions.as_slice() else {
         return Ok(false);
     };
+    // Reconciliation binds THIS read and its command proof to the originally
+    // admitted Session, never to a newer binding observed after the first read.
+    if observation.is_some_and(|expected| {
+        expected.execution_space_id != execution_space_id
+            || expected.session.node_id != session.node_id
+            || expected.session.node_daemon_id != session.node_daemon_id
+            || expected.session.node_daemon_generation != session.node_daemon_generation
+            || runtime_command_binding_for_session(&expected.session)
+                != runtime_command_binding_for_session(session)
+    }) {
+        return Ok(false);
+    }
     // Team Close is reversible and never stops the machine-owned
     // AgentSession. Its exact postcondition is a detached idle Session plus a
     // settled CloseMember command; StopSession belongs only to Node/operator

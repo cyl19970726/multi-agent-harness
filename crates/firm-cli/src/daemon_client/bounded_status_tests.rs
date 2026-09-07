@@ -28,7 +28,11 @@ fn serve_once(socket_path: &Path, respond: impl FnOnce(UnixStream) + Send + 'sta
 fn bounded_request_reads_a_complete_line_promptly() {
     let socket = bounded_request_socket_path("complete");
     serve_once(&socket, |mut stream| {
-        use std::io::Write as _;
+        use std::io::{BufRead as _, Write as _};
+        let mut request = String::new();
+        std::io::BufReader::new(&mut stream)
+            .read_line(&mut request)
+            .expect("consume request before closing peer");
         writeln!(stream, "{{\"ok\":true}}").expect("write complete line");
     });
     let response =
@@ -303,6 +307,10 @@ fn general_status_request_has_one_deadline_and_preserves_first_line() {
     let socket = node_daemon_socket_path(&home, "test");
     std::fs::create_dir_all(socket.parent().expect("socket parent")).expect("socket directory");
     serve_once(&socket, |mut stream| {
+        let mut request = String::new();
+        std::io::BufReader::new(&mut stream)
+            .read_line(&mut request)
+            .expect("consume status request");
         let _ = stream.write_all(b"{\"ok\":true}\nsecond line\n");
     });
     assert_eq!(
