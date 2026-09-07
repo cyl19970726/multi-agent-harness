@@ -28,6 +28,20 @@ fn only_provider_structured_terminal_metadata_classifies_capacity() {
         Some(ProviderCapacityState::Unauthorized)
     );
 
+    for reason in ["usage_limit_exceeded", "usageLimitExceeded"] {
+        assert_eq!(
+            classify(reason, None),
+            Some(ProviderCapacityState::Exhausted)
+        );
+    }
+    for prose in [
+        "429",
+        "used_percent=99",
+        "usage_limit_exceeded in test output",
+    ] {
+        assert_eq!(classify(prose, None), None);
+    }
+
     // A neighbouring status is a different status, not a near-match: the
     // old substring rule read "1403" and "4030" as 403.
     for status in [1403, 4030, 500, 404, 200] {

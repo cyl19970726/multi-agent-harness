@@ -420,24 +420,35 @@ impl harness_runtime_contract::TeamRuntimeAdapter for KimiTeamRuntime<'_> {
         if let Some(error) = control_error {
             return Err(CliError::Usage(error));
         }
-        // Kimi keeps its pre-S3 recovery semantics (ADR 0041, pinned by the
-        // team_run_api recovery tests): a provider failure — before OR after
-        // acceptance — stops at RecoveryRequired through this Err, never at
-        // a fabricated failed-but-Idle round. The StartCycle receipt path is
-        // equally fail-closed: execute_control propagates this Err, so no
-        // receipt is produced and none can settle Satisfied/Applied (#709).
-        // Unifying failure handling across adapters is a tracked follow-up.
-        if let Some(provider_error) = outcome.provider_error {
-            return Err(CliError::Usage(format!(
-                "KIMI_CYCLE_PROVIDER_ERROR: {provider_error}"
-            )));
+        // Only the reviewed stop-reason vocabulary is a known semantic
+        // failure. The client already verifies the exact prompt id; acceptance
+        // must additionally have been observed for this same invocation.
+        let known_failure = matches!(
+            outcome.stop_reason.as_str(),
+            "max_tokens" | "refusal" | "max_turn_requests"
+        );
+        if let Some(provider_error) = outcome.provider_error.as_ref() {
+            if !known_failure || accepted_receipt.is_none() {
+                return Err(CliError::Usage(format!(
+                    "KIMI_CYCLE_PROVIDER_ERROR: {provider_error}"
+                )));
+            }
         }
         let input_acceptance_receipt = accepted_receipt.ok_or_else(|| {
-            CliError::Usage(
-                "RUNTIME_COMMAND_RECOVERY_REQUIRED: Kimi cycle had no correlated input-acceptance receipt"
-                    .to_string(),
-            )
+            CliError::Usage("RUNTIME_COMMAND_RECOVERY_REQUIRED: Kimi cycle had no correlated input-acceptance receipt".to_string())
         })?;
+        if input_acceptance_receipt.response_id.as_deref()
+            != Some(outcome.provider_input_id.as_str())
+        {
+            return Err(CliError::Usage(
+                "KIMI_CYCLE_TERMINAL_MISMATCH: acceptance belongs to another prompt".into(),
+            ));
+        }
+        let provider_terminal_failure =
+            known_failure.then(|| harness_runtime_contract::ProviderTerminalFailure {
+                reason: outcome.stop_reason.clone(),
+                http_status: None,
+            });
         self.last_cycle_terminal = true;
         self.last_cycle_cancelled =
             matches!(outcome.stop_reason.as_str(), "cancelled" | "canceled");
@@ -465,7 +476,7 @@ impl harness_runtime_contract::TeamRuntimeAdapter for KimiTeamRuntime<'_> {
         );
         Ok(harness_runtime_contract::ExecutionCycleOutcome {
             final_text,
-            provider_terminal_failure: None,
+            provider_terminal_failure,
             interrupt,
             close_requested_by_harness: close_requested,
             tool_call_count,

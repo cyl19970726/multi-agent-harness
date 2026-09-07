@@ -7,6 +7,8 @@ pub(super) const PROVIDER_EXHAUSTED_REASONS: &[&str] = &[
     "rate_limit",
     "rate_limit_reached",
     "usage_limit_reached",
+    "usage_limit_exceeded",
+    "usagelimitexceeded", // Codex app-server CodexErrorInfo camelCase variant.
     "quota_exceeded",
     "credits_depleted",
 ];

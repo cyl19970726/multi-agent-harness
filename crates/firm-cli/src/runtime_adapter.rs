@@ -950,12 +950,18 @@ pub(crate) fn run_team_member_with_adapter<A: TeamRuntimeAdapter<Error = CliErro
                             &error.to_string(),
                         )?;
                     }
-                    let action = ledger.append_action(
+                    let provider_status = adapter
+                        .take_cycle_terminal_failure()
+                        .filter(|_| accepted_provider_receipt.is_some())
+                        .map(|failure| failure.to_provider_status());
+                    let action = ledger.append_action_with_provider_status(
                         &member_row.id,
                         "provider_error",
                         MemberActionStatus::Failed,
                         &format!("{display} provider round {round} failed"),
                         &crate::provider_turn_failure_summary(display, round),
+                        provider_status,
+                        &[],
                     )?;
                     ledger.fold_event(
                         TeamRunEventSourceKind::Member,

@@ -1491,3 +1491,6 @@ mod unauthenticated_team_member_inbox_http_route_is_retired;
 mod work_list_brief_prints_one_stable_line_per_work_with_truncated_title;
 #[path = "team_run_api/work_list_since_returns_only_works_changed_after_cursor.rs"]
 mod work_list_since_returns_only_works_changed_after_cursor;
+
+#[path = "team_run_api/codex_quota_diagnostic_preserves_runtime_uncertainty.rs"]
+mod codex_quota_diagnostic_preserves_runtime_uncertainty;

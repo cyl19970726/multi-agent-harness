@@ -1136,3 +1136,127 @@ fn codex_c1_terminal_failure_settles_unsatisfied() {
     );
     harness_runtime_contract::assert_c1_terminal_failure_unsatisfied(&receipt).expect("C1");
 }
+
+#[test]
+fn quota_diagnostic_survives_unknown_idle_without_authorizing_another_turn() {
+    for idle in ["idle", "systemError"] {
+        let mut bridge = FakeBridge::completed("failed");
+        bridge.thread_status_after_terminal = idle;
+        bridge.frames.borrow_mut()[0].as_mut().unwrap()["params"]["turn"]["error"] =
+            serde_json::json!({"codexErrorInfo":"usageLimitExceeded","message":"not parsed"});
+        let mut adapter = CodexTeamRuntime::new(bridge);
+        let mut accepted = 0;
+        let result = TeamRuntimeAdapter::run_cycle(
+            &mut adapter,
+            "one input",
+            CycleTimeouts::with_input_acceptance(Duration::from_secs(1)),
+            &mut |_| {
+                accepted += 1;
+                Ok(())
+            },
+            &mut |_, _| Ok(()),
+            &mut |_| {},
+            &mut CycleControl::default,
+        );
+        assert_eq!(accepted, 1);
+        assert_eq!(adapter.bridge.starts, 1);
+        if idle == "idle" {
+            assert_eq!(
+                result.unwrap().provider_terminal_failure.unwrap().reason,
+                "usageLimitExceeded"
+            );
+            assert!(
+                adapter.take_cycle_terminal_failure().is_none(),
+                "Ok carries and drains its diagnostic"
+            );
+        } else {
+            assert!(result
+                .unwrap_err()
+                .to_string()
+                .contains("POSTCONDITION_UNKNOWN"));
+            assert!(!adapter.last_cycle_terminal, "quota is not an idle proof");
+            assert_eq!(
+                adapter.take_cycle_terminal_failure().unwrap().reason,
+                "usageLimitExceeded"
+            );
+            assert!(
+                adapter.take_cycle_terminal_failure().is_none(),
+                "diagnostic is consumed once"
+            );
+        }
+    }
+}
+
+#[test]
+fn failed_turn_diagnostic_requires_exact_accepted_turn_and_never_leaks() {
+    for boundary in [
+        "no_acceptance",
+        "wrong_turn",
+        "wrong_thread",
+        "missing_thread",
+        "next_cycle",
+    ] {
+        let mut bridge = FakeBridge::completed("failed");
+        bridge.thread_status_after_terminal = "systemError";
+        bridge.frames.borrow_mut()[0].as_mut().unwrap()["params"]["turn"]["error"] =
+            serde_json::json!({"codexErrorInfo":"usage_limit_exceeded"});
+        match boundary {
+            "no_acceptance" => bridge.start_error = Some("start refused".into()),
+            "wrong_turn" => {
+                bridge.frames.borrow_mut()[0].as_mut().unwrap()["params"]["turn"]["id"] =
+                    "other".into()
+            }
+            "wrong_thread" => {
+                bridge.frames.borrow_mut()[0].as_mut().unwrap()["params"]["threadId"] =
+                    "foreign".into()
+            }
+            "missing_thread" => {
+                bridge.frames.borrow_mut()[0].as_mut().unwrap()["params"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("threadId");
+            }
+            _ => {}
+        }
+        let mut adapter = CodexTeamRuntime::new(bridge);
+        let run = |adapter: &mut CodexTeamRuntime<'_, FakeBridge>| {
+            TeamRuntimeAdapter::run_cycle(
+                adapter,
+                "input",
+                CycleTimeouts::with_input_acceptance(Duration::from_secs(1)),
+                &mut |_| Ok(()),
+                &mut |_, _| Ok(()),
+                &mut |_| {},
+                &mut CycleControl::default,
+            )
+        };
+        assert!(run(&mut adapter).is_err(), "{boundary}");
+        assert_eq!(adapter.bridge.starts, 1, "no internal replay");
+        if boundary == "next_cycle" {
+            assert!(adapter.cycle_terminal_failure.is_some());
+            adapter.bridge.start_error = Some("next start refused".into());
+            assert!(run(&mut adapter).is_err());
+        }
+        assert!(
+            adapter.take_cycle_terminal_failure().is_none(),
+            "{boundary}"
+        );
+    }
+}
+
+#[test]
+fn terminal_failure_metadata_never_uses_prose_or_ambiguous_variants() {
+    for error in [
+        serde_json::json!({"message":"usage_limit_exceeded"}),
+        serde_json::json!({"message":"HTTP 429 quota"}),
+        serde_json::json!({"codexErrorInfo":{"usageLimitExceeded":{},"other":{}}}),
+    ] {
+        assert_eq!(
+            provider_terminal_failure(Some(&error)),
+            ProviderTerminalFailure {
+                reason: "turn_failed".into(),
+                http_status: None
+            }
+        );
+    }
+}

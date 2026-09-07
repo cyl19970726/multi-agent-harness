@@ -517,7 +517,7 @@ if [ "$1" = "app-server" ]; then
         if [ "$thread_status" = "active" ]; then
           printf '{"id":%s,"result":{"thread":{"id":"%s","status":{"type":"active"},"turns":[{"id":"%s","status":"inProgress","items":[]}]}}}\n' "$id" "$thread_id" "$turn_id"
         else
-          printf '{"id":%s,"result":{"thread":{"id":"%s","status":{"type":"idle"},"turns":[]}}}\n' "$id" "$thread_id"
+          printf '{"id":%s,"result":{"thread":{"id":"%s","status":{"type":"%s"},"turns":[]}}}\n' "$id" "$thread_id" "$thread_status"
         fi
         ;;
       *'"method":"thread/goal/get"'*)
@@ -558,6 +558,11 @@ if [ "$1" = "app-server" ]; then
           continue
         fi
         printf '{"method":"item/started","params":{"threadId":"%s","turnId":"%s","item":{"id":"command-app-1","type":"commandExecution","command":"cargo check","commandActions":[],"cwd":"/tmp","status":"inProgress"}}}\n' "$thread_id" "$turn_id"
+        if [ "${FAKE_CODEX_TERMINAL_QUOTA:-0}" = "1" ]; then
+          printf '{"method":"turn/completed","params":{"threadId":"%s","turn":{"id":"%s","status":"failed","error":{"codexErrorInfo":"usageLimitExceeded","message":"fixture quota"},"items":[]}}}\n' "$thread_id" "$turn_id"
+          thread_status="${FAKE_CODEX_FAILURE_THREAD_STATUS:-systemError}"
+          continue
+        fi
         if [ "${FAKE_CODEX_AUTO_COMPLETE:-0}" = "1" ] || { [ "${FAKE_CODEX_AUTO_COMPLETE_AFTER_STEER:-0}" = "1" ] && [ "$turn_seq" -gt "1" ]; }; then
           printf '{"method":"item/agentMessage/delta","params":{"threadId":"%s","turnId":"%s","itemId":"message-app-1","delta":"## RESULT\\ndone\\n## SUMMARY\\nexecuted approved plan\\n"}}\n' "$thread_id" "$turn_id"
           printf '{"method":"turn/completed","params":{"threadId":"%s","turn":{"id":"%s","status":"completed","items":[{"id":"message-app-1","type":"agentMessage","text":"## RESULT\\ndone\\n## SUMMARY\\nexecuted approved plan\\n"}]}}}\n' "$thread_id" "$turn_id"

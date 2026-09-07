@@ -92,6 +92,10 @@ impl<B: CodexAppServerBridge> rt::TeamRuntimeAdapter for CodexTeamRuntime<'_, B>
         .map_err(crate::codex_app_server::provider_error)
     }
 
+    fn take_cycle_terminal_failure(&mut self) -> Option<rt::ProviderTerminalFailure> {
+        rt::TeamRuntimeAdapter::take_cycle_terminal_failure(&mut self.0)
+    }
+
     fn native_control<'b>(
         close: &'b mut bool,
         interrupt: &'b mut bool,
