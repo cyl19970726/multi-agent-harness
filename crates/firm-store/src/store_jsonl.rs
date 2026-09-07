@@ -262,6 +262,15 @@ impl HarnessStore {
         timeout: Duration,
         poll_interval: Duration,
     ) -> StoreResult<StoreWriteLock> {
+        self.acquire_write_lock_cancellable(timeout, poll_interval, &|| false)
+    }
+
+    pub(super) fn acquire_write_lock_cancellable(
+        &self,
+        timeout: Duration,
+        poll_interval: Duration,
+        cancelled: &dyn Fn() -> bool,
+    ) -> StoreResult<StoreWriteLock> {
         let lock_path = self.root.join(".store.lock");
         let started = Instant::now();
         let deadline = started + timeout;
@@ -275,8 +284,14 @@ impl HarnessStore {
         };
         let process_write_permit = self
             .process_write_lock
-            .acquire(deadline)
-            .ok_or_else(&timeout_error)?;
+            .acquire_cancellable(deadline, cancelled)
+            .ok_or_else(|| {
+                if cancelled() {
+                    StoreError::Conflict("STORE_LOCK_CANCELLED".into())
+                } else {
+                    timeout_error()
+                }
+            })?;
         let file = OpenOptions::new()
             .create(true)
             .read(true)
@@ -284,6 +299,9 @@ impl HarnessStore {
             .write(true)
             .open(&lock_path)?;
         loop {
+            if cancelled() {
+                return Err(StoreError::Conflict("STORE_LOCK_CANCELLED".into()));
+            }
             match lock_file_exclusive(&file) {
                 Ok(()) => {
                     return Ok(StoreWriteLock {

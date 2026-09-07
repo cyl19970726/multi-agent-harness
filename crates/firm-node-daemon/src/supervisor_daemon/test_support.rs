@@ -250,6 +250,9 @@ impl TestDaemon {
     pub fn ensure_node_authority_bundle(&self) -> CliResult<HashSet<String>> {
         self.inner.ensure_node_authority_bundle()
     }
+    pub fn run_held_node_authorities(&self) -> CliResult<()> {
+        self.inner.run_held_node_authorities()
+    }
     pub fn refresh_held_node_authorities(&self) -> CliResult<()> {
         self.inner.refresh_held_node_authorities()
     }

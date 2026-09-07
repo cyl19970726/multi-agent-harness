@@ -424,22 +424,7 @@ impl MultiTeamDaemon {
                 Ok(())
             });
 
-            let authority_heartbeat = scope.spawn(|| -> CliResult<()> {
-                // Discovery may spend longer than one lease TTL inspecting
-                // unrelated historical Spaces. Keep already-acquired machine
-                // authority alive on an independent cadence so a slow scan
-                // cannot fence the AgentSessions currently being supervised.
-                while !self.authority_shutdown.load(Ordering::SeqCst) {
-                    self.refresh_held_node_authorities()?;
-                    let next_refresh = Instant::now() + self.next_node_authority_refresh_delay();
-                    while !self.authority_shutdown.load(Ordering::SeqCst)
-                        && Instant::now() < next_refresh
-                    {
-                        std::thread::sleep(CONTROL_POLL_INTERVAL);
-                    }
-                }
-                Ok(())
-            });
+            let authority_heartbeat = scope.spawn(|| self.run_held_node_authorities());
 
             while !self.stop_requested.load(Ordering::SeqCst)
                 && !scanner.is_finished()

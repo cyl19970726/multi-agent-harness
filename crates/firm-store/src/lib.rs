@@ -833,7 +833,11 @@ struct ProcessWriteLock {
 }
 
 impl ProcessWriteLock {
-    fn acquire(self: &Arc<Self>, deadline: Instant) -> Option<ProcessWritePermit> {
+    fn acquire_cancellable(
+        self: &Arc<Self>,
+        deadline: Instant,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Option<ProcessWritePermit> {
         let mut state = self
             .state
             .lock()
@@ -841,6 +845,12 @@ impl ProcessWriteLock {
         let ticket = state.next_ticket;
         state.next_ticket = state.next_ticket.checked_add(1)?;
         loop {
+            if cancelled() {
+                state.cancelled_tickets.insert(ticket);
+                advance_cancelled_process_write_tickets(&mut state);
+                self.available.notify_all();
+                return None;
+            }
             if state.serving_ticket == ticket {
                 return Some(ProcessWritePermit {
                     lock: Arc::clone(self),
@@ -856,7 +866,7 @@ impl ProcessWriteLock {
             }
             let (next, _) = self
                 .available
-                .wait_timeout(state, remaining)
+                .wait_timeout(state, remaining.min(Duration::from_millis(20)))
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
             state = next;
         }

@@ -606,6 +606,7 @@ if (!read(runtimeRecoveryCanonicalPath).includes("runtime_recovery_adapter::exec
 const authorityWriterTokens = [
   ".acquire_node_daemon_lease(",
   ".renew_node_daemon_lease(",
+  ".renew_node_daemon_lease_cancellable(",
   ".drain_node_daemon_lease(",
   ".release_node_daemon_lease(",
 ];
@@ -620,7 +621,11 @@ for (const path of productionRustPaths) {
   }
 }
 const machineAuthority = read(machineAuthorityPath);
-for (const token of authorityWriterTokens) {
+// Keep both renewal entry points confined to the authority owner, but require
+// the production owner to use the cancellable renewal operation.
+for (const token of authorityWriterTokens.filter(
+  (token) => token !== ".renew_node_daemon_lease(",
+)) {
   if (!machineAuthority.includes(token)) {
     failures.push(`${machineAuthorityPath}: missing authority operation ${token}`);
   }

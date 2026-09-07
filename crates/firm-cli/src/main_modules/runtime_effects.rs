@@ -1020,12 +1020,13 @@ impl TeamSupervisorRegistration {
                 &heartbeat_authority_gate,
                 || {
                     heartbeat_store
-                        .renew_team_supervisor_lease(
+                        .renew_team_supervisor_lease_cancellable(
                             &heartbeat_policy.team_run_id,
                             &heartbeat_policy.supervisor_id,
                             heartbeat_policy.generation,
                             current_unix_ms_u64(),
                             heartbeat_policy.ttl_ms,
+                            &|| heartbeat_stop_thread.load(Ordering::Acquire),
                         )
                         .map(|lease| lease.expires_unix_ms)
                 },
