@@ -97,6 +97,13 @@ Choose the claim mode deliberately: `host_assign` followed by canonical
 bounded Works over one epic — TeamRun completion atomically rejects
 non-terminal Works, so unbounded Works block teardown.
 
+A managed Host uses `"$FIRM_BIN" member work create|assign|accept` with its
+injected collaboration envelope, as shown in the shared contract. Assignment
+takes `--membership-id`; obtain it from the Team board, not a runtime ID.
+The `team-run` mutation examples below describe local operator entry points;
+do not use them to bypass the bound Host path or claim authenticated Member
+provenance.
+
 Works are flat peer nodes. Add a hard dependency only when the successor truly
 cannot execute before the prerequisite is accepted:
 
@@ -318,7 +325,13 @@ auto-completes your source Work.
 
 ## 6. Recover instead of restarting
 
-A dead member runtime is not lost work. The lifecycle controls:
+A dead member runtime is not lost work. These are **local operator** lifecycle
+controls. They do not authenticate the calling process as the managed Host.
+The bound `member runtime` CLI currently exposes `interrupt`, not Close or
+Reopen; report a need for those operations to the operator rather than
+manufacturing credentials or sending a coordination-only action as a provider
+Close. A planned operator Close/Reopen can prove same-native-session recovery,
+but must be attributed to the operator in dogfood evidence.
 
 ```bash
 firm team-run interrupt-member --id <run> --member-run-id <id> --reason <text>   # stop one turn

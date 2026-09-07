@@ -375,6 +375,8 @@ pub(super) fn print_help() {
                    [--timeout-s <n>] [--fail-on-unavailable] [--fail-on-review] [--json]
   member inbox [--all] [--json]
   member work create|assign|claim|start|block|resume|release|submit|accept --expected-version <n> ...
+  member work assign --work-id <id> --expected-version <n> --membership-id <team-membership-id>
+      Authenticated managed Host assignment targets stable TeamMembership, not MemberRun.
   member runtime interrupt [--member-run-id <target>] --expected-version <n> --reason <text>
   [--project <id|path>] provider admit --provider <name> --execution-mode <mode> --provider-version <version>
                  --adapter-contract-version <version> --evidence <ref>
