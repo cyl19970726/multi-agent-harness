@@ -423,6 +423,11 @@ Live `firm daemon status` exposes `lease_renewals` as volatile diagnostics.
 `attempt_elapsed_ms` measures the whole latest renewal attempt; a retained
 `last_error` includes `lock_wait_ms` for the actual failed lock wait. These
 observations are not durable lease authority and do not authorize execution.
+An in-progress FIFO lock wait can span more than one former 250ms retry window;
+its completed attempt records the full wait without manufacturing timeout
+failures. It remains bounded by the confirmed lease expiry and is cancellable
+when authority shutdown begins. Lease TTLs and expired-generation refusal are
+unchanged.
 
 If the NodeDaemon loses its machine authority and self-stops, it records the
 loss on every TeamRun it was serving through the ordinary TeamRun event log.

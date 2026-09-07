@@ -174,11 +174,16 @@ fn default_leases_survive_ten_second_writer_contention_without_extending_ttl() {
         .iter()
         .find(|v| v["id"] == fixture.run_id)
         .unwrap();
-    assert!(supervisor_diagnostic["failure_count"].as_u64().unwrap() > 3);
-    assert!(supervisor_diagnostic["last_error"]
-        .as_str()
-        .unwrap()
-        .contains("lock_wait_ms="));
+    // The same admitted FIFO wait succeeds after the holder releases. It
+    // must no longer manufacture repeated timeout failures during that wait.
+    assert_eq!(supervisor_diagnostic["failure_count"].as_u64(), Some(0));
+    assert!(
+        supervisor_diagnostic["attempt_elapsed_ms"]
+            .as_u64()
+            .unwrap()
+            >= 9_000
+    );
+    assert!(supervisor_diagnostic["last_error"].is_null());
 }
 
 #[test]
@@ -321,20 +326,33 @@ fn contended_space_does_not_delay_healthy_space_to_expiry() {
         )
         .unwrap();
     daemon.ensure_node_authority(&space, &healthy).unwrap();
+    let initial_healthy = healthy
+        .latest_node_daemon_lease(daemon.node_id())
+        .unwrap()
+        .unwrap();
     let lock = fixture.store.acquire_exclusive_migration_guard().unwrap();
-    std::thread::scope(|scope| {
+    let (midpoint, result) = std::thread::scope(|scope| {
+        let heartbeat = scope.spawn(|| daemon.run_held_node_authorities());
         let holder = scope.spawn(move || {
-            std::thread::sleep(Duration::from_millis(1_000));
+            std::thread::sleep(Duration::from_millis(2_000));
             drop(lock);
         });
-        for _ in 0..4 {
-            daemon
-                .refresh_held_node_authorities()
-                .expect("healthy B cannot be starved by A's retry");
-            std::thread::sleep(daemon.next_node_authority_refresh_delay());
-        }
+        // A remains held beyond B's entire TTL. The production worker for B
+        // must complete multiple renewals while A retains its FIFO position.
+        std::thread::sleep(Duration::from_millis(1_400));
+        let midpoint = healthy
+            .latest_node_daemon_lease(daemon.node_id())
+            .unwrap()
+            .unwrap();
         holder.join().unwrap();
+        daemon
+            .authority_shutdown_flag()
+            .store(true, Ordering::SeqCst);
+        (midpoint, heartbeat.join().unwrap())
     });
+    result.unwrap();
+    assert!(midpoint.renewed_unix_ms >= initial_healthy.renewed_unix_ms + 600);
+    assert!(midpoint.expires_unix_ms > initial_healthy.expires_unix_ms);
     assert!(!daemon.authority_lost());
     for store in [&fixture.store, &healthy] {
         assert!(

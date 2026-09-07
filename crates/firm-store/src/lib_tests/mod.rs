@@ -15,6 +15,7 @@ use firm_core::{
 use super::*;
 
 mod fixtures;
+mod lease_renewal_fairness;
 use fixtures::*;
 mod work_execution_fixture;
 use work_execution_fixture::{

@@ -340,6 +340,30 @@ impl HarnessStore {
         now_unix_ms: u64,
         ttl_ms: u64,
     ) -> StoreResult<NodeDaemonLease> {
+        self.renew_node_daemon_lease_cancellable(
+            node_id,
+            daemon_id,
+            generation,
+            instance_id,
+            now_unix_ms,
+            ttl_ms,
+            &|| false,
+        )
+    }
+
+    /// Keep one FIFO position until the confirmed expiry or explicit shutdown.
+    /// The caller's cancellation never grants renewal or changes the lease fence.
+    #[allow(clippy::too_many_arguments)]
+    pub fn renew_node_daemon_lease_cancellable(
+        &self,
+        node_id: &str,
+        daemon_id: &str,
+        generation: u64,
+        instance_id: &str,
+        now_unix_ms: u64,
+        ttl_ms: u64,
+        cancelled: &dyn Fn() -> bool,
+    ) -> StoreResult<NodeDaemonLease> {
         let started = Instant::now();
         self.init()?;
         // The pre-read only budgets waiting. Ownership is checked again under
@@ -351,8 +375,11 @@ impl HarnessStore {
         let elapsed_ms = || started.elapsed().as_millis().min(u64::MAX as u128) as u64;
         let renewal_now = || now_unix_ms.saturating_add(elapsed_ms());
         let remaining = observed_expiry.saturating_sub(now_unix_ms.saturating_add(elapsed_ms()));
-        let budget = Duration::from_millis((remaining / 4).min(250));
-        let _lock = self.acquire_write_lock_with_policy(budget, Duration::from_millis(2))?;
+        // Short retry deadlines cancel FIFO tickets and can starve a logical
+        // heartbeat behind a continuous stream of otherwise finite writers.
+        let budget = Duration::from_millis(remaining);
+        let _lock =
+            self.acquire_write_lock_cancellable(budget, Duration::from_millis(2), cancelled)?;
         let mut lease = latest_by_id(
             self.read_jsonl::<NodeDaemonLease>("node_daemon_leases.jsonl")?,
             |lease| lease.node_id.clone(),
@@ -597,6 +624,27 @@ impl HarnessStore {
         now_unix_ms: u64,
         ttl_ms: u64,
     ) -> StoreResult<TeamSupervisorLease> {
+        self.renew_team_supervisor_lease_cancellable(
+            team_run_id,
+            supervisor_id,
+            generation,
+            now_unix_ms,
+            ttl_ms,
+            &|| false,
+        )
+    }
+
+    /// Keep one FIFO position until the confirmed expiry or explicit shutdown.
+    /// The caller's cancellation never grants renewal or changes the lease fence.
+    pub fn renew_team_supervisor_lease_cancellable(
+        &self,
+        team_run_id: &str,
+        supervisor_id: &str,
+        generation: u64,
+        now_unix_ms: u64,
+        ttl_ms: u64,
+        cancelled: &dyn Fn() -> bool,
+    ) -> StoreResult<TeamSupervisorLease> {
         let started = Instant::now();
         self.init()?;
         // The pre-read only budgets waiting. Ownership is checked again under
@@ -608,8 +656,11 @@ impl HarnessStore {
         let elapsed_ms = || started.elapsed().as_millis().min(u64::MAX as u128) as u64;
         let renewal_now = || now_unix_ms.saturating_add(elapsed_ms());
         let remaining = observed_expiry.saturating_sub(now_unix_ms.saturating_add(elapsed_ms()));
-        let budget = Duration::from_millis((remaining / 4).min(250));
-        let _lock = self.acquire_write_lock_with_policy(budget, Duration::from_millis(2))?;
+        // Short retry deadlines cancel FIFO tickets and can starve a logical
+        // heartbeat behind a continuous stream of otherwise finite writers.
+        let budget = Duration::from_millis(remaining);
+        let _lock =
+            self.acquire_write_lock_cancellable(budget, Duration::from_millis(2), cancelled)?;
         let mut lease = self
             .latest_lease_for_run_unlocked(team_run_id)?
             .ok_or_else(|| {

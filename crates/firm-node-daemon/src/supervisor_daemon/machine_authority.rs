@@ -286,6 +286,7 @@ impl MultiTeamDaemon {
 
     /// Never add a full scan interval after a slow round when a confirmed
     /// lease has less time left. This is a retry schedule, not drive authority.
+    #[cfg(any(test, feature = "test-support"))]
     pub(super) fn next_node_authority_refresh_delay(&self) -> Duration {
         let now = current_unix_ms_u64();
         self.confirmed_node_leases
@@ -303,6 +304,7 @@ impl MultiTeamDaemon {
     /// Renew only authority already owned by this exact daemon instance.
     /// Discovery remains responsible for first acquisition; this heartbeat is
     /// deliberately unable to steal or create authority in an unscanned Space.
+    #[cfg(any(test, feature = "test-support"))]
     pub(super) fn refresh_held_node_authorities(&self) -> CliResult<()> {
         self.require_machine_authority_open()?;
         // Inventory and ordinary business reads cannot delay the heartbeat.
@@ -335,6 +337,101 @@ impl MultiTeamDaemon {
         }
     }
 
+    /// One lifecycle-owned worker per held Space. A long FIFO wait in one
+    /// Space cannot prevent another Space's next renewal. Discovery remains
+    /// the only authority acquirer; all workers are joined on shutdown.
+    pub(super) fn run_held_node_authorities(&self) -> CliResult<()> {
+        self.require_machine_authority_open()?;
+        std::thread::scope(|scope| {
+            let mut workers = HashMap::new();
+            while !self.authority_shutdown.load(Ordering::SeqCst) {
+                let held = self
+                    .confirmed_node_leases
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .keys()
+                    .cloned()
+                    .collect::<Vec<_>>();
+                for space in held {
+                    workers.entry(space.clone()).or_insert_with(|| {
+                        scope.spawn(move || self.run_space_node_authority(&space))
+                    });
+                }
+                let finished = workers
+                    .iter()
+                    .filter(|(_, worker)| worker.is_finished())
+                    .map(|(space, _)| space.clone())
+                    .collect::<Vec<_>>();
+                for space in finished {
+                    let failure = match workers.remove(&space).unwrap().join() {
+                        Ok(Ok(())) => None,
+                        Ok(Err(error)) => Some(error),
+                        Err(_) => Some(format!("{space}: authority worker panicked")),
+                    };
+                    if let Some(failure) = failure {
+                        // Publish existing Stop/admission fencing before
+                        // scope joins the other workers. The serve loop
+                        // then drains and sets authority_shutdown normally.
+                        return Err(self.latch_machine_authority_loss(&[failure]));
+                    }
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            let failures = workers
+                .into_values()
+                .filter_map(|worker| match worker.join() {
+                    Ok(Ok(())) => None,
+                    Ok(Err(error)) => Some(error),
+                    Err(_) => Some("authority worker panicked during shutdown".into()),
+                })
+                .collect::<Vec<_>>();
+            if failures.is_empty() {
+                Ok(())
+            } else {
+                // Cancellation returns Ok in the worker. A failure already
+                // established before shutdown must not disappear at join.
+                Err(self.latch_machine_authority_loss(&failures))
+            }
+        })
+    }
+
+    fn run_space_node_authority(&self, space: &str) -> Result<(), String> {
+        while !self.authority_shutdown.load(Ordering::SeqCst) {
+            let held = self
+                .confirmed_node_leases
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .get(space)
+                .cloned();
+            let Some((store, lease)) = held else {
+                return Ok(());
+            };
+            self.renew_held_node_lease(space, &store, lease)?;
+            let next = self
+                .confirmed_node_leases
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .get(space)
+                .map(|(_, lease)| {
+                    Duration::from_millis(
+                        (lease.expires_unix_ms.saturating_sub(current_unix_ms_u64()) / 4).max(1),
+                    )
+                    .min(node_authority_refresh_interval(self.scan_interval))
+                });
+            let Some(delay) = next else {
+                return Ok(());
+            };
+            let deadline = Instant::now() + delay;
+            while !self.authority_shutdown.load(Ordering::SeqCst) && Instant::now() < deadline {
+                std::thread::sleep(
+                    Duration::from_millis(20)
+                        .min(deadline.saturating_duration_since(Instant::now())),
+                );
+            }
+        }
+        Ok(())
+    }
+
     pub(super) fn remember_node_lease(
         &self,
         space: &str,
@@ -364,8 +461,8 @@ impl MultiTeamDaemon {
             return Ok(());
         }
         let expires = confirmed.expires_unix_ms;
-        // Exactly one bounded attempt per Space per round. Retrying here for
-        // an entire TTL would make the join starve every healthy Space.
+        // One FIFO admission bounded by this exact lease's remaining life.
+        // Each Space has its own worker, so other Spaces keep renewing.
         let started = Instant::now();
         let result = store
                 .latest_node_daemon_lease(&self.node_id)
@@ -393,13 +490,14 @@ impl MultiTeamDaemon {
                         return Ok(None);
                     }
                     store
-                        .renew_node_daemon_lease(
+                        .renew_node_daemon_lease_cancellable(
                             &self.node_id,
                             &confirmed.daemon_id,
                             confirmed.generation,
                             &confirmed.instance_id,
                             current_unix_ms_u64(),
                             self.node_lease_ttl_ms(),
+                            &|| self.authority_shutdown.load(Ordering::SeqCst),
                         )
                         .map(Some)
                 });

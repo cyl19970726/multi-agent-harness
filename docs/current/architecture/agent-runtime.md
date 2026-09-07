@@ -13,7 +13,13 @@ transcripts. One machine-scoped NodeDaemon owns every local AgentSession,
 provider process/thread, provider delivery, and runtime-control effect across
 the machine's registered Execution Spaces.
 
-Lease renewal is independent of Execution Space discovery, but authority is
+Lease renewal is independent of Execution Space discovery. Each held Space
+has one lifecycle-owned heartbeat worker, so waiting for one Space's Store
+lock does not delay another Space's next renewal. A logical renewal retains
+one FIFO position until its confirmed lease deadline or explicit shutdown;
+short cancellation checks do not discard and re-enqueue that position. The
+Store still checks exact ownership and expiry after acquiring the lock, and
+all workers are joined during daemon shutdown. Authority remains
 process-local and machine-wide. Before any Team may admit a provider effect,
 the NodeDaemon acquires and revalidates the complete set of per-Space leases
 for every registered Space owned by that Node. A failure in any member of this

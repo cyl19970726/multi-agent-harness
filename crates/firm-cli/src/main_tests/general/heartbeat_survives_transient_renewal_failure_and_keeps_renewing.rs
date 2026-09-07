@@ -122,3 +122,33 @@ fn heartbeat_survives_transient_renewal_failure_and_keeps_renewing() {
     std::fs::remove_dir_all(root).expect("cleanup");
     let _ = fs::remove_file(&marker);
 }
+
+#[test]
+fn heartbeat_shutdown_cancellation_does_not_report_lost_authority() {
+    let stop = AtomicBool::new(false);
+    let valid = AtomicBool::new(true);
+    let gate = Mutex::new(());
+    let policy = SupervisorHeartbeatPolicy {
+        team_run_id: generated_id("cancelled-heartbeat"),
+        supervisor_id: "supervisor-cancelled".into(),
+        generation: 1,
+        ttl_ms: 15_000,
+        heartbeat_interval_ms: 1,
+        initial_expires_unix_ms: current_unix_ms_u64() + 15_000,
+    };
+    run_supervisor_heartbeat_loop(
+        &policy,
+        &stop,
+        &valid,
+        &gate,
+        || {
+            stop.store(true, Ordering::Release);
+            Err(StoreError::Conflict("STORE_LOCK_CANCELLED".into()))
+        },
+        || None,
+    );
+    assert!(valid.load(Ordering::Acquire));
+    assert!(!crate::lease_renewal_diagnostics::snapshot()
+        .iter()
+        .any(|row| row["id"] == policy.team_run_id));
+}

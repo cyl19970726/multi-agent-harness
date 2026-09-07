@@ -82,6 +82,11 @@ pub(super) fn run_supervisor_heartbeat_loop(
                 failures = 0;
             }
             Err(error) => {
+                if heartbeat_stop.load(Ordering::Acquire)
+                    && matches!(&error, StoreError::Conflict(code) if code == "STORE_LOCK_CANCELLED")
+                {
+                    break;
+                }
                 failures += 1;
                 let reason = error.to_string();
                 crate::lease_renewal_diagnostics::record(
