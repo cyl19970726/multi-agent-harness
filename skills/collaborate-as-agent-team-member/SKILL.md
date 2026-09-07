@@ -279,7 +279,26 @@ first action of a run:
   turn, claim/start, plan-first, converse through the CLI, block honestly,
   submit with evidence, survive restart.
 
-The gate-checked command shapes both roles share:
+Managed Hosts and Members use the Supervisor-bound `member work` commands
+for authenticated Work mutations. The target of assignment is a stable
+TeamMembership, never a MemberRun:
+
+```bash
+"$FIRM_BIN" member work create --work-id <work-id> --expected-version 0 \
+  --title "<one bounded responsibility>" --context "<scope>" \
+  --completion-criteria "<observable criteria>" --claim-mode host_assign
+"$FIRM_BIN" member work assign --work-id <work-id> \
+  --expected-version <created-version> --membership-id <team-membership-id>
+"$FIRM_BIN" member work accept --work-id <work-id> --expected-version <submitted-version>
+```
+
+Keep the injected collaboration envelope intact: the Supervisor authenticates
+the sender and reconstructs authority. These commands do not grant an ordinary
+Member the Host's assignment rights. A missing bound command is not permission
+to fall back to a local operator mutation and call it authenticated Host work.
+
+The following `team-run` mutation examples are local operator command shapes,
+not evidence of a managed Host's authenticated actions:
 
 ```bash
 # Host creates a Work that only explicit membership assignment may claim:

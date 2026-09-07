@@ -136,3 +136,6 @@ mod cold_completed_member_close;
 
 #[path = "../general/running_idle_scan_cost.rs"]
 mod running_idle_scan_cost;
+
+#[path = "../general/managed_host_assign_uses_membership.rs"]
+mod managed_host_assign_uses_membership;

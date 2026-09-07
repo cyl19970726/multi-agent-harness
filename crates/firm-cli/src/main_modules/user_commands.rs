@@ -952,6 +952,19 @@ pub(super) fn bound_member_message_command(store: &HarnessStore, args: &[String]
     )
 }
 
+pub(super) fn bound_member_work_assignment_intent(args: &[String]) -> CliResult<serde_json::Value> {
+    if has_flag(args, "--member-run-id") {
+        return Err(CliError::Usage(
+            "member work assign targets a TeamMembership: use --membership-id from the Team board, not --member-run-id"
+                .into(),
+        ));
+    }
+    Ok(serde_json::json!({
+        "action": "assign_work",
+        "membership_id": required(args, "--membership-id")?,
+    }))
+}
+
 pub(super) fn bound_member_work_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
     require_subcommand(
         args,
@@ -982,13 +995,7 @@ pub(super) fn bound_member_work_command(store: &HarnessStore, args: &[String]) -
     }
     let work_id = required(args, "--work-id")?;
     let (operation, intent) = match args[0].as_str() {
-        "assign" => (
-            "assign",
-            serde_json::json!({
-                "action": "assign_work",
-                "member_run_id": required(args, "--member-run-id")?,
-            }),
-        ),
+        "assign" => ("assign", bound_member_work_assignment_intent(args)?),
         "claim" => ("claim", serde_json::json!({"action": "claim_work"})),
         "start" => ("start", serde_json::json!({"action": "start_work"})),
         "block" => (
