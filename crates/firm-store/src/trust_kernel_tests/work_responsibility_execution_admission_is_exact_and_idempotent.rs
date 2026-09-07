@@ -23,21 +23,24 @@ fn rewrite_work_active_member_run(
     std::fs::write(path, format!("{rewritten}\n")).unwrap();
 }
 
+fn next_write_ticket(store: &HarnessStore) -> u64 {
+    store
+        .process_write_lock
+        .state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .next_ticket
+}
+
 fn wait_for_write_ticket(store: &HarnessStore, expected_next_ticket: u64) {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
     loop {
-        let next_ticket = store
-            .process_write_lock
-            .state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .next_ticket;
-        if next_ticket >= expected_next_ticket {
+        if next_write_ticket(store) >= expected_next_ticket {
             return;
         }
         assert!(
             std::time::Instant::now() < deadline,
-            "writer did not enter the Store FIFO queue"
+            "writer did not enter the Store FIFO queue (waiting for next_ticket >= {expected_next_ticket})"
         );
         std::thread::yield_now();
     }
