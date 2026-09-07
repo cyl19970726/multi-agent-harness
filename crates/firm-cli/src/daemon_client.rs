@@ -105,25 +105,7 @@ pub(crate) fn try_delegate_to_node_daemon(
 
 /// Send a status request to the machine NodeDaemon.
 pub(crate) fn daemon_status_via_socket(firm_home: &Path, node_id: &str) -> Option<String> {
-    let socket_path = node_daemon_socket_path(firm_home, node_id);
-    let mut stream = UnixStream::connect(&socket_path).ok()?;
-    stream.set_read_timeout(Some(Duration::from_secs(5))).ok()?;
-    stream
-        .set_write_timeout(Some(Duration::from_secs(5)))
-        .ok()?;
-
-    let cmd = r#"{"cmd":"status"}"#;
-    writeln!(stream, "{cmd}").ok()?;
-    stream.flush().ok()?;
-
-    let mut buf = String::new();
-    let mut reader = std::io::BufReader::new(&mut stream);
-    reader.read_line(&mut buf).ok()?;
-    let response = buf.trim().to_string();
-    if response.is_empty() {
-        return None;
-    }
-    Some(response)
+    daemon_status_via_socket_bounded(firm_home, node_id, Duration::from_secs(5))
 }
 
 /// Wait for one fd readiness event, with the wait always computed from the
@@ -252,10 +234,11 @@ pub(crate) fn control_socket_request_line_bounded(
         match stream.read(&mut chunk) {
             Ok(0) => return None,
             Ok(n) => {
-                response.extend_from_slice(&chunk[..n]);
-                if chunk[..n].contains(&b'\n') {
+                if let Some(end) = chunk[..n].iter().position(|byte| *byte == b'\n') {
+                    response.extend_from_slice(&chunk[..=end]);
                     break;
                 }
+                response.extend_from_slice(&chunk[..n]);
             }
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => continue,
             Err(_) => return None,

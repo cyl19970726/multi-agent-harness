@@ -729,6 +729,7 @@ where
         }
         _ => {}
     }
+    let mut close_observation = None;
     if let LiveMemberControlRequest::Close {
         reason,
         requested_by,
@@ -743,7 +744,28 @@ where
         before_close_latch
             .take()
             .expect("Close admission hook is called once")();
-        latch_member_close_for_supervisor(
+        let member = latest_member_runs_in_append_order(store)?
+            .into_iter()
+            .find(|member| member.id == member_run_id)
+            .ok_or_else(|| CliError::Usage(format!("member run not found: {member_run_id}")))?;
+        let execution_space_id = team_run_execution_space_id(store, &run)?;
+        let session = store
+            .fabric_agent_sessions(&execution_space_id)?
+            .into_iter()
+            .find(|session| session.id == control.collaboration_binding.agent_session_id)
+            .ok_or_else(|| CliError::Usage("Close AgentSession binding not found".into()))?;
+        let admitted = &control.collaboration_binding;
+        if member.runtime_generation != admitted.member_run_generation
+            || session.runtime_generation != admitted.agent_session_generation
+            || session.agent_member_id != member.agent_member_id
+            || session.node_daemon_id != admitted.node_daemon_id
+            || session.node_daemon_generation != admitted.node_daemon_generation
+        {
+            return Err(CliError::RuntimeRecoveryRequired(
+                "Close live binding no longer matches its original generation".into(),
+            ));
+        }
+        let close = latch_member_close_for_supervisor(
             store,
             &team_run_id,
             &member_run_id,
@@ -752,6 +774,12 @@ where
             supervisor_id,
             generation,
         )?;
+        close_observation = Some(CloseResponseObservation {
+            close_id: close.id,
+            member,
+            session,
+            execution_space_id,
+        });
         drop(authority_guard);
         // The pending latch freezes new delivery in the provider loop. Do not
         // project Closed/Stopped before the provider-neutral close_runtime
@@ -807,10 +835,8 @@ where
         }
     };
     if control.sender.send(command).is_err() {
-        if is_close {
-            return Err(CliError::RuntimeRecoveryRequired(format!(
-                "Close for {member_run_id} is durably latched but the owning live adapter channel ended before a provider Close receipt"
-            )));
+        if let Some(observation) = &close_observation {
+            return reconcile_close_response(store, observation, true);
         }
         return Err(CliError::Usage(format!(
             "member {member_run_id} provider session already ended"
@@ -831,20 +857,168 @@ where
             &reason,
         )?;
     }
-    // An idle provider loop may be at its longest wake backoff when Close
-    // arrives. Fifteen seconds was the exact observed boundary for a real
-    // Kimi ACP release, yielding a false recovery response milliseconds before
-    // the durable close acknowledgement. Keep the wait bounded while allowing
-    // one complete idle poll plus quiesce/release receipts.
-    match reply_rx.recv_timeout(Duration::from_secs(30)) {
+    await_live_control_reply(
+        store,
+        close_observation.as_ref(),
+        reply_rx,
+        Duration::from_secs(30),
+    )
+}
+
+pub(super) fn await_live_control_reply(
+    store: &HarnessStore,
+    close_observation: Option<&CloseResponseObservation>,
+    reply_rx: std::sync::mpsc::Receiver<CliResult<serde_json::Value>>,
+    wait: Duration,
+) -> CliResult<serde_json::Value> {
+    // Bound the channel wait, not provider completion. A timeout never proves
+    // an unknown effect: observe the same durable request without resending it.
+    match reply_rx.recv_timeout(wait) {
         Ok(result) => result,
-        Err(_) if is_close => Err(CliError::RuntimeRecoveryRequired(format!(
-            "Close for {member_run_id} is durably latched but provider acknowledgement is uncertain"
-        ))),
+        Err(error) if close_observation.is_some() => reconcile_close_response(
+            store,
+            close_observation.expect("Close observation"),
+            matches!(error, std::sync::mpsc::RecvTimeoutError::Disconnected),
+        ),
         Err(_) => Err(CliError::Usage(
             "provider control acknowledgement timed out".to_string(),
         )),
     }
+}
+
+/// Local response correlation only; never persisted or used to authorize an effect.
+pub(super) struct CloseResponseObservation {
+    pub(super) close_id: String,
+    pub(super) member: ProviderRuntimeProjection,
+    pub(super) session: harness_core::agentfirm_api::AgentSession,
+    pub(super) execution_space_id: String,
+}
+
+pub(super) fn reconcile_close_response(
+    store: &HarnessStore,
+    observation: &CloseResponseObservation,
+    channel_ended: bool,
+) -> CliResult<serde_json::Value> {
+    reconcile_close_response_with_hook(store, observation, channel_ended, || {})
+}
+
+pub(super) fn reconcile_close_response_with_hook(
+    store: &HarnessStore,
+    observation: &CloseResponseObservation,
+    channel_ended: bool,
+    before_terminal_read: impl FnOnce(),
+) -> CliResult<serde_json::Value> {
+    use harness_core::agentfirm_api::{
+        RuntimeCommandKind, RuntimeCommandPhase, RuntimeEffectCertainty, RuntimePostconditionStatus,
+    };
+    let member = &observation.member;
+    let uncertain = |detail: &str| {
+        CliError::RuntimeRecoveryRequired(format!(
+            "Close {} for {}: {detail}; inspect the same request before any retry",
+            observation.close_id, member.id,
+        ))
+    };
+    let close = store
+        .latest_team_member_close_request(&member.id)?
+        .filter(|close| close.id == observation.close_id && close.team_run_id == member.team_run_id)
+        .ok_or_else(|| uncertain("durable request was replaced or is unavailable"))?;
+    let latest = latest_member_runs_in_append_order(store)?
+        .into_iter()
+        .find(|candidate| candidate.id == member.id)
+        .ok_or_else(|| uncertain("MemberRun is unavailable"))?;
+    let session = store
+        .fabric_agent_sessions(&observation.execution_space_id)?
+        .into_iter()
+        .find(|session| session.id == observation.session.id)
+        .ok_or_else(|| uncertain("AgentSession is unavailable"))?;
+    let binding = runtime_command_binding_for_session(&observation.session);
+    if !member_runtime_progress_matches(member, member, &latest, false)
+        || runtime_command_binding_for_session(&session) != binding
+        || session.node_id != observation.session.node_id
+        || session.node_daemon_id != observation.session.node_daemon_id
+        || session.node_daemon_generation != observation.session.node_daemon_generation
+    {
+        return Err(uncertain(
+            "original MemberRun/AgentSession generation or binding changed",
+        ));
+    }
+    before_terminal_read();
+    if close.status == TeamMemberCloseStatus::Applied
+        && managed_member_runtime_close_is_settled_for_observation(
+            store,
+            member,
+            Some(observation),
+        )?
+        && store
+            .latest_team_member_close_request(&member.id)?
+            .is_some_and(|latest| latest.id == close.id)
+    {
+        return Ok(serde_json::json!({
+            "member_run_id": member.id, "status": "closed",
+            "close_request_id": close.id,
+            "provider_ack": "member_runtime_close_applied",
+            "reconciled_from": "exact_durable_close_postcondition",
+        }));
+    }
+    let sources = [
+        format!("{}:idle:close-runtime", close.id),
+        format!("{}:active:close-runtime", close.id),
+        format!("{}:active:interrupt", close.id),
+    ];
+    let mut expected_binding = binding;
+    expected_binding.target_member_run_id = Some(member.id.clone());
+    expected_binding.target_member_run_generation = Some(member.runtime_generation);
+    for command in store.runtime_commands(&observation.execution_space_id)? {
+        if !command
+            .source_record_id
+            .as_ref()
+            .is_some_and(|source| sources.contains(source))
+        {
+            continue;
+        }
+        let expected_kind = if command.source_record_id.as_deref() == Some(sources[2].as_str()) {
+            RuntimeCommandKind::InterruptCurrentCycle
+        } else {
+            RuntimeCommandKind::CloseMember
+        };
+        if command.binding != expected_binding
+            || command.command != expected_kind
+            || command.postcondition != runtime_command_postcondition_for(expected_kind)
+            || matches!(
+                command.phase,
+                RuntimeCommandPhase::Unknown
+                    | RuntimeCommandPhase::RecoveryRequired
+                    | RuntimeCommandPhase::Rejected
+            )
+            || command.effect_certainty == RuntimeEffectCertainty::Unknown
+            || (command.phase == RuntimeCommandPhase::Settled
+                && (command.effect_certainty != RuntimeEffectCertainty::Applied
+                    || command.postcondition_status != RuntimePostconditionStatus::Satisfied))
+        {
+            return Err(uncertain(
+                "durable RuntimeCommand does not prove safe pending progress",
+            ));
+        }
+    }
+    if close.status != TeamMemberCloseStatus::Pending
+        || channel_ended
+        || matches!(
+            session.lifecycle,
+            harness_core::agentfirm_api::AgentSessionStatus::RecoveryRequired
+                | harness_core::agentfirm_api::AgentSessionStatus::Closed
+        )
+        || session.control_state.runtime_residency
+            == harness_core::agentfirm_api::RuntimeResidency::Unknown
+        || session.control_state.activity == harness_core::agentfirm_api::RuntimeActivity::Unknown
+    {
+        return Err(uncertain(
+            "reply channel ended, Session needs recovery, or applied latch lacks exact terminal evidence",
+        ));
+    }
+    Err(CliError::Usage(format!(
+        "CLOSE_PENDING: Close {} for {} remains durably pending after the response wait; this is not completion or proof of an unknown provider effect; inspect this same request without resending Close",
+        close.id, member.id,
+    )))
 }
 
 pub(super) fn handle_live_member_control_connection(
@@ -1005,19 +1179,28 @@ pub(super) fn managed_member_runtime_close_is_settled(
     store: &HarnessStore,
     member: &ProviderRuntimeProjection,
 ) -> CliResult<bool> {
+    managed_member_runtime_close_is_settled_for_observation(store, member, None)
+}
+
+fn managed_member_runtime_close_is_settled_for_observation(
+    store: &HarnessStore,
+    member: &ProviderRuntimeProjection,
+    observation: Option<&CloseResponseObservation>,
+) -> CliResult<bool> {
     use harness_core::agentfirm_api::{
         AgentSessionStatus, RuntimeActivity, RuntimeCommandKind, RuntimeCommandPhase,
         RuntimeDriverRef, RuntimeEffectCertainty, RuntimePostconditionStatus, RuntimeResidency,
     };
     if member.is_external_interactive() {
-        return Ok(true);
+        return Ok(observation.is_none());
     }
     let required_interrupt = member.status == MemberRunStatus::Running;
     let latest_member = latest_member_runs_in_append_order(store)?
         .into_iter()
         .find(|candidate| candidate.id == member.id)
         .ok_or_else(|| CliError::Usage(format!("member run not found: {}", member.id)))?;
-    if member.native_session.is_none()
+    if observation.is_none()
+        && member.native_session.is_none()
         && matches!(
             member.status,
             MemberRunStatus::Completed | MemberRunStatus::Failed | MemberRunStatus::Stopped
@@ -1037,6 +1220,9 @@ pub(super) fn managed_member_runtime_close_is_settled(
     else {
         return Ok(false);
     };
+    if observation.is_some_and(|expected| expected.close_id != close_request.id) {
+        return Ok(false);
+    }
     let run = latest_team_run(store, &member.team_run_id)?;
     let execution_space_id = team_run_execution_space_id(store, &run)?;
     let sessions = store
@@ -1050,6 +1236,18 @@ pub(super) fn managed_member_runtime_close_is_settled(
     let [session] = sessions.as_slice() else {
         return Ok(false);
     };
+    // Reconciliation binds THIS read and its command proof to the originally
+    // admitted Session, never to a newer binding observed after the first read.
+    if observation.is_some_and(|expected| {
+        expected.execution_space_id != execution_space_id
+            || expected.session.node_id != session.node_id
+            || expected.session.node_daemon_id != session.node_daemon_id
+            || expected.session.node_daemon_generation != session.node_daemon_generation
+            || runtime_command_binding_for_session(&expected.session)
+                != runtime_command_binding_for_session(session)
+    }) {
+        return Ok(false);
+    }
     // Team Close is reversible and never stops the machine-owned
     // AgentSession. Its exact postcondition is a detached idle Session plus a
     // settled CloseMember command; StopSession belongs only to Node/operator
