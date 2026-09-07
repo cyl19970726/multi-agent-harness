@@ -850,6 +850,11 @@ fn member_run_cutover_linearizes_before_stale_execution_admission() {
 
     let store = std::sync::Arc::new(store);
     let first = store.acquire_write_lock().expect("hold Store writer");
+    // Setup mutations above already consumed queue tickets, so synchronize on a
+    // relative baseline instead of absolute ticket numbers: the cutover thread
+    // must enqueue first (baseline + 1), the admission thread second
+    // (baseline + 2), before the held writer is dropped.
+    let queue_baseline = next_write_ticket(&store);
     let cutover_store = std::sync::Arc::clone(&store);
     let mut generation_two = generation_one;
     generation_two.runtime_generation = 2;
@@ -867,7 +872,7 @@ fn member_run_cutover_linearizes_before_stale_execution_admission() {
             Vec::new(),
         )
     });
-    wait_for_write_ticket(&store, 2);
+    wait_for_write_ticket(&store, queue_baseline + 1);
 
     let admission_store = std::sync::Arc::clone(&store);
     let admission = std::thread::spawn(move || {
@@ -877,7 +882,7 @@ fn member_run_cutover_linearizes_before_stale_execution_admission() {
             stale_binding,
         )
     });
-    wait_for_write_ticket(&store, 3);
+    wait_for_write_ticket(&store, queue_baseline + 2);
     drop(first);
 
     cutover
