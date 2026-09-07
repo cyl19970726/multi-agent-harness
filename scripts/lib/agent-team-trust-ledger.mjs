@@ -88,12 +88,18 @@ function isCanonicalPassReview(body) {
   const lines = body.split(/\r?\n/u).map((line) => line.trim()).filter(Boolean);
   if (lines[0] !== "REVIEW_RESULT") return false;
 
-  const verdicts = lines.filter((line) => /^Verdict\s*:/u.test(line));
+  const verdicts = lines.filter((line) => /^Verdict\s*:/iu.test(line));
   if (verdicts.length !== 1 || verdicts[0] !== "Verdict: Pass") return false;
 
   const remainder = lines.filter((line) => line !== "REVIEW_RESULT" && line !== "Verdict: Pass");
-  return !remainder.some((line) =>
-    /\b(?:not\s+pass|changes?\s+required|fail(?:ed|ure)?|reject(?:ed|ion)?)\b/iu.test(line));
+  // Only review conclusions contradict the declaration. Test output ("0
+  // failed"), quoted diagnostics, and descriptions of rejection behavior are
+  // evidence, not competing verdicts; do not classify them by failure words.
+  return !remainder.some((line) => {
+    const conclusion = /^(?:Conclusion|Review result|Overall verdict|Decision)\s*:\s*(.*)$/iu.exec(line);
+    if (conclusion) return !/^Pass[.!]?$/iu.test(conclusion[1]);
+    return /^(?:(?:this|(?:this |the )?review) (?:is )?)?(?:not pass|changes? required|fail(?:ed|ure)?|reject(?:ed|ion)?)(?:[.!:]|$)/iu.test(line);
+  });
 }
 
 function checkExecutionSpaces(failures, matchedRecords, expectedExecutionSpaceId) {
