@@ -1071,4 +1071,84 @@ withFixture((fixture) => {
   );
 });
 
+// Provenance failure must precede alias publication AND mutation of a version
+// directory that may already be the active rollback target.
+for (const raw of [JSON.stringify({ git_rev: "b".repeat(40) }), "{}", "not JSON"]) {
+  withFixture((fixture) => {
+    const previous = join(fixture.root, "install", "fixture", "harness");
+    const original = "#!/bin/sh\nexit 0\n";
+    write(previous, original, true);
+    mkdirSync(dirname(fixture.binLink), { recursive: true });
+    symlinkSync(previous, fixture.binLink);
+    symlinkSync(previous, fixture.firmLink);
+    const before = lstatSync(fixture.binLink);
+    write(join(fixture.repo, "target/debug/firm"), `#!/bin/sh\nprintf '%s\\n' '${raw}'\n`, true);
+    const result = runApply(fixture, { FIRM_BUILD_GIT_REV: "a".repeat(40) });
+    assert.notEqual(result.status, 0, "stale/missing/malformed provenance fails closed");
+    assert.equal(readlinkSync(fixture.binLink), previous);
+    assert.equal(readlinkSync(fixture.firmLink), previous);
+    assert.equal(lstatSync(fixture.binLink).ino, before.ino);
+    assert.equal(readFileSync(previous, "utf8"), original, "old executable bytes survive");
+    assert.equal(readFailureState(fixture).status, "failed_before_binary_publication");
+    assert.deepEqual(transactionDirectories(fixture), []);
+  });
+}
+
+withFixture((fixture) => {
+  const git = (...args) => {
+    const result = spawnSync("git", ["-C", fixture.repo, ...args], { encoding: "utf8" });
+    assert.equal(result.status, 0, result.stderr);
+    return result.stdout.trim();
+  };
+  git("init", "--quiet");
+  git("add", ".");
+  git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--quiet", "-m", "fixture");
+  const revision = git("rev-parse", "HEAD");
+  const sharedTarget = join(fixture.root, "shared-target");
+  write(join(sharedTarget, "debug/firm"), `#!/bin/sh\necho '{"git_rev":"${revision}"}'\n`, true);
+  write(join(fixture.fakeBin, "cargo"), `#!/bin/sh\nprintf '%s' "$FIRM_BUILD_GIT_REV" > '${fixture.root}/build-input'\n`, true);
+  const result = runApply(fixture, {
+    CARGO_TARGET_DIR: sharedTarget,
+    FIRM_BUILD_GIT_REV: "b".repeat(40), // Git checkout, not ambient input, owns intent.
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(readFileSync(join(fixture.root, "build-input"), "utf8"), revision);
+  const installed = readlinkSync(fixture.binLink);
+  assert.match(installed, new RegExp(revision.slice(0, 12)));
+  assert.equal(spawnSync(installed, ["--build-info"], { encoding: "utf8" }).stdout.trim(), JSON.stringify({ git_rev: revision }));
+});
+
+// Exercise the actual repository build.rs with two identical-tree revisions
+// in linked worktrees sharing one Cargo cache, without building the full CLI.
+{
+  const root = mkdtempSync(join(tmpdir(), "star-harness-build-provenance-"));
+  try {
+    const repo = join(root, "repo");
+    write(join(repo, "Cargo.toml"), '[package]\nname = "provenance-fixture"\nversion = "0.1.0"\nedition = "2021"\n');
+    write(join(repo, "build.rs"), readFileSync(join(sourceRoot, "crates/firm-cli/build.rs"), "utf8"));
+    write(join(repo, "src/main.rs"), 'fn main() { println!("{}", env!("FIRM_BUILD_GIT_REV")); }\n');
+    const run = (command, args, cwd = repo, extra = {}) => {
+      const result = spawnSync(command, args, { cwd, env: { ...process.env, ...extra }, encoding: "utf8" });
+      assert.equal(result.status, 0, result.stderr);
+      return result.stdout.trim();
+    };
+    run("git", ["init", "--quiet"]);
+    run("git", ["add", "."]);
+    const commit = ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--quiet", "-m", "fixture"];
+    run("git", commit);
+    const first = run("git", ["rev-parse", "HEAD"]);
+    run("git", [...commit, "--allow-empty"]);
+    const second = run("git", ["rev-parse", "HEAD"]);
+    const linked = join(root, "linked");
+    run("git", ["worktree", "add", "--quiet", "--detach", linked, first]);
+    const target = join(root, "shared-target");
+    for (const [cwd, revision] of [[linked, first], [repo, second], [linked, first]]) {
+      run("cargo", ["build", "--offline", "--quiet", "--target-dir", target], cwd, { FIRM_BUILD_GIT_REV: revision });
+      assert.equal(run(join(target, "debug/provenance-fixture"), []), revision);
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
 console.log("star-harness installer rollback boundary: PASS");

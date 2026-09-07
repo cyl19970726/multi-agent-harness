@@ -50,6 +50,7 @@ DISPLACED_FIRM_ENTRY=""
 ROLLBACK_FIRM_ENTRY=""
 INSTALL_FS_HELPER=""
 INSTALL_FS_HELPER_REAL=""
+STAGED_BINARY=""
 INSTALL_FS_HELPER_SOURCE="${REPO_ROOT}/scripts/star-harness-install-fs.rs"
 BIN_LINK_LOCK_STAGED=""
 BIN_LINK_LOCK_RELEASE_ENTRY=""
@@ -171,7 +172,8 @@ release_bin_link_lock() {
       "${BIN_LINK_STALE_LOCK_WITNESS}" \
       "${BIN_LINK_STALE_LOCK_ENTRY}" \
       "${INSTALL_FS_HELPER}" \
-      "${INSTALL_FS_HELPER_REAL}"; do
+      "${INSTALL_FS_HELPER_REAL}" \
+      "${STAGED_BINARY}"; do
       if [[ -e "${artifact}" || -L "${artifact}" ]]; then
         if ! unlink "${artifact}"; then
           BIN_LINK_LOCK_STATUS="release_failed"
@@ -198,7 +200,8 @@ release_bin_link_lock() {
       "${BIN_LINK_STALE_LOCK_WITNESS}" \
       "${BIN_LINK_STALE_LOCK_ENTRY}" \
       "${INSTALL_FS_HELPER}" \
-      "${INSTALL_FS_HELPER_REAL}"; do
+      "${INSTALL_FS_HELPER_REAL}" \
+      "${STAGED_BINARY}"; do
       if [[ -e "${artifact}" || -L "${artifact}" ]]; then
         unlink "${artifact}" 2>/dev/null || true
       fi
@@ -256,6 +259,7 @@ initialize_bin_link_transaction_paths() {
   ROLLBACK_FIRM_ENTRY="${BIN_LINK_TRANSACTION_DIR}/rollback-firm-live-entry"
   INSTALL_FS_HELPER="${BIN_LINK_TRANSACTION_DIR}/install-fs-helper"
   INSTALL_FS_HELPER_REAL="${INSTALL_FS_HELPER}.real"
+  STAGED_BINARY="${BIN_LINK_TRANSACTION_DIR}/verified-harness"
   BIN_LINK_LOCK_STAGED="${BIN_LINK_TRANSACTION_DIR}/lock-staged"
   BIN_LINK_LOCK_RELEASE_ENTRY="${BIN_LINK_TRANSACTION_DIR}/lock-release-entry"
   BIN_LINK_STALE_LOCK_WITNESS="${BIN_LINK_TRANSACTION_DIR}/stale-lock-witness"
@@ -900,7 +904,10 @@ if [[ -z "${CRATE_VERSION}" ]]; then
   echo "could not read the firm-cli crate version from ${REPO_ROOT}/crates/firm-cli/Cargo.toml" >&2
   exit 1
 fi
-SOURCE_REVISION="$(git -C "${REPO_ROOT}" rev-parse --short=12 HEAD 2>/dev/null || true)"
+SOURCE_EXACT_REVISION="$(git -C "${REPO_ROOT}" rev-parse --verify 'HEAD^{commit}' 2>/dev/null || true)"
+SOURCE_REVISION="${SOURCE_EXACT_REVISION:0:12}"
+# Archive builds can supply the same exact input understood by build.rs.
+EXPECTED_REVISION="${SOURCE_EXACT_REVISION:-${FIRM_BUILD_GIT_REV:-}}"
 if [[ -n "${SOURCE_REVISION}" ]]; then
   VERSION="${CRATE_VERSION}+g${SOURCE_REVISION}"
   if ! git -C "${REPO_ROOT}" diff --quiet HEAD -- 2>/dev/null; then
@@ -947,7 +954,11 @@ fi
 
 echo
 echo "Candidate Firm binary:"
-CANDIDATE_BIN="${REPO_ROOT}/target/debug/firm"
+BUILD_TARGET_DIR="${CARGO_TARGET_DIR:-${REPO_ROOT}/target}"
+if [[ "${BUILD_TARGET_DIR}" != /* ]]; then
+  BUILD_TARGET_DIR="${REPO_ROOT}/${BUILD_TARGET_DIR}"
+fi
+CANDIDATE_BIN="${BUILD_TARGET_DIR}/debug/firm"
 if [[ -x "${CANDIDATE_BIN}" ]]; then
   "${CANDIDATE_BIN}" --build-info
 else
@@ -966,8 +977,30 @@ echo
 echo "Building Harness..."
 (
   cd "${REPO_ROOT}"
-  cargo build -p firm-cli
+  if [[ -n "${EXPECTED_REVISION}" ]]; then
+    # Explicit input invalidates build.rs even when identical trees in linked
+    # worktrees reuse Cargo output whose watched Git paths belong to another HEAD.
+    FIRM_BUILD_GIT_REV="${EXPECTED_REVISION}" cargo build -p firm-cli --target-dir "${BUILD_TARGET_DIR}"
+  else
+    cargo build -p firm-cli --target-dir "${BUILD_TARGET_DIR}"
+  fi
 )
+# Verify a private copy before touching even an existing version directory:
+# on re-apply that directory may still be the previous aliases' target.
+install -m 0755 "${CANDIDATE_BIN}" "${STAGED_BINARY}"
+BUILD_INFO="$("${STAGED_BINARY}" --build-info)"
+node - "${EXPECTED_REVISION}" "${BUILD_INFO}" <<'NODE'
+const [expected, raw] = process.argv.slice(2);
+const info = JSON.parse(raw);
+if (expected) {
+  if (!/^[0-9a-f]{40}$/i.test(expected) || info.git_rev !== expected.toLowerCase()) {
+    console.error(`refusing install: expected build revision ${expected}, executable reports ${info.git_rev ?? "missing"}`);
+    process.exit(1);
+  }
+} else {
+  console.error("warning: source revision unavailable; archive installation has no exact revision verification");
+}
+NODE
 prepare_bin_link_publication
 prepare_firm_link_publication
 
@@ -977,7 +1010,7 @@ CLAUDE_RUNNER_INSTALL="${VERSION_DIR}/apps/claude-member-runner"
 DEEPSEEK_RUNNER_INSTALL="${VERSION_DIR}/apps/deepseek-member-runner"
 mkdir -p "${VERSION_DIR}" "$(dirname "${BIN_LINK}")" "$(dirname "${FIRM_LINK}")"
 APPLY_IN_PROGRESS="true"
-install -m 0755 "${REPO_ROOT}/target/debug/firm" "${VERSION_BIN}"
+install -m 0755 "${STAGED_BINARY}" "${VERSION_BIN}"
 
 case "${CLAUDE_RUNNER_INSTALL}" in
   "${VERSION_DIR}/"*) ;;
