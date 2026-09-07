@@ -1,10 +1,9 @@
 use super::*;
 
-/// One validated predecessor-recovery intent: the exact latest predecessor
-/// lease this Node may settle.
+/// One validated predecessor instance with exact Space-local lease tuples.
 ///
-/// This module is the shared validate+recover seam for one exact unreleased
-/// predecessor NodeDaemonLease. The Operator HTTP role action
+/// This module is the shared validate+recover seam for captured predecessor
+/// NodeDaemonLease tuples. The Operator HTTP role action
 /// (role_actions_api/operator_actions.rs) and the
 /// `daemon recover-predecessor` CLI (main_modules/daemon_cli.rs) perform the
 /// identical checks and store transitions through these two functions; neither
@@ -12,7 +11,7 @@ use super::*;
 pub(crate) struct PredecessorRecoveryIntent {
     pub daemon_id: String,
     pub instance_id: String,
-    pub generation: u64,
+    pub spaces: Vec<(harness_core::ExecutionSpace, harness_core::NodeDaemonLease)>,
 }
 
 /// Standard process-existence probe for a predecessor instance id of the form
@@ -44,8 +43,8 @@ pub(crate) fn predecessor_process_is_absent(instance_id: &str) -> Result<bool, S
     }
 }
 
-/// Validate that this Node has one exact latest predecessor lease (matching
-/// `expected` when the caller carries an HTTP-bound intent), that no live
+/// Capture exact latest Space-local leases of one predecessor instance
+/// (restricted to `expected` for an HTTP-bound intent), prove that no live
 /// NodeDaemon socket remains, and that the predecessor process is proven
 /// absent. Errors are `(code, detail)` pairs the caller wraps in its own
 /// envelope (HTTP role-action error vs CLI usage error).
@@ -60,41 +59,61 @@ pub(crate) fn validate_daemon_predecessor_recovery(
             "a NodeDaemon socket is still live; Stop it before predecessor recovery".into(),
         ));
     }
-    let mut latest: Option<harness_core::NodeDaemonLease> = None;
+    let mut leases = Vec::new();
     for space in execution_space::list_spaces(firm_home).map_err(|error| {
         execution_space_error_pair("NODE_DAEMON_PREDECESSOR_RECOVERY_INCOMPLETE", error)
     })? {
-        let store = HarnessStore::new(space.store_root);
+        let store = HarnessStore::new(space.store_root.clone());
         if let Some(lease) = store.latest_node_daemon_lease(node_id).map_err(|error| {
             (
-                "NODE_DAEMON_PREDECESSOR_RECOVERY_INCOMPLETE".to_string(),
+                "NODE_DAEMON_PREDECESSOR_RECOVERY_INCOMPLETE".into(),
                 format!("{}: {error}", space.id),
             )
         })? {
-            if latest
-                .as_ref()
-                .is_none_or(|current| lease.generation > current.generation)
-            {
-                latest = Some(lease);
-            }
+            leases.push((space, lease));
         }
     }
-    let latest = latest.ok_or_else(|| {
-        (
-            "SUPERVISOR_GENERATION_FENCED".to_string(),
-            "Node has no predecessor lease to recover".to_string(),
-        )
-    })?;
-    if let Some((daemon_id, instance_id, generation)) = expected {
-        if latest.daemon_id != daemon_id
-            || latest.instance_id != instance_id
-            || latest.generation != generation
-        {
-            return Err((
+    // Generations are Space-local counters, never a machine-wide ordering.
+    let latest = leases
+        .iter()
+        .find(|(_, lease)| lease.status != NodeDaemonLeaseStatus::Released)
+        .or_else(|| leases.first())
+        .map(|(_, lease)| lease.clone())
+        .ok_or_else(|| {
+            (
                 "SUPERVISOR_GENERATION_FENCED".into(),
-                "recovery intent does not match the exact latest predecessor".into(),
-            ));
-        }
+                "Node has no predecessor lease to recover".into(),
+            )
+        })?;
+    if leases.iter().any(|(_, lease)| {
+        lease.status != NodeDaemonLeaseStatus::Released
+            && (lease.daemon_id != latest.daemon_id || lease.instance_id != latest.instance_id)
+    }) {
+        return Err(("SUPERVISOR_GENERATION_FENCED".into(), "Node has different unreleased predecessor instances; recovery must not sweep unrelated instances".into()));
+    }
+    // The existing HTTP request authorizes exactly one tuple. A same-instance
+    // lease with another local generation is outside that request's scope.
+    let spaces: Vec<_> = leases
+        .into_iter()
+        .filter(|(_, lease)| {
+            if let Some((daemon, instance, generation)) = expected {
+                lease.daemon_id == daemon
+                    && lease.instance_id == instance
+                    && lease.generation == generation
+            } else {
+                lease.daemon_id == latest.daemon_id && lease.instance_id == latest.instance_id
+            }
+        })
+        .collect();
+    if spaces.is_empty()
+        || expected.is_some_and(|(daemon, instance, _)| {
+            daemon != latest.daemon_id || instance != latest.instance_id
+        })
+    {
+        return Err((
+            "SUPERVISOR_GENERATION_FENCED".into(),
+            "recovery intent does not match the exact latest predecessor".into(),
+        ));
     }
     if !predecessor_process_is_absent(&latest.instance_id).map_err(|error| {
         (
@@ -110,12 +129,12 @@ pub(crate) fn validate_daemon_predecessor_recovery(
     Ok(PredecessorRecoveryIntent {
         daemon_id: latest.daemon_id,
         instance_id: latest.instance_id,
-        generation: latest.generation,
+        spaces,
     })
 }
 
 /// Perform the per-Space `recover_node_daemon_predecessor` transition for
-/// every Execution Space belonging to this Node and return the recovery
+/// each captured Execution Space and return the recovery
 /// projection. `provider_process_groups_terminated_confirmed` is the
 /// Operator's external-fact confirmation; the CLI passes `true` after its own
 /// pid probe, the HTTP action passes its reviewed request field.
@@ -134,39 +153,37 @@ pub(crate) fn recover_daemon_predecessor_spaces(
     idempotency_key_prefix: &str,
     request_fingerprint: Option<String>,
 ) -> Result<serde_json::Value, (String, String)> {
-    let spaces = execution_space::list_spaces(firm_home).map_err(|error| {
-        execution_space_error_pair("NODE_DAEMON_PREDECESSOR_RECOVERY_INCOMPLETE", error)
-    })?;
+    // Re-probe process absence immediately before any settlement, then use
+    // only the captured Space/lease tuples. The Store fences each tuple under
+    // its write lock, including successors arriving after validation.
+    if daemon_client::daemon_status_via_socket(firm_home, node_id).is_some()
+        || !predecessor_process_is_absent(&intent.instance_id)
+            .map_err(|error| ("NODE_DAEMON_PREDECESSOR_RECOVERY_UNVERIFIED".into(), error))?
+    {
+        return Err((
+            "NODE_DAEMON_PREDECESSOR_RECOVERY_LIVE".into(),
+            "the exact predecessor process or NodeDaemon socket is still live".into(),
+        ));
+    }
     let mut recovered_spaces = Vec::new();
     let mut space_settlements = Vec::new();
     let mut failures = Vec::new();
-    for space in spaces {
+    for (space, lease) in &intent.spaces {
         let scoped = HarnessStore::new(space.store_root.clone());
-        let belongs_to_node = scoped
-            .latest_execution_nodes()
-            .map(|nodes| nodes.into_iter().any(|node| node.id == node_id));
-        match belongs_to_node {
-            Ok(false) => continue,
-            Err(error) => {
-                failures.push(format!("{}: {error}", space.id));
-                continue;
-            }
-            Ok(true) => {}
-        }
         let context = harness_core::agentfirm_api::MutationContext {
             execution_space_id: space.id.clone(),
             authenticated_actor: actor.clone(),
             authority_actor: None,
             command_name: "node_daemon.predecessor_recover".into(),
             idempotency_key: format!("{idempotency_key_prefix}:space:{}", space.id),
-            expected_version: intent.generation,
+            expected_version: lease.generation,
             request_fingerprint: request_fingerprint.clone(),
         };
         match scoped.recover_node_daemon_predecessor(
             &context,
             node_id,
             &intent.daemon_id,
-            intent.generation,
+            lease.generation,
             &intent.instance_id,
             true,
             provider_process_groups_terminated_confirmed,
@@ -181,12 +198,15 @@ pub(crate) fn recover_daemon_predecessor_spaces(
             Ok(recovery) => {
                 space_settlements.push(serde_json::json!({
                     "execution_space_id": space.id,
+                    "generation": lease.generation,
+                    "daemon_id": lease.daemon_id,
+                    "instance_id": lease.instance_id,
                     "already_released": recovery.already_released,
                     "supervisors_released": recovery.supervisors_released,
                     "sessions_detached": recovery.sessions_detached,
                     "sessions_already_settled": recovery.sessions_already_settled,
                 }));
-                recovered_spaces.push(space.id);
+                recovered_spaces.push(space.id.clone());
             }
             Err(error) => failures.push(format!("{}: {error}", space.id)),
         }
@@ -195,7 +215,12 @@ pub(crate) fn recover_daemon_predecessor_spaces(
         "node_id": node_id,
         "daemon_id": intent.daemon_id,
         "instance_id": intent.instance_id,
-        "generation": intent.generation,
+        "generation": intent.spaces.first().map(|(_, lease)| lease.generation).filter(|generation| intent.spaces.iter().all(|(_, lease)| lease.generation == *generation)),
+        "already_released": failures.is_empty() && space_settlements.iter().all(|row| row["already_released"] == true),
+        "space_leases": intent.spaces.iter().map(|(space, lease)| serde_json::json!({
+            "execution_space_id": space.id, "daemon_id": lease.daemon_id,
+            "instance_id": lease.instance_id, "generation": lease.generation,
+        })).collect::<Vec<_>>(),
         "status": "released",
         "recovered_spaces": recovered_spaces,
         "space_settlements": space_settlements,
