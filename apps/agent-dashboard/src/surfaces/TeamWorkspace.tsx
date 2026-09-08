@@ -3,7 +3,7 @@ import { Activity, BriefcaseBusiness, MessageSquare, RefreshCw, ShieldCheck, Use
 
 import { Button } from "@/components/ui/button";
 import { TeamCapacityStrip } from "@/components/workbench/team/TeamCapacityStrip";
-import { TeamConversationStream } from "@/components/workbench/team/TeamConversation";
+import { TeamConversationStream, emptyActivityFilters } from "@/components/workbench/team/TeamConversation";
 import { TeamMembersCapacity } from "@/components/workbench/team/TeamMembersCapacity";
 import { TeamWorksBoard } from "@/components/workbench/team/TeamWorksBoard";
 import { TeamInboxPanel } from "@/components/workbench/team/TeamInboxPanel";
@@ -25,6 +25,9 @@ export function TeamWorkspace({apiUrl,space,project,company,teamId,teamRunId,ref
   const [loading,setLoading] = useState(true);
   const [refetch,setRefetch] = useState(0);
   const [replyTo,setReplyTo] = useState<MessageSummary|null>(null);
+  const [activityFilters,setActivityFilters]=useState(emptyActivityFilters);
+  const activityReturnRef=useRef<{scroll:number;workId:string;recordId:string|null}|null>(null);
+  const tabScrollRef=useRef<Partial<Record<TeamTab,number>>>({});
   const workspaceScrollRef = useRef<HTMLElement>(null);
   const committedIdentityRef = useRef<string|null>(null);
   const committedViewerIdentityRef = useRef<string|null>(null);
@@ -38,13 +41,32 @@ export function TeamWorkspace({apiUrl,space,project,company,teamId,teamRunId,ref
     window.requestAnimationFrame(() => window.requestAnimationFrame(() => document.getElementById("host-tools")?.scrollIntoView({block:"start"})));
   };
   const selectTab = (teamTab:TeamTab) => {
-    if(teamTab === "activity") workspaceScrollRef.current?.scrollTo({top:0,behavior:"auto"});
-    onSelectionChange({teamTab});
-    if(teamTab === "activity") window.requestAnimationFrame(() => workspaceScrollRef.current?.scrollTo({top:0,behavior:"auto"}));
+    tabScrollRef.current[tab]=workspaceScrollRef.current?.scrollTop??0;
+    activityReturnRef.current=null;
+    onSelectionChange({teamTab,teamWorkId:undefined});
+  };
+  const openActivityWork=(teamWorkId:string)=>{
+    activityReturnRef.current={scroll:workspaceScrollRef.current?.scrollTop??0,workId:teamWorkId,recordId:document.activeElement?.closest("[data-activity-record-id]")?.getAttribute("data-activity-record-id")??null};
+    onSelectionChange({teamTab:"works",teamWorkId});
+  };
+  const selectWork=(teamWorkId:string|undefined)=>{
+    if(!teamWorkId&&activityReturnRef.current){
+      tabScrollRef.current.activity=activityReturnRef.current.scroll;
+      onSelectionChange({teamTab:"activity",teamWorkId:undefined});
+    }else onSelectionChange({teamWorkId});
   };
   useLayoutEffect(() => {
-    if(tab === "activity") workspaceScrollRef.current?.scrollTo({top:0,behavior:"auto"});
+    workspaceScrollRef.current?.scrollTo({top:tabScrollRef.current[tab]??0,behavior:"auto"});
+    if(tab==="activity"&&activityReturnRef.current){
+      const {workId,recordId}=activityReturnRef.current;
+      window.requestAnimationFrame(()=>{
+        const recordSelector=recordId?`[data-activity-record-id="${CSS.escape(recordId)}"] `:"";
+        document.querySelector<HTMLElement>(`${recordSelector}[data-activity-work-id="${CSS.escape(workId)}"]`)?.focus({preventScroll:true});
+      });
+      activityReturnRef.current=null;
+    }
   },[tab,teamId]);
+  useEffect(()=>{setActivityFilters(emptyActivityFilters);tabScrollRef.current={};activityReturnRef.current=null;},[requestIdentity]);
   useEffect(() => {
     let live=true;
     const identityChanged=committedIdentityRef.current!==requestIdentity;
@@ -110,9 +132,9 @@ export function TeamWorkspace({apiUrl,space,project,company,teamId,teamRunId,ref
     <TeamCapacityStrip summary={view.data.pressure_summary} compact className="border-b border-border py-3 md:hidden"/>
     <div className="min-w-0">
     <AgentTeamTabs value={tab} onValueChange={selectTab} label="Team Workspace sections">{TABS.map(({id,label,icon:Icon}) => <AgentTeamTab key={id} id={`team-workspace-tab-${id}`} value={id} aria-controls={`team-workspace-panel-${id}`}><Icon className="size-3.5"/>{label}{id === "activity" && view.data.messages.length > 0 && <span className="rounded-full bg-primary/10 px-1.5 text-[9px] text-primary">{view.data.messages.length}</span>}</AgentTeamTab>)}</AgentTeamTabs>
-    {tab === "works" && <div role="tabpanel" id="team-workspace-panel-works" aria-labelledby="team-workspace-tab-works"><TeamWorksBoard works={view.data.works} graph={view.data.work_graph ?? {nodes:view.data.works,edges:[],ready_work_ids:[],attention_work_ids:[]}} members={view.data.members} allowedActions={view.allowed_actions} teamId={team.team_id} actionsCurrent={!error && view.freshness === "current"} onAction={onAction} onCompleted={retry} viewMode={selection.teamWorkView ?? "graph"} onViewModeChange={(teamWorkView) => onSelectionChange({teamWorkView})} selectedWorkId={selection.teamWorkId} onSelectWork={(teamWorkId) => onSelectionChange({teamWorkId})} onOpenMember={(memberRunId) => { const member=view.data.members.find((candidate) => candidate.current_member_run_ref === memberRunId); onSelectionChange({teamMode:"workspace",teamConversation:member?.agent_member_ref.id,memberRunId,teamTab:"members"}); }} onOpenHost={team.viewer_role === "host" ? (teamWorkId) => openHostTools(teamWorkId) : undefined} onOpenHostTools={team.viewer_role === "host" ? () => openHostTools() : undefined} ownerFilter={selection.teamOwner ?? "all"} attentionFilter={selection.teamAttention ?? "all"} queryFilter={selection.teamQuery ?? ""} onFiltersChange={({owner,attention,query}) => onSelectionChange({teamOwner:owner === "all" ? undefined : owner,teamAttention:attention === "all" ? undefined : attention,teamQuery:query || undefined})}/></div>}
-    {tab === "activity" && <div role="tabpanel" id="team-workspace-panel-activity" aria-labelledby="team-workspace-tab-activity" className="space-y-4"><ActivityPressureSummary review={view.data.pressure_summary.review_work} blocked={view.data.pressure_summary.blocked_work} responses={view.data.messages.filter((message) => message.reply_eligible).length}/><TeamInboxPanel apiUrl={apiUrl} space={space} project={project} teamId={teamId} viewerIdentity={viewerIdentity} refreshKey={refreshKey} onOpenWork={(teamWorkId) => onSelectionChange({teamTab:"works",teamWorkId})}/>{team.viewer_role === "host" && resolvedTeamRunId && <HostActivityLeadInbox apiUrl={apiUrl} space={space} project={project} routeIdentity={teamId} refreshKey={refreshKey} onReply={setReplyTo} onOpenWork={(teamWorkId) => onSelectionChange({teamTab:"works",teamWorkId})}/>}<TeamConversationStream activity={view.data.activity} messages={view.data.messages} members={view.data.members} truncated={view.data.activity_truncated} onOpenWork={(teamWorkId) => onSelectionChange({teamTab:"works",teamWorkId})} onReply={team.viewer_role === "host" ? setReplyTo : undefined}/>{team.viewer_role === "host" && resolvedTeamRunId && <details className="group border-y border-border" open={Boolean(replyTo)}><summary role="button" aria-label="Compose team message" className="flex min-h-12 cursor-pointer list-none items-center gap-2 px-1"><MessageSquare className="size-4 text-primary"/><h2 className="text-sm font-semibold group-open:hidden">Team message</h2><span className="text-[10px] text-muted-foreground group-open:hidden">Compose</span><span className="ml-auto text-[10px] text-muted-foreground">ordinary Message · not Steer</span></summary><div className="border-t border-border py-3"><HostActivityComposer apiUrl={apiUrl} space={space} project={project} routeIdentity={teamId} teamRunId={resolvedTeamRunId} replyTo={replyTo} refreshKey={refreshKey} onAction={onAction} onClearReply={() => setReplyTo(null)} collapsibleOnMobile={false}/></div></details>}</div>}
-    {tab === "members" && <div role="tabpanel" id="team-workspace-panel-members" aria-labelledby="team-workspace-tab-members"><TeamMembersCapacity members={view.data.members} summary={view.data.pressure_summary} selectedMemberRunId={selection.memberRunId} onOpenMember={(memberRunId) => { const member=view.data.members.find((candidate) => candidate.current_member_run_ref === memberRunId); onSelectionChange({teamMode:"workspace",teamConversation:member?.agent_member_ref.id,memberRunId}); }}/></div>}
+    {tab === "works" && <div role="tabpanel" id="team-workspace-panel-works" aria-labelledby="team-workspace-tab-works"><TeamWorksBoard works={view.data.works} graph={view.data.work_graph ?? {nodes:view.data.works,edges:[],ready_work_ids:[],attention_work_ids:[]}} members={view.data.members} allowedActions={view.allowed_actions} teamId={team.team_id} actionsCurrent={!error && view.freshness === "current"} onAction={onAction} onCompleted={retry} viewMode={selection.teamWorkView ?? "graph"} onViewModeChange={(teamWorkView) => onSelectionChange({teamWorkView})} selectedWorkId={selection.teamWorkId} onSelectWork={selectWork} onOpenAgent={(agentMemberId) => { const member=view.data.members.find(candidate => candidate.agent_member_ref.id === agentMemberId); if(member)onSelectionChange({teamMode:"workspace",teamConversation:agentMemberId,memberRunId:member.current_member_run_ref ?? undefined}); }} onOpenMember={(memberRunId) => { const member=view.data.members.find((candidate) => candidate.current_member_run_ref === memberRunId); onSelectionChange({teamMode:"workspace",teamConversation:member?.agent_member_ref.id,memberRunId,teamTab:"members"}); }} onOpenHost={team.viewer_role === "host" ? (teamWorkId) => openHostTools(teamWorkId) : undefined} onOpenHostTools={team.viewer_role === "host" ? () => openHostTools() : undefined} ownerFilter={selection.teamOwner ?? "all"} attentionFilter={selection.teamAttention ?? "all"} queryFilter={selection.teamQuery ?? ""} onFiltersChange={({owner,attention,query}) => onSelectionChange({teamOwner:owner === "all" ? undefined : owner,teamAttention:attention === "all" ? undefined : attention,teamQuery:query || undefined})}/></div>}
+    {tab === "activity" && <div role="tabpanel" id="team-workspace-panel-activity" aria-labelledby="team-workspace-tab-activity" className="space-y-4"><ActivityPressureSummary review={view.data.pressure_summary.review_work} blocked={view.data.pressure_summary.blocked_work} responses={view.data.messages.filter((message) => message.reply_eligible).length}/><TeamInboxPanel identityRequired={team.viewer_role === "operator"} apiUrl={apiUrl} space={space} project={project} teamId={teamId} viewerIdentity={viewerIdentity} refreshKey={refreshKey} onOpenWork={openActivityWork}/>{team.viewer_role === "host" && resolvedTeamRunId && <HostActivityLeadInbox apiUrl={apiUrl} space={space} project={project} routeIdentity={teamId} refreshKey={refreshKey} onReply={setReplyTo} onOpenWork={openActivityWork}/>}<TeamConversationStream filters={activityFilters} onFiltersChange={setActivityFilters} activity={view.data.activity} messages={view.data.messages} members={view.data.members} truncated={view.data.activity_truncated} onOpenWork={openActivityWork} onReply={team.viewer_role === "host" ? setReplyTo : undefined}/>{team.viewer_role === "host" && resolvedTeamRunId && <details className="group border-y border-border" open={Boolean(replyTo)}><summary role="button" aria-label="Compose team message" className="flex min-h-12 cursor-pointer list-none items-center gap-2 px-1"><MessageSquare className="size-4 text-primary"/><h2 className="text-sm font-semibold group-open:hidden">Team message</h2><span className="text-[10px] text-muted-foreground group-open:hidden">Compose</span><span className="ml-auto text-[10px] text-muted-foreground">ordinary Message · not Steer</span></summary><div className="border-t border-border py-3"><HostActivityComposer apiUrl={apiUrl} space={space} project={project} routeIdentity={teamId} teamRunId={resolvedTeamRunId} replyTo={replyTo} refreshKey={refreshKey} onAction={onAction} onClearReply={() => setReplyTo(null)} collapsibleOnMobile={false}/></div></details>}</div>}
+    {tab === "members" && <div role="tabpanel" id="team-workspace-panel-members" aria-labelledby="team-workspace-tab-members"><TeamMembersCapacity members={view.data.members} summary={view.data.pressure_summary} selectedMemberRunId={selection.memberRunId} onOpenAgent={(agentMemberId) => { const member=view.data.members.find(candidate => candidate.agent_member_ref.id === agentMemberId); if(member)onSelectionChange({teamMode:"workspace",teamConversation:agentMemberId,memberRunId:member.current_member_run_ref ?? undefined}); }} onOpenMember={(memberRunId) => { const member=view.data.members.find((candidate) => candidate.current_member_run_ref === memberRunId); onSelectionChange({teamMode:"workspace",teamConversation:member?.agent_member_ref.id,memberRunId}); }}/></div>}
     </div>
   </div></main>;
 }

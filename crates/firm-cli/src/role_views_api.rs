@@ -190,6 +190,7 @@ pub(crate) struct Facts {
     runtime_commands: Vec<Value>,
     work_deliveries: Vec<Value>,
     work_events: Vec<Value>,
+    work_display_events: Vec<Value>,
     side: Vec<Value>,
 }
 
@@ -490,6 +491,7 @@ impl Facts {
             .into_iter()
             .map(|value| serde_json::to_value(value).unwrap_or(Value::Null))
             .collect(),
+            work_display_events: work_event_summary::display_events(&work_operations, &operations),
             work_events: work_operations
                 .iter()
                 .map(|operation| serde_json::to_value(&operation.event).unwrap_or(Value::Null))
@@ -695,7 +697,7 @@ fn team_activity(
     run_id: Option<&str>,
 ) -> (Vec<Value>, bool) {
     let mut rows = Vec::new();
-    for event in facts.work_events.iter().filter(|event| {
+    for event in facts.work_display_events.iter().filter(|event| {
         event["work_id"]
             .as_str()
             .is_some_and(|id| team_work_ids.contains(id))
@@ -1046,12 +1048,8 @@ fn work_summary(facts: &Facts, team: &AgentTeam, work: &Work) -> Value {
         })
         .collect::<Vec<_>>();
     let successor_work_ids = derive_work_successor_ids(&work.id, &facts.works);
-    let latest_event = facts
-        .work_events
-        .iter()
-        .filter(|event| event["work_id"] == work.id)
-        .max_by_key(|event| event["sequence"].as_u64().unwrap_or(0))
-        .map(|event| {
+    let latest_event =
+        work_event_summary::latest_event(&facts.work_display_events, &work.id).map(|event| {
             json!({
                 "id":event["id"],
                 "kind":event["kind"],
@@ -1410,6 +1408,7 @@ mod member_surface;
 mod router;
 mod team_surface;
 mod viewer_surface;
+mod work_event_summary;
 mod work_runtime;
 mod workspace_surface;
 

@@ -461,13 +461,8 @@ pub(crate) fn agent_workspace_view(
     });
     let unread_count = messages
         .iter()
-        .filter(|message| {
-            message["deliveries"].as_array().is_some_and(|deliveries| {
-                deliveries.iter().any(|delivery| {
-                    matches!(delivery["status"].as_str(), Some("queued" | "delivered"))
-                })
-            })
-        })
+        // Compatibility field name; this is pending delivery, never a read receipt.
+        .filter(|message| has_pending_delivery(message, selected_agent_id))
         .count();
     let safe_team = json!({
         "team_id":team_data["team"]["team_id"],
@@ -839,6 +834,18 @@ fn read_persisted_session_projection(
     )
 }
 
+fn has_pending_delivery(message: &Value, selected_agent_id: &str) -> bool {
+    message["deliveries"].as_array().is_some_and(|deliveries| {
+        deliveries.iter().any(|delivery| {
+            delivery["recipient_identity_id"] == selected_agent_id
+                && matches!(
+                    delivery["status"].as_str(),
+                    Some("queued" | "routed" | "claimed")
+                )
+        })
+    })
+}
+
 #[cfg(test)]
 mod runtime_truth_tests {
     use super::*;
@@ -996,5 +1003,27 @@ mod runtime_truth_tests {
         assert_eq!(truth["coordination"]["state"], "closed");
         assert_eq!(truth["harness_control"]["state"], "closed");
         assert_eq!(truth["provider_native_activity"]["state"], "unknown");
+    }
+    #[test]
+    fn pending_delivery_is_per_recipient_and_never_a_read_receipt() {
+        for status in ["queued", "routed", "claimed"] {
+            let message =
+                json!({"deliveries":[{"recipient_identity_id":"member-a","status":status}]});
+            assert!(has_pending_delivery(&message, "member-a"));
+            assert!(!has_pending_delivery(&message, "member-b"));
+        }
+        for status in [
+            "provider_received",
+            "acknowledged",
+            "failed",
+            "expired",
+            "invalidated",
+            "delivered",
+        ] {
+            assert!(!has_pending_delivery(
+                &json!({"deliveries":[{"recipient_identity_id":"member-a","status":status}]}),
+                "member-a"
+            ));
+        }
     }
 }

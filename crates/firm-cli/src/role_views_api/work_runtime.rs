@@ -279,6 +279,7 @@ mod tests {
                 "status":"provider_received"
             })],
             work_events: Vec::new(),
+            work_display_events: Vec::new(),
             side: vec![json!({
                 "id":"workspace-worker",
                 "member_run_id":"member-run-worker",

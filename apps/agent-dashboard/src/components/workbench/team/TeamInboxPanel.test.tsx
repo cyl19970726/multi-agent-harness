@@ -65,6 +65,24 @@ describe("TeamInboxPanel revalidation", () => {
     teamId: "team-1", viewerIdentity, refreshKey,
   });
 
+  it("renders a known operator boundary without a loading request, then fetches for a new member identity", async () => {
+    fetchRoleViewMock.mockImplementation(() => new Promise(() => undefined));
+    let renderer: ReactTestRenderer;
+    await act(async () => {
+      renderer=create(<TeamInboxPanel {...props("revision-1")} identityRequired/>);
+      await flushPromises();
+    });
+    expect(fetchRoleViewMock).not.toHaveBeenCalled();
+    expect(JSON.stringify(renderer!.toJSON())).toContain("Sign in as the Team Host");
+    expect(JSON.stringify(renderer!.toJSON())).not.toContain("Loading Team Inbox");
+    await act(async () => {
+      renderer!.update(<TeamInboxPanel {...props("revision-2", "agent_member\u0000host-1")} identityRequired={false}/>);
+      await flushPromises();
+    });
+    expect(fetchRoleViewMock).toHaveBeenCalledTimes(1);
+    renderer!.unmount();
+  });
+
   it("does not re-request after identity-required until viewer identity changes", async () => {
     fetchRoleViewMock.mockRejectedValue(new AgentFirmApiError(
       403,

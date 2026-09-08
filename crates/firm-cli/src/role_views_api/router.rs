@@ -349,6 +349,7 @@ pub(crate) fn global_work_view(spaces: &[(String, HarnessStore)], query: &Query)
         runtime_commands: vec![],
         work_deliveries: vec![],
         work_events: vec![],
+        work_display_events: vec![],
         side: vec![],
     };
     pending_migration.sort();

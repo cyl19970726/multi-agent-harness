@@ -54,3 +54,36 @@ describe("wrapping modebar height contract", () => {
     expect(conversationSource).toContain('className="aw-runtime-truth"');
   });
 });
+
+describe("compact context navigation", () => {
+  it("opens selected message context in the existing compact sheet", () => {
+    expect(conversationSource).toContain('<MessagesCanvas data={data} onSelect={selectContext}');
+    expect(conversationSource).toContain('if(next&&window.matchMedia("(max-width: 1023px)").matches)setContextOpen(true)');
+  });
+  it("unmounts compact sheets when the desktop rail becomes visible", () => {
+    expect(conversationSource).toContain('if(desktop.matches){setRosterOpen(false);setContextOpen(false);}');
+    expect(conversationSource).toContain('desktop.addEventListener("change",closeSheets)');
+    expect(conversationSource).toContain('desktop.removeEventListener("change",closeSheets)');
+  });
+  it("retains an explicitly followed Work while opening its verified roster owner", () => {
+    expect(conversationSource).toContain('teamWorkId:workId');
+    expect(conversationSource).toContain('onClick={()=>onOpenOwner(owner,work.work_id)}');
+  });
+});
+
+describe("member-scoped message controls", () => {
+  it("keeps filters above tab unmounts and scopes them to request identity",()=>{
+    expect(conversationSource).toContain("messageFilters.identity===requestIdentity");
+    expect(conversationSource).toContain("lens={filters.lens} query={filters.query}");
+    expect(conversationSource).toContain("agentWorkspaceMode:mode");
+  });
+  it("labels filtered roster groups from Host identity rather than first row position",()=>{
+    expect(conversationSource).toContain("!agent.is_host&&(index===0||visible[index-1].is_host)");
+    expect(conversationSource).not.toContain('{index===0&&<p');
+  });
+  it("uses pending delivery language without claiming a read receipt",()=>{
+    expect(conversationSource).toContain('title="Pending delivery"');
+    expect(conversationSource).not.toContain('title="Unread"');
+    expect(conversationSource).not.toContain("data.context_summary.unread_count");
+  });
+});
