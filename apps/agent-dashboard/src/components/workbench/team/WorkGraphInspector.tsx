@@ -6,9 +6,9 @@ import { Button } from "@/components/ui/button";
 import { Markdown } from "@/components/workbench/Markdown";
 import { cn } from "@/lib/utils";
 import { formatAbsolute, formatDate, isoTime } from "./teamFormat";
-import { prepareRoleAction, type AllowedAction, type RoleActionExecutor, type WorkSummary } from "../../../model/roleViews";
+import { prepareRoleAction, type MemberCapacitySummary, type AllowedAction, type RoleActionExecutor, type WorkSummary } from "../../../model/roleViews";
 
-export function WorkGraphInspector({work,allWorks,dependencyAction,teamId,actionsCurrent,onAction,onCompleted,onClose,onNavigate,onOpenMember,onOpenHost,closeRef}:{
+export function WorkGraphInspector({work,allWorks,dependencyAction,teamId,actionsCurrent,onAction,onCompleted,onClose,onNavigate,onOpenMember,onOpenAgent,members=[],onOpenHost,closeRef}:{
   work:WorkSummary;
   allWorks:WorkSummary[];
   dependencyAction?:AllowedAction;
@@ -19,9 +19,13 @@ export function WorkGraphInspector({work,allWorks,dependencyAction,teamId,action
   onClose:()=>void;
   onNavigate:(workId:string)=>void;
   onOpenMember:(memberRunId:string)=>void;
+  onOpenAgent?:(agentMemberId:string)=>void;
+  members?:MemberCapacitySummary[];
   onOpenHost?:(workId:string)=>void;
   closeRef:RefObject<HTMLButtonElement>;
 }){
+  const ownerId=work.assignee_ref?.agent_member_id ?? (work.owner_actor_ref?.kind==="agent_member"?work.owner_actor_ref.id:null);
+  const owner=members.find(member=>member.agent_member_ref.id===ownerId);
   return <>
     <header className="flex items-start gap-3"><div className="min-w-0 flex-1"><div className="flex flex-wrap gap-2"><Badge>{work.phase}</Badge>{work.condition!=="normal"&&<Badge tone={work.condition==="blocked"?"bad":"warn"}>{work.condition.replace(/_/g," ")}</Badge>}{work.phase==="closed"&&work.resolution&&<Badge tone={work.resolution==="accepted"?"good":work.resolution==="failed"?"bad":"muted"}>{work.resolution}</Badge>}<span className="font-mono text-[10px] text-muted-foreground">{work.work_id} · v{work.work_revision}</span></div><h2 id="selected-work-title" className="mt-2 break-words text-lg font-semibold">{work.title||work.work_id}</h2></div><button ref={closeRef} className="grid size-11 shrink-0 place-items-center rounded-md hover:bg-muted" onClick={onClose} aria-label="Close Work details"><X className="size-4"/></button></header>
     <div className="mt-4 space-y-4 text-sm">
@@ -29,6 +33,7 @@ export function WorkGraphInspector({work,allWorks,dependencyAction,teamId,action
       <Relations work={work} allWorks={allWorks} onNavigate={onNavigate}/>
       <Detail title="Context" source={work.context_markdown}/><Detail title="Completion criteria" source={work.completion_criteria_markdown}/>
       <FactGrid work={work}/>
+      {owner&&onOpenAgent&&<Button size="sm" variant="secondary" onClick={()=>onOpenAgent(owner.agent_member_ref.id)}>Open {owner.display_name} workspace <ArrowRight className="size-3.5"/></Button>}
       {work.blocker_reason&&<Detail title="Blocker" source={work.blocker_reason} tone="warn"/>}{work.result_summary&&<Detail title="Submitted result" source={work.result_summary}/>}<ReferenceList title="Artifacts" refs={work.artifact_refs}/><ReferenceList title="Checks and evidence" refs={work.check_refs}/>
       {work.latest_event&&<section><h3 className="text-[10px] font-semibold uppercase tracking-[.12em] text-muted-foreground">Latest Work event</h3><p className="mt-1 rounded-lg bg-muted/35 p-3 text-xs">{work.latest_event.kind.replace(/_/g," ")} · <time dateTime={isoTime(work.latest_event.created_at)} title={formatAbsolute(work.latest_event.created_at)}>{formatDate(work.latest_event.created_at)}</time></p></section>}
       {dependencyAction&&<DependencyEditor work={work} allWorks={allWorks} action={dependencyAction} teamId={teamId} actionsCurrent={actionsCurrent} onAction={onAction} onCompleted={onCompleted}/>}
