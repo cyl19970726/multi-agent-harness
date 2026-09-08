@@ -10,7 +10,7 @@ vi.mock("../model/roleViews", async (importOriginal) => ({
   fetchRoleView: fetchRoleViewMock,
 }));
 vi.mock("@/components/workbench/team/TeamCapacityStrip", () => ({ TeamCapacityStrip: () => null }));
-vi.mock("@/components/workbench/team/TeamConversation", () => ({ TeamConversationStream: () => null }));
+vi.mock("@/components/workbench/team/TeamConversation", () => ({ TeamConversationStream: () => null, emptyActivityFilters:{query:"",source:"all",participant:"all",workId:"all",responseOnly:false} }));
 vi.mock("@/components/workbench/team/TeamMembersCapacity", () => ({ TeamMembersCapacity: () => null }));
 vi.mock("@/components/workbench/team/TeamWorksBoard", () => ({ TeamWorksBoard: () => <p>Committed Work view</p> }));
 vi.mock("@/components/workbench/team/AgentTeamVisualPrimitives", () => ({
