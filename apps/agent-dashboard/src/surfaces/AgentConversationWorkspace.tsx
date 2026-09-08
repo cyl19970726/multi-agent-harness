@@ -198,13 +198,13 @@ export function AgentConversationWorkspace({
           {error&&<div role="alert" className="flex items-center gap-3 border-b border-status-warn/25 bg-status-warn/5 px-6 py-2 text-[11px]"><span className="min-w-0 flex-1">Refresh failed; writes are disabled until the authoritative view returns. {error}</span><Button size="sm" variant="secondary" onClick={()=>setRefresh(value=>value+1)}>Retry authenticated view</Button></div>}
           <Tabs.Root value={mode} onValueChange={value=>{setContextSelection(null);onSelectionChange({agentWorkspaceMode:value as WorkspaceMode});}} className="flex min-h-0 flex-1 flex-col">
             <div data-testid="agent-workspace-modebar" className="aw-modebar flex min-h-12 shrink-0 items-end border-b border-border px-4 sm:px-7">
-              <Tabs.List aria-label="Agent Workspace modes" className="agent-workspace-tabs flex h-full items-end gap-7">
+              <Tabs.List aria-label="Agent Workspace modes" className="agent-workspace-tabs flex h-11 shrink-0 items-end gap-7">
                 <WorkspaceTab value="session" label="Session" count={sessionProjection?.available?sessionProjection.records.reduce((count,record)=>count+record.fragments.length,0):0}/>
                 <WorkspaceTab value="messages" label="Messages" count={data.context_summary.unread_count}/>
                 <WorkspaceTab value="work" label="Work" count={data.works.length}/>
               </Tabs.List>
               <RuntimeTruthStrip truth={data.runtime_truth}/>
-              <div className="hidden h-full items-center gap-3 text-[10px] text-muted-foreground xl:flex"><span className="flex items-center gap-1.5"><ShieldCheck className="size-3.5"/>{sessionProjection?.available?"Persisted provider-native Session":"Native Session unavailable"}</span></div>
+              <div className="aw-native-source-note hidden items-center gap-3 text-[10px] text-muted-foreground xl:flex"><span className="flex items-center gap-1.5"><ShieldCheck className="size-3.5"/>{sessionProjection?.available?"Persisted provider-native Session":"Native Session unavailable"}</span></div>
             </div>
             <Tabs.Content value="session" className="min-h-0 flex-1 outline-none"><SessionCanvas data={data} projection={sessionProjection} connectionState={persistedSessionStream.connectionState} selectedMessageId={contextSelection?.kind==="message"?contextSelection.message.message_id:null} onSelect={setContextSelection} loadingOlder={loadingOlder} onLoadOlder={loadOlderSessionEvents}/></Tabs.Content>
             <Tabs.Content value="messages" className="min-h-0 flex-1 outline-none"><MessagesCanvas data={data} onSelect={setContextSelection}/></Tabs.Content>

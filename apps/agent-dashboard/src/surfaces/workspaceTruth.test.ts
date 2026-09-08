@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import { providerDisplayName } from "@/lib/provider";
 import conversationSource from "./AgentConversationWorkspace.tsx?raw";
 import teamSource from "./TeamWorkspace.tsx?raw";
+import { readFileSync } from "node:fs";
+const workspaceCss = readFileSync(new URL("./agent-workspace.css", import.meta.url), "utf8");
 import directorySource from "./Surfaces.tsx?raw";
 
 describe("workspace authority and navigation copy", () => {
@@ -37,5 +39,20 @@ describe("mobile dialog keyboard parity", () => {
     expect(conversationSource).toContain('event.key==="Escape"');
     expect(conversationSource).toContain('event.key!=="Tab"');
     expect(conversationSource).toContain("opener?.focus()");
+  });
+});
+
+
+describe("wrapping modebar height contract", () => {
+  it("keeps child heights independent of the wrapping container", () => {
+    const modebar = conversationSource.slice(conversationSource.indexOf('<div data-testid="agent-workspace-modebar"'), conversationSource.indexOf('<Tabs.Content value="session"'));
+    expect(modebar).not.toContain("h-full");
+    expect(modebar).toContain("agent-workspace-tabs flex h-11 shrink-0");
+    expect(modebar).toContain("<RuntimeTruthStrip truth={data.runtime_truth}/>");
+  });
+
+  it("limits phone hiding to the auxiliary source note, not runtime facts", () => {
+    expect(workspaceCss).toContain(".aw-modebar .aw-native-source-note{");
+    expect(workspaceCss).not.toContain(".aw-modebar > div:last-child{");
   });
 });

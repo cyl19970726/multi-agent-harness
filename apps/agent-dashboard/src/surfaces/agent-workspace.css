@@ -1603,7 +1603,7 @@ select){
 
   @media (max-width: 640px) {.agent-workspace .aw-header-role-badge{
       display: none;
-    }.agent-workspace .aw-modebar > div:last-child{
+    }.agent-workspace .aw-modebar .aw-native-source-note{
       display: none;
     }
   }
