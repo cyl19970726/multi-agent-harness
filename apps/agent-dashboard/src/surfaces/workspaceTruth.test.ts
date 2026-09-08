@@ -2,8 +2,6 @@ import { describe, expect, it } from "vitest";
 import { providerDisplayName } from "@/lib/provider";
 import conversationSource from "./AgentConversationWorkspace.tsx?raw";
 import teamSource from "./TeamWorkspace.tsx?raw";
-import { readFileSync } from "node:fs";
-const workspaceCss = readFileSync(new URL("./agent-workspace.css", import.meta.url), "utf8");
 import directorySource from "./Surfaces.tsx?raw";
 
 describe("workspace authority and navigation copy", () => {
@@ -52,7 +50,7 @@ describe("wrapping modebar height contract", () => {
   });
 
   it("limits phone hiding to the auxiliary source note, not runtime facts", () => {
-    expect(workspaceCss).toContain(".aw-modebar .aw-native-source-note{");
-    expect(workspaceCss).not.toContain(".aw-modebar > div:last-child{");
+    expect(conversationSource).toContain('className="aw-native-source-note hidden items-center');
+    expect(conversationSource).toContain('className="aw-runtime-truth"');
   });
 });
