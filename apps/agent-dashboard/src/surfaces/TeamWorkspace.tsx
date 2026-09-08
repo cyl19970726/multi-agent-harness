@@ -26,7 +26,7 @@ export function TeamWorkspace({apiUrl,space,project,company,teamId,teamRunId,ref
   const [refetch,setRefetch] = useState(0);
   const [replyTo,setReplyTo] = useState<MessageSummary|null>(null);
   const [activityFilters,setActivityFilters]=useState(emptyActivityFilters);
-  const activityReturnRef=useRef<{scroll:number;workId:string}|null>(null);
+  const activityReturnRef=useRef<{scroll:number;workId:string;recordId:string|null}|null>(null);
   const tabScrollRef=useRef<Partial<Record<TeamTab,number>>>({});
   const workspaceScrollRef = useRef<HTMLElement>(null);
   const committedIdentityRef = useRef<string|null>(null);
@@ -46,7 +46,7 @@ export function TeamWorkspace({apiUrl,space,project,company,teamId,teamRunId,ref
     onSelectionChange({teamTab,teamWorkId:undefined});
   };
   const openActivityWork=(teamWorkId:string)=>{
-    activityReturnRef.current={scroll:workspaceScrollRef.current?.scrollTop??0,workId:teamWorkId};
+    activityReturnRef.current={scroll:workspaceScrollRef.current?.scrollTop??0,workId:teamWorkId,recordId:document.activeElement?.closest("[data-activity-record-id]")?.getAttribute("data-activity-record-id")??null};
     onSelectionChange({teamTab:"works",teamWorkId});
   };
   const selectWork=(teamWorkId:string|undefined)=>{
@@ -58,8 +58,11 @@ export function TeamWorkspace({apiUrl,space,project,company,teamId,teamRunId,ref
   useLayoutEffect(() => {
     workspaceScrollRef.current?.scrollTo({top:tabScrollRef.current[tab]??0,behavior:"auto"});
     if(tab==="activity"&&activityReturnRef.current){
-      const returningWorkId=activityReturnRef.current.workId;
-      window.requestAnimationFrame(()=>{document.querySelector<HTMLElement>(`[data-activity-work-id="${CSS.escape(returningWorkId)}"]`)?.focus({preventScroll:true});});
+      const {workId,recordId}=activityReturnRef.current;
+      window.requestAnimationFrame(()=>{
+        const recordSelector=recordId?`[data-activity-record-id="${CSS.escape(recordId)}"] `:"";
+        document.querySelector<HTMLElement>(`${recordSelector}[data-activity-work-id="${CSS.escape(workId)}"]`)?.focus({preventScroll:true});
+      });
       activityReturnRef.current=null;
     }
   },[tab,teamId]);
