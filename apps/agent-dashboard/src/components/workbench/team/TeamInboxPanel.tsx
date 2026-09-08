@@ -18,12 +18,13 @@ export function isTeamInboxIdentityRequiredError(error: unknown): boolean {
     && error.code === "NOT_AUTHORIZED";
 }
 
-export function TeamInboxLoadState({ loading, error, children }: {
+export function TeamInboxLoadState({ loading, error, children, identityRequired=false }: {
+  identityRequired?:boolean;
   loading: boolean;
   error: unknown;
   children: ReactNode;
 }) {
-  if (isTeamInboxIdentityRequiredError(error)) {
+  if (identityRequired || isTeamInboxIdentityRequiredError(error)) {
     return (
       <p className="rounded-lg border border-dashed border-border px-4 py-5 text-center text-xs text-muted-foreground">
         <MailQuestion className="mx-auto mb-1.5 size-4" />
@@ -90,7 +91,8 @@ function InboxRow({ item, teamId, onOpenWork }: { item: TeamInboxItem; teamId: s
  * Team-subject canonical delivery each — no member fan-out. This panel is a
  * read projection: claim/dispatch remain authenticated mutations, not reads.
  */
-export function TeamInboxPanel({ apiUrl, space, project, teamId, viewerIdentity, refreshKey, onOpenWork }: {
+export function TeamInboxPanel({ apiUrl, space, project, teamId, viewerIdentity, refreshKey, onOpenWork, identityRequired=false }: {
+  identityRequired?:boolean;
   apiUrl: string; space: string; project: string; teamId: string; viewerIdentity: string; refreshKey?: string;
   onOpenWork?: (workId: string) => void;
 }) {
@@ -101,7 +103,7 @@ export function TeamInboxPanel({ apiUrl, space, project, teamId, viewerIdentity,
   const identityRequiredRef = useRef<string | null>(null);
   const requestIdentity = `${apiUrl}\u0000${space}\u0000${project}\u0000${teamId}\u0000${viewerIdentity}`;
   useEffect(() => {
-    if (identityRequiredRef.current === requestIdentity) return;
+    if (identityRequired || identityRequiredRef.current === requestIdentity) return;
     let live = true;
     const identityChanged = committedIdentityRef.current !== requestIdentity;
     setLoading(identityChanged);
@@ -121,18 +123,18 @@ export function TeamInboxPanel({ apiUrl, space, project, teamId, viewerIdentity,
       })
       .finally(() => { if (live) setLoading(false); });
     return () => { live = false; };
-  }, [apiUrl, space, project, teamId, viewerIdentity, requestIdentity, refreshKey]);
+  }, [apiUrl, space, project, teamId, viewerIdentity, requestIdentity, refreshKey, identityRequired]);
 
   return (
     <section aria-label="Shared Team Inbox" className="space-y-2" data-testid="team-inbox-panel">
       <div className="flex items-center justify-between gap-2">
         <h2 className="flex items-center gap-2 text-sm font-semibold">
           <Inbox className="size-4 text-primary" /> Team Inbox
-          {view && <span className="rounded-full bg-primary/10 px-1.5 text-[9px] text-primary">{view.data.items.length}</span>}
+          {view && !identityRequired && <span className="rounded-full bg-primary/10 px-1.5 text-[9px] text-primary">{view.data.items.length}</span>}
         </h2>
-        {view && <ViewProvenance view={view} />}
+        {view && !identityRequired && <ViewProvenance view={view} />}
       </div>
-      <TeamInboxLoadState loading={loading} error={error}>
+      <TeamInboxLoadState loading={loading} error={error} identityRequired={identityRequired}>
         {view && (
           view.data.items.length === 0 ? (
             <p className="rounded-lg border border-dashed border-border px-4 py-5 text-center text-xs text-muted-foreground">
