@@ -10,6 +10,7 @@ import {
   UserRound, Users, Wrench, X,
 } from "lucide-react";
 
+import { providerDisplayName } from "@/lib/provider";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Avatar } from "@/components/workbench/Avatar";
@@ -188,7 +189,7 @@ export function AgentConversationWorkspace({
                 <span className="mt-1.5 flex min-w-0 flex-wrap items-center gap-1.5"><span className="aw-header-chip">{currentSession?.provider ? humanizeToken(currentSession.provider) : selected.provider ? humanizeToken(selected.provider) : "No active provider Session"}</span><span className="aw-header-chip" data-status={data.runtime_truth.harness_control.state}>Harness {humanizeToken(data.runtime_truth.harness_control.state)}</span><span className="aw-header-chip">Native {humanizeToken(data.runtime_truth.provider_native_activity.state)}</span>{selected.is_host&&selected.host_session_mode==="external_interactive"&&<span className="aw-header-chip">External · unmanaged</span>}{currentSession&&<span className="aw-header-chip">{humanizeToken(currentSession.effective_permission_ceiling)}</span>}{selected.current_member_run_ref&&<span className="aw-header-chip">{selected.current_member_run_ref}</span>}<span className="aw-header-chip">{visibleSessionId&&visibleSessionGeneration!==null ? `Session ${shortId(visibleSessionId)} · gen ${visibleSessionGeneration}` : "Native Session unavailable"}</span></span>
               </span>
             </button>
-            <div className="hidden items-center gap-1 md:flex">{currentSession?.native_session_open_target&&<Button asChild size="sm" variant="outline"><a href={currentSession.native_session_open_target.uri} title={`Open exact ${humanizeToken(currentSession.provider)} native Session`}>Open native chat</a></Button>}<Button size="icon" variant="ghost" className="text-muted-foreground" aria-label="Agent Session details" title="Agent Session details" onClick={()=>setProfileOpen(true)}><Info className="size-4"/></Button><Button size="icon" variant="ghost" className="text-muted-foreground" aria-label="Agent Session history" title="Provider-native history"><History className="size-4"/></Button></div>
+            <div className="hidden items-center gap-1 md:flex">{currentSession?.native_session_open_target&&<Button asChild size="sm" variant="outline"><a href={currentSession.native_session_open_target.uri} title={`Open exact ${humanizeToken(currentSession.provider)} native Session`}>Open native chat</a></Button>}<Button size="icon" variant="ghost" className="text-muted-foreground" aria-label="Agent Session details" title="Agent Session details" onClick={()=>setProfileOpen(true)}><Info className="size-4"/></Button><Button size="icon" variant="ghost" className="text-muted-foreground" disabled aria-label="Agent Session history unavailable" title="Session history navigation is not available here. Read the current native Session in the Session tab."><History className="size-4"/></Button></div>
             <Button size="icon" variant="secondary" className="lg:hidden" onClick={()=>setRosterOpen(true)} aria-label="Open Agent roster"><Users className="size-4"/></Button>
             <Button size="icon" variant="secondary" className="lg:hidden" onClick={()=>setContextOpen(true)} aria-label="Open Agent context"><PanelRight className="size-4"/></Button>
           </header>
@@ -209,7 +210,7 @@ export function AgentConversationWorkspace({
             <Tabs.Content value="work" className="min-h-0 flex-1 outline-none"><WorkCanvas data={data} onSelect={(work)=>{setContextSelection({kind:"work",work});onSelectionChange({teamWorkId:work.work_id});}}/></Tabs.Content>
           </Tabs.Root>
 
-          {selected.is_host&&currentSession?.native_session_open_target&&<div className="shrink-0 border-t border-border bg-primary/[0.035] px-4 py-2 text-[11px] text-muted-foreground sm:px-7"><span>Direct conversation stays in the provider-native transcript. </span><a className="font-semibold text-primary hover:underline" href={currentSession.native_session_open_target.uri}>Continue this exact Host Session in Codex Desktop</a><span>. Message authoring in Agent Workspace is intentionally deferred.</span></div>}
+          {selected.is_host&&currentSession?.native_session_open_target&&<div className="shrink-0 border-t border-border bg-primary/[0.035] px-4 py-2 text-[11px] text-muted-foreground sm:px-7"><span>Direct conversation stays in the provider-native transcript. </span><a className="font-semibold text-primary hover:underline" href={currentSession.native_session_open_target.uri}>Continue this exact Host Session in {providerDisplayName(currentSession.provider)}</a><span>. Message authoring in Agent Workspace is intentionally deferred.</span></div>}
           <AgentComposer data={data} actions={currentView.allowed_actions} actionsCurrent={!error&&actionsCurrent&&currentView.freshness==="current"} selectedRunId={selectedRunId} onAction={onAction} onCompleted={()=>setRefresh(value=>value+1)}/>
         </section>
 
