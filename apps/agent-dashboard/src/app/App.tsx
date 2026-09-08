@@ -4,7 +4,6 @@ import {
   fetchProjects,
   fetchSpaces,
   fetchSnapshot,
-  fetchTeamRunSnapshot,
   postAction,
   ProjectionInvalidationTracker,
   streamSelectionKey,
@@ -15,6 +14,7 @@ import {
   type SseSnapshotMarker,
   type SnapshotRequestToken,
 } from "../api";
+import { readSelectionSnapshot } from "./readSnapshot";
 import { buildWorkbenchModel } from "../model/readModel";
 import type { DashboardSnapshot, ExecutionSpace, Project } from "../types";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -290,48 +290,9 @@ export function App() {
       const controller = new AbortController();
       resyncAbortControllerRef.current = controller;
       try {
-        // Resolve a durable team id (team-xxx, not team-run-xxx) to its latest
-        // team-run id before calling fetchTeamRunSnapshot so the backend
-        // receives a valid team-run id for the bounded read. The selection keeps
-        // the durable Team id — navigation is durable, the bounded TeamRun read
-        // is an internal projection detail. A Team with no runs yet reads the
-        // full snapshot so it remains visible with no active runtime.
-        let boundedRunId: string | null = null;
-        if (
-          selection.surface === "team" &&
-          selection.teamId &&
-          selection.teamId.startsWith("team-") &&
-          !selection.teamId.startsWith("team-run-")
-        ) {
-          try {
-            const fullSnapshot = await fetchSnapshot(
-              baseUrl,
-              project,
-              company,
-              space,
-              controller.signal,
-            );
-            boundedRunId = (fullSnapshot.team_runs ?? [])
-              .filter((run) => run.agent_team_id === selection.teamId)
-              .sort((a, b) => (b.created_at ?? "").localeCompare(a.created_at ?? ""))[0]?.id ?? null;
-          } catch {
-            // Resolution failed; fall back to the full snapshot so the durable
-            // Team surface still renders its authenticated RoleView.
-          }
-        } else if (selection.surface === "team" && selection.teamId) {
-          // Historical team-run deep link: the bounded read stays run-scoped.
-          boundedRunId = selection.teamId;
-        }
-        const next = boundedRunId
-          ? await fetchTeamRunSnapshot(
-              baseUrl,
-              boundedRunId,
-              project,
-              company,
-              space,
-              controller.signal,
-            )
-          : await fetchSnapshot(baseUrl, project, company, space, controller.signal);
+        const next = await readSelectionSnapshot(
+          selection, baseUrl, project, company, space, controller.signal,
+        );
         return { request, snapshot: next };
       } catch (error) {
         discardSnapshotRequest(request);

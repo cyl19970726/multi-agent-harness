@@ -26,3 +26,16 @@ describe("workspace authority and navigation copy", () => {
     expect(conversationSource).toContain("Session history navigation is not available here. Read the current native Session in the Session tab.");
   });
 });
+
+describe("mobile dialog keyboard parity", () => {
+  it("uses the existing profile focus behavior for mobile sheets", () => {
+    const mobileSheet = conversationSource.slice(conversationSource.indexOf("function MobileSheet"), conversationSource.indexOf("function ProfileSection"));
+    expect(mobileSheet).toContain("useDialogFocus(dialogRef,closeRef,onClose)");
+    expect(mobileSheet).toContain('ref={dialogRef} tabIndex={-1} role="dialog"');
+    expect(mobileSheet).toContain("ref={closeRef}");
+    expect(conversationSource).toContain("useDialogFocus(dialogRef,closeRef,onClose,openerRef)");
+    expect(conversationSource).toContain('event.key==="Escape"');
+    expect(conversationSource).toContain('event.key!=="Tab"');
+    expect(conversationSource).toContain("opener?.focus()");
+  });
+});

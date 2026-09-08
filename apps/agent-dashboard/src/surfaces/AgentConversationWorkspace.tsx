@@ -40,6 +40,7 @@ import {
   type RoleView,
   type WorkSummary,
 } from "../model/roleViews";
+import { NativeSessionUnavailable } from "./NativeSessionUnavailable";
 import { RoleActionPanel } from "./RoleActionPanel";
 import { ViewProvenance, ViewState } from "./RoleViewPrimitives";
 import "./agent-workspace.css";
@@ -298,6 +299,7 @@ function SessionCanvas({data,projection,connectionState,selectedMessageId,onSele
       <span>{currentWork?`${humanizeToken(currentWork.phase)} Work · `:""}{data.messages.length} messages · {projection?.available?projection.records.reduce((count,record)=>count+record.fragments.length,0):0} native fragments{connectionState==="disconnected"?" · persisted stream disconnected":""}{projection?.available&&projection.incomplete_tail?" · provider file has an incomplete tail":""}{projection?.available&&projection.source_reset?" · source generation reset":""}</span>
     </div>
     <div className="aw-authority-legend" aria-label="Session timeline fact sources"><span data-source="message">Harness Message · coordination</span><span data-source="work">Work link · context only</span><span data-source="provider">Provider-native · execution evidence</span></div>
+    {projection&&!projection.available&&<NativeSessionUnavailable reason={projection.reason_code} detail={projection.detail}/>}
     {hasNativeRowsWithoutComparableProviderTime&&<p className="mb-3 text-[10px] leading-4 text-muted-foreground">Native records without comparable provider timestamps remain in provider source order; their position relative to Harness Messages is not a recorded chronology.</p>}
     {projection?.available&&projection.has_more&&<div className="flex justify-center py-3"><Button type="button" variant="outline" size="sm" disabled={loadingOlder} onClick={onLoadOlder}>{loadingOlder?"Loading provider-native events…":"Load earlier native Session events"}</Button></div>}
     {rows.length
@@ -308,7 +310,7 @@ function SessionCanvas({data,projection,connectionState,selectedMessageId,onSele
         if(row.kind==="control_boundary")return <RuntimeControlBoundary truth={data.runtime_truth}/>;
         return <ProviderTimelineRecord item={row.item} actorName={data.selected_agent.display_name} selected={selectedTimelineId===providerId} onSelectFragment={(record,fragment)=>onSelect({kind:"event",record,fragment})} onToggle={()=>{const next=selectedTimelineId===providerId?null:providerId;setSelectedTimelineId(next);onSelect(next?(row.item.kind==="tool_episode"?{kind:"tool",episode:row.item}:row.item.kind==="envelope_group"?null:{kind:"event",record:row.item.record,fragment:row.item.fragment}):null);}}/>;
       })()}</div>})}</div>
-      : <EmptyCanvas compact title={projection&&!projection.available?"Provider-native Session unavailable":data.selected_agent.is_host?"No Host Session events or Team Messages yet":"No Session activity yet"} detail={projection&&!projection.available?`${humanizeToken(projection.reason_code)}${projection.detail?`: ${projection.detail}`:""}`:"Original provider-native events and authored Team Messages will appear here when persisted by the provider."}/>
+      : projection&&!projection.available ? null : <EmptyCanvas compact title={data.selected_agent.is_host?"No Host Session events or Team Messages yet":"No Session activity yet"} detail="Original provider-native events and authored Team Messages will appear here when persisted by the provider."/>
     }
     {projection?.available&&projection.has_more&&<p className="mt-4 border-t border-border pt-3 text-[10px] text-muted-foreground">Earlier original provider events remain available on demand.</p>}
   </div></ScrollArea.Viewport><ScrollArea.Scrollbar orientation="vertical" className="flex w-2 p-0.5"><ScrollArea.Thumb className="rounded-full bg-border"/></ScrollArea.Scrollbar></ScrollArea.Root>;
@@ -525,16 +527,12 @@ function AgentComposer({data,actions,actionsCurrent,selectedRunId,onAction,onCom
   </div></div>;
 }
 
-function ProfileDialog({data,onClose,closeRef,openerRef}:{data:AgentWorkspaceData;onClose:()=>void;closeRef:React.RefObject<HTMLButtonElement>;openerRef:React.RefObject<HTMLButtonElement>}){
-  const selected=data.selected_agent,c=data.configuration;
-  const currentSession=data.current_session??null;
-  const hasProviderConfiguration=Boolean(selected.provider||selected.execution_mode||c.provider_profile_ref||c.permission_ceiling||c.workspace_policy);
-  const sessionProjection=data.persisted_session_projection;
-  const dialogRef=useRef<HTMLElement>(null);
+function useDialogFocus(dialogRef:React.RefObject<HTMLElement>,closeRef:React.RefObject<HTMLButtonElement>,onClose:()=>void,openerRef?:React.RefObject<HTMLButtonElement>) {
   const onCloseRef=useRef(onClose);
   onCloseRef.current=onClose;
   useEffect(()=>{
     const dialog=dialogRef.current;
+    const opener=openerRef?.current ?? document.activeElement as HTMLElement|null;
     const focusFrame=window.requestAnimationFrame(()=>closeRef.current?.focus());
     const onKeyDown=(event:KeyboardEvent)=>{
       if(event.key==="Escape"){event.preventDefault();onCloseRef.current();return;}
@@ -549,9 +547,18 @@ function ProfileDialog({data,onClose,closeRef,openerRef}:{data:AgentWorkspaceDat
     return()=>{
       window.cancelAnimationFrame(focusFrame);
       document.removeEventListener("keydown",onKeyDown);
-      openerRef.current?.focus();
+      opener?.focus();
     };
   },[closeRef,openerRef]);
+}
+
+function ProfileDialog({data,onClose,closeRef,openerRef}:{data:AgentWorkspaceData;onClose:()=>void;closeRef:React.RefObject<HTMLButtonElement>;openerRef:React.RefObject<HTMLButtonElement>}){
+  const selected=data.selected_agent,c=data.configuration;
+  const currentSession=data.current_session??null;
+  const hasProviderConfiguration=Boolean(selected.provider||selected.execution_mode||c.provider_profile_ref||c.permission_ceiling||c.workspace_policy);
+  const sessionProjection=data.persisted_session_projection;
+  const dialogRef=useRef<HTMLElement>(null);
+  useDialogFocus(dialogRef,closeRef,onClose,openerRef);
   return <div className="fixed inset-0 z-50 bg-[#3b2f27]/12" role="presentation" onMouseDown={event=>{if(event.target===event.currentTarget)onClose();}}><section ref={dialogRef} role="dialog" aria-modal="true" aria-label={`${selected.display_name} configuration`} tabIndex={-1} className="agent-profile-drawer absolute inset-y-0 right-0 w-[min(92vw,29rem)] overflow-y-auto border-l border-border bg-background">
     <header className="sticky top-0 z-10 flex min-h-14 items-center gap-3 border-b border-border bg-background/95 px-5 py-2"><Avatar name={selected.display_name} identity={`${selected.agent_member_ref.id} ${selected.role}`} size="lg" tone="running"/><div className="min-w-0 flex-1"><h2 className="truncate text-xl font-semibold tracking-[-0.02em]">{selected.display_name}</h2><p className="mt-0.5 text-[10px] text-muted-foreground">{humanizeToken(selected.role)} · durable AgentMember</p></div><Button ref={closeRef} size="icon" variant="ghost" onClick={onClose} aria-label="Close Agent configuration"><X className="size-4"/></Button></header>
     <div className="space-y-7 px-6 py-6"><ProfileSection title="Who"><ContextFact label="Role" value={humanizeToken(selected.role)} canonical={selected.role}/><ContextFact label="Member lifecycle" value={humanizeToken(selected.organization_status)} canonical={selected.organization_status}/>{c.description&&<p className="aw-profile-description">{c.description}</p>}<p className="aw-profile-canonical" title={selected.agent_member_ref.id}>Durable AgentMember · {shortId(selected.agent_member_ref.id)}</p></ProfileSection>
@@ -563,7 +570,11 @@ function ProfileDialog({data,onClose,closeRef,openerRef}:{data:AgentWorkspaceDat
   </section></div>;
 }
 
-function MobileSheet({title,onClose,children}:{title:string;onClose:()=>void;children:React.ReactNode}){return <div className="aw-sheet-backdrop fixed inset-0 z-40 lg:hidden" onMouseDown={event=>{if(event.target===event.currentTarget)onClose();}}><section role="dialog" aria-modal="true" aria-label={title} className="aw-mobile-sheet absolute inset-y-0 right-0 w-[min(92vw,25rem)] overflow-y-auto border-l"><header className="sticky top-0 z-10 flex min-h-12 items-center justify-between border-b px-4"><h2 className="text-sm font-semibold">{title}</h2><Button size="icon" variant="secondary" onClick={onClose} aria-label={`Close ${title}`}><X className="size-4"/></Button></header>{children}</section></div>}
+function MobileSheet({title,onClose,children}:{title:string;onClose:()=>void;children:React.ReactNode}){
+  const dialogRef=useRef<HTMLElement>(null);
+  const closeRef=useRef<HTMLButtonElement>(null);
+  useDialogFocus(dialogRef,closeRef,onClose);
+  return <div className="aw-sheet-backdrop fixed inset-0 z-40 lg:hidden" onMouseDown={event=>{if(event.target===event.currentTarget)onClose();}}><section ref={dialogRef} tabIndex={-1} role="dialog" aria-modal="true" aria-label={title} className="aw-mobile-sheet absolute inset-y-0 right-0 w-[min(92vw,25rem)] overflow-y-auto border-l"><header className="sticky top-0 z-10 flex min-h-12 items-center justify-between border-b px-4"><h2 className="text-sm font-semibold">{title}</h2><Button ref={closeRef} size="icon" variant="secondary" onClick={onClose} aria-label={`Close ${title}`}><X className="size-4"/></Button></header>{children}</section></div>}
 function ContextSection({title,hint,primary=false,children}:{title:string;hint?:string;primary?:boolean;children:React.ReactNode}){return <WorkspaceSection title={title} hint={hint} primary={primary}>{children}</WorkspaceSection>}
 function ProfileSection({title,children}:{title:string;children:React.ReactNode}){const Icon=title==="Who"?UserRound:title==="Authority"?KeyRound:title==="Capabilities"?Wrench:title==="Runtime"?Activity:History;return <section className="aw-profile-section"><h3><Icon aria-hidden="true"/>{title}</h3><div>{children}</div></section>}
 function ContextFact({label,value,canonical}:{label:string;value:string;canonical?:string}){return <WorkspaceFact label={label} value={value} canonicalValue={canonical}/>}
