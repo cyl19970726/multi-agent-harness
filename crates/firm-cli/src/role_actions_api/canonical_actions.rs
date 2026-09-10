@@ -30,15 +30,13 @@ pub(super) fn execute_canonical_role_action(
                 }))
             );
             let canonical_id = format!("message:{compatibility_id}");
-            let existing = store
-                .fabric_messages(&auth.execution_space_id)?
-                .into_iter()
-                .find(|message| message.id == canonical_id);
+            let messages = store.fabric_messages(&auth.execution_space_id)?;
+            let existing = messages.iter().find(|message| message.id == canonical_id);
             if let Some(canonical) = existing {
                 if canonical.body_digest
                     != harness_core::agentfirm_api::message_body_digest(&canonical.body)
                     || canonical.content_fingerprint
-                        != harness_core::agentfirm_api::message_content_fingerprint(&canonical)
+                        != harness_core::agentfirm_api::message_content_fingerprint(canonical)
                 {
                     return Err(encoded_error(
                         "RUNTIME_COMMAND_RECOVERY_REQUIRED",
@@ -50,7 +48,7 @@ pub(super) fn execute_canonical_role_action(
                 }
                 if !harness_application::prepared_message_matches_canonical(
                     &prepared,
-                    &canonical,
+                    canonical,
                     &compatibility_id,
                 ) {
                     return Err(encoded_error(
@@ -91,8 +89,7 @@ pub(super) fn execute_canonical_role_action(
             }
             if prepared.draft.kind == harness_core::agentfirm_api::MessageKind::Reply {
                 validate_reply_lineage(
-                    store,
-                    &auth.execution_space_id,
+                    &messages,
                     team_run_id,
                     &prepared.draft.correlation_id,
                     prepared.draft.causation_id.as_deref().unwrap_or_default(),

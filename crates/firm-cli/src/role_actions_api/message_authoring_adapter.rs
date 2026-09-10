@@ -109,20 +109,16 @@ pub(super) fn prepare_canonical_message(
 /// after the idempotency replay/conflict check so a reused key with different
 /// Message semantics keeps its RUNTIME_COMMAND_REJECTED contract.
 pub(super) fn validate_reply_lineage(
-    store: &HarnessStore,
-    execution_space_id: &str,
+    messages: &[harness_core::agentfirm_api::Message],
     team_run_id: &str,
     correlation_id: &str,
     causation_id: &str,
 ) -> Result<(), StoreError> {
-    let run_messages = store
-        .fabric_messages(execution_space_id)?
-        .into_iter()
-        .filter(|message| message.team_run_id.as_deref() == Some(team_run_id))
-        .collect::<Vec<_>>();
-    let cause = run_messages
+    let cause = messages
         .iter()
-        .find(|message| message.id == causation_id)
+        .find(|message| {
+            message.team_run_id.as_deref() == Some(team_run_id) && message.id == causation_id
+        })
         .ok_or_else(|| {
             encoded_error(
                 "INVALID_STATE_TRANSITION",
@@ -146,20 +142,7 @@ pub(super) fn validate_reply_lineage(
             None,
         ));
     }
-    if !run_messages
-        .iter()
-        .any(|message| message.correlation_id == correlation_id)
-    {
-        return Err(encoded_error(
-            "INVALID_STATE_TRANSITION",
-            format!(
-                "correlation_id `{correlation_id}` does not identify a conversation in team run {team_run_id}"
-            ),
-            "team_run",
-            team_run_id,
-            None,
-        ));
-    }
+    // The matching cause itself proves this correlation exists in the run.
     Ok(())
 }
 
