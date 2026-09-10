@@ -2,7 +2,7 @@ use super::process_isolation::{
     assert_single_test_passed, isolation_dir, kill_child_group, kill_published_fixtures,
     process_group_alive, read_child_output, run_in_isolated_child, spawn_owned_fixture,
     spawn_test_child, unpublish_owned_fixture, wait_child_bounded, wait_for_file_bounded,
-    CHILD_SIGNAL_TIMEOUT, ISOLATED_CHILD_TIMEOUT, REAP_TIMEOUT,
+    CHILD_SIGNAL_TIMEOUT, ISOLATED_CHILD_TIMEOUT, ISOLATION_DIR_ENV, REAP_TIMEOUT,
 };
 use super::*;
 use std::path::PathBuf;
@@ -24,6 +24,10 @@ const TIMEOUT_FIXTURE_EXACT: &str =
     "daemon_integration_tests::shutdown_tests::timeout_fixture_child_parks_until_released_by_signal";
 const FAILING_CHILD_EXACT: &str =
     "daemon_integration_tests::shutdown_tests::failing_child_exits_nonzero_with_diagnostics";
+const PUBLICATION_FAILURE_EXACT: &str =
+    "daemon_integration_tests::shutdown_tests::publication_write_failure_cleans_the_exact_owned_fixture";
+const GROUP_PROBE_EXACT: &str =
+    "daemon_integration_tests::shutdown_tests::process_group_alive_proves_liveness_and_esrch_absence";
 
 /// Set only in the registrar child of the concurrent regression below; the
 /// value is the shared coordination directory.
@@ -47,7 +51,12 @@ fn shutdown_force_reaps_an_owned_group_before_returning_body() {
         let pid = child.id();
         pid_tx.send(pid).expect("publish owned process group");
         let status = registration.kill_and_reap(&mut child);
-        unpublish_owned_fixture(pid);
+        // Retain the publication unless the reap is proven: a failed
+        // kill/reap leaves the parent's kill_published_fixtures a reachable
+        // fixture (#928).
+        if status.is_ok() {
+            unpublish_owned_fixture(pid);
+        }
         let status = status?;
         assert!(status.is_some(), "shutdown child must be terminal-reaped");
         assert!(!thread_heartbeat.load(Ordering::Acquire));
@@ -202,9 +211,13 @@ fn unrelated_owned_group_survives_a_concurrent_external_shutdown_sweep_body() {
         );
     }));
     // The fixture is reaped on every exit path — including a wait-timeout
-    // panic — before any panic propagates.
+    // panic — before any panic propagates. The publication is retained
+    // unless the reap is proven, so a failed kill/reap still leaves the
+    // parent's kill_published_fixtures a reachable fixture (#928).
     let reap = registration.kill_and_reap(&mut child);
-    unpublish_owned_fixture(pid);
+    if reap.is_ok() {
+        unpublish_owned_fixture(pid);
+    }
     assert!(
         reap.expect("reap unrelated fixture").is_some(),
         "unrelated fixture must be terminal-reaped"
@@ -319,9 +332,12 @@ fn timeout_fixture_child_parks_until_released_by_signal_body() {
             std::thread::sleep(Duration::from_millis(250));
         }
     }));
-    // Reap on every exit path before any panic propagates.
+    // Reap on every exit path before any panic propagates. Same retention
+    // rule: unpublish only after a proven reap (#928).
     let reap = registration.kill_and_reap(&mut child);
-    unpublish_owned_fixture(pid);
+    if reap.is_ok() {
+        unpublish_owned_fixture(pid);
+    }
     assert!(
         reap.expect("reap timeout fixture").is_some(),
         "timeout fixture must be terminal-reaped"
@@ -447,5 +463,89 @@ fn isolated_child_failure_reports_child_output_and_never_fakes_a_pass() {
     assert!(
         !process_group_alive(failing.id()),
         "the failed child exited by itself; nothing may claim further cleanup was needed"
+    );
+}
+
+/// Publication-failure cleanup coverage (#928): when the fixture group id
+/// cannot be published (read-only isolation dir), `spawn_owned_fixture` must
+/// kill and reap the exact owned child locally before panicking — a failed
+/// write must never strand a live, unpublished fixture group.
+#[test]
+fn publication_write_failure_cleans_the_exact_owned_fixture() {
+    run_in_isolated_child(
+        PUBLICATION_FAILURE_EXACT,
+        publication_write_failure_cleans_the_exact_owned_fixture_body,
+    );
+}
+
+fn publication_write_failure_cleans_the_exact_owned_fixture_body() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let original_dir = std::env::var(ISOLATION_DIR_ENV).expect("isolation dir env in child");
+    let read_only = PathBuf::from(&original_dir).join("read-only-publication");
+    std::fs::create_dir_all(&read_only).expect("create read-only publication dir");
+    std::fs::set_permissions(&read_only, std::fs::Permissions::from_mode(0o555))
+        .expect("make publication dir read-only");
+    std::env::set_var(ISOLATION_DIR_ENV, &read_only);
+    let outcome = std::panic::catch_unwind(|| {
+        spawn_owned_fixture(std::process::Command::new("sleep").arg("120"))
+    });
+    std::env::set_var(ISOLATION_DIR_ENV, &original_dir);
+    std::fs::set_permissions(&read_only, std::fs::Permissions::from_mode(0o755))
+        .expect("restore publication dir writable");
+    let error = match outcome {
+        Err(error) => error,
+        Ok((mut child, mut registration)) => {
+            // A spawn that unexpectedly succeeded must not leak its fixture.
+            let _ = registration.kill_and_reap(&mut child);
+            panic!("an unwritable publication dir must fail the fixture spawn");
+        }
+    };
+    let message = error
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .or_else(|| error.downcast_ref::<&str>().copied())
+        .expect("spawn panic carries a message");
+    let pid: u32 = message
+        .split_whitespace()
+        .find_map(|token| token.strip_prefix("fixture-pid="))
+        .and_then(|value| value.parse().ok())
+        .expect("spawn panic names the exact owned fixture pid");
+    assert!(
+        !process_group_alive(pid),
+        "publication failure left fixture group {pid} live and unpublished"
+    );
+}
+
+/// Probe-semantics pin (#928): a live fixture group probes alive, and after
+/// its proven reap the probe proves absence through the ESRCH branch. The
+/// non-ESRCH fail-closed arm is defensive and cannot be forced portably.
+#[test]
+fn process_group_alive_proves_liveness_and_esrch_absence() {
+    run_in_isolated_child(
+        GROUP_PROBE_EXACT,
+        process_group_alive_proves_liveness_and_esrch_absence_body,
+    );
+}
+
+fn process_group_alive_proves_liveness_and_esrch_absence_body() {
+    let (mut child, mut registration) =
+        spawn_owned_fixture(std::process::Command::new("sleep").arg("120"));
+    let pid = child.id();
+    assert!(
+        process_group_alive(pid),
+        "live fixture group must probe alive"
+    );
+    let reap = registration.kill_and_reap(&mut child);
+    if reap.is_ok() {
+        unpublish_owned_fixture(pid);
+    }
+    assert!(
+        reap.expect("reap probe fixture").is_some(),
+        "probe fixture must be terminal-reaped"
+    );
+    assert!(
+        !process_group_alive(pid),
+        "a proven-reaped fixture group must prove absence via ESRCH"
     );
 }

@@ -178,10 +178,20 @@ pub fn kill_child_group(child: &mut Child) {
 }
 
 /// Probe whether process group `pid` still exists: signal 0 returns 0 while
-/// any group member lives and fails with ESRCH once the group is gone.
+/// any group member lives. Absence is proven ONLY by ESRCH; any other errno
+/// (EPERM and friends) leaves existence unresolved, so it fails closed with a
+/// panic instead of masquerading as a proven-gone group (#928).
 pub fn process_group_alive(pid: u32) -> bool {
     let probe = unsafe { libc::kill(-(pid as libc::pid_t), 0) };
-    probe == 0
+    if probe == 0 {
+        return true;
+    }
+    let errno = std::io::Error::last_os_error().raw_os_error();
+    assert!(
+        errno == Some(libc::ESRCH),
+        "process group {pid} existence is unproven: signal 0 failed with errno {errno:?} (only ESRCH proves absence)"
+    );
+    false
 }
 
 /// Explicitly release an independent process group by its published leader
@@ -215,19 +225,25 @@ pub fn kill_independent_process_group(pid: u32, timeout: Duration, label: &str) 
 /// isolated child (`ISOLATION_DIR_ENV` is set) the group id is published to
 /// `<dir>/owned-fixture-<pid>` so a parent that must kill this child can
 /// still release exactly this fixture by explicit signal — killing the
-/// child's own process group never reaches it.
+/// child's own process group never reaches it. If the publication write
+/// fails, parent cleanup could never find this fixture, so the exact owned
+/// child is killed and reaped locally before the error propagates (#928).
 pub fn spawn_owned_fixture(
     command: &mut Command,
 ) -> (Child, harness_runtime_host::OwnedProcessGroupRegistration) {
     let mut child = command.process_group(0).spawn().expect("spawn fixture");
-    let registration = harness_runtime_host::OwnedProcessGroupRegistration::new(&mut child)
+    let mut registration = harness_runtime_host::OwnedProcessGroupRegistration::new(&mut child)
         .expect("register fixture process group");
     if let Ok(dir) = std::env::var(ISOLATION_DIR_ENV) {
-        std::fs::write(
-            Path::new(&dir).join(format!("owned-fixture-{}", child.id())),
-            b"",
-        )
-        .expect("publish owned fixture process group");
+        let publication = Path::new(&dir).join(format!("owned-fixture-{}", child.id()));
+        if let Err(error) = std::fs::write(&publication, b"") {
+            let pid = child.id();
+            let reap = registration.kill_and_reap(&mut child);
+            panic!(
+                "publish owned fixture group fixture-pid={pid} failed ({error}); \
+                 local kill_and_reap of the exact owned child returned {reap:?}"
+            );
+        }
     }
     (child, registration)
 }

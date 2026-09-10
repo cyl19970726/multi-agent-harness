@@ -353,10 +353,14 @@ fn stop_keeps_authority_until_the_registered_process_group_exits_body() {
         let fixture_pid = child.id();
         pid_tx.send(fixture_pid).unwrap();
         // Every miswire path releases the fixture explicitly instead of
-        // leaving it to the sleep's own timer (#928).
+        // leaving it to the sleep's own timer; the publication is retained
+        // unless the reap is proven, so a failed kill/reap still leaves the
+        // parent's kill_published_fixtures a reachable fixture (#928).
         let Ok(store) = store_rx.recv_timeout(Duration::from_secs(5)) else {
             let reap = registration.kill_and_reap(&mut child);
-            unpublish_owned_fixture(fixture_pid);
+            if reap.is_ok() {
+                unpublish_owned_fixture(fixture_pid);
+            }
             reap?;
             return Err(CliError::Usage(
                 "stop-pg wiring failed before the Store handoff".into(),
@@ -376,8 +380,11 @@ fn stop_keeps_authority_until_the_registered_process_group_exits_body() {
             .unwrap()
             .status;
         // Reap before asserting so an ordering regression does not leak the child.
+        // Same retention rule: unpublish only after a proven reap (#928).
         let reap = registration.kill_and_reap(&mut child);
-        unpublish_owned_fixture(fixture_pid);
+        if reap.is_ok() {
+            unpublish_owned_fixture(fixture_pid);
+        }
         assert!(reap?.is_some());
         assert_ne!(
             status_before_termination,
