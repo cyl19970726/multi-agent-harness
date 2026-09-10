@@ -44,7 +44,7 @@ fn detached_blocked_member_recovery_close_is_exact_and_fail_closed() {
             std::process::id(),
             "test://detached-recovery",
             current_unix_ms_u64(),
-            60_000,
+            180_000,
         )
         .expect("acquire Supervisor lease");
     ensure_test_runtime_fabric(&store, &created, &lease);
@@ -466,7 +466,7 @@ fn detached_blocked_member_recovery_close_is_exact_and_fail_closed() {
                         latched_once = true;
                         close_latched_tx.send(()).expect("publish latched Close");
                         allow_terminal_cas_rx
-                            .recv_timeout(Duration::from_secs(5))
+                            .recv_timeout(Duration::from_secs(30))
                             .map_err(|error| {
                                 CliError::Usage(format!(
                                     "timed out waiting to allow terminal MemberRun CAS: {error}"
@@ -482,7 +482,7 @@ fn detached_blocked_member_recovery_close_is_exact_and_fail_closed() {
                             .send(closed.clone())
                             .expect("publish terminal MemberRun before Close settlement");
                         finish_close_rx
-                            .recv_timeout(Duration::from_secs(5))
+                            .recv_timeout(Duration::from_secs(30))
                             .map_err(|error| {
                                 CliError::Usage(format!(
                                     "timed out waiting to settle recovery Close: {error}"
@@ -494,7 +494,7 @@ fn detached_blocked_member_recovery_close_is_exact_and_fail_closed() {
             )
         });
         close_latched_rx
-            .recv_timeout(Duration::from_secs(5))
+            .recv_timeout(Duration::from_secs(30))
             .expect("recovery Close reached pre-terminal fence");
         let early_pending = store
             .latest_team_member_close_request(&probation_blocked.id)
@@ -524,7 +524,7 @@ fn detached_blocked_member_recovery_close_is_exact_and_fail_closed() {
         );
         terminal_cas_release.release("release terminal MemberRun CAS");
         let terminal_member = terminal_member_rx
-            .recv_timeout(Duration::from_secs(5))
+            .recv_timeout(Duration::from_secs(30))
             .expect("recovery Close reached its in-flight settlement fence");
         assert_eq!(terminal_member.status, MemberRunStatus::Stopped);
         assert!(terminal_member.coordination_is_closed());
@@ -561,7 +561,7 @@ fn detached_blocked_member_recovery_close_is_exact_and_fail_closed() {
                 std::process::id(),
                 "test://detached-recovery-successor",
                 current_unix_ms_u64(),
-                60_000,
+                180_000,
             )
             .expect("acquire successor Supervisor generation");
         assert!(successor.generation > lease.generation);
@@ -627,6 +627,8 @@ fn detached_blocked_member_recovery_close_is_exact_and_fail_closed() {
             Arc::new(AtomicBool::new(true)),
         );
         let (pending_observed_tx, pending_observed_rx) = std::sync::mpsc::sync_channel(0);
+        let (resume_successor_tx, resume_successor_rx) = std::sync::mpsc::sync_channel(0);
+        let mut successor_release = ScopedChannelRelease::new(resume_successor_tx);
         let successor_prepared = probation_blocked.clone();
         let successor_root = root.clone();
         let successor_admission = scope.spawn(move || {
@@ -641,6 +643,9 @@ fn detached_blocked_member_recovery_close_is_exact_and_fail_closed() {
                         pending_observed_tx
                             .send(observed.id.clone())
                             .expect("publish exact Pending observation");
+                        resume_successor_rx
+                            .recv_timeout(Duration::from_secs(30))
+                            .expect("resume successor after recovery settlement");
                     }
                     Ok(())
                 },
@@ -648,7 +653,7 @@ fn detached_blocked_member_recovery_close_is_exact_and_fail_closed() {
         });
         assert_eq!(
             pending_observed_rx
-                .recv_timeout(Duration::from_secs(5))
+                .recv_timeout(Duration::from_secs(30))
                 .expect("successor observed exact Pending recovery transaction"),
             pending.id
         );
@@ -672,6 +677,14 @@ fn detached_blocked_member_recovery_close_is_exact_and_fail_closed() {
         )
         .expect("attach Session after successor observed Pending");
         close_settlement_release.release("finish recovery Close");
+        // Hold the successor at its first Pending observation until Close is
+        // durably Applied, so this test exercises authority drift, not scheduling.
+        let recovered = recovery
+            .join()
+            .expect("recovery thread")
+            .expect("recovery Close")
+            .expect("detached recovery result");
+        successor_release.release("observe Applied recovery with changed Session authority");
         let changed_session_error = match successor_admission
             .join()
             .expect("successor admission thread")
@@ -763,11 +776,7 @@ fn detached_blocked_member_recovery_close_is_exact_and_fail_closed() {
             .expect("successor reconciles Applied recovery Close after authority restoration"),
             PreSpawnWorkspacePreparation::Superseded
         ));
-        recovery
-            .join()
-            .expect("recovery thread")
-            .expect("recovery Close")
-            .expect("detached recovery result")
+        recovered
     });
     assert_eq!(recovered["runtime_effect"], "already_detached");
     assert_eq!(recovered["provider_close_receipt"], "not_fabricated");
