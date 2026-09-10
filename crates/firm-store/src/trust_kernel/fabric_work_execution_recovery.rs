@@ -40,6 +40,12 @@
 
 use super::*;
 
+// Only these settlement writers can call the private daemon invalidation
+// primitive. Keep their admission checks at the public Store entry points.
+mod node_daemon_predecessor;
+mod node_daemon_shutdown;
+pub use node_daemon_predecessor::NodeDaemonPredecessorRecovery;
+
 /// The transition every lost-runtime-generation invalidation writes on the
 /// binding, whichever seam proved the loss. Readers that must tell such an
 /// invalidation from a Member Close release (`released`) key on this string.
@@ -117,7 +123,7 @@ impl HarnessStore {
     ///
     /// The caller must already hold the Store write lock and must already have
     /// proved that this generation's owned provider process groups terminated.
-    pub(crate) fn invalidate_lost_generation_work_bindings_unlocked(
+    fn invalidate_lost_generation_work_bindings_unlocked(
         &self,
         context: &MutationContext,
         execution_space_id: &str,

@@ -3,7 +3,7 @@
 //! Split out of `store_node_runtime` so the machine-authority writers and this
 //! fenced, evidence-gated recovery path each stay one readable seam.
 
-use super::*;
+use crate::*;
 
 /// What one exact predecessor-generation recovery settled in one Execution
 /// Space.
@@ -208,7 +208,7 @@ impl HarnessStore {
                 session_context.command_name =
                     "node_daemon.predecessor_recovery.session_detach".into();
                 // Same rule as the in-process drain
-                // (`store_node_runtime_shutdown.rs`): the key names the exact
+                // (`node_daemon_shutdown.rs`): the key names the exact
                 // predecessor generation being settled, never the caller's
                 // recovery-attempt prefix. That prefix is stable across every
                 // recovery this Node ever runs (the CLI passes the constant
