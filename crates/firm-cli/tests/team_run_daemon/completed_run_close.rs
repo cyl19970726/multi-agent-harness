@@ -17,7 +17,11 @@ fn wait_for_idle_managed_member(
     run_id: &str,
     previous_last_event_at: Option<&Option<String>>,
 ) -> harness_core::ProviderRuntimeProjection {
-    let deadline = Instant::now() + Duration::from_secs(10);
+    // Fake-provider binding (shim spawn, native session open, first consumed
+    // Work version) is load-sensitive: 10 s was reachable on a loaded machine,
+    // so budget 45 s like the sibling slow-adoption wait while keeping the
+    // semantic idle/native/consumed-version predicates unchanged.
+    let deadline = Instant::now() + Duration::from_secs(45);
     loop {
         let member = store
             .member_runs()
