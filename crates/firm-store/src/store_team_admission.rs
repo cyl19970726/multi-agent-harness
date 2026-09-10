@@ -1,6 +1,100 @@
 use super::*;
 
 impl HarnessStore {
+    /// Reject an incompatible standing Session before admitting a runtime
+    /// into the roster. A later provider refusal is too late: unrelated
+    /// recipient operations also inspect that roster.
+    fn validate_member_session_admission_unlocked(
+        &self,
+        execution_space_id: &str,
+        team_run: &AgentTeamRun,
+        runtime: &ProviderRuntimeProjection,
+        canonical: &CanonicalMemberRunAdmission,
+    ) -> StoreResult<()> {
+        // Both projections will be persisted by this admission. Validate their
+        // immutable identity before inspecting historical Sessions, including
+        // when no Session exists yet or the member is external-interactive.
+        let projections_match = match (
+            runtime.native_session.as_ref(),
+            canonical.run.native_session.as_ref(),
+        ) {
+            (None, None) => true,
+            (Some(runtime), Some(canonical)) => {
+                runtime.provider == canonical.provider
+                    && runtime.execution_mode == canonical.execution_mode
+                    && runtime.native_session_id == canonical.native_session_id
+                    && runtime.native_locator_kind == canonical.native_locator_kind
+                    && runtime.provider_version == canonical.provider_version
+                    && runtime.adapter_contract_version == canonical.adapter_contract_version
+            }
+            _ => false,
+        };
+        if !projections_match {
+            return Err(StoreError::Conflict(format!(
+                "MEMBER_ADMISSION_NATIVE_IDENTITY_MISMATCH: canonical MemberRun {} and runtime projection name different native sessions",
+                canonical.run.id
+            )));
+        }
+        // Observations are not identity, but admission publishes one snapshot
+        // in two ledgers. The existing Run reader requires those snapshots to
+        // agree. Reject conflicting inputs rather than silently choosing one.
+        if serde_json::to_value(&runtime.native_session)?
+            != serde_json::to_value(&canonical.run.native_session)?
+        {
+            return Err(StoreError::Conflict(format!(
+                "MEMBER_ADMISSION_NATIVE_PROJECTION_MISMATCH: canonical MemberRun {} and runtime projection have inconsistent native-session observations",
+                canonical.run.id
+            )));
+        }
+        if runtime.is_external_interactive() {
+            return Ok(());
+        }
+        let sessions = self
+            .fabric_agent_sessions(execution_space_id)?
+            .into_iter()
+            .filter(|session| {
+                session.agent_member_id == runtime.agent_member_id
+                    && session.lifecycle != firm_core::agentfirm_api::AgentSessionStatus::Closed
+            })
+            .collect::<Vec<_>>();
+        let session = match sessions.as_slice() {
+            [] => return Ok(()),
+            [session] => session,
+            _ => {
+                return Err(StoreError::Conflict(format!(
+                    "AGENT_SESSION_AMBIGUOUS: {} has multiple current sessions",
+                    runtime.agent_member_id
+                )))
+            }
+        };
+        let identity_matches = match (
+            session.native_session_ref.as_ref(),
+            canonical.run.native_session.as_ref(),
+        ) {
+            (None, None) => true,
+            (Some(current), Some(expected)) => {
+                // A resume locator does not know the version that opened the
+                // conversation until the provider observes it again.
+                let mut observed = current.clone();
+                if expected.provider_version.is_none() {
+                    observed.provider_version = None;
+                }
+                observed.same_identity_as(expected)
+            }
+            _ => false,
+        };
+        if session.node_id != team_run.execution_node_id
+            || session.provider_kind != runtime.provider
+            || !identity_matches
+        {
+            return Err(StoreError::Conflict(format!(
+                "AGENT_SESSION_RECOVERY_REQUIRED: {} does not match new MemberRun native-session truth; explicitly resume its exact native session or close the AgentSession before fresh admission",
+                session.id
+            )));
+        }
+        Ok(())
+    }
+
     pub(super) fn validate_new_team_run_from_agent_team_unlocked(
         &self,
         value: &AgentTeamRun,
@@ -864,6 +958,18 @@ impl HarnessStore {
             _ => {}
         }
         self.validate_new_trust_member_runs_unlocked(execution_space_id, value, canonical)?;
+        for runtime in runtimes {
+            let admission = canonical
+                .iter()
+                .find(|row| row.run.id == runtime.id)
+                .expect("validated complete canonical admission set");
+            self.validate_member_session_admission_unlocked(
+                execution_space_id,
+                value,
+                runtime,
+                admission,
+            )?;
+        }
         self.append_jsonl_unlocked("team_runs.jsonl", value)?;
         for runtime in runtimes {
             self.append_jsonl_unlocked("member_runs.jsonl", runtime)?;
@@ -941,6 +1047,12 @@ impl HarnessStore {
             execution_space_id,
             next,
             std::slice::from_ref(canonical),
+        )?;
+        self.validate_member_session_admission_unlocked(
+            execution_space_id,
+            next,
+            member,
+            canonical,
         )?;
         self.append_jsonl_unlocked("team_runs.jsonl", next)?;
         self.append_jsonl_unlocked("member_runs.jsonl", member)?;

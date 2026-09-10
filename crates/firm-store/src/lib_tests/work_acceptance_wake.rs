@@ -374,13 +374,14 @@ fn real_trust_acceptance_selects_blocked_responsibility_without_changing_it() {
         &wake.source_record_id(),
         "accept-wake-new-session",
     );
+    let refusal = store
+        .prepare_runtime_command(&next_admission, &next_command, now_ms(), "unix-ms:14")
+        .unwrap_err();
     assert!(
-        store
-            .prepare_runtime_command(&next_admission, &next_command, now_ms(), "unix-ms:14")
-            .unwrap_err()
+        refusal
             .to_string()
             .contains("WORK_ACCEPTANCE_WAKE_UNAVAILABLE"),
-        "changing the Session ID and runtime generation cannot consume acceptance twice"
+        "changing the Session ID and runtime generation cannot consume acceptance twice: {refusal}"
     );
     std::fs::remove_dir_all(root).unwrap();
 }
