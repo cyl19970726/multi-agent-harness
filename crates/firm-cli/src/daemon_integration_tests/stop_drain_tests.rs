@@ -4,8 +4,22 @@
 //! `NODE_DAEMON_DRAIN_INCOMPLETE` could never reach the caller and
 //! `daemon status` reported absent while the exact serve process still spun.
 
+use super::process_isolation::{
+    run_in_isolated_child, spawn_owned_fixture, unpublish_owned_fixture,
+};
 use super::tests::TestTree;
 use super::*;
+
+// These scenarios stop a daemon, and the stop path sweeps the process-global
+// provider process-group registry; each body therefore runs in an isolated
+// child test process so it can never consume or kill a group registered by
+// another parallel test (#928). Assertions are unchanged in the moved bodies.
+const STOP_ANSWERS_EXACT: &str =
+    "daemon_integration_tests::stop_drain_tests::stop_answers_only_after_the_managed_runtime_drains";
+const STOP_INCOMPLETE_EXACT: &str =
+    "daemon_integration_tests::stop_drain_tests::stop_reports_drain_incomplete_without_releasing_authority";
+const STOP_KEEPS_EXACT: &str =
+    "daemon_integration_tests::stop_drain_tests::stop_keeps_authority_until_the_registered_process_group_exits";
 
 const STOP_TEST_NODE_ID: &str = "22222222-2222-4222-8222-222222222221";
 
@@ -160,6 +174,13 @@ fn request_stop(fixture: &StopFixture) -> serde_json::Value {
 
 #[test]
 fn stop_answers_only_after_the_managed_runtime_drains() {
+    run_in_isolated_child(
+        STOP_ANSWERS_EXACT,
+        stop_answers_only_after_the_managed_runtime_drains_body,
+    );
+}
+
+fn stop_answers_only_after_the_managed_runtime_drains_body() {
     let heartbeat = Arc::new(AtomicBool::new(true));
     let thread_heartbeat = Arc::clone(&heartbeat);
     let converged = Arc::new(AtomicBool::new(false));
@@ -221,6 +242,13 @@ fn stop_answers_only_after_the_managed_runtime_drains() {
 
 #[test]
 fn stop_reports_drain_incomplete_without_releasing_authority() {
+    run_in_isolated_child(
+        STOP_INCOMPLETE_EXACT,
+        stop_reports_drain_incomplete_without_releasing_authority_body,
+    );
+}
+
+fn stop_reports_drain_incomplete_without_releasing_authority_body() {
     let heartbeat = Arc::new(AtomicBool::new(true));
     let release = Arc::new(AtomicBool::new(false));
     let thread_release = Arc::clone(&release);
@@ -308,21 +336,40 @@ fn stop_reports_drain_incomplete_without_releasing_authority() {
 
 #[test]
 fn stop_keeps_authority_until_the_registered_process_group_exits() {
-    use std::os::unix::process::CommandExt;
+    run_in_isolated_child(
+        STOP_KEEPS_EXACT,
+        stop_keeps_authority_until_the_registered_process_group_exits_body,
+    );
+}
+
+fn stop_keeps_authority_until_the_registered_process_group_exits_body() {
     let heartbeat = Arc::new(AtomicBool::new(true));
     let worker_heartbeat = Arc::clone(&heartbeat);
     let (store_tx, store_rx) = std::sync::mpsc::channel::<HarnessStore>();
     let (pid_tx, pid_rx) = std::sync::mpsc::channel();
     let thread = std::thread::spawn(move || -> CliResult<TeamRunDriveOutcome> {
-        let mut child = std::process::Command::new("sleep")
-            .arg("30")
-            .process_group(0)
-            .spawn()?;
-        let mut registration =
-            harness_runtime_host::OwnedProcessGroupRegistration::new(&mut child).unwrap();
-        pid_tx.send(child.id()).unwrap();
-        let store = store_rx.recv_timeout(Duration::from_secs(5)).unwrap();
-        while worker_heartbeat.load(Ordering::Acquire) {
+        let (mut child, mut registration) =
+            spawn_owned_fixture(std::process::Command::new("sleep").arg("120"));
+        let fixture_pid = child.id();
+        pid_tx.send(fixture_pid).unwrap();
+        // Every miswire path releases the fixture explicitly instead of
+        // leaving it to the sleep's own timer; the publication is retained
+        // unless the reap is proven, so a failed kill/reap still leaves the
+        // parent's kill_published_fixtures a reachable fixture (#928).
+        let Ok(store) = store_rx.recv_timeout(Duration::from_secs(5)) else {
+            let reap = registration.kill_and_reap(&mut child);
+            unpublish_owned_fixture(fixture_pid, &reap);
+            reap?;
+            return Err(CliError::Usage(
+                "stop-pg wiring failed before the Store handoff".into(),
+            ));
+        };
+        // The drain revokes the heartbeat; the wall-clock cap guarantees the
+        // fixture is released even if the parent panics before stopping.
+        let hold_started = Instant::now();
+        while worker_heartbeat.load(Ordering::Acquire)
+            && hold_started.elapsed() < Duration::from_secs(20)
+        {
             std::thread::sleep(Duration::from_millis(5));
         }
         let status_before_termination = store
@@ -331,7 +378,10 @@ fn stop_keeps_authority_until_the_registered_process_group_exits() {
             .unwrap()
             .status;
         // Reap before asserting so an ordering regression does not leak the child.
-        assert!(registration.kill_and_reap(&mut child)?.is_some());
+        // Same retention rule: unpublish only after a proven reap (#928).
+        let reap = registration.kill_and_reap(&mut child);
+        unpublish_owned_fixture(fixture_pid, &reap);
+        assert!(reap?.is_some());
         assert_ne!(
             status_before_termination,
             harness_core::NodeDaemonLeaseStatus::Released,

@@ -20,6 +20,7 @@ mod drain_inflight_work_tests;
 mod drain_recovery_tests;
 mod drive_outcome_tests;
 mod lease_renewal_tests;
+mod process_isolation;
 mod recover_blocked_lane_blocker_tests;
 mod recover_lost_execution_tests;
 mod self_stop_events_tests;
