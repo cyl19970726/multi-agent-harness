@@ -77,6 +77,10 @@ pub(super) fn agent_session(
 }
 
 pub(super) fn drain_fixture(label: &str) -> DrainFixture {
+    drain_fixture_with_pi(label, false)
+}
+
+pub(super) fn drain_fixture_with_pi(label: &str, pi_member: bool) -> DrainFixture {
     let tree = TestTree::new(label);
     let firm_home = tree.0.join("home");
     let space = crate::execution_space::register_and_activate(
@@ -95,8 +99,20 @@ pub(super) fn drain_fixture(label: &str) -> DrainFixture {
         agent_member_id: agent_member_id.into(),
         name: name.into(),
         role: role.into(),
-        provider: "codex".into(),
-        execution_mode: Some("codex_app_server".into()),
+        provider: if pi_member && agent_member_id == MID_TURN_MEMBER {
+            "pi"
+        } else {
+            "codex"
+        }
+        .into(),
+        execution_mode: Some(
+            if pi_member && agent_member_id == MID_TURN_MEMBER {
+                "pi_rpc"
+            } else {
+                "codex_app_server"
+            }
+            .into(),
+        ),
         model: None,
         effort: None,
         service_tier: None,
@@ -138,6 +154,13 @@ pub(super) fn drain_fixture(label: &str) -> DrainFixture {
         bound.native_session = Some(drain_native_session(&format!(
             "thread-drain-{agent_member_id}"
         )));
+        if pi_member && agent_member_id == MID_TURN_MEMBER {
+            let native = bound.native_session.as_mut().unwrap();
+            native.provider = "pi".into();
+            native.execution_mode = "pi_rpc".into();
+            native.native_locator_kind = "pi_session".into();
+            native.native_session_id = tree.0.join("pi-native.jsonl").display().to_string();
+        }
         bound.last_event_at = Some("unix-ms:drain-bound".into());
         store
             .compare_and_append_member_run(&expected, &bound)

@@ -616,6 +616,20 @@ pub(super) fn restart_or_explain_blocked_member(
     now: &str,
     json: bool,
 ) -> CliResult<Option<serde_json::Value>> {
+    if let Err(error) = pi_resume_session_file(member) {
+        let blocker = error.to_string();
+        if !json {
+            println!(
+                "  {} ({}): blocked, not restarted — {blocker}",
+                member.name, member.provider
+            );
+        }
+        return Ok(Some(serde_json::json!({
+            "member_run_id": member.id,
+            "name": member.name,
+            "blocker": blocker,
+        })));
+    }
     let (_, session) = provider_session_for_member(ledger, member)?;
     if session.lifecycle == AgentSessionStatus::RecoveryRequired {
         match transition_provider_session_for_member_as(

@@ -541,3 +541,140 @@ fn readoption_hops_a_reconciled_recovery_required_lane_to_idle() {
         "no drain recovery is recorded for a lane the drain skipped"
     );
 }
+
+#[test]
+fn recover_missing_pi_native_file_preserves_block_until_exact_file_returns() {
+    let fixture = super::drain_recovery_tests::drain_fixture_with_pi("missing-pi-native", true);
+    let ledger = fixture.supervise("supervisor-missing-pi", fixture.daemon_generation);
+    fixture.start_cycle_for(&ledger, "work-delivery:missing-pi:1");
+    let member = member_named(&fixture.store, &fixture.run_id, MID_TURN_MEMBER);
+    crate::transition_provider_session_for_member(
+        &ledger,
+        &member,
+        AgentSessionStatus::RecoveryRequired,
+    )
+    .unwrap();
+    crate::transition_provider_session_runtime_control(
+        &ledger,
+        &member,
+        harness_core::agentfirm_api::RuntimeResidency::Detached,
+        RuntimeActivity::Idle,
+    )
+    .unwrap();
+    let expected = member_named(&fixture.store, &fixture.run_id, MID_TURN_MEMBER);
+    let mut blocked = expected.clone();
+    blocked.status = MemberRunStatus::Blocked;
+    fixture
+        .store
+        .compare_and_append_member_run(&expected, &blocked)
+        .unwrap();
+    let before = agent_session(&fixture.store, MID_TURN_MEMBER);
+    let commands = fixture.store.runtime_commands(DRAIN_SPACE_ID).unwrap();
+    let error =
+        crate::pi_resume_session_file(&blocked).expect_err("missing file refuses before spawn");
+    assert!(matches!(
+        error,
+        crate::CliError::ProviderAdmissionRejected(_)
+    ));
+    assert_eq!(
+        crate::provider_retry_authority_after_failure(
+            &error,
+            &harness_application::ProviderEffectOutcome::Unknown {
+                recovery_ref: "no-new-process".into()
+            },
+            1
+        ),
+        harness_application::ProviderRetryAuthority::StopNoRetry
+    );
+    let report = crate::team_run_recover(&fixture.store, &fixture.run_id, true).unwrap();
+    assert_eq!(report["restarted_blocked_members"], 0, "{report}");
+    assert!(
+        report["blocked_lanes_not_proven"]
+            .to_string()
+            .contains("PI_NATIVE_SESSION_MISSING"),
+        "{report}"
+    );
+    assert_eq!(agent_session(&fixture.store, MID_TURN_MEMBER), before);
+    assert_eq!(
+        member_named(&fixture.store, &fixture.run_id, MID_TURN_MEMBER),
+        blocked
+    );
+
+    assert_eq!(
+        fixture.store.runtime_commands(DRAIN_SPACE_ID).unwrap(),
+        commands
+    );
+    // This fixture supplies bytes at the same locator. It tests admission only;
+    // real provider resume still validates and owns its native history.
+    let native = blocked.native_session.as_ref().unwrap();
+    std::fs::write(&native.native_session_id, "{\"type\":\"session\"}\n").unwrap();
+    let report = crate::team_run_recover(&fixture.store, &fixture.run_id, true).unwrap();
+    assert_eq!(report["restarted_blocked_members"], 1, "{report}");
+    assert_eq!(
+        member_named(&fixture.store, &fixture.run_id, MID_TURN_MEMBER).native_session,
+        blocked.native_session
+    );
+}
+
+#[test]
+fn missing_pi_file_does_not_prevent_exact_detached_close() {
+    let fixture = super::drain_recovery_tests::drain_fixture_with_pi("missing-pi-close", true);
+    let ledger = fixture.supervise("supervisor-missing-pi-close", fixture.daemon_generation);
+    fixture.start_cycle_for(&ledger, "work-delivery:missing-pi-close:1");
+    let member = member_named(&fixture.store, &fixture.run_id, MID_TURN_MEMBER);
+    crate::transition_provider_session_for_member(
+        &ledger,
+        &member,
+        AgentSessionStatus::RecoveryRequired,
+    )
+    .unwrap();
+    crate::transition_provider_session_runtime_control(
+        &ledger,
+        &member,
+        harness_core::agentfirm_api::RuntimeResidency::Detached,
+        RuntimeActivity::Idle,
+    )
+    .unwrap();
+    let expected = member_named(&fixture.store, &fixture.run_id, MID_TURN_MEMBER);
+    let mut blocked = expected.clone();
+    blocked.status = MemberRunStatus::Blocked;
+    fixture
+        .store
+        .compare_and_append_member_run(&expected, &blocked)
+        .unwrap();
+    let supervisor = fixture
+        .store
+        .latest_team_supervisor_lease(&fixture.run_id)
+        .unwrap()
+        .unwrap();
+    let before = agent_session(&fixture.store, MID_TURN_MEMBER);
+    let mut wrong_generation = supervisor.clone();
+    wrong_generation.generation += 1;
+    assert!(crate::close_detached_blocked_member_for_recovery(
+        &fixture.store,
+        &fixture.run_id,
+        &blocked,
+        &wrong_generation,
+        "host",
+        "missing file"
+    )
+    .is_err());
+    assert_eq!(agent_session(&fixture.store, MID_TURN_MEMBER), before);
+    let receipt = crate::close_detached_blocked_member_for_recovery(
+        &fixture.store,
+        &fixture.run_id,
+        &blocked,
+        &supervisor,
+        "host",
+        "runtime gone; preserve missing native locator",
+    )
+    .unwrap();
+    assert!(receipt.is_some());
+    let closed = member_named(&fixture.store, &fixture.run_id, MID_TURN_MEMBER);
+    assert_eq!(closed.status, MemberRunStatus::Stopped);
+    assert_eq!(closed.native_session, blocked.native_session);
+    assert!(
+        crate::pi_resume_session_file(&closed).is_err(),
+        "Close is not permission to replace missing history"
+    );
+}

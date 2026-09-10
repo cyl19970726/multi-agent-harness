@@ -30,6 +30,27 @@ pub(super) fn resolve_pi_bin() -> String {
     "pi".into()
 }
 
+/// A locator can be allocated before Pi writes history. Its absence never
+/// proves that execution did not happen and cannot authorize a fresh Session.
+/// This is a resume prerequisite, separate from proof that a runtime exited.
+pub(super) fn pi_resume_session_file(
+    member: &ProviderRuntimeProjection,
+) -> CliResult<Option<&str>> {
+    if member.provider != "pi" {
+        return Ok(None);
+    }
+    let Some(session) = member.native_session.as_ref() else {
+        return Ok(None);
+    };
+    if !Path::new(&session.native_session_id).is_file() {
+        return Err(CliError::ProviderAdmissionRejected(format!(
+            "PI_NATIVE_SESSION_MISSING: refusing to replace missing resume session {} with a fresh session; restore the original provider history before resume",
+            session.native_session_id
+        )));
+    }
+    Ok(Some(session.native_session_id.as_str()))
+}
+
 /// Drive one Pi Team Member through one pi RPC process and native session.
 /// Retired `pi -p` print mode is not an alternative Agent Team Member mode.
 pub(super) fn run_pi_team_member(
@@ -137,18 +158,9 @@ pub(super) fn run_pi_team_member(
     }
 
     let pi_bin = resolve_pi_bin();
-    let resume_session_file = match member.native_session.as_ref() {
-        Some(session) if Path::new(&session.native_session_id).is_file() => {
-            Some(session.native_session_id.as_str())
-        }
-        Some(session) => {
-            return Err(CliError::Usage(format!(
-                "PI_NATIVE_SESSION_MISSING: refusing to replace missing resume session {} with a fresh session",
-                session.native_session_id
-            )))
-        }
-        None => None,
-    };
+    // No provider effect has been prepared or spawned on this attempt.
+    // A missing history file is not a transient transport failure.
+    let resume_session_file = pi_resume_session_file(member)?;
 
     // Fence immediately before pi process start/resume.
     let process_effect =
