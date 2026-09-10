@@ -81,7 +81,7 @@ fn start_distinguishes_assigned_undispatched_foreign_and_dispatched_work() {
     assert_eq!(trust.current_version, Some(undispatched.version));
     assert_eq!(
         trust.message,
-        "Work is assigned to you but not yet dispatched by the Supervisor; wait for the next pass and retry"
+        "Work is assigned to you but not yet dispatched by the Supervisor; end this provider turn without sleep or retry loops, then re-read and start after a new Work delivery"
     );
     assert_eq!(
         store.canonical_operations().unwrap(),

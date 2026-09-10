@@ -128,6 +128,12 @@ Refresh the Work after any `VERSION_CONFLICT`. Never retry with a guessed
 version. `CLAIM_LOST` means another Member owns the latest Work; do not perform
 its side effects.
 
+On `DELIVERY_NOT_DISPATCHED`, end this provider turn after a short status reply.
+Do not sleep, poll the board, or repeat Start within this turn: keeping it active
+can prevent the next assigned delivery. After that new delivery, re-read the
+Work and Start with the latest version. This also applies after self-claiming
+from a shared-board hint; responsibility alone does not authorize execution.
+
 A successful self-claim freezes responsibility to your stable AgentMember and
 active TeamMembership while the Work remains Open. It records the `claimed`
 WorkEvent; the scheduler must still create the exact WorkExecutionBinding and

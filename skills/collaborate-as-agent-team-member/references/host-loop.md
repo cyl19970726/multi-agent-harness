@@ -97,11 +97,18 @@ Write each Work so a Member can execute it without asking what "done" means:
 - **Boundary** — paths to touch and paths never to touch.
 - **Gates/Evidence** — what the reviewer will check, verbatim.
 
-Choose the claim mode deliberately: `host_assign` followed by canonical
+Choose the claim mode at creation: explicitly pass `--claim-mode host_assign`
+for directed work, followed by canonical
 `work assign --membership-id` when one stable TeamMembership must own it;
 `team_claim` when any eligible member may atomically claim. Prefer several
 bounded Works over one epic — TeamRun completion atomically rejects
 non-terminal Works, so unbounded Works block teardown.
+
+Do not create with the default `team_claim` and then assign when you already
+intend a specific owner: the create-time shared hint may wake a member before
+the assigned delivery. If that member reports `DELIVERY_NOT_DISPATCHED`, let it
+end the current turn so dispatch can proceed; do not ask it to sleep and retry
+inside the same turn or repeat assignment to manufacture a wake.
 
 A managed Host uses `"$FIRM_BIN" member work create|assign|accept` with its
 injected collaboration envelope, as shown in the shared contract. Assignment

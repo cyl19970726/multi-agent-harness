@@ -875,7 +875,7 @@ impl HarnessStore {
         {
             return Err(super::trust_kernel::retryable_trust_error(
                 firm_core::agentfirm_api::TrustErrorCode::DeliveryNotDispatched,
-                "Work is assigned to you but not yet dispatched by the Supervisor; wait for the next pass and retry",
+                "Work is assigned to you but not yet dispatched by the Supervisor; end this provider turn without sleep or retry loops, then re-read and start after a new Work delivery",
                 "work",
                 work_id,
                 Some(current.version),
