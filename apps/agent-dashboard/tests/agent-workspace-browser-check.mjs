@@ -606,6 +606,17 @@ try{
     await page.setViewportSize(viewport);
     await open(page,`${base}/?surface=team&team=${routeState.teamRun}&conversation=${routeState.member}&memberRun=${routeState.memberRun}&space=${routeState.space}&project=${routeState.project}`);
     assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=document.documentElement.clientWidth),true,`${viewport.width}px horizontal overflow`);
+    if(!liveConfig&&viewport.width===390){
+      await page.getByRole("tab",{name:/Messages/}).click();
+      assert.equal(await page.getByRole("textbox",{name:"Message",exact:true}).isVisible(),false,"mobile composer should initially leave room for reading");
+      await page.getByRole("button",{name:"Write a message",exact:true}).click();
+      await page.getByRole("textbox",{name:"Message",exact:true}).fill("Mobile draft survives collapse");
+      await page.getByRole("button",{name:"Hide message composer",exact:true}).click();
+      await page.getByRole("button",{name:"Write a message",exact:true}).click();
+      assert.equal(await page.getByRole("textbox",{name:"Message",exact:true}).inputValue(),"Mobile draft survives collapse");
+      await page.getByRole("button",{name:"Hide message composer",exact:true}).click();
+      await page.getByRole("tab",{name:/Session/}).click();
+    }
     if(viewport.width===390){
       await page.getByRole("button",{name:"Open Agent roster"}).click();
       await page.getByRole("dialog",{name:"Agent roster"}).waitFor();

@@ -9,6 +9,7 @@ export function AgentMemberMessageComposer({data,actions,selectedMessage,actions
   actionsCurrent:boolean;onAction:RoleActionExecutor;onCompleted:()=>void;
 }){
   const author={id:data.selected_agent.agent_member_ref.id,label:data.selected_agent.display_name};
+  const [mobileExpanded,setMobileExpanded]=useState(false);
   const [recipientId,setRecipientId]=useState(data.team.host_agent_id);
   const [mode,setMode]=useState("send_message");
   const [replyId,setReplyId]=useState<string|null>(null);
@@ -20,6 +21,8 @@ export function AgentMemberMessageComposer({data,actions,selectedMessage,actions
   const recipient=data.roster.find(item=>item.agent_member_ref.id===targetId&&item.agent_member_ref.id!==author.id);
   const hasAction=(kind:string)=>actions.some(item=>item.kind===kind&&item.target_ref.kind==="team_run");
   return <section aria-label="Member message actions">
+    <Button className="m-3 sm:hidden" size="sm" variant="secondary" aria-expanded={mobileExpanded} onClick={()=>setMobileExpanded(value=>!value)}>{mobileExpanded?"Hide message composer":"Write a message"}</Button>
+    <div className={mobileExpanded?"block":"hidden sm:block"}>
     <div className="flex flex-wrap items-center gap-2 px-4 pt-3">
       {hasAction("send_message")&&<Button size="sm" variant="secondary" aria-pressed={mode==="send_message"} onClick={()=>setMode("send_message")}>New message</Button>}
       {hasAction("request_decision")&&<Button size="sm" variant="secondary" aria-pressed={mode==="request_decision"} onClick={()=>setMode("request_decision")}>Ask Host</Button>}
@@ -33,5 +36,6 @@ export function AgentMemberMessageComposer({data,actions,selectedMessage,actions
       replyContext={reply??undefined} allowResponseRequired works={data.works} teamId={data.team.team_id}
       teamRunId={data.team.latest_run_id??undefined} actionsCurrent={actionsCurrent} onAction={onAction} onCompleted={onCompleted}
     />:<p className="px-4 py-3 text-xs text-muted-foreground">{mode==="reply_message"?"The reply target is unavailable in this authenticated view. Select an incoming message or start a new message.":"No authorized message route is available."}</p>}
+    </div>
   </section>;
 }
