@@ -1,10 +1,10 @@
 use super::process_isolation::{
-    assert_single_test_passed, isolation_dir, kill_child_group, kill_independent_process_group,
-    process_group_alive, read_child_output, run_in_isolated_child, spawn_test_child,
-    wait_child_bounded, wait_for_file_bounded, CHILD_SIGNAL_TIMEOUT, ISOLATED_CHILD_TIMEOUT,
+    assert_single_test_passed, isolation_dir, kill_child_group, kill_published_fixtures,
+    process_group_alive, read_child_output, run_in_isolated_child, spawn_owned_fixture,
+    spawn_test_child, unpublish_owned_fixture, wait_child_bounded, wait_for_file_bounded,
+    CHILD_SIGNAL_TIMEOUT, ISOLATED_CHILD_TIMEOUT, REAP_TIMEOUT,
 };
 use super::*;
-use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
 
 // Process-global shutdown scenarios run in isolated child test processes
@@ -42,14 +42,13 @@ fn shutdown_force_reaps_an_owned_group_before_returning_body() {
     let thread_heartbeat = Arc::clone(&heartbeat);
     let (pid_tx, pid_rx) = std::sync::mpsc::channel();
     let thread = std::thread::spawn(move || -> CliResult<TeamRunDriveOutcome> {
-        let mut command = std::process::Command::new("sh");
-        command.arg("-c").arg("sleep 30").process_group(0);
-        let mut child = command.spawn()?;
+        let (mut child, mut registration) =
+            spawn_owned_fixture(std::process::Command::new("sh").arg("-c").arg("sleep 30"));
         let pid = child.id();
-        let mut registration = harness_runtime_host::OwnedProcessGroupRegistration::new(&mut child)
-            .expect("register shutdown test process group");
         pid_tx.send(pid).expect("publish owned process group");
-        let status = registration.kill_and_reap(&mut child)?;
+        let status = registration.kill_and_reap(&mut child);
+        unpublish_owned_fixture(pid);
+        let status = status?;
         assert!(status.is_some(), "shutdown child must be terminal-reaped");
         assert!(!thread_heartbeat.load(Ordering::Acquire));
         Ok(TeamRunDriveOutcome::Progressed {
@@ -174,40 +173,45 @@ fn unrelated_owned_group_survives_a_concurrent_external_shutdown_sweep() {
 
 fn unrelated_owned_group_survives_a_concurrent_external_shutdown_sweep_body() {
     let coordination = std::env::var_os(COORDINATION_DIR_ENV).map(PathBuf::from);
-    let mut child = std::process::Command::new("sleep")
-        .arg("30")
-        .process_group(0)
-        .spawn()
-        .expect("spawn unrelated fixture process group");
-    let mut registration = harness_runtime_host::OwnedProcessGroupRegistration::new(&mut child)
-        .expect("register unrelated fixture process group");
+    // The fixture outlives every designed wait; its only designed release is
+    // an explicit signal with a bound — never its own timer (#928).
+    let (mut child, mut registration) =
+        spawn_owned_fixture(std::process::Command::new("sleep").arg("120"));
     let pid = child.id();
-    if let Some(dir) = &coordination {
-        std::fs::write(dir.join("registered"), pid.to_string())
-            .expect("publish unrelated process group");
-        wait_for_file_bounded(
-            &dir.join("scenario-done"),
-            ISOLATED_CHILD_TIMEOUT,
-            "scenario completion signal",
+    let hold = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if let Some(dir) = &coordination {
+            std::fs::write(dir.join("registered"), pid.to_string())
+                .expect("publish unrelated process group");
+            // The scenario runs in seconds; this bound stays far below the
+            // fixture's own lifetime so a hung scenario can never make the
+            // aliveness proof vacuous.
+            wait_for_file_bounded(
+                &dir.join("scenario-done"),
+                Duration::from_secs(30),
+                "scenario completion signal",
+            );
+        } else {
+            std::thread::sleep(Duration::from_millis(250));
+        }
+        // The regression's whole point: after a full external shutdown sweep
+        // the unrelated group is still exactly as registered — not consumed,
+        // not killed.
+        assert!(
+            process_group_alive(pid),
+            "unrelated registered process group was consumed or killed by the external shutdown sweep"
         );
-    } else {
-        std::thread::sleep(Duration::from_millis(250));
-    }
-    // The regression's whole point: after a full external shutdown sweep the
-    // unrelated group is still exactly as registered — not consumed, not
-    // killed.
-    assert_eq!(
-        unsafe { libc::kill(-(pid as libc::pid_t), 0) },
-        0,
-        "unrelated registered process group was consumed or killed by the external shutdown sweep"
-    );
+    }));
+    // The fixture is reaped on every exit path — including a wait-timeout
+    // panic — before any panic propagates.
+    let reap = registration.kill_and_reap(&mut child);
+    unpublish_owned_fixture(pid);
     assert!(
-        registration
-            .kill_and_reap(&mut child)
-            .expect("reap unrelated fixture")
-            .is_some(),
+        reap.expect("reap unrelated fixture").is_some(),
         "unrelated fixture must be terminal-reaped"
     );
+    if let Err(error) = hold {
+        std::panic::resume_unwind(error);
+    }
     assert_eq!(unsafe { libc::kill(-(pid as libc::pid_t), 0) }, -1);
     assert_eq!(
         std::io::Error::last_os_error().raw_os_error(),
@@ -269,19 +273,12 @@ fn isolated_shutdown_scenario_cannot_consume_an_unrelated_registered_group() {
         );
     }));
     if let Err(error) = outcome {
-        // One failed side must never strand the other side's processes. The
-        // registrar's fixture is an INDEPENDENT process group: killing the
-        // registrar's own group never reaches it, so release it explicitly
-        // by signal with a bound, then kill and reap the registrar itself.
-        if let Ok(contents) = std::fs::read_to_string(dir.join("registered")) {
-            if let Ok(fixture_pid) = contents.trim().parse::<u32>() {
-                kill_independent_process_group(
-                    fixture_pid,
-                    Duration::from_secs(5),
-                    "registrar fixture",
-                );
-            }
-        }
+        // One failed side must never strand the other side's processes:
+        // every fixture either child published is released by explicit
+        // signal with a bounded absence proof (killing a child's own group
+        // never reaches independent groups), then the registrar itself is
+        // killed and reaped.
+        kill_published_fixtures(&dir, REAP_TIMEOUT, "regression fixtures");
         kill_child_group(&mut registrar);
         std::panic::resume_unwind(error);
     }
@@ -302,32 +299,36 @@ fn timeout_fixture_child_parks_until_released_by_signal() {
 
 fn timeout_fixture_child_parks_until_released_by_signal_body() {
     let coordination = std::env::var_os(COORDINATION_DIR_ENV).map(PathBuf::from);
-    let mut child = std::process::Command::new("sleep")
-        .arg("30")
-        .process_group(0)
-        .spawn()
-        .expect("spawn timeout fixture process group");
-    let mut registration = harness_runtime_host::OwnedProcessGroupRegistration::new(&mut child)
-        .expect("register timeout fixture process group");
+    // Same contract as the registrar: the fixture outlives every designed
+    // wait and is released only by explicit signal, never by its own timer.
+    let (mut child, mut registration) =
+        spawn_owned_fixture(std::process::Command::new("sleep").arg("120"));
     let pid = child.id();
-    if let Some(dir) = &coordination {
-        std::fs::write(dir.join("fixture-published"), pid.to_string())
-            .expect("publish timeout fixture pid");
-        wait_for_file_bounded(
-            &dir.join("release-fixture"),
-            CHILD_SIGNAL_TIMEOUT,
-            "explicit fixture release signal",
-        );
-    } else {
-        std::thread::sleep(Duration::from_millis(250));
-    }
+    let park = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if let Some(dir) = &coordination {
+            std::fs::write(dir.join("fixture-published"), pid.to_string())
+                .expect("publish timeout fixture pid");
+            // The parent kills this child long before this backstop bound
+            // fires; the bound only keeps a parentless child finite.
+            wait_for_file_bounded(
+                &dir.join("release-fixture"),
+                CHILD_SIGNAL_TIMEOUT,
+                "explicit fixture release signal",
+            );
+        } else {
+            std::thread::sleep(Duration::from_millis(250));
+        }
+    }));
+    // Reap on every exit path before any panic propagates.
+    let reap = registration.kill_and_reap(&mut child);
+    unpublish_owned_fixture(pid);
     assert!(
-        registration
-            .kill_and_reap(&mut child)
-            .expect("reap timeout fixture")
-            .is_some(),
+        reap.expect("reap timeout fixture").is_some(),
         "timeout fixture must be terminal-reaped"
     );
+    if let Err(error) = park {
+        std::panic::resume_unwind(error);
+    }
 }
 
 /// Forced-timeout cleanup coverage (#928): a bounded wait kills the hung
@@ -383,9 +384,9 @@ fn isolated_child_timeout_kills_child_group_but_not_independent_groups() {
         process_group_alive(fixture_pid),
         "killing the child's process group must not remove the independent fixture group"
     );
-    // Explicit release by signal with a bound: the only honest cleanup for
-    // an independent process group.
-    kill_independent_process_group(fixture_pid, Duration::from_secs(5), "hanger fixture");
+    // The ACTUAL cleanup path, not a special case: every fixture the hanger
+    // published is released by explicit signal with a bounded absence proof.
+    kill_published_fixtures(&dir, REAP_TIMEOUT, "hanger fixtures");
     assert!(!process_group_alive(fixture_pid));
 }
 

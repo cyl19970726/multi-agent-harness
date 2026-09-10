@@ -12,6 +12,12 @@
 //! exact test selection), so a scenario sweeps only the registry of its own
 //! process and an unrelated registration anywhere else is unreachable by
 //! construction — no lock, no suite serialization.
+//!
+//! Killing a child's own process group never reaches the independent groups
+//! its fixtures lead (`process_group(0)`), so fixtures publish their group
+//! ids into the child's isolation directory and every kill/failure path
+//! releases exactly those groups by explicit signal with a bounded absence
+//! proof — never by the fixture's own timer.
 
 use std::io::Read;
 use std::os::unix::process::CommandExt;
@@ -33,6 +39,15 @@ pub const ISOLATED_CHILD_TIMEOUT: Duration = Duration::from_secs(120);
 /// startup plus one fixture spawn). Fires only when the child died before
 /// signaling, which the sibling-output dump then explains.
 pub const CHILD_SIGNAL_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Set by `spawn_test_child` in every isolated child's environment so the
+/// child's fixture spawns (`spawn_owned_fixture`) publish their process-group
+/// ids where the parent's explicit cleanup paths can find them.
+pub const ISOLATION_DIR_ENV: &str = "FIRM_PROCESS_ISOLATION_DIR";
+
+/// Bound for proving a SIGKILLed child was actually reaped. An unproven reap
+/// is reported as unresolved cleanup, never hidden by an unbounded wait.
+pub const REAP_TIMEOUT: Duration = Duration::from_secs(5);
 
 const POLL_INTERVAL: Duration = Duration::from_millis(20);
 
@@ -60,9 +75,19 @@ pub fn run_in_isolated_child(exact_test_name: &str, body: fn()) {
     let dir = isolation_dir(exact_test_name);
     let mut child = spawn_test_child(exact_test_name, &dir, "child", &[])
         .expect("spawn isolated scenario child");
-    let status = wait_child_bounded(&mut child, ISOLATED_CHILD_TIMEOUT, exact_test_name);
-    let output = read_child_output(&dir, "child");
-    assert_single_test_passed(status, exact_test_name, &output);
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let status = wait_child_bounded(&mut child, ISOLATED_CHILD_TIMEOUT, exact_test_name);
+        let output = read_child_output(&dir, "child");
+        assert_single_test_passed(status, exact_test_name, &output);
+    }));
+    if let Err(error) = outcome {
+        // Every failure path — a timed-out scenario child included — releases
+        // the exact fixture groups the child published, then kills and reaps
+        // the child itself (a no-op when it already exited).
+        kill_published_fixtures(&dir, REAP_TIMEOUT, exact_test_name);
+        kill_child_group(&mut child);
+        std::panic::resume_unwind(error);
+    }
 }
 
 /// Spawn one isolated child copy of the test binary running exactly
@@ -88,6 +113,7 @@ pub fn spawn_test_child(
         .arg("--nocapture")
         .arg("--test-threads=1")
         .env(ISOLATED_CHILD_ENV, exact_test_name)
+        .env(ISOLATION_DIR_ENV, dir)
         .envs(extra_env.iter().copied())
         .stdin(Stdio::null())
         .stdout(Stdio::from(stdout))
@@ -120,17 +146,35 @@ pub fn wait_child_bounded(child: &mut Child, timeout: Duration, label: &str) -> 
 
 /// SIGKILL and reap `child`'s own process group if it is still running.
 /// Used on a sibling's failure path. This never removes independent process
-/// groups the child spawned with `process_group(0)`; a coordinated fixture
-/// must publish its leader pid so the parent can release it explicitly with
-/// `kill_independent_process_group`.
+/// groups the child spawned with `process_group(0)` — those are released via
+/// `kill_published_fixtures`. The kill result is checked (an already-gone
+/// group is fine; any other errno is a failure, never ignored) and the reap
+/// is bounded: an unproven reap panics with the unresolved cleanup named
+/// instead of blocking the suite on an unbounded wait.
 pub fn kill_child_group(child: &mut Child) {
     if child.try_wait().expect("poll child before kill").is_some() {
         return;
     }
-    unsafe {
-        libc::kill(-(child.id() as libc::pid_t), libc::SIGKILL);
+    let pid = child.id();
+    let kill_result = unsafe { libc::kill(-(pid as libc::pid_t), libc::SIGKILL) };
+    if kill_result == -1 {
+        let errno = std::io::Error::last_os_error().raw_os_error();
+        assert!(
+            errno == Some(libc::ESRCH),
+            "SIGKILL of child process group {pid} failed with errno {errno:?}; cleanup is unproven"
+        );
     }
-    let _ = child.wait();
+    let deadline = Instant::now() + REAP_TIMEOUT;
+    loop {
+        if child.try_wait().expect("poll child after kill").is_some() {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "child {pid} was SIGKILLed but its reap is unproven after {REAP_TIMEOUT:?}; unresolved cleanup"
+        );
+        std::thread::sleep(POLL_INTERVAL);
+    }
 }
 
 /// Probe whether process group `pid` still exists: signal 0 returns 0 while
@@ -145,8 +189,16 @@ pub fn process_group_alive(pid: u32) -> bool {
 /// Independent groups are never removed by killing a child's own process
 /// group; this explicit, bounded signal is the only honest release for them.
 pub fn kill_independent_process_group(pid: u32, timeout: Duration, label: &str) {
-    unsafe {
-        libc::kill(-(pid as libc::pid_t), libc::SIGKILL);
+    if !process_group_alive(pid) {
+        return;
+    }
+    let kill_result = unsafe { libc::kill(-(pid as libc::pid_t), libc::SIGKILL) };
+    if kill_result == -1 {
+        let errno = std::io::Error::last_os_error().raw_os_error();
+        assert!(
+            errno == Some(libc::ESRCH),
+            "SIGKILL of independent process group {pid} ({label}) failed with errno {errno:?}"
+        );
     }
     let deadline = Instant::now() + timeout;
     while process_group_alive(pid) {
@@ -155,6 +207,58 @@ pub fn kill_independent_process_group(pid: u32, timeout: Duration, label: &str) 
             "independent process group {pid} ({label}) did not exit within {timeout:?}"
         );
         std::thread::sleep(POLL_INTERVAL);
+    }
+}
+
+/// Spawn a scenario fixture process: it leads its own (independent) process
+/// group and is registered in this process's provider registry. Inside an
+/// isolated child (`ISOLATION_DIR_ENV` is set) the group id is published to
+/// `<dir>/owned-fixture-<pid>` so a parent that must kill this child can
+/// still release exactly this fixture by explicit signal — killing the
+/// child's own process group never reaches it.
+pub fn spawn_owned_fixture(
+    command: &mut Command,
+) -> (Child, harness_runtime_host::OwnedProcessGroupRegistration) {
+    let mut child = command.process_group(0).spawn().expect("spawn fixture");
+    let registration = harness_runtime_host::OwnedProcessGroupRegistration::new(&mut child)
+        .expect("register fixture process group");
+    if let Ok(dir) = std::env::var(ISOLATION_DIR_ENV) {
+        std::fs::write(
+            Path::new(&dir).join(format!("owned-fixture-{}", child.id())),
+            b"",
+        )
+        .expect("publish owned fixture process group");
+    }
+    (child, registration)
+}
+
+/// Remove a fixture's publication after its proven reap so parent cleanup
+/// never double-handles it. Best-effort: a missing file just means someone
+/// already cleaned up.
+pub fn unpublish_owned_fixture(pid: u32) {
+    if let Ok(dir) = std::env::var(ISOLATION_DIR_ENV) {
+        let _ = std::fs::remove_file(Path::new(&dir).join(format!("owned-fixture-{pid}")));
+    }
+}
+
+/// Explicitly release every fixture group published into `dir`: SIGKILL each
+/// exact group and prove absence within `timeout` per group. This is what
+/// actually cleans a killed or timed-out child's owned fixtures on the real
+/// timeout/failure paths — not only in dedicated cleanup tests.
+pub fn kill_published_fixtures(dir: &Path, timeout: Duration, label: &str) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let pid = entry
+            .file_name()
+            .to_str()
+            .and_then(|name| name.strip_prefix("owned-fixture-"))
+            .and_then(|pid| pid.parse::<u32>().ok());
+        if let Some(pid) = pid {
+            kill_independent_process_group(pid, timeout, label);
+            let _ = std::fs::remove_file(entry.path());
+        }
     }
 }
 
