@@ -755,7 +755,10 @@ textarea):focus{
     background: color-mix(in srgb, #fff8ed 38%, transparent);
   }.agent-workspace .agent-work-row[data-condition="blocked"]{
     background: color-mix(in srgb, #fff1ee 44%, transparent);
-  }.agent-workspace .agent-work-row[data-current="true"]::before{
+  }.agent-workspace .agent-work-row[aria-pressed="true"]{
+    background: color-mix(in srgb, var(--aw-coral-wash) 28%, transparent);
+  }.agent-workspace .agent-work-row[data-current="true"]::before,
+  .agent-workspace .agent-work-row[aria-pressed="true"]::before{
     position: absolute;
     top: 1rem;
     bottom: 1rem;

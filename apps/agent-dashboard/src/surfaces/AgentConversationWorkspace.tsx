@@ -42,6 +42,7 @@ import {
 } from "../model/roleViews";
 import { NativeSessionUnavailable } from "./NativeSessionUnavailable";
 import { hasPendingDelivery } from "../model/messageDelivery";
+import { linkedWorkLens, reconcileWorkLens, resolveWorkspaceWork, workMatchesLens, type WorkLens } from "../model/agentWorkNavigation";
 import { RoleActionPanel } from "./RoleActionPanel";
 import { ViewProvenance, ViewState } from "./RoleViewPrimitives";
 import "./agent-workspace.css";
@@ -97,6 +98,10 @@ export function AgentConversationWorkspace({
   const requestIdentity=`${apiUrl}\u0000${space}\u0000${project}\u0000${company??""}\u0000${requestPath}`;
   const expectedIdentityRef=useRef(requestIdentity);
   expectedIdentityRef.current=requestIdentity;
+
+  // URL navigation (including browser Back) replaces the local inspector
+  // selection. The linked Work is resolved only from this authenticated view.
+  useEffect(()=>setContextSelection(null),[requestIdentity,selection.teamWorkId]);
 
   useEffect(()=>{
     let live=true;
@@ -170,7 +175,8 @@ export function AgentConversationWorkspace({
       persistedSessionStream.mergeOlder(older.data.persisted_session_projection);
     }catch(reason){if(expectedIdentityRef.current===requestedIdentity)setError(String(reason));}finally{setLoadingOlder(false);}
   };
-  const currentWork=data.works.find(work=>work.work_id===(contextSelection?.kind==="work"?contextSelection.work.work_id:data.context_summary.current_work_id));
+  const currentWork=resolveWorkspaceWork(data.works,selection.teamWorkId,data.context_summary.current_work_id);
+  const selectedContext=contextSelection??(selection.teamWorkId&&currentWork?{kind:"work" as const,work:currentWork}:null);
   const selectAgent=(agent:AgentWorkspaceRosterItem,workId?:string)=>{
     onSelectionChange({
       teamConversation:agent.is_host ? "host" : agent.agent_member_ref.id,
@@ -189,7 +195,7 @@ export function AgentConversationWorkspace({
     if(next&&window.matchMedia("(max-width: 1023px)").matches)setContextOpen(true);
   };
   const closeWorkspace=()=>onSelectionChange({teamConversation:undefined,memberRunId:undefined,agentWorkspaceMode:undefined,agentSessionId:undefined,teamWorkId:undefined});
-  const context=<AgentContextRail view={currentView} data={data} mode={mode} selected={contextSelection} currentWork={currentWork} actions={currentView.allowed_actions} onOpenOwner={(agent,workId)=>selectAgent(agent,workId)} onOpenWork={(work)=>{if(work){setContextSelection({kind:"work",work});onSelectionChange({agentWorkspaceMode:"work",teamWorkId:work.work_id});}else{setContextSelection(null);onSelectionChange({agentWorkspaceMode:"work"});}}}/>;
+  const context=<AgentContextRail view={currentView} data={data} mode={mode} selected={selectedContext} currentWork={currentWork} actions={currentView.allowed_actions} onOpenOwner={(agent,workId)=>selectAgent(agent,workId)} onOpenWork={(work)=>{if(work){setContextSelection({kind:"work",work});onSelectionChange({agentWorkspaceMode:"work",teamWorkId:work.work_id});}else{setContextSelection(null);onSelectionChange({agentWorkspaceMode:"work",teamWorkId:undefined});}}}/>;
 
   return <Tooltip.Provider delayDuration={350}>
     <main ref={workspaceRef} className="agent-team-surface agent-workspace h-full min-h-0 flex-1 overflow-hidden" data-testid="agent-workspace">
@@ -226,7 +232,7 @@ export function AgentConversationWorkspace({
             </div>
             <Tabs.Content value="session" className="min-h-0 flex-1 outline-none"><SessionCanvas data={data} projection={sessionProjection} connectionState={persistedSessionStream.connectionState} selectedMessageId={contextSelection?.kind==="message"?contextSelection.message.message_id:null} onSelect={setContextSelection} loadingOlder={loadingOlder} onLoadOlder={loadOlderSessionEvents}/></Tabs.Content>
             <Tabs.Content value="messages" className="min-h-0 flex-1 outline-none"><MessagesCanvas data={data} onSelect={selectContext} lens={filters.lens} query={filters.query} onFilterChange={next=>setMessageFilters({...filters,...next})}/></Tabs.Content>
-            <Tabs.Content value="work" className="min-h-0 flex-1 outline-none"><WorkCanvas data={data} onSelect={(work)=>{selectContext({kind:"work",work});onSelectionChange({teamWorkId:work.work_id});}}/></Tabs.Content>
+            <Tabs.Content value="work" className="min-h-0 flex-1 outline-none"><WorkCanvas key={requestIdentity} data={data} requestedWorkId={selection.teamWorkId} onSelect={(work)=>{selectContext({kind:"work",work});onSelectionChange({teamWorkId:work.work_id});}}/></Tabs.Content>
           </Tabs.Root>
 
           {selected.is_host&&currentSession?.native_session_open_target&&<div className="shrink-0 border-t border-border bg-primary/[0.035] px-4 py-2 text-[11px] text-muted-foreground sm:px-7"><span>Direct conversation stays in the provider-native transcript. </span><a className="font-semibold text-primary hover:underline" href={currentSession.native_session_open_target.uri}>Continue this exact Host Session in {providerDisplayName(currentSession.provider)}</a><span>. Message authoring in Agent Workspace is intentionally deferred.</span></div>}
@@ -442,18 +448,22 @@ function messageDeliveryLabel(message:MessageSummary){
   return "No recipient delivery";
 }
 
-function WorkCanvas({data,onSelect}:{data:AgentWorkspaceData;onSelect:(work:WorkSummary)=>void}){
-  const [lens,setLens]=useState<"current"|"open"|"active"|"review"|"closed"|"eligible">("current");
+function WorkCanvas({data,requestedWorkId,onSelect}:{data:AgentWorkspaceData;requestedWorkId?:string;onSelect:(work:WorkSummary)=>void}){
   const memberId=data.selected_agent.agent_member_ref.id;
+  const linkedWork=data.works.find(work=>work.work_id===requestedWorkId);
+  const defaultLens=linkedWorkLens(linkedWork,memberId);
+  const [lens,setLens]=useState<WorkLens>(defaultLens);
+  useEffect(()=>setLens(current=>reconcileWorkLens(current,linkedWork,memberId)),[requestedWorkId,defaultLens,memberId]);
   const owns=(work:WorkSummary)=>work.owner_actor_ref?.id===memberId;
-  const visible=data.works.filter(work=>lens==="current"?owns(work)&&work.phase!=="closed":lens==="eligible"?!owns(work)&&work.eligible_member_ids.includes(memberId):work.phase===lens);
+  const visible=data.works.filter(work=>workMatchesLens(work,lens,memberId));
   const ordered=[...visible].sort((left,right)=>workVisualRank(left,data.context_summary.current_work_id)-workVisualRank(right,data.context_summary.current_work_id)||timestampKey(right.updated_at)-timestampKey(left.updated_at));
   const ownedCount=data.works.filter(owns).length;
   const reviewCount=data.works.filter(work=>work.phase==="review").length;
   return <ScrollArea.Root className="h-full overflow-hidden"><ScrollArea.Viewport className="size-full min-w-0 [&>div]:!block [&>div]:!min-w-0"><div className="agent-work-canvas mx-auto max-w-[60rem] px-5 pb-10 sm:px-7">
     <WorkspaceCanvasIntro compact eyebrow="Responsibility" title={`${data.selected_agent.display_name} · Work`} detail="Ownership, execution phase, condition and gate progress stay distinct." facts={[`${ownedCount} owned`,`${reviewCount} in review`,`${data.works.length-ownedCount} eligible or shared`]}/>
+    {requestedWorkId&&!linkedWork&&<EmptyCanvas compact title="Linked Work unavailable" detail={`Work ${requestedWorkId} is not in this Agent's authorized view. Return to the Team to check its owner or availability.`}/>}
     <div className="aw-filter-strip flex flex-wrap items-center gap-5 border-y border-border">{(["current","open","active","review","closed","eligible"] as const).map(item=><button key={item} type="button" data-active={lens===item} onClick={()=>setLens(item)} className="agent-work-lens relative text-[10px] font-semibold capitalize text-muted-foreground data-[active=true]:text-foreground">{item}</button>)}<span className="ml-auto text-[10px] text-muted-foreground">{visible.length} {visible.length===1?"record":"records"}</span></div>
-    {ordered.length?<div className="agent-work-stream">{ordered.map((work,index)=>{const current=work.work_id===data.context_summary.current_work_id;const group=workGroupLabel(work,current,lens);const prior=index>0?workGroupLabel(ordered[index-1],ordered[index-1].work_id===data.context_summary.current_work_id,lens):null;const owner=data.roster.find(item=>item.agent_member_ref.id===work.owner_actor_ref?.id);return <div key={work.work_id}>{group!==prior&&<p className="aw-work-group-label">{group}</p>}<button type="button" data-current={current||undefined} data-phase={work.phase} data-condition={work.condition} className="agent-work-row grid w-full grid-cols-[minmax(0,1fr)_auto] gap-5 text-left" onClick={()=>onSelect(work)}><span className="min-w-0"><span className="flex items-center gap-2"><span className="break-words text-[13.5px] font-semibold leading-[1.35]">{work.title||work.work_id}</span>{work.condition!=="normal"&&<WorkspaceState label={humanizeToken(String(work.condition))} tone="bad"/>}</span>{work.completion_criteria_markdown&&<span className="mt-1 block max-w-[42rem] line-clamp-1 text-[12.5px] leading-[1.5] text-foreground/75">{work.completion_criteria_markdown}</span>}<span className="aw-record-meta"><span className="aw-work-owner"><Avatar name={owner?.display_name??"Unassigned"} identity={work.owner_actor_ref?.id??"unassigned"} size="xs" tone={owner?.runtime_state==="running"?"running":"idle"}/><span>{owner?.display_name??(work.owner_actor_ref?"Assigned":"Unassigned")}</span></span><span>{work.owner_actor_ref?.id===memberId?"Owned responsibility":"Eligible responsibility"}</span><span>{shortId(work.work_id)} · revision {work.work_revision}</span><span>{humanizeToken(String(work.priority))} priority</span><span>Gates {work.gate_summary.passed}/{work.gate_summary.required}</span></span></span><span className="aw-work-state"><WorkspaceState label={humanizeToken(work.phase)} tone={work.phase==="active"?"running":work.phase==="review"?"warn":work.phase==="closed"?"good":"muted"}/>{meaningfulRecovery(work)&&<span>{humanizeToken(String(work.delivery_summary.recovery_class))}</span>}<time>{formatTime(work.updated_at)}</time></span></button></div>})}</div>:<EmptyCanvas title="No Work in this view" detail="Eligibility is not ownership. Work remains authoritative in the Team Work kernel."/>}
+    {ordered.length?<div className="agent-work-stream">{ordered.map((work,index)=>{const current=work.work_id===data.context_summary.current_work_id;const group=workGroupLabel(work,current,lens);const prior=index>0?workGroupLabel(ordered[index-1],ordered[index-1].work_id===data.context_summary.current_work_id,lens):null;const owner=data.roster.find(item=>item.agent_member_ref.id===work.owner_actor_ref?.id);return <div key={work.work_id}>{group!==prior&&<p className="aw-work-group-label">{group}</p>}<button type="button" data-current={current||undefined} data-work-id={work.work_id} aria-pressed={work.work_id===requestedWorkId} data-phase={work.phase} data-condition={work.condition} className="agent-work-row grid w-full grid-cols-[minmax(0,1fr)_auto] gap-5 text-left" onClick={()=>onSelect(work)}><span className="min-w-0"><span className="flex items-center gap-2"><span className="break-words text-[13.5px] font-semibold leading-[1.35]">{work.title||work.work_id}</span>{work.condition!=="normal"&&<WorkspaceState label={humanizeToken(String(work.condition))} tone="bad"/>}</span>{work.completion_criteria_markdown&&<span className="mt-1 block max-w-[42rem] line-clamp-1 text-[12.5px] leading-[1.5] text-foreground/75">{work.completion_criteria_markdown}</span>}<span className="aw-record-meta"><span className="aw-work-owner"><Avatar name={owner?.display_name??"Unassigned"} identity={work.owner_actor_ref?.id??"unassigned"} size="xs" tone={owner?.runtime_state==="running"?"running":"idle"}/><span>{owner?.display_name??(work.owner_actor_ref?"Assigned":"Unassigned")}</span></span><span>{work.owner_actor_ref?.id===memberId?"Owned responsibility":"Eligible responsibility"}</span><span>{shortId(work.work_id)} · revision {work.work_revision}</span><span>{humanizeToken(String(work.priority))} priority</span><span>Gates {work.gate_summary.passed}/{work.gate_summary.required}</span></span></span><span className="aw-work-state"><WorkspaceState label={humanizeToken(work.phase)} tone={work.phase==="active"?"running":work.phase==="review"?"warn":work.phase==="closed"?"good":"muted"}/>{meaningfulRecovery(work)&&<span>{humanizeToken(String(work.delivery_summary.recovery_class))}</span>}<time>{formatTime(work.updated_at)}</time></span></button></div>})}</div>:<EmptyCanvas title="No Work in this view" detail="Eligibility is not ownership. Work remains authoritative in the Team Work kernel."/>}
   </div></ScrollArea.Viewport></ScrollArea.Root>;
 }
 
@@ -481,7 +491,7 @@ function AgentContextRail({view,data,mode,selected,currentWork,actions,onOpenWor
   const executionDriver=[data.configuration.provider_profile_ref?humanizeToken(data.configuration.provider_profile_ref):null,data.configuration.model_preference].filter(Boolean).join(" · ");
   const otherOwnedWorks=ownedWorks.filter(work=>work.work_id!==anchoredWork?.work_id&&!attentionWorks.some(attention=>attention.work_id===work.work_id));
   const prioritizedActions=[...actionIndex].sort((left,right)=>decisionActionRank(left.kind,anchoredWork)-decisionActionRank(right.kind,anchoredWork));
-  const workSection=<WorkContext work={anchoredWork} title={isHost&&anchoredNeedsJudgment?"Current decision":"Current Work"} onOpenWork={onOpenWork}/>;
+  const workSection=<WorkContext work={anchoredWork} title={selected?.kind==="work"?"Selected Work":isHost&&anchoredNeedsJudgment?"Current decision":"Current Work"} onOpenWork={onOpenWork}/>;
   const selectionInset=selected&&<div className="aw-context-selection-inset" aria-label="Selected context">{selected.kind==="message"?<MessageContext data={data} message={selected.message}/>:selected.kind==="event"?<EventContext record={selected.record} fragment={selected.fragment}/>:selected.kind==="tool"?<ToolContext episode={selected.episode}/>:<WorkSelectionContext data={data} work={selected.work} onOpenOwner={onOpenOwner}/>}</div>;
   const responsibilitySection=!isHost&&<ContextSection title="Responsibility" hint={eligibleWorks.length?`${eligibleWorks.length} eligible Work`:undefined}><ResponsibilityStrip values={responsibility}/><button type="button" className="aw-context-link" onClick={()=>onOpenWork()}>View ready work ↗</button>{latestExchange&&<div className="mt-3"><ContextMessageRow data={data} message={latestExchange}/></div>}</ContextSection>;
   const needsHostSection=isHost&&attentionWorks.length>0&&<ContextSection title="Needs Host" hint={`${attentionWorks.length} ${attentionWorks.length===1?"responsibility":"responsibilities"}`}>{attentionWorks.filter(work=>work.work_id!==anchoredWork?.work_id).slice(0,2).map(work=><ContextWorkRow key={work.work_id} data={data} work={work}/>)}</ContextSection>;
