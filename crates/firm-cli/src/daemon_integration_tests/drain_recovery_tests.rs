@@ -547,3 +547,72 @@ fn drained_mid_turn_member_can_be_closed_by_the_host() {
         "Close never replays the killed cycle"
     );
 }
+
+/// GitHub #937: a dead Team Supervisor must not leave the Sessions it drove
+/// falsely `Active`. The failure settles them truthfully as
+/// `RecoveryRequired` (the lane's effect is unproven — never Idle/Detached),
+/// while quiet unrelated Sessions stay untouched and the TeamRun-level
+/// recovery marker still lands. Red today: the driven Session stays `Active`.
+#[test]
+fn a_dead_supervisor_settles_driven_active_sessions_as_recovery_required() {
+    let fixture = drain_fixture("supervisor-failure-settlement");
+    let ledger = fixture.supervise("supervisor-settlement-1", fixture.daemon_generation);
+    fixture.start_cycle_for(&ledger, "work-delivery:settle:1");
+    let driven = agent_session(&fixture.store, MID_TURN_MEMBER);
+    assert_eq!(
+        driven.lifecycle,
+        AgentSessionStatus::Active,
+        "the fixture drives the member Session Active before the failure"
+    );
+    let quiet_before = agent_session(&fixture.store, IDLE_MEMBER).lifecycle;
+
+    // The window3 death: the Supervisor thread fails on a Store write-lock
+    // timeout while the daemon survives.
+    let context = OwnedTestContext::new(TestContextConfig {
+        execution_space_id: DRAIN_SPACE_ID.into(),
+        project_binding_id: fixture.project_binding_id.clone(),
+        run_id: fixture.run_id.clone(),
+        daemon_generation: fixture.daemon_generation,
+        supervisor_id: "supervisor-settlement-1".into(),
+        supervisor_generation: fixture.daemon_generation,
+        heartbeat_valid: Arc::new(AtomicBool::new(false)),
+        serving_status: Arc::new(Mutex::new("running".into())),
+        thread: None,
+        started_at: Instant::now(),
+    });
+    fixture.daemon.block_finished_supervisor_failure(
+        &context,
+        &CliError::Usage(
+            "store error: timed out waiting for store write lock; lock_wait_ms=2001; lock_budget_ms=2000"
+                .into(),
+        ),
+    );
+
+    // The TeamRun-level diagnosis still lands (existing behavior).
+    assert!(
+        fixture
+            .store
+            .member_actions()
+            .expect("read member actions")
+            .into_iter()
+            .any(|action| action.team_run_id == fixture.run_id
+                && action.action_type == "team_supervisor_recovery_required"),
+        "the TeamRun-level recovery marker must still be written"
+    );
+
+    // The truthful per-Session settlement (#937): the driven, falsely Active
+    // Session is marked RecoveryRequired — uncertain, never Idle/Detached.
+    let settled = agent_session(&fixture.store, MID_TURN_MEMBER);
+    assert_eq!(
+        settled.lifecycle,
+        AgentSessionStatus::RecoveryRequired,
+        "a dead Supervisor must settle its driven Active Session as RecoveryRequired, not leave it falsely Active"
+    );
+
+    // The unrelated quiet Session is untouched by another member's failure.
+    assert_eq!(
+        agent_session(&fixture.store, IDLE_MEMBER).lifecycle,
+        quiet_before,
+        "an unrelated quiet Session is never settled by a Supervisor failure"
+    );
+}

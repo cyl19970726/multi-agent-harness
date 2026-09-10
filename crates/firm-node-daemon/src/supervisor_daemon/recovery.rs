@@ -440,6 +440,84 @@ impl MultiTeamDaemon {
                 context.execution_space_id, context.run_id
             );
         }
+        self.settle_driven_sessions_after_supervisor_failure(context, store, error);
+    }
+
+    /// GitHub #937: the dead Supervisor's driven Sessions must not stay
+    /// falsely `Active`. Settle every current `Active` AgentSession of this
+    /// run's members as `RecoveryRequired`: once the lane's only execution
+    /// driver is dead its provider effect is unproven, so the truthful mark
+    /// is the uncertain one — never `Idle`, never `Detached`, never `Closed`.
+    /// Quiet Sessions (Cold/Idle/Waiting/Interrupted/RecoveryRequired/Closed)
+    /// are untouched, and a per-Session failure is logged honestly without
+    /// blocking the TeamRun-level marker above. Resume of a settled lane
+    /// still goes through the existing reconciliation contract.
+    fn settle_driven_sessions_after_supervisor_failure(
+        &self,
+        context: &MultiTeamContext,
+        store: &HarnessStore,
+        error: &CliError,
+    ) {
+        let member_ids: Vec<String> = match store.latest_member_runs() {
+            Ok(members) => members
+                .into_iter()
+                .filter(|member| member.team_run_id == context.run_id)
+                .map(|member| member.agent_member_id)
+                .collect(),
+            Err(read_error) => {
+                eprintln!(
+                    "[node-daemon] could not enumerate members of {}/{} for Session settlement after Supervisor failure ({error}): {read_error}",
+                    context.execution_space_id, context.run_id
+                );
+                return;
+            }
+        };
+        let sessions = match store.fabric_agent_sessions(&context.execution_space_id) {
+            Ok(sessions) => sessions,
+            Err(read_error) => {
+                eprintln!(
+                    "[node-daemon] could not read AgentSessions for Session settlement after Supervisor failure in {}/{} ({error}): {read_error}",
+                    context.execution_space_id, context.run_id
+                );
+                return;
+            }
+        };
+        for session in sessions.into_iter().filter(|session| {
+            member_ids.contains(&session.agent_member_id)
+                && session.lifecycle == harness_core::agentfirm_api::AgentSessionStatus::Active
+        }) {
+            let transition_context = harness_core::agentfirm_api::MutationContext {
+                execution_space_id: context.execution_space_id.clone(),
+                authenticated_actor: harness_core::agentfirm_api::ActorRef {
+                    kind: harness_core::agentfirm_api::ActorKind::Service,
+                    id: self.daemon_id.clone(),
+                },
+                authority_actor: None,
+                command_name: "node_daemon.agent_session.supervisor_failure".into(),
+                idempotency_key: format!(
+                    "session:{}:{}:RecoveryRequired",
+                    session.id, session.version
+                ),
+                expected_version: session.version,
+                request_fingerprint: None,
+            };
+            let updated_at = format!("unix-ms:{}", current_unix_ms_u64());
+            match store.transition_agent_session(
+                &transition_context,
+                &session.id,
+                harness_core::agentfirm_api::AgentSessionStatus::RecoveryRequired,
+                &updated_at,
+            ) {
+                Ok(_) => eprintln!(
+                    "[node-daemon] settled AgentSession {} of {}/{} as RecoveryRequired after Supervisor failure: lane effect is unproven; reconcile before resume",
+                    session.id, context.execution_space_id, context.run_id
+                ),
+                Err(settle_error) => eprintln!(
+                    "[node-daemon] could not settle AgentSession {} of {}/{} as RecoveryRequired after Supervisor failure ({error}): {settle_error}",
+                    session.id, context.execution_space_id, context.run_id
+                ),
+            }
+        }
     }
 
     fn block_finished_supervisor_volatile(&self, context: &MultiTeamContext, error: &CliError) {
