@@ -226,8 +226,8 @@ try{
   assert.deepEqual(await page.locator(".agent-roster-meta").evaluateAll(nodes=>nodes.filter(node=>node.scrollHeight>node.clientHeight+1).map(node=>node.textContent)),[],"Agent roster role/runtime meta wraps beyond its single-line row");
   if(!liveConfig){const hostMeta=await page.locator(".agent-roster-row").first().locator(".agent-roster-meta").textContent();assert.ok(hostMeta?.includes("External · unmanaged"),"external-interactive Host roster row must not masquerade as Running");assert.ok(!hostMeta?.includes("Running"),"external-interactive Host roster row still shows Running");}
   assert.deepEqual(await page.locator(".aw-context-work-title, .aw-context-work-row-title, .aw-context-work-row-meta").evaluateAll(nodes=>nodes.filter(node=>node.scrollWidth>node.clientWidth).map(node=>node.textContent)),[],"Current or assigned Work is visually clipped");
-  await page.getByText(/no Host-authored Message authority/).waitFor();
-  assert.equal(await page.locator('textarea[aria-label="Message"]').count(),0,"Member self-view borrowed Host Message authority");
+  await page.getByRole("region",{name:"Member message actions"}).waitFor();
+  assert.equal(await page.locator('textarea[aria-label="Message"]').count(),1,"authenticated Member message authority is hidden");
   if(!liveConfig){await page.getByText(/Implemented the Team-scoped Session projection/).waitFor();await page.locator(".aw-native-facts-trail .aw-stream-fact__trigger").first().waitFor();assert.ok(await page.locator(".aw-native-facts-trail .aw-stream-fact__trigger").count()>=3,"native observations are not presented as individual expandable event rows");}
   if(!liveConfig){
     assert.equal(await page.locator(".aw-runtime-truth").count(),1,"four-axis runtime truth is missing");
@@ -253,7 +253,7 @@ try{
   assert.equal(await page.locator(".aw-current-execution").count(),0,"Agent Workspace fabricated a current-execution preview without an exact Team Session live projection");
   assert.equal(await page.locator('[data-testid="agent-workspace"]').evaluate(node=>node.textContent?.includes("Live · transient")??false),false,"legacy live member activity entered the Team Session execution slot without exact Session generation scope");
   await waitForStableWriteSurface(page);
-  assert.equal(await page.getByTestId("agent-workspace-composer").getAttribute("data-composer-kind"),"action","canonical Work/runtime controls did not remain separate from the read-only Message boundary");
+  assert.equal(await page.getByTestId("agent-workspace-composer").getAttribute("data-composer-kind"),"message","authenticated Member Message composer is unavailable");
   await page.screenshot({path:join(evidenceDir,`member-session--1440x1000--${capturedSourceSha}.png`),animations:"disabled"});
   if(!liveConfig){
     const eventRow=page.locator('[data-tool-call-id="call-1"] .aw-stream-fact__trigger');
@@ -606,6 +606,17 @@ try{
     await page.setViewportSize(viewport);
     await open(page,`${base}/?surface=team&team=${routeState.teamRun}&conversation=${routeState.member}&memberRun=${routeState.memberRun}&space=${routeState.space}&project=${routeState.project}`);
     assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=document.documentElement.clientWidth),true,`${viewport.width}px horizontal overflow`);
+    if(!liveConfig&&viewport.width===390){
+      await page.getByRole("tab",{name:/Messages/}).click();
+      assert.equal(await page.getByRole("textbox",{name:"Message",exact:true}).isVisible(),false,"mobile composer should initially leave room for reading");
+      await page.getByRole("button",{name:"Write a message",exact:true}).click();
+      await page.getByRole("textbox",{name:"Message",exact:true}).fill("Mobile draft survives collapse");
+      await page.getByRole("button",{name:"Hide message composer",exact:true}).click();
+      await page.getByRole("button",{name:"Write a message",exact:true}).click();
+      assert.equal(await page.getByRole("textbox",{name:"Message",exact:true}).inputValue(),"Mobile draft survives collapse");
+      await page.getByRole("button",{name:"Hide message composer",exact:true}).click();
+      await page.getByRole("tab",{name:/Session/}).click();
+    }
     if(viewport.width===390){
       await page.getByRole("button",{name:"Open Agent roster"}).click();
       await page.getByRole("dialog",{name:"Agent roster"}).waitFor();
