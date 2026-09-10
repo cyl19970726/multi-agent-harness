@@ -57,9 +57,14 @@ fn host_can_explicitly_close_a_live_codex_member() {
         &serde_json::json!({}),
     );
     assert_eq!(status, 202);
-    let mut running = false;
+    let mut running;
     let mut native_session_id = None;
-    for _ in 0..100 {
+    // Startup readiness is load-sensitive: the fake Codex shim spawn can far
+    // exceed the old nominal 2-second (100 x 20 ms) loop on a loaded machine.
+    // Bound the wait by wall clock (45 s maximum) with the same 20 ms poll
+    // cadence and the same running/native-session predicates (#848).
+    let readiness_deadline = std::time::Instant::now() + Duration::from_secs(45);
+    loop {
         let (_, snapshot) = serve.get_json("/v1/snapshot");
         running = snapshot["member_runs"]
             .as_array()
@@ -75,6 +80,10 @@ fn host_can_explicitly_close_a_live_codex_member() {
         if running {
             break;
         }
+        assert!(
+            std::time::Instant::now() < readiness_deadline,
+            "Codex member never became live"
+        );
         std::thread::sleep(Duration::from_millis(20));
     }
     assert!(running, "Codex member never became live");
