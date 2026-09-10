@@ -5,6 +5,8 @@
 
 use crate::*;
 
+mod author_message;
+
 /// What one exact predecessor-generation recovery settled in one Execution
 /// Space.
 ///
@@ -103,6 +105,13 @@ impl HarnessStore {
         }
 
         let execution_space_ids = self.canonical_execution_space_ids()?;
+        self.reconcile_predecessor_author_messages_unlocked(
+            context,
+            &execution_space_ids,
+            &lease,
+            evidence_ref,
+            updated_at,
+        )?;
         for execution_space_id in &execution_space_ids {
             if let Some(command) =
                 self.runtime_commands(execution_space_id)?
