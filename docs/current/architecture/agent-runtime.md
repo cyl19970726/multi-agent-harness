@@ -575,7 +575,7 @@ Codex, Claude, Kimi, Pi, and DeepSeek Harness expose separate, closed capability
   not a claim that an unavailable provider passed a live run;
 - collaboration Role Actions use one process-local
   `CollaborationCapabilityEnvelope`. It freezes the exact TeamRun, MemberRun,
-  MemberRun, AgentSession, NodeDaemon and Supervisor generations, exact-self scope,
+  AgentSession, NodeDaemon and Supervisor generations, exact-self scope,
   non-secret fingerprint, provider delivery mechanism, and expiry with the
   live Supervisor registration. The bearer secret is deliberately neither
   cloneable nor serializable and remains inside a non-cloneable, Debug-redacted
