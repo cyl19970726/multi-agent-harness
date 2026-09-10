@@ -458,26 +458,51 @@ impl MultiTeamDaemon {
         store: &HarnessStore,
         error: &CliError,
     ) {
+        self.settle_driven_sessions_for_failed_driver(
+            &context.execution_space_id,
+            store,
+            &context.run_id,
+            &context.supervisor_id,
+            context.supervisor_generation,
+            &error.to_string(),
+        );
+    }
+
+    /// The settlement core, bound to the exact failed driver: a Session is
+    /// marked only while its current `driver_ref` still names the failed
+    /// TeamSupervisor generation. A lane already re-bound to a successor
+    /// Supervisor, another driver, or a different Run is never marked by a
+    /// stale failure; the per-Session expected-version CAS fences a transfer
+    /// that races this write. RecoveryRequired is the honest uncertain mark —
+    /// never proof of a stopped provider, never a resume.
+    #[allow(clippy::too_many_arguments)]
+    fn settle_driven_sessions_for_failed_driver(
+        &self,
+        execution_space_id: &str,
+        store: &HarnessStore,
+        run_id: &str,
+        supervisor_id: &str,
+        supervisor_generation: u64,
+        cause: &str,
+    ) {
         let member_ids: Vec<String> = match store.latest_member_runs() {
             Ok(members) => members
                 .into_iter()
-                .filter(|member| member.team_run_id == context.run_id)
+                .filter(|member| member.team_run_id == run_id)
                 .map(|member| member.agent_member_id)
                 .collect(),
             Err(read_error) => {
                 eprintln!(
-                    "[node-daemon] could not enumerate members of {}/{} for Session settlement after Supervisor failure ({error}): {read_error}",
-                    context.execution_space_id, context.run_id
+                    "[node-daemon] could not enumerate members of {execution_space_id}/{run_id} for Session settlement after Supervisor failure ({cause}): {read_error}"
                 );
                 return;
             }
         };
-        let sessions = match store.fabric_agent_sessions(&context.execution_space_id) {
+        let sessions = match store.fabric_agent_sessions(execution_space_id) {
             Ok(sessions) => sessions,
             Err(read_error) => {
                 eprintln!(
-                    "[node-daemon] could not read AgentSessions for Session settlement after Supervisor failure in {}/{} ({error}): {read_error}",
-                    context.execution_space_id, context.run_id
+                    "[node-daemon] could not read AgentSessions for Session settlement after Supervisor failure in {execution_space_id}/{run_id} ({cause}): {read_error}"
                 );
                 return;
             }
@@ -485,9 +510,19 @@ impl MultiTeamDaemon {
         for session in sessions.into_iter().filter(|session| {
             member_ids.contains(&session.agent_member_id)
                 && session.lifecycle == harness_core::agentfirm_api::AgentSessionStatus::Active
+                && matches!(
+                    &session.control_state.driver_ref,
+                    harness_core::agentfirm_api::RuntimeDriverRef::TeamSupervisor {
+                        team_run_id,
+                        team_supervisor_id,
+                        team_supervisor_generation,
+                    } if *team_run_id == run_id
+                        && team_supervisor_id == supervisor_id
+                        && *team_supervisor_generation == supervisor_generation
+                )
         }) {
             let transition_context = harness_core::agentfirm_api::MutationContext {
-                execution_space_id: context.execution_space_id.clone(),
+                execution_space_id: execution_space_id.to_string(),
                 authenticated_actor: harness_core::agentfirm_api::ActorRef {
                     kind: harness_core::agentfirm_api::ActorKind::Service,
                     id: self.daemon_id.clone(),
@@ -509,12 +544,12 @@ impl MultiTeamDaemon {
                 &updated_at,
             ) {
                 Ok(_) => eprintln!(
-                    "[node-daemon] settled AgentSession {} of {}/{} as RecoveryRequired after Supervisor failure: lane effect is unproven; reconcile before resume",
-                    session.id, context.execution_space_id, context.run_id
+                    "[node-daemon] settled AgentSession {} of {execution_space_id}/{run_id} as RecoveryRequired after Supervisor failure: lane effect is unproven; reconcile before resume",
+                    session.id
                 ),
                 Err(settle_error) => eprintln!(
-                    "[node-daemon] could not settle AgentSession {} of {}/{} as RecoveryRequired after Supervisor failure ({error}): {settle_error}",
-                    session.id, context.execution_space_id, context.run_id
+                    "[node-daemon] could not settle AgentSession {} of {execution_space_id}/{run_id} as RecoveryRequired after Supervisor failure ({cause}): {settle_error}",
+                    session.id
                 ),
             }
         }
@@ -668,6 +703,19 @@ impl MultiTeamDaemon {
         supervisor_id: &str,
         supervisor_generation: u64,
     ) -> CliResult<()> {
+        // Documented completion route (#937): if the Store was unreadable at
+        // failure time, the driven Sessions could not be settled then. The
+        // explicit recovery route completes that settlement now — idempotent,
+        // because already-settled lanes are not `Active`, and still bound to
+        // the exact failed driver, so a successor's lane is never marked.
+        self.settle_driven_sessions_for_failed_driver(
+            execution_space_id,
+            store,
+            run_id,
+            supervisor_id,
+            supervisor_generation,
+            "explicit recovery completing Session settlement after Supervisor failure",
+        );
         self.recovery_blocked_runs
             .lock()
             .unwrap_or_else(|error| error.into_inner())

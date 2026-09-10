@@ -565,21 +565,11 @@ fn a_dead_supervisor_settles_driven_active_sessions_as_recovery_required() {
         "the fixture drives the member Session Active before the failure"
     );
     let quiet_before = agent_session(&fixture.store, IDLE_MEMBER).lifecycle;
+    let (supervisor_id, supervisor_generation) = bound_supervisor(&driven);
 
     // The window3 death: the Supervisor thread fails on a Store write-lock
     // timeout while the daemon survives.
-    let context = OwnedTestContext::new(TestContextConfig {
-        execution_space_id: DRAIN_SPACE_ID.into(),
-        project_binding_id: fixture.project_binding_id.clone(),
-        run_id: fixture.run_id.clone(),
-        daemon_generation: fixture.daemon_generation,
-        supervisor_id: "supervisor-settlement-1".into(),
-        supervisor_generation: fixture.daemon_generation,
-        heartbeat_valid: Arc::new(AtomicBool::new(false)),
-        serving_status: Arc::new(Mutex::new("running".into())),
-        thread: None,
-        started_at: Instant::now(),
-    });
+    let context = supervisor_failure_context(&fixture, &supervisor_id, supervisor_generation, None);
     fixture.daemon.block_finished_supervisor_failure(
         &context,
         &CliError::Usage(
@@ -614,5 +604,338 @@ fn a_dead_supervisor_settles_driven_active_sessions_as_recovery_required() {
         agent_session(&fixture.store, IDLE_MEMBER).lifecycle,
         quiet_before,
         "an unrelated quiet Session is never settled by a Supervisor failure"
+    );
+}
+
+/// The exact failed driver of one Session, as the Supervisor bound it.
+fn bound_supervisor(session: &harness_core::agentfirm_api::AgentSession) -> (String, u64) {
+    match &session.control_state.driver_ref {
+        harness_core::agentfirm_api::RuntimeDriverRef::TeamSupervisor {
+            team_supervisor_id,
+            team_supervisor_generation,
+            ..
+        } => (team_supervisor_id.clone(), *team_supervisor_generation),
+        other => panic!("expected a TeamSupervisor driver, got {other:?}"),
+    }
+}
+
+/// The dead Supervisor's context, as the daemon carried it into the reap.
+fn supervisor_failure_context(
+    fixture: &DrainFixture,
+    supervisor_id: &str,
+    supervisor_generation: u64,
+    thread: Option<std::thread::JoinHandle<CliResult<TeamRunDriveOutcome>>>,
+) -> OwnedTestContext {
+    OwnedTestContext::new(TestContextConfig {
+        execution_space_id: DRAIN_SPACE_ID.into(),
+        project_binding_id: fixture.project_binding_id.clone(),
+        run_id: fixture.run_id.clone(),
+        daemon_generation: fixture.daemon_generation,
+        supervisor_id: supervisor_id.into(),
+        supervisor_generation,
+        heartbeat_valid: Arc::new(AtomicBool::new(false)),
+        serving_status: Arc::new(Mutex::new("running".into())),
+        thread,
+        started_at: Instant::now(),
+    })
+}
+
+const SUPERVISOR_LOCK_DEATH: &str =
+    "store error: timed out waiting for store write lock; lock_wait_ms=2001; lock_budget_ms=2000";
+
+/// #937: the real route — a Supervisor THREAD that fails is joined by
+/// reap_finished, which must route the error into the same truthful
+/// settlement (not only a direct setter call).
+#[test]
+fn reap_of_a_failed_supervisor_thread_settles_its_driven_sessions() {
+    let fixture = drain_fixture("supervisor-failure-reap-route");
+    let ledger = fixture.supervise("supervisor-reap-1", fixture.daemon_generation);
+    fixture.start_cycle_for(&ledger, "work-delivery:reap:1");
+    let driven = agent_session(&fixture.store, MID_TURN_MEMBER);
+    let (supervisor_id, supervisor_generation) = bound_supervisor(&driven);
+    let quiet_before = agent_session(&fixture.store, IDLE_MEMBER).lifecycle;
+
+    // The window3 death, driven through the real failed-thread/reap route.
+    let failing = std::thread::spawn(|| -> CliResult<TeamRunDriveOutcome> {
+        Err(CliError::Usage(SUPERVISOR_LOCK_DEATH.into()))
+    });
+    while !failing.is_finished() {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    fixture.daemon.push_context(supervisor_failure_context(
+        &fixture,
+        &supervisor_id,
+        supervisor_generation,
+        Some(failing),
+    ));
+    fixture
+        .daemon
+        .reap_finished()
+        .expect("reap joins the failed Supervisor thread");
+
+    assert!(
+        fixture
+            .store
+            .member_actions()
+            .expect("read member actions")
+            .into_iter()
+            .any(|action| action.team_run_id == fixture.run_id
+                && action.action_type == "team_supervisor_recovery_required"),
+        "the reap must still write the TeamRun-level recovery marker"
+    );
+    assert_eq!(
+        agent_session(&fixture.store, MID_TURN_MEMBER).lifecycle,
+        AgentSessionStatus::RecoveryRequired,
+        "the reap route must settle the driven Active Session as RecoveryRequired"
+    );
+    assert_eq!(
+        agent_session(&fixture.store, IDLE_MEMBER).lifecycle,
+        quiet_before,
+        "an unrelated quiet Session is never settled by a Supervisor failure"
+    );
+}
+
+/// #937: settlement is bound to the exact failed driver. A lane already
+/// re-bound to a successor Supervisor is never marked by a stale failure.
+#[test]
+fn a_stale_supervisor_failure_never_marks_a_successors_lane() {
+    let fixture = drain_fixture("supervisor-stale-generation");
+    let ledger = fixture.supervise("supervisor-stale-1", fixture.daemon_generation);
+    fixture.start_cycle_for(&ledger, "work-delivery:stale:1");
+    let (failed_id, failed_generation) =
+        bound_supervisor(&agent_session(&fixture.store, MID_TURN_MEMBER));
+
+    let first = supervisor_failure_context(&fixture, &failed_id, failed_generation, None);
+    fixture
+        .daemon
+        .block_finished_supervisor_failure(&first, &CliError::Usage(SUPERVISOR_LOCK_DEATH.into()));
+    assert_eq!(
+        agent_session(&fixture.store, MID_TURN_MEMBER).lifecycle,
+        AgentSessionStatus::RecoveryRequired,
+        "the first failure settles its own lane"
+    );
+
+    // Reconcile the lane as proven dead and re-drive it under a successor
+    // Supervisor generation.
+    let member = member_named(&fixture.store, &fixture.run_id, MID_TURN_MEMBER);
+    crate::transition_provider_session_runtime_control(
+        &ledger,
+        &member,
+        RuntimeResidency::Detached,
+        RuntimeActivity::Idle,
+    )
+    .expect("detach the reaped lane");
+    crate::transition_provider_session_for_member(&ledger, &member, AgentSessionStatus::Idle)
+        .expect("reconcile the RecoveryRequired lane to Idle");
+    fixture
+        .store
+        .release_team_supervisor_lease(
+            &fixture.run_id,
+            &failed_id,
+            failed_generation,
+            current_unix_ms_u64(),
+        )
+        .expect("release the dead Supervisor lease");
+    let successor = fixture.supervise("supervisor-stale-2", fixture.daemon_generation);
+    fixture.start_cycle_for(&successor, "work-delivery:stale:2");
+    let (successor_id, successor_generation) =
+        bound_supervisor(&agent_session(&fixture.store, MID_TURN_MEMBER));
+    assert_ne!(
+        (failed_id.clone(), failed_generation),
+        (successor_id, successor_generation),
+        "the successor binding must be a different driver generation"
+    );
+    assert_eq!(
+        agent_session(&fixture.store, MID_TURN_MEMBER).lifecycle,
+        AgentSessionStatus::Active,
+        "the successor drives the lane again"
+    );
+
+    // The stale failure fires again: the successor's live lane stays untouched.
+    let stale = supervisor_failure_context(&fixture, &failed_id, failed_generation, None);
+    fixture
+        .daemon
+        .block_finished_supervisor_failure(&stale, &CliError::Usage(SUPERVISOR_LOCK_DEATH.into()));
+    assert_eq!(
+        agent_session(&fixture.store, MID_TURN_MEMBER).lifecycle,
+        AgentSessionStatus::Active,
+        "a stale Supervisor failure must never mark a lane its driver no longer owns"
+    );
+}
+
+/// #937: the documented supported recovery route end to end — after the
+/// failure, explicit recovery plus a proven-dead lane returns the member to
+/// real execution, with no replayed cycle.
+#[test]
+fn the_supported_recovery_route_returns_the_member_to_real_execution() {
+    let fixture = drain_fixture("supervisor-failure-recovery-route");
+    let ledger = fixture.supervise("supervisor-route-1", fixture.daemon_generation);
+    fixture.start_cycle_for(&ledger, "work-delivery:route:1");
+    let (supervisor_id, supervisor_generation) =
+        bound_supervisor(&agent_session(&fixture.store, MID_TURN_MEMBER));
+
+    let failure = supervisor_failure_context(&fixture, &supervisor_id, supervisor_generation, None);
+    fixture.daemon.block_finished_supervisor_failure(
+        &failure,
+        &CliError::Usage(SUPERVISOR_LOCK_DEATH.into()),
+    );
+    assert_eq!(
+        agent_session(&fixture.store, MID_TURN_MEMBER).lifecycle,
+        AgentSessionStatus::RecoveryRequired
+    );
+
+    // 1. Explicit operator recovery of the run (clears the failure hold).
+    fixture
+        .daemon
+        .clear_team_run_supervisor_recovery(
+            DRAIN_SPACE_ID,
+            &fixture.store,
+            &fixture.run_id,
+            &supervisor_id,
+            supervisor_generation,
+        )
+        .expect("explicit operator recovery clears the hold");
+
+    // 2. The lane is proven dead (process reaped); journal the member Blocked
+    // the way the runner does, then recover it.
+    let member = member_named(&fixture.store, &fixture.run_id, MID_TURN_MEMBER);
+    crate::transition_provider_session_runtime_control(
+        &ledger,
+        &member,
+        RuntimeResidency::Detached,
+        RuntimeActivity::Idle,
+    )
+    .expect("detach the reaped lane");
+    let expected = member_named(&fixture.store, &fixture.run_id, MID_TURN_MEMBER);
+    let mut blocked = expected.clone();
+    blocked.status = MemberRunStatus::Blocked;
+    blocked.last_event_at = Some("unix-ms:route-blocked".into());
+    fixture
+        .store
+        .compare_and_append_member_run(&expected, &blocked)
+        .expect("journal the member Blocked the way the runner does");
+    let report = crate::team_run_recover(&fixture.store, &fixture.run_id, false)
+        .expect("lane-level recovery repairs");
+    assert_eq!(
+        report["restarted_blocked_members"],
+        serde_json::json!(1),
+        "a proven-dead RecoveryRequired lane is recovered: {report}"
+    );
+
+    // 3. Real execution continues under the next Supervisor generation —
+    // exactly one new cycle, never a replay of the killed one.
+    fixture
+        .store
+        .release_team_supervisor_lease(
+            &fixture.run_id,
+            &supervisor_id,
+            supervisor_generation,
+            current_unix_ms_u64(),
+        )
+        .expect("release the dead Supervisor lease");
+    let successor = fixture.supervise("supervisor-route-2", fixture.daemon_generation);
+    fixture.start_cycle_for(&successor, "work-delivery:route:2");
+    assert_eq!(
+        agent_session(&fixture.store, MID_TURN_MEMBER).lifecycle,
+        AgentSessionStatus::Active,
+        "the recovered member executes again"
+    );
+    assert_eq!(
+        fixture.start_cycles().len(),
+        2,
+        "one pre-failure cycle and one post-recovery cycle; nothing replayed"
+    );
+}
+
+/// #937: the Unknown fence is preserved — without a proven-dead lane the
+/// recovery route reports and refuses to restart, never forcing Idle.
+#[test]
+fn recovery_never_restarts_a_lane_that_is_not_proven_dead() {
+    let fixture = drain_fixture("supervisor-failure-unknown-fence");
+    let ledger = fixture.supervise("supervisor-unknown-1", fixture.daemon_generation);
+    fixture.start_cycle_for(&ledger, "work-delivery:unknown:1");
+    let (supervisor_id, supervisor_generation) =
+        bound_supervisor(&agent_session(&fixture.store, MID_TURN_MEMBER));
+
+    let failure = supervisor_failure_context(&fixture, &supervisor_id, supervisor_generation, None);
+    fixture.daemon.block_finished_supervisor_failure(
+        &failure,
+        &CliError::Usage(SUPERVISOR_LOCK_DEATH.into()),
+    );
+    assert_eq!(
+        agent_session(&fixture.store, MID_TURN_MEMBER).lifecycle,
+        AgentSessionStatus::RecoveryRequired
+    );
+
+    // The lane is still Attached/Running — nothing proves the provider died.
+    let expected = member_named(&fixture.store, &fixture.run_id, MID_TURN_MEMBER);
+    let mut blocked = expected.clone();
+    blocked.status = MemberRunStatus::Blocked;
+    blocked.last_event_at = Some("unix-ms:unknown-blocked".into());
+    fixture
+        .store
+        .compare_and_append_member_run(&expected, &blocked)
+        .expect("journal the member Blocked the way the runner does");
+    let report = crate::team_run_recover(&fixture.store, &fixture.run_id, false)
+        .expect("recovery reports instead of restarting");
+    assert_eq!(
+        report["restarted_blocked_members"],
+        serde_json::json!(0),
+        "an unproven lane is never restarted: {report}"
+    );
+    assert_eq!(
+        member_named(&fixture.store, &fixture.run_id, MID_TURN_MEMBER).status,
+        MemberRunStatus::Blocked,
+        "the member stays Blocked while its lane is unproven"
+    );
+    assert_eq!(
+        agent_session(&fixture.store, MID_TURN_MEMBER).lifecycle,
+        AgentSessionStatus::RecoveryRequired,
+        "the lane stays honestly RecoveryRequired, never forced Idle"
+    );
+    assert_eq!(
+        fixture.start_cycles().len(),
+        1,
+        "no new cycle and no replay while the effect is unknown"
+    );
+}
+
+/// #937: when the Store was unreadable at failure time, the explicit
+/// recovery route is the documented completion path — it settles the lane
+/// once access returns (idempotently, still bound to the failed driver).
+#[test]
+fn explicit_recovery_completes_settlement_that_a_store_outage_deferred() {
+    let fixture = drain_fixture("supervisor-failure-deferred-settlement");
+    let ledger = fixture.supervise("supervisor-deferred-1", fixture.daemon_generation);
+    fixture.start_cycle_for(&ledger, "work-delivery:deferred:1");
+    let (supervisor_id, supervisor_generation) =
+        bound_supervisor(&agent_session(&fixture.store, MID_TURN_MEMBER));
+
+    // The outage boundary: nothing was persisted at failure time — only the
+    // volatile adoption hold exists and the lane is still honestly Active.
+    fixture
+        .daemon
+        .insert_volatile_hold((DRAIN_SPACE_ID.into(), fixture.run_id.clone()), None);
+    assert_eq!(
+        agent_session(&fixture.store, MID_TURN_MEMBER).lifecycle,
+        AgentSessionStatus::Active,
+        "the deferred boundary leaves the lane honestly unsettled"
+    );
+
+    // After access returns, the documented explicit route completes it.
+    fixture
+        .daemon
+        .clear_team_run_supervisor_recovery(
+            DRAIN_SPACE_ID,
+            &fixture.store,
+            &fixture.run_id,
+            &supervisor_id,
+            supervisor_generation,
+        )
+        .expect("explicit recovery completes the deferred settlement");
+    assert_eq!(
+        agent_session(&fixture.store, MID_TURN_MEMBER).lifecycle,
+        AgentSessionStatus::RecoveryRequired,
+        "the explicit route settles the deferred lane as RecoveryRequired"
     );
 }
