@@ -231,7 +231,10 @@ doc carries the contract behind each rule.
    record the reason and start a new session, retaining the old one as
    history.
 8. **One execution driver.** Each active MemberRun/native session has exactly
-   one top-level execution driver: `host_driven` or `provider_driven`.
+   one top-level execution driver: `host_driven` or `provider_driven` for
+   managed runtimes. The explicit `external_interactive` Host exception is
+   `user_driven`: the human drives the external session, and Harness never
+   starts a provider cycle for it.
    Multiple explicitly bound Sessions may share one cwd; worktrees are optional
    task isolation. Never activate a provider-native goal and also issue an
    ordinary Harness start for the same work. Provider satisfaction never
