@@ -514,6 +514,13 @@ fn exact_self_session_projection_follows_fresh_start_settle_sync() {
         member_stopped,
         "Member did not reach a clean stopped boundary"
     );
+    let (status, closed_history) = serve.get_json(&member_agent_workspace_route);
+    assert_eq!(status, 200, "closed history read: {closed_history}");
+    assert_eq!(
+        closed_history["data"]["persisted_session_projection"]["available"], true,
+        "the still-running reader may read closed native history"
+    );
+    assert_eq!(closed_history["allowed_actions"], serde_json::json!([]));
     let daemon_stopped = run_firm(&home, &root, &["daemon", "stop"]);
     assert!(
         daemon_stopped.status.success(),
@@ -534,5 +541,14 @@ fn exact_self_session_projection_follows_fresh_start_settle_sync() {
     assert_eq!(
         stopped_owner_workspace["data"]["persisted_session_projection"]["available"], false,
         "v3 reads require the current owning NodeDaemon; serve never traverses provider files"
+    );
+    assert_eq!(
+        stopped_owner_workspace["data"]["current_session"]["agent_session_id"], sessions[0].id,
+        "closing execution does not erase the exact historical Session selection"
+    );
+    assert_eq!(
+        stopped_owner_workspace["data"]["persisted_session_projection"]["reason_code"],
+        "node_daemon_read_unavailable",
+        "reader availability and historical identity are distinct"
     );
 }

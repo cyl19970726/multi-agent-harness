@@ -10,6 +10,8 @@ mod claude_sdk_native_session_has_deterministic_desktop_import_target;
 mod close_admission_is_serialized_with_successor_supervisor_generation;
 #[path = "../general/close_without_live_supervisor_requires_runtime_command_recovery_without_side_effects.rs"]
 mod close_without_live_supervisor_requires_runtime_command_recovery_without_side_effects;
+#[path = "../general/closed_host_workspace_history.rs"]
+mod closed_host_workspace_history;
 #[path = "../general/codex_multi_question_request_fails_closed_without_durable_side_effects.rs"]
 mod codex_multi_question_request_fails_closed_without_durable_side_effects;
 #[path = "../general/codex_request_user_input_survives_settled_round_work_progress_bookkeeping.rs"]

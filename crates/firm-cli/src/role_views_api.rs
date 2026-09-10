@@ -1410,6 +1410,7 @@ mod team_surface;
 mod viewer_surface;
 mod work_event_summary;
 mod work_runtime;
+mod workspace_session;
 mod workspace_surface;
 
 pub(crate) use member_surface::*;

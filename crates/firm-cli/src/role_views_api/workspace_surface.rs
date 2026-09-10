@@ -108,6 +108,7 @@ pub(crate) fn agent_workspace_view(
             })
         })
         .transpose()?;
+    // Live binding is used only for runtime health, never historical selection.
     let host_runtime_binding = run.and_then(|run| {
         store
             .host_runtime_binding(&run.id, crate::current_unix_ms_u64())
@@ -154,7 +155,7 @@ pub(crate) fn agent_workspace_view(
     let team_envelope = team_view(
         space_id,
         store,
-        route_ref,
+        run_id.unwrap_or(resolved_team_id),
         false,
         identity,
         query.company.as_deref(),
@@ -296,33 +297,18 @@ pub(crate) fn agent_workspace_view(
         })
     }
     .or_else(|| member_runs.first());
-    // Provider-native Session reads are Team-scoped. The application layer has
-    // The AgentSession binding is coordination provenance only. Provider-native
-    // content is exposed below exclusively to the same-machine loopback
-    // Operator; remote RoleView credentials never become transcript grants.
-    let current_agent_sessions = facts
-        .agent_sessions
-        .iter()
-        .filter(|session| session["execution_space_id"] == space_id)
-        .filter(|session| session["agent_member_id"] == selected_agent_id)
-        .filter(|session| session["lifecycle"] != "closed")
-        .collect::<Vec<_>>();
-    let current_agent_session = if selected_is_host {
-        host_runtime_binding
-            .as_ref()
-            .and_then(|binding| match binding {
-                harness_application::HostRuntimeBinding::Managed(binding) => facts
-                    .agent_sessions
-                    .iter()
-                    .find(|session| session["id"] == binding.agent_session.id),
-                harness_application::HostRuntimeBinding::ExternalInteractive(_) => None,
-            })
-    } else {
-        match current_agent_sessions.as_slice() {
-            [session] => Some(*session),
-            _ => None,
-        }
-    };
+    // Host and peer history use the same exact MemberRun/native identity join.
+    // Closed history is readable without acquiring live control authority.
+    // The daemon reader still authenticates the viewer and its own generation;
+    // mutation actions below keep their existing separate authority checks.
+    let current_agent_session = run.zip(selected_member_run).and_then(|(run, member_run)| {
+        super::workspace_session::workspace_session(
+            space_id,
+            run,
+            member_run,
+            &facts.agent_sessions,
+        )
+    });
     // The Team-scoped historical projection is decoded on demand. It is
     // independent from the volatile live overlay and never enters a ledger.
     let persisted_session_projection = current_agent_session
@@ -379,7 +365,7 @@ pub(crate) fn agent_workspace_view(
         team_view(
             space_id,
             store,
-            route_ref,
+            run_id.unwrap_or(resolved_team_id),
             true,
             identity,
             query.company.as_deref(),
@@ -725,7 +711,21 @@ fn read_persisted_session_projection(
     let session: harness_core::agentfirm_api::AgentSession =
         serde_json::from_value(session_value.clone()).ok()?;
     let native = session.native_session_ref.as_ref()?;
-    let lease = store.latest_node_daemon_lease(&team.node_id).ok()??;
+    let lease = match store.latest_node_daemon_lease(&team.node_id) {
+        Ok(Some(lease)) => lease,
+        result => {
+            return Some(json!({
+                "schema_version":"agentfirm.native_session_read.v1",
+                "available":false,
+                "reason_code":"node_daemon_read_unavailable",
+                "detail":match result {
+                    Ok(None) => "No NodeDaemon reader lease is available".to_string(),
+                    Err(error) => error.to_string(),
+                    _ => unreachable!(),
+                }
+            }))
+        }
+    };
     let mode_and_cursor = if let Some(after) = query
         .values
         .get("session_after")
