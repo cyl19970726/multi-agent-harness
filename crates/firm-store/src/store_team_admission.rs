@@ -11,6 +11,30 @@ impl HarnessStore {
         runtime: &ProviderRuntimeProjection,
         canonical: &CanonicalMemberRunAdmission,
     ) -> StoreResult<()> {
+        // Both projections will be persisted by this admission. Validate their
+        // immutable identity before inspecting historical Sessions, including
+        // when no Session exists yet or the member is external-interactive.
+        let projections_match = match (
+            runtime.native_session.as_ref(),
+            canonical.run.native_session.as_ref(),
+        ) {
+            (None, None) => true,
+            (Some(runtime), Some(canonical)) => {
+                runtime.provider == canonical.provider
+                    && runtime.execution_mode == canonical.execution_mode
+                    && runtime.native_session_id == canonical.native_session_id
+                    && runtime.native_locator_kind == canonical.native_locator_kind
+                    && runtime.provider_version == canonical.provider_version
+                    && runtime.adapter_contract_version == canonical.adapter_contract_version
+            }
+            _ => false,
+        };
+        if !projections_match {
+            return Err(StoreError::Conflict(format!(
+                "MEMBER_ADMISSION_NATIVE_IDENTITY_MISMATCH: canonical MemberRun {} and runtime projection name different native sessions",
+                canonical.run.id
+            )));
+        }
         if runtime.is_external_interactive() {
             return Ok(());
         }
