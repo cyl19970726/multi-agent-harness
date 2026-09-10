@@ -241,6 +241,10 @@ impl TestDaemon {
     pub fn settle_finished_supervisor(&self, ctx: &OwnedTestContext, outcome: TeamRunDriveOutcome) {
         self.inner.settle_finished_supervisor(&ctx.inner, outcome)
     }
+    pub fn block_finished_supervisor_failure(&self, ctx: &OwnedTestContext, error: &CliError) {
+        self.inner
+            .block_finished_supervisor_failure(&ctx.inner, error)
+    }
     pub fn serve_loop(self: &Arc<Self>, listener: &UnixListener) -> CliResult<()> {
         self.inner.serve_loop(listener)
     }
