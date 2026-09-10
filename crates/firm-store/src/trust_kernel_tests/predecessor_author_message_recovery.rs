@@ -81,6 +81,31 @@ fn recover_message(
 }
 
 #[test]
+fn predecessor_author_message_allows_work_revision_independent_of_canonical_sequence() {
+    let (store, root, _command, operator) = prepared_message();
+    append_runtime_team(&store, "team-a", "team-run-a");
+    let mut work = insert_runtime_work(&store, "historical-work", "team-a", "team-run-a");
+    // Work revisions include its WorkOperation history, while this ledger only
+    // counts canonical mutations. Exercise the real writer, not hand-edited rows.
+    for (expected, key) in [(4, "first-canonical"), (7, "second-canonical")] {
+        work.version = expected + 1;
+        store
+            .commit_current_work_mutation_unlocked(
+                &context("fixture-host", "work.update", key, expected),
+                "updated",
+                serde_json::json!({}),
+                &work,
+                Vec::new(),
+                Vec::new(),
+            )
+            .unwrap();
+    }
+    recover_message(&store, &operator)
+        .expect("Work revision gaps are not missing canonical message history");
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn predecessor_author_message_without_authored_effect_is_not_applied() {
     let (store, root, command, operator) = prepared_message();
     recover_message(&store, &operator)
@@ -151,7 +176,7 @@ fn predecessor_author_message_applied_is_not_replayed_and_recovery_is_idempotent
 
 #[test]
 fn predecessor_author_message_rejects_incomplete_history_without_settlement() {
-    for damage in ["tail", "gap", "payload"] {
+    for damage in ["tail", "gap", "aggregate-gap", "version-gap", "payload"] {
         let (store, root, command, operator) = prepared_message();
         if damage == "payload" {
             authored_message(&store, &command);
@@ -160,12 +185,30 @@ fn predecessor_author_message_rejects_incomplete_history_without_settlement() {
         let original = fs::read_to_string(&path).unwrap();
         let damaged = match damage {
             "tail" => format!("{original}{{\"unfinished\":"),
-            "gap" => {
+            "gap" | "aggregate-gap" | "version-gap" => {
                 let mut rows = original
                     .lines()
                     .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
                     .collect::<Vec<_>>();
-                rows[0]["operation"]["event"]["store_sequence"] = serde_json::json!(2);
+                if damage == "version-gap" {
+                    let row = rows
+                        .iter_mut()
+                        .find(|row| {
+                            row["operation"]["event"]["aggregate_kind"] == "runtime_command"
+                        })
+                        .unwrap();
+                    // This is internally a valid single increment, but it skips
+                    // the initial canonical version and must not prove absence.
+                    row["operation"]["event"]["expected_version"] = serde_json::json!(2);
+                    row["operation"]["event"]["resulting_version"] = serde_json::json!(3);
+                } else {
+                    let field = if damage == "gap" {
+                        "store_sequence"
+                    } else {
+                        "sequence"
+                    };
+                    rows[0]["operation"]["event"][field] = serde_json::json!(2);
+                }
                 rows.iter().map(|row| format!("{row}\n")).collect()
             }
             _ => {

@@ -551,7 +551,11 @@ It validates the original accepted envelope and immutable authored Message,
 including historical sender binding and initial delivery evidence. A matching
 authored operation proves `Applied` (creation, not delivery); complete absence
 without conflicting or orphaned records proves `NotApplied`. Unterminated tails,
-malformed records, sequence gaps, or inconsistent evidence remain blocked. All
+malformed records, sequence gaps, or inconsistent evidence remain blocked.
+Canonical event sequences are checked independently of object versions: Work
+versions also span WorkOperation history and need not start at one in this
+ledger. Work rows still advance their expected version once; other aggregates
+retain their complete canonical version chain. All
 pending outcomes are checked before any settlement is appended, and any other
 Unknown command still blocks recovery. This does not replay a Message, permit
 a successor to execute an old effect, or unfreeze generic reconciliation verbs.

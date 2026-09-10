@@ -73,15 +73,19 @@ impl HarnessStore {
                 event.aggregate_kind.clone(),
                 event.aggregate_id.clone(),
             );
-            let prior = *versions.get(&key).unwrap_or(&0);
+            let (prior_sequence, prior_version) = *versions.get(&key).unwrap_or(&(0, 0));
+            // Work revisions also advance through WorkOperation history; its
+            // canonical event count is independent of that revision sequence.
+            // Message proof never depends on a Work projection. Other aggregates
+            // retain the complete canonical version chain used by that proof.
             if event.store_sequence != history.len() as u64 + 1
-                || event.sequence != prior + 1
-                || event.expected_version != prior
-                || event.resulting_version != prior + 1
+                || event.sequence != prior_sequence + 1
+                || (event.aggregate_kind != "work" && event.expected_version != prior_version)
+                || event.expected_version.checked_add(1) != Some(event.resulting_version)
             {
                 return Err(unproven("canonical history has a sequence/version gap"));
             }
-            versions.insert(key, event.resulting_version);
+            versions.insert(key, (event.sequence, event.resulting_version));
             history.push(envelope);
         }
         // Validate every outcome before appending anything. Another Unknown command
