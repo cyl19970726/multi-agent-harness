@@ -251,9 +251,9 @@ pub fn spawn_owned_fixture(
 /// Remove a fixture's publication after its proven reap so parent cleanup
 /// never double-handles it. Best-effort: a missing file just means someone
 /// already cleaned up.
-pub fn unpublish_owned_fixture(pid: u32) {
+pub fn unpublish_owned_fixture(pid: u32, reap: &std::io::Result<Option<ExitStatus>>) {
     if let Ok(dir) = std::env::var(ISOLATION_DIR_ENV) {
-        let _ = std::fs::remove_file(Path::new(&dir).join(format!("owned-fixture-{pid}")));
+        unpublish_reaped_fixture(&Path::new(&dir).join(format!("owned-fixture-{pid}")), reap);
     }
 }
 
@@ -341,4 +341,37 @@ pub fn wait_for_file_bounded(path: &Path, timeout: Duration, label: &str) {
         );
         std::thread::sleep(POLL_INTERVAL);
     }
+}
+
+fn unpublish_reaped_fixture(path: &Path, reap: &std::io::Result<Option<ExitStatus>>) {
+    if matches!(reap, Ok(Some(_))) {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+#[test]
+fn fixture_publication_survives_unproven_reap() {
+    use std::os::unix::process::ExitStatusExt;
+    let dir = isolation_dir("reap-proof");
+    let publication = dir.join("owned-fixture-test");
+    std::fs::write(&publication, b"").unwrap();
+    unpublish_reaped_fixture(&publication, &Ok(None));
+    assert!(
+        publication.exists(),
+        "timeout must preserve parent cleanup evidence"
+    );
+    unpublish_reaped_fixture(
+        &publication,
+        &Err(std::io::Error::from_raw_os_error(libc::EPERM)),
+    );
+    assert!(
+        publication.exists(),
+        "error must preserve parent cleanup evidence"
+    );
+    unpublish_reaped_fixture(&publication, &Ok(Some(ExitStatus::from_raw(0))));
+    assert!(
+        !publication.exists(),
+        "terminal reap releases the publication"
+    );
+    std::fs::remove_dir_all(dir).unwrap();
 }

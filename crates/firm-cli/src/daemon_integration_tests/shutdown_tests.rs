@@ -54,9 +54,7 @@ fn shutdown_force_reaps_an_owned_group_before_returning_body() {
         // Retain the publication unless the reap is proven: a failed
         // kill/reap leaves the parent's kill_published_fixtures a reachable
         // fixture (#928).
-        if status.is_ok() {
-            unpublish_owned_fixture(pid);
-        }
+        unpublish_owned_fixture(pid, &status);
         let status = status?;
         assert!(status.is_some(), "shutdown child must be terminal-reaped");
         assert!(!thread_heartbeat.load(Ordering::Acquire));
@@ -215,9 +213,7 @@ fn unrelated_owned_group_survives_a_concurrent_external_shutdown_sweep_body() {
     // unless the reap is proven, so a failed kill/reap still leaves the
     // parent's kill_published_fixtures a reachable fixture (#928).
     let reap = registration.kill_and_reap(&mut child);
-    if reap.is_ok() {
-        unpublish_owned_fixture(pid);
-    }
+    unpublish_owned_fixture(pid, &reap);
     assert!(
         reap.expect("reap unrelated fixture").is_some(),
         "unrelated fixture must be terminal-reaped"
@@ -335,9 +331,7 @@ fn timeout_fixture_child_parks_until_released_by_signal_body() {
     // Reap on every exit path before any panic propagates. Same retention
     // rule: unpublish only after a proven reap (#928).
     let reap = registration.kill_and_reap(&mut child);
-    if reap.is_ok() {
-        unpublish_owned_fixture(pid);
-    }
+    unpublish_owned_fixture(pid, &reap);
     assert!(
         reap.expect("reap timeout fixture").is_some(),
         "timeout fixture must be terminal-reaped"
@@ -537,9 +531,7 @@ fn process_group_alive_proves_liveness_and_esrch_absence_body() {
         "live fixture group must probe alive"
     );
     let reap = registration.kill_and_reap(&mut child);
-    if reap.is_ok() {
-        unpublish_owned_fixture(pid);
-    }
+    unpublish_owned_fixture(pid, &reap);
     assert!(
         reap.expect("reap probe fixture").is_some(),
         "probe fixture must be terminal-reaped"
