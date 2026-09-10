@@ -1,4 +1,7 @@
 use super::*;
+use harness_core::agentfirm_api::{
+    RuntimeCommandKind, RuntimeCommandPhase, RuntimeEffectCertainty,
+};
 use std::io::Read as _;
 
 /// Reap every spawned process on any test outcome. The release file is
@@ -61,6 +64,11 @@ fn start_during_slow_adoption_observes_and_proves_exact_postcondition_once() {
     // it. Everything else delegates to the ordinary fake Kimi ACP shim.
     let release = home.base().join("kimi-probe-release");
     let mut processes = ProcessGuard::new(&release);
+    let prompt_release = home.base().join("prompt-release");
+    let _prompt_release_guard = ProcessGuard::new(&prompt_release);
+    let prompt_release_text = prompt_release.display().to_string();
+    let prompt_ready = home.base().join("prompt-ready");
+    let prompt_ready_text = prompt_ready.display().to_string();
     let wrapper_dir = home.base().join("fakebin-slow-kimi");
     std::fs::create_dir_all(&wrapper_dir).expect("wrapper bin dir");
     let wrapper_path = wrapper_dir.join("kimi");
@@ -94,6 +102,12 @@ fn start_during_slow_adoption_observes_and_proves_exact_postcondition_once() {
         ("KIMI_CODE_BIN", wrapper_path_string.as_str()),
         ("FAKE_KIMI_VERSION", "0.36.1"),
         ("FAKE_KIMI_WAIT", "1"),
+        ("FAKE_KIMI_FIRST_PROMPT_READY", prompt_ready_text.as_str()),
+        (
+            "FAKE_KIMI_FIRST_PROMPT_RELEASE",
+            prompt_release_text.as_str(),
+        ),
+        ("FAKE_KIMI_TERMINAL_ON_FIRST_RELEASE", "1"),
     ];
     let daemon = spawn_daemon(&home, &fixture, &daemon_env);
     processes.watch(daemon);
@@ -225,6 +239,44 @@ fn start_during_slow_adoption_observes_and_proves_exact_postcondition_once() {
     assert_eq!(duplicate["already_managed"], true);
     assert_eq!(duplicate["supervisor_generation"], 1);
 
+    // Managed admission proves no provider-input receipt. Establish that
+    // independent cleanup precondition explicitly instead of racing cancel
+    // against an unacknowledged StartCycle and expecting Unknown to release.
+    let store = HarnessStore::new(home.spaces_dir().join(&fixture.execution_space_id));
+    let receipt_deadline = Instant::now() + Duration::from_secs(15);
+    let command_id = loop {
+        let command = store
+            .runtime_commands(&fixture.execution_space_id)
+            .unwrap()
+            .into_iter()
+            .find(|command| {
+                command.command == RuntimeCommandKind::StartCycle
+                    && command.phase == RuntimeCommandPhase::Prepared
+                    && command.effect_certainty == RuntimeEffectCertainty::Unknown
+            });
+        if let Some(command) = command.filter(|_| prompt_ready.exists()) {
+            break command.id;
+        }
+        assert!(Instant::now() < receipt_deadline, "prompt was not prepared");
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    std::fs::write(&prompt_release, b"release exact terminal").unwrap();
+    let receipt_deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        let commands = store.runtime_commands(&fixture.execution_space_id).unwrap();
+        if commands.iter().any(|command| {
+            command.id == command_id
+                && command.phase == RuntimeCommandPhase::Settled
+                && command.effect_certainty == RuntimeEffectCertainty::Applied
+        }) {
+            break;
+        }
+        assert!(
+            Instant::now() < receipt_deadline,
+            "exact StartCycle {command_id} lacks Applied settlement: {commands:?}"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
     let mut daemon = processes.children.remove(socket_wait_child_index);
     stop_daemon(&home, &fixture, &mut daemon, &socket);
 }

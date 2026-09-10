@@ -96,10 +96,7 @@ impl MultiTeamDaemon {
             );
         }
         if !termination.signal_failures.is_empty() {
-            failures.push(format!(
-                "owned provider process-group signals failed: {:?}",
-                termination.signal_failures
-            ));
+            eprintln!("[node-daemon] owned provider process-group signal failures pending exit proof: {:?}", termination.signal_failures);
         }
         let forced_deadline = Instant::now() + forced_timeout;
         for (space_id, run_id, thread) in unfinished {
@@ -135,23 +132,34 @@ impl MultiTeamDaemon {
             );
         }
         if !late_termination.signal_failures.is_empty() {
-            failures.push(format!(
-                "late owned provider process-group signals failed: {:?}",
-                late_termination.signal_failures
-            ));
+            eprintln!("[node-daemon] late owned provider process-group signal failures pending exit proof: {:?}", late_termination.signal_failures);
         }
         self.journal_machine_authority_loss_phase(
             "process_groups_terminated",
             &terminated_process_groups,
         );
         if failures.is_empty() {
-            // Every old Supervisor has joined and the final closed-admission
-            // drain is empty of failures. A future daemon generation in this
-            // same process may now register its own groups.
-            if let Err(error) = harness_runtime_host::complete_registered_process_group_shutdown() {
-                failures.push(format!(
+            // Every old Supervisor has joined. Earlier signal errors remain
+            // diagnostics until this final registry/exit proof resolves them;
+            // EPERM alone never authorizes release.
+            match harness_runtime_host::complete_registered_process_group_shutdown() {
+                Ok(proof) => {
+                    if !proof.reconciled_signal_failures.is_empty() {
+                        eprintln!("[node-daemon] prior signal failures reconciled by later process-group absence: {:?}", proof.reconciled_signal_failures);
+                        let absent_groups = proof
+                            .reconciled_signal_failures
+                            .iter()
+                            .map(|(pid, _)| *pid)
+                            .collect::<Vec<_>>();
+                        self.journal_machine_authority_loss_phase(
+                            "signal_failures_reconciled_by_group_absence",
+                            &absent_groups,
+                        );
+                    }
+                }
+                Err(error) => failures.push(format!(
                     "owned provider process-group admission cannot reopen: {error}"
-                ));
+                )),
             }
         }
         if failures.is_empty() {

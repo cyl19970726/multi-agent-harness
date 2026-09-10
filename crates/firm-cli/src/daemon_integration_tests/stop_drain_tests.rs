@@ -305,3 +305,67 @@ fn stop_reports_drain_incomplete_without_releasing_authority() {
     harness_runtime_host::complete_registered_process_group_shutdown()
         .expect("reset process-group admission after the drain-timeout test");
 }
+
+#[test]
+fn stop_keeps_authority_until_the_registered_process_group_exits() {
+    use std::os::unix::process::CommandExt;
+    let heartbeat = Arc::new(AtomicBool::new(true));
+    let worker_heartbeat = Arc::clone(&heartbeat);
+    let (store_tx, store_rx) = std::sync::mpsc::channel::<HarnessStore>();
+    let (pid_tx, pid_rx) = std::sync::mpsc::channel();
+    let thread = std::thread::spawn(move || -> CliResult<TeamRunDriveOutcome> {
+        let mut child = std::process::Command::new("sleep")
+            .arg("30")
+            .process_group(0)
+            .spawn()?;
+        let mut registration =
+            harness_runtime_host::OwnedProcessGroupRegistration::new(&mut child).unwrap();
+        pid_tx.send(child.id()).unwrap();
+        let store = store_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        while worker_heartbeat.load(Ordering::Acquire) {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let status_before_termination = store
+            .latest_node_daemon_lease(STOP_TEST_NODE_ID)
+            .unwrap()
+            .unwrap()
+            .status;
+        // Reap before asserting so an ordering regression does not leak the child.
+        assert!(registration.kill_and_reap(&mut child)?.is_some());
+        assert_ne!(
+            status_before_termination,
+            harness_core::NodeDaemonLeaseStatus::Released,
+            "authority was released before owned process termination"
+        );
+        Ok(TeamRunDriveOutcome::Progressed {
+            team_run_status: harness_core::TeamRunStatus::Completed,
+        })
+    });
+    let pid = pid_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    let fixture = stop_fixture(
+        "stop-pg",
+        Some(managed_context(thread, heartbeat)),
+        (5_000, 1_000),
+    );
+    let store = HarnessStore::new(
+        crate::execution_space::list_spaces(fixture.daemon.firm_home())
+            .unwrap()
+            .remove(0)
+            .store_root,
+    );
+    store_tx.send(store).unwrap();
+    std::thread::scope(|scope| {
+        let daemon = Arc::clone(&fixture.daemon);
+        let listener = &fixture.listener;
+        let server = scope.spawn(move || daemon.serve_loop(listener));
+        let response = request_stop(&fixture);
+        server.join().unwrap().unwrap();
+        assert_eq!(response["authority_released"], true, "{response}");
+        assert!(observed_lease_is_released(&fixture));
+        assert_eq!(unsafe { libc::kill(-(pid as libc::pid_t), 0) }, -1);
+        assert_eq!(
+            std::io::Error::last_os_error().raw_os_error(),
+            Some(libc::ESRCH)
+        );
+    });
+}
