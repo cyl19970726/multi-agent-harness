@@ -553,13 +553,12 @@ try {
   await memberPage.getByRole("tab", {name:/Session/}).waitFor();
   await memberPage.getByRole("tab", {name:/Work/}).click();
   await waitForText(memberPage, "Real browser RoleAction loop");
-  // No runtime action is authorized before exact NodeDaemon admission, so the
-  // current AgentComposer intentionally renders a read-only boundary instead
-  // of the former action selector.
+  // Authored Messages have independent identity-based authority. Their composer
+  // must not grant a Work/runtime action before exact NodeDaemon admission.
   const memberComposer = memberPage.getByTestId("agent-workspace-composer");
   await memberComposer.waitFor();
   check(
-    await memberComposer.getAttribute("data-composer-kind") === "read_only"
+    await memberComposer.getAttribute("data-composer-kind") === "message"
       && await memberPage.getByLabel("Composer action").count() === 0
       && await memberPage.getByRole("button", {name:"start work",exact:true}).count() === 0,
     "Agent Workspace does not invent runtime authority before exact NodeDaemon admission",
