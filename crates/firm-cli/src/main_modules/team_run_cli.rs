@@ -761,6 +761,7 @@ pub(super) fn team_run_command(
             let mut member = parse_team_member_spec(&required(args, "--member")?)?;
             member.effort = value(args, "--effort");
             member.service_tier = value(args, "--service-tier");
+            member.resume_native_session_id = value(args, "--resume-session");
             let initial_work = value(args, "--initial-work");
             let (run, member, work) = add_team_run_member(
                 store,

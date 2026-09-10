@@ -1,6 +1,49 @@
 use super::*;
 
 #[test]
+fn add_member_preserves_an_explicit_native_resume_locator() {
+    let home = TempHome::new("joined-member-explicit-resume");
+    let project_id = init_project(&home, "alpha");
+    let created = team_run_json(
+        &home,
+        &project_id,
+        &[
+            "create",
+            "--agent-team-id",
+            FIXTURE_TEAM_ID,
+            "--objective",
+            "Preserve explicit native resume intent",
+            "--member",
+            "agent-runtime-host:host:kimi",
+            "--no-initial-work",
+            "--json",
+        ],
+    );
+    let run_id = created["team_run"]["id"].as_str().expect("run id");
+    let added = team_run_json(
+        &home,
+        &project_id,
+        &[
+            "add-member",
+            "--id",
+            run_id,
+            "--member",
+            "resume-worker:member:codex/codex_app_server",
+            "--resume-session",
+            "thread-explicit-resume-933",
+        ],
+    );
+    assert_eq!(
+        added["member_run"]["native_session"]["native_session_id"],
+        "thread-explicit-resume-933"
+    );
+    assert!(
+        added["member_run"]["native_session"]["provider_version"].is_null(),
+        "the caller supplies identity, not an observed provider version"
+    );
+}
+
+#[test]
 fn team_run_create_without_initial_work_accepts_the_first_host_assignment() {
     let home = TempHome::new("team-run-no-initial-work");
     let project_id = init_project(&home, "alpha");

@@ -226,10 +226,39 @@ pub(crate) fn member_needs_agent_session(
     execution_space_id: &str,
     member: &ProviderRuntimeProjection,
 ) -> CliResult<bool> {
-    match current_member_sessions(store, execution_space_id, member)?.len() {
-        0 => Ok(true),
-        1 => Ok(false),
-        found => Err(ambiguous_session_error(member, execution_space_id, found)),
+    let sessions = current_member_sessions(store, execution_space_id, member)?;
+    match sessions.as_slice() {
+        [] => Ok(true),
+        [session] => {
+            let expected_native = expected_agentfirm_native_session_ref(member);
+            if session.provider_kind != member.provider
+                || !(agentfirm_native_session_identity_matches(
+                    session.native_session_ref.as_ref(),
+                    expected_native.as_ref(),
+                ) || agentfirm_native_session_identity_matches_for_admission(
+                    session.native_session_ref.as_ref(),
+                    expected_native.as_ref(),
+                ))
+            {
+                return Err(CliError::Usage(format!(
+                    "AGENT_SESSION_RECOVERY_REQUIRED: {} does not match MemberRun {} native-session truth; explicitly resume the exact native session or close its execution lane before fresh admission",
+                    session.id, member.id
+                )));
+            }
+            // A standing identity may own a session from an earlier run.
+            // Identity alone does not prove this Supervisor provisioned it.
+            Ok(!matches!(
+                &session.control_state.driver_ref,
+                harness_core::agentfirm_api::RuntimeDriverRef::TeamSupervisor {
+                    team_run_id, ..
+                } if team_run_id == &member.team_run_id
+            ))
+        }
+        rows => Err(ambiguous_session_error(
+            member,
+            execution_space_id,
+            rows.len(),
+        )),
     }
 }
 

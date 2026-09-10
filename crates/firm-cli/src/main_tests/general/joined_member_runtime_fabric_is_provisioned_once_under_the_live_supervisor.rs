@@ -261,6 +261,85 @@ fn a_lost_member_run_cas_is_retryable_and_the_member_still_provisions() {
 
 /// One live TeamRun with a founding roster, a live Supervisor lease, and one
 /// member admitted into it by `team-run add-member`.
+#[test]
+fn joined_member_cannot_treat_another_native_session_as_already_provisioned() {
+    let fixture = JoinedMemberFixture::new("joined-member-historical-native-session");
+    let mut member = fixture.joined.clone();
+    fixture
+        .provision(&mut member)
+        .expect("provision original lane");
+    let expected = member.clone();
+    member.native_session = Some(NativeSessionRef {
+        provider: "codex".into(),
+        execution_mode: "codex_app_server".into(),
+        native_session_id: "thread-historical-member".into(),
+        native_locator_kind: "codex_rollout".into(),
+        provider_version: Some("0.148.0-alpha.9".into()),
+        adapter_contract_version: "codex-app-server-v1".into(),
+        availability: NativeSessionAvailability::Available,
+        supports_resume: true,
+        last_verified_at: Some(now_string()),
+        parent_native_session_id: None,
+    });
+    fixture
+        .ledger
+        .save_member_run(&expected, &member)
+        .expect("bind native identity");
+
+    // A new admission does not imply permission to resume the previous
+    // provider-native session merely because the AgentMember is the same.
+    let mut fresh = member.clone();
+    fresh.native_session = None;
+    let before = durable_store_file_bytes(&fixture.store);
+    let result =
+        ensure_joined_member_runtime_fabric_with_probe(&fixture.ledger, &mut fresh, |_| {
+            panic!("mismatched native identity must be refused before probing")
+        });
+    assert!(
+        result.is_err(),
+        "historical native session was mistaken for this member's provisioned lane: {result:?}"
+    );
+    assert_eq!(durable_store_file_bytes(&fixture.store), before);
+
+    let successor = create_two_member_team_run(&fixture.store);
+    let spec = TeamMemberSpec {
+        agent_member_id: member.agent_member_id.clone(),
+        name: "HistoricalMemberInNewRun".into(),
+        role: member.role.clone(),
+        provider: member.provider.clone(),
+        execution_mode: Some("codex_app_server".into()),
+        model: None,
+        effort: None,
+        service_tier: None,
+        provider_cwd_hint: None,
+        owned_paths: vec![],
+        resume_native_session_id: None,
+        initial_work: None,
+    };
+    let before = durable_store_file_bytes(&fixture.store);
+    let admission = add_team_run_member(&fixture.store, None, &successor.team_run.id, &spec, None);
+    assert!(
+        admission.is_err(),
+        "fresh admission must reject before adding an unusable member to the roster"
+    );
+    assert_eq!(
+        durable_store_file_bytes(&fixture.store),
+        before,
+        "refused admission must not contaminate the run serving other recipients"
+    );
+    let mut resume = spec;
+    resume.resume_native_session_id = Some("thread-historical-member".into());
+    let (_, admitted, _) =
+        add_team_run_member(&fixture.store, None, &successor.team_run.id, &resume, None)
+            .expect("explicit exact-native resume remains admissible");
+    assert!(
+        member_needs_agent_session(&fixture.store, &fixture.execution_space_id, &admitted)
+            .expect("inspect the explicitly resumed member"),
+        "an earlier run's session must pass reattachment, not AlreadyProvisioned"
+    );
+    fixture.cleanup();
+}
+
 struct JoinedMemberFixture {
     store: HarnessStore,
     root: std::path::PathBuf,

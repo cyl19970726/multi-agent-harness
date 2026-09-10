@@ -300,6 +300,9 @@ pub(super) fn print_help() {
   team-run create|list|status|recover|host-inbox|message|validate-host-session|bind-host|host-lease-status|renew-host-lease|release-host-lease|inbox|add-member|rename-member|interrupt-member|close-member|reopen-member|deactivate-member|start|answer-message|events|complete|cancel
   team-run create --no-initial-work
       Create MemberRuns without per-member bootstrap Work; Host assignment can follow directly.
+  team-run add-member --id <run> --member <name:role:provider/mode> [--resume-session <native-id>]
+      Reusing a standing member's existing native conversation requires its exact
+      --resume-session id; admission never infers resume from identity alone.
   team-run host-inbox --surface <surface> --thread-id <id> [--all] [--json]
       Both --surface and --thread-id are required.
   team-run message send --team-run-id <team-run-id> --to-membership <membership-id>
