@@ -136,9 +136,12 @@ resolution: Accepted | Cancelled | Failed       (exists only at Closed)
   versions**. `VERSION_CONFLICT` means refresh and re-read; never retry with a
   guessed version. `CLAIM_LOST` means someone else owns it; do not perform its
   side effects.
-- `DELIVERY_NOT_DISPATCHED` is transient: wait for the next Supervisor pass and
-  retry instead of escalating immediately. `MEMBER_BUSY` means you already hold
-  one active Work.
+- `DELIVERY_NOT_DISPATCHED` is transient across provider turns: end the current
+  turn without sleep, polling, or retry loops. An active turn can prevent the
+  Supervisor from dispatching the assigned Work. After a new Work delivery,
+  re-read the Work and start with its latest version. A shared-board hint or
+  successful claim/assignment is not dispatch. `MEMBER_BUSY` means you already
+  hold one active Work.
 - An Open, never-started Work whose delivery is frozen on a member generation
   that no longer runs (typically after close-member + reopen-member) needs the
   Host's `work redeliver`. A Work you had already started whose binding a
