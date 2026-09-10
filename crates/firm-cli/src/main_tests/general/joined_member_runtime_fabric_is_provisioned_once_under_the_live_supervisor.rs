@@ -366,6 +366,21 @@ fn joined_member_cannot_treat_another_native_session_as_already_provisioned() {
     let observation = observed_canonical.run.native_session.as_mut().unwrap();
     observation.last_verified_at = Some(now_string());
     observation.supports_resume = !observation.supports_resume;
+    let before = durable_store_file_bytes(&fixture.store);
+    let observation_conflict = fixture.store.admit_member_run_with_canonical(
+        &successor.team_run,
+        &next,
+        &runtime,
+        &fixture.execution_space_id,
+        &observed_canonical,
+    );
+    assert!(
+        observation_conflict.as_ref().is_err_and(|error| error
+            .to_string()
+            .contains("MEMBER_ADMISSION_NATIVE_PROJECTION_MISMATCH")),
+        "same identity must still have one consistent admission snapshot: {observation_conflict:?}"
+    );
+    assert_eq!(durable_store_file_bytes(&fixture.store), before);
     fixture
         .store
         .admit_member_run_with_canonical(
@@ -373,9 +388,17 @@ fn joined_member_cannot_treat_another_native_session_as_already_provisioned() {
             &next,
             &runtime,
             &fixture.execution_space_id,
-            &observed_canonical,
+            &canonical_member_run_admission(&fixture.execution_space_id, &runtime),
         )
-        .expect("exact-native resume permits different mutable observations");
+        .expect("consistent exact-native resume remains admissible");
+    assert_eq!(
+        fixture
+            .store
+            .current_team_run_execution_space(&next)
+            .unwrap(),
+        fixture.execution_space_id,
+        "successful admission must leave the entire Run readable"
+    );
     assert!(
         member_needs_agent_session(&fixture.store, &fixture.execution_space_id, &runtime)
             .expect("inspect the explicitly resumed member"),

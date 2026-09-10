@@ -35,6 +35,17 @@ impl HarnessStore {
                 canonical.run.id
             )));
         }
+        // Observations are not identity, but admission publishes one snapshot
+        // in two ledgers. The existing Run reader requires those snapshots to
+        // agree. Reject conflicting inputs rather than silently choosing one.
+        if serde_json::to_value(&runtime.native_session)?
+            != serde_json::to_value(&canonical.run.native_session)?
+        {
+            return Err(StoreError::Conflict(format!(
+                "MEMBER_ADMISSION_NATIVE_PROJECTION_MISMATCH: canonical MemberRun {} and runtime projection have inconsistent native-session observations",
+                canonical.run.id
+            )));
+        }
         if runtime.is_external_interactive() {
             return Ok(());
         }
