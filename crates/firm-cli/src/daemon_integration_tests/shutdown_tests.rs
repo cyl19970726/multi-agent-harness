@@ -1,7 +1,7 @@
 use super::process_isolation::{
-    assert_single_test_passed, isolation_dir, kill_child_group, read_child_output,
-    run_in_isolated_child, spawn_test_child, wait_child_bounded, wait_for_file_bounded,
-    CHILD_SIGNAL_TIMEOUT, ISOLATED_CHILD_TIMEOUT,
+    assert_single_test_passed, isolation_dir, kill_child_group, kill_independent_process_group,
+    process_group_alive, read_child_output, run_in_isolated_child, spawn_test_child,
+    wait_child_bounded, wait_for_file_bounded, CHILD_SIGNAL_TIMEOUT, ISOLATED_CHILD_TIMEOUT,
 };
 use super::*;
 use std::os::unix::process::CommandExt;
@@ -20,6 +20,10 @@ const DRAIN_INCOMPLETE_EXACT: &str =
     "daemon_integration_tests::shutdown_tests::shutdown_returns_drain_incomplete_when_provider_thread_does_not_converge";
 const UNRELATED_GROUP_EXACT: &str =
     "daemon_integration_tests::shutdown_tests::unrelated_owned_group_survives_a_concurrent_external_shutdown_sweep";
+const TIMEOUT_FIXTURE_EXACT: &str =
+    "daemon_integration_tests::shutdown_tests::timeout_fixture_child_parks_until_released_by_signal";
+const FAILING_CHILD_EXACT: &str =
+    "daemon_integration_tests::shutdown_tests::failing_child_exits_nonzero_with_diagnostics";
 
 /// Set only in the registrar child of the concurrent regression below; the
 /// value is the shared coordination directory.
@@ -235,6 +239,11 @@ fn isolated_shutdown_scenario_cannot_consume_an_unrelated_registered_group() {
             CHILD_SIGNAL_TIMEOUT,
             "registrar publication",
         );
+        let fixture_pid: u32 = std::fs::read_to_string(dir.join("registered"))
+            .expect("read published fixture pid")
+            .trim()
+            .parse()
+            .expect("published fixture pid is numeric");
         let mut scenario = spawn_test_child(FORCE_REAPS_EXACT, &dir, "scenario", &[])
             .expect("spawn scenario child");
         let scenario_status = wait_child_bounded(&mut scenario, ISOLATED_CHILD_TIMEOUT, "scenario");
@@ -251,10 +260,191 @@ fn isolated_shutdown_scenario_cannot_consume_an_unrelated_registered_group() {
             UNRELATED_GROUP_EXACT,
             &read_child_output(&dir, "registrar"),
         );
+        // Release-by-signal end to end: the registrar reaped its fixture
+        // after the completion signal, so the group is provably gone — not
+        // merely counting down the sleep's own timer.
+        assert!(
+            !process_group_alive(fixture_pid),
+            "registrar fixture group {fixture_pid} survived its explicit release"
+        );
     }));
     if let Err(error) = outcome {
-        // One failed side must never strand the other side's process group.
+        // One failed side must never strand the other side's processes. The
+        // registrar's fixture is an INDEPENDENT process group: killing the
+        // registrar's own group never reaches it, so release it explicitly
+        // by signal with a bound, then kill and reap the registrar itself.
+        if let Ok(contents) = std::fs::read_to_string(dir.join("registered")) {
+            if let Ok(fixture_pid) = contents.trim().parse::<u32>() {
+                kill_independent_process_group(
+                    fixture_pid,
+                    Duration::from_secs(5),
+                    "registrar fixture",
+                );
+            }
+        }
         kill_child_group(&mut registrar);
         std::panic::resume_unwind(error);
     }
+}
+
+/// Fixture of the forced-timeout cleanup regression. In a coordinated child
+/// it spawns an independent fixture process group, publishes the leader pid,
+/// then parks until the parent releases it by signal (the backstop bound
+/// only fires if the parent itself dies). Standalone it performs the same
+/// spawn/register/reap cycle against a short fixed window.
+#[test]
+fn timeout_fixture_child_parks_until_released_by_signal() {
+    run_in_isolated_child(
+        TIMEOUT_FIXTURE_EXACT,
+        timeout_fixture_child_parks_until_released_by_signal_body,
+    );
+}
+
+fn timeout_fixture_child_parks_until_released_by_signal_body() {
+    let coordination = std::env::var_os(COORDINATION_DIR_ENV).map(PathBuf::from);
+    let mut child = std::process::Command::new("sleep")
+        .arg("30")
+        .process_group(0)
+        .spawn()
+        .expect("spawn timeout fixture process group");
+    let mut registration = harness_runtime_host::OwnedProcessGroupRegistration::new(&mut child)
+        .expect("register timeout fixture process group");
+    let pid = child.id();
+    if let Some(dir) = &coordination {
+        std::fs::write(dir.join("fixture-published"), pid.to_string())
+            .expect("publish timeout fixture pid");
+        wait_for_file_bounded(
+            &dir.join("release-fixture"),
+            CHILD_SIGNAL_TIMEOUT,
+            "explicit fixture release signal",
+        );
+    } else {
+        std::thread::sleep(Duration::from_millis(250));
+    }
+    assert!(
+        registration
+            .kill_and_reap(&mut child)
+            .expect("reap timeout fixture")
+            .is_some(),
+        "timeout fixture must be terminal-reaped"
+    );
+}
+
+/// Forced-timeout cleanup coverage (#928): a bounded wait kills the hung
+/// child's own process group — and provably does NOT remove the child's
+/// independent fixture group, which is then released by an explicit signal
+/// with a bound. This is the honest shape of "killpg cleans up": it never
+/// reaches independent process groups.
+#[test]
+fn isolated_child_timeout_kills_child_group_but_not_independent_groups() {
+    let dir = isolation_dir("timeout-cleanup");
+    let mut hanger = spawn_test_child(
+        TIMEOUT_FIXTURE_EXACT,
+        &dir,
+        "hanger",
+        &[(
+            COORDINATION_DIR_ENV,
+            dir.to_str().expect("utf-8 isolation dir"),
+        )],
+    )
+    .expect("spawn hanger child");
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        wait_for_file_bounded(
+            &dir.join("fixture-published"),
+            CHILD_SIGNAL_TIMEOUT,
+            "hanger fixture publication",
+        );
+        // Deliberately short bound: the hanger parks far longer, so the
+        // timeout kill fires deterministically here.
+        wait_child_bounded(&mut hanger, Duration::from_secs(3), "hanger");
+    }));
+    let timeout_error = outcome.expect_err("hanger child must hit its short wall-clock bound");
+    let message = timeout_error
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .or_else(|| timeout_error.downcast_ref::<&str>().copied())
+        .expect("timeout panic carries a message");
+    assert!(
+        message.contains("exceeded its") && message.contains("wall-clock bound"),
+        "timeout panic must name the bound: {message}"
+    );
+    // The child's own process group was killed and reaped...
+    assert!(
+        !process_group_alive(hanger.id()),
+        "timed-out child's own process group survived the kill"
+    );
+    // ...but the kill did not reach the independent fixture group.
+    let fixture_pid: u32 = std::fs::read_to_string(dir.join("fixture-published"))
+        .expect("read published fixture pid")
+        .trim()
+        .parse()
+        .expect("published fixture pid is numeric");
+    assert!(
+        process_group_alive(fixture_pid),
+        "killing the child's process group must not remove the independent fixture group"
+    );
+    // Explicit release by signal with a bound: the only honest cleanup for
+    // an independent process group.
+    kill_independent_process_group(fixture_pid, Duration::from_secs(5), "hanger fixture");
+    assert!(!process_group_alive(fixture_pid));
+}
+
+/// Fixture of the forced-failure honesty regression. In a coordinated child
+/// it fails deterministically with a recognizable diagnostic; standalone it
+/// returns cleanly so the family run never carries a planted failure.
+#[test]
+fn failing_child_exits_nonzero_with_diagnostics() {
+    run_in_isolated_child(
+        FAILING_CHILD_EXACT,
+        failing_child_exits_nonzero_with_diagnostics_body,
+    );
+}
+
+fn failing_child_exits_nonzero_with_diagnostics_body() {
+    if std::env::var_os(COORDINATION_DIR_ENV).is_some() {
+        panic!("planted child failure: failure-output-marker-928");
+    }
+}
+
+/// Forced-failure honesty coverage (#928): a failing child surfaces its own
+/// real output through the zero-match guard — never a fake pass, never a
+/// bare exit status — and its already-exited process group needs no further
+/// cleanup claim.
+#[test]
+fn isolated_child_failure_reports_child_output_and_never_fakes_a_pass() {
+    let dir = isolation_dir("failure-honesty");
+    let mut failing = spawn_test_child(
+        FAILING_CHILD_EXACT,
+        &dir,
+        "failing",
+        &[(
+            COORDINATION_DIR_ENV,
+            dir.to_str().expect("utf-8 isolation dir"),
+        )],
+    )
+    .expect("spawn failing child");
+    let status = wait_child_bounded(&mut failing, ISOLATED_CHILD_TIMEOUT, "failing");
+    assert!(!status.success(), "planted-failure child must exit nonzero");
+    let output = read_child_output(&dir, "failing");
+    let guard = std::panic::catch_unwind(|| {
+        assert_single_test_passed(status, FAILING_CHILD_EXACT, &output)
+    })
+    .expect_err("the guard must refuse a failed child");
+    let message = guard
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .or_else(|| guard.downcast_ref::<&str>().copied())
+        .expect("guard panic carries a message");
+    assert!(
+        message.contains("failure-output-marker-928"),
+        "the guard must surface the child's own diagnostics: {message}"
+    );
+    assert!(
+        output.contains("running 1 test"),
+        "the failing child still ran exactly one test — the guard rejected its result, not a zero-match: {output}"
+    );
+    assert!(
+        !process_group_alive(failing.id()),
+        "the failed child exited by itself; nothing may claim further cleanup was needed"
+    );
 }

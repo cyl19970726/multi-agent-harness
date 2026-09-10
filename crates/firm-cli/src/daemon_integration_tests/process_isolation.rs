@@ -41,7 +41,7 @@ const POLL_INTERVAL: Duration = Duration::from_millis(20);
 /// In the ordinary test binary this spawns
 /// `<current_exe> <exact_test_name> --exact --nocapture --test-threads=1`
 /// with [`ISOLATED_CHILD_ENV`] set, waits with an explicit bound (SIGKILLing
-/// and reaping the whole child process group on timeout), and fails unless
+/// and reaping the child's own process group on timeout), and fails unless
 /// the child ran exactly one test and passed it — a mistyped selection that
 /// matches zero tests must never masquerade as a pass. Inside the child the
 /// same wrapper observes the env and executes `body` in place.
@@ -68,8 +68,11 @@ pub fn run_in_isolated_child(exact_test_name: &str, body: fn()) {
 /// Spawn one isolated child copy of the test binary running exactly
 /// `exact_test_name`, stdout/stderr captured to `<dir>/<label>.{stdout,stderr}`
 /// (files, not pipes, so a verbose child can never deadlock a bounded wait).
-/// The child leads its own process group so a timeout can SIGKILL the whole
-/// subtree — scenario bodies spawn `sleep` fixtures of their own.
+/// The child leads its own process group so a timeout can SIGKILL that exact
+/// group. Killing it never reaches independent process groups: a scenario
+/// body that spawns a fixture with `process_group(0)` gives that fixture its
+/// own group, which only an explicit `kill_independent_process_group` on the
+/// published pid removes.
 pub fn spawn_test_child(
     exact_test_name: &str,
     dir: &Path,
@@ -93,9 +96,12 @@ pub fn spawn_test_child(
     command.spawn()
 }
 
-/// Join `child` with a hard wall-clock bound. On timeout the whole child
+/// Join `child` with a hard wall-clock bound. On timeout the child's own
 /// process group is SIGKILLed and the child reaped before panicking, so a
-/// hung scenario can never leak a fixture process or block the suite.
+/// hung scenario can never block the suite. Independent process groups the
+/// child created (fixtures spawned with `process_group(0)`) survive this
+/// kill by design; their lifetime is released explicitly, never by this
+/// function — see `kill_independent_process_group`.
 pub fn wait_child_bounded(child: &mut Child, timeout: Duration, label: &str) -> ExitStatus {
     let deadline = Instant::now() + timeout;
     loop {
@@ -112,9 +118,11 @@ pub fn wait_child_bounded(child: &mut Child, timeout: Duration, label: &str) -> 
     }
 }
 
-/// SIGKILL and reap `child`'s whole process group if it is still running.
-/// Used on a sibling's failure path so one hung or failed child never leaves
-/// the other side of a coordinated regression behind.
+/// SIGKILL and reap `child`'s own process group if it is still running.
+/// Used on a sibling's failure path. This never removes independent process
+/// groups the child spawned with `process_group(0)`; a coordinated fixture
+/// must publish its leader pid so the parent can release it explicitly with
+/// `kill_independent_process_group`.
 pub fn kill_child_group(child: &mut Child) {
     if child.try_wait().expect("poll child before kill").is_some() {
         return;
@@ -123,6 +131,31 @@ pub fn kill_child_group(child: &mut Child) {
         libc::kill(-(child.id() as libc::pid_t), libc::SIGKILL);
     }
     let _ = child.wait();
+}
+
+/// Probe whether process group `pid` still exists: signal 0 returns 0 while
+/// any group member lives and fails with ESRCH once the group is gone.
+pub fn process_group_alive(pid: u32) -> bool {
+    let probe = unsafe { libc::kill(-(pid as libc::pid_t), 0) };
+    probe == 0
+}
+
+/// Explicitly release an independent process group by its published leader
+/// pid: SIGKILL the group, then prove absence (ESRCH) within `timeout`.
+/// Independent groups are never removed by killing a child's own process
+/// group; this explicit, bounded signal is the only honest release for them.
+pub fn kill_independent_process_group(pid: u32, timeout: Duration, label: &str) {
+    unsafe {
+        libc::kill(-(pid as libc::pid_t), libc::SIGKILL);
+    }
+    let deadline = Instant::now() + timeout;
+    while process_group_alive(pid) {
+        assert!(
+            Instant::now() < deadline,
+            "independent process group {pid} ({label}) did not exit within {timeout:?}"
+        );
+        std::thread::sleep(POLL_INTERVAL);
+    }
 }
 
 /// Read everything an isolated child wrote to its capture files, for failure

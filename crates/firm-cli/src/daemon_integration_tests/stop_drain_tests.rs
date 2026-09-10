@@ -354,8 +354,20 @@ fn stop_keeps_authority_until_the_registered_process_group_exits_body() {
         let mut registration =
             harness_runtime_host::OwnedProcessGroupRegistration::new(&mut child).unwrap();
         pid_tx.send(child.id()).unwrap();
-        let store = store_rx.recv_timeout(Duration::from_secs(5)).unwrap();
-        while worker_heartbeat.load(Ordering::Acquire) {
+        // Every miswire path releases the fixture explicitly instead of
+        // leaving it to the sleep's own timer (#928).
+        let Ok(store) = store_rx.recv_timeout(Duration::from_secs(5)) else {
+            registration.kill_and_reap(&mut child)?;
+            return Err(CliError::Usage(
+                "stop-pg wiring failed before the Store handoff".into(),
+            ));
+        };
+        // The drain revokes the heartbeat; the wall-clock cap guarantees the
+        // fixture is released even if the parent panics before stopping.
+        let hold_started = Instant::now();
+        while worker_heartbeat.load(Ordering::Acquire)
+            && hold_started.elapsed() < Duration::from_secs(20)
+        {
             std::thread::sleep(Duration::from_millis(5));
         }
         let status_before_termination = store
