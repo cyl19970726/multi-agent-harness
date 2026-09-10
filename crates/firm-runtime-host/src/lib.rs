@@ -377,19 +377,49 @@ pub fn terminate_registered_process_groups() -> ProcessGroupTermination {
     }
 }
 
-/// Reopen registration only after every old Supervisor thread has joined and
-/// a final closed-admission drain observed no signal failure.
+/// Historical signal errors resolved by a later read-only absence observation.
+/// This covers only the registered process groups, not escaped descendants.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct ProcessGroupShutdownCompletion {
+    pub reconciled_signal_failures: Vec<(u32, i32)>,
+}
+
+fn process_group_is_absent(pid: u32) -> bool {
+    #[cfg(unix)]
+    {
+        // Signal 0 observes only; never send a termination signal after reap.
+        (unsafe { libc::kill(-(pid as libc::pid_t), 0) }) == -1
+            && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = pid;
+        false
+    }
+}
+
+/// Reopen registration after every old Supervisor has joined, every child is
+/// reaped, and any historical signal failure has a later group-absence proof.
 pub fn complete_registered_process_group_shutdown(
-) -> Result<(), ProcessGroupShutdownCompletionError> {
+) -> Result<ProcessGroupShutdownCompletion, ProcessGroupShutdownCompletionError> {
+    complete_registered_process_group_shutdown_with_probe(process_group_is_absent)
+}
+
+fn complete_registered_process_group_shutdown_with_probe(
+    mut group_is_absent: impl FnMut(u32) -> bool,
+) -> Result<ProcessGroupShutdownCompletion, ProcessGroupShutdownCompletionError> {
     let mut groups = owned_process_groups()
         .lock()
         .unwrap_or_else(|error| error.into_inner());
     groups.accepting = false;
     if !groups.groups.is_empty()
         || !groups.shutdown_signaled.is_empty()
-        || !groups.shutdown_signal_failures.is_empty()
         || !groups.shutdown_reap_failures.is_empty()
         || !groups.shutdown_reap_timeouts.is_empty()
+        || groups
+            .shutdown_signal_failures
+            .iter()
+            .any(|(pid, _)| !group_is_absent(*pid))
     {
         let mut registered_pids = groups.groups.keys().copied().collect::<Vec<_>>();
         registered_pids.sort_unstable();
@@ -404,8 +434,11 @@ pub fn complete_registered_process_group_shutdown(
             reap_timeout_pids: groups.shutdown_reap_timeouts.clone(),
         });
     }
+    let reconciled_signal_failures = std::mem::take(&mut groups.shutdown_signal_failures);
     groups.accepting = true;
-    Ok(())
+    Ok(ProcessGroupShutdownCompletion {
+        reconciled_signal_failures,
+    })
 }
 
 /// Kill the child process group, falling back to the immediate child.
@@ -795,8 +828,8 @@ mod tests {
             .expect_err("process-group signal failure must remain typed");
         assert_eq!(error.raw_os_error(), Some(libc::EPERM));
 
-        let completion = complete_registered_process_group_shutdown()
-            .expect_err("signal failure must keep admission closed after child reap");
+        let completion = complete_registered_process_group_shutdown_with_probe(|_| false)
+            .expect_err("without group-absence proof, signal failure must keep admission closed");
         assert!(completion.registered_pids.is_empty());
         assert_eq!(completion.signal_failures, vec![(pid, libc::EPERM)]);
         assert_eq!(
@@ -808,15 +841,9 @@ mod tests {
             "a terminal-reaped pid must never be signalled again"
         );
 
-        // The residual is intentionally unrecoverable in production. Remove
-        // only the synthetic diagnostic so this process-global test registry
-        // can exercise the remaining cases.
-        owned_process_groups()
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .shutdown_signal_failures
-            .retain(|failure| *failure != (pid, libc::EPERM));
-        complete_registered_process_group_shutdown().expect("reopen after test-only cleanup");
+        let proof = complete_registered_process_group_shutdown()
+            .expect("real group absence resolves residual");
+        assert_eq!(proof.reconciled_signal_failures, vec![(pid, libc::EPERM)]);
     }
 
     #[test]
@@ -835,5 +862,97 @@ mod tests {
         assert_eq!(terminate_registered_process_groups().pids, vec![999_997]);
         registration.release();
         complete_registered_process_group_shutdown().expect("reopen process-group admission");
+    }
+
+    #[test]
+    fn reaped_signal_failure_completes_when_original_group_is_proven_absent() {
+        use std::os::unix::process::CommandExt;
+        let _test_lock = registry_test_lock();
+        let mut child = std::process::Command::new("sleep")
+            .arg("30")
+            .process_group(0)
+            .spawn()
+            .unwrap();
+        let pid = child.id();
+        let mut registration = OwnedProcessGroupRegistration::new(&mut child).unwrap();
+        let error = registration
+            .finish_kill_and_reap_after_signal(&mut child, Some(libc::EPERM))
+            .unwrap_err();
+        assert_eq!(error.raw_os_error(), Some(libc::EPERM));
+        assert!(
+            terminate_registered_process_groups().pids.is_empty(),
+            "reaped registration must never be signalled again"
+        );
+        complete_registered_process_group_shutdown()
+            .expect("later group-absence proof must resolve the old signal failure");
+        assert!(!owned_process_groups()
+            .lock()
+            .unwrap()
+            .shutdown_signal_failures
+            .contains(&(pid, libc::EPERM)));
+    }
+
+    #[test]
+    fn residual_reap_state_blocks_completion_without_even_probing_absence() {
+        let _test_lock = registry_test_lock();
+        let pid = 999_996;
+        for residual in ["registered", "late_pending", "reap_failure", "reap_timeout"] {
+            {
+                let mut groups = owned_process_groups().lock().unwrap();
+                groups.shutdown_signal_failures.push((pid, libc::EPERM));
+                match residual {
+                    "registered" => {
+                        groups.groups.insert(pid, 42);
+                    }
+                    "late_pending" => groups.shutdown_signaled.push(pid),
+                    "reap_failure" => groups
+                        .shutdown_reap_failures
+                        .push((pid, Some(libc::ECHILD))),
+                    _ => groups.shutdown_reap_timeouts.push(pid),
+                }
+            }
+            let error = complete_registered_process_group_shutdown_with_probe(|_| {
+                panic!("{residual} must block before probe")
+            })
+            .expect_err("absence cannot replace terminal-reap proof");
+            assert_eq!(error.signal_failures, vec![(pid, libc::EPERM)]);
+            // Remove only this test's synthetic state; no real process was registered.
+            let mut groups = owned_process_groups().lock().unwrap();
+            groups.groups.remove(&pid);
+            groups.shutdown_signaled.retain(|value| *value != pid);
+            groups
+                .shutdown_reap_failures
+                .retain(|(value, _)| *value != pid);
+            groups.shutdown_reap_timeouts.retain(|value| *value != pid);
+            groups
+                .shutdown_signal_failures
+                .retain(|(value, _)| *value != pid);
+        }
+        complete_registered_process_group_shutdown().unwrap();
+    }
+
+    #[test]
+    fn live_or_reused_group_number_stays_blocked_and_is_never_signalled() {
+        let _test_lock = registry_test_lock();
+        let pid = unsafe { libc::getpgrp() } as u32;
+        assert!(!process_group_is_absent(pid));
+        owned_process_groups()
+            .lock()
+            .unwrap()
+            .shutdown_signal_failures
+            .push((pid, libc::EPERM));
+        let error = complete_registered_process_group_shutdown()
+            .expect_err("a currently present group is not absence proof");
+        assert_eq!(error.signal_failures, vec![(pid, libc::EPERM)]);
+        assert!(
+            terminate_registered_process_groups().pids.is_empty(),
+            "historical failure must not cause another termination signal"
+        );
+        owned_process_groups()
+            .lock()
+            .unwrap()
+            .shutdown_signal_failures
+            .retain(|(value, _)| *value != pid);
+        complete_registered_process_group_shutdown().unwrap();
     }
 }
