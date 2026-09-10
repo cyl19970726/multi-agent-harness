@@ -344,93 +344,12 @@ impl HarnessStore {
                 }
             }
         }
-        let mut delivery_rows = Vec::new();
-        let mut delivered_subjects = BTreeSet::new();
-        // A peer-Team direct Message binds the recipient membership in the
-        // collaboration target Team, not the source Team (the author's scope).
-        // Same-Space peer authoring resolves the target direct subscription in
-        // this store; a remote target leaves delivery creation to its own Node.
-        let peer_target_team_id = peer_authority.map(|authority| authority.target_team_id.as_str());
-        for recipient in &message.recipients {
-            let matching = subscriptions.iter().filter(|subscription| {
-                subscription.status == MessageSubscriptionStatus::Active
-                    && match recipient.kind {
-                        MessageRecipientKind::AgentMember => {
-                            subscription.subscriber_kind == MessageSubjectKind::AgentMember
-                                && subscription.subscriber_ref == recipient.id
-                                && subscription.source_kind == MessageSubscriptionKind::Agent
-                                && if let Some(team_id) = message.team_id.as_deref() {
-                                    subscription.membership_ref.as_deref().is_some_and(
-                                        |membership_id| {
-                                            memberships.iter().any(|membership| {
-                                                membership.id == membership_id
-                                                    && membership.state
-                                                        == TeamMembershipStatus::Active
-                                                    && membership.team_id
-                                                        == peer_target_team_id.unwrap_or(team_id)
-                                            })
-                                        },
-                                    )
-                                } else {
-                                    subscription.membership_ref.is_none()
-                                        && message.sender_agent_member_id.as_deref()
-                                            == Some(subscription.source_ref.as_str())
-                                }
-                        }
-                        MessageRecipientKind::Team => {
-                            subscription.subscriber_kind == MessageSubjectKind::Team
-                                && subscription.subscriber_ref == recipient.id
-                                && subscription.source_kind
-                                    == MessageSubscriptionKind::AllAuthorized
-                                && subscription.source_ref == "authorized_peer_teams"
-                                && subscription.target_team_id.as_deref()
-                                    == Some(recipient.id.as_str())
-                        }
-                        MessageRecipientKind::ControlPlaneActor => false,
-                    }
-            });
-            for subscription in matching {
-                let subject_key = (
-                    subscription.subscriber_kind,
-                    subscription.subscriber_ref.clone(),
-                );
-                if !delivered_subjects.insert(subject_key) {
-                    continue;
-                }
-                let resolved_team_membership_id = (subscription.subscriber_kind
-                    == MessageSubjectKind::AgentMember)
-                    .then(|| subscription.membership_ref.clone())
-                    .flatten();
-                let recipient_agent_member_id = (subscription.subscriber_kind
-                    == MessageSubjectKind::AgentMember)
-                    .then(|| subscription.subscriber_ref.clone());
-                delivery_rows.push(CanonicalMessageDelivery {
-                    id: format!("{}:{}", message.id, subscription.id),
-                    message_id: message.id.clone(),
-                    subscription_id: subscription.id.clone(),
-                    subscription_revision: subscription.revision,
-                    subscription_policy_digest: subscription.policy_digest.clone(),
-                    recipient_kind: subscription.subscriber_kind,
-                    recipient_ref: subscription.subscriber_ref.clone(),
-                    target_team_id: subscription.target_team_id.clone(),
-                    target_node_id: subscription.target_node_id.clone(),
-                    resolved_team_membership_id,
-                    recipient_agent_member_id,
-                    recipient_session_id: None,
-                    recipient_session_generation: None,
-                    status: CanonicalMessageDeliveryStatus::Queued,
-                    attempt: 1,
-                    claim_id: None,
-                    claimed_node_daemon_generation: None,
-                    provider_receipt_id: None,
-                    failure_code: None,
-                    failure_detail: None,
-                    version: 1,
-                    created_at: message.created_at.clone(),
-                    updated_at: message.created_at.clone(),
-                });
-            }
-        }
+        let delivery_rows = initial_message_deliveries(
+            &message,
+            &subscriptions,
+            &memberships,
+            peer_authority.map(|authority| authority.target_team_id.as_str()),
+        );
         let cross_node_collaboration = message
             .collaboration_scope
             .as_ref()
@@ -1345,4 +1264,97 @@ impl HarnessStore {
                 .collect::<Result<Vec<_>, _>>()?,
         )
     }
+}
+
+/// One calculation for live authoring and historical recovery proof.
+pub(super) fn initial_message_deliveries(
+    message: &Message,
+    subscriptions: &[MessageSubscription],
+    memberships: &[TeamMembership],
+    peer_target_team_id: Option<&str>,
+) -> Vec<CanonicalMessageDelivery> {
+    let mut delivery_rows = Vec::new();
+    let mut delivered_subjects = BTreeSet::new();
+    // A peer-Team direct Message binds the recipient membership in the
+    // collaboration target Team, not the source Team (the author's scope).
+    // Same-Space peer authoring resolves the target direct subscription in
+    // this store; a remote target leaves delivery creation to its own Node.
+    for recipient in &message.recipients {
+        let matching = subscriptions.iter().filter(|subscription| {
+            subscription.status == MessageSubscriptionStatus::Active
+                && match recipient.kind {
+                    MessageRecipientKind::AgentMember => {
+                        subscription.subscriber_kind == MessageSubjectKind::AgentMember
+                            && subscription.subscriber_ref == recipient.id
+                            && subscription.source_kind == MessageSubscriptionKind::Agent
+                            && if let Some(team_id) = message.team_id.as_deref() {
+                                subscription.membership_ref.as_deref().is_some_and(
+                                    |membership_id| {
+                                        memberships.iter().any(|membership| {
+                                            membership.id == membership_id
+                                                && membership.state == TeamMembershipStatus::Active
+                                                && membership.team_id
+                                                    == peer_target_team_id.unwrap_or(team_id)
+                                        })
+                                    },
+                                )
+                            } else {
+                                subscription.membership_ref.is_none()
+                                    && message.sender_agent_member_id.as_deref()
+                                        == Some(subscription.source_ref.as_str())
+                            }
+                    }
+                    MessageRecipientKind::Team => {
+                        subscription.subscriber_kind == MessageSubjectKind::Team
+                            && subscription.subscriber_ref == recipient.id
+                            && subscription.source_kind == MessageSubscriptionKind::AllAuthorized
+                            && subscription.source_ref == "authorized_peer_teams"
+                            && subscription.target_team_id.as_deref() == Some(recipient.id.as_str())
+                    }
+                    MessageRecipientKind::ControlPlaneActor => false,
+                }
+        });
+        for subscription in matching {
+            let subject_key = (
+                subscription.subscriber_kind,
+                subscription.subscriber_ref.clone(),
+            );
+            if !delivered_subjects.insert(subject_key) {
+                continue;
+            }
+            let resolved_team_membership_id = (subscription.subscriber_kind
+                == MessageSubjectKind::AgentMember)
+                .then(|| subscription.membership_ref.clone())
+                .flatten();
+            let recipient_agent_member_id = (subscription.subscriber_kind
+                == MessageSubjectKind::AgentMember)
+                .then(|| subscription.subscriber_ref.clone());
+            delivery_rows.push(CanonicalMessageDelivery {
+                id: format!("{}:{}", message.id, subscription.id),
+                message_id: message.id.clone(),
+                subscription_id: subscription.id.clone(),
+                subscription_revision: subscription.revision,
+                subscription_policy_digest: subscription.policy_digest.clone(),
+                recipient_kind: subscription.subscriber_kind,
+                recipient_ref: subscription.subscriber_ref.clone(),
+                target_team_id: subscription.target_team_id.clone(),
+                target_node_id: subscription.target_node_id.clone(),
+                resolved_team_membership_id,
+                recipient_agent_member_id,
+                recipient_session_id: None,
+                recipient_session_generation: None,
+                status: CanonicalMessageDeliveryStatus::Queued,
+                attempt: 1,
+                claim_id: None,
+                claimed_node_daemon_generation: None,
+                provider_receipt_id: None,
+                failure_code: None,
+                failure_detail: None,
+                version: 1,
+                created_at: message.created_at.clone(),
+                updated_at: message.created_at.clone(),
+            });
+        }
+    }
+    delivery_rows
 }

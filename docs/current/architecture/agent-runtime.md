@@ -545,6 +545,21 @@ and the exact expired daemon/instance/generation matches. Recovery detaches the
 dead generation's Sessions and releases its Supervisor and NodeDaemon leases;
 only then may a successor generation be acquired.
 
+For a dead predecessor's `AuthorMessage` only, this same locked recovery path
+can establish the local creation outcome from canonical history before release.
+It validates the original accepted envelope and immutable authored Message,
+including historical sender binding and initial delivery evidence. A matching
+authored operation proves `Applied` (creation, not delivery); complete absence
+without conflicting or orphaned records proves `NotApplied`. Unterminated tails,
+malformed records, sequence gaps, or inconsistent evidence remain blocked.
+Canonical event sequences are checked independently of object versions: Work
+versions also span WorkOperation history and need not start at one in this
+ledger. Work rows still advance their expected version once; other aggregates
+retain their complete canonical version chain. All
+pending outcomes are checked before any settlement is appended, and any other
+Unknown command still blocks recovery. This does not replay a Message, permit
+a successor to execute an old effect, or unfreeze generic reconciliation verbs.
+
 `RecoveryRequired / Unknown` is visible in the exact Node Operator RoleView.
 Resolution is a critical confirmed action bound to command version, Node,
 NodeDaemon and AgentSession generation, authority, and idempotency fingerprint.

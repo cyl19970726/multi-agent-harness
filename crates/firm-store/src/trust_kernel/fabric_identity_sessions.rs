@@ -482,30 +482,11 @@ impl HarnessStore {
         &self,
         execution_space_id: &str,
     ) -> StoreResult<Vec<MessageSubscription>> {
-        let mut latest = BTreeMap::new();
-        for envelope in self
-            .trust_operation_envelopes_unlocked()?
-            .into_iter()
-            .filter(|envelope| envelope.execution_space_id == execution_space_id)
-        {
-            if envelope.operation.event.aggregate_kind == "message_subscription" {
-                let subscription = event_projection::<MessageSubscription>(&envelope)?;
-                latest.insert(subscription.id.clone(), subscription);
-            }
-            for value in envelope
-                .operation
-                .initial_outbox_records
+        message_subscriptions_from_history(
+            self.trust_operation_envelopes_unlocked()?
                 .iter()
-                .chain(&envelope.operation.immutable_side_records)
-            {
-                if let Ok(subscription) =
-                    serde_json::from_value::<MessageSubscription>(value.clone())
-                {
-                    latest.insert(subscription.id.clone(), subscription);
-                }
-            }
-        }
-        Ok(latest.into_values().collect())
+                .filter(|entry| entry.execution_space_id == execution_space_id),
+        )
     }
 
     pub fn create_message_subscription(
@@ -1401,4 +1382,27 @@ impl HarnessStore {
             Vec::new(),
         )
     }
+}
+
+pub(super) fn message_subscriptions_from_history<'a>(
+    history: impl Iterator<Item = &'a TrustOperationEnvelope>,
+) -> StoreResult<Vec<MessageSubscription>> {
+    let mut latest = BTreeMap::new();
+    for envelope in history {
+        if envelope.operation.event.aggregate_kind == "message_subscription" {
+            let subscription = event_projection::<MessageSubscription>(envelope)?;
+            latest.insert(subscription.id.clone(), subscription);
+        }
+        for value in envelope
+            .operation
+            .initial_outbox_records
+            .iter()
+            .chain(&envelope.operation.immutable_side_records)
+        {
+            if let Ok(subscription) = serde_json::from_value::<MessageSubscription>(value.clone()) {
+                latest.insert(subscription.id.clone(), subscription);
+            }
+        }
+    }
+    Ok(latest.into_values().collect())
 }
