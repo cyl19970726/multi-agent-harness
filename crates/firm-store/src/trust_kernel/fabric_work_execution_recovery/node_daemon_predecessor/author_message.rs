@@ -263,18 +263,51 @@ fn prove_author_message(
     } else if message.sender_agent_member_id.is_some() {
         return Err(unproven("sender identity lacks its historical Session"));
     }
-    for value in &authored.operation.initial_outbox_records {
-        let delivery: CanonicalMessageDelivery = serde_json::from_value(value.clone())?;
-        if delivery.message_id != message.id
-            || delivery.version != 1
-            || delivery.status != CanonicalMessageDeliveryStatus::Queued
-            || delivery.provider_receipt_id.is_some()
-            || delivery.recipient_session_id.is_some()
-        {
-            return Err(unproven("invalid initial message delivery evidence"));
-        }
+    let before_author = history
+        .iter()
+        .filter(in_space)
+        .filter(|entry| entry.operation.event.store_sequence < event.store_sequence);
+    let subscriptions =
+        crate::trust_kernel::fabric_identity_sessions::message_subscriptions_from_history(
+            before_author.clone(),
+        )?;
+    let mut memberships = std::collections::BTreeMap::new();
+    for entry in
+        before_author.filter(|entry| entry.operation.event.aggregate_kind == "team_membership")
+    {
+        let membership: TeamMembership = event_projection(entry)?;
+        memberships.insert(membership.id.clone(), membership);
     }
-    if authored.operation.initial_outbox_records.is_empty()
+    let authority: Option<firm_core::collaboration::MessageAdmissionAuthority> = command
+        .payload
+        .get("message_admission_authority")
+        .filter(|value| !value.is_null())
+        .map(|value| serde_json::from_value(value.clone()))
+        .transpose()?;
+    let target_team = match &authority {
+        Some(firm_core::collaboration::MessageAdmissionAuthority::PeerTeam(authority)) => {
+            Some(authority.target_team_id.as_str())
+        }
+        _ => None,
+    };
+    let expected = crate::trust_kernel::fabric_message_authoring::initial_message_deliveries(
+        &message,
+        &subscriptions,
+        &memberships.into_values().collect::<Vec<_>>(),
+        target_team,
+    );
+    let observed = authored
+        .operation
+        .initial_outbox_records
+        .iter()
+        .map(|value| serde_json::from_value::<CanonicalMessageDelivery>(value.clone()))
+        .collect::<Result<Vec<_>, _>>()?;
+    if observed != expected {
+        return Err(unproven(
+            "initial delivery set differs from historical subscriptions and memberships",
+        ));
+    }
+    if expected.is_empty()
         && !message
             .recipients
             .iter()

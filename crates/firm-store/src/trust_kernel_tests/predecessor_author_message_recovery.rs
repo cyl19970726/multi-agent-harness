@@ -6,7 +6,21 @@ fn prepared_message() -> (
     ControlCommandEnvelope,
     MutationContext,
 ) {
+    prepared_message_for_members(false)
+}
+
+fn prepared_message_for_members(
+    member_recipients: bool,
+) -> (
+    HarnessStore,
+    PathBuf,
+    ControlCommandEnvelope,
+    MutationContext,
+) {
     let (store, root) = fabric_store();
+    if member_recipients {
+        seed_direct_members(&store);
+    }
     let lane = session("unused-session", "unused-member");
     let (mut command, mut admission) = runtime_command_fixture(
         "prepared-message-crash",
@@ -22,6 +36,18 @@ fn prepared_message() -> (
         "kind": "message", "body": "recovery regression", "correlation_id": "recovery-934",
         "response_intent": "informational", "schema_version": 1
     }});
+    if member_recipients {
+        command.authenticated_actor = ActorRef {
+            kind: ActorKind::AgentMember,
+            id: "sender".into(),
+        };
+        command.payload["draft"]["target_ref"] =
+            serde_json::json!({"kind": "agent_member", "id": "recipient-a"});
+        command.payload["draft"]["recipients"] = serde_json::json!([
+            {"kind": "agent_member", "id": "recipient-a"}, {"kind": "agent_member", "id": "recipient-b"}
+        ]);
+        admission.authority_actor = Some(command.authenticated_actor.clone());
+    }
     command.payload_fingerprint = canonical_json_fingerprint(&command.payload);
     admission.request_fingerprint = Some(runtime_command_envelope_fingerprint(&command).unwrap());
     store
@@ -89,6 +115,13 @@ fn authored_message(store: &HarnessStore, command: &ControlCommandEnvelope) -> M
         "content_fingerprint": "pending", "created_at": "authored"
     });
     object.extend(extra.as_object().unwrap().clone());
+    if command.authenticated_actor.kind == ActorKind::AgentMember {
+        object.insert("sender_agent_member_id".into(), serde_json::json!("sender"));
+        object.insert(
+            "sender_session_id".into(),
+            serde_json::json!("session-sender"),
+        );
+    }
     let mut message: Message = serde_json::from_value(value).unwrap();
     message.content_fingerprint = firm_core::agentfirm_api::message_content_fingerprint(&message);
     let mut author = service_context("message.author", "prepared-message-crash:effect", 0);
@@ -246,4 +279,152 @@ fn predecessor_author_message_rejects_orphaned_delivery_evidence() {
     assert!(error.to_string().contains("related canonical records"));
     assert_eq!(store.canonical_operations().unwrap(), before);
     fs::remove_dir_all(root).unwrap();
+}
+
+fn seed_direct_members(store: &HarnessStore) {
+    for id in ["sender", "recipient-a", "recipient-b"] {
+        store
+            .migrate_legacy_agent_identity_same_id(
+                &context("host", "identity.create", &format!("identity-{id}"), 0),
+                identity(id),
+            )
+            .unwrap();
+    }
+    store
+        .create_agent_session(
+            &service_context("session.create", "session-sender", 0),
+            session("session-sender", "sender"),
+        )
+        .unwrap();
+    for id in ["recipient-a", "recipient-b"] {
+        let subscription = MessageSubscription {
+            id: format!("direct-{id}"),
+            subscriber_kind: MessageSubjectKind::AgentMember,
+            subscriber_ref: id.into(),
+            execution_space_id: "space-test".into(),
+            target_team_id: None,
+            target_node_id: "11111111-1111-4111-8111-111111111111".into(),
+            source_kind: MessageSubscriptionKind::Agent,
+            source_ref: "sender".into(),
+            delivery_mode: firm_core::agentfirm_api::RuntimeDispatchMode::StartIfIdle,
+            history_policy: firm_core::agentfirm_api::MessageHistoryPolicy::FromJoin,
+            membership_ref: None,
+            authorization_policy_ref: "direct.test".into(),
+            policy_revision: 1,
+            policy_digest: canonical_json_fingerprint(&serde_json::json!({"direct": true})),
+            status: MessageSubscriptionStatus::Active,
+            revision: 1,
+            created_by: actor("host"),
+            created_at: "t1".into(),
+            revoked_at: None,
+        };
+        let _lock = store.acquire_write_lock().unwrap();
+        store
+            .commit_trust_projection_unlocked(
+                &context(
+                    "host",
+                    "subscription.create",
+                    &format!("subscription-{id}"),
+                    0,
+                ),
+                "message_subscription_set",
+                id,
+                "created",
+                serde_json::to_value(&subscription).unwrap(),
+                &serde_json::json!({"recipient_agent_member_id": id}),
+                vec![serde_json::to_value(&subscription).unwrap()],
+                Vec::new(),
+            )
+            .unwrap();
+    }
+}
+
+#[test]
+fn predecessor_author_message_requires_the_complete_historical_member_delivery_set() {
+    for damage in [
+        "none",
+        "revoked_later",
+        "missing",
+        "recipient",
+        "duplicate",
+        "claim",
+    ] {
+        let (store, root, command, operator) = prepared_message_for_members(true);
+        authored_message(&store, &command);
+        assert_eq!(
+            store.fabric_message_deliveries("space-test").unwrap().len(),
+            2
+        );
+        if damage == "revoked_later" {
+            let mut subscription = store
+                .fabric_message_subscriptions("space-test")
+                .unwrap()
+                .remove(0);
+            subscription.status = MessageSubscriptionStatus::Revoked;
+            subscription.revision += 1;
+            subscription.revoked_at = Some("later".into());
+            let _lock = store.acquire_write_lock().unwrap();
+            store
+                .commit_trust_projection_unlocked(
+                    &context("host", "subscription.revoke", "later-revoke", 0),
+                    "message_subscription",
+                    &subscription.id,
+                    "revoked",
+                    serde_json::to_value(&subscription).unwrap(),
+                    &subscription,
+                    Vec::new(),
+                    Vec::new(),
+                )
+                .unwrap();
+        }
+        let path = root.join("agentfirm_trust_operations.jsonl");
+        if !matches!(damage, "none" | "revoked_later") {
+            let mut rows = fs::read_to_string(&path)
+                .unwrap()
+                .lines()
+                .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+                .collect::<Vec<_>>();
+            let row = rows
+                .iter_mut()
+                .find(|row| row["operation"]["event"]["aggregate_kind"] == "message")
+                .unwrap();
+            let deliveries = row["operation"]["initial_outbox_records"]
+                .as_array_mut()
+                .unwrap();
+            match damage {
+                "missing" => {
+                    deliveries.pop();
+                }
+                "recipient" => deliveries[0]["recipient_ref"] = serde_json::json!("wrong-member"),
+                "duplicate" => deliveries.push(deliveries[0].clone()),
+                _ => deliveries[0]["claim_id"] = serde_json::json!("unproven-claim"),
+            }
+            fs::write(
+                &path,
+                rows.iter()
+                    .map(|row| format!("{row}\n"))
+                    .collect::<String>(),
+            )
+            .unwrap();
+        }
+        let before = fs::read(&path).unwrap();
+        let result = recover_message(&store, &operator);
+        if matches!(damage, "none" | "revoked_later") {
+            result.unwrap();
+            assert_eq!(
+                store.runtime_commands("space-test").unwrap()[0].effect_certainty,
+                RuntimeEffectCertainty::Applied
+            );
+        } else {
+            assert!(
+                result
+                    .unwrap_err()
+                    .to_string()
+                    .contains("initial delivery set"),
+                "{damage}"
+            );
+            assert_eq!(fs::read(&path).unwrap(), before, "{damage} must not settle");
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
 }
