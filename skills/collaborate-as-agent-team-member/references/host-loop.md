@@ -28,6 +28,12 @@ loading alternative. Recheck newly added Members and refresh old sessions at
 a safe boundary after a skill update. Repository symlinks, an installer success
 message, or a directory listing alone do not prove agents loaded this version.
 
+Before assigning implementation, receive each participating Member's ordinary
+reply confirming the exact skill revision and required shared/role Reads,
+including the Reviewer. Verify its native Read evidence for a dogfood claim;
+an installed copy or a quiet Reviewer is not that acknowledgement. Use the
+existing conversation, not a new approval object.
+
 Decide, explicitly and durably, before `team-run start`:
 
 - **Roster**: which AgentMembers, which provider mode each runs. The five
@@ -131,10 +137,10 @@ The run has a sequenced event stream and a cursor-based board. **Block on the
 stream; never sleep-and-status:**
 
 ```bash
-# 1. wait for the next event(s); default timeout 600 s, poll interval 500 ms
-firm team-run wait --id <team-run-id> --after-seq <last-seq> --timeout-secs 600 --json
+# 1. one bounded wait for the next event(s); use 45 s during active review pickup
+firm team-run wait --id <team-run-id> --after-seq <last-seq> --timeout-secs 45 --json
 #    → { timed_out, after_seq, next_after_seq, events[] }
-# 2. read only what changed
+# 2. ALWAYS read relevant Work state before waiting again (including on timeout)
 firm team-run work list --team-run-id <team-run-id> --since <next_since>
 firm team-run board-summary --id <team-run-id>
 # 3. external_interactive Host: read your mail explicitly
@@ -148,16 +154,22 @@ Rules:
 - Chain cursors: pass `next_after_seq` back to `--after-seq`, and the JSON
   `list` response's `next_since` back to `--since`. Omitting `--after-seq`
   means "wait for what happens next", not "replay this run's history".
-- A `timed_out` return is information ("nothing happened for 10 minutes"),
-  not an error; decide whether to keep waiting, message the member, or
-  interrupt.
+- After **every** bounded wait, including timeout, idle, or provider-completed
+  events, read the relevant Work changes/board before issuing another wait.
+  A provider event summary is not Work-state authority. Never batch waits
+  until rendered prose matches `submitted`, `review`, or `blocked`: a Work
+  can already be in Review while those words never appear in the stream.
+- A `timed_out` return means no matching stream event arrived during that
+  interval. It does not prove no Work changed. Read Work state, then decide
+  whether to wait again, message the member, or interrupt.
 - `board-summary` is a ≤500-character digest: `open= active= blocked= review=
   accepted= cancelled=`, `assigned= unassigned= ready=`, one
   `idle|working|awaiting-review` line per active member, and the supervisor
   generation/heartbeat line. Use it to decide, not to wait.
-- A background watcher is acceptable only when its body is `wait` (or a
-  bounded chain of `wait` → `work list --since`); a watcher whose body is
-  `sleep N` + `status` is the polling anti-pattern moved out of sight.
+- A background watcher for Work must repeat `wait` → `work list --since`
+  with explicit limits and a stop owner. A one-off event wait is fine; a
+  repeated wait-only watcher must not claim to monitor Work. `sleep N` +
+  `status` is the polling anti-pattern moved out of sight.
 - If `wait` cannot express what you need (a Work-scoped condition, a delivery
   state, a member-scoped filter), **file the gap as a repository Issue before
   scripting around it**. The bypass is a product finding, not a private
@@ -197,8 +209,13 @@ immediately but does not interrupt your current reasoning.
   `reply` persists the exact incoming correlation and causation in the stored
   canonical Message; both ids come from `team-run host-inbox --json`. Unknown,
   mismatched, or cross-run lineage is refused, and retrying with the same
-  idempotency key replays the same Message instead of duplicating it. The
-  peer-Team `team message send` flags are not an intra-Team substitute, and
+  idempotency key with identical content replays the same Message instead of
+  duplicating it; reusing it with different semantics is a conflict. The
+  external Host CLI default key does not include Work or response intent.
+  Keep the same key for an exact retry; supply a new explicit
+  `--idempotency-key` for an intentionally distinct reply, including one that
+  changes only those fields. Do not use a new key to bypass an uncertain send.
+  The peer-Team `team message send` flags are not an intra-Team substitute, and
   `answer-message` remains only for provider-native questions — never for
   ordinary conversation.
 
