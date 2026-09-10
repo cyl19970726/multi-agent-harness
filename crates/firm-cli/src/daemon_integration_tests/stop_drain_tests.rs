@@ -4,8 +4,20 @@
 //! `NODE_DAEMON_DRAIN_INCOMPLETE` could never reach the caller and
 //! `daemon status` reported absent while the exact serve process still spun.
 
+use super::process_isolation::run_in_isolated_child;
 use super::tests::TestTree;
 use super::*;
+
+// These scenarios stop a daemon, and the stop path sweeps the process-global
+// provider process-group registry; each body therefore runs in an isolated
+// child test process so it can never consume or kill a group registered by
+// another parallel test (#928). Assertions are unchanged in the moved bodies.
+const STOP_ANSWERS_EXACT: &str =
+    "daemon_integration_tests::stop_drain_tests::stop_answers_only_after_the_managed_runtime_drains";
+const STOP_INCOMPLETE_EXACT: &str =
+    "daemon_integration_tests::stop_drain_tests::stop_reports_drain_incomplete_without_releasing_authority";
+const STOP_KEEPS_EXACT: &str =
+    "daemon_integration_tests::stop_drain_tests::stop_keeps_authority_until_the_registered_process_group_exits";
 
 const STOP_TEST_NODE_ID: &str = "22222222-2222-4222-8222-222222222221";
 
@@ -160,6 +172,13 @@ fn request_stop(fixture: &StopFixture) -> serde_json::Value {
 
 #[test]
 fn stop_answers_only_after_the_managed_runtime_drains() {
+    run_in_isolated_child(
+        STOP_ANSWERS_EXACT,
+        stop_answers_only_after_the_managed_runtime_drains_body,
+    );
+}
+
+fn stop_answers_only_after_the_managed_runtime_drains_body() {
     let heartbeat = Arc::new(AtomicBool::new(true));
     let thread_heartbeat = Arc::clone(&heartbeat);
     let converged = Arc::new(AtomicBool::new(false));
@@ -221,6 +240,13 @@ fn stop_answers_only_after_the_managed_runtime_drains() {
 
 #[test]
 fn stop_reports_drain_incomplete_without_releasing_authority() {
+    run_in_isolated_child(
+        STOP_INCOMPLETE_EXACT,
+        stop_reports_drain_incomplete_without_releasing_authority_body,
+    );
+}
+
+fn stop_reports_drain_incomplete_without_releasing_authority_body() {
     let heartbeat = Arc::new(AtomicBool::new(true));
     let release = Arc::new(AtomicBool::new(false));
     let thread_release = Arc::clone(&release);
@@ -308,6 +334,13 @@ fn stop_reports_drain_incomplete_without_releasing_authority() {
 
 #[test]
 fn stop_keeps_authority_until_the_registered_process_group_exits() {
+    run_in_isolated_child(
+        STOP_KEEPS_EXACT,
+        stop_keeps_authority_until_the_registered_process_group_exits_body,
+    );
+}
+
+fn stop_keeps_authority_until_the_registered_process_group_exits_body() {
     use std::os::unix::process::CommandExt;
     let heartbeat = Arc::new(AtomicBool::new(true));
     let worker_heartbeat = Arc::clone(&heartbeat);

@@ -1,17 +1,39 @@
+use super::process_isolation::{
+    assert_single_test_passed, isolation_dir, kill_child_group, read_child_output,
+    run_in_isolated_child, spawn_test_child, wait_child_bounded, wait_for_file_bounded,
+    CHILD_SIGNAL_TIMEOUT, ISOLATED_CHILD_TIMEOUT,
+};
 use super::*;
 use std::os::unix::process::CommandExt;
-use std::sync::OnceLock;
+use std::path::PathBuf;
 
-fn shutdown_test_lock() -> std::sync::MutexGuard<'static, ()> {
-    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    LOCK.get_or_init(|| Mutex::new(()))
-        .lock()
-        .unwrap_or_else(|error| error.into_inner())
-}
+// Process-global shutdown scenarios run in isolated child test processes
+// (#928): the daemon graceful-shutdown sweep and the provider process-group
+// registry are process-global, so the old file-local `shutdown_test_lock`
+// could never protect them from stop/drain fixtures or incidental
+// `serve_loop` exits elsewhere in this binary. Isolation replaces the lock;
+// every behavioral assertion of the original scenarios is preserved in the
+// moved bodies.
+const FORCE_REAPS_EXACT: &str =
+    "daemon_integration_tests::shutdown_tests::shutdown_force_reaps_an_owned_group_before_returning";
+const DRAIN_INCOMPLETE_EXACT: &str =
+    "daemon_integration_tests::shutdown_tests::shutdown_returns_drain_incomplete_when_provider_thread_does_not_converge";
+const UNRELATED_GROUP_EXACT: &str =
+    "daemon_integration_tests::shutdown_tests::unrelated_owned_group_survives_a_concurrent_external_shutdown_sweep";
+
+/// Set only in the registrar child of the concurrent regression below; the
+/// value is the shared coordination directory.
+const COORDINATION_DIR_ENV: &str = "FIRM_PROCESS_ISOLATION_COORDINATION_DIR";
 
 #[test]
 fn shutdown_force_reaps_an_owned_group_before_returning() {
-    let _test_lock = shutdown_test_lock();
+    run_in_isolated_child(
+        FORCE_REAPS_EXACT,
+        shutdown_force_reaps_an_owned_group_before_returning_body,
+    );
+}
+
+fn shutdown_force_reaps_an_owned_group_before_returning_body() {
     let heartbeat = Arc::new(AtomicBool::new(true));
     let thread_heartbeat = Arc::clone(&heartbeat);
     let (pid_tx, pid_rx) = std::sync::mpsc::channel();
@@ -71,7 +93,13 @@ fn shutdown_force_reaps_an_owned_group_before_returning() {
 
 #[test]
 fn shutdown_returns_drain_incomplete_when_provider_thread_does_not_converge() {
-    let _test_lock = shutdown_test_lock();
+    run_in_isolated_child(
+        DRAIN_INCOMPLETE_EXACT,
+        shutdown_returns_drain_incomplete_when_provider_thread_does_not_converge_body,
+    );
+}
+
+fn shutdown_returns_drain_incomplete_when_provider_thread_does_not_converge_body() {
     let heartbeat = Arc::new(AtomicBool::new(true));
     let release = Arc::new(AtomicBool::new(false));
     let thread_release = Arc::clone(&release);
@@ -124,4 +152,109 @@ fn shutdown_returns_drain_incomplete_when_provider_thread_does_not_converge() {
         .expect("detached test thread exits");
     harness_runtime_host::complete_registered_process_group_shutdown()
         .expect("reset process-group admission after timeout test");
+}
+
+/// The unrelated owned fixture of the concurrent regression. In a coordinated
+/// child it registers a real process group, publishes it, holds it across the
+/// scenario child's entire run, and proves the external shutdown sweep never
+/// reached it. Run standalone (an ordinary harness run still executes it in
+/// its own isolated child) it performs the same register/hold/reap cycle
+/// against a fixed short window, so it is a real test in both modes.
+#[test]
+fn unrelated_owned_group_survives_a_concurrent_external_shutdown_sweep() {
+    run_in_isolated_child(
+        UNRELATED_GROUP_EXACT,
+        unrelated_owned_group_survives_a_concurrent_external_shutdown_sweep_body,
+    );
+}
+
+fn unrelated_owned_group_survives_a_concurrent_external_shutdown_sweep_body() {
+    let coordination = std::env::var_os(COORDINATION_DIR_ENV).map(PathBuf::from);
+    let mut child = std::process::Command::new("sleep")
+        .arg("30")
+        .process_group(0)
+        .spawn()
+        .expect("spawn unrelated fixture process group");
+    let mut registration = harness_runtime_host::OwnedProcessGroupRegistration::new(&mut child)
+        .expect("register unrelated fixture process group");
+    let pid = child.id();
+    if let Some(dir) = &coordination {
+        std::fs::write(dir.join("registered"), pid.to_string())
+            .expect("publish unrelated process group");
+        wait_for_file_bounded(
+            &dir.join("scenario-done"),
+            ISOLATED_CHILD_TIMEOUT,
+            "scenario completion signal",
+        );
+    } else {
+        std::thread::sleep(Duration::from_millis(250));
+    }
+    // The regression's whole point: after a full external shutdown sweep the
+    // unrelated group is still exactly as registered — not consumed, not
+    // killed.
+    assert_eq!(
+        unsafe { libc::kill(-(pid as libc::pid_t), 0) },
+        0,
+        "unrelated registered process group was consumed or killed by the external shutdown sweep"
+    );
+    assert!(
+        registration
+            .kill_and_reap(&mut child)
+            .expect("reap unrelated fixture")
+            .is_some(),
+        "unrelated fixture must be terminal-reaped"
+    );
+    assert_eq!(unsafe { libc::kill(-(pid as libc::pid_t), 0) }, -1);
+    assert_eq!(
+        std::io::Error::last_os_error().raw_os_error(),
+        Some(libc::ESRCH)
+    );
+}
+
+/// Deterministic concurrent regression (#928): an isolated shutdown scenario
+/// runs its full process-group sweep while an unrelated owned group is
+/// registered in a sibling child process. Process isolation — not a lock —
+/// keeps the sweep from consuming or killing what it does not own, and the
+/// parent's own registry is never touched by either child.
+#[test]
+fn isolated_shutdown_scenario_cannot_consume_an_unrelated_registered_group() {
+    let dir = isolation_dir("concurrent-regression");
+    let mut registrar = spawn_test_child(
+        UNRELATED_GROUP_EXACT,
+        &dir,
+        "registrar",
+        &[(
+            COORDINATION_DIR_ENV,
+            dir.to_str().expect("utf-8 isolation dir"),
+        )],
+    )
+    .expect("spawn registrar child");
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        wait_for_file_bounded(
+            &dir.join("registered"),
+            CHILD_SIGNAL_TIMEOUT,
+            "registrar publication",
+        );
+        let mut scenario = spawn_test_child(FORCE_REAPS_EXACT, &dir, "scenario", &[])
+            .expect("spawn scenario child");
+        let scenario_status = wait_child_bounded(&mut scenario, ISOLATED_CHILD_TIMEOUT, "scenario");
+        assert_single_test_passed(
+            scenario_status,
+            FORCE_REAPS_EXACT,
+            &read_child_output(&dir, "scenario"),
+        );
+        std::fs::write(dir.join("scenario-done"), "done").expect("signal scenario completion");
+        let registrar_status =
+            wait_child_bounded(&mut registrar, ISOLATED_CHILD_TIMEOUT, "registrar");
+        assert_single_test_passed(
+            registrar_status,
+            UNRELATED_GROUP_EXACT,
+            &read_child_output(&dir, "registrar"),
+        );
+    }));
+    if let Err(error) = outcome {
+        // One failed side must never strand the other side's process group.
+        kill_child_group(&mut registrar);
+        std::panic::resume_unwind(error);
+    }
 }
