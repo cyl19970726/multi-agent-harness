@@ -156,7 +156,7 @@ fn downstream_warm_work_source_replacement_rechecks_existing_lifecycle_identity(
     let (root, store, attention) = fixture("downstream-source-replacement");
     store.current_work_sources().unwrap();
     store.current_host_attention_projection().unwrap();
-    let mut operations = store.work_operations().unwrap();
+    let mut operations = store.work_operations_unlocked().unwrap();
     let source = operations
         .iter_mut()
         .find(|op| op.event.payload.get("work_graph_outbox").is_some())

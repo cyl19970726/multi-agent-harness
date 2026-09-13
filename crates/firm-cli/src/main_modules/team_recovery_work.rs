@@ -765,36 +765,37 @@ pub(super) fn format_work_brief_line(work: &Work) -> String {
     )
 }
 
-/// Per-run monotonic cursor for `work list --since`: each Work id mapped to
-/// the 1-based position of its most recent [`WorkOperation`] within this team
-/// run's operations, numbered in store append (causal) order.
+/// Per-run monotonic delta cursors for `work list --since`: each Work id
+/// mapped to the position of its most recent Work journal row within this team
+/// run, numbered in each journal's own append (causal) order.
 ///
-/// `work_operations.jsonl` is the sole mutation path for every Work row and
-/// every append is serialized under the store's write lock, so this order is
-/// a genuine per-run total order -- the "monotonic per-run operation
-/// sequence" a delta cursor needs. Two alternatives were considered and
-/// rejected: `Work::version` restarts at 1 for every Work, so it is not
-/// comparable across Works in one run; `updated_at` is millisecond-resolution
-/// and can tie under fast scripted mutation (concurrent or same-millisecond
-/// writes), which would make "changed after" ambiguous. `--since <cursor>`
-/// therefore means "Works whose latest WorkOperation sorts after `cursor` in
-/// this run's append order", and a `list` call made with `--since` reports
-/// the new `next_since` watermark so a Host wake->decide->act loop can chain
-/// calls without redundantly re-reading unchanged Works.
-pub(super) fn work_operation_cursors(
+/// A Work's version chain is one chain but, until the W4 writer cutover, its
+/// rows live in two journals: `work_operations.jsonl` and the `work` aggregate
+/// of `agentfirm_trust_operations.jsonl`. Every append in either is serialized
+/// under the store's write lock, so each journal's order is a genuine per-run
+/// total order; the two files share no comparable clock, so the cursor keeps
+/// one component per journal and advances a Work when EITHER component grows
+/// (see `harness_store::WorkJournalPosition`). Counting only the ledger — as
+/// this cursor did before W3 — left a Work whose latest change was an accept,
+/// a cancellation or a dependency change permanently below the watermark, so a
+/// Host `--since` loop never saw it change.
+///
+/// Two single-number alternatives were considered and rejected: `Work::version`
+/// restarts at 1 for every Work, so it is not comparable across Works in one
+/// run; `updated_at` is millisecond-resolution and can tie under fast scripted
+/// mutation. A single interleaved counter is impossible while both journals
+/// are written, because a ledger row appended after a trust row would have to
+/// sort below an already-issued watermark and would be skipped.
+///
+/// `--since <cursor>` therefore means "Works whose latest Work journal row
+/// sorts after `cursor` in this run", and a `list` call made with `--since`
+/// reports the new `next_since` watermark so a Host wake->decide->act loop can
+/// chain calls without redundantly re-reading unchanged Works.
+pub(super) fn work_journal_cursors(
     store: &HarnessStore,
     team_run_id: &str,
-) -> CliResult<BTreeMap<String, u64>> {
-    let mut cursors = BTreeMap::new();
-    for (index, operation) in store
-        .work_operations()?
-        .into_iter()
-        .filter(|operation| operation.event.team_run_id == team_run_id)
-        .enumerate()
-    {
-        cursors.insert(operation.work.id, (index + 1) as u64);
-    }
-    Ok(cursors)
+) -> CliResult<WorkJournalRunCursors> {
+    Ok(store.work_journal_cursors_for_team_run(team_run_id)?)
 }
 
 /// Bucket one member into the `board-summary` per-member line. Reads BOTH

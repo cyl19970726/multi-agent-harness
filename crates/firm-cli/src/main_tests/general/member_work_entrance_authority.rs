@@ -328,3 +328,105 @@ fn bound_work_cancel_is_host_only_and_needs_no_local_cli_fallback() {
         Some(harness_core::WorkResolution::Cancelled)
     );
 }
+
+/// A refused Role Action reports the CURRENT Work revision, across both
+/// journals.
+///
+/// The refusal payload carries the version a caller should retry against, so
+/// it must never name a revision the trust journal has already superseded. The
+/// entrance reads it through `protocol::current_work`, whose second argument is
+/// a TeamRun id by design: it folds `latest_works()` — the merged
+/// both-journals reader — and then checks the Work belongs to the addressed
+/// run. (It is a different function from `work_action_service::current_work`,
+/// which takes an Execution Space and is only reached here through its
+/// fully-qualified path. Handing the run id to the space-scoped one instead
+/// breaks the ownership check outright: every Work then answers
+/// UNAUTHORIZED_ACTOR, because no Work's `team_run_id` equals a space id.)
+///
+/// This test pins the observable property rather than either function's
+/// argument, so neither can regress unnoticed: cancel writes only to the trust
+/// journal, and the refusal must report that Closed revision.
+#[test]
+fn a_refused_role_action_reports_the_trust_side_current_revision() {
+    let fixture = entrance_fixture("role-action-trust-revision");
+    let supervisor_valid = AtomicBool::new(true);
+    let authority_gate = Mutex::new(());
+    let run_id = fixture.created.team_run.id.clone();
+
+    work_role_action(
+        &fixture.store,
+        &fixture.lease,
+        &supervisor_valid,
+        &authority_gate,
+        &fixture.host,
+        &fixture.host_token,
+        format!("/v1/agentfirm/team-runs/{run_id}/works"),
+        0,
+        "trust-revision-create",
+        serde_json::json!({
+            "action":"create_work",
+            "work_id":"trust-revision-target",
+            "title":"Closed by a trust transition",
+            "completion_criteria_markdown":"never reached"
+        }),
+        None,
+    )
+    .expect("Host creates the Work");
+    let created = latest_work(&fixture.store, "trust-revision-target");
+    let ledger_version = created.version;
+
+    // Cancel is written to the trust journal only, so the Closed revision
+    // exists nowhere in `work_operations.jsonl`.
+    work_role_action(
+        &fixture.store,
+        &fixture.lease,
+        &supervisor_valid,
+        &authority_gate,
+        &fixture.host,
+        &fixture.host_token,
+        format!("/v1/agentfirm/team-runs/{run_id}/works/trust-revision-target/cancel"),
+        ledger_version,
+        "trust-revision-cancel",
+        serde_json::json!({"action":"cancel_work","reason":"superseded"}),
+        Some("cancel"),
+    )
+    .expect("the Host cancels through the bound entrance");
+    let cancelled = latest_work(&fixture.store, "trust-revision-target");
+    assert_eq!(
+        cancelled.resolution,
+        Some(harness_core::WorkResolution::Cancelled)
+    );
+    let trust_version = cancelled.version;
+    assert_eq!(
+        trust_version,
+        ledger_version + 1,
+        "the cancellation is the newer revision, and it lives only in the trust journal"
+    );
+
+    // A Role Action whose semantic body does not match its route is refused,
+    // and the refusal payload carries the current revision.
+    let refusal = work_role_action(
+        &fixture.store,
+        &fixture.lease,
+        &supervisor_valid,
+        &authority_gate,
+        &fixture.host,
+        &fixture.host_token,
+        format!("/v1/agentfirm/team-runs/{run_id}/works/trust-revision-target/start"),
+        trust_version,
+        "trust-revision-mismatch",
+        serde_json::json!({"action":"block_work","reason":"route and body disagree"}),
+        None,
+    )
+    .expect_err("a body that does not match the route is refused");
+    let refusal = refusal.to_string();
+    assert!(
+        refusal.contains("INVALID_STATE_TRANSITION"),
+        "the mismatch is the refusal under test: {refusal}"
+    );
+    assert!(
+        refusal.contains(&format!("\"current_version\":{trust_version}")),
+        "the refusal must report the trust-side Closed revision {trust_version}, not the ledger's \
+         {ledger_version}: {refusal}"
+    );
+}

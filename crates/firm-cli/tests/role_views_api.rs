@@ -51,6 +51,16 @@ const OPERATOR_TOKEN: &str = "role-view-operator-capability";
 const WRONG_OPERATOR_TOKEN: &str = "role-view-wrong-operator-capability";
 const DELEGATED_OPERATOR_TOKEN: &str = "role-view-delegated-operator-capability";
 
+/// The raw legacy `work_operations.jsonl` rows. These assertions are about
+/// that one file — a refused writer appends nothing to it, and a canonical
+/// accept fabricates no legacy transition in it — so they deliberately read
+/// the legacy ledger rather than the merged Work journal.
+fn legacy_ledger_rows(store: &HarnessStore) -> Vec<harness_core::WorkOperation> {
+    store
+        .legacy_work_operation_rows()
+        .expect("legacy Work ledger rows")
+}
+
 fn ledger_digest(root: &std::path::Path) -> Vec<(String, Vec<u8>)> {
     let mut rows = std::fs::read_dir(root)
         .into_iter()
@@ -427,7 +437,7 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
         )
         .expect("provider projection AgentSession");
 
-    let before = store.work_operations().expect("before operations").len();
+    let before = legacy_ledger_rows(&store).len();
     let legacy_route = format!("/v1/team-runs/{run_id}/works?project={project_id}");
     let (status, retired) = serve.post_json(
         &legacy_route,
@@ -442,10 +452,7 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
         status, 410,
         "legacy delegation writer: {retired_delegation}"
     );
-    assert_eq!(
-        store.work_operations().expect("after retired").len(),
-        before
-    );
+    assert_eq!(legacy_ledger_rows(&store).len(), before);
 
     let action_route = format!("/v1/agentfirm/team-runs/{run_id}/works?project={project_id}");
     let intent = serde_json::json!({
@@ -457,7 +464,7 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
     });
     let (status, denied) = serve.post_json(&action_route, &intent);
     assert_eq!(status, 401, "unauth action: {denied}");
-    assert_eq!(store.work_operations().expect("after unauth").len(), before);
+    assert_eq!(legacy_ledger_rows(&store).len(), before);
 
     let headers = action_headers(TOKEN, "create-store-live-1", "0");
     let (status, created) = serve.post_json_with_headers(&action_route, &intent, &headers);
@@ -1105,9 +1112,7 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
     assert_eq!(status, 200, "member start replay: {start_replay}");
     assert_eq!(start_replay["event_id"], started["event_id"]);
     assert_eq!(start_replay["replayed"], true);
-    let operations_before_cli_replay = store
-        .work_operations()
-        .expect("Work operations before CLI replay");
+    let operations_before_cli_replay = legacy_ledger_rows(&store);
     let start_operation = operations_before_cli_replay
         .iter()
         .find(|operation| operation.event.idempotency_key == "start-store-live-1")
@@ -1164,9 +1169,7 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
                 && refusal.contains("firm member work start"),
             "refusal must name the authenticated entrance: {refusal}"
         );
-        let operations_after_cli = store
-            .work_operations()
-            .expect("Work operations after the refused CLI write");
+        let operations_after_cli = legacy_ledger_rows(&store);
         assert_eq!(
             operations_after_cli.len(),
             operations_before_cli_replay.len(),
@@ -1399,7 +1402,7 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
     assert_eq!(accept_replay["event_id"], accepted["event_id"]);
     assert_eq!(accept_replay["replayed"], true);
     assert_eq!(
-        store.work_operations().expect("accept roll-up").len(),
+        legacy_ledger_rows(&store).len(),
         before + 5,
         "canonical accept must not fabricate a legacy Work transition beyond membership assignment, the two exact starts, and request-changes"
     );

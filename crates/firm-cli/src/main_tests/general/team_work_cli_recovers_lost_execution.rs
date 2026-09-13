@@ -287,7 +287,7 @@ fn team_work_cli_recovers_lost_execution_after_a_superseded_generation() {
         harness_core::agentfirm_api::WorkExecutionBindingStatus::Released
     );
     let recovered_event = store
-        .work_operations()
+        .legacy_work_operation_rows()
         .unwrap()
         .into_iter()
         .find(|operation| {

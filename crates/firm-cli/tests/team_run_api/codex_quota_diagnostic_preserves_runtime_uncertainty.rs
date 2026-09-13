@@ -84,7 +84,7 @@ fn codex_quota_diagnostic_preserves_runtime_uncertainty_without_replay() {
         let store = HarnessStore::new(home.spaces_dir().join(&project_id));
         assert!(
             store
-                .work_operations()
+                .legacy_work_operation_rows()
                 .unwrap()
                 .iter()
                 .filter(|operation| operation.event.work_id == work_id)

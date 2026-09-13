@@ -20,8 +20,11 @@ fn work_event_id_reuse_is_rejected_without_creating_legacy_delivery_identity() {
         )
         .expect_err("caller event id reuse must be rejected");
     assert!(error.to_string().contains("WORK_EVENT_ID_CONFLICT"));
-    assert_eq!(store.work_operations().expect("operations").len(), 1);
-    let wire = serde_json::to_value(&store.work_operations().expect("operations")[0])
+    assert_eq!(
+        store.work_operations_unlocked().expect("operations").len(),
+        1
+    );
+    let wire = serde_json::to_value(&store.work_operations_unlocked().expect("operations")[0])
         .expect("operation wire");
     assert!(wire.get("deliveries").is_none());
     assert!(wire.get("delivery_updates").is_none());

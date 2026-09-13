@@ -521,7 +521,7 @@ fn retained_projected_rows_remain_bounded_with_200_unrelated_team_runs_and_works
     filtered_global_reference["generated_at"] = serde_json::Value::Null;
     let seed_run = selected.team_run.clone();
     let seed_operation = store
-        .work_operations()
+        .legacy_work_operation_rows()
         .expect("read seed Work operation")
         .into_iter()
         .find(|operation| operation.work.id == "bounded-selected-work")
@@ -550,7 +550,7 @@ fn retained_projected_rows_remain_bounded_with_200_unrelated_team_runs_and_works
     let raw_started = std::time::Instant::now();
     let raw_team_run_rows = store.team_runs().expect("deserialize TeamRun ledger").len();
     let raw_work_rows = store
-        .work_operations()
+        .legacy_work_operation_rows()
         .expect("deserialize Work ledger")
         .len();
     let raw_deserialization_elapsed = raw_started.elapsed();

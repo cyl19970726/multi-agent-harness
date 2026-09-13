@@ -32,7 +32,7 @@ fn retarget_is_a_versioned_host_decision_independent_of_notification_intake() {
     store
         .ensure_host_attention(&attention(&work, HostAttentionKind::WorkChanged))
         .unwrap();
-    let before = store.work_operations().unwrap();
+    let before = store.work_operations_unlocked().unwrap();
     let mut foreign = command(&store, "run-source", "wrong-host");
     foreign.performed_by_actor.id = "wrong-host".into();
     assert!(store
@@ -54,7 +54,7 @@ fn retarget_is_a_versioned_host_decision_independent_of_notification_intake() {
             command(&store, "run-source", "foreign-team")
         )
         .is_err());
-    assert_eq!(store.work_operations().unwrap(), before);
+    assert_eq!(store.work_operations_unlocked().unwrap(), before);
     let context = command(&store, "run-source", "retarget");
     let next = store
         .retarget_work_execution(&work.id, work.version, "run-successor", context.clone())
@@ -117,7 +117,7 @@ fn historical_submission_provenance_uses_work_operations_and_rejects_ambiguity()
     append_runtime_team(&store, "team-intake", "run-source");
     let work = insert_runtime_work(&store, "work-intake", "team-intake", "run-source");
     let mut submission = store
-        .work_operations()
+        .work_operations_unlocked()
         .unwrap()
         .into_iter()
         .find(|op| op.work.id == work.id)
@@ -198,7 +198,7 @@ fn retarget_allows_blocked_recovery_but_rejects_terminal_work() {
     append_runtime_team(&store, "team-intake", "run-successor");
     let work = insert_runtime_work(&store, "work-intake", "team-intake", "run-source");
     let mut op = store
-        .work_operations()
+        .work_operations_unlocked()
         .unwrap()
         .into_iter()
         .find(|op| op.work.id == work.id)
@@ -232,7 +232,7 @@ fn retarget_allows_blocked_recovery_but_rejects_terminal_work() {
             command(&store, "run-successor", "cancel"),
         )
         .unwrap();
-    let before = store.work_operations().unwrap();
+    let before = store.work_operations_unlocked().unwrap();
     assert!(store
         .retarget_work_execution(
             &cancelled.id,
@@ -243,5 +243,5 @@ fn retarget_allows_blocked_recovery_but_rejects_terminal_work() {
         .unwrap_err()
         .to_string()
         .contains("terminal"));
-    assert_eq!(store.work_operations().unwrap(), before);
+    assert_eq!(store.work_operations_unlocked().unwrap(), before);
 }

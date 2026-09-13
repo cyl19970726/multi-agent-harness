@@ -4,7 +4,7 @@ use firm_core::agentfirm_api::{
     RuntimeCommandKind, RuntimeDriverRef, TeamMembershipStatus,
 };
 use firm_core::work_acceptance::{select_acceptance_wake, AcceptanceWake};
-use firm_core::{TeamRunStatus, WorkCondition, WorkEvent, WorkEventKind, WorkPhase};
+use firm_core::{TeamRunStatus, WorkCondition, WorkPhase};
 
 impl HarnessStore {
     /// Read-only candidate selection. Preparation rechecks this under the
@@ -75,53 +75,16 @@ impl HarnessStore {
             return Ok(None);
         }
         let work_ids = works.iter().map(|work| work.id.clone()).collect();
-        let mut events: Vec<_> = self
-            .work_operations_for_ids_unlocked(&work_ids)?
-            .into_iter()
-            .map(|operation| operation.event)
-            .collect();
-        events.extend(self.trust_work_events_for_ids_unlocked(&work_ids)?);
-        // Current acceptance is the canonical Work transition itself, not an
-        // immutable WorkEvent side record. Normalize only for this pure read;
-        // preserve its native event id and never write a compatibility event.
-        for envelope in self.trust_operation_envelopes_unlocked()? {
-            let event = envelope.operation.event;
-            if envelope.execution_space_id != space_id
-                || event.aggregate_kind != "work"
-                || event.transition != "accepted"
-                || !work_ids.contains(&event.aggregate_id)
-            {
-                continue;
-            }
-            let Some(work) = works.iter().find(|work| work.id == event.aggregate_id) else {
-                continue;
-            };
-            let actor = |actor: firm_core::agentfirm_api::ActorRef| TeamActorRef {
-                kind: match actor.kind {
-                    firm_core::agentfirm_api::ActorKind::AgentMember => TeamActorKind::AgentMember,
-                    firm_core::agentfirm_api::ActorKind::Service => TeamActorKind::Service,
-                    _ => TeamActorKind::Operator,
-                },
-                id: actor.id,
-                display_name: None,
-                authn_source: Some("canonical-work-event".into()),
-            };
-            events.push(WorkEvent {
-                id: event.id,
-                team_run_id: work.team_run_id.clone(),
-                work_id: event.aggregate_id,
-                sequence: event.sequence,
-                kind: WorkEventKind::Accepted,
-                expected_version: event.expected_version,
-                resulting_version: event.resulting_version,
-                performed_by_actor: actor(event.performed_by_actor),
-                authority_actor: event.authority_actor.map(actor),
-                causation_ref: None,
-                idempotency_key: event.idempotency_key,
-                payload: event.payload,
-                created_at: event.created_at,
-            });
-        }
+        // One reader for both journals: Accepted is a trust transition and
+        // Blocked is a ledger row, and this scan needs the same chain the rest
+        // of the store sees. The wake used to synthesize the Accepted event
+        // here for one read; `crate::work_history` now materializes it for
+        // every reader, and current acceptances commit it durably. The scan
+        // stays narrowed to this run's Execution Space, exactly as the deleted
+        // synthesis was: a physical store may hold more than one space during
+        // recovery or import, and no other scope's acceptance may wake a
+        // member here.
+        let events = self.work_journal_events_for_ids_in_space_unlocked(space_id, &work_ids)?;
         let Some(candidate) = select_acceptance_wake(
             &works,
             &events,

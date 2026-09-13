@@ -383,10 +383,11 @@ pub(crate) fn work_review_authorized(
     let Some(team) = store.latest_teams()?.remove(team_id) else {
         return Ok(false);
     };
+    // The one Store Work reader, the same fold acceptance itself resolves
+    // through: review authority may never be decided on half the chain.
     let Some(work) = store
-        .latest_works()?
-        .into_iter()
-        .find(|work| work.id == work_id && work.accountable_team_id.as_deref() == Some(team_id))
+        .current_work_in_space(execution_space_id, work_id)?
+        .filter(|work| work.accountable_team_id.as_deref() == Some(team_id))
     else {
         return Ok(false);
     };

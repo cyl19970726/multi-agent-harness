@@ -370,17 +370,6 @@ impl HarnessStore {
         self.all_work_operations_unlocked()
     }
 
-    pub(super) fn work_operations_for_ids_unlocked(
-        &self,
-        work_ids: &std::collections::HashSet<String>,
-    ) -> StoreResult<Vec<WorkOperation>> {
-        Ok(self
-            .all_work_operations_unlocked()?
-            .into_iter()
-            .filter(|operation| work_ids.contains(&operation.work.id))
-            .collect())
-    }
-
     fn all_work_operations_unlocked(&self) -> StoreResult<Vec<WorkOperation>> {
         let operations: Vec<WorkOperation> = self
             .read_jsonl::<WorkOperation>("work_operations.jsonl")?
@@ -896,24 +885,5 @@ impl HarnessStore {
             )));
         }
         Ok(())
-    }
-
-    pub(super) fn latest_works_unlocked(
-        &self,
-    ) -> StoreResult<std::collections::BTreeMap<String, Work>> {
-        let mut latest = self
-            .current_work_sources()?
-            .latest
-            .clone()
-            .map_err(StoreError::Conflict)?;
-        for work in self.cached_trust_work_latest_unlocked()? {
-            match latest.get(&work.id) {
-                Some(current) if current.version >= work.version => {}
-                _ => {
-                    latest.insert(work.id.clone(), work);
-                }
-            }
-        }
-        Ok(latest)
     }
 }

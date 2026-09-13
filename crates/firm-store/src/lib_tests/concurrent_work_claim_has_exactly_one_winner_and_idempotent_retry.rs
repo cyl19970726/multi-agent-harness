@@ -77,7 +77,7 @@ fn concurrent_work_claim_has_exactly_one_winner_and_idempotent_retry() {
         )
         .expect("idempotent retry");
     assert_eq!(retried, winner);
-    let before_unbound_execution = store.work_operations().expect("Work operations");
+    let before_unbound_execution = store.work_operations_unlocked().expect("Work operations");
     let start_error = store
         .start_work(
             &winner.id,
@@ -131,7 +131,7 @@ fn concurrent_work_claim_has_exactly_one_winner_and_idempotent_retry() {
         "unexpected Submit rejection: {submit_error}"
     );
     assert_eq!(
-        store.work_operations().expect("Work operations"),
+        store.work_operations_unlocked().expect("Work operations"),
         before_unbound_execution
     );
     let winner_member = contenders

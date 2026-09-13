@@ -300,7 +300,10 @@ fn cancelled_prerequisite_uses_only_canonical_work_authority_and_replays_outbox(
             host_work_context("event-dependent-edge", "key-dependent-edge", "unix-ms:4"),
         )
         .expect("dependent edge");
-    let legacy_before = store.work_operations().expect("legacy operations").len();
+    let legacy_before = store
+        .work_operations_unlocked()
+        .expect("legacy operations")
+        .len();
 
     let cancelled = store
         .cancel_work(
@@ -324,7 +327,10 @@ fn cancelled_prerequisite_uses_only_canonical_work_authority_and_replays_outbox(
         .expect("exact canonical replay");
     assert_eq!(cancelled, replay);
     assert_eq!(
-        store.work_operations().expect("legacy operations").len(),
+        store
+            .work_operations_unlocked()
+            .expect("legacy operations")
+            .len(),
         legacy_before,
         "current cancellation must not append the legacy WorkOperation ledger"
     );

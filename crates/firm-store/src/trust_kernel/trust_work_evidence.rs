@@ -313,6 +313,7 @@ impl HarnessStore {
             .map(serde_json::to_value)
             .collect::<Result<Vec<_>, _>>()?;
         let mut initial_outbox_records = Vec::new();
+        let mut paired_work = None;
         if report.kind == WorkReportKind::Result {
             let released_binding = self.result_submission_released_binding_unlocked(
                 &context.execution_space_id,
@@ -371,12 +372,22 @@ impl HarnessStore {
                 created_at: report.created_at.clone(),
                 updated_at: report.created_at.clone(),
             })?);
+            // The Review snapshot stays a side record of this report for every
+            // reader that already binds acceptance to it; the paired `work`
+            // envelope below is what makes the same revision a named Submitted
+            // transition in the one Work journal.
+            paired_work = Some(PairedWorkTransition {
+                transition: "submitted",
+                kind: firm_core::WorkEventKind::Submitted,
+                expected_version: current_work.version,
+                work: submitted_work.clone(),
+            });
             side_records.push(serde_json::to_value(submitted_work)?);
             if let Some(released_binding) = released_binding {
                 side_records.push(serde_json::to_value(released_binding)?);
             }
         }
-        self.commit_trust_projection_unlocked(
+        self.commit_trust_projection_with_work_transition_unlocked(
             context,
             "work_report",
             &report.id,
@@ -385,6 +396,7 @@ impl HarnessStore {
             &report,
             side_records,
             initial_outbox_records,
+            paired_work,
         )
     }
 

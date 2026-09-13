@@ -33,6 +33,17 @@ fn recorded_time(value: &str) -> Option<OffsetDateTime> {
     }
 }
 
+/// The one comparable key for a coordination timestamp, in nanoseconds.
+///
+/// The store mixes `unix-ms:` and RFC3339 stamps in the same collections, and
+/// the two forms do not sort against each other as raw strings — every ISO
+/// value sorts below every `unix-ms:` value. Any reader that orders records
+/// from more than one source must compare through this key, and must keep a
+/// deterministic tie-break for the values it cannot parse.
+pub fn recorded_time_key(value: &str) -> Option<i128> {
+    recorded_time(value).map(OffsetDateTime::unix_timestamp_nanos)
+}
+
 /// Select the latest related acceptance after at least one current block.
 /// Sequence numbers are only compared within one Work; cross-Work ordering
 /// uses parsed recorded times, with missing/invalid evidence failing closed.

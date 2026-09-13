@@ -476,15 +476,35 @@ impl HarnessStore {
         next.version = next.version.saturating_add(1);
         next.updated_at = context.created_at.clone();
         require_valid_work_transition(&current, &next, WorkEventKind::DependenciesChanged)?;
+        let payload = serde_json::json!({
+            "request_fingerprint": request_fingerprint,
+            "change": change,
+        });
+        // Preserve the historical WorkEvent read contract as an immutable
+        // record inside the one canonical operation, exactly as the cancel
+        // path does. It is not a second Work writer: the resulting Work
+        // projection is committed by commit_current_work_mutation_unlocked.
+        let compatibility_event = WorkEvent {
+            id: context.event_id.clone(),
+            team_run_id: next.team_run_id.clone(),
+            work_id: next.id.clone(),
+            sequence: next.version,
+            kind: WorkEventKind::DependenciesChanged,
+            expected_version,
+            resulting_version: next.version,
+            performed_by_actor: context.performed_by_actor.clone(),
+            authority_actor: context.authority_actor.clone(),
+            causation_ref: context.causation_ref.clone(),
+            idempotency_key: context.idempotency_key.clone(),
+            payload: payload.clone(),
+            created_at: context.created_at.clone(),
+        };
         let result = self.commit_current_work_mutation_unlocked(
             &mutation_context,
             "dependencies_changed",
-            serde_json::json!({
-                "request_fingerprint": request_fingerprint,
-                "change": change,
-            }),
+            payload,
             &next,
-            Vec::new(),
+            vec![serde_json::to_value(compatibility_event)?],
             Vec::new(),
         )?;
         Ok(result.projection)

@@ -588,7 +588,7 @@ fn the_adoption_hold_fingerprint_sees_the_execution_lane() {
             member_statuses(&fixture),
             fixture
                 .store
-                .work_operations()
+                .legacy_work_operation_rows()
                 .expect("work operations")
                 .len(),
             fixture

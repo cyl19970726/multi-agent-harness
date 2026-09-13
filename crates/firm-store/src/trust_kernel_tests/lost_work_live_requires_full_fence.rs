@@ -49,7 +49,7 @@ fn active_fixture(suffix: &str, native: bool) -> (ReopenedMemberFixture, PathBuf
 fn assert_unproven_without_writes(fixture: &ReopenedMemberFixture, work: &firm_core::Work) {
     let store = &fixture.store;
     let before = store.canonical_operations().unwrap();
-    let work_before = store.work_operations().unwrap();
+    let work_before = store.work_operations_unlocked().unwrap();
     let error = store
         .recover_lost_work_execution(
             &work.id,
@@ -72,7 +72,7 @@ fn assert_unproven_without_writes(fixture: &ReopenedMemberFixture, work: &firm_c
     assert!(scan.errors.iter().any(|error| error.work_id == work.id
         && error.error.contains("WORK_EXECUTION_AUTHORITY_UNPROVEN")));
     assert_eq!(store.canonical_operations().unwrap(), before);
-    assert_eq!(store.work_operations().unwrap(), work_before);
+    assert_eq!(store.work_operations_unlocked().unwrap(), work_before);
 }
 
 #[test]
