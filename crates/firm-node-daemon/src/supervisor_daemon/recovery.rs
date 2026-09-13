@@ -38,6 +38,58 @@ fn supervisor_recovery_actions(
         .collect())
 }
 
+/// What the durable attach inventory proves for one lane's provider group
+/// when the live registry entry is already gone (#937 normal-teardown
+/// branch).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DurableProviderGroupEvidence {
+    /// Exactly one exact record: the lane's provider group leader pid.
+    Exact(u32),
+    /// No exact record exists.
+    None,
+    /// More than one record matches the exact fields; never resolved by
+    /// recency or session id alone.
+    Ambiguous,
+}
+
+/// Select provider-group evidence for a lane from its RuntimeCommand
+/// inventory, matched on the exact Session id, Session runtime generation,
+/// NodeDaemon id and generation, an attach-capable command kind
+/// (StartCycle/OpenRuntime/ResumeNativeSession), and a Settled + Applied
+/// settlement. Anything else — wrong generation, wrong kind, unsettled,
+/// unsettled-but-recorded — is ignored, and more than one exact record fails
+/// closed as ambiguous instead of being resolved by recency.
+fn durable_provider_group_evidence(
+    commands: &[harness_core::agentfirm_api::RuntimeCommandRecord],
+    session: &harness_core::agentfirm_api::AgentSession,
+) -> DurableProviderGroupEvidence {
+    let records: Vec<u32> = commands
+        .iter()
+        .filter(|command| {
+            command.target_session_id.as_deref() == Some(session.id.as_str())
+                && command.target_session_generation == Some(session.runtime_generation)
+                && command.target_node_daemon_id == session.node_daemon_id
+                && command.target_node_daemon_generation == session.node_daemon_generation
+                && matches!(
+                    command.command,
+                    harness_core::agentfirm_api::RuntimeCommandKind::StartCycle
+                        | harness_core::agentfirm_api::RuntimeCommandKind::OpenRuntime
+                        | harness_core::agentfirm_api::RuntimeCommandKind::ResumeNativeSession
+                )
+                && command.phase == harness_core::agentfirm_api::RuntimeCommandPhase::Settled
+                && command.effect_certainty
+                    == harness_core::agentfirm_api::RuntimeEffectCertainty::Applied
+        })
+        .filter_map(|command| command.result.as_ref()?.get("provider_group")?.as_u64())
+        .map(|pgid| pgid as u32)
+        .collect();
+    match records.as_slice() {
+        [] => DurableProviderGroupEvidence::None,
+        [pgid] => DurableProviderGroupEvidence::Exact(*pgid),
+        _ => DurableProviderGroupEvidence::Ambiguous,
+    }
+}
+
 /// Read the durable adoption outcome for one TeamRun as a hold.
 ///
 /// This deliberately does not read only the newest row. `seq` is assigned per
@@ -623,20 +675,8 @@ impl MultiTeamDaemon {
                     // probe it read-only (never signal after a reap) and
                     // publish Detached/Idle only on proven absence. A missing
                     // registry entry alone is never treated as proof.
-                    let recorded = store.runtime_commands(execution_space_id).map(|commands| {
-                        commands
-                            .iter()
-                            .filter(|command| {
-                                command.target_session_id.as_deref() == Some(session.id.as_str())
-                            })
-                            .filter_map(|command| {
-                                command.result.as_ref()?.get("provider_group")?.as_u64()
-                            })
-                            .map(|pgid| pgid as u32)
-                            .next_back()
-                    });
-                    let pgid = match recorded {
-                        Ok(pgid) => pgid,
+                    let commands = match store.runtime_commands(execution_space_id) {
+                        Ok(commands) => commands,
                         Err(read_error) => {
                             eprintln!(
                                 "[node-daemon] could not read the RuntimeCommand inventory for lane {}: {read_error}; termination unproven",
@@ -645,24 +685,33 @@ impl MultiTeamDaemon {
                             continue;
                         }
                     };
-                    match pgid {
-                        Some(pgid) if harness_runtime_host::prove_registered_group_absent(pgid) => {
+                    match durable_provider_group_evidence(&commands, &session) {
+                        DurableProviderGroupEvidence::Exact(pgid)
+                            if harness_runtime_host::prove_registered_group_absent(pgid) =>
+                        {
                             eprintln!(
                                 "[node-daemon] lane {} provider group {pgid} was already reaped by the normal teardown; absence proven read-only from the durable attach record",
                                 session.id
                             );
                             pgid
                         }
-                        Some(pgid) => {
+                        DurableProviderGroupEvidence::Exact(pgid) => {
                             eprintln!(
                                 "[node-daemon] lane {} provider group {pgid} (durable attach record) is still live after the registry entry was removed without proof; termination unproven — lane stays Attached + RecoveryRequired",
                                 session.id
                             );
                             continue;
                         }
-                        None => {
+                        DurableProviderGroupEvidence::Ambiguous => {
                             eprintln!(
-                                "[node-daemon] no registered provider group and no durable attach record for lane {} ({}); termination is unproven — lane stays Attached + RecoveryRequired; supported manual boundary: reconcile the provider process by exact process evidence or drain the machine with proof",
+                                "[node-daemon] durable attach inventory for lane {} carries more than one exact provider-group record; ambiguity is never resolved by recency — lane stays Attached + RecoveryRequired and needs explicit operator reconciliation",
+                                session.id
+                            );
+                            continue;
+                        }
+                        DurableProviderGroupEvidence::None => {
+                            eprintln!(
+                                "[node-daemon] no registered provider group and no exact durable attach record for lane {} ({}); termination is unproven — lane stays Attached + RecoveryRequired; supported manual boundary: reconcile the provider process by exact process evidence or drain the machine with proof",
                                 session.id, label
                             );
                             continue;
@@ -1173,5 +1222,140 @@ mod tests {
             "supervisor",
             3,
         ));
+    }
+
+    fn lane_session() -> harness_core::agentfirm_api::AgentSession {
+        serde_json::from_value(serde_json::json!({
+            "id": "agent-session:lane:1:1",
+            "agent_member_id": "agent-lane",
+            "node_id": "node",
+            "execution_space_id": "space",
+            "node_daemon_id": "node-daemon:node",
+            "node_daemon_generation": 2,
+            "provider_kind": "codex",
+            "provider_profile_ref": "profile:codex",
+            "permission_envelope_ref": "envelope:full",
+            "effective_permission_ceiling": "full_access",
+            "workspace_cwd": null,
+            "lifecycle": "active",
+            "runtime_generation": 3,
+            "control_state": {},
+            "native_session_ref": null,
+            "current_turn_id": null,
+            "queued_input_count": 0,
+            "version": 4,
+            "opened_at": "unix-ms:1",
+            "last_active_at": "unix-ms:1",
+            "closed_at": null
+        }))
+        .expect("AgentSession fixture")
+    }
+
+    fn exact_attach_record(pgid: u64) -> harness_core::agentfirm_api::RuntimeCommandRecord {
+        serde_json::from_value(serde_json::json!({
+            "id": format!("runtime-command-attach-{pgid}"),
+            "execution_space_id": "space",
+            "target_node_id": "node",
+            "target_node_daemon_id": "node-daemon:node",
+            "target_node_daemon_generation": 2,
+            "authenticated_actor": {"kind": "service", "id": "node-daemon:node"},
+            "command": "start_cycle",
+            "required_capability": "runtime.cycle.start",
+            "idempotency_key": format!("attach-{pgid}"),
+            "request_fingerprint": "fingerprint",
+            "phase": "settled",
+            "effect_certainty": "applied",
+            "postcondition_status": "satisfied",
+            "binding": {},
+            "precondition": {},
+            "postcondition": {},
+            "target_session_id": "agent-session:lane:1:1",
+            "target_session_generation": 3,
+            "source_record_id": null,
+            "provider_attempt": null,
+            "result": {"provider_group": pgid},
+            "failure_code": null,
+            "version": 1,
+            "created_at": "unix-ms:1",
+            "updated_at": "unix-ms:1"
+        }))
+        .expect("RuntimeCommandRecord fixture")
+    }
+
+    #[test]
+    fn durable_attach_evidence_requires_exact_fields_and_single_record() {
+        let session = lane_session();
+
+        // One exact record proves the lane's provider group.
+        let commands = vec![exact_attach_record(4242)];
+        assert_eq!(
+            durable_provider_group_evidence(&commands, &session),
+            DurableProviderGroupEvidence::Exact(4242)
+        );
+
+        // Wrong Session runtime generation.
+        let mut wrong_session_generation = exact_attach_record(4242);
+        wrong_session_generation.target_session_generation = Some(4);
+        assert_eq!(
+            durable_provider_group_evidence(&[wrong_session_generation], &session),
+            DurableProviderGroupEvidence::None
+        );
+
+        // Wrong NodeDaemon generation.
+        let mut wrong_daemon_generation = exact_attach_record(4242);
+        wrong_daemon_generation.target_node_daemon_generation = 9;
+        assert_eq!(
+            durable_provider_group_evidence(&[wrong_daemon_generation], &session),
+            DurableProviderGroupEvidence::None
+        );
+
+        // A non-attach command kind with a recorded group is not evidence.
+        let mut wrong_kind = exact_attach_record(4242);
+        wrong_kind.command = harness_core::agentfirm_api::RuntimeCommandKind::InterruptCurrentCycle;
+        assert_eq!(
+            durable_provider_group_evidence(&[wrong_kind], &session),
+            DurableProviderGroupEvidence::None
+        );
+
+        // An unsettled command is not evidence.
+        let mut unsettled = exact_attach_record(4242);
+        unsettled.phase = harness_core::agentfirm_api::RuntimeCommandPhase::Prepared;
+        unsettled.effect_certainty = harness_core::agentfirm_api::RuntimeEffectCertainty::Unknown;
+        assert_eq!(
+            durable_provider_group_evidence(&[unsettled], &session),
+            DurableProviderGroupEvidence::None
+        );
+
+        // A different Session's record is not evidence.
+        let mut foreign = exact_attach_record(4242);
+        foreign.target_session_id = Some("agent-session:other:1:1".into());
+        assert_eq!(
+            durable_provider_group_evidence(&[foreign], &session),
+            DurableProviderGroupEvidence::None
+        );
+
+        // A record without a provider group is not evidence.
+        let mut no_group = exact_attach_record(4242);
+        no_group.result = Some(serde_json::json!({"phase": "input_accepted"}));
+        assert_eq!(
+            durable_provider_group_evidence(&[no_group], &session),
+            DurableProviderGroupEvidence::None
+        );
+
+        // Two exact records are never resolved by recency.
+        let commands = vec![exact_attach_record(4242), exact_attach_record(5252)];
+        assert_eq!(
+            durable_provider_group_evidence(&commands, &session),
+            DurableProviderGroupEvidence::Ambiguous
+        );
+
+        // An exact record mixed with non-evidence is still exactly one.
+        let mut stale = exact_attach_record(4242);
+        stale.target_session_generation = Some(1);
+        let commands = vec![exact_attach_record(5252), stale];
+        assert_eq!(
+            durable_provider_group_evidence(&commands, &session),
+            DurableProviderGroupEvidence::Exact(5252)
+        );
     }
 }

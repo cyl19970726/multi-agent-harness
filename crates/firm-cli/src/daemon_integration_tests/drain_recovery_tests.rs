@@ -1039,9 +1039,10 @@ fn a_dead_supervisors_orphaned_provider_is_proven_gone_and_the_lane_detaches_bod
     let _ = orphan.wait();
 }
 
-/// #937 B1-E: two ACTIVE TeamRuns sharing one AgentMember on one
-/// machine-scoped NodeDaemon — the member's one current Session is driven by
-/// Run B, and a Supervisor failure on Run A must never mark it.
+/// #937 B1-C: two ACTIVE TeamRuns sharing one AgentMember on one
+/// machine-scoped NodeDaemon, the shared member an actual MemberRun
+/// participant in Run B through the supported native-resume admission. Run
+/// A's stale Supervisor authority must never touch the live Run-B lane.
 #[test]
 fn a_supervisor_failure_never_marks_a_live_lane_driven_by_another_run() {
     let fixture = drain_fixture("supervisor-cross-run-fence");
@@ -1050,50 +1051,108 @@ fn a_supervisor_failure_never_marks_a_live_lane_driven_by_another_run() {
     let (failed_id, failed_generation) =
         bound_supervisor(&agent_session(&fixture.store, MID_TURN_MEMBER));
 
-    // A second ACTIVE TeamRun on the same NodeDaemon, sharing the AgentMember.
-    let spec = |agent_member_id: &str, name: &str, role: &str| crate::TeamMemberSpec {
-        agent_member_id: agent_member_id.into(),
-        name: name.into(),
-        role: role.into(),
+    // Settle the shared member's native session into the exact shape the
+    // supported resume admission produces: the durable locator without a
+    // version claim (the provider settlement, not preflight, owns version
+    // truth) — see successor_resume_accepts_exact_native_identity_before_version_observation.
+    let expected = member_named(&fixture.store, &fixture.run_id, MID_TURN_MEMBER);
+    let mut settled = expected.clone();
+    settled.native_session = Some(NativeSessionRef {
         provider: "codex".into(),
-        execution_mode: Some("codex_app_server".into()),
-        model: None,
-        effort: None,
-        service_tier: None,
-        provider_cwd_hint: None,
-        owned_paths: Vec::new(),
-        resume_native_session_id: None,
-        initial_work: None,
+        execution_mode: "codex_app_server".into(),
+        native_session_id: "thread-drain-agent-builder-a".into(),
+        native_locator_kind: "codex_rollout".into(),
+        provider_version: None,
+        adapter_contract_version: "codex-app-server-v1".into(),
+        availability: NativeSessionAvailability::Available,
+        supports_resume: true,
+        last_verified_at: Some("unix-ms:99".into()),
+        parent_native_session_id: None,
+    });
+    settled.status = MemberRunStatus::Idle;
+    settled.last_event_at = Some("unix-ms:resume-shape".into());
+    ledger
+        .save_member_run(&expected, &settled)
+        .expect("settle the shared member's exact resume truth");
+
+    // A second ACTIVE TeamRun on the same NodeDaemon, sharing the AgentMember
+    // through the supported native-resume admission.
+    let team_run = crate::daemon_support::latest_team_run(&fixture.store, &fixture.run_id)
+        .expect("latest TeamRun A");
+    let specs = [MID_TURN_MEMBER, "host"]
+        .iter()
+        .map(|agent_member_id| {
+            let member = member_named(&fixture.store, &fixture.run_id, agent_member_id);
+            crate::TeamMemberSpec {
+                agent_member_id: member.agent_member_id.clone(),
+                name: member.name.clone(),
+                role: member.role.clone(),
+                provider: member.provider.clone(),
+                execution_mode: member
+                    .provider_profile
+                    .as_ref()
+                    .map(|profile| profile.execution_mode.clone()),
+                model: member.model.clone(),
+                effort: None,
+                service_tier: None,
+                provider_cwd_hint: None,
+                owned_paths: member.owned_paths.clone(),
+                resume_native_session_id: (*agent_member_id == MID_TURN_MEMBER)
+                    .then(|| "thread-drain-agent-builder-a".to_string()),
+                initial_work: None,
+            }
+        })
+        .collect::<Vec<_>>();
+    let project = crate::ProjectContext {
+        id: fixture.project_binding_id.clone(),
+        project_root: fixture.store.root().to_path_buf(),
+        store_root: fixture.store.root().to_path_buf(),
+        kind: crate::ProjectKind::Repo,
+        is_git_repo: false,
     };
-    // A second ACTIVE TeamRun on the same NodeDaemon. A second fresh
-    // admission of the shared AgentMember is correctly fenced by
-    // native-session identity truth, so Run B carries the Team's Host; the
-    // shared-membership exploit shape under test is that the member sits on
-    // Run A's roster while its one current Session is driven by Run B —
-    // exactly the run conjunct in the failed-driver guard.
     let run_b = crate::create_team_run(
         &fixture.store,
-        None,
-        None,
-        None,
+        Some(&project),
+        Some(DRAIN_SPACE_ID),
+        Some(fixture.store.root().to_string_lossy().into_owned()),
         "Run B live work",
         None,
         "test",
         None,
         harness_core::HostControlMode::Managed,
+        Some(fixture.run_id.clone()),
+        Some(team_run.agent_team_id.clone()),
         None,
         None,
-        None,
-        None,
-        &[spec("host", "Host", "host")],
+        &specs,
     )
-    .expect("create the second ACTIVE TeamRun on the same NodeDaemon");
+    .expect("create the second ACTIVE TeamRun sharing the AgentMember through supported resume");
+    let run_b_shared = run_b
+        .member_runs
+        .iter()
+        .find(|member| member.agent_member_id == MID_TURN_MEMBER)
+        .expect("the shared AgentMember is an actual MemberRun participant in Run B");
+    assert_eq!(
+        run_b_shared
+            .native_session
+            .as_ref()
+            .map(|native| native.native_session_id.as_str()),
+        Some("thread-drain-agent-builder-a"),
+        "Run B resumes the exact native session"
+    );
 
-    // Re-drive the member's one current Session under Run B's Supervisor
-    // through the store's own control admission: quiet lane (Detached/Idle
-    // and the Active->Idle hop that clears the open turn), driver
-    // generation +1, finished handoff. Run B holds a real Supervisor lease
-    // so the driver reference validates.
+    // Run B's Supervisor binds the lane through the production driver binder
+    // (not a raw control write): quiet lane, generation +1, finished handoff.
+    let member = member_named(&fixture.store, &fixture.run_id, MID_TURN_MEMBER);
+    crate::transition_provider_session_runtime_control(
+        &ledger,
+        &member,
+        RuntimeResidency::Detached,
+        RuntimeActivity::Idle,
+    )
+    .expect("quiet the lane residency for the driver transfer");
+    crate::transition_provider_session_for_member(&ledger, &member, AgentSessionStatus::Idle)
+        .expect("the Active->Idle hop clears the open turn for the driver transfer");
     let run_b_supervisor_lease = fixture
         .store
         .acquire_team_supervisor_under_node_lease(
@@ -1110,47 +1169,20 @@ fn a_supervisor_failure_never_marks_a_live_lane_driven_by_another_run() {
             600_000,
         )
         .expect("Run B holds a real Supervisor lease");
-    let member = member_named(&fixture.store, &fixture.run_id, MID_TURN_MEMBER);
-    crate::transition_provider_session_runtime_control(
-        &ledger,
-        &member,
-        RuntimeResidency::Detached,
-        RuntimeActivity::Idle,
-    )
-    .expect("quiet the lane residency for the driver transfer");
-    crate::transition_provider_session_for_member(&ledger, &member, AgentSessionStatus::Idle)
-        .expect("the Active->Idle hop clears the open turn for the driver transfer");
-    let session = agent_session(&fixture.store, MID_TURN_MEMBER);
-    let mut next = session.control_state.clone();
-    next.driver_ref = harness_core::agentfirm_api::RuntimeDriverRef::TeamSupervisor {
-        team_run_id: run_b.team_run.id.clone(),
-        team_supervisor_id: "supervisor-run-b".into(),
-        team_supervisor_generation: run_b_supervisor_lease.generation,
-    };
-    next.driver_generation = session.control_state.driver_generation + 1;
-    next.handoff_state = harness_core::agentfirm_api::DriverHandoffState::None;
-    let rebind_context = harness_core::agentfirm_api::MutationContext {
-        execution_space_id: DRAIN_SPACE_ID.into(),
-        authenticated_actor: harness_core::agentfirm_api::ActorRef {
-            kind: harness_core::agentfirm_api::ActorKind::Service,
-            id: fixture.daemon.daemon_id().to_string(),
+    bind_team_runtime_supervisor(
+        &fixture.store,
+        &crate::PreparedTeamRunBody {
+            run_id: run_b.team_run.id.clone(),
+            objective: run_b.team_run.objective.clone(),
+            run: run_b.team_run.clone(),
+            members: run_b.member_runs.clone(),
         },
-        authority_actor: None,
-        command_name: "test.driver.rebind".into(),
-        idempotency_key: format!("test-rebind-{}", session.id),
-        expected_version: session.version,
-        request_fingerprint: None,
-    };
-    fixture
-        .store
-        .bind_agent_session_control_state(
-            &rebind_context,
-            &session.id,
-            session.runtime_generation,
-            next,
-            "unix-ms:rebind",
-        )
-        .expect("rebind the lane to Run B through the store admission");
+        DRAIN_SPACE_ID,
+        fixture.daemon.daemon_id(),
+        "supervisor-run-b",
+        run_b_supervisor_lease.generation,
+    )
+    .expect("Run B binds the lane through the production driver binder");
     crate::transition_provider_session_runtime_control(
         &ledger,
         &member,
@@ -1161,7 +1193,7 @@ fn a_supervisor_failure_never_marks_a_live_lane_driven_by_another_run() {
     crate::transition_provider_session_for_member(&ledger, &member, AgentSessionStatus::Active)
         .expect("Run B drives the lane Active");
 
-    // Run A's Supervisor fails. The lane driven by Run B must survive.
+    // Run A's Supervisor fails. The live Run-B lane must survive.
     let context = supervisor_failure_context(&fixture, &failed_id, failed_generation, None);
     fixture.daemon.block_finished_supervisor_failure(
         &context,
@@ -1181,6 +1213,15 @@ fn a_supervisor_failure_never_marks_a_live_lane_driven_by_another_run() {
                 if *team_run_id == run_b.team_run.id
         ),
         "the lane is still honestly bound to Run B"
+    );
+    let run_b_shared_after = run_b
+        .member_runs
+        .iter()
+        .find(|member| member.agent_member_id == MID_TURN_MEMBER)
+        .expect("Run B's shared MemberRun is still present");
+    assert_eq!(
+        run_b_shared_after.native_session, run_b_shared.native_session,
+        "Run B's shared MemberRun is untouched by Run A's failure"
     );
     assert!(
         fixture
@@ -1356,4 +1397,102 @@ fn a_successful_teardown_still_detaches_from_the_durable_record_body() {
     assert!(harness_runtime_host::prove_registered_group_absent(
         provider_pid
     ));
+}
+
+/// #937 D1 negative: the durable record's provider group is still live, so
+/// the recovery path keeps the lane Attached + RecoveryRequired instead of
+/// detaching on a live process.
+#[test]
+fn a_still_live_recorded_provider_never_detaches_the_lane() {
+    use std::os::unix::process::CommandExt;
+
+    let fixture = drain_fixture("supervisor-live-record-negative");
+    let ledger = fixture.supervise("supervisor-live-1", fixture.daemon_generation);
+    let mut provider = std::process::Command::new("sleep")
+        .arg("120")
+        .process_group(0)
+        .spawn()
+        .expect("spawn live provider fixture");
+    let provider_pid = provider.id();
+    fixture.start_cycle_for_member_with_provider_group(
+        &ledger,
+        MID_TURN_MEMBER,
+        "work-delivery:live:1",
+        Some(provider_pid),
+    );
+    let (supervisor_id, supervisor_generation) =
+        bound_supervisor(&agent_session(&fixture.store, MID_TURN_MEMBER));
+
+    let context = supervisor_failure_context(&fixture, &supervisor_id, supervisor_generation, None);
+    fixture.daemon.block_finished_supervisor_failure(
+        &context,
+        &CliError::Usage(SUPERVISOR_LOCK_DEATH.into()),
+    );
+
+    let lane = agent_session(&fixture.store, MID_TURN_MEMBER);
+    assert_eq!(lane.lifecycle, AgentSessionStatus::RecoveryRequired);
+    assert_eq!(
+        lane.control_state.runtime_residency,
+        RuntimeResidency::Attached,
+        "a still-live recorded provider never detaches the lane"
+    );
+    let _ = provider.kill();
+    let _ = provider.wait();
+}
+
+/// #937 D1 negative: two exact durable records are never resolved by
+/// recency; the lane stays Attached + RecoveryRequired for explicit
+/// operator reconciliation.
+#[test]
+fn ambiguous_durable_records_never_resolve_by_recency() {
+    use std::os::unix::process::CommandExt;
+
+    let fixture = drain_fixture("supervisor-ambiguous-records");
+    let ledger = fixture.supervise("supervisor-ambig-1", fixture.daemon_generation);
+    let mut first = std::process::Command::new("sleep")
+        .arg("120")
+        .process_group(0)
+        .spawn()
+        .expect("spawn first provider fixture");
+    let first_pid = first.id();
+    fixture.start_cycle_for_member_with_provider_group(
+        &ledger,
+        MID_TURN_MEMBER,
+        "work-delivery:ambig:1",
+        Some(first_pid),
+    );
+    let _ = first.kill();
+    let _ = first.wait();
+
+    // A second settled cycle for the same lane records a second exact group.
+    let mut second = std::process::Command::new("sleep")
+        .arg("120")
+        .process_group(0)
+        .spawn()
+        .expect("spawn second provider fixture");
+    let second_pid = second.id();
+    fixture.start_cycle_for_member_with_provider_group(
+        &ledger,
+        MID_TURN_MEMBER,
+        "work-delivery:ambig:2",
+        Some(second_pid),
+    );
+    let _ = second.kill();
+    let _ = second.wait();
+
+    let (supervisor_id, supervisor_generation) =
+        bound_supervisor(&agent_session(&fixture.store, MID_TURN_MEMBER));
+    let context = supervisor_failure_context(&fixture, &supervisor_id, supervisor_generation, None);
+    fixture.daemon.block_finished_supervisor_failure(
+        &context,
+        &CliError::Usage(SUPERVISOR_LOCK_DEATH.into()),
+    );
+
+    let lane = agent_session(&fixture.store, MID_TURN_MEMBER);
+    assert_eq!(lane.lifecycle, AgentSessionStatus::RecoveryRequired);
+    assert_eq!(
+        lane.control_state.runtime_residency,
+        RuntimeResidency::Attached,
+        "two exact records fail closed instead of recency-picking"
+    );
 }
