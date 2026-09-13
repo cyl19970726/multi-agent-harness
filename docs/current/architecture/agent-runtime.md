@@ -403,8 +403,14 @@ both sources and refuses a mismatch. A Result
 submission writes its `work`/`submitted` envelope in the SAME atomic ledger
 rewrite as its `work_report/created` envelope, so the report and the Review
 revision it produced can never exist without one another; the paired envelope
-derives its idempotency key from the report's, and an exact replay re-appends
-neither. Pre-cutover rows carry no such side record and are read as the
+derives its idempotency key from the report's by appending `#<transition>`, and
+an exact replay re-appends neither. `#` is therefore reserved in a canonical
+idempotency key, and both trust entrances refuse a caller key containing it as
+a request-shape error — never as a replay. The reservation binds the trust
+journal, where derived keys live; ledger writers keep their own key namespace
+in `work_operations.jsonl`, looked up only against ledger rows, so a `#` there
+can collide with nothing. W4 moves those writers into this journal and must
+route their keys through the same check when it does. Pre-cutover rows carry no such side record and are read as the
 `WorkEvent` their canonical operation already implies — never rewritten.
 
 One Store reader owns the fold. It answers four shapes: the merged latest Work

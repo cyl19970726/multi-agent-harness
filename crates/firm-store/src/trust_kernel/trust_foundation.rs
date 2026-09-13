@@ -9,6 +9,35 @@ use read_model::TrustReadModel;
 /// exactly the caller's envelope.
 pub(in crate::trust_kernel) const PAIRED_KEY_SEPARATOR: char = '#';
 
+/// Refuse a caller idempotency key that could collide with a derived paired
+/// key, at every entrance that appends a canonical trust envelope.
+///
+/// This is a request-shape refusal, not a replay: it uses the same code,
+/// resource kind and id shape as `required`, the sibling argument check in
+/// this module, so a caller is never told its key was "already used for a
+/// different Work" when the key is simply malformed.
+///
+/// Scope: both trust entrances, which is where derived keys live. Ledger
+/// writers keep their own key namespace in `work_operations.jsonl`, looked up
+/// only against ledger rows, so a `#` there can collide with nothing. W4 moves
+/// those writers into this journal, and must route their keys through this
+/// same check when it does.
+fn require_unreserved_idempotency_key(idempotency_key: &str) -> StoreResult<()> {
+    if idempotency_key.contains(PAIRED_KEY_SEPARATOR) {
+        return Err(trust_error(
+            TrustErrorCode::InvalidStateTransition,
+            format!(
+                "idempotency_key must not contain {PAIRED_KEY_SEPARATOR:?}: the separator is \
+                 reserved for the paired canonical Work transition a command may commit"
+            ),
+            "request",
+            "idempotency_key",
+            None,
+        ));
+    }
+    Ok(())
+}
+
 /// One `work` aggregate transition committed atomically with another
 /// canonical projection that produced it.
 pub(in crate::trust_kernel) struct PairedWorkTransition {
@@ -43,6 +72,7 @@ impl HarnessStore {
     ) -> StoreResult<CanonicalMutationResult<Work>> {
         work.validate()
             .map_err(|error| StoreError::Conflict(format!("INVALID_WORK_PROJECTION: {error}")))?;
+        require_unreserved_idempotency_key(&context.idempotency_key)?;
         if work.version != context.expected_version.saturating_add(1) {
             return Err(trust_error(
                 TrustErrorCode::VersionConflict,
@@ -900,22 +930,7 @@ impl HarnessStore {
         required(&context.idempotency_key, "idempotency_key")?;
         required(aggregate_kind, "aggregate_kind")?;
         required(aggregate_id, "aggregate_id")?;
-        // A paired `work` transition derives its key by appending
-        // `#<transition>` to the caller's, so `#` is reserved. A caller key
-        // containing it could collide with a derived key and be answered by the
-        // replay check with the misleading "idempotent replay changed aggregate
-        // identity"; refuse it here, where the real reason is nameable.
-        if context.idempotency_key.contains(PAIRED_KEY_SEPARATOR) {
-            return Err(trust_error(
-                TrustErrorCode::IdempotencyKeyReused,
-                format!(
-                    "idempotency key must not contain {PAIRED_KEY_SEPARATOR:?}: it is reserved for                      the paired canonical Work transition this command may commit"
-                ),
-                aggregate_kind,
-                aggregate_id,
-                None,
-            ));
-        }
+        require_unreserved_idempotency_key(&context.idempotency_key)?;
         let existing = self.trust_operation_envelopes_unlocked()?;
         let fingerprint = context
             .request_fingerprint

@@ -370,7 +370,7 @@ fn work_readers_agree_across_both_journals() {
     assert_eq!(
         role_view_work["work_revision"].as_u64(),
         Some(3),
-        "the RoleView reports the newer LEDGER revision, not the later-appended          trust envelope: {role_view_work}"
+        "the RoleView reports the newer LEDGER revision, not the later-appended trust envelope: {role_view_work}"
     );
     assert_eq!(
         role_view_work["assignee_membership_id"].as_str(),

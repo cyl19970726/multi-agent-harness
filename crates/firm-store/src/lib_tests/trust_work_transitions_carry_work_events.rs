@@ -218,7 +218,7 @@ fn a_caller_idempotency_key_may_not_use_the_reserved_paired_separator() {
         .expect_err("a reserved separator in the caller key is refused");
     let message = error.to_string();
     assert!(
-        message.contains("idempotency key must not contain"),
+        message.contains("idempotency_key must not contain"),
         "the refusal must name the real cause, not a replay identity change: {message}"
     );
     assert!(
