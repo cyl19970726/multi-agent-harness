@@ -31,6 +31,24 @@ resolution: accepted | cancelled            # closed only
 from; the Store consults it on every write and each command adds its own
 positive preconditions on top.
 
+Every edge above is a versioned Work event, but the rows are persisted in two
+journals until the writer cutover: `work_operations.jsonl` holds Created,
+Assigned, Claimed, Started, Released, Blocked, Resumed, ChangesRequested,
+Updated, Rebound, ExecutionRetargeted and ExecutionRecovered, while Submitted,
+Accepted, Cancelled and DependenciesChanged are canonical `work` transitions in
+the trust journal, each carrying the same WorkEvent as an immutable side
+record. One Store reader folds both and is the only way to read a Work: the
+merged latest Work per id, one Work's history strictly in version order, every
+event in one deterministic total order, and a monotonic Work journal position
+that advances on a row in either journal. `firm team-run work show|list`, the
+RoleViews, the dashboard projection and the `--since` delta cursor all read it,
+so they report one version and one phase for the same Work. The cursor stays a
+single integer and an integer issued by an earlier binary still names the
+ledger position it meant; see
+[agent-runtime.md](../architecture/agent-runtime.md) for the encoding. The next
+slice moves the remaining writers into the trust journal, collapsing the two
+files into one.
+
 `team_id` is a deprecated pre-cutover alias of `accountable_team_id`,
 readable through the Rust serde alias and never written by current
 binaries.

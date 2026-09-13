@@ -384,6 +384,52 @@ Canonical source rows fold before lifecycle rows. A matching legacy-only
 HostAttention lifecycle row remains readable, but it is not canonical Work or
 delivery authority and cannot synthesize a WorkDelivery. See ADR 0060.
 
+### Work journal reads
+
+A Work's version chain is one chain, but its rows are persisted in two files
+and every reader folds both:
+
+| Journal | Rows |
+| --- | --- |
+| `work_operations.jsonl` (plus the crash-atomic `work_delegation_operations.jsonl` composite) | `WorkOperation` rows: Created, Assigned, Claimed, Started, Released, Blocked, Resumed, ChangesRequested, Updated, Rebound, ExecutionRetargeted, ExecutionRecovered |
+| `agentfirm_trust_operations.jsonl`, `work` aggregate | Submitted, Accepted, Cancelled, DependenciesChanged |
+
+Each trust `work` transition commits the `WorkEvent` the ledger row would have
+carried, as an immutable side record of the same canonical operation. A Result
+submission writes its `work`/`submitted` envelope in the SAME atomic ledger
+rewrite as its `work_report/created` envelope, so the report and the Review
+revision it produced can never exist without one another; the paired envelope
+derives its idempotency key from the report's, and an exact replay re-appends
+neither. Pre-cutover rows carry no such side record and are read as the
+`WorkEvent` their canonical operation already implies — never rewritten.
+
+One Store reader owns the fold. It answers four shapes: the merged latest Work
+per id (the ledger and delegation fold overlaid by the trust fold on a greater
+version, the ledger winning an exact tie); one Work's history, strictly in
+version order; every Work event in the store in one deterministic total order;
+and a monotonic **Work journal position** that advances on a row in EITHER
+journal. No current-phase, event, count or cursor reader may read one journal
+alone: the RoleView, `work show`, `work list`, the dashboard projection, the
+TeamRun canonical-state fingerprint and the delta cursor all consume this one
+surface, so they cannot disagree about a Work's version or phase.
+
+The journal position carries one component per journal, because the two files
+share no comparable clock and both are still written: a ledger row appended
+after a trust row must not have to sort below an already-issued watermark. A
+position advances past a cursor when EITHER component is strictly greater. The
+single-integer transport used by `firm team-run work list --since` packs it as
+`trust * 2^32 + ledger`, so an integer cursor issued before this contract — a
+bare ledger row count — decodes unchanged to that same ledger position, and
+any position carrying a trust row orders after every such legacy value.
+Comparison always decodes first: comparing packed integers directly would be
+trust-major and would skip a Work whose only new row is a ledger row.
+
+This shape is transitional. The next slice moves every remaining Work writer
+into the trust journal, after which `work_operations.jsonl` becomes read-only
+legacy input and the fold collapses to one file. Only that file's raw rows are
+readable on their own, through an explicitly named legacy reader, for
+migration, export and historical inspection of the file itself.
+
 ### Runtime control
 
 Start, resume, turn, queued input, interrupt, and stop all use the same durable
