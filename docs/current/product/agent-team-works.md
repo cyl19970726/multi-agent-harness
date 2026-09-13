@@ -20,9 +20,16 @@ only as the implementation-bound remainder below.
 
 ```text
 phase:      open -> active -> review -> closed
+            review -> open   (ChangesRequested)
+            open|active -> open   (ExecutionRecovered; never from review)
+            open|active|review -> closed  (Cancelled)
 condition:  normal | blocked
 resolution: accepted | cancelled            # closed only
 ```
+
+`crates/firm-core/src/work/lifecycle.rs` is the table these edges are read
+from; the Store consults it on every write and each command adds its own
+positive preconditions on top.
 
 `team_id` is a deprecated pre-cutover alias of `accountable_team_id`,
 readable through the Rust serde alias and never written by current
@@ -46,15 +53,23 @@ set is the forward authority; successors are derived. Dependency writes are
 versioned Work operations and reject missing nodes, duplicates, self-edges,
 stale revisions, and direct or transitive cycles.
 
-Failed or cancelled prerequisites do not propagate a terminal resolution.
-They leave successors not ready and create Host attention for explicit replan.
-Changing dependencies on active/review Work is Host-only and reconciles the
-execution binding. Terminal Work is immutable.
+A cancelled prerequisite does not propagate its resolution. It leaves
+successors not ready and creates Host attention for explicit replan.
+Dependencies are Host-only and may change only while the Work is `open`:
+`replace-dependencies` refuses an active, review or closed Work with
+`WORK_DEPENDENCIES_IMMUTABLE`, and refuses an open Work that still holds an
+active execution binding with `WORK_EXECUTION_BINDING_ACTIVE`. It reconciles
+nothing on the member's behalf. Terminal Work is immutable: every Host writer
+refuses it with `WORK_TERMINAL_IMMUTABLE`.
 
 ## Kernel and package boundary
 
-The `firm-core` Work kernel owns lifecycle legality, DAG validation, readiness,
-terminal immutability, responsibility, and Module/Gate invariants. `firm-store`
+The `firm-core` Work kernel owns the lifecycle transition table, terminal
+immutability, DAG validation, readiness, and Module/Gate invariants as pure
+functions. It is consulted, not obeyed: authority, evidence and precondition
+checks — who may call a verb, which binding or delivery proof it needs, which
+exact phase it demands — live in the Store command that writes the operation,
+and the kernel table is the last fence before the append. `firm-store`
 does not sit beneath the application layer. The Work service inside
 `firm-application` defines `WorkPersistence` over core contracts and owns
 generic `WorkApplication<P>` use cases without importing Store, CLI, UI, or a
@@ -112,10 +127,14 @@ the browser does not write graph semantics or infer readiness.
 Mutation surface (all executable Work mutations):
 
 ```bash
-firm team-run work list|show|create|assign|redeliver|recover-lost-execution|claim|start|block|resume
-firm team-run work release|submit|review|request-changes|accept|cancel|retarget
-firm team-run work reconcile-projection|poll-github-ci
+firm team-run work list|show|create|replace-dependencies|assign|redeliver
+firm team-run work recover-lost-execution|claim|start|block|resume|release
+firm team-run work submit|request-changes|accept|cancel|retarget
+firm team-run work reconcile-projection|migrate-responsibility|poll-github-ci
 ```
+
+There is no `review` verb: the Host reads a submission with `show` and answers
+with `accept` or `request-changes`.
 
 `redeliver` is the Host re-authorization of an open, never-started Work whose
 `WorkDelivery` is frozen on a member generation that no longer runs; it

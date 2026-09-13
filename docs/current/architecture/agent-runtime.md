@@ -348,9 +348,15 @@ types from every maintained current product module in this table.
 Canonical delivery revisions are folded by an explicit source/lifecycle
 contract, not by last-row-wins. The WorkDelivery id, Work/binding revision,
 recipient AgentMember and AgentSession generation, target Node, and creation
-time are immutable. The only legal revision chain is
-`Queued -> Claimed -> ProviderReceived|Failed`; exact replay is idempotent,
-while identity drift, same-version drift, version regression/gaps, and illegal
+time are immutable. The legal revision edges are
+`Queued -> Claimed`, `Claimed -> ProviderReceived|Failed`,
+`Queued -> Failed` when the execution binding is released before any claim
+(`WORK_EXECUTION_BINDING_RELEASED_BEFORE_CLAIM`), and
+`ProviderReceived -> Failed` when the exact runtime generation that received
+the delivery is provably gone — the immutable provider receipt stays on the
+row and only the named lost-generation failure codes may claim that edge, as
+the recovery section below describes. Exact replay is idempotent, while
+identity drift, same-version drift, version regression/gaps, and illegal
 transitions fail the entire read closed. There is no legacy WorkDelivery row
 to merge into this fold.
 
