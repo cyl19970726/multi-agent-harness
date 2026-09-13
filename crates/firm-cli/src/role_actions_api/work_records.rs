@@ -99,7 +99,15 @@ pub(super) fn execute_work_record_action(
                 Some(current.version),
             ));
         };
-        let action = if is_host(&auth, &team.host_agent_id) {
+        // Attribution follows the same predicate the authorization above used:
+        // the authenticated actor, never `authorized_authority_actors`. A peer
+        // credential that happens to carry the Host as an authority actor
+        // passed this gate as the peer, so the ledger records the peer (and
+        // the ProviderRuntimeProjection performer still raises the Host's
+        // WorkChangesRequested attention).
+        let authenticated_host =
+            auth.actor.kind == ActorKind::AgentMember && auth.actor.id == team.host_agent_id;
+        let action = if authenticated_host {
             WorkAction::RequestChanges {
                 work_id: work_id.to_string(),
                 expected_version: auth.expected_version,

@@ -140,10 +140,10 @@ WorkEvent; the scheduler must still create the exact WorkExecutionBinding and
 WorkDelivery before Start. After a runtime restart, continue only through a
 freshly validated binding to the current MemberRun and AgentSession generation.
 Inspect native history and the Workspace first, and never invent a provider
-receipt. A request-changes review (Host, or the exact peer of Host-owned
-Work) returns Review → Open and requires the next monotonic binding/delivery
-generation. Compatible Workspace and native-session
-continuity may resume, but neither is Work ownership.
+receipt. A request-changes review (Host, or the exact peer of Host-owned Work)
+returns Review → Open, re-authorizes the next execution admission, and requires
+the next monotonic binding/delivery generation. Compatible Workspace and
+native-session continuity may resume, but neither is Work ownership.
 
 V1 permits one `Active` Work per Member (`MEMBER_BUSY` refuses a second Start)
 unless a concrete capacity profile says otherwise. You may own several Open

@@ -712,6 +712,42 @@ impl HarnessStore {
         Ok(actor)
     }
 
+    /// The one Execution Space a TeamRun's current coordination belongs to.
+    /// A physical Store may temporarily contain more than one Execution Space
+    /// during recovery/import, so every scope-sensitive authority read resolves
+    /// this exact space instead of folding every local space's rows together.
+    /// Before its MemberRuns materialize, exactly one Active node/project
+    /// registration may stand in; anything else keeps the original refusal.
+    pub(crate) fn require_team_run_execution_space_unlocked(
+        &self,
+        run: &AgentTeamRun,
+    ) -> StoreResult<String> {
+        match self.current_team_run_execution_space_unlocked(run) {
+            Ok(scope) => Ok(scope),
+            Err(StoreError::Conflict(message))
+                if message.starts_with("MEMBER_RUN_MATERIALIZATION_INCOMPLETE:") =>
+            {
+                let registrations = latest_by_id(
+                    self.read_jsonl::<NodeProjectRegistration>("node_project_registrations.jsonl")?,
+                    node_project_registration_identity,
+                )
+                .into_values()
+                .filter(|registration| {
+                    registration.node_id == run.execution_node_id
+                        && registration.project_binding_id == run.project_binding_id
+                        && registration.status == NodeProjectRegistrationStatus::Active
+                })
+                .map(|registration| registration.execution_space_id)
+                .collect::<std::collections::BTreeSet<_>>();
+                if registrations.len() != 1 {
+                    return Err(StoreError::Conflict(message));
+                }
+                Ok(registrations.into_iter().next().expect("one registration"))
+            }
+            Err(error) => Err(error),
+        }
+    }
+
     pub(crate) fn require_exact_team_run_host_actor(
         &self,
         actor: &TeamActorRef,
@@ -733,30 +769,7 @@ impl HarnessStore {
                     run.agent_team_id
                 ))
             })?;
-        let execution_space_id = match self.current_team_run_execution_space_unlocked(&run) {
-            Ok(scope) => scope,
-            Err(StoreError::Conflict(message))
-                if message.starts_with("MEMBER_RUN_MATERIALIZATION_INCOMPLETE:") =>
-            {
-                let registrations = latest_by_id(
-                    self.read_jsonl::<NodeProjectRegistration>("node_project_registrations.jsonl")?,
-                    node_project_registration_identity,
-                )
-                .into_values()
-                .filter(|registration| {
-                    registration.node_id == run.execution_node_id
-                        && registration.project_binding_id == run.project_binding_id
-                        && registration.status == NodeProjectRegistrationStatus::Active
-                })
-                .map(|registration| registration.execution_space_id)
-                .collect::<std::collections::BTreeSet<_>>();
-                if registrations.len() != 1 {
-                    return Err(StoreError::Conflict(message));
-                }
-                registrations.into_iter().next().expect("one registration")
-            }
-            Err(error) => return Err(error),
-        };
+        let execution_space_id = self.require_team_run_execution_space_unlocked(&run)?;
         let membership = self.team_host_membership(&execution_space_id, &team.id, true)?;
         if expected.id != team.host_agent_id || membership.agent_member_id != expected.id {
             return Err(StoreError::Conflict(format!(

@@ -615,3 +615,335 @@ fn host_owned_work_changes_may_be_requested_by_the_same_exact_peer_that_may_acce
     )
     .expect("exact Host request-changes on Member Work is unchanged");
 }
+
+/// #369: a structured GitHub link is itself the submitted evidence, so a
+/// submission may carry one instead of a candidate revision. That capability
+/// used to live only on the retired local `team-run work submit` verb; it now
+/// belongs to the one authenticated entrance, which means the server — not the
+/// caller — has to decide whether a caller-supplied link is evidence at all.
+#[test]
+fn a_submitted_github_link_is_preserved_and_a_self_inconsistent_link_mints_no_candidate() {
+    let (store, _root) = temp_store("submitted-github-link");
+    let created = create_two_member_team_run(&store);
+    let worker = created
+        .member_runs
+        .iter()
+        .find(|member| member.agent_member_id == "agent-builder-b")
+        .expect("worker MemberRun")
+        .clone();
+    let lease = store
+        .acquire_test_supervisor_lease(
+            &created.team_run.id,
+            "supervisor-submitted-github-link",
+            std::process::id(),
+            "test://submitted-github-link",
+            current_unix_ms_u64(),
+            60_000,
+        )
+        .expect("acquire Supervisor lease");
+    ensure_test_runtime_fabric(&store, &created, &lease);
+    let ledger = TeamRunLedger::new(
+        &store,
+        &created.team_run.id,
+        &lease.supervisor_id,
+        lease.generation,
+        Arc::new(AtomicBool::new(true)),
+    );
+    transition_provider_session_for_member(
+        &ledger,
+        &worker,
+        harness_core::agentfirm_api::AgentSessionStatus::Active,
+    )
+    .expect("activate the exact submitting session");
+    let worker_token = "d".repeat(64);
+    let capability = test_collaboration_capability(&store, &lease, &worker, &worker_token);
+    let _live_control = register_live_member_control(&worker, &capability, 1);
+    let supervisor_valid = AtomicBool::new(true);
+    let authority_gate = Mutex::new(());
+
+    let work = create_assigned_review_work(&store, &created, &lease, &worker, "linked-work");
+    bind_test_responsible_work_execution(&store, &lease, &worker, &work);
+    receive_bound_work(&ledger, &worker, "provider-receipt:linked-work");
+    let base = format!(
+        "/v1/agentfirm/team-runs/{}/works/{}",
+        created.team_run.id, work.id
+    );
+    role_action(
+        &store,
+        &lease,
+        &supervisor_valid,
+        &authority_gate,
+        &worker,
+        &worker_token,
+        format!("{base}/start"),
+        work.version,
+        "start-linked-work",
+        serde_json::json!({"action":"start_work"}),
+        None,
+    )
+    .expect("owner starts the linked Work");
+
+    // A link whose structured fields disagree with its own url is refused
+    // before it can mint a synthetic candidate, and appends nothing.
+    let before_spoofed = durable_store_file_bytes(&store);
+    let spoofed = role_action(
+        &store,
+        &lease,
+        &supervisor_valid,
+        &authority_gate,
+        &worker,
+        &worker_token,
+        format!("{base}/submit"),
+        work.version + 1,
+        "submit-spoofed-link",
+        serde_json::json!({
+            "action":"submit_work",
+            "result_summary":"submission carrying a spoofed link",
+            "github_links":[{
+                "kind":"pull_request",
+                "owner":"example",
+                "repo":"project",
+                "number":17,
+                "url":"https://github.com/attacker/elsewhere/pull/99",
+                "status":"OPEN",
+                "ci_status":"success",
+                "ci_url":"https://github.com/example/project/actions/runs/17"
+            }]
+        }),
+        None,
+    )
+    .expect_err("a link that does not describe its own url is not evidence");
+    assert!(
+        spoofed.to_string().contains("GITHUB_LINK_INCONSISTENT"),
+        "{spoofed}"
+    );
+    assert_eq!(
+        durable_store_file_bytes(&store),
+        before_spoofed,
+        "a refused submission has zero durable effects"
+    );
+
+    // The consistent link stands in for the candidate revision. The submitted
+    // refs are exactly what the retired local verb produced: the caller's own
+    // refs first, then the PR url on artifact_refs and the checks url on
+    // check_refs.
+    let pr_url = "https://github.com/example/project/pull/17";
+    let ci_url = "https://github.com/example/project/actions/runs/17";
+    let link = harness_core::GitHubLink {
+        kind: harness_core::GitHubLinkKind::PullRequest,
+        owner: "example".into(),
+        repo: "project".into(),
+        number: 17,
+        url: pr_url.into(),
+        status: Some("OPEN".into()),
+        ci_status: Some("success".into()),
+        ci_url: Some(ci_url.into()),
+    };
+    let mut artifact_refs = vec!["artifact:linked-work".to_string()];
+    let mut check_refs = Vec::new();
+    merge_github_link_refs(&link, &mut artifact_refs, &mut check_refs);
+    assert_eq!(
+        artifact_refs,
+        vec!["artifact:linked-work".to_string(), pr_url.to_string()]
+    );
+    assert_eq!(check_refs, vec![ci_url.to_string()]);
+    // Merging the same link twice never duplicates a ref.
+    merge_github_link_refs(&link, &mut artifact_refs, &mut check_refs);
+    assert_eq!(artifact_refs.len(), 2);
+    assert_eq!(check_refs.len(), 1);
+
+    role_action(
+        &store,
+        &lease,
+        &supervisor_valid,
+        &authority_gate,
+        &worker,
+        &worker_token,
+        format!("{base}/submit"),
+        work.version + 1,
+        "submit-linked-work",
+        serde_json::json!({
+            "action":"submit_work",
+            "result_summary":"submission whose evidence is the linked pull request",
+            "artifact_refs":artifact_refs,
+            "check_refs":check_refs,
+            "github_links":[link]
+        }),
+        None,
+    )
+    .expect("a structured GitHub link stands in for the candidate revision");
+
+    let reports = store
+        .trust_work_reports(&lease.execution_space_id)
+        .expect("submitted WorkReports")
+        .into_iter()
+        .filter(|report| report.work_id == work.id)
+        .collect::<Vec<_>>();
+    let [report] = reports.as_slice() else {
+        panic!("exactly one immutable Result for this revision: {reports:?}")
+    };
+    assert_eq!(
+        report.artifact_refs,
+        vec!["artifact:linked-work".to_string(), pr_url.to_string()]
+    );
+    assert_eq!(report.check_refs, vec![ci_url.to_string()]);
+    assert_eq!(report.github_links.len(), 1);
+    assert_eq!(report.github_links[0].url, pr_url);
+    assert_eq!(report.github_links[0].number, 17);
+    assert!(
+        !report.report_only,
+        "a linked submission is not report-only"
+    );
+    let derived = harness_store::canonical_work_candidate_revision(
+        &report.summary,
+        &report.artifact_refs,
+        &report.check_refs,
+        &report.github_links,
+    );
+    assert_eq!(
+        report
+            .candidate
+            .as_ref()
+            .map(|candidate| candidate.value.as_str()),
+        Some(derived.as_str()),
+        "the candidate is derived from the submitted link content"
+    );
+}
+
+/// Attribution must follow the same predicate as authorization. `is_host` is
+/// also true through `authorized_authority_actors`, so a peer credential that
+/// merely carries the Host as an authority actor would have been recorded as a
+/// Host-performed review — losing who actually reviewed, and suppressing the
+/// Host's own WorkChangesRequested attention as self-authored.
+#[test]
+fn a_peer_credential_carrying_host_authority_is_still_recorded_as_the_peer() {
+    let (store, _root) = temp_store("peer-attribution");
+    let created = create_two_member_team_run(&store);
+    let host = created
+        .member_runs
+        .iter()
+        .find(|member| member.agent_member_id == "host")
+        .expect("Host MemberRun")
+        .clone();
+    let reviewer = created
+        .member_runs
+        .iter()
+        .find(|member| member.agent_member_id == "agent-builder-a")
+        .expect("reviewer MemberRun")
+        .clone();
+    let lease = store
+        .acquire_test_supervisor_lease(
+            &created.team_run.id,
+            "supervisor-peer-attribution",
+            std::process::id(),
+            "test://peer-attribution",
+            current_unix_ms_u64(),
+            60_000,
+        )
+        .expect("acquire Supervisor lease");
+    ensure_test_runtime_fabric(&store, &created, &lease);
+    let ledger = TeamRunLedger::new(
+        &store,
+        &created.team_run.id,
+        &lease.supervisor_id,
+        lease.generation,
+        Arc::new(AtomicBool::new(true)),
+    );
+    for member in [&host, &reviewer] {
+        transition_provider_session_for_member(
+            &ledger,
+            member,
+            harness_core::agentfirm_api::AgentSessionStatus::Active,
+        )
+        .expect("activate exact reviewer session");
+    }
+    let host_token = "e".repeat(64);
+    let reviewer_token = "f".repeat(64);
+    let mut _live_controls = Vec::new();
+    for (member, token) in [
+        (&host, host_token.as_str()),
+        (&reviewer, reviewer_token.as_str()),
+    ] {
+        let capability = test_collaboration_capability(&store, &lease, member, token);
+        _live_controls.push(register_live_member_control(member, &capability, 1));
+    }
+    let supervisor_valid = AtomicBool::new(true);
+    let authority_gate = Mutex::new(());
+
+    let work = create_assigned_review_work(&store, &created, &lease, &host, "attribution-work");
+    bind_test_responsible_work_execution(&store, &lease, &host, &work);
+    receive_bound_work(&ledger, &host, "provider-receipt:attribution-work");
+    let review = advance_to_review(
+        &store,
+        &created,
+        &lease,
+        &supervisor_valid,
+        &authority_gate,
+        &host,
+        &host_token,
+        &work,
+    );
+
+    // The peer's own credential, carrying the Host as an authority actor.
+    crate::role_actions_api::execute(
+        &store,
+        crate::agentfirm_api::AuthenticatedMutation {
+            execution_space_id: lease.execution_space_id.clone(),
+            actor: harness_core::agentfirm_api::ActorRef {
+                kind: harness_core::agentfirm_api::ActorKind::AgentMember,
+                id: reviewer.agent_member_id.clone(),
+            },
+            authorized_authority_actors: vec![harness_core::agentfirm_api::ActorRef {
+                kind: harness_core::agentfirm_api::ActorKind::AgentMember,
+                id: created_team_host_agent_id(&store, &created),
+            }],
+            idempotency_key: "peer-with-host-authority".into(),
+            expected_version: review.version,
+            request_fingerprint: None,
+        },
+        &format!(
+            "/v1/agentfirm/teams/{}/works/{}/request-changes",
+            created.team_run.agent_team_id, review.id
+        ),
+        serde_json::json!({"action":"request_changes","reason":"peer review with host authority attached"})
+            .to_string()
+            .as_bytes(),
+        None,
+    )
+    .expect("the peer is authorized as the peer");
+
+    let event = store
+        .work_events()
+        .expect("Work events")
+        .into_iter()
+        .rev()
+        .find(|event| {
+            event.work_id == review.id
+                && event.kind == harness_core::WorkEventKind::ChangesRequested
+        })
+        .expect("committed ChangesRequested event");
+    assert_eq!(
+        event.performed_by_actor.kind,
+        harness_core::TeamActorKind::ProviderRuntimeProjection,
+        "an authority actor must not rewrite who performed the review"
+    );
+    assert_eq!(event.performed_by_actor.id, reviewer.id);
+    assert!(
+        store
+            .host_attentions()
+            .expect("HostAttentions")
+            .iter()
+            .any(|attention| attention.work_id == review.id
+                && attention.kind == harness_core::HostAttentionKind::WorkChangesRequested),
+        "a peer-performed review still raises the Host's attention"
+    );
+}
+
+fn created_team_host_agent_id(store: &HarnessStore, created: &CreatedTeamRun) -> String {
+    store
+        .latest_teams()
+        .expect("latest teams")
+        .remove(&created.team_run.agent_team_id)
+        .expect("AgentTeam")
+        .host_agent_id
+}

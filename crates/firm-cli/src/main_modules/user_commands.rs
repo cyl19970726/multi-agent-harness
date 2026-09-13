@@ -965,6 +965,26 @@ pub(super) fn bound_member_work_assignment_intent(args: &[String]) -> CliResult<
     }))
 }
 
+/// Merge one structured GitHub link's own URLs into the submitted evidence
+/// refs, byte-for-byte as the retired local `team-run work submit` verb did:
+/// the object URL joins `artifact_refs` and the checks URL joins `check_refs`,
+/// each only when the caller did not already name it. Order is preserved so a
+/// caller's explicit refs stay first.
+pub(super) fn merge_github_link_refs(
+    link: &GitHubLink,
+    artifact_refs: &mut Vec<String>,
+    check_refs: &mut Vec<String>,
+) {
+    if !artifact_refs.contains(&link.url) {
+        artifact_refs.push(link.url.clone());
+    }
+    if let Some(ci_url) = &link.ci_url {
+        if !check_refs.contains(ci_url) {
+            check_refs.push(ci_url.clone());
+        }
+    }
+}
+
 pub(super) fn bound_member_work_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
     require_subcommand(
         args,
@@ -1017,22 +1037,13 @@ pub(super) fn bound_member_work_command(store: &HarnessStore, args: &[String]) -
             let (candidate_revision, report_only) = submit_revision_args(args)?;
             // #369: `--github-pr owner/repo#N` resolves to one structured
             // GitHub snapshot here, so the authenticated entrance keeps the
-            // link-as-evidence capability the retired local verb carried. The
-            // PR URL and its checks URL join the submitted refs exactly as
-            // before.
+            // link-as-evidence capability the retired local verb carried.
             let mut artifact_refs = many(args, "--artifact-ref");
             let mut check_refs = many(args, "--check-ref");
             let mut github_links = Vec::new();
             if let Some(raw) = value(args, "--github-pr") {
                 let link = github_pr_link(&raw)?;
-                if !artifact_refs.contains(&link.url) {
-                    artifact_refs.push(link.url.clone());
-                }
-                if let Some(ci_url) = &link.ci_url {
-                    if !check_refs.contains(ci_url) {
-                        check_refs.push(ci_url.clone());
-                    }
-                }
+                merge_github_link_refs(&link, &mut artifact_refs, &mut check_refs);
                 github_links.push(link);
             }
             (

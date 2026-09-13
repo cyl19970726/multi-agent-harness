@@ -47,18 +47,23 @@ impl HarnessStore {
                     .to_string(),
             ));
         }
-        let mut memberships = Vec::new();
-        for space_id in self.canonical_execution_space_ids()? {
-            memberships.extend(self.fabric_team_memberships(&space_id)?.into_iter().filter(
-                |membership| {
-                    membership.team_id == team.id
-                        && membership.node_id == team.node_id
-                        && membership.agent_member_id == member.agent_member_id
-                        && membership.state
-                            == firm_core::agentfirm_api::TeamMembershipStatus::Active
-                },
-            ));
-        }
+        // Count memberships only inside the Work's own TeamRun Execution
+        // Space. A physical Store may temporarily hold more than one space
+        // during recovery/import; folding them together would let another
+        // scope's row grant review authority here, or let a duplicate row over
+        // there withdraw it.
+        let run = self.require_team_run_unlocked(&work.team_run_id)?;
+        let execution_space_id = self.require_team_run_execution_space_unlocked(&run)?;
+        let memberships = self
+            .fabric_team_memberships(&execution_space_id)?
+            .into_iter()
+            .filter(|membership| {
+                membership.team_id == team.id
+                    && membership.node_id == team.node_id
+                    && membership.agent_member_id == member.agent_member_id
+                    && membership.state == firm_core::agentfirm_api::TeamMembershipStatus::Active
+            })
+            .collect::<Vec<_>>();
         if memberships.len() != 1 {
             return Err(StoreError::Conflict(format!(
                 "WORK_REVIEW_NOT_AUTHORIZED: expected exactly one Active TeamMembership for the reviewer, found {}",

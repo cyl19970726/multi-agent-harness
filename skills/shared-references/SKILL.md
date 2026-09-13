@@ -110,10 +110,11 @@ across WorkEvent history, re-plans, crashes, and runtime restarts. MemberRun
 and AgentSession generations are exact execution authority, not Work ownership.
 Never clear responsibility, duplicate side effects, or reconstruct a session
 from Harness messages after a crash. Each execution attempt requires its own
-monotonic WorkExecutionBinding and WorkDelivery. Host request-changes returns
-Review → Open; the scheduler then admits the next exact binding/delivery
-generation. A compatible Workspace and provider-native session may continue,
-but continuity never substitutes for exact runtime admission.
+monotonic WorkExecutionBinding and WorkDelivery. Host, or the exact peer of
+Host-owned Work, request-changes returns Review → Open; the scheduler then
+admits the next exact binding/delivery generation. A compatible Workspace and
+provider-native session may continue, but continuity never substitutes for
+exact runtime admission.
 
 ## 10. Cross-Node Routing Has One Truth
 
