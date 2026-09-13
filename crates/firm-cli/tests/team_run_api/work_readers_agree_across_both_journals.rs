@@ -273,4 +273,113 @@ fn work_readers_agree_across_both_journals() {
         Some("accepted"),
         "the RoleView's latest event follows the version chain, not append order: {role_view_work}"
     );
+
+    // ---- 4. a LEDGER row after a TRUST row for the same Work -----------
+    // This is the exact shape seam F got wrong. The RoleView fold started from
+    // the merged latest Work and then re-derived Work from canonical envelopes
+    // in APPEND order, so a trust revision that is older than the Work's newest
+    // ledger revision overwrote it: the panel showed `open` for a Work the
+    // store had already assigned.
+    let ledger_after_trust = create_fixture_work(
+        &fixture.home,
+        &fixture.project_id,
+        &fixture.run_id,
+        "Ledger row after a trust row",
+        None,
+    );
+    // Trust first: a dependency change is written only to the trust journal.
+    team_run_json(
+        &fixture.home,
+        &fixture.project_id,
+        &[
+            "work",
+            "replace-dependencies",
+            "--team-id",
+            FIXTURE_TEAM_ID,
+            "--work-id",
+            &ledger_after_trust,
+            "--expected-version",
+            "1",
+            "--prerequisite-work-id",
+            &fixture.work_done_id,
+        ],
+    );
+    // Then a ledger row, at a HIGHER Work version than the trust envelope.
+    let assigned = firm_env::work_execution::assign_work_for_member_run(
+        &fixture.home,
+        &fixture.project_id,
+        &ledger_after_trust,
+        &fixture.alice_member_run_id,
+        false,
+    );
+    assert_eq!(assigned.version, 3);
+    assert_eq!(assigned.phase, harness_core::WorkPhase::Open);
+    let membership_id = assigned
+        .assignee_membership_id
+        .clone()
+        .expect("the ledger row is the newer revision and carries the assignee");
+
+    // Every reader must report that newer ledger revision. An append-order
+    // fold cannot: the trust envelope is the LAST canonical row written for
+    // this Work, so it would win and report version 2 with no assignee.
+    let history = show(&ledger_after_trust);
+    assert_eq!(history["work"]["version"].as_u64(), Some(3));
+    assert_eq!(
+        history["work"]["assignee_membership_id"].as_str(),
+        Some(membership_id.as_str())
+    );
+    let kinds_seen = kinds(&history);
+    assert_eq!(
+        kinds_seen,
+        vec!["created", "dependencies_changed", "assigned"],
+        "the one chain is in version order across both journals: {history}"
+    );
+
+    let listed = team_run_json(
+        &fixture.home,
+        &fixture.project_id,
+        &["work", "list", "--team-run-id", &fixture.run_id],
+    );
+    let listed_work = listed
+        .as_array()
+        .expect("works")
+        .iter()
+        .find(|work| work["id"].as_str() == Some(ledger_after_trust.as_str()))
+        .expect("listed Work")
+        .clone();
+    assert_eq!(listed_work["version"].as_u64(), Some(3));
+    assert_eq!(
+        listed_work["assignee_membership_id"].as_str(),
+        Some(membership_id.as_str())
+    );
+
+    let view = run_firm(
+        &fixture.home,
+        fixture.home.base(),
+        &["--project", &fixture.project_id, "work", "list"],
+    );
+    let view: serde_json::Value =
+        serde_json::from_slice(&view.stdout).expect("Global Work RoleView JSON");
+    let role_view_work = view["result"]["data"]["items"]
+        .as_array()
+        .expect("RoleView works")
+        .iter()
+        .find(|work| work["work_id"].as_str() == Some(ledger_after_trust.as_str()))
+        .expect("RoleView Work")
+        .clone();
+    assert_eq!(
+        role_view_work["work_revision"].as_u64(),
+        Some(3),
+        "the RoleView reports the newer LEDGER revision, not the later-appended          trust envelope: {role_view_work}"
+    );
+    assert_eq!(
+        role_view_work["assignee_membership_id"].as_str(),
+        Some(membership_id.as_str()),
+        "an append-order fold would have reported no assignee here: {role_view_work}"
+    );
+    assert_eq!(
+        role_view_work["latest_event"]["kind"].as_str(),
+        Some("assigned"),
+        "and its latest event is the ledger one: {role_view_work}"
+    );
 }

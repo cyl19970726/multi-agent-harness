@@ -62,6 +62,13 @@ pub enum WorkJournalSource {
 #[derive(Debug, Clone, PartialEq)]
 pub struct WorkJournalRecord {
     pub source: WorkJournalSource,
+    /// The Execution Space the canonical trust envelope was written in, or
+    /// `None` for a ledger row. `work_operations.jsonl` is the store's own
+    /// file and carries no space of its own; the trust journal is explicitly
+    /// scoped, and a physical store may temporarily hold more than one space
+    /// during recovery or import, so a space-scoped reader must never fold
+    /// another scope's trust truth.
+    pub execution_space_id: Option<String>,
     pub event: WorkEvent,
     pub work: Work,
 }
@@ -102,10 +109,31 @@ impl WorkJournalPosition {
     /// two million trust Work transitions.
     pub const PACKED_LEDGER_RADIX: u64 = 1 << 32;
 
-    pub fn packed(&self) -> u64 {
+    /// Render the position as the single integer the `--since` transport
+    /// carries.
+    ///
+    /// A component that does not fit is a refusal, never a clamp: a silently
+    /// clamped ledger component would freeze at the radix and a Host loop would
+    /// stop seeing its own ledger rows without any error to act on. A store
+    /// large enough to reach either bound needs a wider cursor, and must say so.
+    pub fn packed(&self) -> StoreResult<u64> {
+        if self.ledger >= Self::PACKED_LEDGER_RADIX {
+            return Err(StoreError::Conflict(format!(
+                "WORK_JOURNAL_CURSOR_OVERFLOW: ledger position {} does not fit the {} packing radix; \
+                 the single-integer cursor cannot name this position",
+                self.ledger,
+                Self::PACKED_LEDGER_RADIX
+            )));
+        }
         self.trust
-            .saturating_mul(Self::PACKED_LEDGER_RADIX)
-            .saturating_add(self.ledger.min(Self::PACKED_LEDGER_RADIX - 1))
+            .checked_mul(Self::PACKED_LEDGER_RADIX)
+            .and_then(|high| high.checked_add(self.ledger))
+            .ok_or_else(|| {
+                StoreError::Conflict(format!(
+                    "WORK_JOURNAL_CURSOR_OVERFLOW: trust position {} overflows the packed cursor",
+                    self.trust
+                ))
+            })
     }
 
     pub fn from_packed(value: u64) -> Self {
@@ -164,6 +192,46 @@ impl HarnessStore {
         Ok(self.latest_works_unlocked()?.remove(work_id))
     }
 
+    /// The merged current Work for one id inside one Execution Space: this
+    /// store's ledger fold, overlaid only by trust transitions written in
+    /// `execution_space_id`. Use this wherever the caller holds a space; the
+    /// unscoped form above exists for store-wide reads that genuinely have no
+    /// space to narrow with.
+    pub fn current_work_in_space(
+        &self,
+        execution_space_id: &str,
+        work_id: &str,
+    ) -> StoreResult<Option<Work>> {
+        Ok(self
+            .latest_works_in_space_unlocked(execution_space_id)?
+            .remove(work_id))
+    }
+
+    pub(super) fn latest_works_in_space_unlocked(
+        &self,
+        execution_space_id: &str,
+    ) -> StoreResult<BTreeMap<String, Work>> {
+        let mut latest = self
+            .current_work_sources()?
+            .latest
+            .clone()
+            .map_err(StoreError::Conflict)?;
+        for record in self
+            .work_journal_unlocked()?
+            .records
+            .iter()
+            .filter(|record| record.execution_space_id.as_deref() == Some(execution_space_id))
+        {
+            match latest.get(&record.work.id) {
+                Some(current) if current.version >= record.work.version => {}
+                _ => {
+                    latest.insert(record.work.id.clone(), record.work.clone());
+                }
+            }
+        }
+        Ok(latest)
+    }
+
     /// Latest Work per id across both journals. The ledger + delegation fold
     /// is overlaid by the trust fold wherever trust holds a greater version;
     /// an exact version tie keeps the ledger projection.
@@ -213,6 +281,26 @@ impl HarnessStore {
         Ok(self.work_journal_unlocked()?.records.clone())
     }
 
+    /// Every Work record this store's ledger holds, plus only the trust Work
+    /// transitions written in `execution_space_id`.
+    pub fn work_journal_records_for_space(
+        &self,
+        execution_space_id: &str,
+    ) -> StoreResult<Vec<WorkJournalRecord>> {
+        Ok(self
+            .work_journal_unlocked()?
+            .records
+            .iter()
+            .filter(|record| {
+                record
+                    .execution_space_id
+                    .as_deref()
+                    .is_none_or(|space| space == execution_space_id)
+            })
+            .cloned()
+            .collect())
+    }
+
     pub(crate) fn work_journal_records_for_ids_unlocked(
         &self,
         work_ids: &HashSet<String>,
@@ -233,6 +321,20 @@ impl HarnessStore {
         Ok(self
             .work_journal_records_for_ids_unlocked(work_ids)?
             .into_iter()
+            .map(|record| record.event)
+            .collect())
+    }
+
+    /// Work events for these ids, narrowed to one Execution Space.
+    pub(crate) fn work_journal_events_for_ids_in_space_unlocked(
+        &self,
+        execution_space_id: &str,
+        work_ids: &HashSet<String>,
+    ) -> StoreResult<Vec<WorkEvent>> {
+        Ok(self
+            .work_journal_records_for_space(execution_space_id)?
+            .into_iter()
+            .filter(|record| work_ids.contains(&record.work.id))
             .map(|record| record.event)
             .collect())
     }
@@ -288,6 +390,7 @@ impl HarnessStore {
                     .into_iter()
                     .map(|operation| WorkJournalRecord {
                         source: WorkJournalSource::Ledger,
+                        execution_space_id: None,
                         event: operation.event,
                         work: operation.work,
                     })
@@ -318,7 +421,7 @@ mod tests {
         assert_eq!(WorkJournalPosition::from_packed(0), position(0, 0));
         assert_eq!(WorkJournalPosition::from_packed(7), position(7, 0));
         assert_eq!(
-            position(7, 0).packed(),
+            position(7, 0).packed().unwrap(),
             7,
             "no trust rows: still a row count"
         );
@@ -326,8 +429,10 @@ mod tests {
 
     #[test]
     fn a_trust_bearing_position_orders_after_every_legacy_value() {
-        assert!(position(0, 1).packed() > position(u32::MAX as u64 - 1, 0).packed());
-        let packed = position(6, 3).packed();
+        assert!(
+            position(0, 1).packed().unwrap() > position(u32::MAX as u64 - 1, 0).packed().unwrap()
+        );
+        let packed = position(6, 3).packed().unwrap();
         assert_eq!(WorkJournalPosition::from_packed(packed), position(6, 3));
     }
 
@@ -341,6 +446,25 @@ mod tests {
         assert!(
             position(6, 0).advanced_past(&cursor),
             "a Work with no trust row is never hidden by another Work's trust row"
+        );
+    }
+
+    #[test]
+    fn a_position_the_single_integer_cursor_cannot_name_is_refused_not_clamped() {
+        let overflowing = position(WorkJournalPosition::PACKED_LEDGER_RADIX, 0);
+        let error = overflowing
+            .packed()
+            .expect_err("a ledger position at the radix cannot be packed");
+        assert!(
+            error.to_string().contains("WORK_JOURNAL_CURSOR_OVERFLOW"),
+            "the refusal must name itself so a Host loop can act on it: {error}"
+        );
+        assert!(position(WorkJournalPosition::PACKED_LEDGER_RADIX - 1, 0)
+            .packed()
+            .is_ok());
+        assert!(
+            position(0, u64::MAX).packed().is_err(),
+            "trust overflows too"
         );
     }
 

@@ -79,8 +79,12 @@ impl HarnessStore {
         // Blocked is a ledger row, and this scan needs the same chain the rest
         // of the store sees. The wake used to synthesize the Accepted event
         // here for one read; `crate::work_history` now materializes it for
-        // every reader, and current acceptances commit it durably.
-        let events = self.work_journal_events_for_ids_unlocked(&work_ids)?;
+        // every reader, and current acceptances commit it durably. The scan
+        // stays narrowed to this run's Execution Space, exactly as the deleted
+        // synthesis was: a physical store may hold more than one space during
+        // recovery or import, and no other scope's acceptance may wake a
+        // member here.
+        let events = self.work_journal_events_for_ids_in_space_unlocked(space_id, &work_ids)?;
         let Some(candidate) = select_acceptance_wake(
             &works,
             &events,

@@ -597,18 +597,30 @@ fn outcome_from_trust(
 /// IDENTITY_CONFLICT when the two disagreed at one revision. That comparison
 /// was between this function's own re-derivation and the Store's, not between
 /// two independent authorities, so it could only ever report a bug in the copy
-/// kept here. The Store fold is the single source and needs no second opinion;
-/// a genuinely conflicting projection at one revision is refused where it is
-/// observable — the Store's own provenance guard
-/// (`WORK_PROJECTION_PROVENANCE_CONFLICT`) and the RoleView side-record fold's
-/// `IDENTITY_CONFLICT`.
+/// kept here.
+///
+/// Two journals holding the same Work version is prevented, and detected,
+/// elsewhere:
+///
+/// * every Work writer resolves its expected revision through the merged
+///   reader under the store write lock —
+///   `HarnessStore::current_work_unlocked` CASes `latest_works_unlocked()`
+///   against `expected_version` before any append — so a second journal cannot
+///   mint a revision the first already holds;
+/// * `insert_work_revision` in the current-delivery projection compares every
+///   Work projection at one `(id, version)` across BOTH sources and refuses a
+///   mismatch with `CURRENT_WORK_DELIVERY_WORK_REVISION_CONFLICT`.
+///
+/// That is where a genuine same-revision divergence is observable. This
+/// function is a reader and adds nothing by re-deriving the fold to disagree
+/// with it.
 pub fn current_work(
     store: &HarnessStore,
-    _execution_space_id: &str,
+    execution_space_id: &str,
     work_id: &str,
 ) -> Result<Work, StoreError> {
     store
-        .current_work(work_id)?
+        .current_work_in_space(execution_space_id, work_id)?
         .ok_or_else(|| conflict("INVALID_STATE_TRANSITION", "Work does not exist"))
 }
 

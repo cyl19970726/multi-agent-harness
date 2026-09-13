@@ -157,3 +157,79 @@ fn trust_work_transitions_carry_work_events() {
     drop(other);
     drop(root);
 }
+
+/// The paired `work` transition derives its idempotency key from the caller's
+/// by appending `#<transition>`, so `#` is reserved. A caller key containing it
+/// could collide with a derived key and be answered by the replay check with
+/// "idempotent replay changed aggregate identity" — a refusal that names the
+/// wrong cause. The separator is refused where the real reason is nameable.
+#[test]
+fn a_caller_idempotency_key_may_not_use_the_reserved_paired_separator() {
+    let (root, store, run, member, other) = work_test_fixture("reserved-paired-key");
+    let work = store
+        .insert_work(
+            unassigned_test_work(&run.id, "reserved"),
+            host_work_context("create-reserved", "create-reserved", "unix-ms:2"),
+        )
+        .unwrap();
+    let work = assign_test_work_to_member(
+        &store,
+        &run,
+        &work,
+        &member,
+        "assign-reserved",
+        "assign-reserved",
+        "unix-ms:3",
+    );
+    let active = start_claimed_work_for_test(
+        &store,
+        &work,
+        &member,
+        "start-reserved",
+        "start-reserved",
+        "unix-ms:4",
+    );
+    let mut report = result_report_for_test(
+        &active,
+        &member,
+        "reserved-result",
+        "done",
+        vec!["artifact://reserved".into()],
+        Vec::new(),
+        "unix-ms:5",
+    );
+    report.id = "work-report:reserved".into();
+    let space = store.current_team_run_execution_space(&run).unwrap();
+    let before = store.canonical_operations().unwrap().len();
+    let error = store
+        .create_trust_work_report(
+            &MutationContext {
+                execution_space_id: space,
+                authenticated_actor: report.authored_by.clone(),
+                authority_actor: None,
+                command_name: "test.work_report.create".into(),
+                idempotency_key: "submission#submitted".into(),
+                expected_version: 0,
+                request_fingerprint: None,
+            },
+            active.accountable_team_id.as_deref().unwrap(),
+            report,
+        )
+        .expect_err("a reserved separator in the caller key is refused");
+    let message = error.to_string();
+    assert!(
+        message.contains("idempotency key must not contain"),
+        "the refusal must name the real cause, not a replay identity change: {message}"
+    );
+    assert!(
+        !message.contains("changed aggregate identity"),
+        "the misleading replay message must not be what the caller sees: {message}"
+    );
+    assert_eq!(
+        store.canonical_operations().unwrap().len(),
+        before,
+        "a refused submission commits neither envelope"
+    );
+    drop(other);
+    drop(root);
+}

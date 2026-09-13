@@ -15,6 +15,9 @@ pub struct BoardReadFixture {
     pub project_id: String,
     pub run_id: String,
     pub alice_agent_member_id: String,
+    /// alice's MemberRun id — the handle the fixture's own assignment helper
+    /// takes, so a test can append one more ledger Work row.
+    pub alice_member_run_id: String,
     pub bob_agent_member_id: String,
     #[allow(dead_code)] // read by the board-summary test only
     pub charlie_id: String,
@@ -308,6 +311,7 @@ pub fn seed_board_read_fixture(tag: &str) -> BoardReadFixture {
         project_id,
         run_id,
         alice_agent_member_id,
+        alice_member_run_id: alice_id,
         bob_agent_member_id,
         charlie_id,
         work_open_id,

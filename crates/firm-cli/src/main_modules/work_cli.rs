@@ -240,9 +240,12 @@ pub(super) fn team_run_work_command(
                     .map(|cursors| cursors.watermark)
                     .unwrap_or_default()
                     .merged_max(since);
+                // A position the single-integer transport cannot name is a
+                // refusal here, not a clamped cursor a Host loop would silently
+                // freeze on.
                 print_json(&serde_json::json!({
-                    "since": since.packed(),
-                    "next_since": next_since.packed(),
+                    "since": since.packed()?,
+                    "next_since": next_since.packed()?,
                     "works": works,
                 }))
             } else {

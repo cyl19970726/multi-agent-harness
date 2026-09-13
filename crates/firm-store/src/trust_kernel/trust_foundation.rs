@@ -3,6 +3,12 @@ use super::*;
 mod read_model;
 use read_model::TrustReadModel;
 
+/// Reserved in a canonical idempotency key: a paired `work` transition's key
+/// is the caller's with this separator and the transition name appended, so
+/// every existing scan that resolves a command by its exact key still finds
+/// exactly the caller's envelope.
+pub(in crate::trust_kernel) const PAIRED_KEY_SEPARATOR: char = '#';
+
 /// One `work` aggregate transition committed atomically with another
 /// canonical projection that produced it.
 pub(in crate::trust_kernel) struct PairedWorkTransition {
@@ -894,6 +900,22 @@ impl HarnessStore {
         required(&context.idempotency_key, "idempotency_key")?;
         required(aggregate_kind, "aggregate_kind")?;
         required(aggregate_id, "aggregate_id")?;
+        // A paired `work` transition derives its key by appending
+        // `#<transition>` to the caller's, so `#` is reserved. A caller key
+        // containing it could collide with a derived key and be answered by the
+        // replay check with the misleading "idempotent replay changed aggregate
+        // identity"; refuse it here, where the real reason is nameable.
+        if context.idempotency_key.contains(PAIRED_KEY_SEPARATOR) {
+            return Err(trust_error(
+                TrustErrorCode::IdempotencyKeyReused,
+                format!(
+                    "idempotency key must not contain {PAIRED_KEY_SEPARATOR:?}: it is reserved for                      the paired canonical Work transition this command may commit"
+                ),
+                aggregate_kind,
+                aggregate_id,
+                None,
+            ));
+        }
         let existing = self.trust_operation_envelopes_unlocked()?;
         let fingerprint = context
             .request_fingerprint
@@ -997,7 +1019,10 @@ impl HarnessStore {
                 performed_by_actor: event.performed_by_actor.clone(),
                 authority_actor: event.authority_actor.clone(),
                 causation_ref: None,
-                idempotency_key: format!("{}#{}", context.idempotency_key, paired.transition),
+                idempotency_key: format!(
+                    "{}{PAIRED_KEY_SEPARATOR}{}",
+                    context.idempotency_key, paired.transition
+                ),
                 canonical_request_fingerprint: event.canonical_request_fingerprint.clone(),
                 payload: event.payload.clone(),
                 created_at: event.created_at.clone(),

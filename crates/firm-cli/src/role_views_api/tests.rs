@@ -354,3 +354,50 @@ fn runtime_command_summary_reads_the_current_phase() {
         assert_eq!(summary["status"], phase);
     }
 }
+
+/// The store stamps coordination time in two formats, and one Work's history
+/// can carry both: a ledger row's ISO `created_at` and a canonical trust
+/// event's `unix-ms:`. Sorting the activity feed on the raw string put every
+/// ISO row below every `unix-ms:` row regardless of when they happened.
+#[test]
+fn activity_rows_are_ordered_through_one_parsed_timestamp() {
+    // 2026-09-07T13:10:25.134Z is 1788786625134; the unix-ms row is one second
+    // earlier, so the ISO row must sort first even though "2" < "u" as bytes.
+    let mut rows = vec![
+        json!({"id":"earlier","created_at":"unix-ms:1788786624134","resulting_version":1}),
+        json!({"id":"later","created_at":"2026-09-07T13:10:25.134Z","resulting_version":2}),
+    ];
+    sort_activity_rows(&mut rows);
+    assert_eq!(
+        rows.iter()
+            .map(|row| row["id"].as_str().unwrap_or_default())
+            .collect::<Vec<_>>(),
+        vec!["later", "earlier"],
+        "mixed timestamp forms interleave by parsed time, not by raw bytes: {rows:?}"
+    );
+
+    // Equal instants tie-break on the newer Work revision, then on id, so the
+    // feed is stable across reads.
+    let mut tied = vec![
+        json!({"id":"a","created_at":"unix-ms:1788786625134","resulting_version":1}),
+        json!({"id":"b","created_at":"2026-09-07T13:10:25.134Z","resulting_version":3}),
+        json!({"id":"c","created_at":"unix-ms:1788786625134","resulting_version":3}),
+    ];
+    sort_activity_rows(&mut tied);
+    assert_eq!(
+        tied.iter()
+            .map(|row| row["id"].as_str().unwrap_or_default())
+            .collect::<Vec<_>>(),
+        vec!["c", "b", "a"],
+        "deterministic tie-break: version, then id: {tied:?}"
+    );
+
+    // An unparseable stamp is never given an invented order.
+    let mut opaque = vec![
+        json!({"id":"opaque","created_at":"not-a-time"}),
+        json!({"id":"real","created_at":"unix-ms:1788786625134"}),
+    ];
+    sort_activity_rows(&mut opaque);
+    assert_eq!(opaque[0]["id"], "real");
+    assert_eq!(opaque[1]["id"], "opaque");
+}

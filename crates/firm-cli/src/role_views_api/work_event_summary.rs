@@ -75,6 +75,8 @@ mod tests {
     fn record(source: WorkJournalSource, kind: WorkEventKind, version: u64) -> WorkJournalRecord {
         WorkJournalRecord {
             source,
+            execution_space_id: matches!(source, WorkJournalSource::Trust)
+                .then(|| "space-a".to_string()),
             event: WorkEvent {
                 id: format!("event-{version}"),
                 team_run_id: "run-a".into(),

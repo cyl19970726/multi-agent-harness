@@ -395,7 +395,11 @@ and every reader folds both:
 | `agentfirm_trust_operations.jsonl`, `work` aggregate | Submitted, Accepted, Cancelled, DependenciesChanged |
 
 Each trust `work` transition commits the `WorkEvent` the ledger row would have
-carried, as an immutable side record of the same canonical operation. A Result
+carried, as an immutable side record of the same canonical operation. Two
+journals cannot hold one Work version: every writer resolves its expected
+revision through the merged reader under the store write lock, and the
+current-delivery projection compares projections at one `(id, version)` across
+both sources and refuses a mismatch. A Result
 submission writes its `work`/`submitted` envelope in the SAME atomic ledger
 rewrite as its `work_report/created` envelope, so the report and the Review
 revision it produced can never exist without one another; the paired envelope
@@ -408,7 +412,12 @@ per id (the ledger and delegation fold overlaid by the trust fold on a greater
 version, the ledger winning an exact tie); one Work's history, strictly in
 version order; every Work event in the store in one deterministic total order;
 and a monotonic **Work journal position** that advances on a row in EITHER
-journal. No current-phase, event, count or cursor reader may read one journal
+journal. Every shape has an Execution-Space-scoped form, and a caller holding a
+space uses it: `work_operations.jsonl` is the store's own file and carries no
+space of its own, but the trust journal is explicitly scoped and a physical
+store may temporarily hold more than one space during recovery or import, so a
+scoped read folds this store's ledger rows plus only that space's trust
+transitions. No current-phase, event, count or cursor reader may read one journal
 alone: the RoleView, `work show`, `work list`, the dashboard projection, the
 TeamRun canonical-state fingerprint and the delta cursor all consume this one
 surface, so they cannot disagree about a Work's version or phase.
@@ -422,7 +431,10 @@ single-integer transport used by `firm team-run work list --since` packs it as
 bare ledger row count — decodes unchanged to that same ledger position, and
 any position carrying a trust row orders after every such legacy value.
 Comparison always decodes first: comparing packed integers directly would be
-trust-major and would skip a Work whose only new row is a ledger row.
+trust-major and would skip a Work whose only new row is a ledger row. A
+position neither component of that packing can name is refused
+(`WORK_JOURNAL_CURSOR_OVERFLOW`), never clamped: a clamped ledger component
+would freeze a Host's `--since` loop with nothing to act on.
 
 This shape is transitional. The next slice moves every remaining Work writer
 into the trust journal, after which `work_operations.jsonl` becomes read-only

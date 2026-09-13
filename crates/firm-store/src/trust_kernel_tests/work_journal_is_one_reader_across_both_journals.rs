@@ -32,7 +32,7 @@ fn kinds(records: &[crate::WorkJournalRecord]) -> Vec<WorkEventKind> {
 /// state fingerprint, the dashboard cursor — was blind to both.
 #[test]
 fn work_journal_is_one_reader_across_both_journals() {
-    let (store, _root) = fabric_store();
+    let (store, root) = fabric_store();
     append_runtime_team(&store, "team-journal", "team-run-journal");
     let prerequisite = insert_runtime_work(
         &store,
@@ -49,7 +49,7 @@ fn work_journal_is_one_reader_across_both_journals() {
         "no trust Work transition yet: {ledger_only:?}"
     );
     assert_eq!(
-        ledger_only.packed(),
+        ledger_only.packed().unwrap(),
         ledger_only.ledger,
         "a ledger-only position packs to the bare row count a pre-W3 cursor carried"
     );
@@ -84,7 +84,7 @@ fn work_journal_is_one_reader_across_both_journals() {
         "and therefore advances past the previous position"
     );
     assert!(
-        after_dependencies.packed() > ledger_only.packed(),
+        after_dependencies.packed().unwrap() > ledger_only.packed().unwrap(),
         "a trust-bearing position orders after every ledger-only value"
     );
 
@@ -167,4 +167,90 @@ fn work_journal_is_one_reader_across_both_journals() {
         store.work_journal_records().unwrap(),
         "the total order is deterministic across reads"
     );
+
+    // A physical store may temporarily hold more than one Execution Space
+    // during recovery or import. Append the cancellation again under a second
+    // space, at a higher Work version, and prove every space-scoped reader
+    // ignores it. These are the exact three functions the acceptance wake, the
+    // RoleView `Facts` fold and `work_action_service::current_work` call.
+    append_foreign_space_work_envelope(&root, &prerequisite.id, "space-other");
+    let scoped = store.work_journal_records_for_space("space-test").unwrap();
+    assert!(
+        scoped
+            .iter()
+            .all(|record| record.execution_space_id.as_deref() != Some("space-other")),
+        "a space-scoped read never folds another scope's trust truth"
+    );
+    assert_eq!(
+        scoped.len(),
+        all.len(),
+        "and it still returns every record of its own scope, ledger rows included"
+    );
+    assert!(
+        store
+            .work_journal_records()
+            .unwrap()
+            .iter()
+            .any(|record| record.execution_space_id.as_deref() == Some("space-other")),
+        "the unscoped read is the one that sees the whole store"
+    );
+
+    let work_ids = std::collections::HashSet::from([prerequisite.id.clone()]);
+    let foreign_version = store
+        .current_work(&prerequisite.id)
+        .unwrap()
+        .expect("the unscoped fold sees the foreign revision")
+        .version;
+    assert_eq!(
+        store
+            .current_work_in_space("space-test", &prerequisite.id)
+            .unwrap()
+            .expect("the Work still exists in its own space")
+            .version,
+        foreign_version - 1,
+        "current_work_in_space must not adopt another scope's higher revision"
+    );
+    assert!(
+        store
+            .work_journal_events_for_ids_in_space_unlocked("space-test", &work_ids)
+            .unwrap()
+            .iter()
+            .all(|event| event.resulting_version < foreign_version),
+        "the acceptance wake's scan never sees another scope's Work event"
+    );
+}
+
+/// Append a duplicate of one Work's latest canonical envelope under a second
+/// Execution Space, one revision higher. Raw-row fixtures are how this suite
+/// already stages pre-existing canonical shapes it has no writer for.
+fn append_foreign_space_work_envelope(root: &std::path::Path, work_id: &str, space: &str) {
+    let ledger = root.join("agentfirm_trust_operations.jsonl");
+    let contents = std::fs::read_to_string(&ledger).expect("read canonical trust ledger");
+    let mut rows = contents.lines().map(str::to_owned).collect::<Vec<_>>();
+    let mut foreign: serde_json::Value = contents
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .rfind(|row| {
+            row["operation"]["event"]["aggregate_kind"] == "work"
+                && row["operation"]["event"]["aggregate_id"] == work_id
+        })
+        .expect("one canonical Work envelope to duplicate");
+    let version = foreign["operation"]["event"]["resulting_version"]
+        .as_u64()
+        .expect("resulting version")
+        + 1;
+    let sequence = rows.len() as u64 + 1;
+    foreign["execution_space_id"] = serde_json::json!(space);
+    foreign["operation"]["event"]["id"] = serde_json::json!(format!("trust-event-foreign-{space}"));
+    foreign["operation"]["event"]["idempotency_key"] =
+        serde_json::json!(format!("foreign-{space}-{work_id}"));
+    foreign["operation"]["event"]["store_sequence"] = serde_json::json!(sequence);
+    foreign["operation"]["event"]["expected_version"] = serde_json::json!(version - 1);
+    foreign["operation"]["event"]["resulting_version"] = serde_json::json!(version);
+    foreign["operation"]["resulting_projection"]["version"] = serde_json::json!(version);
+    foreign["operation"]["immutable_side_records"] = serde_json::json!([]);
+    foreign["operation"]["initial_outbox_records"] = serde_json::json!([]);
+    rows.push(serde_json::to_string(&foreign).expect("serialize foreign trust row"));
+    std::fs::write(&ledger, format!("{}\n", rows.join("\n")))
+        .expect("append the foreign-space trust row");
 }

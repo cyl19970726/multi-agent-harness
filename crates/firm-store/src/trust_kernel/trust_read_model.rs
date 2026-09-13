@@ -74,7 +74,7 @@ impl TrustReadModel {
         } else if op.event.aggregate_kind == "work" && self.invalid_work.is_none() {
             self.invalid_work = Some(op.resulting_projection.clone());
         }
-        self.observe_work_journal(op);
+        self.observe_work_journal(space, op);
         if op.event.aggregate_kind == "work_execution_binding" {
             match serde_json::from_value::<WorkExecutionBinding>(op.resulting_projection.clone()) {
                 Ok(binding) => {
@@ -207,7 +207,7 @@ impl TrustReadModel {
     /// side record with the transition; a pre-W3 envelope carries none, and
     /// its event is derived from the canonical event it already persisted.
     /// Nothing here is ever written back: this is a read projection.
-    fn observe_work_journal(&mut self, op: &CanonicalOperation) {
+    fn observe_work_journal(&mut self, space: &str, op: &CanonicalOperation) {
         if op.event.aggregate_kind == "work" {
             let Ok(work) = serde_json::from_value::<Work>(op.resulting_projection.clone()) else {
                 return;
@@ -226,7 +226,7 @@ impl TrustReadModel {
             };
             let event = committed_work_event(op, &work)
                 .unwrap_or_else(|| derived_work_event(op, &work, kind, op.event.expected_version));
-            self.record_work_journal(work, event, true);
+            self.record_work_journal(space, work, event, true);
             return;
         }
         // Pre-cutover Result submission: the Review revision exists only as an
@@ -253,16 +253,23 @@ impl TrustReadModel {
                 WorkEventKind::Submitted,
                 work.version.saturating_sub(1),
             );
-            self.record_work_journal(work, event, false);
+            self.record_work_journal(space, work, event, false);
         }
     }
 
     /// Keep exactly one record per (Work, version). A `work`-aggregate record
     /// is the authority for its revision and replaces a report-derived one.
-    fn record_work_journal(&mut self, work: Work, event: WorkEvent, from_work_aggregate: bool) {
+    fn record_work_journal(
+        &mut self,
+        space: &str,
+        work: Work,
+        event: WorkEvent,
+        from_work_aggregate: bool,
+    ) {
         let key = (work.id.clone(), event.resulting_version);
         let record = crate::work_history::WorkJournalRecord {
             source: crate::work_history::WorkJournalSource::Trust,
+            execution_space_id: Some(space.to_owned()),
             event,
             work,
         };
@@ -298,11 +305,21 @@ impl TrustReadModel {
         }
     }
 }
-/// Every `work`-aggregate transition this binary can write, and the WorkEvent
-/// kind it means. An unrecognized transition is a Work revision this binary
-/// cannot name honestly, so the Work journal fails closed rather than
-/// labelling it; the latest-Work fold is deliberately independent of this map
-/// and keeps reading such a store.
+/// Every `work`-aggregate transition that may appear in a store, and the
+/// WorkEvent kind it means.
+///
+/// What binds this map is not what this binary writes — it is what any binary
+/// ever wrote into a store this one may read. `submitted`, `accepted`,
+/// `cancelled` and `dependencies_changed` are the current writers;
+/// `updated` is carried for the canonical Work-update shape. An unrecognized
+/// transition is a Work revision this binary cannot name honestly, so the Work
+/// journal fails closed rather than labelling it, and the latest-Work fold is
+/// deliberately independent of this map so such a store still reads its
+/// current Work.
+///
+/// The one retired transition needs no arm here: a pre-W1 `failed` envelope
+/// carries `resolution: "failed"`, which `WorkResolution` no longer decodes, so
+/// the Work decode above refuses it before this map is consulted.
 fn work_transition_event_kind(transition: &str) -> Option<WorkEventKind> {
     Some(match transition {
         "submitted" => WorkEventKind::Submitted,
