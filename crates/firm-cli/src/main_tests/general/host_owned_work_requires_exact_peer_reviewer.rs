@@ -428,3 +428,190 @@ fn host_owned_work_requires_exact_active_peer_while_member_work_remains_host_rev
     )
     .expect("resolve inactive reviewer"));
 }
+
+/// Review authority is symmetric. Whoever may accept a Work may also return it
+/// for changes: the exact Host for ordinary Member Work, and for Host-owned
+/// Work either the Host or one exact active non-owner Team peer. Before this,
+/// a peer could accept Host-owned Work but had to fall back to a Message to
+/// ask for changes.
+#[test]
+fn host_owned_work_changes_may_be_requested_by_the_same_exact_peer_that_may_accept_it() {
+    let (store, _root) = temp_store("host-owned-peer-request-changes");
+    let created = create_two_member_team_run(&store);
+    let host = created
+        .member_runs
+        .iter()
+        .find(|member| member.agent_member_id == "host")
+        .expect("Host MemberRun")
+        .clone();
+    let reviewer = created
+        .member_runs
+        .iter()
+        .find(|member| member.agent_member_id == "agent-builder-a")
+        .expect("reviewer MemberRun")
+        .clone();
+    let worker = created
+        .member_runs
+        .iter()
+        .find(|member| member.agent_member_id == "agent-builder-b")
+        .expect("worker MemberRun")
+        .clone();
+    let lease = store
+        .acquire_test_supervisor_lease(
+            &created.team_run.id,
+            "supervisor-host-owned-peer-request-changes",
+            std::process::id(),
+            "test://host-owned-peer-request-changes",
+            current_unix_ms_u64(),
+            60_000,
+        )
+        .expect("acquire Supervisor lease");
+    ensure_test_runtime_fabric(&store, &created, &lease);
+    let ledger = TeamRunLedger::new(
+        &store,
+        &created.team_run.id,
+        &lease.supervisor_id,
+        lease.generation,
+        Arc::new(AtomicBool::new(true)),
+    );
+    for member in [&host, &reviewer, &worker] {
+        transition_provider_session_for_member(
+            &ledger,
+            member,
+            harness_core::agentfirm_api::AgentSessionStatus::Active,
+        )
+        .expect("activate exact reviewer session");
+    }
+    let host_token = "a".repeat(64);
+    let reviewer_token = "b".repeat(64);
+    let worker_token = "c".repeat(64);
+    let mut _live_controls = Vec::new();
+    for (member, token) in [
+        (&host, host_token.as_str()),
+        (&reviewer, reviewer_token.as_str()),
+        (&worker, worker_token.as_str()),
+    ] {
+        let capability = test_collaboration_capability(&store, &lease, member, token);
+        _live_controls.push(register_live_member_control(member, &capability, 1));
+    }
+    let supervisor_valid = AtomicBool::new(true);
+    let authority_gate = Mutex::new(());
+
+    let host_work = create_assigned_review_work(&store, &created, &lease, &host, "host-owned-rc");
+    bind_test_responsible_work_execution(&store, &lease, &host, &host_work);
+    receive_bound_work(&ledger, &host, "provider-receipt:host-owned-rc");
+    let host_review = advance_to_review(
+        &store,
+        &created,
+        &lease,
+        &supervisor_valid,
+        &authority_gate,
+        &host,
+        &host_token,
+        &host_work,
+    );
+    let request_changes_path = |work_id: &str| {
+        format!(
+            "/v1/agentfirm/teams/{}/works/{work_id}/request-changes",
+            created.team_run.agent_team_id
+        )
+    };
+
+    // The exact active non-owner peer returns Host-owned Work for changes.
+    role_action(
+        &store,
+        &lease,
+        &supervisor_valid,
+        &authority_gate,
+        &reviewer,
+        &reviewer_token,
+        request_changes_path(&host_review.id),
+        host_review.version,
+        "peer-request-changes-host-work",
+        serde_json::json!({"action":"request_changes","reason":"name the exact failing gate"}),
+        None,
+    )
+    .expect("exact active Team peer requests changes on Host-owned Work");
+    let returned = store
+        .latest_works()
+        .expect("latest Works")
+        .into_iter()
+        .find(|candidate| candidate.id == host_review.id)
+        .expect("returned Host Work");
+    assert_eq!(returned.phase, harness_core::WorkPhase::Open);
+    assert_eq!(returned.condition, harness_core::WorkCondition::Normal);
+    assert_eq!(returned.resolution, None);
+    assert_eq!(
+        returned.blocker_reason.as_deref(),
+        Some("name the exact failing gate")
+    );
+    assert_eq!(returned.version, host_review.version + 1);
+    assert_eq!(
+        returned.owner_member_id.as_deref(),
+        Some("host"),
+        "peer review never moves responsibility"
+    );
+
+    // Ordinary Member Work stays Host-reviewed on both review verbs.
+    let member_work = create_assigned_review_work(&store, &created, &lease, &worker, "member-rc");
+    bind_test_responsible_work_execution(&store, &lease, &worker, &member_work);
+    receive_bound_work(&ledger, &worker, "provider-receipt:member-rc");
+    let member_review = advance_to_review(
+        &store,
+        &created,
+        &lease,
+        &supervisor_valid,
+        &authority_gate,
+        &worker,
+        &worker_token,
+        &member_work,
+    );
+    for (actor, token, key) in [
+        (
+            &reviewer,
+            reviewer_token.as_str(),
+            "peer-cannot-request-changes-member-work",
+        ),
+        (
+            &worker,
+            worker_token.as_str(),
+            "owner-cannot-request-changes-on-itself",
+        ),
+    ] {
+        let before = durable_store_file_bytes(&store);
+        let refused = role_action(
+            &store,
+            &lease,
+            &supervisor_valid,
+            &authority_gate,
+            actor,
+            token,
+            request_changes_path(&member_review.id),
+            member_review.version,
+            key,
+            serde_json::json!({"action":"request_changes","reason":"peer opinion"}),
+            None,
+        )
+        .expect_err("Member Work review authority stays with the exact Host");
+        assert!(refused.to_string().contains("UNAUTHORIZED_ACTOR"), "{key}");
+        assert_eq!(
+            durable_store_file_bytes(&store),
+            before,
+            "{key} rejection has zero durable effects"
+        );
+    }
+    role_action(
+        &store,
+        &lease,
+        &supervisor_valid,
+        &authority_gate,
+        &host,
+        &host_token,
+        request_changes_path(&member_review.id),
+        member_review.version,
+        "host-request-changes-member-work",
+        serde_json::json!({"action":"request_changes","reason":"gate evidence missing"}),
+        None,
+    )
+    .expect("exact Host request-changes on Member Work is unchanged");
+}

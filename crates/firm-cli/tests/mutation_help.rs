@@ -215,6 +215,88 @@ fn mutating_help_is_effect_free_and_normal_dispatch_is_unchanged() {
         );
     }
 
+    // Member Work writes have one authenticated entrance. Every retired local
+    // member shape refuses with a typed RETIRED_WRITE_AUTHORITY that names its
+    // replacement, and none of them touches a durable Store byte -- including
+    // the shapes that would otherwise be a valid Host command.
+    for (args, replacement) in [
+        (
+            vec!["team-run", "work", "claim", "--work-id", "work-1"],
+            "firm member work claim",
+        ),
+        (
+            vec!["team-run", "work", "start", "--work-id", "work-1"],
+            "firm member work start",
+        ),
+        (
+            vec!["team-run", "work", "submit", "--work-id", "work-1"],
+            "firm member work submit",
+        ),
+        (
+            vec![
+                "team-run",
+                "work",
+                "block",
+                "--work-id",
+                "work-1",
+                "--member-run-id",
+                "member-run-1",
+            ],
+            "firm member work block",
+        ),
+        (
+            vec![
+                "team-run",
+                "work",
+                "resume",
+                "--work-id",
+                "work-1",
+                "--member-run-id",
+                "member-run-1",
+            ],
+            "firm member work resume",
+        ),
+        (
+            vec![
+                "team-run",
+                "work",
+                "release",
+                "--work-id",
+                "work-1",
+                "--member-run-id",
+                "member-run-1",
+            ],
+            "firm member work release",
+        ),
+        (
+            vec![
+                "team-run",
+                "work",
+                "create",
+                "--team-run-id",
+                RUN_ID,
+                "--as-member-run-id",
+                "member-run-1",
+            ],
+            "firm member work create",
+        ),
+    ] {
+        let mut full = vec!["--store", store_arg];
+        full.extend_from_slice(&args);
+        let refused = run_firm(&home, home.base(), &full);
+        assert!(!refused.status.success(), "{args:?} unexpectedly succeeded");
+        let stderr = String::from_utf8_lossy(&refused.stderr).to_string();
+        assert!(
+            stderr.contains("RETIRED_WRITE_AUTHORITY") && stderr.contains(replacement),
+            "{args:?} must name {replacement}: {stderr}"
+        );
+        assert_eq!(
+            file_snapshot(&store_root),
+            before_help,
+            "{args:?} changed durable Store bytes"
+        );
+    }
+
     let completed = run_firm(
         &home,
         home.base(),
