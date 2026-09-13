@@ -185,8 +185,10 @@ impl HarnessStore {
     }
 
     /// One Work's complete version chain from both journals, strictly in
-    /// version order. Ties (the same version present in both journals) keep
-    /// the ledger record, matching [`Self::latest_works_unlocked`].
+    /// version order. History hides no persisted row, so if one version is
+    /// somehow present in both journals both records are returned, the ledger
+    /// one first — the same precedence [`Self::latest_works_unlocked`] applies
+    /// when it folds a tie.
     pub fn work_history(&self, work_id: &str) -> StoreResult<Vec<WorkJournalRecord>> {
         let mut records = self
             .work_journal_unlocked()?
