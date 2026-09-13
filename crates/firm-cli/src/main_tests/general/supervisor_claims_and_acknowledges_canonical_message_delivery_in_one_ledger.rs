@@ -84,6 +84,133 @@ fn supervisor_claims_and_acknowledges_canonical_message_delivery_in_one_ledger()
         &created,
         &lease,
         &lease.execution_space_id,
+        "canonical-informational-boundary-context",
+        &member.agent_member_id,
+        &host.agent_member_id,
+        harness_core::agentfirm_api::MessageKind::Message,
+        "include this constraint with the next real cycle",
+        "canonical-informational-boundary-correlation",
+        None,
+        harness_core::agentfirm_api::ResponseIntent::Informational,
+    );
+    assert!(
+        claim_canonical_messages_for_member(&ledger, &host)
+            .expect("informational-only wake check")
+            .is_empty(),
+        "informational-only mail must remain queued instead of waking an idle member"
+    );
+    let boundary_message = claim_canonical_messages_for_cycle_boundary(&ledger, &host)
+        .expect("already-selected cycle boundary claim")
+        .pop()
+        .expect("informational context joins an already-selected cycle");
+    assert_eq!(
+        boundary_message.id,
+        "canonical-informational-boundary-context"
+    );
+    let boundary_delivery = store
+        .fabric_message_deliveries(&lease.execution_space_id)
+        .expect("boundary delivery after claim")
+        .into_iter()
+        .find(|delivery| delivery.message_id == boundary_message.id)
+        .expect("boundary delivery exists");
+    assert_eq!(
+        boundary_delivery.status,
+        harness_core::agentfirm_api::CanonicalMessageDeliveryStatus::Claimed
+    );
+    assert!(
+        boundary_delivery.provider_receipt_id.is_none(),
+        "claiming boundary context must not fabricate provider acceptance"
+    );
+    mark_message_delivered(
+        &ledger,
+        &boundary_message,
+        &host.id,
+        &host.name,
+        "provider-receipt-informational-boundary",
+    )
+    .expect("settle boundary context after explicit provider acceptance");
+    for (id, body) in [
+        ("canonical-boundary-partial-1", "first boundary message"),
+        ("canonical-boundary-partial-2", "second boundary message"),
+    ] {
+        author_test_canonical_message(
+            &store,
+            &created,
+            &lease,
+            &lease.execution_space_id,
+            id,
+            &member.agent_member_id,
+            &host.agent_member_id,
+            harness_core::agentfirm_api::MessageKind::Message,
+            body,
+            "canonical-boundary-partial-correlation",
+            None,
+            harness_core::agentfirm_api::ResponseIntent::Informational,
+        );
+    }
+    let host_session = store
+        .fabric_agent_sessions(&lease.execution_space_id)
+        .expect("Host session")
+        .into_iter()
+        .find(|session| session.agent_member_id == host.agent_member_id)
+        .expect("one Host session");
+    let partial_error =
+        claim_canonical_messages_with_before_claim(&ledger, &host, false, |index, delivery| {
+            if index == 1 {
+                // A concurrent exact-daemon claimant wins the second delivery
+                // after the boundary caller already claimed the first. The
+                // caller's subsequent store claim must lose real durable
+                // validation rather than returning a partially rendered input.
+                store.claim_message_for_provider(
+                    &canonical_delivery_context(
+                        &lease.execution_space_id,
+                        &lease.node_daemon_id,
+                        "test.message_boundary.competing_claim",
+                        format!("{}:competing-claim", delivery.id),
+                        delivery.version.saturating_sub(1),
+                    ),
+                    &delivery.id,
+                    &host_session.node_id,
+                    &lease.node_daemon_id,
+                    lease.node_daemon_generation,
+                    "competing-boundary-claim",
+                    harness_core::agentfirm_api::RuntimeDispatchMode::StartIfIdle,
+                    &now_string(),
+                )?;
+            }
+            Ok(())
+        })
+        .expect_err("second delivery's competing claim must abort cycle input assembly");
+    assert!(
+        partial_error
+            .to_string()
+            .contains("only the target NodeDaemon can claim a queued MessageDelivery"),
+        "unexpected second-claim validation error: {partial_error}"
+    );
+    let partial_deliveries = store
+        .fabric_message_deliveries(&lease.execution_space_id)
+        .expect("partial boundary deliveries")
+        .into_iter()
+        .filter(|delivery| {
+            delivery
+                .message_id
+                .starts_with("canonical-boundary-partial-")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(partial_deliveries.len(), 2);
+    assert!(partial_deliveries.iter().all(|delivery| {
+        delivery.status == harness_core::agentfirm_api::CanonicalMessageDeliveryStatus::Claimed
+            && delivery.provider_receipt_id.is_none()
+    }));
+    assert_ne!(
+        partial_deliveries[0].claim_id, partial_deliveries[1].claim_id,
+        "the boundary caller and competing claimant remain separately reconcilable"
+    );
+    author_test_canonical_message(
+        &store,
+        &created,
+        &lease,
+        &lease.execution_space_id,
         "canonical-supervisor-message",
         &member.agent_member_id,
         &host.agent_member_id,

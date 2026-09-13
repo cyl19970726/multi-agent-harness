@@ -672,6 +672,37 @@ pub(super) fn claim_canonical_messages_for_member(
     ledger: &TeamRunLedger,
     member: &ProviderRuntimeProjection,
 ) -> CliResult<Vec<TeamMessageProjection>> {
+    claim_canonical_messages(ledger, member, true)
+}
+
+/// Claim every queued message that is eligible at an already-selected provider
+/// cycle boundary. Unlike [`claim_canonical_messages_for_member`], this does
+/// not require mail to be a wake trigger: the cycle already has a primary
+/// purpose such as Work, continuation, acceptance, or Host attention.
+pub(super) fn claim_canonical_messages_for_cycle_boundary(
+    ledger: &TeamRunLedger,
+    member: &ProviderRuntimeProjection,
+) -> CliResult<Vec<TeamMessageProjection>> {
+    claim_canonical_messages(ledger, member, false)
+}
+
+fn claim_canonical_messages(
+    ledger: &TeamRunLedger,
+    member: &ProviderRuntimeProjection,
+    require_round_trigger: bool,
+) -> CliResult<Vec<TeamMessageProjection>> {
+    claim_canonical_messages_with_before_claim(ledger, member, require_round_trigger, |_, _| Ok(()))
+}
+
+pub(super) fn claim_canonical_messages_with_before_claim(
+    ledger: &TeamRunLedger,
+    member: &ProviderRuntimeProjection,
+    require_round_trigger: bool,
+    mut before_claim: impl FnMut(
+        usize,
+        &harness_core::agentfirm_api::CanonicalMessageDelivery,
+    ) -> CliResult<()>,
+) -> CliResult<Vec<TeamMessageProjection>> {
     let run = latest_team_run(&ledger.store, &ledger.run_id)?;
     let execution_space_id = team_run_execution_space_id(&ledger.store, &run)?;
     let sessions = ledger
@@ -736,11 +767,12 @@ pub(super) fn claim_canonical_messages_for_member(
                     == harness_core::agentfirm_api::MessageKind::ProviderInteractionResponse
         })
     });
-    if !triggers_round {
+    if require_round_trigger && !triggers_round {
         return Ok(Vec::new());
     }
     let mut claimed_messages = Vec::new();
-    for delivery in queued {
+    for (index, delivery) in queued.into_iter().enumerate() {
+        before_claim(index, &delivery)?;
         let source = messages.get(&delivery.message_id).ok_or_else(|| {
             CliError::Usage(format!(
                 "canonical RegistryDeliveryAttempt {} references missing TeamMessageProjection {}",

@@ -190,10 +190,13 @@ Queued → Routed → Claimed → ProviderReceived → Acknowledged
   a second ledger.
 - A Team-subject delivery is claimed by one member as an atomic transition on
   the same row; a stale or duplicate claim has zero side effects.
-- Ordinary mail is injected at the recipient's **next safe provider cycle**;
-  it does not interrupt the current turn. Steer is the separate same-turn
-  control. Offline/Detached recipients keep the delivery honestly Queued — no
-  invented sessions.
+- Ordinary mail is supplied at a recipient provider-cycle boundary; it does
+  not interrupt the current turn. On builds with managed boundary-context
+  delivery, already queued mail accompanies an otherwise-selected cycle,
+  including Work continuation. Older builds may hold informational mail until
+  a response-required round: verify the installed version. Steer is a separate
+  capability-checked control. Offline/Detached recipients keep delivery
+  honestly Queued — no invented sessions.
 - `informational` intent does not start a provider round by itself; select
   `response-required` only when an answer or action is genuinely needed. This
   is what prevents two agents from bouncing acknowledgement mail forever.

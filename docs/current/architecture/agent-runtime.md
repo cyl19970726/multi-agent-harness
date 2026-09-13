@@ -218,6 +218,36 @@ provider effect goes through a `RuntimeCommand`.
 The source and target may be the same NodeDaemon. That does not allow a second
 Message, sequence, or delivery authority.
 
+### Managed message boundaries
+
+Wake intent and cycle context are separate. A queued `response_required`
+Message can wake an eligible idle managed member; informational mail alone
+cannot. Once another ordinary cycle is selected (Work, continuation,
+acceptance, Host attention, or Messages), its input also includes the queued
+Messages successfully claimed for that input boundary, including informational
+mail. The same canonical claim and exact Session/NodeDaemon fences apply.
+Claims are individually fenced, not an atomic freeze of the whole mailbox.
+Later arrivals stay queued; a failed or uncertain claim follows the existing
+reconciliation path and cannot be represented as accepted input.
+
+The cycle retains one primary purpose. Its conversation section does not grant
+Work ownership, resume blocked Work, or authorize implementation after
+submission. A recipient checks the current linked Work before acting on delayed
+instructions. A message-only cycle does not create responsibility.
+
+Only Messages actually rendered in the accepted input receive that cycle's
+provider receipt. The managed delivery bridge also advances the recipient's
+transport ACK at this handoff; neither fact proves the model read, understood,
+or acted on the text. Native input and an explicit correlated response are
+needed to establish those separate observations. Failed or uncertain handoffs
+retain the existing explicit reconciliation boundary; no blind replay.
+
+Ordinary Messages never interrupt a running turn. Explicit Steer remains a
+separate capability-checked RuntimeCommand; adapter support alone does not
+establish an ordinary-Message injection path. Kimi ACP without reviewed steer
+support waits for a real turn boundary. Interrupt ends a turn, not its Work,
+and does not by itself pause automatic continuation.
+
 ### Cross-node messaging
 
 The source NodeDaemon remains the only Message author. The Control Plane owns
