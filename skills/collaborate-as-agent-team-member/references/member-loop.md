@@ -168,6 +168,15 @@ and reviewer qualifications — see shared hard invariants §6.
 
 ## Read And Send Work-Linked Conversation
 
+At each new turn, read the supplied conversation context and your current
+inbox before continuing. A Work or continuation prompt can carry queued mail
+without creating another assignment. For delayed Work-linked instructions,
+read the current Work: `Review`, `Blocked`, `OnHold`, or `Closed` never becomes
+permission to implement merely because the message says to continue. Explain
+any mismatch to the Host and retain the current Work boundary. A transport ACK
+is automatic handoff evidence, not your semantic response; answer a request
+through the ordinary correlated Message when an answer is needed.
+
 Read actionable mail, or include history when needed:
 
 ```bash

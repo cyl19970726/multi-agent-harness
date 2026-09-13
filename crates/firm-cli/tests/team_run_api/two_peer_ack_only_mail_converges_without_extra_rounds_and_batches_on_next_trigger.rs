@@ -46,6 +46,23 @@ fn two_peer_ack_only_mail_converges_without_extra_rounds_and_batches_on_next_tri
         .as_str()
         .unwrap()
         .to_string();
+    let (status, prestart_context) = serve.post_json(
+        &format!("/v1/team-runs/{run_id}/messages"),
+        &serde_json::json!({
+            "sender_kind": "member_run",
+            "sender_id": member_b,
+            "sender_runtime_id": member_b,
+            "recipient_runtime_ids": [member_a],
+            "kind": "message",
+            "response_intent": "informational",
+            "body": "CONSTRAINT: read this before the initial Work side effects",
+        }),
+    );
+    assert_eq!(status, 200, "body: {prestart_context}");
+    let prestart_context_id = prestart_context["result"]["id"]
+        .as_str()
+        .expect("prestart context message id")
+        .to_string();
     let (status, started) = serve.post_json(
         &format!("/v1/team-runs/{run_id}/start"),
         &serde_json::json!({}),
@@ -84,7 +101,10 @@ fn two_peer_ack_only_mail_converges_without_extra_rounds_and_batches_on_next_tri
         std::fs::read_to_string(prompts)
             .unwrap_or_default()
             .lines()
-            .filter(|line| line.contains("TEAM MESSAGES arrived."))
+            .filter(|line| {
+                line.contains("TEAM MESSAGES at this cycle boundary")
+                    && !line.contains("CURRENT WORK")
+            })
             .count()
     };
 
@@ -100,6 +120,21 @@ fn two_peer_ack_only_mail_converges_without_extra_rounds_and_batches_on_next_tri
         std::thread::sleep(Duration::from_millis(20));
     }
     assert!(round_one, "both peers must finish round one and go idle");
+    let first_cycle_log = std::fs::read_to_string(&prompts).unwrap_or_default();
+    assert!(
+        first_cycle_log.lines().any(|line| {
+            line.contains("CURRENT WORK")
+                && line.contains("CONSTRAINT: read this before the initial Work side effects")
+        }),
+        "the initial Work cycle must include informational context already queued at its boundary: {first_cycle_log}"
+    );
+    let prestart_delivery = snapshot_messages(&serve)
+        .into_iter()
+        .find(|message| message["id"].as_str() == Some(prestart_context_id.as_str()))
+        .map(|message| message["deliveries"][0].clone())
+        .expect("prestart context delivery");
+    assert_eq!(prestart_delivery["status"].as_str(), Some("acknowledged"));
+    assert!(prestart_delivery["provider_receipt_id"].as_str().is_some());
 
     // Ack-only PEER mail must NOT wake an idle peer into a provider round
     // (ADR 0046 §4); the delivery stays durable and queued. This is the
@@ -327,7 +362,9 @@ fn two_peer_ack_only_mail_converges_without_extra_rounds_and_batches_on_next_tri
     let prompt_log = std::fs::read_to_string(&prompts).expect("prompt log");
     let b_round_line = prompt_log
         .lines()
-        .filter(|line| line.contains("TEAM MESSAGES arrived."))
+        .filter(|line| {
+            line.contains("TEAM MESSAGES at this cycle boundary") && !line.contains("CURRENT WORK")
+        })
         .find(|line| line.contains("Start your reviewed lane now"))
         .expect("peer B follow-up prompt");
     let ack_position = b_round_line

@@ -228,13 +228,24 @@ immediately but does not interrupt your current reasoning.
 
   A managed Host uses the same `member message send|reply|request-decision`
   Role Actions as any member.
-- Use `informational` intent for anything that does not need a member
-  provider round; `response-required` mail is what wakes an idle managed
-  member cycle.
-- Steer changes a member's **current** turn only when the provider
-  acknowledges it; a queued Message affects the **next** safe boundary.
-  `team-run interrupt-member --id <run> --member-run-id <id> --reason <text>`
-  stops one turn without closing the member.
+- `informational` does not start a member round by itself. On builds with
+  managed boundary-context delivery, it joins the next otherwise-selected
+  cycle; older builds may retain it until a response-required round. Verify
+  the installed build before relying on that guarantee. Use
+  `response-required` when a response is needed from an eligible idle member.
+- A queued Message is not current-turn steering. Its boundary is the input
+  assembled from successful claims and handed to the provider; later arrivals
+  wait for another cycle. Steer is a separate capability-checked control. Kimi ACP without
+  reviewed steering cannot consume new text inside its active prompt.
+- To make a busy member read a correction before continuing: persist a linked
+  response-required Message first. If continuing the current Work would be
+  wrong, explicitly block that Work at its current version. If sending or
+  blocking fails, reconcile before proceeding. Then interrupt and verify the
+  terminal receipt. Interrupt alone stops one turn; it does not pause Work.
+  Verify the correction in native input and the member's actual response,
+  then explicitly resume only when the current Work permits it. Do not infer
+  understanding from provider receipt or transport ACK. If Message, block,
+  or interrupt fails, reconcile that operation before proceeding.
 - Never order work in chat. If conversation produces durable follow-up,
   create a peer Work and, when ordering is real, mutate the dependency graph
   through `replace-dependencies`.

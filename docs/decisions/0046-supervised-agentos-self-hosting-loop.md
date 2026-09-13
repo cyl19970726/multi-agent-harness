@@ -87,6 +87,14 @@ several persistent Members are useful for one execution.
 
 ### 4. Stable Inbox delivery is state-aware
 
+> Boundary-context update: the managed-cycle policy in
+> [agent-runtime.md](../current/architecture/agent-runtime.md#managed-message-boundaries)
+> supersedes only the informational batching restriction below. Informational
+> mail still does not wake an idle member by itself, but also accompanies the
+> next otherwise-selected cycle. The original rationale and prior behavior
+> remain below as history; response intent, Work authority, and runtime
+> control stay separate.
+
 External UI, CLI, another Agent, or the Supervising Operator sends a durable
 message to the linked Agent identity. Delivery behavior depends on runtime
 state:
