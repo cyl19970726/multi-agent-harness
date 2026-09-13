@@ -159,7 +159,7 @@ fn closed_work_refuses_every_host_mutation_with_one_terminal_code() {
 
     for (verb, error) in &refusals {
         assert!(
-            error.to_string().contains("WORK_TERMINAL_IMMUTABLE"),
+            error.to_string().contains(crate::WORK_TERMINAL_IMMUTABLE),
             "{verb} must refuse a closed Work with the one terminal code: {error}"
         );
     }
@@ -240,7 +240,9 @@ fn terminal_work_refuses_external_evidence_updates() {
         )
         .expect_err("external CI evidence cannot advance a closed Work");
     assert!(
-        evidence.to_string().contains("WORK_TERMINAL_IMMUTABLE"),
+        evidence
+            .to_string()
+            .contains(crate::WORK_TERMINAL_IMMUTABLE),
         "error: {evidence}"
     );
     assert_eq!(

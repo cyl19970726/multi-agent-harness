@@ -668,17 +668,24 @@ pub(super) fn migration_host_work_context(
             Err(error) => unresolved.push(format!("{run_id}: {error}")),
         }
     }
+    // A run whose Host cannot be resolved is not a run to skip: the sweep
+    // would still reach its Work and refuse mid-migration. Name it here
+    // instead, so the operator scopes or repairs it before anything runs.
+    if !unresolved.is_empty() {
+        return Err(CliError::Usage(format!(
+            "MIGRATION_HOST_UNRESOLVED: {} of {} TeamRun(s) named by this store's Work do not bind one exact active Host AgentMember ({}); rerun with --team-run-id to scope the migration to a resolvable run",
+            unresolved.len(),
+            run_ids.len(),
+            unresolved.join("; ")
+        )));
+    }
     let host_actor = match hosts.len() {
         1 => hosts.into_values().next().expect("one exact Host"),
         0 => {
-            return Err(CliError::Usage(format!(
-                "MIGRATION_HOST_UNRESOLVED: no TeamRun in this store binds one exact active Host AgentMember ({})",
-                if unresolved.is_empty() {
-                    "no Work names a TeamRun".to_string()
-                } else {
-                    unresolved.join("; ")
-                }
-            )));
+            return Err(CliError::Usage(
+                "MIGRATION_HOST_UNRESOLVED: no Work in this store names a TeamRun, so no Host can be resolved"
+                    .to_string(),
+            ));
         }
         _ => {
             return Err(CliError::Usage(format!(
@@ -1191,6 +1198,10 @@ pub(crate) struct GithubPollSummary {
     /// Work(s) whose declared gates all pass after this poll (meaning they are
     /// ready for `work accept`).
     pub gate_ready: Vec<String>,
+    /// Work(s) the Host closed between this pass reading the Work list and
+    /// writing their refreshed evidence. External CI evidence never advances a
+    /// terminal Work, so the row is left as it settled and the pass continues.
+    pub terminal_skipped: Vec<String>,
     pub gh_unavailable: bool,
 }
 
@@ -1200,6 +1211,19 @@ impl GithubPollSummary {
             && self.blocked_on_failure.is_empty()
             && self.gate_ready.is_empty()
     }
+}
+
+/// Classify one Work's evidence-refresh refusal inside a GitHub poll pass.
+///
+/// The pass reads the Work list once and writes per Work, so the Host may
+/// close a Work in between. Terminal Work is immutable, and external CI
+/// evidence has no business reopening a settled responsibility, so that one
+/// refusal is absorbed as a per-Work skip. Every other refusal — a stale
+/// daemon generation, a version conflict, a missing lease — means the pass
+/// itself is wrong and stays fatal. The code is the Store's own exported
+/// constant so the two sides cannot drift.
+pub(super) fn github_poll_refusal_is_terminal_skip(error: &str) -> bool {
+    error.contains(harness_store::WORK_TERMINAL_IMMUTABLE)
 }
 
 /// Refresh the stored GitHub linkage snapshot for every Work on the run that
@@ -1288,18 +1312,26 @@ pub(crate) fn poll_team_run_github_linkages(
                     ))
                 })?;
             let execution_space_id = store.current_team_run_execution_space(&run)?;
-            store
-                .update_work_github_links(
-                    &work.id,
-                    work.version,
-                    refreshed_links,
-                    &execution_space_id,
-                    &daemon,
-                    context,
-                )
-                .map_err(|error| {
-                    CliError::Usage(format!("github poll evidence refresh failed: {error}"))
-                })?;
+            // This pass read `latest_works` once. A Work the Host accepted or
+            // cancelled since then is terminal now, and terminal Work is
+            // immutable: skip that one row instead of failing the whole pass.
+            // Every other refusal stays fatal.
+            if let Err(error) = store.update_work_github_links(
+                &work.id,
+                work.version,
+                refreshed_links,
+                &execution_space_id,
+                &daemon,
+                context,
+            ) {
+                if github_poll_refusal_is_terminal_skip(&error.to_string()) {
+                    summary.terminal_skipped.push(work.id.clone());
+                    continue;
+                }
+                return Err(CliError::Usage(format!(
+                    "github poll evidence refresh failed: {error}"
+                )));
+            }
         }
     }
     Ok(summary)

@@ -55,6 +55,11 @@ impl HarnessStore {
         let memberships = self.fabric_team_memberships(execution_space_id)?;
         let mut entries = Vec::new();
         let mut migrated_work_ids = Vec::new();
+        // Plan every write first. Authority and mutability are checked per
+        // Work, so a refusal on a later Work must not leave earlier ones
+        // already appended: nothing is written until the whole sweep is
+        // proven legal.
+        let mut planned = Vec::new();
         for work in works.values() {
             if team_run_scope.is_some_and(|scope| work.team_run_id != scope) {
                 continue;
@@ -237,7 +242,7 @@ impl HarnessStore {
                     decisions: Vec::new(),
                     delegation_revisions: Vec::new(),
                 };
-                self.append_work_operation_unlocked(&operation)?;
+                planned.push(operation);
                 to_version = Some(work.version + 1);
                 migrated_work_ids.push(work.id.clone());
             }
@@ -248,6 +253,9 @@ impl HarnessStore {
                 accountable_team,
                 assignee,
             });
+        }
+        for operation in &planned {
+            self.append_work_operation_unlocked(operation)?;
         }
         Ok(WorkResponsibilityMigrationReport {
             execution_space_id: execution_space_id.to_string(),

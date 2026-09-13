@@ -624,6 +624,13 @@ fn require_non_empty_store(value: &str, label: &str) -> StoreResult<()> {
     }
 }
 
+/// The refusal code every Host Work writer returns for terminal Work.
+///
+/// Exported because callers outside the Store classify on it — the GitHub
+/// evidence poll absorbs exactly this refusal and stays fatal on every other —
+/// and a copied string literal would drift silently.
+pub const WORK_TERMINAL_IMMUTABLE: &str = "WORK_TERMINAL_IMMUTABLE";
+
 /// The one terminal-immutability choke point for Work writes.
 ///
 /// Closed Work is immutable (docs/current/product/agent-team-works.md). Every
@@ -633,7 +640,7 @@ fn require_non_empty_store(value: &str, label: &str) -> StoreResult<()> {
 /// or doc already publishes one.
 pub(crate) fn require_mutable_work(work: &Work, detail: &str) -> StoreResult<()> {
     firm_core::ensure_work_mutable(work).map_err(|error| {
-        StoreError::Conflict(format!("WORK_TERMINAL_IMMUTABLE: {error}; {detail}"))
+        StoreError::Conflict(format!("{WORK_TERMINAL_IMMUTABLE}: {error}; {detail}"))
     })
 }
 
@@ -648,7 +655,7 @@ pub(crate) fn require_valid_work_transition(
 ) -> StoreResult<()> {
     firm_core::validate_work_transition(current, next, kind).map_err(|error| match error {
         firm_core::WorkLifecycleError::TerminalWork { .. } => {
-            StoreError::Conflict(format!("WORK_TERMINAL_IMMUTABLE: {error}"))
+            StoreError::Conflict(format!("{WORK_TERMINAL_IMMUTABLE}: {error}"))
         }
         firm_core::WorkLifecycleError::InvalidTransition { .. } => StoreError::Conflict(format!(
             "WORK_TRANSITION_INVALID: {error} for Work {}",

@@ -78,11 +78,14 @@ pub fn validate_work_transition(
         | WorkEventKind::Rebound
         | WorkEventKind::ExecutionRetargeted => before == after,
         // A lost execution returns an open or started Work to the dispatchable
-        // state; the responsibility fields are untouched by this rule.
+        // state; the responsibility fields are untouched by this rule. No
+        // precondition on the current resolution: `is_terminal` is phase-only,
+        // and the command deliberately clears a stray resolution a legacy
+        // non-terminal row may carry, so demanding `None` here would be
+        // narrower than the command it fences.
         WorkEventKind::ExecutionRecovered => {
             matches!(before.0, WorkPhase::Open | WorkPhase::Active)
                 && before.1 == WorkCondition::Normal
-                && before.2.is_none()
                 && after == (WorkPhase::Open, WorkCondition::Normal, None)
         }
         WorkEventKind::Created => false,
@@ -179,6 +182,25 @@ mod tests {
         assert_eq!(
             validate_work_transition(&active, &open, WorkEventKind::ExecutionRecovered),
             Ok(())
+        );
+
+        // The command refuses only Review and a non-Normal condition; it
+        // clears a stray resolution on a legacy non-terminal row rather than
+        // refusing it, so the table must admit that repair too.
+        let mut legacy_active = active.clone();
+        legacy_active.resolution = Some(WorkResolution::Cancelled);
+        assert!(!legacy_active.is_terminal());
+        assert_eq!(
+            validate_work_transition(&legacy_active, &open, WorkEventKind::ExecutionRecovered),
+            Ok(())
+        );
+        let mut blocked = active.clone();
+        blocked.condition = WorkCondition::Blocked;
+        assert_eq!(
+            validate_work_transition(&blocked, &open, WorkEventKind::ExecutionRecovered),
+            Err(WorkLifecycleError::InvalidTransition {
+                operation: WorkEventKind::ExecutionRecovered
+            })
         );
 
         // Responsibility and evidence events keep the lifecycle triple fixed.

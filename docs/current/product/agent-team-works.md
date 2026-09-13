@@ -56,9 +56,10 @@ stale revisions, and direct or transitive cycles.
 A cancelled prerequisite does not propagate its resolution. It leaves
 successors not ready and creates Host attention for explicit replan.
 Dependencies are Host-only and may change only while the Work is `open`:
-`replace-dependencies` refuses an active, review or closed Work with
+`replace-dependencies` refuses an active or review Work with
 `WORK_DEPENDENCIES_IMMUTABLE`, and refuses an open Work that still holds an
-active execution binding with `WORK_EXECUTION_BINDING_ACTIVE`. It reconciles
+active execution binding with `WORK_EXECUTION_BINDING_ACTIVE`. A closed Work
+answers the terminal code below, before the phase guard runs. It reconciles
 nothing on the member's behalf. Terminal Work is immutable: every Host writer
 refuses it with `WORK_TERMINAL_IMMUTABLE`.
 

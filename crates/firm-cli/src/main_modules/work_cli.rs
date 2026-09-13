@@ -840,6 +840,7 @@ pub(super) fn team_run_work_command(
                 "links_refreshed": summary.links_refreshed,
                 "blocked_on_failure": summary.blocked_on_failure,
                 "gate_ready": summary.gate_ready,
+                "terminal_skipped": summary.terminal_skipped,
                 "gh_unavailable": summary.gh_unavailable,
             }))
         }

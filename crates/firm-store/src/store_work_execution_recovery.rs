@@ -339,12 +339,12 @@ impl HarnessStore {
                 "WORK_IN_REVIEW_NOT_RECOVERABLE: Work {work_id} is awaiting review; accept it or use request-changes"
             )));
         }
-        // A blocked or on-hold Work carries a durable condition record and a
-        // blocker reason that only `resume` resolves; recovery never clears a
-        // block silently.
+        // A blocked Work carries a durable condition record and a blocker
+        // reason that only `resume` resolves; recovery never clears a block
+        // silently.
         if current.condition != WorkCondition::Normal {
             return Err(StoreError::Conflict(format!(
-                "WORK_CONDITION_NOT_NORMAL: Work {work_id} is {:?}; resume it (team-run work resume) or resolve the hold before recovering its execution",
+                "WORK_CONDITION_NOT_NORMAL: Work {work_id} is {:?}; resume it (team-run work resume) before recovering its execution",
                 current.condition
             )));
         }
