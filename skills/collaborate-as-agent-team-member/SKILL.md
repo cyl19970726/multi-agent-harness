@@ -285,9 +285,10 @@ first action of a run:
   turn, claim/start, plan-first, converse through the CLI, block honestly,
   submit with evidence, survive restart.
 
-Managed Hosts and Members use the Supervisor-bound `member work` commands
-for authenticated Work mutations. The target of assignment is a stable
-TeamMembership, never a MemberRun:
+Member Work writes have exactly one entrance: the Supervisor-bound
+`member work` commands. The Supervisor verifies the capability token and the
+exact MemberRun, AgentSession and NodeDaemon generations before anything is
+written. The target of assignment is a stable TeamMembership, never a MemberRun:
 
 ```bash
 "$FIRM_BIN" member work create --work-id <work-id> --expected-version 0 \
@@ -296,15 +297,29 @@ TeamMembership, never a MemberRun:
 "$FIRM_BIN" member work assign --work-id <work-id> \
   --expected-version <created-version> --membership-id <team-membership-id>
 "$FIRM_BIN" member work accept --work-id <work-id> --expected-version <submitted-version>
+"$FIRM_BIN" member work request-changes --work-id <work-id> \
+  --expected-version <submitted-version> --reason "<exact failing gate>"
+"$FIRM_BIN" member work cancel --work-id <work-id> \
+  --expected-version <current-version> --reason "<why it is obsolete>"
 ```
+
+A Member creates its own follow-up Work through the same `member work create`:
+the Work is always unassigned, carries the Member's own `created_by_member_id`,
+and never an owner or assignee. Use `--claim-mode team_claim` so membership
+responsibility can be claimed afterwards.
 
 Keep the injected collaboration envelope intact: the Supervisor authenticates
 the sender and reconstructs authority. These commands do not grant an ordinary
-Member the Host's assignment rights. A missing bound command is not permission
-to fall back to a local operator mutation and call it authenticated Host work.
+Member the Host's assignment or cancellation rights. A missing bound command is
+not permission to fall back to a local operator mutation and call it
+authenticated Host work.
 
-The following `team-run` mutation examples are local operator command shapes,
-not evidence of a managed Host's authenticated actions:
+The local `team-run work` member verbs are retired. `claim`, `start`, `submit`,
+`block|resume|release --member-run-id`, and `create --as-member-run-id` refuse
+with `RETIRED_WRITE_AUTHORITY` naming their `member work` replacement; they
+proved only that the caller could read an environment variable. The remaining
+`team-run` mutation examples are local operator/Host command shapes, not
+evidence of a managed Host's authenticated actions:
 
 ```bash
 # Host creates a Work that only explicit membership assignment may claim:
@@ -321,8 +336,7 @@ firm team-run work assign \
   --membership-id <team-membership-id> \
   --idempotency-key <stable-command-key>
 
-# Either role creates an open Work for eligible claim
-# (a Member adds --as-member-run-id "$FIRM_MEMBER_RUN_ID" so provenance is its own):
+# Host creates an open Work for eligible claim:
 firm team-run work create \
   --team-run-id <team-run-id> \
   --title "<follow-up responsibility>" \
@@ -438,10 +452,10 @@ Harness has no Plan Gate and it blocks headless members indefinitely (ADR
   Naming neither flag is refused with `REPORT_EVIDENCE_MISSING`,
   except for a submission that carries a structured GitHub link
   (`--github-pr owner/repo#N`): that link is the evidence, and the candidate
-  is derived from it (#369). This link exception applies only to the Host
-  submit surface that accepts `--github-pr`; bound `member work submit` must
-  select one of the two flags. Never fabricate a candidate revision to make a
-  report-only Work fit the commit-shaped path.
+  is derived from it (#369). `member work submit` accepts `--github-pr`, so
+  the link exception now lives on the one authenticated entrance. Never
+  fabricate a candidate revision to make a report-only Work fit the
+  commit-shaped path.
 
 Short example (one gate shown; list every gate the Work names):
 
