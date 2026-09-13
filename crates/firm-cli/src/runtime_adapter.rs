@@ -41,17 +41,18 @@ use crate::provider_adapter::{self, PendingProviderControl, ProviderControlDispa
 use crate::settlements::{APPLIED_SATISFIED, UNPROVEN};
 use crate::supervisor_wake::{WakeBackoff, WakePolicy};
 use crate::{
-    active_work_continuation_prompt, emit_native_session_wake, mark_message_delivered,
-    member_work_collaboration_envelope, native_session_ref, now_string, parse_round_result,
-    prepare_provider_effect, record_provider_cycle_correlation,
-    refresh_member_after_provider_callbacks, requeue_managed_host_attentions,
-    require_provider_session_authority, settle_managed_host_attentions, settle_provider_effect,
-    settle_provider_effect_not_applied, stop_member_for_latched_close, team_messages_prompt,
-    transition_provider_session_for_member, wait_for_idle_member_wake, work_contract_prompt,
-    ClaimedWork, CliError, CliResult, ControlReceiver, HostAttention, IdleMemberWake,
-    LiveMemberControlRegistration, MemberActionStatus, MemberControlCommand, MemberOutcome,
-    MemberRoundResult, MemberRunStatus, MemberRuntimeContext, NativeSessionWakeGuard,
-    ProviderRuntimeProjection, TeamMessageProjection, TeamRunEventSourceKind, TeamRunLedger,
+    active_work_continuation_prompt, claim_canonical_messages_for_cycle_boundary,
+    emit_native_session_wake, mark_message_delivered, member_work_collaboration_envelope,
+    native_session_ref, now_string, parse_round_result, prepare_provider_effect,
+    record_provider_cycle_correlation, refresh_member_after_provider_callbacks,
+    requeue_managed_host_attentions, require_provider_session_authority,
+    settle_managed_host_attentions, settle_provider_effect, settle_provider_effect_not_applied,
+    stop_member_for_latched_close, team_messages_prompt, transition_provider_session_for_member,
+    wait_for_idle_member_wake, work_contract_prompt, ClaimedWork, CliError, CliResult,
+    ControlReceiver, HostAttention, IdleMemberWake, LiveMemberControlRegistration,
+    MemberActionStatus, MemberControlCommand, MemberOutcome, MemberRoundResult, MemberRunStatus,
+    MemberRuntimeContext, NativeSessionWakeGuard, ProviderRuntimeProjection, TeamMessageProjection,
+    TeamRunEventSourceKind, TeamRunLedger,
 };
 
 #[path = "runtime_adapter/native_session_binding.rs"]

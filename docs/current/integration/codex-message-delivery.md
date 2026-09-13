@@ -108,12 +108,13 @@ latest queued CanonicalMessageDelivery
   -> claim under current NodeDaemon / Team Supervisor authority
   -> submit envelope to the same-process app-server adapter
   -> record provider_received or failed
-  -> record acknowledged only when that exact recipient consumes it
+  -> record the managed bridge transport acknowledgement for that handoff
 ```
 
 `provider_received` means the adapter accepted the envelope for the frozen
-AgentSession and native thread. `acknowledged` means that recipient consumed the
-envelope. Neither means the model agreed, executed Work, answered a question or
+AgentSession and native thread. `acknowledged` is the managed bridge's recipient transport handoff
+record, currently advanced alongside receipt; it is not a model-authored read
+confirmation. Neither means the model agreed, executed Work, answered a question or
 obtained approval. Semantic response is a correlated Message, Work transition,
 Host review action, or real RuntimeCommand result.
 
@@ -126,12 +127,19 @@ is not inferred from a transport receipt.
 
 | Member/runtime state | Ordinary Message |
 | --- | --- |
-| live and idle | deliver next eligible delivery as a new turn |
+| live and idle | response-required mail may start a turn; informational alone stays queued |
 | current turn running | retain queued until the next eligible round |
 | waiting on a provider question | answer with an exact correlated `provider_interaction_response` |
 | interrupted but runtime open | allow a later ordinary turn |
 | explicitly closed | reject normal delivery |
 | native session unavailable/incompatible | show blocker; do not fabricate resume |
+
+An otherwise-selected Work, continuation, acceptance, or Host-attention cycle
+also carries its eligible queued Messages, including informational context.
+This does not turn a Message into Work authority. The successfully claimed deliveries define
+this input boundary; it is not an atomic claim of the whole mailbox. Later
+arrivals remain queued; failed or uncertain claims follow reconciliation. Receipt records cover only the
+Messages included in the accepted input.
 
 Ordinary Messages never interrupt a busy turn. Steer is a separate
 RuntimeCommand and uses `turn/steer` only when the snapshotted mode supports it.

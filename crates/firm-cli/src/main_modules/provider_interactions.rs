@@ -1117,7 +1117,7 @@ pub(super) fn active_work_continuation_prompt(
     }
     format!(
         "ACTIVE WORK CONTINUATION\n\
-         Work {work_id} version {work_version} is still assigned to this ProviderRuntimeProjection and has not reached review or a terminal state. No new canonical Work delivery or TeamMessageProjection was created: continue the same durable responsibility in the same provider-native session. Inspect the native session and Workspace before acting so you do not duplicate completed effects.\n\n{}",
+         Work {work_id} version {work_version} is still assigned to this ProviderRuntimeProjection and has not reached review or a terminal state. Continue the same durable responsibility in the same provider-native session. Inspect the native session, current Work state, and Workspace before acting so you do not duplicate completed effects.\n\n{}",
         work_contract_prompt(objective, member, work, envelope),
         work_id = work.id,
         work_version = work.version,

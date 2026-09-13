@@ -84,6 +84,56 @@ fn supervisor_claims_and_acknowledges_canonical_message_delivery_in_one_ledger()
         &created,
         &lease,
         &lease.execution_space_id,
+        "canonical-informational-boundary-context",
+        &member.agent_member_id,
+        &host.agent_member_id,
+        harness_core::agentfirm_api::MessageKind::Message,
+        "include this constraint with the next real cycle",
+        "canonical-informational-boundary-correlation",
+        None,
+        harness_core::agentfirm_api::ResponseIntent::Informational,
+    );
+    assert!(
+        claim_canonical_messages_for_member(&ledger, &host)
+            .expect("informational-only wake check")
+            .is_empty(),
+        "informational-only mail must remain queued instead of waking an idle member"
+    );
+    let boundary_message = claim_canonical_messages_for_cycle_boundary(&ledger, &host)
+        .expect("already-selected cycle boundary claim")
+        .pop()
+        .expect("informational context joins an already-selected cycle");
+    assert_eq!(
+        boundary_message.id,
+        "canonical-informational-boundary-context"
+    );
+    let boundary_delivery = store
+        .fabric_message_deliveries(&lease.execution_space_id)
+        .expect("boundary delivery after claim")
+        .into_iter()
+        .find(|delivery| delivery.message_id == boundary_message.id)
+        .expect("boundary delivery exists");
+    assert_eq!(
+        boundary_delivery.status,
+        harness_core::agentfirm_api::CanonicalMessageDeliveryStatus::Claimed
+    );
+    assert!(
+        boundary_delivery.provider_receipt_id.is_none(),
+        "claiming boundary context must not fabricate provider acceptance"
+    );
+    mark_message_delivered(
+        &ledger,
+        &boundary_message,
+        &host.id,
+        &host.name,
+        "provider-receipt-informational-boundary",
+    )
+    .expect("settle boundary context after explicit provider acceptance");
+    author_test_canonical_message(
+        &store,
+        &created,
+        &lease,
+        &lease.execution_space_id,
         "canonical-supervisor-message",
         &member.agent_member_id,
         &host.agent_member_id,
