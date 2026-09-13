@@ -1195,7 +1195,11 @@ fn responsibility_migration_is_append_only_reported_and_never_guesses() {
 
     let before_rows = work_operations_raw(store);
     let report = store
-        .migrate_work_responsibility(SPACE, host_work_context("host-migrate", "migrate", "t3"))
+        .migrate_work_responsibility(
+            SPACE,
+            None,
+            host_work_context("host-migrate", "migrate", "t3"),
+        )
         .expect("migration runs");
     assert_eq!(report.execution_space_id, SPACE);
     let mut migrated = report.migrated_work_ids.clone();
@@ -1310,6 +1314,7 @@ fn responsibility_migration_is_append_only_reported_and_never_guesses() {
     let second = store
         .migrate_work_responsibility(
             SPACE,
+            None,
             host_work_context("host-migrate", "migrate-again", "t5"),
         )
         .expect("second migration run");
@@ -1370,6 +1375,7 @@ fn terminal_work_refuses_both_ledger_shaped_updated_writers() {
     let migrate = store
         .migrate_work_responsibility(
             SPACE,
+            None,
             host_work_context("host-terminal-updated", "migrate-terminal", "t2"),
         )
         .expect_err("responsibility migration cannot advance a closed Work");
@@ -1382,4 +1388,88 @@ fn terminal_work_refuses_both_ledger_shaped_updated_writers() {
         before,
         "a refused Updated writer appends nothing"
     );
+}
+
+/// The migration writes ordinary `Updated` WorkOperations, so it needs the
+/// exact Host of each Work's own TeamRun — the same authority every other Host
+/// Work verb needs. A Host-shaped actor that is not that Host, and a non-Host
+/// actor, are both refused before any row is appended.
+#[test]
+fn responsibility_migration_requires_the_exact_team_run_host() {
+    let fixture = TestStore::new("migration-authority");
+    let store = &fixture.store;
+    let run = seed_team(
+        store,
+        "migrate-authority",
+        &["host-migrate-authority", "worker-migrate-authority"],
+    );
+    append_legacy_work_row(
+        store,
+        &run.id,
+        "host-migrate-authority",
+        "work-legacy-authority",
+        Some("worker-migrate-authority"),
+        None,
+    );
+    let before = work_operations_raw(store);
+
+    let operator = store
+        .migrate_work_responsibility(
+            SPACE,
+            None,
+            WorkCommandContext {
+                performed_by_actor: TeamActorRef {
+                    kind: TeamActorKind::Operator,
+                    id: "host-migrate-authority".into(),
+                    display_name: None,
+                    authn_source: Some("test".into()),
+                },
+                ..host_work_context("host-migrate-authority", "migrate-operator", "t1")
+            },
+        )
+        .expect_err("a non-Host actor cannot migrate responsibility");
+    assert!(
+        operator.to_string().contains("Host authority is required"),
+        "unexpected error: {operator}"
+    );
+
+    let impostor = store
+        .migrate_work_responsibility(
+            SPACE,
+            None,
+            host_work_context("migration-host", "migrate-impostor", "t2"),
+        )
+        .expect_err("a Host-shaped actor that is not the TeamRun Host is refused");
+    assert!(
+        impostor
+            .to_string()
+            .contains("TEAM_RUN_HOST_AUTHORITY_MISMATCH"),
+        "unexpected error: {impostor}"
+    );
+    assert_eq!(
+        work_operations_raw(store),
+        before,
+        "a refused migration appends nothing"
+    );
+
+    let report = store
+        .migrate_work_responsibility(
+            SPACE,
+            None,
+            host_work_context("host-migrate-authority", "migrate-exact", "t3"),
+        )
+        .expect("the exact TeamRun Host migrates");
+    assert_eq!(report.migrated_work_ids, ["work-legacy-authority"]);
+    assert_eq!(work_operations_raw(store).len(), before.len() + 1);
+
+    // A scope narrows the sweep without widening the authority rule.
+    let scoped = store
+        .migrate_work_responsibility(
+            SPACE,
+            Some("team-run-absent"),
+            host_work_context("host-migrate-authority", "migrate-scoped", "t4"),
+        )
+        .expect("an empty scope is a reported no-op");
+    assert!(scoped.migrated_work_ids.is_empty());
+    assert!(scoped.entries.is_empty());
 }

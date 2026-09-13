@@ -233,7 +233,9 @@ work list --team-run-id <id> [--brief] [--since <cursor>]
 work show --work-id <id>
 work assign --work-id <id> --expected-version <n> --membership-id <id> [--idempotency-key <key>]
   (canonical TeamMembership responsibility; runtime ids are not Work authority)
-work migrate-responsibility  (append-only DOC-106 cutover of legacy TeamRun-scoped Work)
+work migrate-responsibility [--team-run-id <id>] [--actor <host>]
+  Append-only DOC-106 cutover; the Host comes from the stored TeamRun
+  and --actor may only assert it.
 work accept --work-id <id> --expected-version <n> [--idempotency-key <key>]
 work request-changes --work-id <id> --expected-version <n> --reason <text> [--idempotency-key <key>]
 work poll-github-ci --team-run-id <id>

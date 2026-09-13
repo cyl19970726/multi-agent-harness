@@ -636,22 +636,83 @@ pub(super) fn team_run_id_for_work(store: &HarnessStore, work_id: &str) -> CliRe
         .ok_or_else(|| CliError::Usage(format!("Work not found: {work_id}")))
 }
 
-pub(super) fn migration_host_work_context(args: &[String]) -> WorkCommandContext {
-    WorkCommandContext {
-        event_id: value(args, "--event-id").unwrap_or_else(|| generated_id("work-event")),
-        performed_by_actor: TeamActorRef {
-            kind: TeamActorKind::Host,
-            id: value(args, "--actor").unwrap_or_else(|| "migration-host".to_string()),
-            display_name: None,
-            authn_source: Some("local_cli_migration".to_string()),
-        },
-        authority_actor: None,
-        causation_ref: work_causation(args),
-        idempotency_key: value(args, "--idempotency-key")
-            .unwrap_or_else(|| generated_id("work-command")),
-        created_at: now_string(),
-        duplicate_ok: has_flag(args, "--duplicate-ok"),
+/// Resolve the exact Host that may run a responsibility migration, and the
+/// TeamRun the sweep is scoped to.
+///
+/// The migration writes ordinary `Updated` WorkOperations, so it needs the
+/// same authority every other Host Work verb needs: the stored TeamRun Host
+/// actor, not a name the caller types. `--team-run-id` scopes the sweep to one
+/// run; without it the Host must be unambiguous across every TeamRun the
+/// store's Work names. `--actor` is only an assertion the caller may make
+/// about the resolved Host, never a way to name a different one.
+pub(super) fn migration_host_work_context(
+    store: &HarnessStore,
+    args: &[String],
+) -> CliResult<(Option<String>, WorkCommandContext)> {
+    let scope = value(args, "--team-run-id");
+    let run_ids = match scope.as_deref() {
+        Some(run_id) => BTreeSet::from([run_id.to_string()]),
+        None => store
+            .latest_works()?
+            .into_iter()
+            .map(|work| work.team_run_id)
+            .collect::<BTreeSet<_>>(),
+    };
+    let mut hosts = BTreeMap::new();
+    let mut unresolved = Vec::new();
+    for run_id in &run_ids {
+        match store.exact_team_run_host_actor(run_id) {
+            Ok(actor) => {
+                hosts.insert(actor.id.clone(), actor);
+            }
+            Err(error) => unresolved.push(format!("{run_id}: {error}")),
+        }
     }
+    let host_actor = match hosts.len() {
+        1 => hosts.into_values().next().expect("one exact Host"),
+        0 => {
+            return Err(CliError::Usage(format!(
+                "MIGRATION_HOST_UNRESOLVED: no TeamRun in this store binds one exact active Host AgentMember ({})",
+                if unresolved.is_empty() {
+                    "no Work names a TeamRun".to_string()
+                } else {
+                    unresolved.join("; ")
+                }
+            )));
+        }
+        _ => {
+            return Err(CliError::Usage(format!(
+                "MIGRATION_HOST_AMBIGUOUS: this store's Work spans {} exact Hosts ({}); rerun with --team-run-id to migrate one TeamRun at a time",
+                hosts.len(),
+                hosts.keys().cloned().collect::<Vec<_>>().join(", ")
+            )));
+        }
+    };
+    if let Some(claimed) = value(args, "--actor") {
+        if claimed != host_actor.id {
+            return Err(CliError::Usage(format!(
+                "MIGRATION_HOST_MISMATCH: --actor {claimed} is not the exact Host {} for this migration",
+                host_actor.id
+            )));
+        }
+    }
+    Ok((
+        scope,
+        WorkCommandContext {
+            event_id: value(args, "--event-id").unwrap_or_else(|| generated_id("work-event")),
+            performed_by_actor: TeamActorRef {
+                display_name: None,
+                authn_source: Some("local_cli_exact_team_host".to_string()),
+                ..host_actor.clone()
+            },
+            authority_actor: Some(host_actor),
+            causation_ref: work_causation(args),
+            idempotency_key: value(args, "--idempotency-key")
+                .unwrap_or_else(|| generated_id("work-command")),
+            created_at: now_string(),
+            duplicate_ok: has_flag(args, "--duplicate-ok"),
+        },
+    ))
 }
 
 pub(super) fn member_work_context(

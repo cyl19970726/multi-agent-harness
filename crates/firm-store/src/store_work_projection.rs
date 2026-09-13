@@ -29,9 +29,14 @@ impl HarnessStore {
     /// versions, Operation/Event history, provenance, reports, evidence, gates
     /// and decisions are preserved: the only writes are new `Updated`
     /// WorkOperations appended to the same `work_operations.jsonl` authority.
+    /// `team_run_scope` restricts the sweep to one TeamRun. Every Work the
+    /// migration writes is gated on the exact Host of that Work's own TeamRun,
+    /// so a store whose Work spans several Teams migrates one Host at a time
+    /// instead of letting any Host-shaped actor rewrite all of it.
     pub fn migrate_work_responsibility(
         &self,
         execution_space_id: &str,
+        team_run_scope: Option<&str>,
         context: WorkCommandContext,
     ) -> StoreResult<firm_core::WorkResponsibilityMigrationReport> {
         use firm_core::{
@@ -51,6 +56,9 @@ impl HarnessStore {
         let mut entries = Vec::new();
         let mut migrated_work_ids = Vec::new();
         for work in works.values() {
+            if team_run_scope.is_some_and(|scope| work.team_run_id != scope) {
+                continue;
+            }
             let accountable_team = match work.accountable_team_id.as_deref() {
                 Some(team_id) if teams.contains_key(team_id) => {
                     WorkResponsibilityResolution::AlreadyCanonical
@@ -172,6 +180,13 @@ impl HarnessStore {
                 matches!(assignee, WorkResponsibilityResolution::Resolved { .. });
             let mut to_version = None;
             if needs_team_write || needs_assignee_write {
+                // The same authority rule every other Host Work verb uses: the
+                // exact Host actor stored on this Work's own TeamRun, proven
+                // against the AgentTeam Host and its active Host membership.
+                self.require_exact_team_run_host_actor(
+                    &context.performed_by_actor,
+                    &work.team_run_id,
+                )?;
                 require_mutable_work(
                     work,
                     "a closed Work keeps the responsibility it settled with",

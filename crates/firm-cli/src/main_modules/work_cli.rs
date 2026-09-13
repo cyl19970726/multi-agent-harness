@@ -687,8 +687,12 @@ pub(super) fn team_run_work_command(
                             .to_string(),
                     )
                 })?;
-            let report =
-                store.migrate_work_responsibility(&space_id, migration_host_work_context(args))?;
+            let (team_run_scope, context) = migration_host_work_context(store, args)?;
+            let report = store.migrate_work_responsibility(
+                &space_id,
+                team_run_scope.as_deref(),
+                context,
+            )?;
             print_json(&report)
         }
         "claim" => {
