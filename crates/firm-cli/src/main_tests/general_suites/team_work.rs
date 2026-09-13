@@ -14,3 +14,5 @@ mod team_work_cli_recovers_lost_execution;
 mod team_work_cli_redelivers_and_derives_release_team_run;
 #[path = "../general/team_work_cli_replaces_dependencies_through_application.rs"]
 mod team_work_cli_replaces_dependencies_through_application;
+#[path = "../general/work_usage_lines_name_only_real_verbs.rs"]
+mod work_usage_lines_name_only_real_verbs;

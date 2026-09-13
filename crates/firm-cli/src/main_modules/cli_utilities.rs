@@ -321,7 +321,7 @@ pub(super) fn print_help() {
   team-run board-summary --id <team-run-id>
       <=500-char plain-text board digest: counts by status, assigned/unassigned,
       ready, and one idle|working|awaiting-review line per active member.
-  team-run work list|show|create|assign|redeliver|recover-lost-execution|claim|start|block|resume|release|submit|review|request-changes|accept|cancel
+  team-run work list|show|create|replace-dependencies|assign|redeliver|recover-lost-execution|claim|start|block|resume|release|submit|request-changes|accept|cancel|retarget|reconcile-projection|migrate-responsibility|poll-github-ci
   team-run work redeliver --work-id <id> --expected-version <n> [--reason <text>]
       Re-authorize an open Work whose delivery is frozen on an AgentSession
       generation the member no longer runs (typically after close-member +

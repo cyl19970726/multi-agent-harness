@@ -1,5 +1,6 @@
 use super::*;
 use harness_core::CurrentWorkDraft;
+use harness_core::{WorkDelegationState, WorkRef};
 
 fn create_unrelated_run_with_work(store: &HarnessStore, index: usize) -> CreatedTeamRun {
     let worker_id = format!("bounded-worker-{index}");

@@ -1,5 +1,4 @@
 use super::*;
-use harness_core::CurrentWorkDraft;
 
 struct CliWorkActionOutcome(crate::work_action_service::CanonicalWorkActionOutcome);
 
@@ -91,7 +90,7 @@ pub(super) fn team_run_work_command(
 ) -> CliResult<()> {
     require_subcommand(
         args,
-        "team-run work list|show|create|replace-dependencies|delegate|delegation|assign|redeliver|claim|start|block|resume|release|submit|request-changes|accept|cancel|retarget|reconcile-projection|migrate-responsibility|poll-github-ci",
+        "team-run work list|show|create|replace-dependencies|assign|redeliver|recover-lost-execution|claim|start|block|resume|release|submit|request-changes|accept|cancel|retarget|reconcile-projection|migrate-responsibility|poll-github-ci",
     )?;
     if matches!(args[0].as_str(), "delegate" | "delegation") {
         return Err(CliError::Usage(
@@ -269,150 +268,6 @@ pub(super) fn team_run_work_command(
                 "deliveries": deliveries,
                 "github_links": github_links,
             }))
-        }
-        "delegate" => {
-            let source_run_id = required(args, "--team-run-id")?;
-            let source_work_id = required(args, "--work-id")?;
-            let expected_version = required_work_version(args)?;
-            let target_team_id = required(args, "--target-team-id")?;
-            let source = store
-                .latest_works()?
-                .into_iter()
-                .find(|work| work.id == source_work_id)
-                .ok_or_else(|| CliError::Usage(format!("Work not found: {source_work_id}")))?;
-            if source.team_run_id != source_run_id {
-                return Err(CliError::Usage(format!(
-                    "Work {source_work_id} belongs to TeamRun {}, not {source_run_id}",
-                    source.team_run_id
-                )));
-            }
-            let source_owner = source.owner_member_id.clone().ok_or_else(|| {
-                CliError::Usage("DELEGATION_NOT_AUTHORIZED: source Work has no durable owner".to_string())
-            })?;
-            let target_runs = latest_team_runs_in_append_order(store)?
-                .into_iter()
-                .filter(|run| run.agent_team_id == target_team_id)
-                .filter(|run| {
-                    !matches!(
-                        run.status,
-                        TeamRunStatus::Completed | TeamRunStatus::Failed | TeamRunStatus::Cancelled
-                    )
-                })
-                .collect::<Vec<_>>();
-            if target_runs.len() != 1 {
-                return Err(CliError::Usage(format!(
-                    "DELEGATION_TARGET_INVALID: target Team {target_team_id} must have exactly one active TeamRun, found {}",
-                    target_runs.len()
-                )));
-            }
-            let target_run = &target_runs[0];
-            let context = if let Some(member_run_id) = value(args, "--member-run-id") {
-                member_work_context(args, &source_run_id, &member_run_id)?
-            } else {
-                host_work_context(store, &source_run_id, args)?
-            };
-            let now = context.created_at.clone();
-            let request_hash = content_hash_hex16(&context.idempotency_key);
-            let target_work_id = value(args, "--target-work-id")
-                .unwrap_or_else(|| format!("delegated-work-{request_hash}"));
-            let target_work = CurrentWorkDraft::new(
-                target_work_id.clone(),
-                target_run.id.clone(),
-                target_team_id.clone(),
-                required(args, "--target-title")?,
-                required(args, "--target-context")?,
-                required(args, "--target-completion-criteria")?,
-                WorkClaimMode::TeamClaim,
-                source.priority,
-                context.performed_by_actor.clone(),
-                now.clone(),
-            )
-            .into_work();
-            let delegation = WorkDelegation {
-                id: value(args, "--delegation-id")
-                    .unwrap_or_else(|| format!("work-delegation-{request_hash}")),
-                source_work_ref: WorkRef {
-                    team_run_id: source_run_id,
-                    work_id: source_work_id,
-                },
-                source_work_version: expected_version,
-                source_owner_member_id: source_owner,
-                created_by_member_run_id: None,
-                target_agent_team_id: target_team_id,
-                target_work_ref: WorkRef {
-                    team_run_id: target_run.id.clone(),
-                    work_id: target_work_id,
-                },
-                delegated_by_actor: context.performed_by_actor.clone(),
-                state: WorkDelegationState::Active,
-                resolution_summary: None,
-                blocker_reason: None,
-                version: 1,
-                created_at: now.clone(),
-                updated_at: now,
-            };
-            let (delegation, target_work) = store
-                .create_work_delegation_with_target_work(delegation, target_work, context)?;
-            print_json(&serde_json::json!({
-                "delegation": delegation,
-                "target_work": target_work,
-            }))
-        }
-        "delegation" => {
-            require_subcommand(args, "team-run work delegation list|show|cancel")?;
-            match args[1].as_str() {
-                "list" => {
-                    let source_work_id = value(args, "--source-work-id");
-                    let target_team_id = value(args, "--target-team-id");
-                    let state = value(args, "--state");
-                    let delegations = store
-                        .latest_work_delegations()?
-                        .into_iter()
-                        .filter(|delegation| {
-                            source_work_id.as_deref().is_none_or(|id| {
-                                delegation.source_work_ref.work_id == id
-                            })
-                        })
-                        .filter(|delegation| {
-                            target_team_id.as_deref().is_none_or(|id| {
-                                delegation.target_agent_team_id == id
-                            })
-                        })
-                        .filter(|delegation| {
-                            state.as_deref().is_none_or(|state| {
-                                serde_snake_label(&delegation.state) == state
-                            })
-                        })
-                        .collect::<Vec<_>>();
-                    print_json(&delegations)
-                }
-                "show" => {
-                    let id = required(args, "--delegation-id")?;
-                    let delegation = store
-                        .latest_work_delegations()?
-                        .into_iter()
-                        .find(|delegation| delegation.id == id)
-                        .ok_or_else(|| CliError::Usage(format!("Delegation not found: {id}")))?;
-                    let events = store
-                        .work_delegation_events()?
-                        .into_iter()
-                        .filter(|event| event.delegation_id == id)
-                        .collect::<Vec<_>>();
-                    print_json(&serde_json::json!({"delegation": delegation, "events": events}))
-                }
-                "cancel" => {
-                    let delegation = store.cancel_work_delegation(
-                        &required(args, "--delegation-id")?,
-                        required_work_version(args)?,
-                        &required(args, "--reason")?,
-                        host_work_context(store, &required(args, "--team-run-id")?, args)?,
-                    )?;
-                    print_json(&delegation)
-                }
-                other => Err(CliError::Usage(format!(
-                    "unknown delegation command: {other}"
-                ))),
-            }
         }
         "create" => {
             reject_unknown_work_options(
@@ -1123,7 +978,7 @@ pub(super) fn team_run_work_command(
             )?)
         }
         other => Err(CliError::Usage(format!(
-            "unknown team-run work command: {other}; usage: team-run work list|show|create|assign|claim|start|block|resume|release|submit|review|request-changes|accept|cancel|retarget|reconcile-projection"
+            "unknown team-run work command: {other}; usage: team-run work list|show|create|replace-dependencies|assign|redeliver|recover-lost-execution|claim|start|block|resume|release|submit|request-changes|accept|cancel|retarget|reconcile-projection|migrate-responsibility|poll-github-ci"
         ))),
     }
 }
