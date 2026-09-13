@@ -12,6 +12,12 @@ use super::*;
 use crate::ProviderEffectSettlement;
 use crate::{bind_team_runtime_supervisor, ensure_team_message_fabric, TeamRunLedger};
 
+// Tests that spawn real processes and write the process-global provider
+// registry run their bodies in isolated child test processes (#928), so a
+// labeled orphan fixture can never collide with or leak into another test's
+// registry, drain, or label lookup.
+use super::process_isolation::run_in_isolated_child;
+
 use harness_core::agentfirm_api::{
     AgentSessionStatus, RuntimeActivity, RuntimeCommandKind, RuntimeCommandPhase,
     RuntimeEffectCertainty, RuntimeResidency,
@@ -30,8 +36,8 @@ pub(super) struct DrainFixture {
     _tree: TestTree,
     pub(super) store: HarnessStore,
     pub(super) run_id: String,
-    node_id: String,
-    project_binding_id: String,
+    pub(super) node_id: String,
+    pub(super) project_binding_id: String,
     daemon: TestDaemon,
     pub(super) daemon_generation: u64,
 }
@@ -313,7 +319,31 @@ impl DrainFixture {
 
     /// The same mid-turn state, driven by one exact canonical WorkDelivery.
     pub(super) fn start_cycle_for(&self, ledger: &TeamRunLedger, delivery_id: &str) {
-        let member = member_named(&self.store, &self.run_id, MID_TURN_MEMBER);
+        self.start_cycle_for_member(ledger, MID_TURN_MEMBER, delivery_id);
+    }
+
+    /// The same mid-turn state for one named member (#937 B2-E: the unrelated
+    /// queued member must demonstrably execute, not merely stay unchanged).
+    pub(super) fn start_cycle_for_member(
+        &self,
+        ledger: &TeamRunLedger,
+        agent_member_id: &str,
+        delivery_id: &str,
+    ) {
+        self.start_cycle_for_member_with_provider_group(ledger, agent_member_id, delivery_id, None);
+    }
+
+    /// The same mid-turn state, with the exact provider process group the
+    /// runtime would have recorded durably at attach (#937: the recovery
+    /// actor reads it back when the live registry entry is already gone).
+    pub(super) fn start_cycle_for_member_with_provider_group(
+        &self,
+        ledger: &TeamRunLedger,
+        agent_member_id: &str,
+        delivery_id: &str,
+        provider_group: Option<u32>,
+    ) {
+        let member = member_named(&self.store, &self.run_id, agent_member_id);
         crate::transition_provider_session_for_member(ledger, &member, AgentSessionStatus::Active)
             .expect("activate the mid-turn Session");
         crate::transition_provider_session_runtime_control(
@@ -331,18 +361,22 @@ impl DrainFixture {
             1,
         )
         .expect("admit one StartCycle");
+        let mut result = serde_json::json!({
+            "phase": "input_accepted",
+            "provider_receipt": {
+                "command": "deliver",
+                "response_id": "provider-receipt:drain",
+                "success": true,
+            },
+        });
+        if let Some(group) = provider_group {
+            result["provider_group"] = serde_json::json!(group);
+        }
         crate::settle_provider_effect(
             ledger,
             &admission,
             ProviderEffectSettlement::APPLIED_SATISFIED,
-            Some(serde_json::json!({
-                "phase": "input_accepted",
-                "provider_receipt": {
-                    "command": "deliver",
-                    "response_id": "provider-receipt:drain",
-                    "success": true,
-                },
-            })),
+            Some(result),
             None,
         )
         .expect("settle the StartCycle before the drain");
@@ -643,6 +677,13 @@ fn supervisor_failure_context(
 const SUPERVISOR_LOCK_DEATH: &str =
     "store error: timed out waiting for store write lock; lock_wait_ms=2001; lock_budget_ms=2000";
 
+const A_DEAD_SUPERVISORS_ORPHANED_PROVIDER_IS_PROVEN_GONE_AND_THE_LANE_DETACHES_EXACT: &str =
+    "daemon_integration_tests::drain_recovery_tests::a_dead_supervisors_orphaned_provider_is_proven_gone_and_the_lane_detaches";
+const A_SUCCESSFUL_TEARDOWN_STILL_DETACHES_FROM_THE_DURABLE_RECORD_EXACT: &str =
+    "daemon_integration_tests::drain_recovery_tests::a_successful_teardown_still_detaches_from_the_durable_record";
+const AN_UNRELATED_QUEUED_MEMBER_EXECUTES_AFTER_PROVEN_RECOVERY_EXACT: &str =
+    "daemon_integration_tests::drain_recovery_tests::an_unrelated_queued_member_executes_after_proven_recovery";
+
 /// #937: the real route — a Supervisor THREAD that fails is joined by
 /// reap_finished, which must route the error into the same truthful
 /// settlement (not only a direct setter call).
@@ -938,4 +979,381 @@ fn explicit_recovery_completes_settlement_that_a_store_outage_deferred() {
         AgentSessionStatus::RecoveryRequired,
         "the explicit route settles the deferred lane as RecoveryRequired"
     );
+}
+
+/// #937 B2, runtime-backed: the dead Supervisor's orphaned provider process
+/// is terminated with genuine owned-process proof (exact generation-bound
+/// cleanup label, token-exact registry lookup, bounded ESRCH absence), and
+/// only then is the lane published Detached/Idle — the machine owner's
+/// executable safe path from RecoveryRequired to a resumable lane.
+#[test]
+fn a_dead_supervisors_orphaned_provider_is_proven_gone_and_the_lane_detaches() {
+    run_in_isolated_child(
+        A_DEAD_SUPERVISORS_ORPHANED_PROVIDER_IS_PROVEN_GONE_AND_THE_LANE_DETACHES_EXACT,
+        a_dead_supervisors_orphaned_provider_is_proven_gone_and_the_lane_detaches_body,
+    );
+}
+
+fn a_dead_supervisors_orphaned_provider_is_proven_gone_and_the_lane_detaches_body() {
+    use std::os::unix::process::CommandExt;
+
+    let fixture = drain_fixture("supervisor-orphan-proof");
+    let ledger = fixture.supervise("supervisor-orphan-1", fixture.daemon_generation);
+    fixture.start_cycle_for(&ledger, "work-delivery:orphan:1");
+    let driven = agent_session(&fixture.store, MID_TURN_MEMBER);
+    let (supervisor_id, supervisor_generation) = bound_supervisor(&driven);
+
+    // A real provider process group orphaned with its dead driver, labeled
+    // with this lane's exact generation-bound cleanup scope.
+    let mut orphan = std::process::Command::new("sleep")
+        .arg("120")
+        .process_group(0)
+        .spawn()
+        .expect("spawn orphaned provider fixture");
+    let orphan_pid = orphan.id();
+    let mut registration = harness_runtime_host::OwnedProcessGroupRegistration::new(&mut orphan)
+        .expect("register orphaned provider group");
+    registration.set_cleanup_label(&format!("{}:rg{}", driven.id, driven.runtime_generation));
+    // The dead Supervisor dropped its handle; the registration persists in
+    // the daemon registry by design (OwnedProcessGroupRegistration Drop).
+    drop(registration);
+
+    let context = supervisor_failure_context(&fixture, &supervisor_id, supervisor_generation, None);
+    fixture.daemon.block_finished_supervisor_failure(
+        &context,
+        &CliError::Usage(SUPERVISOR_LOCK_DEATH.into()),
+    );
+
+    let settled = agent_session(&fixture.store, MID_TURN_MEMBER);
+    assert_eq!(settled.lifecycle, AgentSessionStatus::RecoveryRequired);
+    assert_eq!(
+        settled.control_state.runtime_residency,
+        RuntimeResidency::Detached,
+        "the orphaned provider is proven gone before the lane detaches"
+    );
+    assert_eq!(settled.control_state.activity, RuntimeActivity::Idle);
+    assert!(
+        harness_runtime_host::prove_registered_group_absent(orphan_pid),
+        "the orphaned provider group is provably gone"
+    );
+    let _ = orphan.wait();
+}
+
+/// #937 B1-E: two ACTIVE TeamRuns sharing one AgentMember on one
+/// machine-scoped NodeDaemon — the member's one current Session is driven by
+/// Run B, and a Supervisor failure on Run A must never mark it.
+#[test]
+fn a_supervisor_failure_never_marks_a_live_lane_driven_by_another_run() {
+    let fixture = drain_fixture("supervisor-cross-run-fence");
+    let ledger = fixture.supervise("supervisor-run-a", fixture.daemon_generation);
+    fixture.start_cycle_for(&ledger, "work-delivery:run-a:1");
+    let (failed_id, failed_generation) =
+        bound_supervisor(&agent_session(&fixture.store, MID_TURN_MEMBER));
+
+    // A second ACTIVE TeamRun on the same NodeDaemon, sharing the AgentMember.
+    let spec = |agent_member_id: &str, name: &str, role: &str| crate::TeamMemberSpec {
+        agent_member_id: agent_member_id.into(),
+        name: name.into(),
+        role: role.into(),
+        provider: "codex".into(),
+        execution_mode: Some("codex_app_server".into()),
+        model: None,
+        effort: None,
+        service_tier: None,
+        provider_cwd_hint: None,
+        owned_paths: Vec::new(),
+        resume_native_session_id: None,
+        initial_work: None,
+    };
+    // A second ACTIVE TeamRun on the same NodeDaemon. A second fresh
+    // admission of the shared AgentMember is correctly fenced by
+    // native-session identity truth, so Run B carries the Team's Host; the
+    // shared-membership exploit shape under test is that the member sits on
+    // Run A's roster while its one current Session is driven by Run B —
+    // exactly the run conjunct in the failed-driver guard.
+    let run_b = crate::create_team_run(
+        &fixture.store,
+        None,
+        None,
+        None,
+        "Run B live work",
+        None,
+        "test",
+        None,
+        harness_core::HostControlMode::Managed,
+        None,
+        None,
+        None,
+        None,
+        &[spec("host", "Host", "host")],
+    )
+    .expect("create the second ACTIVE TeamRun on the same NodeDaemon");
+
+    // Re-drive the member's one current Session under Run B's Supervisor
+    // through the store's own control admission: quiet lane (Detached/Idle
+    // and the Active->Idle hop that clears the open turn), driver
+    // generation +1, finished handoff. Run B holds a real Supervisor lease
+    // so the driver reference validates.
+    let run_b_supervisor_lease = fixture
+        .store
+        .acquire_team_supervisor_under_node_lease(
+            &run_b.team_run.id,
+            &fixture.node_id,
+            fixture.daemon.daemon_id(),
+            fixture.daemon_generation,
+            DRAIN_SPACE_ID,
+            &fixture.project_binding_id,
+            "supervisor-run-b",
+            std::process::id(),
+            "test://run-b",
+            current_unix_ms_u64(),
+            600_000,
+        )
+        .expect("Run B holds a real Supervisor lease");
+    let member = member_named(&fixture.store, &fixture.run_id, MID_TURN_MEMBER);
+    crate::transition_provider_session_runtime_control(
+        &ledger,
+        &member,
+        RuntimeResidency::Detached,
+        RuntimeActivity::Idle,
+    )
+    .expect("quiet the lane residency for the driver transfer");
+    crate::transition_provider_session_for_member(&ledger, &member, AgentSessionStatus::Idle)
+        .expect("the Active->Idle hop clears the open turn for the driver transfer");
+    let session = agent_session(&fixture.store, MID_TURN_MEMBER);
+    let mut next = session.control_state.clone();
+    next.driver_ref = harness_core::agentfirm_api::RuntimeDriverRef::TeamSupervisor {
+        team_run_id: run_b.team_run.id.clone(),
+        team_supervisor_id: "supervisor-run-b".into(),
+        team_supervisor_generation: run_b_supervisor_lease.generation,
+    };
+    next.driver_generation = session.control_state.driver_generation + 1;
+    next.handoff_state = harness_core::agentfirm_api::DriverHandoffState::None;
+    let rebind_context = harness_core::agentfirm_api::MutationContext {
+        execution_space_id: DRAIN_SPACE_ID.into(),
+        authenticated_actor: harness_core::agentfirm_api::ActorRef {
+            kind: harness_core::agentfirm_api::ActorKind::Service,
+            id: fixture.daemon.daemon_id().to_string(),
+        },
+        authority_actor: None,
+        command_name: "test.driver.rebind".into(),
+        idempotency_key: format!("test-rebind-{}", session.id),
+        expected_version: session.version,
+        request_fingerprint: None,
+    };
+    fixture
+        .store
+        .bind_agent_session_control_state(
+            &rebind_context,
+            &session.id,
+            session.runtime_generation,
+            next,
+            "unix-ms:rebind",
+        )
+        .expect("rebind the lane to Run B through the store admission");
+    crate::transition_provider_session_runtime_control(
+        &ledger,
+        &member,
+        RuntimeResidency::Attached,
+        RuntimeActivity::Running,
+    )
+    .expect("the lane is live under Run B");
+    crate::transition_provider_session_for_member(&ledger, &member, AgentSessionStatus::Active)
+        .expect("Run B drives the lane Active");
+
+    // Run A's Supervisor fails. The lane driven by Run B must survive.
+    let context = supervisor_failure_context(&fixture, &failed_id, failed_generation, None);
+    fixture.daemon.block_finished_supervisor_failure(
+        &context,
+        &CliError::Usage(SUPERVISOR_LOCK_DEATH.into()),
+    );
+
+    let lane = agent_session(&fixture.store, MID_TURN_MEMBER);
+    assert_eq!(
+        lane.lifecycle,
+        AgentSessionStatus::Active,
+        "Run A's dead Supervisor never marks the lane driven by Run B"
+    );
+    assert!(
+        matches!(
+            &lane.control_state.driver_ref,
+            harness_core::agentfirm_api::RuntimeDriverRef::TeamSupervisor { team_run_id, .. }
+                if *team_run_id == run_b.team_run.id
+        ),
+        "the lane is still honestly bound to Run B"
+    );
+    assert!(
+        fixture
+            .store
+            .member_actions()
+            .expect("read member actions")
+            .into_iter()
+            .any(|action| action.team_run_id == fixture.run_id
+                && action.action_type == "team_supervisor_recovery_required"),
+        "Run A's own failure diagnosis still lands honestly"
+    );
+}
+
+/// #937 B2-E, the full honest path: the dead Supervisor's lane is settled,
+/// its orphaned provider is proven gone and detached by the machine owner,
+/// recover restarts the failed member, and the unrelated queued member
+/// executes under the next Supervisor generation.
+#[test]
+fn an_unrelated_queued_member_executes_after_proven_recovery() {
+    run_in_isolated_child(
+        AN_UNRELATED_QUEUED_MEMBER_EXECUTES_AFTER_PROVEN_RECOVERY_EXACT,
+        an_unrelated_queued_member_executes_after_proven_recovery_body,
+    );
+}
+
+fn an_unrelated_queued_member_executes_after_proven_recovery_body() {
+    use std::os::unix::process::CommandExt;
+
+    let fixture = drain_fixture("supervisor-failure-unrelated-continuation");
+    let ledger = fixture.supervise("supervisor-unrelated-1", fixture.daemon_generation);
+    fixture.start_cycle_for(&ledger, "work-delivery:u:1");
+    let driven = agent_session(&fixture.store, MID_TURN_MEMBER);
+    let (supervisor_id, supervisor_generation) = bound_supervisor(&driven);
+
+    // The dead driver's orphaned provider process, labeled for exact cleanup.
+    let mut orphan = std::process::Command::new("sleep")
+        .arg("120")
+        .process_group(0)
+        .spawn()
+        .expect("spawn orphaned provider fixture");
+    let mut registration = harness_runtime_host::OwnedProcessGroupRegistration::new(&mut orphan)
+        .expect("register orphaned provider group");
+    registration.set_cleanup_label(&format!("{}:rg{}", driven.id, driven.runtime_generation));
+    drop(registration);
+
+    let context = supervisor_failure_context(&fixture, &supervisor_id, supervisor_generation, None);
+    fixture.daemon.block_finished_supervisor_failure(
+        &context,
+        &CliError::Usage(SUPERVISOR_LOCK_DEATH.into()),
+    );
+    let failed = agent_session(&fixture.store, MID_TURN_MEMBER);
+    assert_eq!(failed.lifecycle, AgentSessionStatus::RecoveryRequired);
+    assert_eq!(
+        failed.control_state.runtime_residency,
+        RuntimeResidency::Detached,
+        "the orphan is proven gone before the lane detaches"
+    );
+    let _ = orphan.wait();
+
+    // Journal Blocked as the runner does; recover restarts the proven lane.
+    let expected = member_named(&fixture.store, &fixture.run_id, MID_TURN_MEMBER);
+    let mut blocked = expected.clone();
+    blocked.status = MemberRunStatus::Blocked;
+    blocked.last_event_at = Some("unix-ms:u-blocked".into());
+    fixture
+        .store
+        .compare_and_append_member_run(&expected, &blocked)
+        .expect("journal the member Blocked the way the runner does");
+    let report = crate::team_run_recover(&fixture.store, &fixture.run_id, false)
+        .expect("recover repairs the proven lane");
+    assert_eq!(
+        report["restarted_blocked_members"],
+        serde_json::json!(1),
+        "{report}"
+    );
+
+    // Both lanes are quiet now; the next generation binds and the unrelated
+    // queued member actually executes.
+    fixture
+        .store
+        .release_team_supervisor_lease(
+            &fixture.run_id,
+            &supervisor_id,
+            supervisor_generation,
+            current_unix_ms_u64(),
+        )
+        .expect("release the dead Supervisor lease");
+    let successor = fixture.supervise("supervisor-unrelated-2", fixture.daemon_generation);
+    fixture.start_cycle_for_member(&successor, IDLE_MEMBER, "work-delivery:u:2");
+    assert_eq!(
+        agent_session(&fixture.store, IDLE_MEMBER).lifecycle,
+        AgentSessionStatus::Active,
+        "the unrelated queued member actually executes"
+    );
+    assert_ne!(
+        member_named(&fixture.store, &fixture.run_id, MID_TURN_MEMBER).status,
+        MemberRunStatus::Blocked,
+        "the proven failed member was restarted before the continuation"
+    );
+    assert_eq!(
+        fixture.start_cycles().len(),
+        2,
+        "one failed cycle and the unrelated continuation"
+    );
+}
+
+/// #937: the normal-teardown branch — a successful teardown already reaped
+/// the provider and removed the live registry entry BEFORE the Supervisor
+/// failure. The recovery path proves termination read-only from the exact
+/// pgid recorded durably at attach; the missing registry entry alone is
+/// never treated as proof.
+#[test]
+fn a_successful_teardown_still_detaches_from_the_durable_record() {
+    run_in_isolated_child(
+        A_SUCCESSFUL_TEARDOWN_STILL_DETACHES_FROM_THE_DURABLE_RECORD_EXACT,
+        a_successful_teardown_still_detaches_from_the_durable_record_body,
+    );
+}
+
+fn a_successful_teardown_still_detaches_from_the_durable_record_body() {
+    use std::os::unix::process::CommandExt;
+
+    let fixture = drain_fixture("supervisor-normal-teardown");
+    let ledger = fixture.supervise("supervisor-normal-1", fixture.daemon_generation);
+    let mut provider = std::process::Command::new("sleep")
+        .arg("120")
+        .process_group(0)
+        .spawn()
+        .expect("spawn provider fixture");
+    let provider_pid = provider.id();
+    // The attach settles with the exact provider group recorded durably.
+    fixture.start_cycle_for_member_with_provider_group(
+        &ledger,
+        MID_TURN_MEMBER,
+        "work-delivery:normal:1",
+        Some(provider_pid),
+    );
+    let driven = agent_session(&fixture.store, MID_TURN_MEMBER);
+    let (supervisor_id, supervisor_generation) = bound_supervisor(&driven);
+    let label = format!("{}:rg{}", driven.id, driven.runtime_generation);
+
+    // Normal successful teardown: the provider exits and the exact
+    // registration reaps it, removing the live registry entry.
+    let mut registration = harness_runtime_host::OwnedProcessGroupRegistration::new(&mut provider)
+        .expect("register provider group");
+    registration.set_cleanup_label(&label);
+    provider.kill().expect("provider exits");
+    let _ = provider.wait();
+    registration
+        .try_wait_and_release(&mut provider)
+        .expect("the successful teardown reaps and removes the entry");
+    assert!(
+        harness_runtime_host::registered_group_for_label(&label)
+            .expect("lookup")
+            .is_none(),
+        "the live registry entry is removed by the normal teardown"
+    );
+
+    let context = supervisor_failure_context(&fixture, &supervisor_id, supervisor_generation, None);
+    fixture.daemon.block_finished_supervisor_failure(
+        &context,
+        &CliError::Usage(SUPERVISOR_LOCK_DEATH.into()),
+    );
+
+    let settled = agent_session(&fixture.store, MID_TURN_MEMBER);
+    assert_eq!(settled.lifecycle, AgentSessionStatus::RecoveryRequired);
+    assert_eq!(
+        settled.control_state.runtime_residency,
+        RuntimeResidency::Detached,
+        "the durable-record probe proves termination after the registry entry is gone"
+    );
+    assert_eq!(settled.control_state.activity, RuntimeActivity::Idle);
+    assert!(harness_runtime_host::prove_registered_group_absent(
+        provider_pid
+    ));
 }

@@ -441,6 +441,13 @@ impl MultiTeamDaemon {
             );
         }
         self.settle_driven_sessions_after_supervisor_failure(context, store, error);
+        self.detach_proven_dead_lanes_for_failed_driver(
+            &context.execution_space_id,
+            store,
+            &context.run_id,
+            &context.supervisor_id,
+            context.supervisor_generation,
+        );
     }
 
     /// GitHub #937: the dead Supervisor's driven Sessions must not stay
@@ -549,6 +556,164 @@ impl MultiTeamDaemon {
                 ),
                 Err(settle_error) => eprintln!(
                     "[node-daemon] could not settle AgentSession {} of {execution_space_id}/{run_id} as RecoveryRequired after Supervisor failure ({cause}): {settle_error}",
+                    session.id
+                ),
+            }
+        }
+    }
+
+    /// #937: obtain genuine termination proof for the dead driver's orphaned
+    /// provider processes, then publish Detached/Idle as the machine owner.
+    /// The orphaned groups are found through their generation-bound cleanup
+    /// labels (`session:rg<generation>`); lookup, signal, proof and removal
+    /// stay token-exact inside the runtime registry. Only lanes still bound
+    /// to the exact failed driver are touched. A lane whose group cannot be
+    /// proven gone keeps Attached + RecoveryRequired, and the remaining
+    /// manual boundary (operator reconciliation or a machine drain) is
+    /// logged, never hidden.
+    fn detach_proven_dead_lanes_for_failed_driver(
+        &self,
+        execution_space_id: &str,
+        store: &HarnessStore,
+        run_id: &str,
+        supervisor_id: &str,
+        supervisor_generation: u64,
+    ) {
+        let sessions = match store.fabric_agent_sessions(execution_space_id) {
+            Ok(sessions) => sessions,
+            Err(read_error) => {
+                eprintln!(
+                    "[node-daemon] could not read AgentSessions for orphan detachment in {execution_space_id}/{run_id}: {read_error}"
+                );
+                return;
+            }
+        };
+        for session in sessions.into_iter().filter(|session| {
+            session.lifecycle == harness_core::agentfirm_api::AgentSessionStatus::RecoveryRequired
+                && session.control_state.runtime_residency
+                    == harness_core::agentfirm_api::RuntimeResidency::Attached
+                && matches!(
+                    &session.control_state.driver_ref,
+                    harness_core::agentfirm_api::RuntimeDriverRef::TeamSupervisor {
+                        team_run_id,
+                        team_supervisor_id,
+                        team_supervisor_generation,
+                    } if *team_run_id == run_id
+                        && team_supervisor_id == supervisor_id
+                        && *team_supervisor_generation == supervisor_generation
+                )
+        }) {
+            let label = format!("{}:rg{}", session.id, session.runtime_generation);
+            let termination = match harness_runtime_host::terminate_labeled_group_with_proof(
+                &label,
+                Duration::from_secs(5),
+            ) {
+                Err(ambiguous) => {
+                    eprintln!(
+                        "[node-daemon] cleanup label {label} is ambiguous across registrations {:?}; lane {} stays Attached + RecoveryRequired and needs explicit operator reconciliation",
+                        ambiguous.pids, session.id
+                    );
+                    continue;
+                }
+                Ok(None) => {
+                    // Normal-teardown branch: a successful Drop already reaped
+                    // the provider and removed the live registry entry, so no
+                    // registration remains to terminate. The exact pgid
+                    // recorded durably at attach is the only trustworthy key;
+                    // probe it read-only (never signal after a reap) and
+                    // publish Detached/Idle only on proven absence. A missing
+                    // registry entry alone is never treated as proof.
+                    let recorded = store.runtime_commands(execution_space_id).map(|commands| {
+                        commands
+                            .iter()
+                            .filter(|command| {
+                                command.target_session_id.as_deref() == Some(session.id.as_str())
+                            })
+                            .filter_map(|command| {
+                                command.result.as_ref()?.get("provider_group")?.as_u64()
+                            })
+                            .map(|pgid| pgid as u32)
+                            .next_back()
+                    });
+                    let pgid = match recorded {
+                        Ok(pgid) => pgid,
+                        Err(read_error) => {
+                            eprintln!(
+                                "[node-daemon] could not read the RuntimeCommand inventory for lane {}: {read_error}; termination unproven",
+                                session.id
+                            );
+                            continue;
+                        }
+                    };
+                    match pgid {
+                        Some(pgid) if harness_runtime_host::prove_registered_group_absent(pgid) => {
+                            eprintln!(
+                                "[node-daemon] lane {} provider group {pgid} was already reaped by the normal teardown; absence proven read-only from the durable attach record",
+                                session.id
+                            );
+                            pgid
+                        }
+                        Some(pgid) => {
+                            eprintln!(
+                                "[node-daemon] lane {} provider group {pgid} (durable attach record) is still live after the registry entry was removed without proof; termination unproven — lane stays Attached + RecoveryRequired",
+                                session.id
+                            );
+                            continue;
+                        }
+                        None => {
+                            eprintln!(
+                                "[node-daemon] no registered provider group and no durable attach record for lane {} ({}); termination is unproven — lane stays Attached + RecoveryRequired; supported manual boundary: reconcile the provider process by exact process evidence or drain the machine with proof",
+                                session.id, label
+                            );
+                            continue;
+                        }
+                    }
+                }
+                Ok(Some(termination)) => {
+                    if !termination.proven_gone {
+                        eprintln!(
+                            "[node-daemon] orphaned provider group {} for lane {} was not proven gone within its bound (signal_errno={:?}); lane stays Attached + RecoveryRequired",
+                            termination.registration.pid, session.id, termination.signal_errno
+                        );
+                        continue;
+                    }
+                    termination.registration.pid
+                }
+            };
+            let proven_pid = termination;
+            let mut next = session.control_state.clone();
+            next.runtime_residency = harness_core::agentfirm_api::RuntimeResidency::Detached;
+            next.activity = harness_core::agentfirm_api::RuntimeActivity::Idle;
+            next.last_reconciled_at = Some(format!("unix-ms:{}", current_unix_ms_u64()));
+            let observation_context = harness_core::agentfirm_api::MutationContext {
+                execution_space_id: execution_space_id.to_string(),
+                authenticated_actor: harness_core::agentfirm_api::ActorRef {
+                    kind: harness_core::agentfirm_api::ActorKind::Service,
+                    id: self.daemon_id.clone(),
+                },
+                authority_actor: None,
+                command_name: "node_daemon.runtime_control.supervisor_failure_cleanup".into(),
+                idempotency_key: format!(
+                    "runtime-control-observation:{}:{}:{}:Detached:Idle",
+                    session.id, session.runtime_generation, session.version
+                ),
+                expected_version: session.version,
+                request_fingerprint: None,
+            };
+            let observed_at = format!("unix-ms:{}", current_unix_ms_u64());
+            match store.bind_agent_session_control_state(
+                &observation_context,
+                &session.id,
+                session.runtime_generation,
+                next,
+                &observed_at,
+            ) {
+                Ok(_) => eprintln!(
+                    "[node-daemon] detached lane {} after proving orphaned provider group {} gone",
+                    session.id, proven_pid
+                ),
+                Err(bind_error) => eprintln!(
+                    "[node-daemon] could not publish Detached/Idle for lane {} after proven termination: {bind_error}",
                     session.id
                 ),
             }
@@ -715,6 +880,13 @@ impl MultiTeamDaemon {
             supervisor_id,
             supervisor_generation,
             "explicit recovery completing Session settlement after Supervisor failure",
+        );
+        self.detach_proven_dead_lanes_for_failed_driver(
+            execution_space_id,
+            store,
+            run_id,
+            supervisor_id,
+            supervisor_generation,
         );
         self.recovery_blocked_runs
             .lock()

@@ -165,6 +165,18 @@ impl DeepSeekRunnerChild {
         self.child.id()
     }
 
+    /// Label the owned runner process group with its exact cleanup scope (an
+    /// AgentSession id), so a machine-level owner can prove and terminate the
+    /// orphaned group after this runtime's driver dies (#937).
+    fn set_cleanup_label(&mut self, label: &str) {
+        self.process_group.set_cleanup_label(label);
+    }
+
+    /// The owned runner group leader pid (#937).
+    fn owned_process_group_id(&self) -> u32 {
+        self.process_group.pid()
+    }
+
     fn try_wait(&mut self) -> std::io::Result<Option<std::process::ExitStatus>> {
         let status = self.process_group.try_wait_and_release(&mut self.child)?;
         if status.is_some() {
@@ -1037,6 +1049,12 @@ impl TeamRuntimeAdapter for DeepSeekTeamRuntime {
                 session.provider_kind, profile.provider, profile.execution_mode
             )));
         }
+        // #937: label the owned runner process group with its exact cleanup
+        // scope so a machine-level owner can prove and terminate it if this
+        // runtime's driver dies before settling the lane.
+        self.transport
+            .child
+            .set_cleanup_label(&format!("{}:rg{}", session.id, session.runtime_generation));
         if profile.provider_version.as_deref() != Some(REVIEWED_DEEPSEEK_HARNESS_VERSION) {
             return Err(CliError::Usage(format!(
                 "DEEPSEEK_HARNESS_VERSION_UNREVIEWED: profile must bind exact DSH {}, got {:?}",
@@ -1100,6 +1118,10 @@ impl TeamRuntimeAdapter for DeepSeekTeamRuntime {
 impl RuntimeAdapter for DeepSeekTeamRuntime {
     fn describe(&self) -> &RuntimeDescription {
         &self.description
+    }
+
+    fn owned_process_group_id(&self) -> Option<u32> {
+        Some(self.transport.child.owned_process_group_id())
     }
 
     fn open_or_resume(

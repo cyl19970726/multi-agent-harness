@@ -51,6 +51,15 @@ pub trait RuntimeAdapter {
         })
     }
 
+    /// The leader pid of this adapter's owned provider process group, when it
+    /// owns one. Recorded durably at attach so a later recovery actor can
+    /// prove termination of an orphaned provider even after a successful
+    /// teardown removed the live registry entry (#937). Adapters without an
+    /// owned process group return None.
+    fn owned_process_group_id(&self) -> Option<u32> {
+        None
+    }
+
     fn quiesce(
         &mut self,
         fence: RuntimeBindingFence,

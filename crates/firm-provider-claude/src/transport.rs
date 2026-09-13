@@ -64,6 +64,18 @@ impl ClaudeRunnerChild {
         self.child.id()
     }
 
+    /// Label the owned runner process group with its exact cleanup scope (an
+    /// AgentSession id), so a machine-level owner can prove and terminate the
+    /// orphaned group after this runtime's driver dies (#937).
+    pub(crate) fn set_cleanup_label(&mut self, label: &str) {
+        self.process_group.set_cleanup_label(label);
+    }
+
+    /// The owned runner group leader pid (#937).
+    pub(crate) fn owned_process_group_id(&self) -> u32 {
+        self.process_group.pid()
+    }
+
     fn try_wait(&mut self) -> std::io::Result<Option<std::process::ExitStatus>> {
         let status = self.process_group.try_wait_and_release(&mut self.child)?;
         if status.is_some() {
