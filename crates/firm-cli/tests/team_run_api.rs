@@ -1426,6 +1426,8 @@ mod kimi_acp_member_can_be_cancelled_cooperatively;
 mod kimi_empty_terminal_rounds_trip_the_bounded_circuit_and_real_output_resets_it;
 #[path = "team_run_api/kimi_incomplete_stop_reason_requires_recovery_without_replay.rs"]
 mod kimi_incomplete_stop_reason_requires_recovery_without_replay;
+#[path = "team_run_api/kimi_informational_mail_joins_active_work_continuation_boundary.rs"]
+mod kimi_informational_mail_joins_active_work_continuation_boundary;
 #[path = "team_run_api/kimi_model_switch_uses_only_the_new_models_advertised_effort_controls.rs"]
 mod kimi_model_switch_uses_only_the_new_models_advertised_effort_controls;
 #[path = "team_run_api/kimi_null_error_key_on_a_successful_response_is_not_a_provider_error.rs"]

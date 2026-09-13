@@ -691,6 +691,18 @@ fn claim_canonical_messages(
     member: &ProviderRuntimeProjection,
     require_round_trigger: bool,
 ) -> CliResult<Vec<TeamMessageProjection>> {
+    claim_canonical_messages_with_before_claim(ledger, member, require_round_trigger, |_, _| Ok(()))
+}
+
+pub(super) fn claim_canonical_messages_with_before_claim(
+    ledger: &TeamRunLedger,
+    member: &ProviderRuntimeProjection,
+    require_round_trigger: bool,
+    mut before_claim: impl FnMut(
+        usize,
+        &harness_core::agentfirm_api::CanonicalMessageDelivery,
+    ) -> CliResult<()>,
+) -> CliResult<Vec<TeamMessageProjection>> {
     let run = latest_team_run(&ledger.store, &ledger.run_id)?;
     let execution_space_id = team_run_execution_space_id(&ledger.store, &run)?;
     let sessions = ledger
@@ -759,7 +771,8 @@ fn claim_canonical_messages(
         return Ok(Vec::new());
     }
     let mut claimed_messages = Vec::new();
-    for delivery in queued {
+    for (index, delivery) in queued.into_iter().enumerate() {
+        before_claim(index, &delivery)?;
         let source = messages.get(&delivery.message_id).ok_or_else(|| {
             CliError::Usage(format!(
                 "canonical RegistryDeliveryAttempt {} references missing TeamMessageProjection {}",
