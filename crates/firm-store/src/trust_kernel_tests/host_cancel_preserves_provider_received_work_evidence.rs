@@ -276,7 +276,7 @@ fn retarget_keeps_claimed_delivery_reconciliation_fence() {
     let (store, _root) = fabric_store();
     let (work, _, _, _) = claimed_work_fixture(&store, "retarget-claimed");
     append_runtime_team(&store, "team-a", "run-successor");
-    let before = store.work_operations().unwrap();
+    let before = store.work_operations_unlocked().unwrap();
     let error = store
         .retarget_work_execution(
             &work.id,
@@ -286,5 +286,5 @@ fn retarget_keeps_claimed_delivery_reconciliation_fence() {
         )
         .unwrap_err();
     assert!(error.to_string().contains("RECONCILIATION_REQUIRED"));
-    assert_eq!(store.work_operations().unwrap(), before);
+    assert_eq!(store.work_operations_unlocked().unwrap(), before);
 }

@@ -376,7 +376,14 @@ impl HarnessStore {
         self.read_jsonl("team_messages.jsonl")
     }
 
-    pub fn work_operations(&self) -> StoreResult<Vec<WorkOperation>> {
+    /// Read the append-only legacy `work_operations.jsonl` rows for explicit
+    /// migration, export, and historical inspection of that one file only.
+    ///
+    /// This is HALF a Work's version chain until the W4 writer cutover:
+    /// Submitted, Accepted, Cancelled and DependenciesChanged are written to
+    /// the trust journal and never appear here. Current phase, event, count
+    /// and cursor readers must use `crate::work_history` instead.
+    pub fn legacy_work_operation_rows(&self) -> StoreResult<Vec<WorkOperation>> {
         self.work_operations_unlocked()
     }
 
@@ -412,12 +419,7 @@ impl HarnessStore {
         // trust event for those identities so history and provenance remain
         // complete without repeating the store-wide latest-Work fold.
         let (works, work_ids) = self.latest_works_and_ids_for_team_run_unlocked(team_run_id)?;
-        let mut events = self
-            .work_operations_for_ids_unlocked(&work_ids)?
-            .into_iter()
-            .map(|operation| operation.event)
-            .collect::<Vec<_>>();
-        events.extend(self.trust_work_events_for_ids_unlocked(&work_ids)?);
+        let events = self.work_journal_events_for_ids_unlocked(&work_ids)?;
         Ok((works, events))
     }
 
@@ -596,14 +598,14 @@ impl HarnessStore {
             .collect())
     }
 
+    /// Every Work event in the store, from both journals, in the one
+    /// deterministic total order `crate::work_history` defines.
     pub fn work_events(&self) -> StoreResult<Vec<WorkEvent>> {
-        let mut events = self
-            .work_operations_unlocked()?
+        Ok(self
+            .work_journal_records()?
             .into_iter()
-            .map(|operation| operation.event)
-            .collect::<Vec<_>>();
-        events.extend(self.trust_work_events_unlocked()?);
-        Ok(events)
+            .map(|record| record.event)
+            .collect())
     }
 
     pub fn work_events_for_team_run(&self, team_run_id: &str) -> StoreResult<Vec<WorkEvent>> {

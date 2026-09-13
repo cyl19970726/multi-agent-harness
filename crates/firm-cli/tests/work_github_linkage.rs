@@ -842,7 +842,7 @@ fi
         .find(|work| work.id == work_id)
         .expect("active Work");
     let before_operations = store.canonical_operations().expect("canonical operations");
-    let before_work_operations = store.work_operations().expect("Work operations");
+    let before_work_operations = store.legacy_work_operation_rows().expect("Work operations");
     let before_attentions = store.host_attentions().expect("HostAttentions");
     let before_binding = store
         .fabric_work_execution_bindings(&project_id)
@@ -887,7 +887,9 @@ fi
         Some("success")
     );
     assert_eq!(store.canonical_operations().unwrap(), before_operations);
-    let after_work_operations = store.work_operations().expect("Work operations after poll");
+    let after_work_operations = store
+        .legacy_work_operation_rows()
+        .expect("Work operations after poll");
     assert_eq!(
         after_work_operations.len(),
         before_work_operations.len() + 1

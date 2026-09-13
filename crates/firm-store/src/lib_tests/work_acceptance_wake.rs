@@ -143,7 +143,7 @@ fn real_trust_acceptance_selects_blocked_responsibility_without_changing_it() {
     );
     assert!(
         !store
-            .work_operations()
+            .work_operations_unlocked()
             .unwrap()
             .iter()
             .any(|op| op.event.id == wake.acceptance_event_id),

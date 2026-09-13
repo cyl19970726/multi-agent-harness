@@ -154,20 +154,25 @@ pub(super) fn team_run_work_command(
                         })
                 })
                 .transpose()?;
-            // `--since <cursor>`: delta read against the WorkOperation append
-            // order (see `work_operation_cursors` for why that order, and not
+            // `--since <cursor>`: delta read against the Work journal position
+            // (see `work_journal_cursors` for why that order, and not
             // Work::version or updated_at, is the cursor). Independent of the
             // --status/--member-run-id value filters below: a Work can match
-            // both, either, or neither.
+            // both, either, or neither. An integer cursor a pre-W3 binary
+            // returned is a bare ledger row count and decodes unchanged, so a
+            // Host loop that kept one across the upgrade neither skips nor
+            // replays a ledger row.
             let since = value(args, "--since")
                 .map(|raw| {
-                    raw.parse::<u64>().map_err(|_| {
-                        CliError::Usage(
-                            "--since must be an integer WorkOperation-order cursor (pass the \
-                             next_since a previous `work list --since` call returned)"
-                                .to_string(),
-                        )
-                    })
+                    raw.parse::<u64>()
+                        .map(WorkJournalPosition::from_packed)
+                        .map_err(|_| {
+                            CliError::Usage(
+                                "--since must be an integer Work journal cursor (pass the \
+                                 next_since a previous `work list --since` call returned)"
+                                    .to_string(),
+                            )
+                        })
                 })
                 .transpose()?;
             let brief = has_flag(args, "--brief");
@@ -181,7 +186,7 @@ pub(super) fn team_run_work_command(
                             .to_string(),
                     )
                 })?;
-                Some(work_operation_cursors(store, run_id)?)
+                Some(work_journal_cursors(store, run_id)?)
             } else {
                 None
             };
@@ -207,11 +212,10 @@ pub(super) fn team_run_work_command(
                     })
                 })
                 .filter(|work| {
-                    since.is_none_or(|cursor| {
+                    since.as_ref().is_none_or(|cursor| {
                         cursors
                             .as_ref()
-                            .and_then(|cursors| cursors.get(&work.id))
-                            .is_some_and(|sequence| *sequence > cursor)
+                            .is_some_and(|cursors| cursors.changed_after(&work.id, cursor))
                     })
                 })
                 .collect::<Vec<_>>();
@@ -233,12 +237,12 @@ pub(super) fn team_run_work_command(
             } else if let Some(since) = since {
                 let next_since = cursors
                     .as_ref()
-                    .and_then(|cursors| cursors.values().copied().max())
-                    .unwrap_or(0)
-                    .max(since);
+                    .map(|cursors| cursors.watermark)
+                    .unwrap_or_default()
+                    .merged_max(since);
                 print_json(&serde_json::json!({
-                    "since": since,
-                    "next_since": next_since,
+                    "since": since.packed(),
+                    "next_since": next_since.packed(),
                     "works": works,
                 }))
             } else {
@@ -248,14 +252,14 @@ pub(super) fn team_run_work_command(
         "show" => {
             let work_id = required(args, "--work-id")?;
             let work = store
-                .latest_works()?
-                .into_iter()
-                .find(|work| work.id == work_id)
+                .current_work(&work_id)?
                 .ok_or_else(|| CliError::Usage(format!("Work not found: {work_id}")))?;
+            // One reader, one chain: `work show` reports the same version and
+            // phase as RoleView, `work list` and the dashboard projection.
             let events = store
-                .work_events()?
+                .work_history(&work_id)?
                 .into_iter()
-                .filter(|event| event.work_id == work_id)
+                .map(|record| record.event)
                 .collect::<Vec<_>>();
             let deliveries = store
                 .current_work_deliveries_for_team_run(&work.team_run_id)?

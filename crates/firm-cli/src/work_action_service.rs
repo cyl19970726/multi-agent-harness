@@ -112,7 +112,7 @@ fn execute_lifecycle(
     auth: &AuthenticatedMutation,
     action: WorkAction,
 ) -> Result<CanonicalWorkActionOutcome, StoreError> {
-    let before_work = store.work_operations()?.len();
+    let before_work = store.work_journal_position()?;
     let before_canonical = store
         .canonical_operations_for_space(&auth.execution_space_id)?
         .len();
@@ -169,14 +169,12 @@ fn execute_lifecycle(
         });
     }
 
-    let operations = store.work_operations()?;
-    let operation = operations
+    let position = store.work_journal_position()?;
+    let history = store.work_history(&executed.work.id)?;
+    let operation = history
         .iter()
         .rev()
-        .find(|operation| {
-            operation.work.id == executed.work.id
-                && operation.event.idempotency_key == auth.idempotency_key
-        })
+        .find(|record| record.event.idempotency_key == auth.idempotency_key)
         .ok_or_else(|| {
             StoreError::Conflict(
                 "INVALID_STATE_TRANSITION: Work mutation committed without its operation".into(),
@@ -206,9 +204,9 @@ fn execute_lifecycle(
         projection,
         work: executed.work,
         event_id: operation.event.id.clone(),
-        store_sequence: operations.len() as u64,
+        store_sequence: position.total(),
         resulting_version: operation.work.version,
-        replayed: operations.len() == before_work,
+        replayed: position == before_work,
     })
 }
 
@@ -217,7 +215,7 @@ fn execute_local_lifecycle(
     action: WorkAction,
 ) -> Result<CanonicalWorkActionOutcome, StoreError> {
     let idempotency_key = action.context().idempotency_key.clone();
-    let before = store.work_operations()?.len();
+    let before = store.work_journal_position()?;
     let canonical_space_ids = store.canonical_execution_space_ids()?;
     let before_canonical = if canonical_space_ids.len() == 1 {
         store
@@ -250,14 +248,14 @@ fn execute_local_lifecycle(
             replayed: canonical.len() == before_canonical,
         });
     }
-    let operations = store.work_operations()?;
-    let operation = operations
+    let position = store.work_journal_position()?;
+    let history = store.work_history(&executed.work.id)?;
+    let operation = history
         .iter()
         .rev()
-        .find(|operation| {
-            operation.work.id == executed.work.id
-                && (operation.event.idempotency_key == idempotency_key
-                    || operation.work.version == executed.work.version)
+        .find(|record| {
+            record.event.idempotency_key == idempotency_key
+                || record.work.version == executed.work.version
         })
         .ok_or_else(|| {
             StoreError::Conflict(
@@ -269,9 +267,9 @@ fn execute_local_lifecycle(
         projection,
         work: executed.work,
         event_id: operation.event.id.clone(),
-        store_sequence: operations.len() as u64,
+        store_sequence: position.total(),
         resulting_version: operation.work.version,
-        replayed: operations.len() == before,
+        replayed: position == before,
     })
 }
 
@@ -592,45 +590,26 @@ fn outcome_from_trust(
     })
 }
 
+/// The current Work, read through the one Store reader.
+///
+/// This used to run a second private fold — canonical envelope projections and
+/// side records by max version, compared against `latest_works()` — and raise
+/// IDENTITY_CONFLICT when the two disagreed at one revision. That comparison
+/// was between this function's own re-derivation and the Store's, not between
+/// two independent authorities, so it could only ever report a bug in the copy
+/// kept here. The Store fold is the single source and needs no second opinion;
+/// a genuinely conflicting projection at one revision is refused where it is
+/// observable — the Store's own provenance guard
+/// (`WORK_PROJECTION_PROVENANCE_CONFLICT`) and the RoleView side-record fold's
+/// `IDENTITY_CONFLICT`.
 pub fn current_work(
     store: &HarnessStore,
-    execution_space_id: &str,
+    _execution_space_id: &str,
     work_id: &str,
 ) -> Result<Work, StoreError> {
-    let canonical = store
-        .canonical_operations_for_space(execution_space_id)?
-        .into_iter()
-        .flat_map(|operation| {
-            std::iter::once(operation.resulting_projection).chain(operation.immutable_side_records)
-        })
-        .filter_map(|projection| serde_json::from_value::<Work>(projection).ok())
-        .filter(|work| work.id == work_id)
-        .max_by_key(|work| work.version);
-    let compatibility = store
-        .latest_works()?
-        .into_iter()
-        .find(|work| work.id == work_id);
-    match (canonical, compatibility) {
-        (Some(canonical), Some(compatibility)) if canonical.version == compatibility.version => {
-            if canonical != compatibility {
-                Err(conflict(
-                    "IDENTITY_CONFLICT",
-                    "canonical and compatibility Work projections conflict at one revision",
-                ))
-            } else {
-                Ok(canonical)
-            }
-        }
-        (Some(canonical), Some(compatibility)) => {
-            Ok(if canonical.version > compatibility.version {
-                canonical
-            } else {
-                compatibility
-            })
-        }
-        (Some(work), None) | (None, Some(work)) => Ok(work),
-        (None, None) => Err(conflict("INVALID_STATE_TRANSITION", "Work does not exist")),
-    }
+    store
+        .current_work(work_id)?
+        .ok_or_else(|| conflict("INVALID_STATE_TRANSITION", "Work does not exist"))
 }
 
 fn conflict(code: &str, message: &str) -> StoreError {

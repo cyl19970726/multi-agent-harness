@@ -77,7 +77,9 @@ fn sparse_mixed_version_update_recovers_and_repersists_work_provenance() {
     store
         .append_jsonl("work_operations.jsonl", &sparse_json)
         .expect("simulate stale mixed-version append");
-    let raw = store.work_operations().expect("raw WorkOperations");
+    let raw = store
+        .work_operations_unlocked()
+        .expect("raw WorkOperations");
     assert!(raw
         .last()
         .expect("sparse rebound")
@@ -116,7 +118,9 @@ fn sparse_mixed_version_update_recovers_and_repersists_work_provenance() {
             .expect("repair retry is idempotent"),
         repaired
     );
-    let raw = store.work_operations().expect("repaired WorkOperations");
+    let raw = store
+        .work_operations_unlocked()
+        .expect("repaired WorkOperations");
     assert_eq!(raw.last().expect("repair operation").work, repaired);
     assert_eq!(raw.last().unwrap().event.kind, WorkEventKind::Updated);
 

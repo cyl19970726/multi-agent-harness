@@ -161,7 +161,12 @@ fn exact_active_peer_returns_host_owned_work_and_reauthorizes_the_next_admission
 fn peer_review_fails_closed_on_each_independent_mode_without_appending() {
     let (root, store, run, host_run, peer, submitted) =
         host_owned_review_fixture("peer-review-closed");
-    let appended = || store.work_operations().expect("Work operations").len();
+    let appended = || {
+        store
+            .work_operations_unlocked()
+            .expect("Work operations")
+            .len()
+    };
 
     // 1. The performer must be the exact ProviderRuntimeProjection it names.
     let before = appended();
@@ -481,7 +486,10 @@ fn peer_review_counts_memberships_only_in_the_work_execution_space() {
             "unix-ms:12",
         )
         .expect("deactivate the reviewer membership in the Work's own space");
-    let before = store.work_operations().expect("Work operations").len();
+    let before = store
+        .work_operations_unlocked()
+        .expect("Work operations")
+        .len();
     let foreign_only = store
         .request_work_changes_as_peer_reviewer(
             &second.id,
@@ -498,7 +506,10 @@ fn peer_review_counts_memberships_only_in_the_work_execution_space() {
         "{foreign_only}"
     );
     assert_eq!(
-        store.work_operations().expect("Work operations").len(),
+        store
+            .work_operations_unlocked()
+            .expect("Work operations")
+            .len(),
         before
     );
     std::fs::remove_dir_all(root).expect("remove temp store");

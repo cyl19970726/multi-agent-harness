@@ -469,17 +469,18 @@ pub(super) fn dashboard_snapshot_with_team_run(
 ///   - `store_root`: which coordination store this response actually read;
 ///   - `latest_op_seq`: how far that store's Work operation log has advanced.
 ///
-/// The store has no single field named "seq"; `work_operations.jsonl` is an
-/// append-only per-store log (one row per create/assign/start/accept/...), so
-/// its row count is a monotonic cursor over every WorkOperation the store has
-/// recorded — the "newest event cursor" the store exposes (see
-/// `HarnessStore::work_operations`). It only ever grows.
+/// The store has no single field named "seq". Work rows are appended to two
+/// journals — `work_operations.jsonl` and the `work` aggregate of the trust
+/// operations ledger — so the monotonic cursor is the total of the Work
+/// journal position across both (see `HarnessStore::work_journal_position`).
+/// It only ever grows, and unlike the pre-W3 ledger row count it also grows on
+/// an accept, a cancellation and a dependency change.
 pub(super) fn dashboard_meta(store: &HarnessStore) -> CliResult<serde_json::Value> {
     let store_root = std::fs::canonicalize(store.root())
         .unwrap_or_else(|_| store.root().to_path_buf())
         .display()
         .to_string();
-    let latest_op_seq = store.work_operations()?.len() as u64;
+    let latest_op_seq = store.work_journal_position()?.total();
     let daemon_lease = store
         .latest_node_daemon_leases()?
         .into_iter()

@@ -3,7 +3,7 @@ use super::*;
 #[test]
 fn member_created_work_cannot_embed_runtime_ownership() {
     let (root, store, run, member_a, member_b) = work_test_fixture("member-work-authority");
-    let operations_before = store.work_operations().unwrap().len();
+    let operations_before = store.work_operations_unlocked().unwrap().len();
 
     let mut peer_owned = unassigned_test_work(&run.id, "work-peer-owned");
     peer_owned.active_member_run_id = Some(member_b.id.clone());
@@ -93,7 +93,10 @@ fn member_created_work_cannot_embed_runtime_ownership() {
     assert!(error
         .to_string()
         .contains("WORK_CREATE_UNASSIGNED_REQUIRED"));
-    assert_eq!(store.work_operations().unwrap().len(), operations_before);
+    assert_eq!(
+        store.work_operations_unlocked().unwrap().len(),
+        operations_before
+    );
 
     let unassigned = store
         .insert_work(
@@ -129,7 +132,7 @@ fn member_created_work_cannot_embed_runtime_ownership() {
     store
         .compare_and_append_member_run(&member_a, &failed_member)
         .expect("persist Active+Failed provider runtime fixture");
-    let before_failed_create = store.work_operations().unwrap();
+    let before_failed_create = store.work_operations_unlocked().unwrap();
     let error = store
         .insert_work(
             unassigned_test_work(&run.id, "work-created-by-failed-runtime"),
@@ -144,7 +147,10 @@ fn member_created_work_cannot_embed_runtime_ownership() {
     assert!(error
         .to_string()
         .contains("only a live ProviderRuntimeProjection"));
-    assert_eq!(store.work_operations().unwrap(), before_failed_create);
+    assert_eq!(
+        store.work_operations_unlocked().unwrap(),
+        before_failed_create
+    );
 
     std::fs::remove_dir_all(root).expect("remove temp store");
 }

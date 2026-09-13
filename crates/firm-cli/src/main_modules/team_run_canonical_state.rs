@@ -99,11 +99,11 @@ pub(super) fn team_run_canonical_state_fingerprint(
         .collect::<Vec<_>>();
     members.sort_by(|left, right| left["id"].as_str().cmp(&right["id"].as_str()));
 
-    let work_operations = store
-        .work_operations()?
-        .into_iter()
-        .filter(|operation| operation.work.team_run_id == run_id)
-        .count();
+    // The Work plane advances in two journals until the W4 writer cutover.
+    // Counting only `work_operations.jsonl` made an accept, a cancellation or
+    // a dependency change look like no canonical progress at all, so a hold
+    // that those settled kept holding.
+    let work_operations = store.work_journal_cursors_for_team_run(run_id)?.watermark;
 
     let member_run_ids = members
         .iter()
@@ -193,7 +193,7 @@ pub(super) fn team_run_canonical_state_fingerprint(
                 "member_run_ids": run.member_run_ids,
             },
             "member_runs": members,
-            "work_operations": work_operations,
+            "work_operations": work_operations.total(),
             "execution_space_id": execution_space_id,
             "messages": messages,
             "runtime_commands": runtime_commands,

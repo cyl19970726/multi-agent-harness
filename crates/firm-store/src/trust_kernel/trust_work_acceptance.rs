@@ -253,6 +253,25 @@ impl HarnessStore {
         };
         let delegation_revisions =
             self.work_delegation_rollup_revisions_unlocked(&next, &rollup_context)?;
+        // Preserve the historical WorkEvent read contract as an immutable
+        // record inside the one canonical operation, exactly as the cancel
+        // path does. It is not a second Work writer: the resulting Work
+        // projection is committed by commit_current_work_mutation_unlocked.
+        let acceptance_event = firm_core::WorkEvent {
+            id: rollup_context.event_id.clone(),
+            team_run_id: next.team_run_id.clone(),
+            work_id: next.id.clone(),
+            sequence: next.version,
+            kind: firm_core::WorkEventKind::Accepted,
+            expected_version: current.version,
+            resulting_version: next.version,
+            performed_by_actor: rollup_context.performed_by_actor.clone(),
+            authority_actor: rollup_context.authority_actor.clone(),
+            causation_ref: None,
+            idempotency_key: context.idempotency_key.clone(),
+            payload: request_payload.clone(),
+            created_at: updated_at.to_string(),
+        };
         let side_records = std::iter::once(serde_json::to_value(&report)?)
             .chain(
                 requirements
@@ -278,6 +297,7 @@ impl HarnessStore {
                     .map(serde_json::to_value)
                     .collect::<Result<Vec<_>, _>>()?,
             )
+            .chain(std::iter::once(serde_json::to_value(&acceptance_event)?))
             .collect();
         let mut commit_context = context.clone();
         commit_context.request_fingerprint = Some(request_fingerprint);
@@ -458,29 +478,28 @@ impl HarnessStore {
         if revision > current.version {
             return Ok(false);
         }
-        let mut updates = self
-            .work_operations_unlocked()?
+        // Reads both journals through the one Work reader. A revision the
+        // trust journal owns used to be missing from this span entirely, so a
+        // gap refused; it is now present and refused for the honest reason
+        // (it is not a GitHub evidence refresh). The admitted set is the
+        // continuous evidence-refresh chain, exactly as before.
+        let updates = self
+            .work_history(&current.id)?
             .into_iter()
-            .filter(|operation| {
-                operation.work.id == current.id
-                    && operation.event.resulting_version > revision
-                    && operation.event.resulting_version <= current.version
+            .filter(|record| {
+                record.event.resulting_version > revision
+                    && record.event.resulting_version <= current.version
             })
             .collect::<Vec<_>>();
-        updates.sort_by_key(|operation| operation.event.resulting_version);
         Ok(updates.len() as u64 == current.version - revision
-            && updates.iter().enumerate().all(|(offset, operation)| {
-                operation.event.expected_version == revision + offset as u64
-                    && operation.event.resulting_version == revision + offset as u64 + 1
-                    && operation.event.kind == firm_core::WorkEventKind::Updated
-                    && operation
-                        .event
-                        .payload
-                        .get("reason")
-                        .and_then(Value::as_str)
+            && updates.iter().enumerate().all(|(offset, record)| {
+                record.event.expected_version == revision + offset as u64
+                    && record.event.resulting_version == revision + offset as u64 + 1
+                    && record.event.kind == firm_core::WorkEventKind::Updated
+                    && record.event.payload.get("reason").and_then(Value::as_str)
                         == Some("github_evidence_refresh")
-                    && operation.work.phase == firm_core::WorkPhase::Review
-                    && operation.work.condition == firm_core::WorkCondition::Normal
+                    && record.work.phase == firm_core::WorkPhase::Review
+                    && record.work.condition == firm_core::WorkCondition::Normal
             }))
     }
 }

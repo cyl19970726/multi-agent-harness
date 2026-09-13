@@ -77,13 +77,15 @@ fn membership_assignment_is_cas_fenced_and_needs_no_runtime() {
     assert_eq!(assigned.owner_member_id.as_deref(), Some("worker-assign"));
     assert_eq!(assigned.active_member_run_id, None);
     assert_eq!(assigned.phase, WorkPhase::Open);
-    let assigned_operation = store
-        .work_operations()
-        .expect("Work operations")
-        .into_iter()
-        .find(|operation| operation.work.id == "work-assign-1" && operation.work.version == 2)
+    // The persisted row shape is a ledger-file fact, so it is asserted on the
+    // bytes rather than through a Work reader: `work_history` returns the
+    // merged version chain, not one journal's row schema.
+    let wire = std::fs::read_to_string(fixture.root.join("work_operations.jsonl"))
+        .expect("work operations ledger")
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("ledger row"))
+        .find(|row| row["work"]["id"] == "work-assign-1" && row["work"]["version"] == 2)
         .expect("assignment operation");
-    let wire = serde_json::to_value(assigned_operation).expect("assignment wire");
     assert!(wire.get("deliveries").is_none());
     assert!(wire.get("delivery_updates").is_none());
 
@@ -112,8 +114,8 @@ fn membership_assignment_is_cas_fenced_and_needs_no_runtime() {
         Some("membership-team-assign-host-assign")
     );
     let last = store
-        .work_operations()
-        .expect("operations")
+        .work_history("work-assign-1")
+        .expect("Work history")
         .last()
         .expect("reassign operation")
         .clone();
@@ -277,8 +279,8 @@ fn dormant_assignee_retains_responsibility_without_active_membership_or_runtime(
         .expect("reassign while the previous assignee is dormant");
     assert_eq!(reassigned.version, 3);
     let last = store
-        .work_operations()
-        .expect("operations")
+        .work_history(&work.id)
+        .expect("Work history")
         .last()
         .expect("reassign operation")
         .clone();

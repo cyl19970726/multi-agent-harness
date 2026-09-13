@@ -3,7 +3,10 @@ use super::*;
 #[test]
 fn legacy_runtime_work_writers_are_typed_zero_delta_rejections() {
     let (root, store, run, member, _) = work_test_fixture("legacy-runtime-work-writers");
-    let before = store.work_operations().expect("operations before").len();
+    let before = store
+        .work_operations_unlocked()
+        .expect("operations before")
+        .len();
 
     let mut legacy = unassigned_test_work(&run.id, "legacy-runtime-create");
     legacy.owner_member_id = Some(member.agent_member_id.clone());
@@ -17,7 +20,7 @@ fn legacy_runtime_work_writers_are_typed_zero_delta_rejections() {
     assert!(create_error
         .to_string()
         .contains("LEGACY_RUNTIME_WORK_AUTHORITY_RETIRED"));
-    assert_eq!(store.work_operations().unwrap().len(), before);
+    assert_eq!(store.work_operations_unlocked().unwrap().len(), before);
 
     let canonical = store
         .insert_work(
@@ -42,7 +45,7 @@ fn legacy_runtime_work_writers_are_typed_zero_delta_rejections() {
         .collect::<Vec<_>>()
         .join("\n");
     std::fs::write(&ledger, format!("{rewritten}\n")).expect("write historical Work row");
-    let legacy_before = store.work_operations().unwrap().len();
+    let legacy_before = store.work_operations_unlocked().unwrap().len();
     for error in [
         store
             .start_work(
@@ -79,7 +82,10 @@ fn legacy_runtime_work_writers_are_typed_zero_delta_rejections() {
                 || error.to_string().contains("does not hold responsibility"),
             "unexpected legacy rejection: {error}"
         );
-        assert_eq!(store.work_operations().unwrap().len(), legacy_before);
+        assert_eq!(
+            store.work_operations_unlocked().unwrap().len(),
+            legacy_before
+        );
     }
 
     std::fs::remove_dir_all(root).expect("remove temp store");

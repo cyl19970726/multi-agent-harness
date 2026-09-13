@@ -395,6 +395,10 @@ mod store_work_mutations;
 mod store_work_projection;
 mod store_work_redelivery;
 mod store_work_state;
+mod work_history;
+pub use work_history::{
+    WorkJournalPosition, WorkJournalRecord, WorkJournalRunCursors, WorkJournalSource,
+};
 
 fn latest_by_id<T>(
     values: Vec<T>,

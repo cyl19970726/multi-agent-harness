@@ -44,7 +44,7 @@ use harness_core::{
 };
 use harness_store::{
     canonical_surface, CanonicalMemberRunAdmission, HarnessStore, HostAttentionClaimResult,
-    MessageDeliveryClaimResult, StoreError,
+    MessageDeliveryClaimResult, StoreError, WorkJournalPosition, WorkJournalRunCursors,
 };
 
 // Mission/MissionStatus remain only for cfg(test) legacy-history fixtures.

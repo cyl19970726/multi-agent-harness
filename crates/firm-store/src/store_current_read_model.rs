@@ -5,6 +5,10 @@ use std::sync::Arc;
 
 pub(super) struct CurrentWorkSources {
     pub operations: Vec<WorkOperation>,
+    /// The same rows with immutable additive provenance folded through them.
+    /// Both the latest-Work fold and the Work journal read this, so a store
+    /// pays for the recovery once.
+    pub recovered: Result<Vec<WorkOperation>, String>,
     pub latest: Result<std::collections::BTreeMap<String, Work>, String>,
     pub attention_sources: Result<Vec<(bool, HostAttention)>, String>,
     pub responsibility_versions: std::collections::BTreeMap<String, u64>,
@@ -56,18 +60,18 @@ impl HarnessStore {
             || {
                 let operations =
                     merge_work_operation_sources((*ordinary).clone(), (*delegated).clone());
-                let latest = self
+                let recovered = self
                     .recover_work_operation_provenance(operations.clone())
-                    .map(|recovered| {
-                        latest_by_id(recovered, |op| op.work.id.clone())
-                            .into_iter()
-                            .map(|(id, op)| (id, op.work))
-                            .collect()
-                    })
                     .map_err(|error| match error {
                         StoreError::Conflict(message) => message,
                         other => other.to_string(),
                     });
+                let latest = recovered.clone().map(|recovered| {
+                    latest_by_id(recovered, |op| op.work.id.clone())
+                        .into_iter()
+                        .map(|(id, op)| (id, op.work))
+                        .collect()
+                });
                 let attention_sources = (|| -> StoreResult<Vec<(bool, HostAttention)>> {
                     let mut sources = Vec::new();
                     for operation in &operations {
@@ -105,6 +109,7 @@ impl HarnessStore {
                 }
                 Ok(CurrentWorkSources {
                     operations,
+                    recovered,
                     latest,
                     responsibility_versions,
                     attention_sources,

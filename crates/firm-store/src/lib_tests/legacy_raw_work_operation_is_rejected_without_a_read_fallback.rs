@@ -40,7 +40,7 @@ fn legacy_raw_work_operation_is_rejected_without_a_read_fallback() {
     .expect("write historical WorkOperation bytes");
 
     let error = store
-        .work_operations()
+        .work_operations_unlocked()
         .expect_err("legacy Work status must not gain a read fallback");
     assert!(
         error.to_string().contains("unknown field `status`"),

@@ -302,14 +302,16 @@ pub(super) fn exact_work_projection_at_revision(
             }
         }
     }
-    for operation in store
-        .work_operations()
+    // The one Work reader covers both journals, so a revision the trust
+    // journal owns is resolvable here instead of falling off the end.
+    for record in store
+        .work_history(work_id)
         .map_err(|error| FabricError::none(FabricErrorCode::StoreUnavailable, error.to_string()))?
         .into_iter()
         .rev()
     {
-        if operation.work.id == work_id && operation.work.version == work_revision {
-            return Ok((operation.work, operation.event.id));
+        if record.work.version == work_revision {
+            return Ok((record.work, record.event.id));
         }
     }
     Err(FabricError::none(

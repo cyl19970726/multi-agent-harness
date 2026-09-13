@@ -45,15 +45,16 @@ impl HarnessStore {
         provider_received_revision: u64,
         candidate_revision: u64,
     ) -> StoreResult<bool> {
-        Ok(self
-            .work_operations_unlocked()?
-            .into_iter()
-            .any(|operation| {
-                operation.event.work_id == work_id
-                    && operation.event.resulting_version > provider_received_revision
-                    && operation.event.resulting_version <= candidate_revision
-                    && Self::work_event_reauthorizes_execution(&operation.event)
-            }))
+        // Reads both journals through the one Work reader, so a re-authorizing
+        // event does not become invisible once its writer moves to the trust
+        // journal. The admitted set is unchanged: a trust-materialized event's
+        // actor is never `Host`, and no trust transition this binary writes
+        // (Submitted, Accepted, Cancelled, DependenciesChanged) is in the set.
+        Ok(self.work_history(work_id)?.into_iter().any(|record| {
+            record.event.resulting_version > provider_received_revision
+                && record.event.resulting_version <= candidate_revision
+                && Self::work_event_reauthorizes_execution(&record.event)
+        }))
     }
     /// Return the immutable exact runtime authority captured when one
     /// WorkExecutionBinding was created. Later binding lifecycle projections

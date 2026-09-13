@@ -1,6 +1,7 @@
 //! Disposable source projections built during the same Trust envelope scan as
 //! the latest-kind index. No clock/lease decision is memoized here.
 use super::*;
+use firm_core::{WorkEvent, WorkEventKind};
 use std::sync::Arc;
 #[path = "trust_read_model/messages.rs"]
 mod messages;
@@ -18,6 +19,9 @@ pub(crate) struct TrustReadModel {
     work_revisions: BTreeMap<String, Vec<Work>>,
     latest_work: BTreeMap<String, Work>,
     invalid_work: Option<serde_json::Value>,
+    work_journal: Vec<crate::work_history::WorkJournalRecord>,
+    work_journal_seen: BTreeMap<(String, u64), usize>,
+    work_journal_error: Option<String>,
     attentions: BTreeMap<String, BTreeMap<String, HostAttention>>,
     attention_errors: BTreeMap<String, String>,
     bindings: BTreeMap<String, BTreeMap<String, WorkExecutionBinding>>,
@@ -70,6 +74,7 @@ impl TrustReadModel {
         } else if op.event.aggregate_kind == "work" && self.invalid_work.is_none() {
             self.invalid_work = Some(op.resulting_projection.clone());
         }
+        self.observe_work_journal(op);
         if op.event.aggregate_kind == "work_execution_binding" {
             match serde_json::from_value::<WorkExecutionBinding>(op.resulting_projection.clone()) {
                 Ok(binding) => {
@@ -196,6 +201,93 @@ impl TrustReadModel {
             .or_default()
             .insert(membership.id.clone(), membership);
     }
+    /// Materialize the Work revisions this canonical operation produced as
+    /// WorkOperation-shaped records, so the one Work reader sees the same
+    /// chain the ledger exposes. Current writers commit a real `WorkEvent`
+    /// side record with the transition; a pre-W3 envelope carries none, and
+    /// its event is derived from the canonical event it already persisted.
+    /// Nothing here is ever written back: this is a read projection.
+    fn observe_work_journal(&mut self, op: &CanonicalOperation) {
+        if op.event.aggregate_kind == "work" {
+            let Ok(work) = serde_json::from_value::<Work>(op.resulting_projection.clone()) else {
+                return;
+            };
+            let kind = match work_transition_event_kind(&op.event.transition) {
+                Some(kind) => kind,
+                None => {
+                    self.work_journal_error.get_or_insert_with(|| {
+                        format!(
+                            "WORK_JOURNAL_UNKNOWN_TRANSITION: canonical Work operation {} names transition {:?}, which this binary cannot read as a WorkEvent",
+                            op.event.id, op.event.transition
+                        )
+                    });
+                    return;
+                }
+            };
+            let event = committed_work_event(op, &work)
+                .unwrap_or_else(|| derived_work_event(op, &work, kind, op.event.expected_version));
+            self.record_work_journal(work, event, true);
+            return;
+        }
+        // Pre-cutover Result submission: the Review revision exists only as an
+        // immutable side record of the report envelope. Current writers pair
+        // that envelope with a `work`/`submitted` operation in the same atomic
+        // write; the pair is deduplicated on (Work, version) below.
+        if op.event.aggregate_kind != "work_report" || op.event.transition != "created" {
+            return;
+        }
+        let Some(work_id) = op.resulting_projection["work_id"].as_str() else {
+            return;
+        };
+        let revision = op.resulting_projection["work_revision"].as_u64();
+        for record in &op.immutable_side_records {
+            let Ok(work) = serde_json::from_value::<Work>(record.clone()) else {
+                continue;
+            };
+            if work.id != work_id || Some(work.version) != revision {
+                continue;
+            }
+            let event = derived_work_event(
+                op,
+                &work,
+                WorkEventKind::Submitted,
+                work.version.saturating_sub(1),
+            );
+            self.record_work_journal(work, event, false);
+        }
+    }
+
+    /// Keep exactly one record per (Work, version). A `work`-aggregate record
+    /// is the authority for its revision and replaces a report-derived one.
+    fn record_work_journal(&mut self, work: Work, event: WorkEvent, from_work_aggregate: bool) {
+        let key = (work.id.clone(), event.resulting_version);
+        let record = crate::work_history::WorkJournalRecord {
+            source: crate::work_history::WorkJournalSource::Trust,
+            event,
+            work,
+        };
+        match self.work_journal_seen.get(&key) {
+            Some(&index) => {
+                if from_work_aggregate {
+                    self.work_journal[index] = record;
+                }
+            }
+            None => {
+                self.work_journal_seen.insert(key, self.work_journal.len());
+                self.work_journal.push(record);
+            }
+        }
+    }
+
+    pub(crate) fn work_journal_records(
+        &self,
+    ) -> StoreResult<Vec<crate::work_history::WorkJournalRecord>> {
+        if let Some(error) = &self.work_journal_error {
+            return Err(StoreError::Conflict(error.clone()));
+        }
+        Ok(self.work_journal.clone())
+    }
+
     fn observe_latest_work(&mut self, work: Work) {
         if self
             .latest_work
@@ -206,6 +298,68 @@ impl TrustReadModel {
         }
     }
 }
+/// Every `work`-aggregate transition this binary can write, and the WorkEvent
+/// kind it means. An unrecognized transition is a Work revision this binary
+/// cannot name honestly, so the Work journal fails closed rather than
+/// labelling it; the latest-Work fold is deliberately independent of this map
+/// and keeps reading such a store.
+fn work_transition_event_kind(transition: &str) -> Option<WorkEventKind> {
+    Some(match transition {
+        "submitted" => WorkEventKind::Submitted,
+        "accepted" => WorkEventKind::Accepted,
+        "cancelled" => WorkEventKind::Cancelled,
+        "dependencies_changed" => WorkEventKind::DependenciesChanged,
+        "updated" => WorkEventKind::Updated,
+        _ => return None,
+    })
+}
+
+/// The WorkEvent a current writer committed alongside its canonical Work
+/// transition, when it bound this exact revision.
+fn committed_work_event(op: &CanonicalOperation, work: &Work) -> Option<WorkEvent> {
+    op.immutable_side_records.iter().find_map(|record| {
+        serde_json::from_value::<WorkEvent>(record.clone())
+            .ok()
+            .filter(|event| event.work_id == work.id && event.resulting_version == work.version)
+    })
+}
+
+/// Read a pre-W3 canonical operation as the WorkEvent it already implies. The
+/// canonical actor model has no Host kind, so a derived actor is never Host:
+/// no authority check can be widened by reading these rows.
+pub(super) fn derived_work_event(
+    op: &CanonicalOperation,
+    work: &Work,
+    kind: WorkEventKind,
+    expected_version: u64,
+) -> WorkEvent {
+    let actor = |actor: firm_core::agentfirm_api::ActorRef| TeamActorRef {
+        kind: match actor.kind {
+            firm_core::agentfirm_api::ActorKind::AgentMember => TeamActorKind::AgentMember,
+            firm_core::agentfirm_api::ActorKind::Service => TeamActorKind::Service,
+            _ => TeamActorKind::Operator,
+        },
+        id: actor.id,
+        display_name: None,
+        authn_source: Some("canonical-work-event".into()),
+    };
+    WorkEvent {
+        id: op.event.id.clone(),
+        team_run_id: work.team_run_id.clone(),
+        work_id: work.id.clone(),
+        sequence: work.version,
+        kind,
+        expected_version,
+        resulting_version: work.version,
+        performed_by_actor: actor(op.event.performed_by_actor.clone()),
+        authority_actor: op.event.authority_actor.clone().map(actor),
+        causation_ref: None,
+        idempotency_key: op.event.idempotency_key.clone(),
+        payload: op.event.payload.clone(),
+        created_at: op.event.created_at.clone(),
+    }
+}
+
 impl HarnessStore {
     pub(crate) fn trust_read_model(&self) -> StoreResult<Arc<TrustReadModel>> {
         Ok(self

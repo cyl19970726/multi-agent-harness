@@ -427,7 +427,10 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
         )
         .expect("provider projection AgentSession");
 
-    let before = store.work_operations().expect("before operations").len();
+    let before = store
+        .legacy_work_operation_rows()
+        .expect("before operations")
+        .len();
     let legacy_route = format!("/v1/team-runs/{run_id}/works?project={project_id}");
     let (status, retired) = serve.post_json(
         &legacy_route,
@@ -443,7 +446,10 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
         "legacy delegation writer: {retired_delegation}"
     );
     assert_eq!(
-        store.work_operations().expect("after retired").len(),
+        store
+            .legacy_work_operation_rows()
+            .expect("after retired")
+            .len(),
         before
     );
 
@@ -457,7 +463,13 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
     });
     let (status, denied) = serve.post_json(&action_route, &intent);
     assert_eq!(status, 401, "unauth action: {denied}");
-    assert_eq!(store.work_operations().expect("after unauth").len(), before);
+    assert_eq!(
+        store
+            .legacy_work_operation_rows()
+            .expect("after unauth")
+            .len(),
+        before
+    );
 
     let headers = action_headers(TOKEN, "create-store-live-1", "0");
     let (status, created) = serve.post_json_with_headers(&action_route, &intent, &headers);
@@ -1106,7 +1118,7 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
     assert_eq!(start_replay["event_id"], started["event_id"]);
     assert_eq!(start_replay["replayed"], true);
     let operations_before_cli_replay = store
-        .work_operations()
+        .legacy_work_operation_rows()
         .expect("Work operations before CLI replay");
     let start_operation = operations_before_cli_replay
         .iter()
@@ -1165,7 +1177,7 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
             "refusal must name the authenticated entrance: {refusal}"
         );
         let operations_after_cli = store
-            .work_operations()
+            .legacy_work_operation_rows()
             .expect("Work operations after the refused CLI write");
         assert_eq!(
             operations_after_cli.len(),
@@ -1399,7 +1411,7 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
     assert_eq!(accept_replay["event_id"], accepted["event_id"]);
     assert_eq!(accept_replay["replayed"], true);
     assert_eq!(
-        store.work_operations().expect("accept roll-up").len(),
+        store.legacy_work_operation_rows().expect("accept roll-up").len(),
         before + 5,
         "canonical accept must not fabricate a legacy Work transition beyond membership assignment, the two exact starts, and request-changes"
     );

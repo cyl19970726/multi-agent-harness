@@ -352,7 +352,7 @@ pub(super) fn assert_compliant_result_submission(
     );
     assert_eq!(
         store
-            .work_operations()
+            .legacy_work_operation_rows()
             .expect("submission is canonical-only")
             .len(),
         before + 3,

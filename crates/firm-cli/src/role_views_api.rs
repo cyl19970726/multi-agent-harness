@@ -284,7 +284,15 @@ impl Facts {
         store: &HarnessStore,
         team_ids: Option<&BTreeSet<String>>,
     ) -> Result<Self, String> {
-        let work_operations = store.work_operations().map_err(|error| error.to_string())?;
+        // Work comes from the one Store reader, which folds both journals in
+        // version order. This fold used to re-derive Work from canonical
+        // envelopes in APPEND order on top of it, so a trust revision that
+        // landed before a later ledger revision silently overwrote the newer
+        // projection and the RoleView disagreed with `work show` and the
+        // dashboard about the same Work's phase (architecture seam F).
+        let work_records = store
+            .work_journal_records()
+            .map_err(|error| error.to_string())?;
         let operations = store
             .canonical_operations_for_space(space_id)
             .map_err(|error| error.to_string())?;
@@ -302,13 +310,6 @@ impl Facts {
         let mut latest_side = BTreeMap::new();
         let mut unkeyed_side = Vec::new();
         for operation in &operations {
-            if operation.event.aggregate_kind == "work" {
-                if let Ok(work) =
-                    serde_json::from_value::<Work>(operation.resulting_projection.clone())
-                {
-                    works.insert(work.id.clone(), work);
-                }
-            }
             if operation.event.aggregate_kind != "work" {
                 fold_side_record(
                     &mut latest_side,
@@ -318,9 +319,8 @@ impl Facts {
                 )?;
             }
             for value in operation.immutable_side_records.clone() {
-                if let Ok(work) = serde_json::from_value::<Work>(value.clone()) {
-                    works.insert(work.id.clone(), work);
-                } else {
+                // A Work revision is Work history, not a generic side record.
+                if serde_json::from_value::<Work>(value.clone()).is_err() {
                     fold_side_record(&mut latest_side, &mut unkeyed_side, None, value)?;
                 }
             }
@@ -398,7 +398,10 @@ impl Facts {
             space_id: space_id.to_string(),
             store_identity,
             sequence,
-            work_sequence: work_operations.len() as u64,
+            work_sequence: store
+                .work_journal_position()
+                .map_err(|error| error.to_string())?
+                .total(),
             team_sequence: team_rows.len() as u64,
             run_sequence: run_revisions.values().sum(),
             team_revisions,
@@ -491,10 +494,10 @@ impl Facts {
             .into_iter()
             .map(|value| serde_json::to_value(value).unwrap_or(Value::Null))
             .collect(),
-            work_display_events: work_event_summary::display_events(&work_operations, &operations),
-            work_events: work_operations
+            work_display_events: work_event_summary::display_events(&work_records),
+            work_events: work_records
                 .iter()
-                .map(|operation| serde_json::to_value(&operation.event).unwrap_or(Value::Null))
+                .map(|record| serde_json::to_value(&record.event).unwrap_or(Value::Null))
                 .collect(),
             side,
         })

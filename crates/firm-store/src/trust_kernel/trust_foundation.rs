@@ -3,6 +3,15 @@ use super::*;
 mod read_model;
 use read_model::TrustReadModel;
 
+/// One `work` aggregate transition committed atomically with another
+/// canonical projection that produced it.
+pub(in crate::trust_kernel) struct PairedWorkTransition {
+    pub transition: &'static str,
+    pub kind: firm_core::WorkEventKind,
+    pub expected_version: u64,
+    pub work: Work,
+}
+
 impl HarnessStore {
     pub(crate) fn replay_current_work_mutation_unlocked(
         &self,
@@ -716,38 +725,6 @@ impl HarnessStore {
         self.cached_host_attention_outbox()
     }
 
-    /// Decode-only compatibility view for callers that still resolve a
-    /// historical/native WorkEvent reference. Current Work state is never
-    /// reconstructed from these records; the canonical operation projection
-    /// remains the sole writer and authority.
-    pub(crate) fn trust_work_events_unlocked(&self) -> StoreResult<Vec<firm_core::WorkEvent>> {
-        Ok(self
-            .trust_operation_envelopes_unlocked()?
-            .into_iter()
-            .filter(|envelope| envelope.operation.event.aggregate_kind == "work")
-            .flat_map(|envelope| envelope.operation.immutable_side_records)
-            .filter_map(|record| serde_json::from_value::<firm_core::WorkEvent>(record).ok())
-            .collect())
-    }
-
-    pub(crate) fn trust_work_events_for_ids_unlocked(
-        &self,
-        work_ids: &std::collections::HashSet<String>,
-    ) -> StoreResult<Vec<firm_core::WorkEvent>> {
-        Ok(self
-            .trust_operation_envelopes_unlocked()?
-            .into_iter()
-            .filter(|envelope| envelope.operation.event.aggregate_kind == "work")
-            .flat_map(|envelope| envelope.operation.immutable_side_records)
-            .filter(|record| {
-                record["work_id"]
-                    .as_str()
-                    .is_some_and(|id| work_ids.contains(id))
-            })
-            .filter_map(|record| serde_json::from_value::<firm_core::WorkEvent>(record).ok())
-            .collect())
-    }
-
     pub(crate) fn trust_work_delegation_revisions_for_team_run_unlocked(
         &self,
         team_run_id: Option<&str>,
@@ -867,6 +844,50 @@ impl HarnessStore {
         immutable_side_records: Vec<Value>,
         initial_outbox_records: Vec<Value>,
     ) -> StoreResult<CanonicalMutationResult<T>> {
+        self.commit_trust_projection_with_work_transition_unlocked(
+            context,
+            aggregate_kind,
+            aggregate_id,
+            transition,
+            request_payload,
+            resulting_projection,
+            immutable_side_records,
+            initial_outbox_records,
+            None,
+        )
+    }
+
+    /// Commit one canonical projection and, atomically with it, the `work`
+    /// aggregate transition it produced.
+    ///
+    /// A Result submission advances its Work to Review as a side effect of
+    /// publishing an immutable report. Before W3 that Work revision existed
+    /// only as an immutable side record of the `work_report` envelope, so the
+    /// Work journal could not name the transition that produced it and
+    /// `WorkEventKind::Submitted` had no writer at all. The paired `work`
+    /// envelope is written in the SAME atomic ledger rewrite as the report, so
+    /// a crash can never leave one without the other, and it carries the
+    /// WorkEvent the ledger would have carried.
+    ///
+    /// The paired envelope derives its idempotency key from the caller's, so
+    /// every existing scan that resolves a command by its exact key still
+    /// finds exactly the report envelope; an exact replay returns at the
+    /// report's replay check above and re-appends neither.
+    #[allow(clippy::too_many_arguments)]
+    pub(in crate::trust_kernel) fn commit_trust_projection_with_work_transition_unlocked<
+        T: Serialize + for<'de> Deserialize<'de> + Clone,
+    >(
+        &self,
+        context: &MutationContext,
+        aggregate_kind: &str,
+        aggregate_id: &str,
+        transition: &str,
+        request_payload: Value,
+        resulting_projection: &T,
+        immutable_side_records: Vec<Value>,
+        initial_outbox_records: Vec<Value>,
+        paired_work: Option<PairedWorkTransition>,
+    ) -> StoreResult<CanonicalMutationResult<T>> {
         required(&context.execution_space_id, "execution_space_id")?;
         required(&context.authenticated_actor.id, "authenticated_actor.id")?;
         required(&context.command_name, "command_name")?;
@@ -944,13 +965,64 @@ impl HarnessStore {
             initial_outbox_records,
         };
         let mut committed = existing;
-        committed.push(TrustOperationEnvelope {
+        let envelope = |operation| TrustOperationEnvelope {
             execution_space_id: context.execution_space_id.clone(),
             authenticated_actor_kind: context.authenticated_actor.kind,
             authenticated_actor_id: context.authenticated_actor.id.clone(),
             command_name: context.command_name.clone(),
             operation,
-        });
+        };
+        if let Some(paired) = paired_work {
+            let previous = committed
+                .iter()
+                .filter(|envelope| {
+                    envelope.execution_space_id == context.execution_space_id
+                        && envelope.operation.event.aggregate_kind == "work"
+                        && envelope.operation.event.aggregate_id == paired.work.id
+                })
+                .max_by_key(|envelope| envelope.operation.event.sequence);
+            let paired_store_sequence = store_sequence + 1;
+            let paired_event = CanonicalMutationEvent {
+                id: format!("trust-event-{paired_store_sequence}"),
+                aggregate_kind: "work".into(),
+                aggregate_id: paired.work.id.clone(),
+                sequence: previous
+                    .map(|envelope| envelope.operation.event.sequence)
+                    .unwrap_or(0)
+                    + 1,
+                store_sequence: paired_store_sequence,
+                transition: paired.transition.to_string(),
+                expected_version: paired.expected_version,
+                resulting_version: paired.work.version,
+                performed_by_actor: event.performed_by_actor.clone(),
+                authority_actor: event.authority_actor.clone(),
+                causation_ref: None,
+                idempotency_key: format!("{}#{}", context.idempotency_key, paired.transition),
+                canonical_request_fingerprint: event.canonical_request_fingerprint.clone(),
+                payload: event.payload.clone(),
+                created_at: event.created_at.clone(),
+            };
+            let mut paired_operation = CanonicalOperation {
+                event: paired_event,
+                resulting_projection: serde_json::to_value(&paired.work)?,
+                immutable_side_records: Vec::new(),
+                initial_outbox_records: Vec::new(),
+            };
+            // The committed WorkEvent is built by the same function the reader
+            // uses for pre-W3 rows, so a store written before and after this
+            // slice reports one identical Work event for this revision.
+            paired_operation.immutable_side_records =
+                vec![serde_json::to_value(read_model::derived_work_event(
+                    &paired_operation,
+                    &paired.work,
+                    paired.kind,
+                    paired.expected_version,
+                ))?];
+            committed.push(envelope(operation));
+            committed.push(envelope(paired_operation));
+        } else {
+            committed.push(envelope(operation));
+        }
         self.write_trust_operation_envelopes_atomic_unlocked(&committed)?;
         Ok(CanonicalMutationResult {
             projection: resulting_projection.clone(),
