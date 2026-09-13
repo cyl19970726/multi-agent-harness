@@ -4,8 +4,10 @@
 //!     what it's actually talking to;
 //!   - `git_rev`/`built_at` are compile-time (never request-time) values;
 //!   - `store_root` names the coordination store this exact response read;
-//!   - `latest_op_seq` is a monotonic cursor over the store's WorkOperation
-//!     log: it starts at zero and advances as Works are created.
+//!   - `latest_op_seq` is a monotonic cursor over the store's whole Work
+//!     journal — `work_operations.jsonl` plus the `work` aggregate of the
+//!     trust journal — so it starts at zero and advances on a Work creation
+//!     and on a trust-journal transition alike.
 
 mod firm_env;
 use firm_env::{
@@ -269,6 +271,30 @@ fn latest_op_seq_advances_as_work_operations_are_appended() {
     // A read-only GET must never itself advance the cursor.
     let (_status, unchanged) = serve.get_json("/v1/meta");
     assert_eq!(unchanged["latest_op_seq"].as_u64(), Some(3));
+
+    // A Work cancellation is written to the trust journal, not to
+    // `work_operations.jsonl`. The cursor counts the whole Work journal, so it
+    // advances here too; counting only the ledger made every accept, cancel
+    // and dependency change look like no progress at all.
+    let (status, cancelled) = serve.post_json_with_headers(
+        &format!(
+            "/v1/agentfirm/team-runs/{team_run_id}/works/work-meta-second/cancel?project={project_id}"
+        ),
+        &serde_json::json!({"action": "cancel_work", "reason": "superseded"}),
+        &[
+            ("X-AgentFirm-Token", "meta-host-token"),
+            ("Idempotency-Key", "meta-second-cancel"),
+            ("If-Match", "1"),
+            ("X-AgentFirm-Confirm", "cancel"),
+        ],
+    );
+    assert_eq!(status, 200, "body: {cancelled}");
+    let (_status, after_cancel) = serve.get_json("/v1/meta");
+    assert_eq!(
+        after_cancel["latest_op_seq"].as_u64(),
+        Some(4),
+        "a trust-journal Work transition advances the cursor: {after_cancel}"
+    );
 }
 
 #[test]

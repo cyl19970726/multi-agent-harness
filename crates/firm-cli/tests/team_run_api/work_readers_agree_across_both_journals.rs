@@ -12,15 +12,16 @@ use super::*;
 ///    `cancelled`) — they had no writer at all and no reader could see them.
 /// 2. `work list --since` advances for a Work whose ONLY change was a trust
 ///    transition, and an integer cursor issued before W3 still decodes.
-/// 3. `work show`, `work list`, the RoleView and the dashboard projection all
-///    report the same version and phase for the same Work. The RoleView used
-///    to re-derive Work from canonical envelopes in APPEND order on top of the
-///    merged fold, so a trust revision could overwrite a newer ledger one
-///    (architecture seam F).
+/// 3. `team-run work show`, `team-run work list` and the RoleView projection
+///    (`firm work list`, the DOC-106 Global Work read over the same RoleView
+///    `Facts` fold the HTTP RoleViews serve) all report the same version and
+///    phase for the same Work. That fold used to re-derive Work from canonical
+///    envelopes in APPEND order on top of the merged one, so a trust revision
+///    could overwrite a newer ledger revision (architecture seam F). The
+///    dashboard's `latest_op_seq` is covered in `dashboard_meta_api`.
 #[test]
 fn work_readers_agree_across_both_journals() {
     let fixture = seed_board_read_fixture("work-readers-agree");
-    let serve = ServeHandle::spawn(&fixture.home, fixture.home.base(), &[]);
 
     // ---- 1. trust transitions are named Work events -------------------
     let show = |work_id: &str| -> serde_json::Value {
@@ -101,9 +102,6 @@ fn work_readers_agree_across_both_journals() {
         "since=0 returns every Work: {baseline}"
     );
     let watermark = baseline["next_since"].as_u64().expect("next_since");
-    let (status, meta) = serve.get_json("/v1/meta");
-    assert_eq!(status, 200, "meta: {meta}");
-    let op_seq_before = meta["latest_op_seq"].as_u64().expect("latest_op_seq");
 
     // Accept the Work sitting in review. Acceptance is written only to the
     // trust journal, so a ledger-only cursor could never report it.
@@ -132,12 +130,6 @@ fn work_readers_agree_across_both_journals() {
         after_accept_watermark > watermark,
         "the watermark is monotonic: {after_accept_watermark} must exceed {watermark}"
     );
-    let (_status, meta_after) = serve.get_json("/v1/meta");
-    assert!(
-        meta_after["latest_op_seq"].as_u64().expect("latest_op_seq") > op_seq_before,
-        "latest_op_seq counts both journals: {meta_after}"
-    );
-
     // A dependency change is the third trust-journal transition.
     team_run_json(
         &fixture.home,
@@ -244,12 +236,22 @@ fn work_readers_agree_across_both_journals() {
     assert_eq!(listed_work["version"].as_u64(), Some(expected_version));
     assert_eq!(listed_work["phase"].as_str(), Some(expected_phase.as_str()));
 
-    let (status, view) = serve.get_json(&format!(
-        "/v1/views/team-workspace/{FIXTURE_TEAM_ID}?project={}",
-        fixture.project_id
-    ));
-    assert_eq!(status, 200, "team workspace RoleView: {view}");
-    let role_view_work = view["data"]["works"]
+    // `firm work list` is the DOC-106 Global Work read: the same RoleView
+    // `Facts` fold and the same Work item projection the HTTP RoleViews serve,
+    // read in process.
+    let view = run_firm(
+        &fixture.home,
+        fixture.home.base(),
+        &["--project", &fixture.project_id, "work", "list"],
+    );
+    assert!(
+        view.status.success(),
+        "work list failed: {}",
+        String::from_utf8_lossy(&view.stderr)
+    );
+    let view: serde_json::Value =
+        serde_json::from_slice(&view.stdout).expect("Global Work RoleView JSON");
+    let role_view_work = view["result"]["data"]["items"]
         .as_array()
         .expect("RoleView works")
         .iter()
