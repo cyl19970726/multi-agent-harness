@@ -71,11 +71,11 @@ pub fn prepare_dependency_change(
     prerequisite_work_ids: Vec<String>,
     all_works: &[Work],
 ) -> Result<WorkDependenciesChangedPayload, WorkDependencyError> {
-    if work.is_terminal() {
-        return Err(WorkDependencyError::TerminalWork {
-            work_id: work.id.clone(),
-        });
-    }
+    // One terminal rule for the whole kernel; this error keeps the dependency
+    // vocabulary its callers already match on.
+    super::ensure_work_mutable(work).map_err(|_| WorkDependencyError::TerminalWork {
+        work_id: work.id.clone(),
+    })?;
 
     let mut proposed = prerequisite_work_ids;
     let mut seen = BTreeSet::new();

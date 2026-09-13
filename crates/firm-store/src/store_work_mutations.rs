@@ -500,11 +500,10 @@ impl HarnessStore {
                     .to_string(),
             ));
         }
-        if current.is_terminal() {
-            return Err(StoreError::Conflict(format!(
-                "work {work_id} is terminal and cannot be reassigned"
-            )));
-        }
+        require_mutable_work(
+            &current,
+            "create a new Work instead of reassigning a terminal one",
+        )?;
         let team_id = current.accountable_team_id.clone().ok_or_else(|| {
             StoreError::Conflict(format!(
                 "WORK_NOT_TEAM_SCOPED: run responsibility migration for Work {work_id} before membership assignment"
@@ -610,6 +609,10 @@ impl HarnessStore {
             )));
         }
         let current = self.current_work_unlocked(work_id, expected_version)?;
+        require_mutable_work(
+            &current,
+            "a closed Work keeps the provenance it settled with",
+        )?;
         let mut recovered_fields = Vec::new();
         if raw_current.work.accountable_team_id.is_none() && current.accountable_team_id.is_some() {
             recovered_fields.push("accountable_team_id");
@@ -684,11 +687,10 @@ impl HarnessStore {
                     .to_string(),
             ));
         }
-        if current.is_terminal() {
-            return Err(StoreError::Conflict(format!(
-                "work {work_id} is terminal and cannot be retargeted"
-            )));
-        }
+        require_mutable_work(
+            &current,
+            "create a new Work instead of retargeting a terminal one",
+        )?;
         // The versioned Host decision is the intake action. Notification
         // transport/ACK state never gates a Work transition (ADR 0064, S9).
         let team_id = current.accountable_team_id.clone().ok_or_else(|| {

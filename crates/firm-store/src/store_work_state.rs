@@ -140,6 +140,12 @@ impl HarnessStore {
             return Ok(existing.work);
         }
         let current = self.current_work_unlocked(work_id, expected_version)?;
+        // External CI evidence never reopens a settled responsibility. The
+        // daemon poll skips terminal Work, so reaching here is a caller bug.
+        require_mutable_work(
+            &current,
+            "external GitHub evidence cannot advance a closed Work revision",
+        )?;
         if current.github_links == github_links {
             return Ok(current);
         }
@@ -276,11 +282,7 @@ impl HarnessStore {
                 current.version
             )));
         }
-        if current.is_terminal() {
-            return Err(StoreError::Conflict(format!(
-                "work {work_id} is already terminal"
-            )));
-        }
+        require_mutable_work(&current, "a closed Work cannot be cancelled again")?;
         self.ensure_no_claimed_delivery_unlocked(&current)?;
         let mut next = current.clone();
         next.phase = WorkPhase::Closed;
@@ -289,6 +291,7 @@ impl HarnessStore {
         next.blocker_reason = Some(reason.to_string());
         next.version += 1;
         next.updated_at = context.created_at.clone();
+        require_valid_work_transition(&current, &next, WorkEventKind::Cancelled)?;
         // Preserve the historical WorkEvent read contract as an immutable
         // record inside the one canonical operation. It is not a second Work
         // writer: the resulting Work projection and its successor outbox are
@@ -351,11 +354,11 @@ impl HarnessStore {
                     .to_string(),
             ));
         }
-        // A Closed or Retired ProviderRuntimeProjection no longer mutates its owned Work:
-        // unfinished Work moves only via Host reassign/cancel or after an
-        // explicit Reopen (docs/product/agent-team-works.md). This aligns
-        // member-side transitions with insert/claim/start/receive, which
-        // already require active coordination.
+        // A Closed or Retired ProviderRuntimeProjection no longer mutates its
+        // owned Work: unfinished Work moves only via Host reassign, cancel,
+        // redeliver or recover-lost-execution. There is no Reopen verb. This
+        // aligns member-side transitions with insert/claim/start/receive,
+        // which already require active coordination.
         let member = self.require_member_run_unlocked(member_run_id, &current.team_run_id)?;
         if (current.phase, current.condition) != required_lifecycle
             || !self.member_run_holds_work_responsibility_unlocked(&current, &member)?
@@ -557,6 +560,7 @@ impl HarnessStore {
         reports: Vec<WorkReport>,
         decisions: Vec<WorkOperationalDecision>,
     ) -> StoreResult<Work> {
+        require_valid_work_transition(&current, &next, kind)?;
         self.ensure_work_event_id_available_unlocked(&context.event_id)?;
         let sequence = self
             .work_operations_unlocked()?

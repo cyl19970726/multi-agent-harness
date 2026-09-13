@@ -172,6 +172,10 @@ impl HarnessStore {
                 matches!(assignee, WorkResponsibilityResolution::Resolved { .. });
             let mut to_version = None;
             if needs_team_write || needs_assignee_write {
+                require_mutable_work(
+                    work,
+                    "a closed Work keeps the responsibility it settled with",
+                )?;
                 self.ensure_work_event_id_available_unlocked(&format!(
                     "{}:{}",
                     context.event_id, work.id
@@ -185,6 +189,7 @@ impl HarnessStore {
                 }
                 next.version += 1;
                 next.updated_at = context.created_at.clone();
+                require_valid_work_transition(work, &next, WorkEventKind::Updated)?;
                 let operation = WorkOperation {
                     event: WorkEvent {
                         id: format!("{}:{}", context.event_id, work.id),

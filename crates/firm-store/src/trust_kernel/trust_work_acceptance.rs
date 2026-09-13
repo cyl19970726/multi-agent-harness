@@ -210,13 +210,14 @@ impl HarnessStore {
             .into_iter()
             .filter(|waiver| requirement_ids.contains(waiver.requirement_id.as_str()))
             .collect::<Vec<_>>();
-        let mut next = current;
+        let mut next = current.clone();
         next.phase = firm_core::WorkPhase::Closed;
         next.condition = firm_core::WorkCondition::Normal;
         next.resolution = Some(firm_core::WorkResolution::Accepted);
         next.result_summary = Some(report.summary.clone());
         next.version += 1;
         next.updated_at = updated_at.to_string();
+        crate::require_valid_work_transition(&current, &next, firm_core::WorkEventKind::Accepted)?;
         let actor_kind = match context.authenticated_actor.kind {
             ActorKind::Human => TeamActorKind::Operator,
             ActorKind::AgentMember => TeamActorKind::AgentMember,
