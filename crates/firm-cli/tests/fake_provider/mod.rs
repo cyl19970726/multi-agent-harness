@@ -942,20 +942,24 @@ for line in sys.stdin:
                         'before fake Pi Work start'
                     )
                 time.sleep(0.01)
+            # Member Work writes have one authenticated entrance: the
+            # Supervisor-bound Role Action resolves this member's identity
+            # from the injected collaboration envelope, so the fake member
+            # never supplies a MemberRun or TeamRun of its own.
             subprocess.run([
-                harness, 'team-run', 'work', 'start',
-                '--team-run-id', team_run, '--work-id', work,
-                '--member-run-id', member_run, '--expected-version', str(version),
+                harness, 'member', 'work', 'start',
+                '--work-id', work, '--expected-version', str(version),
+                '--idempotency-key', 'fake-pi-start-' + work + '-' + str(version),
             ], check=True, stdout=subprocess.DEVNULL)
             subprocess.run([
-                harness, 'team-run', 'work', 'submit',
-                '--team-run-id', team_run, '--work-id', work,
-                '--member-run-id', member_run, '--expected-version', str(version + 1),
-                '--result', 'Fake Pi submitted the initial Work',
+                harness, 'member', 'work', 'submit',
+                '--work-id', work, '--expected-version', str(version + 1),
+                '--result-summary', 'Fake Pi submitted the initial Work',
                 '--check-ref', 'check:fake-pi-round-1',
                 # DEV-214 (#830): the fake Pi member runs no repository work
                 # and produces no commit, so it submits report-only.
                 '--report-only',
+                '--idempotency-key', 'fake-pi-submit-' + work + '-' + str(version),
             ], check=True, stdout=subprocess.DEVNULL)
         for event in [
             {{"type": "agent_start"}},
