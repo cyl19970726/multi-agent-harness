@@ -92,24 +92,17 @@ fn team_run_create_without_initial_work_accepts_the_first_host_assignment() {
         "First Host-assigned Work",
         Some(&worker_run_id),
     );
-    let started = member_team_run_json(
+    let started = crate::firm_env::member_work::start_work_for_member_run(
         &home,
-        &project_id,
-        run_id,
+        &current_space_id(&home),
+        &work_id,
         &worker_run_id,
-        &[
-            "work",
-            "start",
-            "--team-run-id",
-            run_id,
-            "--work-id",
-            &work_id,
-            "--expected-version",
-            "2",
-            "--member-run-id",
-            &worker_run_id,
-        ],
+        "create-without-initial-work-start",
     );
-    assert_eq!(started["phase"].as_str(), Some("active"), "{started}");
-    assert_eq!(started["version"].as_u64(), Some(3), "{started}");
+    assert_eq!(
+        started.phase,
+        harness_core::WorkPhase::Active,
+        "{started:?}"
+    );
+    assert_eq!(started.version, 3, "{started:?}");
 }

@@ -265,10 +265,10 @@ work list --team-run-id <id> [--brief] [--since <cursor>]
 work show --work-id <id>
 work assign --work-id <id> --expected-version <n> --membership-id <id>
   (canonical TeamMembership responsibility; runtime ids are not Work authority)
-work submit --team-run-id <id> --member-run-id <id> --work-id <id>
-  --expected-version <n> --result <text> [--github-pr owner/repo#N]
-  --candidate-revision <full 40-hex sha> (commit produced; --result quotes it)
+member work submit --work-id <id> --expected-version <n> --result-summary <text>
+  --candidate-revision <full 40-hex sha> (commit produced; the summary quotes it)
   or --report-only (no commit); mutually exclusive, never fabricated.
+  (Supervisor-bound; the local `work submit` member verb is retired.)
 work accept --work-id <id> --expected-version <n>
 work request-changes --work-id <id> --expected-version <n> --reason <text>
 
@@ -321,7 +321,10 @@ pub(super) fn print_help() {
   team-run board-summary --id <team-run-id>
       <=500-char plain-text board digest: counts by status, assigned/unassigned,
       ready, and one idle|working|awaiting-review line per active member.
-  team-run work list|show|create|replace-dependencies|assign|redeliver|recover-lost-execution|claim|start|block|resume|release|submit|request-changes|accept|cancel|retarget|reconcile-projection|migrate-responsibility|poll-github-ci
+  team-run work list|show|create|replace-dependencies|assign|redeliver|recover-lost-execution|block|resume|release|request-changes|accept|cancel|retarget|reconcile-projection|migrate-responsibility|poll-github-ci
+      Local operator/Host shapes only. The member verbs (claim, start, submit,
+      block/resume/release --member-run-id, create --as-member-run-id) are
+      retired: use the Supervisor-bound `member work <verb>` entrance.
   team-run work redeliver --work-id <id> --expected-version <n> [--reason <text>]
       Re-authorize an open Work whose delivery is frozen on an AgentSession
       generation the member no longer runs (typically after close-member +
@@ -380,9 +383,19 @@ pub(super) fn print_help() {
   member preflight [--provider <name>] [--execution-mode <mode>] [--canary]
                    [--timeout-s <n>] [--fail-on-unavailable] [--fail-on-review] [--json]
   member inbox [--all] [--json]
-  member work create|assign|claim|start|block|resume|release|submit|accept --expected-version <n> ...
+  member work create|assign|claim|start|block|resume|release|submit|request-changes|accept|cancel --expected-version <n> ...
+      The one authenticated entrance for member Work writes; the local
+      `team-run work` member verbs are retired (RETIRED_WRITE_AUTHORITY).
   member work assign --work-id <id> --expected-version <n> --membership-id <team-membership-id>
       Authenticated managed Host assignment targets stable TeamMembership, not MemberRun.
+  member work create --work-id <id> --expected-version 0 --title <text> --completion-criteria <text>
+      A Member creates unassigned follow-up Work here; it carries the creator's
+      own created_by_member_id and never an assignee or owner.
+  member work cancel --work-id <id> --expected-version <n> --reason <text>
+      Host-only and server-confirmed; a managed Host never drops to the local CLI.
+  member work request-changes --work-id <id> --expected-version <n> --reason <text>
+      Host always; a non-owner exact active peer only on Host-owned Work — the
+      same predicate that authorizes peer acceptance.
   member runtime interrupt [--member-run-id <target>] --expected-version <n> --reason <text>
   [--project <id|path>] provider admit --provider <name> --execution-mode <mode> --provider-version <version>
                  --adapter-contract-version <version> --evidence <ref>

@@ -1,6 +1,78 @@
 use super::*;
 
+/// Who is returning a submitted Work for changes. The Store keeps the two
+/// authorities separate so the Host gate is never relaxed to admit a peer:
+/// each arm proves its own exact identity before the shared transition runs.
+enum WorkChangesReviewer {
+    Host,
+    ExactTeamPeer { member_run_id: String },
+}
+
 impl HarnessStore {
+    /// The exact active non-owner Team peer that may review one Host-owned
+    /// Work. Mirrors the acceptance rule in `work_review_authorized`: the Work
+    /// must be owned by this Team's Host, the reviewer must hold exactly one
+    /// Active TeamMembership of that Team, and exactly one active MemberRun in
+    /// the Work's TeamRun. Any other shape fails closed.
+    fn require_exact_host_owned_work_peer_reviewer_unlocked(
+        &self,
+        work: &Work,
+        member_run_id: &str,
+    ) -> StoreResult<()> {
+        let member = self.require_member_run_unlocked(member_run_id, &work.team_run_id)?;
+        if !member_is_active_reviewer_runtime(&member) {
+            return Err(StoreError::Conflict(format!(
+                "WORK_REVIEW_NOT_AUTHORIZED: MemberRun {member_run_id} is not an active reviewer runtime"
+            )));
+        }
+        let team_id = work.accountable_team_id.as_deref().ok_or_else(|| {
+            StoreError::Conflict(
+                "WORK_REVIEW_NOT_AUTHORIZED: Work has no accountable AgentTeam".to_string(),
+            )
+        })?;
+        let team = self.latest_teams()?.remove(team_id).ok_or_else(|| {
+            StoreError::Conflict(format!(
+                "WORK_REVIEW_NOT_AUTHORIZED: accountable AgentTeam {team_id} not found"
+            ))
+        })?;
+        if work.owner_member_id.as_deref() != Some(team.host_agent_id.as_str()) {
+            return Err(StoreError::Conflict(
+                "WORK_REVIEW_NOT_AUTHORIZED: only Host-owned Work admits a Team peer reviewer; Member Work stays Host-reviewed"
+                    .to_string(),
+            ));
+        }
+        if work.owner_member_id.as_deref() == Some(member.agent_member_id.as_str()) {
+            return Err(StoreError::Conflict(
+                "WORK_REVIEW_NOT_AUTHORIZED: the accountable Work owner cannot review its own candidate"
+                    .to_string(),
+            ));
+        }
+        // Count memberships only inside the Work's own TeamRun Execution
+        // Space. A physical Store may temporarily hold more than one space
+        // during recovery/import; folding them together would let another
+        // scope's row grant review authority here, or let a duplicate row over
+        // there withdraw it.
+        let run = self.require_team_run_unlocked(&work.team_run_id)?;
+        let execution_space_id = self.require_team_run_execution_space_unlocked(&run)?;
+        let memberships = self
+            .fabric_team_memberships(&execution_space_id)?
+            .into_iter()
+            .filter(|membership| {
+                membership.team_id == team.id
+                    && membership.node_id == team.node_id
+                    && membership.agent_member_id == member.agent_member_id
+                    && membership.state == firm_core::agentfirm_api::TeamMembershipStatus::Active
+            })
+            .collect::<Vec<_>>();
+        if memberships.len() != 1 {
+            return Err(StoreError::Conflict(format!(
+                "WORK_REVIEW_NOT_AUTHORIZED: expected exactly one Active TeamMembership for the reviewer, found {}",
+                memberships.len()
+            )));
+        }
+        Ok(())
+    }
+
     pub(super) fn resolved_work_condition_record(
         &self,
         work_id: &str,
@@ -175,7 +247,7 @@ impl HarnessStore {
         _context: WorkCommandContext,
     ) -> StoreResult<Work> {
         Err(StoreError::Conflict(
-            "LEGACY_WORK_ACCEPT_RETIRED: use the authenticated team-scoped member-trust Work acceptance command"
+            "LEGACY_WORK_ACCEPT_RETIRED: this local writer is closed; accept through `firm member work accept` (Supervisor-bound), `firm team-run work accept` (local Host), or `firm member-trust mutate --json '{\"AcceptWork\":...}'`"
                 .to_string(),
         ))
     }
@@ -188,7 +260,7 @@ impl HarnessStore {
         _context: WorkCommandContext,
     ) -> StoreResult<Work> {
         Err(StoreError::Conflict(
-            "LEGACY_WORK_ACCEPT_RETIRED: use the authenticated team-scoped member-trust Work acceptance command"
+            "LEGACY_WORK_ACCEPT_RETIRED: this local writer is closed; accept through `firm member work accept` (Supervisor-bound), `firm team-run work accept` (local Host), or `firm member-trust mutate --json '{\"AcceptWork\":...}'`"
                 .to_string(),
         ))
     }
@@ -197,6 +269,48 @@ impl HarnessStore {
         work_id: &str,
         expected_version: u64,
         reason: &str,
+        context: WorkCommandContext,
+    ) -> StoreResult<Work> {
+        self.request_work_changes_by_reviewer(
+            work_id,
+            expected_version,
+            reason,
+            WorkChangesReviewer::Host,
+            context,
+        )
+    }
+
+    /// Peer review of Host-owned Work. Ordinary Member Work stays Host-reviewed;
+    /// Host-owned Work has no Host reviewer, so exactly one active non-owner
+    /// Team peer may return it for changes — the same authority that already
+    /// accepts Host-owned Work (`work_review_authorized`). This never widens
+    /// beyond Host-owned Work and never lets the owner review its own
+    /// candidate.
+    pub fn request_work_changes_as_peer_reviewer(
+        &self,
+        work_id: &str,
+        expected_version: u64,
+        reason: &str,
+        member_run_id: &str,
+        context: WorkCommandContext,
+    ) -> StoreResult<Work> {
+        self.request_work_changes_by_reviewer(
+            work_id,
+            expected_version,
+            reason,
+            WorkChangesReviewer::ExactTeamPeer {
+                member_run_id: member_run_id.to_string(),
+            },
+            context,
+        )
+    }
+
+    fn request_work_changes_by_reviewer(
+        &self,
+        work_id: &str,
+        expected_version: u64,
+        reason: &str,
+        reviewer: WorkChangesReviewer,
         context: WorkCommandContext,
     ) -> StoreResult<Work> {
         if reason.trim().is_empty() {
@@ -213,18 +327,33 @@ impl HarnessStore {
         )? {
             return Ok(existing.work);
         }
-        require_host_actor(&context.performed_by_actor)?;
-        let current = self.current_work_unlocked(work_id, expected_version)?;
-        self.require_exact_team_run_host_actor(&context.performed_by_actor, &current.team_run_id)?;
+        let current = match &reviewer {
+            WorkChangesReviewer::Host => {
+                require_host_actor(&context.performed_by_actor)?;
+                let current = self.current_work_unlocked(work_id, expected_version)?;
+                self.require_exact_team_run_host_actor(
+                    &context.performed_by_actor,
+                    &current.team_run_id,
+                )?;
+                current
+            }
+            WorkChangesReviewer::ExactTeamPeer { member_run_id } => {
+                require_member_actor(&context.performed_by_actor, member_run_id)?;
+                let current = self.current_work_unlocked(work_id, expected_version)?;
+                self.require_exact_host_owned_work_peer_reviewer_unlocked(&current, member_run_id)?;
+                current
+            }
+        };
         if current.phase != WorkPhase::Review || current.condition != WorkCondition::Normal {
             return Err(StoreError::Conflict(format!(
                 "work {work_id} must await Host acceptance"
             )));
         }
         let mut next = current.clone();
-        // A submitted execution has already settled its exact binding. Host
-        // changes therefore return the stable responsibility to the scheduler
-        // queue; a new execution admission must Start the next attempt.
+        // A submitted execution has already settled its exact binding. A
+        // changes-requested review therefore returns the stable responsibility
+        // to the scheduler queue; a new execution admission must Start the
+        // next attempt. The transition is identical for either reviewer.
         next.phase = WorkPhase::Open;
         next.condition = WorkCondition::Normal;
         next.resolution = None;

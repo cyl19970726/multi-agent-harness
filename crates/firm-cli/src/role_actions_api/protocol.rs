@@ -46,6 +46,12 @@ pub(super) enum RoleActionIntent {
         artifact_refs: Vec<String>,
         #[serde(default)]
         check_refs: Vec<String>,
+        /// #369: a structured GitHub link is itself the submitted evidence.
+        /// The member CLI resolves `--github-pr owner/repo#N` into this exact
+        /// snapshot before the request leaves the caller, so the authenticated
+        /// entrance keeps the capability the retired local verb had.
+        #[serde(default)]
+        github_links: Vec<harness_core::GitHubLink>,
         #[serde(default)]
         base_revision: Option<String>,
         #[serde(default)]

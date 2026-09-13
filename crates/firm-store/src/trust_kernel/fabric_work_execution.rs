@@ -7,6 +7,38 @@ pub enum WorkExecutionBindingReconciliation {
     AlreadySettled(Box<WorkExecutionBinding>),
 }
 impl HarnessStore {
+    /// Which committed WorkEvent re-authorizes the next execution admission
+    /// after a provider already received the previous revision.
+    ///
+    /// Host authority does it for the whole re-authorization set. Review
+    /// authority is symmetric on Host-owned Work, so a peer-performed
+    /// `ChangesRequested` must re-authorize exactly like the Host's; otherwise
+    /// a peer review leaves the Work re-openable but never re-bindable, and the
+    /// next WorkExecutionBinding fails closed with DeliveryRecoveryUncertain
+    /// until some unrelated Host event happens to land. Only `ChangesRequested`
+    /// is admitted from a ProviderRuntimeProjection: the peer path in
+    /// `request_work_changes_as_peer_reviewer` is the sole writer of that
+    /// (event kind, actor kind) pair and it already proved the exact active
+    /// non-owner Team peer of Host-owned Work before appending. No other member
+    /// event re-authorizes anything.
+    fn work_event_reauthorizes_execution(event: &firm_core::WorkEvent) -> bool {
+        match event.performed_by_actor.kind {
+            firm_core::TeamActorKind::Host => matches!(
+                event.kind,
+                firm_core::WorkEventKind::Assigned
+                    | firm_core::WorkEventKind::ChangesRequested
+                    | firm_core::WorkEventKind::Updated
+                    | firm_core::WorkEventKind::Rebound
+                    | firm_core::WorkEventKind::ExecutionRetargeted
+                    | firm_core::WorkEventKind::ExecutionRecovered
+            ),
+            firm_core::TeamActorKind::ProviderRuntimeProjection => {
+                event.kind == firm_core::WorkEventKind::ChangesRequested
+            }
+            _ => false,
+        }
+    }
+
     fn work_revision_reauthorized_after_provider_receipt_unlocked(
         &self,
         work_id: &str,
@@ -20,16 +52,7 @@ impl HarnessStore {
                 operation.event.work_id == work_id
                     && operation.event.resulting_version > provider_received_revision
                     && operation.event.resulting_version <= candidate_revision
-                    && operation.event.performed_by_actor.kind == firm_core::TeamActorKind::Host
-                    && matches!(
-                        operation.event.kind,
-                        firm_core::WorkEventKind::Assigned
-                            | firm_core::WorkEventKind::ChangesRequested
-                            | firm_core::WorkEventKind::Updated
-                            | firm_core::WorkEventKind::Rebound
-                            | firm_core::WorkEventKind::ExecutionRetargeted
-                            | firm_core::WorkEventKind::ExecutionRecovered
-                    )
+                    && Self::work_event_reauthorizes_execution(&operation.event)
             }))
     }
     /// Return the immutable exact runtime authority captured when one

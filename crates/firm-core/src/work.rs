@@ -395,6 +395,46 @@ pub struct GitHubLink {
     pub ci_url: Option<String>,
 }
 
+impl GitHubLink {
+    /// The canonical GitHub object URL this link's own structured fields
+    /// describe: `https://github.com/<owner>/<repo>/(issues|pull)/<number>`.
+    pub fn canonical_url(&self) -> String {
+        let segment = match self.kind {
+            GitHubLinkKind::Issue => "issues",
+            GitHubLinkKind::PullRequest => "pull",
+        };
+        format!(
+            "https://github.com/{}/{}/{segment}/{}",
+            self.owner, self.repo, self.number
+        )
+    }
+
+    /// A submitted link is evidence, and #369 lets a link stand in for the
+    /// candidate revision. A caller therefore may not hand in structured
+    /// fields that disagree with the url they point at: the derived candidate
+    /// hashes the whole link, so a spoofed or malformed pairing would mint a
+    /// synthetic candidate that names one object while its url names another.
+    /// This only checks the caller's own fields against each other — it never
+    /// contacts GitHub and never widens what the field accepts.
+    pub fn require_structural_consistency(&self) -> Result<(), String> {
+        if self.owner.trim().is_empty() || self.repo.trim().is_empty() || self.number == 0 {
+            return Err(format!(
+                "GitHub link must name a non-empty owner, repo and non-zero number; got {}/{}#{}",
+                self.owner, self.repo, self.number
+            ));
+        }
+        let canonical = self.canonical_url();
+        let supplied = self.url.trim().trim_end_matches('/');
+        if supplied != canonical {
+            return Err(format!(
+                "GitHub link url {} does not describe its own {:?} {}/{}#{} (expected {canonical})",
+                self.url, self.kind, self.owner, self.repo, self.number
+            ));
+        }
+        Ok(())
+    }
+}
+
 /// Current-write input for a new Work. Historical decode-only fields and
 /// derived lifecycle fields are intentionally absent, so current application
 /// adapters cannot depend on compatibility storage details.

@@ -140,9 +140,10 @@ WorkEvent; the scheduler must still create the exact WorkExecutionBinding and
 WorkDelivery before Start. After a runtime restart, continue only through a
 freshly validated binding to the current MemberRun and AgentSession generation.
 Inspect native history and the Workspace first, and never invent a provider
-receipt. Host request-changes returns Review → Open and requires the next
-monotonic binding/delivery generation. Compatible Workspace and native-session
-continuity may resume, but neither is Work ownership.
+receipt. A request-changes review (Host, or the exact peer of Host-owned Work)
+returns Review → Open, re-authorizes the next execution admission, and requires
+the next monotonic binding/delivery generation. Compatible Workspace and
+native-session continuity may resume, but neither is Work ownership.
 
 V1 permits one `Active` Work per Member (`MEMBER_BUSY` refuses a second Start)
 unless a concrete capacity profile says otherwise. You may own several Open
@@ -273,10 +274,16 @@ responsibility. Do not create a Team-level goal, assign a
 same-level peer, cross a Team boundary, expand permission, or alter another
 Work's acceptance criteria.
 
+Create it through the same authenticated entrance as every other Work write.
+The Supervisor resolves your identity from the envelope: the new Work is always
+unassigned, carries your own `created_by_member_id`, and never an owner or
+assignee. The local `team-run work create --as-member-run-id` shape is retired
+and refuses with `RETIRED_WRITE_AUTHORITY`.
+
 ```bash
-"$FIRM_BIN" team-run work create \
-  --team-run-id "$FIRM_TEAM_RUN_ID" \
-  --as-member-run-id "$FIRM_MEMBER_RUN_ID" \
+"$FIRM_BIN" member work create \
+  --work-id <work-id> \
+  --expected-version 0 \
   --title "<follow-up responsibility>" \
   --context "<why it exists and relevant evidence>" \
   --completion-criteria "<observable completion criteria>" \
@@ -396,10 +403,13 @@ Submission moves Work to `review`; it does not imply acceptance. Ordinary
 Member-owned Work is accepted only by the exact Host. When the Host asks you to
 review Host-owned Work, inspect its WorkReport and evidence; if you are an exact
 active non-owner peer in the same TeamRun, accept it with `firm member work
-accept`. You cannot accept another Member's Work. If Host-owned Work needs
-changes, send a Work-linked Message so the Host can revise and resubmit; do not
-invent a reviewer role or mutate another lifecycle. See shared hard invariants
-§5.
+accept`. You cannot accept another Member's Work. Review authority is
+symmetric: the same exact peer may also return Host-owned Work for changes with
+`firm member work request-changes --work-id <id> --expected-version <n>
+--reason "<exact failing gate>"`, which moves it Review → Open and leaves the
+Host's responsibility in place. You cannot request changes on Member-owned Work
+or on your own candidate; do not invent a reviewer role or mutate another
+lifecycle. See shared hard invariants §5.
 
 ## Respect Workspace, Permissions, And Controls
 

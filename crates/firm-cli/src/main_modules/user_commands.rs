@@ -965,10 +965,30 @@ pub(super) fn bound_member_work_assignment_intent(args: &[String]) -> CliResult<
     }))
 }
 
+/// Merge one structured GitHub link's own URLs into the submitted evidence
+/// refs, byte-for-byte as the retired local `team-run work submit` verb did:
+/// the object URL joins `artifact_refs` and the checks URL joins `check_refs`,
+/// each only when the caller did not already name it. Order is preserved so a
+/// caller's explicit refs stay first.
+pub(super) fn merge_github_link_refs(
+    link: &GitHubLink,
+    artifact_refs: &mut Vec<String>,
+    check_refs: &mut Vec<String>,
+) {
+    if !artifact_refs.contains(&link.url) {
+        artifact_refs.push(link.url.clone());
+    }
+    if let Some(ci_url) = &link.ci_url {
+        if !check_refs.contains(ci_url) {
+            check_refs.push(ci_url.clone());
+        }
+    }
+}
+
 pub(super) fn bound_member_work_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
     require_subcommand(
         args,
-        "member work create|assign|claim|start|block|resume|release|submit|accept --expected-version <n> ...",
+        "member work create|assign|claim|start|block|resume|release|submit|request-changes|accept|cancel --expected-version <n> ...",
     )?;
     let context = bound_member_role_context()?;
     let expected_version = required(args, "--expected-version")?
@@ -1015,13 +1035,25 @@ pub(super) fn bound_member_work_command(store: &HarnessStore, args: &[String]) -
         "release" => ("release", serde_json::json!({"action": "release_work"})),
         "submit" => {
             let (candidate_revision, report_only) = submit_revision_args(args)?;
+            // #369: `--github-pr owner/repo#N` resolves to one structured
+            // GitHub snapshot here, so the authenticated entrance keeps the
+            // link-as-evidence capability the retired local verb carried.
+            let mut artifact_refs = many(args, "--artifact-ref");
+            let mut check_refs = many(args, "--check-ref");
+            let mut github_links = Vec::new();
+            if let Some(raw) = value(args, "--github-pr") {
+                let link = github_pr_link(&raw)?;
+                merge_github_link_refs(&link, &mut artifact_refs, &mut check_refs);
+                github_links.push(link);
+            }
             (
                 "submit",
                 serde_json::json!({
                     "action": "submit_work",
                     "result_summary": required(args, "--result-summary")?,
-                    "artifact_refs": many(args, "--artifact-ref"),
-                    "check_refs": many(args, "--check-ref"),
+                    "artifact_refs": artifact_refs,
+                    "check_refs": check_refs,
+                    "github_links": github_links,
                     "base_revision": value(args, "--base-revision"),
                     "candidate_revision": candidate_revision,
                     "report_only": report_only,
@@ -1029,16 +1061,35 @@ pub(super) fn bound_member_work_command(store: &HarnessStore, args: &[String]) -
             )
         }
         "accept" => ("accept", serde_json::json!({"action": "accept_work"})),
+        // The Role Action layer decides authority: `cancel` stays Host-only
+        // (B10) behind the server confirmation, and `request-changes` admits
+        // the Host plus the exact active non-owner peer of Host-owned Work.
+        // Both exist here so a managed Host or peer reviewer never has to drop
+        // to the unauthenticated local CLI.
+        "cancel" => (
+            "cancel",
+            serde_json::json!({
+                "action": "cancel_work",
+                "reason": required(args, "--reason")?,
+            }),
+        ),
+        "request-changes" => (
+            "request-changes",
+            serde_json::json!({
+                "action": "request_changes",
+                "reason": required(args, "--reason")?,
+            }),
+        ),
         other => {
             return Err(CliError::Usage(format!(
-                "unknown member work command: {other}; expected create|assign|claim|start|block|resume|release|submit|accept"
+                "unknown member work command: {other}; expected create|assign|claim|start|block|resume|release|submit|request-changes|accept|cancel"
             )))
         }
     };
-    let path = if operation == "accept" {
+    let path = if matches!(operation, "accept" | "request-changes") {
         let run = latest_team_run(store, &context.team_run_id)?;
         format!(
-            "/v1/agentfirm/teams/{}/works/{work_id}/accept",
+            "/v1/agentfirm/teams/{}/works/{work_id}/{operation}",
             run.agent_team_id
         )
     } else {
@@ -1047,6 +1098,11 @@ pub(super) fn bound_member_work_command(store: &HarnessStore, args: &[String]) -
             context.team_run_id
         )
     };
+    let confirmed_action = match operation {
+        "accept" => Some("accept".to_string()),
+        "cancel" => Some("cancel".to_string()),
+        _ => None,
+    };
     execute_bound_member_role_action(
         store,
         &context,
@@ -1054,7 +1110,7 @@ pub(super) fn bound_member_work_command(store: &HarnessStore, args: &[String]) -
         expected_version,
         value(args, "--idempotency-key").unwrap_or_else(|| generated_id("member-work")),
         intent,
-        (operation == "accept").then_some("accept".to_string()),
+        confirmed_action,
     )
 }
 

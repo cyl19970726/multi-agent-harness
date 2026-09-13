@@ -722,50 +722,6 @@ pub(super) fn migration_host_work_context(
     ))
 }
 
-pub(super) fn member_work_context(
-    args: &[String],
-    team_run_id: &str,
-    member_run_id: &str,
-) -> CliResult<WorkCommandContext> {
-    let bound_member = env::var("FIRM_MEMBER_RUN_ID")
-        .or_else(|_| env::var("HARNESS_MEMBER_RUN_ID"))
-        .map_err(|_| {
-            CliError::Usage(
-                "member Work commands require the bound FIRM_MEMBER_RUN_ID runtime environment"
-                    .to_string(),
-            )
-        })?;
-    if bound_member != member_run_id {
-        return Err(CliError::Usage(format!(
-            "bound ProviderRuntimeProjection is {bound_member}, not {member_run_id}"
-        )));
-    }
-    if let Ok(bound_team) =
-        env::var("FIRM_TEAM_RUN_ID").or_else(|_| env::var("HARNESS_TEAM_RUN_ID"))
-    {
-        if bound_team != team_run_id {
-            return Err(CliError::Usage(format!(
-                "bound TeamRun is {bound_team}, not {team_run_id}"
-            )));
-        }
-    }
-    Ok(WorkCommandContext {
-        event_id: value(args, "--event-id").unwrap_or_else(|| generated_id("work-event")),
-        performed_by_actor: TeamActorRef {
-            kind: TeamActorKind::ProviderRuntimeProjection,
-            id: member_run_id.to_string(),
-            display_name: None,
-            authn_source: Some("bound_runtime_env".to_string()),
-        },
-        authority_actor: None,
-        causation_ref: work_causation(args),
-        idempotency_key: value(args, "--idempotency-key")
-            .unwrap_or_else(|| generated_id("work-command")),
-        created_at: now_string(),
-        duplicate_ok: false,
-    })
-}
-
 pub(super) fn roll_up_target_work_delegations(
     store: &HarnessStore,
     work: &Work,

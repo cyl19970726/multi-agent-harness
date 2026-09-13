@@ -248,11 +248,13 @@ while IFS= read -r line; do
           --member-run-id "$FIRM_MEMBER_RUN_ID")
         work_id=$(printf '%s\n' "$work_json" | sed -n 's/.*"id": "\([^"]*\)".*/\1/p' | sed -n '1p')
         work_version=$(printf '%s\n' "$work_json" | sed -n 's/.*"version": \([0-9][0-9]*\).*/\1/p' | sed -n '1p')
-        "$FIRM_BIN" --project "$FIRM_PROJECT_ID" team-run work start \
-          --team-run-id "$FIRM_TEAM_RUN_ID" \
+        # Member Work writes have one authenticated entrance: the
+        # Supervisor-bound Role Action resolves this member's identity from
+        # the injected collaboration envelope.
+        "$FIRM_BIN" --project "$FIRM_PROJECT_ID" member work start \
           --work-id "$work_id" \
-          --member-run-id "$FIRM_MEMBER_RUN_ID" \
-          --expected-version "$work_version" >/dev/null
+          --expected-version "$work_version" \
+          --idempotency-key "fake-kimi-start-$work_id-$work_version" >/dev/null
       fi
       if [ "${FAKE_KIMI_QUOTA_ERROR:-0}" = "1" ]; then
         printf '{"jsonrpc":"2.0","id":%s,"error":{"code":-32000,"message":"provider API 403: quota exceeded"}}\n' "$id"
@@ -942,20 +944,24 @@ for line in sys.stdin:
                         'before fake Pi Work start'
                     )
                 time.sleep(0.01)
+            # Member Work writes have one authenticated entrance: the
+            # Supervisor-bound Role Action resolves this member's identity
+            # from the injected collaboration envelope, so the fake member
+            # never supplies a MemberRun or TeamRun of its own.
             subprocess.run([
-                harness, 'team-run', 'work', 'start',
-                '--team-run-id', team_run, '--work-id', work,
-                '--member-run-id', member_run, '--expected-version', str(version),
+                harness, 'member', 'work', 'start',
+                '--work-id', work, '--expected-version', str(version),
+                '--idempotency-key', 'fake-pi-start-' + work + '-' + str(version),
             ], check=True, stdout=subprocess.DEVNULL)
             subprocess.run([
-                harness, 'team-run', 'work', 'submit',
-                '--team-run-id', team_run, '--work-id', work,
-                '--member-run-id', member_run, '--expected-version', str(version + 1),
-                '--result', 'Fake Pi submitted the initial Work',
+                harness, 'member', 'work', 'submit',
+                '--work-id', work, '--expected-version', str(version + 1),
+                '--result-summary', 'Fake Pi submitted the initial Work',
                 '--check-ref', 'check:fake-pi-round-1',
                 # DEV-214 (#830): the fake Pi member runs no repository work
                 # and produces no commit, so it submits report-only.
                 '--report-only',
+                '--idempotency-key', 'fake-pi-submit-' + work + '-' + str(version),
             ], check=True, stdout=subprocess.DEVNULL)
         for event in [
             {{"type": "agent_start"}},

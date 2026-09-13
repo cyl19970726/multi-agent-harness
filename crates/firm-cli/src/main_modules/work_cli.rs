@@ -83,6 +83,19 @@ fn local_work_auth(
     })
 }
 
+/// Member Work writes have exactly one authenticated entrance: the
+/// Supervisor-bound `firm member work <verb>` Role Action, which verifies the
+/// bearer capability token and the exact MemberRun / AgentSession /
+/// NodeDaemon / Supervisor generations before it mutates anything. The local
+/// `team-run work` member verbs proved only that the caller could read two
+/// environment variables, so they are retired rather than kept as a weaker
+/// second entrance to the same ledger. Host forms of these verbs stay.
+pub(super) fn retired_member_work_verb(verb: &str) -> CliError {
+    CliError::Usage(format!(
+        "RETIRED_WRITE_AUTHORITY: the local member `team-run work {verb}` writer is retired; use the Supervisor-bound `firm member work {verb}`, which authenticates the exact MemberRun, AgentSession, and NodeDaemon generations"
+    ))
+}
+
 pub(super) fn team_run_work_command(
     store: &HarnessStore,
     resolved: &ResolvedStore,
@@ -90,13 +103,24 @@ pub(super) fn team_run_work_command(
 ) -> CliResult<()> {
     require_subcommand(
         args,
-        "team-run work list|show|create|replace-dependencies|assign|redeliver|recover-lost-execution|claim|start|block|resume|release|submit|request-changes|accept|cancel|retarget|reconcile-projection|migrate-responsibility|poll-github-ci",
+        "team-run work list|show|create|replace-dependencies|assign|redeliver|recover-lost-execution|block|resume|release|request-changes|accept|cancel|retarget|reconcile-projection|migrate-responsibility|poll-github-ci",
     )?;
     if matches!(args[0].as_str(), "delegate" | "delegation") {
         return Err(CliError::Usage(
             "RETIRED_WRITE_AUTHORITY: local TeamRun WorkDelegation commands are retired; use the Company Control Plane collaboration API and collaboration_delegation MCP reads"
                 .into(),
         ));
+    }
+    if matches!(args[0].as_str(), "claim" | "start" | "submit") {
+        return Err(retired_member_work_verb(args[0].as_str()));
+    }
+    if matches!(args[0].as_str(), "block" | "resume" | "release")
+        && has_flag(args, "--member-run-id")
+    {
+        return Err(retired_member_work_verb(args[0].as_str()));
+    }
+    if args[0].as_str() == "create" && has_flag(args, "--as-member-run-id") {
+        return Err(retired_member_work_verb("create"));
     }
     match args[0].as_str() {
         "list" => {
@@ -293,12 +317,9 @@ pub(super) fn team_run_work_command(
             )?;
             let team_run_id = required(args, "--team-run-id")?;
             let run = latest_team_run(store, &team_run_id)?;
-            let acting_member_run_id = value(args, "--as-member-run-id");
-            let context = if let Some(member_run_id) = acting_member_run_id.as_deref() {
-                member_work_context(args, &team_run_id, member_run_id)?
-            } else {
-                host_work_context(store, &team_run_id, args)?
-            };
+            // Member creation moved to the Supervisor-bound `firm member work
+            // create` Role Action; `--as-member-run-id` is refused above.
+            let context = host_work_context(store, &team_run_id, args)?;
             let claim_mode = value(args, "--claim-mode")
                 .map(|raw| parse_work_claim_mode(&raw))
                 .transpose()?
@@ -550,145 +571,55 @@ pub(super) fn team_run_work_command(
             )?;
             print_json(&report)
         }
-        "claim" => {
-            let team_run_id = required(args, "--team-run-id")?;
-            let member_run_id = required(args, "--member-run-id")?;
-            let work = execute_work_action(
-                store,
-                harness_application::WorkAction::Claim {
-                    work_id: required(args, "--work-id")?,
-                    expected_version: required_work_version(args)?,
-                    member_run_id: member_run_id.clone(),
-                    context: member_work_context(args, &team_run_id, &member_run_id)?,
-                },
-            )?;
-            append_work_event(
-                store,
-                &work,
-                TeamRunEventSourceKind::Member,
-                Some(member_run_id.clone()),
-                "claimed",
-                &format!("Work claimed by {member_run_id}"),
-            )?;
-            print_json(&work)
-        }
-        "start" => {
-            let team_run_id = required(args, "--team-run-id")?;
-            let member_run_id = required(args, "--member-run-id")?;
-            let work = execute_work_action(
-                store,
-                harness_application::WorkAction::Start {
-                    work_id: required(args, "--work-id")?,
-                    expected_version: required_work_version(args)?,
-                    member_run_id: member_run_id.clone(),
-                    context: member_work_context(args, &team_run_id, &member_run_id)?,
-                },
-            )?;
-            append_work_event(
-                store,
-                &work,
-                TeamRunEventSourceKind::Member,
-                Some(member_run_id.clone()),
-                "started",
-                &format!("Work started by {member_run_id}"),
-            )?;
-            print_json(&work)
-        }
         "block" => {
             let team_run_id = required(args, "--team-run-id")?;
             let work_id = required(args, "--work-id")?;
             let expected_version = required_work_version(args)?;
             let reason = required(args, "--reason")?;
-            if let Some(member_run_id) = value(args, "--member-run-id") {
-                let work = execute_work_action(
-                    store,
-                    harness_application::WorkAction::BlockMember {
-                        work_id: work_id.clone(),
-                        expected_version,
-                        member_run_id: member_run_id.clone(),
-                        reason: reason.clone(),
-                        context: member_work_context(args, &team_run_id, &member_run_id)?,
-                    },
-                )?;
-                append_work_event(
-                    store,
-                    &work,
-                    TeamRunEventSourceKind::Member,
-                    Some(member_run_id.clone()),
-                    "blocked",
-                    &format!("Work blocked by {member_run_id}: {reason}"),
-                )?;
-                roll_up_target_work_delegations(store, &work, args)?;
-                print_json(&work)
-            } else {
-                let work = execute_work_action(
-                    store,
-                    harness_application::WorkAction::BlockHost {
-                        work_id: work_id.clone(),
-                        expected_version,
-                        reason: reason.clone(),
-                        context: host_work_context(store, &team_run_id, args)?,
-                    },
-                )?;
-                append_work_event(
-                    store,
-                    &work,
-                    TeamRunEventSourceKind::Host,
-                    None,
-                    "blocked",
-                    &format!("Work blocked by host: {reason}"),
-                )?;
-                roll_up_target_work_delegations(store, &work, args)?;
-                print_json(&work)
-            }
+            let work = execute_work_action(
+                store,
+                harness_application::WorkAction::BlockHost {
+                    work_id: work_id.clone(),
+                    expected_version,
+                    reason: reason.clone(),
+                    context: host_work_context(store, &team_run_id, args)?,
+                },
+            )?;
+            append_work_event(
+                store,
+                &work,
+                TeamRunEventSourceKind::Host,
+                None,
+                "blocked",
+                &format!("Work blocked by host: {reason}"),
+            )?;
+            roll_up_target_work_delegations(store, &work, args)?;
+            print_json(&work)
         }
         "resume" => {
             let team_run_id = required(args, "--team-run-id")?;
             let work_id = required(args, "--work-id")?;
             let expected_version = required_work_version(args)?;
             let resolution = required(args, "--resolution")?;
-            if let Some(member_run_id) = value(args, "--member-run-id") {
-                let work = execute_work_action(
-                    store,
-                    harness_application::WorkAction::ResumeMember {
-                        work_id: work_id.clone(),
-                        expected_version,
-                        member_run_id: member_run_id.clone(),
-                        resolution: resolution.clone(),
-                        context: member_work_context(args, &team_run_id, &member_run_id)?,
-                    },
-                )?;
-                append_work_event(
-                    store,
-                    &work,
-                    TeamRunEventSourceKind::Member,
-                    Some(member_run_id.clone()),
-                    "resumed",
-                    &format!("Work resumed by {member_run_id}: {resolution}"),
-                )?;
-                roll_up_target_work_delegations(store, &work, args)?;
-                print_json(&work)
-            } else {
-                let work = execute_work_action(
-                    store,
-                    harness_application::WorkAction::ResumeHost {
-                        work_id: work_id.clone(),
-                        expected_version,
-                        resolution: resolution.clone(),
-                        context: host_work_context(store, &team_run_id, args)?,
-                    },
-                )?;
-                append_work_event(
-                    store,
-                    &work,
-                    TeamRunEventSourceKind::Host,
-                    None,
-                    "resumed",
-                    &format!("Work resumed by host: {resolution}"),
-                )?;
-                roll_up_target_work_delegations(store, &work, args)?;
-                print_json(&work)
-            }
+            let work = execute_work_action(
+                store,
+                harness_application::WorkAction::ResumeHost {
+                    work_id: work_id.clone(),
+                    expected_version,
+                    resolution: resolution.clone(),
+                    context: host_work_context(store, &team_run_id, args)?,
+                },
+            )?;
+            append_work_event(
+                store,
+                &work,
+                TeamRunEventSourceKind::Host,
+                None,
+                "resumed",
+                &format!("Work resumed by host: {resolution}"),
+            )?;
+            roll_up_target_work_delegations(store, &work, args)?;
+            print_json(&work)
         }
         "release" => {
             let work_id = required(args, "--work-id")?;
@@ -699,135 +630,21 @@ pub(super) fn team_run_work_command(
                 Some(team_run_id) => team_run_id,
                 None => team_run_id_for_work(store, &work_id)?,
             };
-            if let Some(member_run_id) = value(args, "--member-run-id") {
-                let work = execute_work_action(
-                    store,
-                    harness_application::WorkAction::ReleaseMember {
-                        work_id: work_id.clone(),
-                        expected_version,
-                        member_run_id: member_run_id.clone(),
-                        context: member_work_context(args, &team_run_id, &member_run_id)?,
-                    },
-                )?;
-                append_work_event(
-                    store,
-                    &work,
-                    TeamRunEventSourceKind::Member,
-                    Some(member_run_id.clone()),
-                    "released",
-                    &format!("Work released by {member_run_id}"),
-                )?;
-                print_json(&work)
-            } else {
-                let work = execute_work_action(
-                    store,
-                    harness_application::WorkAction::ReleaseHost {
-                        work_id: work_id.clone(),
-                        expected_version,
-                        context: host_work_context(store, &team_run_id, args)?,
-                    },
-                )?;
-                append_work_event(
-                    store,
-                    &work,
-                    TeamRunEventSourceKind::Host,
-                    None,
-                    "released",
-                    "Work released by host",
-                )?;
-                print_json(&work)
-            }
-        }
-        "submit" => {
-            let team_run_id = required(args, "--team-run-id")?;
-            let member_run_id = required(args, "--member-run-id")?;
-            // `--github-pr owner/repo#N` attaches the PR to the submission,
-            // auto-fetches its CI status via the `gh` API, and auto-populates
-            // artifact_refs (PR URL) + check_refs (CI checks URL) (issue #369).
-            let mut artifact_refs = many(args, "--artifact-ref");
-            let mut check_refs = many(args, "--check-ref");
-            let mut github_links = Vec::new();
-            let result = required(args, "--result")?;
-            if let Some(raw) = value(args, "--github-pr") {
-                let link = github_pr_link(&raw)?;
-                if !artifact_refs.contains(&link.url) {
-                    artifact_refs.push(link.url.clone());
-                }
-                if let Some(ci_url) = &link.ci_url {
-                    if !check_refs.contains(ci_url) {
-                        check_refs.push(ci_url.clone());
-                    }
-                }
-                github_links.push(link);
-            }
-            let work_id = required(args, "--work-id")?;
-            let expected_version = required_work_version(args)?;
-            let context = member_work_context(args, &team_run_id, &member_run_id)?;
-            let execution_space_id = resolved
-                .execution_space_context
-                .as_ref()
-                .map(|space| space.id.clone())
-                .ok_or_else(|| {
-                    CliError::Usage(
-                        "canonical Work submission requires an explicitly selected --space".into(),
-                    )
-                })?;
-            let member = store
-                .trust_member_runs(&execution_space_id)?
-                .into_iter()
-                .find(|run| run.id == member_run_id)
-                .ok_or_else(|| {
-                    CliError::Usage(format!("MemberRun not found: {member_run_id}"))
-                })?;
-            let current = crate::work_action_service::current_work(
+            let work = execute_work_action(
                 store,
-                &execution_space_id,
-                &work_id,
-            )?;
-            let team_id = current.accountable_team_id.clone().ok_or_else(|| {
-                CliError::Usage("canonical Work has no accountable Team".into())
-            })?;
-            let auth = local_work_auth(
-                resolved,
-                harness_core::agentfirm_api::ActorRef {
-                    kind: harness_core::agentfirm_api::ActorKind::AgentMember,
-                    id: member.agent_member_id,
-                },
-                None,
-                &context,
-                expected_version,
-            )?;
-            // DEV-214 (#830): the same revision shape as `member work
-            // submit` — --candidate-revision <sha> xor --report-only; naming
-            // both is a local usage error. Naming neither is left to the
-            // submission service, which derives the candidate from a
-            // structured GitHub link (#369) or refuses a bare submission.
-            let (candidate_revision, report_only) = submit_revision_args(args)?;
-            let outcome = crate::work_action_service::execute(
-                store,
-                crate::work_action_service::CanonicalWorkCommand::SubmitResult {
-                    auth,
-                    team_id,
+                harness_application::WorkAction::ReleaseHost {
                     work_id: work_id.clone(),
-                    submission: crate::work_action_service::ResultSubmission {
-                        result_summary: required(args, "--result")?,
-                        artifact_refs,
-                        check_refs,
-                        github_links,
-                        base_revision: value(args, "--base-revision"),
-                        candidate_revision,
-                        report_only,
-                    },
+                    expected_version,
+                    context: host_work_context(store, &team_run_id, args)?,
                 },
             )?;
-            let work = outcome.work;
             append_work_event(
                 store,
                 &work,
-                TeamRunEventSourceKind::Member,
-                Some(member_run_id.clone()),
-                "submitted",
-                &format!("Work submitted by {member_run_id}: {result}"),
+                TeamRunEventSourceKind::Host,
+                None,
+                "released",
+                "Work released by host",
             )?;
             print_json(&work)
         }
@@ -979,7 +796,7 @@ pub(super) fn team_run_work_command(
             )?)
         }
         other => Err(CliError::Usage(format!(
-            "unknown team-run work command: {other}; usage: team-run work list|show|create|replace-dependencies|assign|redeliver|recover-lost-execution|claim|start|block|resume|release|submit|request-changes|accept|cancel|retarget|reconcile-projection|migrate-responsibility|poll-github-ci"
+            "unknown team-run work command: {other}; usage: team-run work list|show|create|replace-dependencies|assign|redeliver|recover-lost-execution|block|resume|release|request-changes|accept|cancel|retarget|reconcile-projection|migrate-responsibility|poll-github-ci (member verbs live on the Supervisor-bound `firm member work` entrance)"
         ))),
     }
 }

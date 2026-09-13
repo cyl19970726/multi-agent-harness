@@ -139,6 +139,23 @@ fn member_firm_json(
     member_id: &str,
     args: &[&str],
 ) -> serde_json::Value {
+    // The local `team-run work start` member verb is retired; member Work
+    // writes have one authenticated entrance. These GitHub-linkage tests are
+    // about link evidence, so the fixture drives the same Store seam.
+    if args.starts_with(&["team-run", "work", "start"]) {
+        let work_id = args
+            .windows(2)
+            .find_map(|pair| (pair[0] == "--work-id").then_some(pair[1]))
+            .expect("--work-id in the start fixture");
+        let started = firm_env::member_work::start_work_for_member_run(
+            home,
+            project_id,
+            work_id,
+            member_id,
+            &format!("github-linkage-start:{work_id}"),
+        );
+        return serde_json::to_value(started).expect("started Work projection");
+    }
     let mut full = vec!["--project", project_id];
     full.extend_from_slice(args);
     let out = run_firm_with_env(
@@ -392,7 +409,8 @@ fi
         ],
     );
 
-    let out = run_firm_with_env(
+    // The retired local member submit verb refuses, naming the one entrance.
+    let retired = run_firm_with_env(
         &home,
         home.base(),
         &[
@@ -420,13 +438,36 @@ fi
             ("FIRM_MEMBER_RUN_ID", &member_id),
         ],
     );
+    assert!(!retired.status.success(), "retired verb must refuse");
+    let refusal = String::from_utf8_lossy(&retired.stderr).to_string();
     assert!(
-        out.status.success(),
-        "submit without --candidate-revision failed: {}",
-        String::from_utf8_lossy(&out.stderr)
+        refusal.contains("RETIRED_WRITE_AUTHORITY") && refusal.contains("firm member work submit"),
+        "refusal must name the authenticated entrance: {refusal}"
     );
-    let submitted: serde_json::Value =
-        serde_json::from_slice(&out.stdout).expect("submitted Work JSON");
+    // The structured PR link is exactly what `--github-pr example/project#17`
+    // resolves to against the offline `gh` shim above; #369 derives the
+    // candidate from it, so no explicit --candidate-revision is needed.
+    let submitted = firm_env::member_work::submit_work_for_member_run(
+        &home,
+        &project_id,
+        work_id,
+        &member_id,
+        firm_env::member_work::FixtureSubmission::with_github_link(
+            "offline structured PR submission",
+            harness_core::GitHubLink {
+                kind: harness_core::GitHubLinkKind::PullRequest,
+                owner: "example".into(),
+                repo: "project".into(),
+                number: 17,
+                url: "https://github.com/example/project/pull/17".into(),
+                status: Some("OPEN".into()),
+                ci_status: Some("success".into()),
+                ci_url: Some("https://github.com/example/project/actions/runs/17".into()),
+            },
+        ),
+        "github-linkage-offline-submit",
+    );
+    let submitted = serde_json::to_value(submitted).expect("submitted Work JSON");
     assert_eq!(submitted["phase"].as_str(), Some("review"));
     assert_eq!(submitted["github_links"][0]["kind"].as_str(), Some("issue"));
     assert_eq!(
@@ -542,30 +583,41 @@ fn github_issue_and_pr_linkage_roundtrip() {
             &member_id,
         ],
     );
+    // Resolve the live PR snapshot through the one shared resolver the create
+    // surface uses, then submit it through the authenticated member seam.
     let pr_ref = format!("{GH_REPO}#{GH_PR_NUMBER}");
-    let submitted = member_firm_json(
+    let pr_link_work = host_firm_json(
         &home,
         &project_id,
-        &run_id,
-        &member_id,
         &[
             "team-run",
             "work",
-            "submit",
+            "create",
             "--team-run-id",
             &run_id,
-            "--work-id",
-            &work_id,
-            "--expected-version",
-            "3",
-            "--member-run-id",
-            &member_id,
-            "--result",
-            "submission with GitHub PR linkage",
+            "--title",
+            "Resolve the live PR snapshot",
+            "--completion-criteria",
+            "structured PR link resolved once and reused by the submission",
             "--github-pr",
             &pr_ref,
         ],
     );
+    let pr_link: harness_core::GitHubLink =
+        serde_json::from_value(pr_link_work["github_links"][0].clone())
+            .expect("resolved structured PR link");
+    let submitted = serde_json::to_value(firm_env::member_work::submit_work_for_member_run(
+        &home,
+        &project_id,
+        &work_id,
+        &member_id,
+        firm_env::member_work::FixtureSubmission::with_github_link(
+            "submission with GitHub PR linkage",
+            pr_link,
+        ),
+        "github-linkage-roundtrip-submit",
+    ))
+    .expect("submitted Work JSON");
     assert_eq!(submitted["phase"].as_str(), Some("review"));
     let links = submitted["github_links"]
         .as_array()

@@ -662,6 +662,16 @@ fn conflict(code: &str, message: &str) -> StoreError {
 fn resolve_submission_candidate(
     submission: &ResultSubmission,
 ) -> Result<Option<String>, StoreError> {
+    // #369 lets a structured link stand in for the candidate revision, and the
+    // derived candidate hashes the link itself. The server therefore refuses a
+    // caller-supplied link whose structured fields disagree with its own url
+    // before that link can mint a synthetic candidate: malformed or spoofed, it
+    // is not evidence. This compares only the submitted fields against each
+    // other — it never contacts GitHub and never widens what the field accepts.
+    for link in &submission.github_links {
+        link.require_structural_consistency()
+            .map_err(|message| conflict("GITHUB_LINK_INCONSISTENT", &message))?;
+    }
     let named = submission
         .candidate_revision
         .as_deref()

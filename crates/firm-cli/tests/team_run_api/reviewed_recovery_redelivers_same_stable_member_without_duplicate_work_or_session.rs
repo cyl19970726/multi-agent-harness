@@ -44,30 +44,19 @@ fn reviewed_recovery_preserves_closed_runtime_and_stable_work_responsibility() {
         .find(|run| run.id == run_id)
         .expect("TeamRun");
     assert!(!linked_run.agent_team_id.is_empty());
-    let _created_work = member_team_run_json(
+    // Member Work creation moved to the authenticated `member work create`
+    // entrance; the fixture drives that same Store seam, so the Work still
+    // carries this member's own durable `created_by_member_id`.
+    let _created_work = crate::firm_env::member_work::create_work_for_member_run(
         &home,
-        &project_id,
+        &current_space_id(&home),
         &run_id,
+        &linked_run.agent_team_id,
+        "work-stable-recovery",
+        "Preserve stable recovery provenance",
+        "Stable responsibility survives recovery; delivery waits for exact runtime admission",
         &member_id,
-        &[
-            "work",
-            "create",
-            "--team-run-id",
-            &run_id,
-            "--as-member-run-id",
-            &member_id,
-            "--work-id",
-            "work-stable-recovery",
-            "--title",
-            "Preserve stable recovery provenance",
-            "--completion-criteria",
-            "Stable responsibility survives recovery; delivery waits for exact runtime admission",
-            "--event-id",
-            "work-event-stable-recovery-create",
-            "--idempotency-key",
-            "work-command-stable-recovery-create",
-            "--json",
-        ],
+        "work-command-stable-recovery-create",
     );
     let work = serde_json::to_value(firm_env::work_execution::assign_work_for_member_run(
         &home,

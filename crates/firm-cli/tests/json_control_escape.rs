@@ -263,57 +263,26 @@ fn work_show_stays_strict_json_with_a_control_character_result_summary() {
         &work_id,
         "json-escape-summary",
     );
-    let member_env = [
-        ("FIRM_MEMBER_RUN_ID", member_run_id.as_str()),
-        ("FIRM_TEAM_RUN_ID", run_id.as_str()),
-    ];
-    let start = run_firm_with_env(
+    // Member lifecycle writes go through the one authenticated entrance; the
+    // fixture drives the same Store seams so this test stays about JSON
+    // control-character escaping in the read projection.
+    firm_env::member_work::start_work_for_member_run(
         &home,
-        home.base(),
-        &[
-            "--project",
-            &project_id,
-            "team-run",
-            "work",
-            "start",
-            "--team-run-id",
-            &run_id,
-            "--member-run-id",
-            &member_run_id,
-            "--work-id",
-            &work_id,
-            "--expected-version",
-            "2",
-        ],
-        &member_env,
+        &space_id,
+        &work_id,
+        &member_run_id,
+        "json-escape-start",
     );
-    ok(&start, "work start");
     let summary = "result line one
 result line two	with tabform feed end";
-    let submit = run_firm_with_env(
+    firm_env::member_work::submit_work_for_member_run(
         &home,
-        home.base(),
-        &[
-            "--project",
-            &project_id,
-            "team-run",
-            "work",
-            "submit",
-            "--team-run-id",
-            &run_id,
-            "--member-run-id",
-            &member_run_id,
-            "--work-id",
-            &work_id,
-            "--expected-version",
-            "3",
-            "--result",
-            summary,
-            "--report-only",
-        ],
-        &member_env,
+        &space_id,
+        &work_id,
+        &member_run_id,
+        firm_env::member_work::FixtureSubmission::report_only(summary),
+        "json-escape-submit",
     );
-    ok(&submit, "work submit");
     let show = run_firm_with_env(
         &home,
         home.base(),

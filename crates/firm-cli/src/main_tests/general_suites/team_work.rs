@@ -6,6 +6,8 @@ mod canonical_surface_equivalence;
 mod create_team_value_missing_required_field_is_usage_error;
 #[path = "../general/github_poll_absorbs_only_the_terminal_refusal.rs"]
 mod github_poll_absorbs_only_the_terminal_refusal;
+#[path = "../general/member_work_entrance_authority.rs"]
+mod member_work_entrance_authority;
 #[path = "../general/partial_legacy_team_run_is_diagnostic_only_until_canonical_completeness_is_restored.rs"]
 mod partial_legacy_team_run_is_diagnostic_only_until_canonical_completeness_is_restored;
 #[path = "../general/provider_profiles_make_codex_app_server_the_team_default.rs"]

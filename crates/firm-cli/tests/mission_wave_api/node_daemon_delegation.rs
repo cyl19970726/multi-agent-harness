@@ -90,9 +90,6 @@ fn http_console_delegates_native_team_run_to_node_daemon() {
         .as_str()
         .expect("Work id")
         .to_string();
-    let work_version = body["result"]["works"][0]["version"]
-        .as_u64()
-        .expect("Work version");
 
     let daemon = run_firm_with_env(
         &home,
@@ -157,27 +154,16 @@ fn http_console_delegates_native_team_run_to_node_daemon() {
         std::thread::sleep(Duration::from_millis(25));
     }
 
-    let started = run_member_json(
+    // The local member start verb is retired; the fixture drives the same
+    // Store seam the authenticated `member work start` Role Action reaches.
+    let started = crate::firm_env::member_work::start_work_for_member_run(
         &home,
         &project_id,
-        &run_id,
+        &work_id,
         &member_id,
-        &[
-            "team-run",
-            "work",
-            "start",
-            "--team-run-id",
-            &run_id,
-            "--work-id",
-            &work_id,
-            "--expected-version",
-            &work_version.to_string(),
-            "--member-run-id",
-            &member_id,
-            "--json",
-        ],
+        "node-daemon-delegation-start",
     );
-    let started_version = started["version"].as_u64().expect("started version");
+    let started_version = started.version;
     let submitted_version = started_version + 1;
     let report_id = "report-console-result";
     let candidate = serde_json::json!({

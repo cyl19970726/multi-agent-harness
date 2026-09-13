@@ -109,23 +109,12 @@ fn host_can_explicitly_close_a_live_codex_member() {
         provider_received,
         "Codex WorkDelivery never reached ProviderReceived before Start"
     );
-    member_team_run_json(
+    crate::firm_env::member_work::start_work_for_member_run(
         &home,
-        &project_id,
-        &run_id,
+        &current_space_id(&home),
+        &work_id,
         &member_id,
-        &[
-            "work",
-            "start",
-            "--team-run-id",
-            &run_id,
-            "--work-id",
-            &work_id,
-            "--member-run-id",
-            &member_id,
-            "--expected-version",
-            "2",
-        ],
+        "close-live-codex-member-start",
     );
 
     let (status, result) = serve.post_json(

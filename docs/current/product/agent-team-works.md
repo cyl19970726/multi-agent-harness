@@ -125,17 +125,29 @@ visual only. Kanban dragging has no mutation authority in V1. Every lifecycle
 or dependency change goes through an explicit authenticated Inspector action;
 the browser does not write graph semantics or infer readiness.
 
-Mutation surface (all executable Work mutations):
+Mutation surface (all executable Work mutations). Member writes have exactly
+one entrance, the Supervisor-bound `member work` Role Action; the `team-run`
+tree keeps only the local operator/Host shapes:
 
 ```bash
+firm member work create|assign|claim|start|block|resume|release|submit
+firm member work request-changes|accept|cancel
 firm team-run work list|show|create|replace-dependencies|assign|redeliver
-firm team-run work recover-lost-execution|claim|start|block|resume|release
-firm team-run work submit|request-changes|accept|cancel|retarget
+firm team-run work recover-lost-execution|block|resume|release
+firm team-run work request-changes|accept|cancel|retarget
 firm team-run work reconcile-projection|migrate-responsibility|poll-github-ci
 ```
 
-There is no `review` verb: the Host reads a submission with `show` and answers
-with `accept` or `request-changes`.
+There is no `review` verb: a reviewer reads a submission with `show` and
+answers with `accept` or `request-changes`.
+
+The local member verbs (`claim`, `start`, `submit`, `block|resume|release
+--member-run-id`, `create --as-member-run-id`) are retired: they authenticated
+nothing beyond an environment variable and now refuse with
+`RETIRED_WRITE_AUTHORITY` naming the `member work` replacement. Review
+authority is symmetric on both review verbs: the exact Host for Member Work,
+and for Host-owned Work either the Host or one exact active non-owner Team
+peer.
 
 `redeliver` is the Host re-authorization of an open, never-started Work whose
 `WorkDelivery` is frozen on a member generation that no longer runs; it
