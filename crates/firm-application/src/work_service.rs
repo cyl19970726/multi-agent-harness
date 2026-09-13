@@ -114,6 +114,17 @@ pub trait WorkPersistence {
         reason: &str,
         context: WorkCommandContext,
     ) -> Result<Work, Self::Error>;
+    /// Peer review of Host-owned Work: the exact active non-owner Team peer
+    /// returns the candidate for changes. Separate from the Host port method
+    /// so the Host authority gate is never relaxed to admit a peer.
+    fn request_work_changes_as_peer_reviewer(
+        &self,
+        work_id: &str,
+        expected_version: u64,
+        reason: &str,
+        member_run_id: &str,
+        context: WorkCommandContext,
+    ) -> Result<Work, Self::Error>;
     fn cancel_work(
         &self,
         work_id: &str,
@@ -170,6 +181,7 @@ pub enum WorkActionKind {
     ResumeHost,
     ResumeMember,
     RequestChanges,
+    RequestChangesByPeerReviewer,
     Cancel,
 }
 
@@ -258,6 +270,15 @@ pub enum WorkAction {
         reason: String,
         context: WorkCommandContext,
     },
+    /// Host-owned Work returned for changes by the exact active non-owner
+    /// Team peer that may also accept it.
+    RequestChangesByPeerReviewer {
+        work_id: String,
+        expected_version: u64,
+        reason: String,
+        member_run_id: String,
+        context: WorkCommandContext,
+    },
     Cancel {
         work_id: String,
         expected_version: u64,
@@ -283,6 +304,9 @@ impl WorkAction {
             Self::ResumeHost { .. } => WorkActionKind::ResumeHost,
             Self::ResumeMember { .. } => WorkActionKind::ResumeMember,
             Self::RequestChanges { .. } => WorkActionKind::RequestChanges,
+            Self::RequestChangesByPeerReviewer { .. } => {
+                WorkActionKind::RequestChangesByPeerReviewer
+            }
             Self::Cancel { .. } => WorkActionKind::Cancel,
         }
     }
@@ -303,6 +327,7 @@ impl WorkAction {
             | Self::ResumeHost { context, .. }
             | Self::ResumeMember { context, .. }
             | Self::RequestChanges { context, .. }
+            | Self::RequestChangesByPeerReviewer { context, .. }
             | Self::Cancel { context, .. } => context,
         }
     }
@@ -432,6 +457,19 @@ impl<'a, P: WorkPersistence + ?Sized> WorkApplication<'a, P> {
                 reason,
                 context,
             } => self.request_changes(&work_id, expected_version, &reason, context)?,
+            WorkAction::RequestChangesByPeerReviewer {
+                work_id,
+                expected_version,
+                reason,
+                member_run_id,
+                context,
+            } => self.request_changes_as_peer_reviewer(
+                &work_id,
+                expected_version,
+                &reason,
+                &member_run_id,
+                context,
+            )?,
             WorkAction::Cancel {
                 work_id,
                 expected_version,
@@ -654,6 +692,23 @@ impl<'a, P: WorkPersistence + ?Sized> WorkApplication<'a, P> {
             .request_work_changes(work_id, expected_version, reason, context)
     }
 
+    pub fn request_changes_as_peer_reviewer(
+        &self,
+        work_id: &str,
+        expected_version: u64,
+        reason: &str,
+        member_run_id: &str,
+        context: WorkCommandContext,
+    ) -> Result<Work, P::Error> {
+        self.port.request_work_changes_as_peer_reviewer(
+            work_id,
+            expected_version,
+            reason,
+            member_run_id,
+            context,
+        )
+    }
+
     pub fn cancel(
         &self,
         work_id: &str,
@@ -798,6 +853,13 @@ mod tests {
                 reason: "revise".into(),
                 context: context(),
             },
+            WorkAction::RequestChangesByPeerReviewer {
+                work_id: "work-1".into(),
+                expected_version: 1,
+                reason: "revise".into(),
+                member_run_id: "member-run-1".into(),
+                context: context(),
+            },
             WorkAction::Cancel {
                 work_id: "work-1".into(),
                 expected_version: 1,
@@ -823,6 +885,7 @@ mod tests {
                 WorkActionKind::ResumeHost,
                 WorkActionKind::ResumeMember,
                 WorkActionKind::RequestChanges,
+                WorkActionKind::RequestChangesByPeerReviewer,
                 WorkActionKind::Cancel,
             ]
         );

@@ -621,6 +621,25 @@ fn member_team_run_json(
     member_run_id: &str,
     args: &[&str],
 ) -> serde_json::Value {
+    // The local `team-run work start` member verb is retired: member Work
+    // writes have one authenticated entrance (`firm member work start`).
+    // Fixtures that only need the Work in `active` drive the same Store seam.
+    if args.starts_with(&["work", "start"]) {
+        let value = |flag: &str| {
+            args.windows(2)
+                .find_map(|pair| (pair[0] == flag).then_some(pair[1]))
+                .unwrap_or_else(|| panic!("missing {flag} in canonical start fixture"))
+        };
+        let work_id = value("--work-id");
+        let started = firm_env::member_work::start_work_for_member_run(
+            home,
+            project_id,
+            work_id,
+            member_run_id,
+            &format!("fixture-start:{work_id}:{member_run_id}"),
+        );
+        return serde_json::to_value(started).expect("started Work projection");
+    }
     if args.starts_with(&["work", "submit"]) {
         let value = |flag: &str| {
             args.windows(2)

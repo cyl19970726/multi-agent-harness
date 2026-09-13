@@ -8,6 +8,7 @@
 
 #![allow(dead_code)]
 
+pub mod member_work;
 pub mod provider_received_work;
 pub mod work_execution;
 mod work_owner;

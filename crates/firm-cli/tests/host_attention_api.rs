@@ -13,7 +13,7 @@ mod fake_provider;
 mod firm_env;
 use firm_env::{
     create_canonical_agent_member, current_project_id, member_run_for_work_owner, run_firm,
-    run_firm_with_env, ServeHandle, TempHome,
+    ServeHandle, TempHome,
 };
 
 fn init_project(home: &TempHome, name: &str) -> (String, String, String) {
@@ -56,33 +56,6 @@ fn init_project(home: &TempHome, name: &str) -> (String, String, String) {
     assert!(host.status.success(), "host create failed: {host:?}");
     let host_id = "agent-console-host".to_string();
     (project_id, node_id, host_id)
-}
-
-fn run_member_json(
-    home: &TempHome,
-    project_id: &str,
-    team_run_id: &str,
-    member_run_id: &str,
-    args: &[&str],
-) -> serde_json::Value {
-    let mut full = vec!["--project", project_id];
-    full.extend_from_slice(args);
-    let out = run_firm_with_env(
-        home,
-        home.base(),
-        &full,
-        &[
-            ("FIRM_TEAM_RUN_ID", team_run_id),
-            ("FIRM_MEMBER_RUN_ID", member_run_id),
-        ],
-    );
-    assert!(
-        out.status.success(),
-        "member harness {args:?} failed: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    serde_json::from_str(&String::from_utf8_lossy(&out.stdout))
-        .unwrap_or_else(|error| panic!("member harness {args:?} stdout was not JSON ({error})"))
 }
 
 fn spawn_fake_kimi_serve(home: &TempHome) -> (ServeHandle, PathBuf, PathBuf, PathBuf, PathBuf) {
@@ -314,52 +287,27 @@ fn host_attentions_read_and_console_ack_lifecycle() {
         "host-attention",
     );
     // Submitting the initial Work derives a WorkReviewRequested HostAttention.
-    let started = run_member_json(
+    // The member lifecycle runs through the fixture Store seams: the local
+    // `team-run work start|submit` verbs are retired in favour of the one
+    // authenticated `firm member work` entrance.
+    let started = firm_env::member_work::start_work_for_member_run(
         &home,
         &project_id,
-        &run_id,
+        &work_id,
         &member_id,
-        &[
-            "team-run",
-            "work",
-            "start",
-            "--team-run-id",
-            &run_id,
-            "--work-id",
-            &work_id,
-            "--expected-version",
-            &work_version.to_string(),
-            "--member-run-id",
-            &member_id,
-            "--json",
-        ],
+        "host-attention-start",
     );
-    let started_version = started["version"].as_u64().expect("started version");
-    run_member_json(
+    assert_eq!(started.version, work_version + 1);
+    // DEV-214 (#830): this fixture Work produces no commit — it only has to
+    // derive a WorkReviewRequested HostAttention — so it submits report-only
+    // rather than naming a fabricated candidate.
+    firm_env::member_work::submit_work_for_member_run(
         &home,
         &project_id,
-        &run_id,
+        &work_id,
         &member_id,
-        &[
-            "team-run",
-            "work",
-            "submit",
-            "--team-run-id",
-            &run_id,
-            "--work-id",
-            &work_id,
-            "--expected-version",
-            &started_version.to_string(),
-            "--member-run-id",
-            &member_id,
-            "--result",
-            "evidence for the console route",
-            // DEV-214 (#830): this fixture Work produces no commit — it only
-            // has to derive a WorkReviewRequested HostAttention — so it
-            // submits report-only rather than naming a fabricated candidate.
-            "--report-only",
-            "--json",
-        ],
+        firm_env::member_work::FixtureSubmission::report_only("evidence for the console route"),
+        "host-attention-submit",
     );
     std::fs::write(&first_prompt_terminal_release, b"release\n")
         .expect("release fake provider terminal response");

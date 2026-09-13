@@ -48,34 +48,6 @@ fn run_json(home: &TempHome, project_id: &str, args: &[&str]) -> serde_json::Val
         .unwrap_or_else(|error| panic!("harness {args:?} stdout was not JSON ({error})"))
 }
 
-fn run_member_json(
-    home: &TempHome,
-    project_id: &str,
-    team_run_id: &str,
-    member_run_id: &str,
-    args: &[&str],
-) -> serde_json::Value {
-    let mut full = vec!["--project", project_id];
-    full.extend_from_slice(args);
-    let out = run_firm_with_env(
-        home,
-        home.base(),
-        &full,
-        &[
-            ("FIRM_COMPANY_OS_TOKEN", COMPANY_OS_TEST_TOKEN),
-            ("FIRM_TEAM_RUN_ID", team_run_id),
-            ("FIRM_MEMBER_RUN_ID", member_run_id),
-        ],
-    );
-    assert!(
-        out.status.success(),
-        "member harness {args:?} failed: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    serde_json::from_str(&String::from_utf8_lossy(&out.stdout))
-        .unwrap_or_else(|error| panic!("member harness {args:?} stdout was not JSON ({error})"))
-}
-
 #[cfg(any())]
 fn force_team_run_reviewing(home: &TempHome, project_id: &str, run_id: &str, mission_id: &str) {
     use std::io::Write as _;

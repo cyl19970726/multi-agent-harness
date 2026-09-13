@@ -194,6 +194,24 @@ impl WorkPersistence for HarnessStore {
         HarnessStore::request_work_changes(self, work_id, expected_version, reason, context)
     }
 
+    fn request_work_changes_as_peer_reviewer(
+        &self,
+        work_id: &str,
+        expected_version: u64,
+        reason: &str,
+        member_run_id: &str,
+        context: WorkCommandContext,
+    ) -> StoreResult<Work> {
+        HarnessStore::request_work_changes_as_peer_reviewer(
+            self,
+            work_id,
+            expected_version,
+            reason,
+            member_run_id,
+            context,
+        )
+    }
+
     fn cancel_work(
         &self,
         work_id: &str,

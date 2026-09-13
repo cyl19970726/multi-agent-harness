@@ -38,7 +38,29 @@ pub(super) fn execute_work_record_action(
         ));
     }
     match operation {
-        "request-changes" | "gate-requirements" => {
+        // Review authority is symmetric: whoever may accept this Work may also
+        // return it for changes. That is the Host for ordinary Member Work,
+        // and for Host-owned Work either the Host or one exact active
+        // non-owner Team peer (`work_review_authorized`) — the same predicate
+        // the acceptance path already uses.
+        "request-changes" => {
+            if !crate::agentfirm_api::work_review_authorized(
+                store,
+                &auth.execution_space_id,
+                &auth.actor,
+                team_id,
+                work_id,
+            )? {
+                return Err(encoded_error(
+                    "UNAUTHORIZED_ACTOR",
+                    "requesting changes needs this Team's exact Host for Member Work, or one exact active non-owner Team peer for Host-owned Work",
+                    "work",
+                    work_id,
+                    Some(current.version),
+                ));
+            }
+        }
+        "gate-requirements" => {
             require_host(&auth, &team.host_agent_id, "work", work_id)?;
         }
         _ => {}
@@ -77,17 +99,28 @@ pub(super) fn execute_work_record_action(
                 Some(current.version),
             ));
         };
-        let host_id = require_host(&auth, &team.host_agent_id, "work", work_id)?;
+        let action = if is_host(&auth, &team.host_agent_id) {
+            WorkAction::RequestChanges {
+                work_id: work_id.to_string(),
+                expected_version: auth.expected_version,
+                reason,
+                context: host_context(&auth, &team.host_agent_id, false),
+            }
+        } else {
+            let member_run_id = resolve_member_run(store, &auth, &current.team_run_id)?;
+            WorkAction::RequestChangesByPeerReviewer {
+                work_id: work_id.to_string(),
+                expected_version: auth.expected_version,
+                reason,
+                member_run_id: member_run_id.clone(),
+                context: member_context(&auth, &member_run_id),
+            }
+        };
         let outcome = crate::work_action_service::execute(
             store,
             crate::work_action_service::CanonicalWorkCommand::Lifecycle {
                 auth: Some(auth.clone()),
-                action: Box::new(WorkAction::RequestChanges {
-                    work_id: work_id.to_string(),
-                    expected_version: auth.expected_version,
-                    reason,
-                    context: host_context(&auth, host_id, false),
-                }),
+                action: Box::new(action),
             },
         )?;
         return Ok(work_outcome_result(outcome));

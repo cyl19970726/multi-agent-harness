@@ -381,24 +381,25 @@ for await (const line of rl) {{
     if (payload.kind === "work") {{
       const workVersion = process.env.HARNESS_WORK_VERSION;
       if (!workVersion) throw new Error("missing HARNESS_WORK_VERSION");
+      // The one authenticated entrance: the Supervisor resolves this member's
+      // identity from the injected collaboration envelope, so the fake member
+      // never supplies a MemberRun or TeamRun of its own.
       harness([
-        "team-run", "work", "start",
-        "--team-run-id", cfg.teamRunId,
+        "member", "work", "start",
         "--work-id", payload.correlation_id,
-        "--member-run-id", cfg.memberRunId,
         "--expected-version", workVersion,
+        "--idempotency-key", `fake-start-${{payload.correlation_id}}-${{workVersion}}`,
       ]);
       harness([
-        "team-run", "work", "submit",
-        "--team-run-id", cfg.teamRunId,
+        "member", "work", "submit",
         "--work-id", payload.correlation_id,
-        "--member-run-id", cfg.memberRunId,
         "--expected-version", String(Number(workVersion) + 1),
-        "--result", `turn-${{turns}} completed`,
+        "--result-summary", `turn-${{turns}} completed`,
         "--artifact-ref", "src/member.ts",
         // DEV-214 (#830): the fake member edits src/member.ts and never
         // commits, so its submission is report-only.
         "--report-only",
+        "--idempotency-key", `fake-submit-${{payload.correlation_id}}-${{workVersion}}`,
       ]);
     }}
     emit("turn_complete", {{

@@ -216,6 +216,7 @@ pub fn execute(
             result_summary,
             artifact_refs,
             check_refs,
+            github_links,
             base_revision,
             candidate_revision,
             report_only,
@@ -232,7 +233,7 @@ pub fn execute(
                     result_summary: result_summary.clone(),
                     artifact_refs: artifact_refs.clone(),
                     check_refs: check_refs.clone(),
-                    github_links: Vec::new(),
+                    github_links: github_links.clone(),
                     base_revision: base_revision.clone(),
                     candidate_revision: candidate_revision.clone(),
                     report_only: *report_only,
@@ -256,7 +257,6 @@ pub fn execute(
                 priority,
             },
         ) => {
-            let host_id = require_host(&auth, &team.host_agent_id, "team_run", route.team_run_id)?;
             if auth.expected_version != 0 {
                 return Err(encoded_error(
                     "VERSION_CONFLICT",
@@ -266,7 +266,18 @@ pub fn execute(
                     Some(0),
                 ));
             }
-            let context = host_context(&auth, host_id, false);
+            // A Member creates follow-up Work through this same authenticated
+            // entrance (B11). The closed intent carries no owner or assignee
+            // field and the Store refuses responsibility at creation
+            // (`WORK_CREATE_UNASSIGNED_REQUIRED`), so a member-created Work is
+            // always unassigned and stamped with the creator's own
+            // `created_by_member_id`. Host creation (B10) is unchanged.
+            let context = if is_host(&auth, &team.host_agent_id) {
+                host_context(&auth, &team.host_agent_id, false)
+            } else {
+                let member_run_id = resolve_member_run(store, &auth, route.team_run_id)?;
+                member_context(&auth, &member_run_id)
+            };
             execute_work_action(
                 store,
                 &auth,

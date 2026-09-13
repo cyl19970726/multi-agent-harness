@@ -1140,6 +1140,10 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
         "--event-id",
         "role-action:start-store-live-1",
     ];
+    // There is no second member write entrance to keep in parity with: the
+    // local `team-run work start` member verb is retired, so the same request
+    // that the authenticated Role Action committed is refused here — twice,
+    // and without appending anything to the authoritative ledger.
     for attempt in 1..=2 {
         let cli_start = run_firm_with_env(
             &home,
@@ -1151,30 +1155,30 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
             ],
         );
         assert!(
-            cli_start.status.success(),
-            "CLI start parity attempt {attempt}: {cli_start:?}"
+            !cli_start.status.success(),
+            "retired CLI member verb must refuse on attempt {attempt}: {cli_start:?}"
         );
-        let cli_projection: serde_json::Value =
-            serde_json::from_slice(&cli_start.stdout).expect("CLI start Work projection");
-        assert_eq!(
-            cli_projection, started["projection"],
-            "CLI and HTTP must return the same committed Work projection"
+        let refusal = String::from_utf8_lossy(&cli_start.stderr).to_string();
+        assert!(
+            refusal.contains("RETIRED_WRITE_AUTHORITY")
+                && refusal.contains("firm member work start"),
+            "refusal must name the authenticated entrance: {refusal}"
         );
         let operations_after_cli = store
             .work_operations()
-            .expect("Work operations after CLI replay");
+            .expect("Work operations after the refused CLI write");
         assert_eq!(
             operations_after_cli.len(),
             operations_before_cli_replay.len(),
-            "CLI replay must not append another Work event"
+            "a refused CLI member write must not append a Work event"
         );
-        let replayed_operation = operations_after_cli
+        let unchanged_operation = operations_after_cli
             .iter()
             .find(|operation| operation.event.idempotency_key == "start-store-live-1")
-            .expect("stable cross-surface start operation");
-        assert_eq!(replayed_operation.event.id, start_operation.event.id);
+            .expect("stable authenticated start operation");
+        assert_eq!(unchanged_operation.event.id, start_operation.event.id);
         assert_eq!(
-            replayed_operation.event.resulting_version,
+            unchanged_operation.event.resulting_version,
             start_operation.event.resulting_version
         );
     }
