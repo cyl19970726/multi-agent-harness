@@ -40,8 +40,7 @@ use harness_core::{
     TeamMemberCloseRequest, TeamMemberCloseStatus, TeamMessageProjection, TeamRecipientKind,
     TeamRecipientRef, TeamRunEvent, TeamRunEventSourceKind, TeamRunStatus, TeamSupervisorLease,
     Validate, Work, WorkCausationRef, WorkClaimMode, WorkCommandContext, WorkCondition,
-    WorkDelegation, WorkDelegationState, WorkPhase, WorkPriority, WorkRef, WorkResolution,
-    EXECUTION_MODE_EXTERNAL_INTERACTIVE,
+    WorkDelegation, WorkPhase, WorkPriority, WorkResolution, EXECUTION_MODE_EXTERNAL_INTERACTIVE,
 };
 use harness_store::{
     canonical_surface, CanonicalMemberRunAdmission, HarnessStore, HostAttentionClaimResult,

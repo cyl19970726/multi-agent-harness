@@ -52,8 +52,8 @@ does not contain or own durable Work responsibility.
 **Work**: The responsibility kernel. Title, context, criteria, owner
 (AgentMember), Team/TeamRun scope and three independent lifecycle axes:
 `phase` (`open -> active -> review -> closed`), `condition`
-(`normal | blocked | on_hold`), and closed-only `resolution`
-(`accepted | cancelled | failed`). Optional `labels` (filtering). The Global
+(`normal | blocked`), and closed-only `resolution`
+(`accepted | cancelled`). Optional `labels` (filtering). The Global
 Work RoleView is a read-only aggregate over this same identity, not a second
 task record.
 

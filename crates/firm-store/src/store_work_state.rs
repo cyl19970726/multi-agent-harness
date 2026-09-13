@@ -140,6 +140,12 @@ impl HarnessStore {
             return Ok(existing.work);
         }
         let current = self.current_work_unlocked(work_id, expected_version)?;
+        // External CI evidence never reopens a settled responsibility. The
+        // daemon poll skips terminal Work, so reaching here is a caller bug.
+        require_mutable_work(
+            &current,
+            "external GitHub evidence cannot advance a closed Work revision",
+        )?;
         if current.github_links == github_links {
             return Ok(current);
         }
@@ -276,11 +282,7 @@ impl HarnessStore {
                 current.version
             )));
         }
-        if current.is_terminal() {
-            return Err(StoreError::Conflict(format!(
-                "work {work_id} is already terminal"
-            )));
-        }
+        require_mutable_work(&current, "a closed Work cannot be cancelled again")?;
         self.ensure_no_claimed_delivery_unlocked(&current)?;
         let mut next = current.clone();
         next.phase = WorkPhase::Closed;
@@ -289,6 +291,7 @@ impl HarnessStore {
         next.blocker_reason = Some(reason.to_string());
         next.version += 1;
         next.updated_at = context.created_at.clone();
+        require_valid_work_transition(&current, &next, WorkEventKind::Cancelled)?;
         // Preserve the historical WorkEvent read contract as an immutable
         // record inside the one canonical operation. It is not a second Work
         // writer: the resulting Work projection and its successor outbox are
@@ -314,90 +317,6 @@ impl HarnessStore {
             request_payload,
             &next,
             vec![serde_json::to_value(compatibility_event)?],
-            Vec::new(),
-        )?;
-        Ok(result.projection)
-    }
-
-    /// Close a non-terminal Work as failed by an explicit Host decision.
-    /// Provider failure never calls this implicitly; it is a responsibility-
-    /// plane judgment recorded with the exact Work revision.
-    pub fn fail_work(
-        &self,
-        work_id: &str,
-        expected_version: u64,
-        reason: &str,
-        failure_analysis_ref: &str,
-        context: WorkCommandContext,
-    ) -> StoreResult<Work> {
-        if reason.trim().is_empty() || failure_analysis_ref.trim().is_empty() {
-            return Err(StoreError::Conflict(
-                "failure reason and FailureAnalysis reference are required".to_string(),
-            ));
-        }
-        self.init()?;
-        let _lock = self.acquire_write_lock()?;
-        require_host_actor(&context.performed_by_actor)?;
-        let current = self
-            .latest_works_unlocked()?
-            .remove(work_id)
-            .ok_or_else(|| StoreError::Conflict(format!("work not found: {work_id}")))?;
-        let request_payload = serde_json::json!({
-            "work_id": work_id,
-            "expected_version": expected_version,
-            "reason": reason,
-            "failure_analysis_ref": failure_analysis_ref,
-        });
-        let (mutation_context, fingerprint) = self.canonical_work_command_context_unlocked(
-            &current,
-            expected_version,
-            "work.fail",
-            &context,
-            &request_payload,
-        )?;
-        if let Some(replay) =
-            self.replay_current_work_mutation_unlocked(&mutation_context, work_id, &fingerprint)?
-        {
-            return Ok(replay.projection);
-        }
-        if current.version != expected_version {
-            return Err(StoreError::Conflict(format!(
-                "WORK_VERSION_CONFLICT: Work {work_id} is version {}, expected {expected_version}",
-                current.version
-            )));
-        }
-        if current.is_terminal() {
-            return Err(StoreError::Conflict(format!(
-                "work {work_id} is already terminal"
-            )));
-        }
-        self.ensure_deliveries_reassignable_unlocked(&current)?;
-        let mut next = current.clone();
-        next.phase = WorkPhase::Closed;
-        next.condition = WorkCondition::Normal;
-        next.resolution = Some(WorkResolution::Failed);
-        next.blocker_reason = Some(reason.to_string());
-        next.version += 1;
-        next.updated_at = context.created_at.clone();
-        let decision = WorkOperationalDecision {
-            id: format!("work-decision-{}", context.event_id),
-            work_id: work_id.to_string(),
-            expected_work_version: expected_version,
-            kind: firm_core::WorkDecisionKind::Fail,
-            decided_by_actor: context.performed_by_actor.clone(),
-            rationale: reason.to_string(),
-            work_report_id: None,
-            gate_requirement_ref: None,
-            failure_analysis_ref: Some(failure_analysis_ref.to_string()),
-            evidence_refs: Vec::new(),
-            created_at: context.created_at.clone(),
-        };
-        let result = self.commit_current_work_mutation_unlocked(
-            &mutation_context,
-            "failed",
-            request_payload,
-            &next,
-            vec![serde_json::to_value(decision)?],
             Vec::new(),
         )?;
         Ok(result.projection)
@@ -435,11 +354,11 @@ impl HarnessStore {
                     .to_string(),
             ));
         }
-        // A Closed or Retired ProviderRuntimeProjection no longer mutates its owned Work:
-        // unfinished Work moves only via Host reassign/cancel or after an
-        // explicit Reopen (docs/product/agent-team-works.md). This aligns
-        // member-side transitions with insert/claim/start/receive, which
-        // already require active coordination.
+        // A Closed or Retired ProviderRuntimeProjection no longer mutates its
+        // owned Work: unfinished Work moves only via Host reassign, cancel,
+        // redeliver or recover-lost-execution. There is no Reopen verb. This
+        // aligns member-side transitions with insert/claim/start/receive,
+        // which already require active coordination.
         let member = self.require_member_run_unlocked(member_run_id, &current.team_run_id)?;
         if (current.phase, current.condition) != required_lifecycle
             || !self.member_run_holds_work_responsibility_unlocked(&current, &member)?
@@ -641,6 +560,7 @@ impl HarnessStore {
         reports: Vec<WorkReport>,
         decisions: Vec<WorkOperationalDecision>,
     ) -> StoreResult<Work> {
+        require_valid_work_transition(&current, &next, kind)?;
         self.ensure_work_event_id_available_unlocked(&context.event_id)?;
         let sequence = self
             .work_operations_unlocked()?

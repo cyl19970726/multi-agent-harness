@@ -320,7 +320,7 @@ impl HarnessStore {
                 &execution_binding,
                 &report.created_at,
             )?;
-            let mut submitted_work = current_work;
+            let mut submitted_work = current_work.clone();
             submitted_work.phase = firm_core::WorkPhase::Review;
             submitted_work.condition = firm_core::WorkCondition::Normal;
             submitted_work.version = report.work_revision;
@@ -340,6 +340,11 @@ impl HarnessStore {
             }
             submitted_work.github_links = candidate_links;
             submitted_work.updated_at = report.created_at.clone();
+            crate::require_valid_work_transition(
+                &current_work,
+                &submitted_work,
+                firm_core::WorkEventKind::Submitted,
+            )?;
             initial_outbox_records.push(serde_json::to_value(HostAttention {
                 id: format!("host-attention-{}", report.id),
                 team_run_id: submitted_work.team_run_id.clone(),

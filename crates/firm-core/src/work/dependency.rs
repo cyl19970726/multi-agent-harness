@@ -49,9 +49,6 @@ pub enum WorkReadinessReason {
         phase: WorkPhase,
         condition: WorkCondition,
     },
-    PrerequisiteFailed {
-        work_id: String,
-    },
     PrerequisiteCancelled {
         work_id: String,
     },
@@ -74,11 +71,11 @@ pub fn prepare_dependency_change(
     prerequisite_work_ids: Vec<String>,
     all_works: &[Work],
 ) -> Result<WorkDependenciesChangedPayload, WorkDependencyError> {
-    if work.is_terminal() {
-        return Err(WorkDependencyError::TerminalWork {
-            work_id: work.id.clone(),
-        });
-    }
+    // One terminal rule for the whole kernel; this error keeps the dependency
+    // vocabulary its callers already match on.
+    super::ensure_work_mutable(work).map_err(|_| WorkDependencyError::TerminalWork {
+        work_id: work.id.clone(),
+    })?;
 
     let mut proposed = prerequisite_work_ids;
     let mut seen = BTreeSet::new();
@@ -212,9 +209,6 @@ pub fn work_readiness(work: &Work, all_works: &[Work]) -> WorkReadiness {
         };
         match (prerequisite.phase, prerequisite.resolution) {
             (WorkPhase::Closed, Some(WorkResolution::Accepted)) => {}
-            (WorkPhase::Closed, Some(WorkResolution::Failed)) => {
-                reasons.push(WorkReadinessReason::PrerequisiteFailed { work_id: id });
-            }
             (WorkPhase::Closed, Some(WorkResolution::Cancelled)) => {
                 reasons.push(WorkReadinessReason::PrerequisiteCancelled { work_id: id });
             }
@@ -351,34 +345,23 @@ mod tests {
     }
 
     #[test]
-    fn readiness_distinguishes_pending_failed_cancelled_and_missing() {
+    fn readiness_distinguishes_pending_cancelled_and_missing() {
         let mut accepted = work("accepted", &[]);
         accepted.phase = WorkPhase::Closed;
         accepted.resolution = Some(WorkResolution::Accepted);
-        let mut failed = work("failed", &[]);
-        failed.phase = WorkPhase::Closed;
-        failed.resolution = Some(WorkResolution::Failed);
         let mut cancelled = work("cancelled", &[]);
         cancelled.phase = WorkPhase::Closed;
         cancelled.resolution = Some(WorkResolution::Cancelled);
         let pending = work("pending", &[]);
-        let target = work(
-            "target",
-            &["missing", "cancelled", "accepted", "pending", "failed"],
-        );
+        let target = work("target", &["missing", "cancelled", "accepted", "pending"]);
 
-        let readiness = work_readiness(&target, &[accepted, failed, cancelled, pending]);
+        let readiness = work_readiness(&target, &[accepted, cancelled, pending]);
         assert!(!readiness.ready);
-        assert_eq!(readiness.reasons.len(), 4);
+        assert_eq!(readiness.reasons.len(), 3);
         assert!(readiness
             .reasons
             .contains(&WorkReadinessReason::PrerequisiteCancelled {
                 work_id: "cancelled".into()
-            }));
-        assert!(readiness
-            .reasons
-            .contains(&WorkReadinessReason::PrerequisiteFailed {
-                work_id: "failed".into()
             }));
         assert!(readiness
             .reasons

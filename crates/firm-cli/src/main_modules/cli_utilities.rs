@@ -233,7 +233,9 @@ work list --team-run-id <id> [--brief] [--since <cursor>]
 work show --work-id <id>
 work assign --work-id <id> --expected-version <n> --membership-id <id> [--idempotency-key <key>]
   (canonical TeamMembership responsibility; runtime ids are not Work authority)
-work migrate-responsibility  (append-only DOC-106 cutover of legacy TeamRun-scoped Work)
+work migrate-responsibility [--team-run-id <id>] [--actor <host>]
+  Append-only DOC-106 cutover; the Host comes from the stored TeamRun
+  and --actor may only assert it.
 work accept --work-id <id> --expected-version <n> [--idempotency-key <key>]
 work request-changes --work-id <id> --expected-version <n> --reason <text> [--idempotency-key <key>]
 work poll-github-ci --team-run-id <id>
@@ -319,7 +321,7 @@ pub(super) fn print_help() {
   team-run board-summary --id <team-run-id>
       <=500-char plain-text board digest: counts by status, assigned/unassigned,
       ready, and one idle|working|awaiting-review line per active member.
-  team-run work list|show|create|assign|redeliver|recover-lost-execution|claim|start|block|resume|release|submit|review|request-changes|accept|cancel
+  team-run work list|show|create|replace-dependencies|assign|redeliver|recover-lost-execution|claim|start|block|resume|release|submit|request-changes|accept|cancel|retarget|reconcile-projection|migrate-responsibility|poll-github-ci
   team-run work redeliver --work-id <id> --expected-version <n> [--reason <text>]
       Re-authorize an open Work whose delivery is frozen on an AgentSession
       generation the member no longer runs (typically after close-member +

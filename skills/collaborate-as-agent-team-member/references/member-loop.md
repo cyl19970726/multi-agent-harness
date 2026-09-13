@@ -171,7 +171,7 @@ and reviewer qualifications — see shared hard invariants §6.
 At each new turn, read the supplied conversation context and your current
 inbox before continuing. A Work or continuation prompt can carry queued mail
 without creating another assignment. For delayed Work-linked instructions,
-read the current Work: `Review`, `Blocked`, `OnHold`, or `Closed` never becomes
+read the current Work: `Review`, `Blocked`, or `Closed` never becomes
 permission to implement merely because the message says to continue. Explain
 any mismatch to the Host and retain the current Work boundary. A transport ACK
 is automatic handoff evidence, not your semantic response; answer a request

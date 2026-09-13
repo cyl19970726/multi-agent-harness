@@ -148,7 +148,7 @@ impl HarnessStore {
     ) -> StoreResult<Vec<HostAttention>> {
         let successor_kind = match work.resolution {
             Some(WorkResolution::Accepted) => HostAttentionKind::WorkPrerequisiteCompleted,
-            Some(WorkResolution::Failed | WorkResolution::Cancelled) => {
+            Some(WorkResolution::Cancelled) => {
                 HostAttentionKind::WorkPrerequisiteNeedsReconciliation
             }
             None => return Ok(Vec::new()),
@@ -261,7 +261,6 @@ impl HarnessStore {
     ) -> StoreResult<serde_json::Value> {
         let outcome = match kind {
             WorkEventKind::Accepted => "accepted",
-            WorkEventKind::Failed => "failed",
             WorkEventKind::Cancelled => "cancelled",
             _ => return Ok(payload),
         };
@@ -432,6 +431,10 @@ impl HarnessStore {
             .cloned()
             .ok_or_else(|| StoreError::Conflict(format!("work not found: {work_id}")))?;
         self.require_exact_team_run_host_actor(&context.performed_by_actor, &current.team_run_id)?;
+        require_mutable_work(
+            &current,
+            "a closed Work keeps the dependency set it settled with",
+        )?;
         let (mutation_context, request_fingerprint) = self
             .canonical_work_command_context_unlocked(
                 &current,
@@ -472,6 +475,7 @@ impl HarnessStore {
         next.prerequisite_work_ids = change.prerequisite_work_ids.clone();
         next.version = next.version.saturating_add(1);
         next.updated_at = context.created_at.clone();
+        require_valid_work_transition(&current, &next, WorkEventKind::DependenciesChanged)?;
         let result = self.commit_current_work_mutation_unlocked(
             &mutation_context,
             "dependencies_changed",

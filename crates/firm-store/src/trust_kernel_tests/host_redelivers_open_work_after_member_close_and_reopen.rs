@@ -480,14 +480,6 @@ fn delivery_staleness_emits_only_the_reachable_token_set() {
             Some(WorkExecutionBindingStatus::Released),
             "work_execution_binding_released",
         ),
-        (
-            Some(WorkExecutionBindingStatus::Completed),
-            "work_execution_binding_completed",
-        ),
-        (
-            Some(WorkExecutionBindingStatus::Invalidated),
-            "work_execution_binding_invalidated",
-        ),
     ];
     for (status, expected) in cases {
         let candidate = status.map(|status| WorkExecutionBinding {

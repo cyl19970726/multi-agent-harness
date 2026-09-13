@@ -29,9 +29,14 @@ impl HarnessStore {
     /// versions, Operation/Event history, provenance, reports, evidence, gates
     /// and decisions are preserved: the only writes are new `Updated`
     /// WorkOperations appended to the same `work_operations.jsonl` authority.
+    /// `team_run_scope` restricts the sweep to one TeamRun. Every Work the
+    /// migration writes is gated on the exact Host of that Work's own TeamRun,
+    /// so a store whose Work spans several Teams migrates one Host at a time
+    /// instead of letting any Host-shaped actor rewrite all of it.
     pub fn migrate_work_responsibility(
         &self,
         execution_space_id: &str,
+        team_run_scope: Option<&str>,
         context: WorkCommandContext,
     ) -> StoreResult<firm_core::WorkResponsibilityMigrationReport> {
         use firm_core::{
@@ -50,7 +55,15 @@ impl HarnessStore {
         let memberships = self.fabric_team_memberships(execution_space_id)?;
         let mut entries = Vec::new();
         let mut migrated_work_ids = Vec::new();
+        // Plan every write first. Authority and mutability are checked per
+        // Work, so a refusal on a later Work must not leave earlier ones
+        // already appended: nothing is written until the whole sweep is
+        // proven legal.
+        let mut planned = Vec::new();
         for work in works.values() {
+            if team_run_scope.is_some_and(|scope| work.team_run_id != scope) {
+                continue;
+            }
             let accountable_team = match work.accountable_team_id.as_deref() {
                 Some(team_id) if teams.contains_key(team_id) => {
                     WorkResponsibilityResolution::AlreadyCanonical
@@ -172,6 +185,17 @@ impl HarnessStore {
                 matches!(assignee, WorkResponsibilityResolution::Resolved { .. });
             let mut to_version = None;
             if needs_team_write || needs_assignee_write {
+                // The same authority rule every other Host Work verb uses: the
+                // exact Host actor stored on this Work's own TeamRun, proven
+                // against the AgentTeam Host and its active Host membership.
+                self.require_exact_team_run_host_actor(
+                    &context.performed_by_actor,
+                    &work.team_run_id,
+                )?;
+                require_mutable_work(
+                    work,
+                    "a closed Work keeps the responsibility it settled with",
+                )?;
                 self.ensure_work_event_id_available_unlocked(&format!(
                     "{}:{}",
                     context.event_id, work.id
@@ -185,6 +209,7 @@ impl HarnessStore {
                 }
                 next.version += 1;
                 next.updated_at = context.created_at.clone();
+                require_valid_work_transition(work, &next, WorkEventKind::Updated)?;
                 let operation = WorkOperation {
                     event: WorkEvent {
                         id: format!("{}:{}", context.event_id, work.id),
@@ -217,7 +242,7 @@ impl HarnessStore {
                     decisions: Vec::new(),
                     delegation_revisions: Vec::new(),
                 };
-                self.append_work_operation_unlocked(&operation)?;
+                planned.push(operation);
                 to_version = Some(work.version + 1);
                 migrated_work_ids.push(work.id.clone());
             }
@@ -228,6 +253,9 @@ impl HarnessStore {
                 accountable_team,
                 assignee,
             });
+        }
+        for operation in &planned {
+            self.append_work_operation_unlocked(operation)?;
         }
         Ok(WorkResponsibilityMigrationReport {
             execution_space_id: execution_space_id.to_string(),
@@ -497,16 +525,6 @@ impl HarnessStore {
                             .result_summary
                             .clone()
                             .unwrap_or_else(|| "target Work accepted".to_string()),
-                        None,
-                    )),
-                    Some(WorkResolution::Failed) => Some((
-                        WorkDelegationState::Failed,
-                        WorkDelegationTransition::Failed,
-                        target
-                            .result_summary
-                            .clone()
-                            .or_else(|| target.blocker_reason.clone())
-                            .unwrap_or_else(|| "target Work failed".to_string()),
                         None,
                     )),
                     Some(WorkResolution::Cancelled) => Some((

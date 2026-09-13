@@ -624,6 +624,46 @@ fn require_non_empty_store(value: &str, label: &str) -> StoreResult<()> {
     }
 }
 
+/// The refusal code every Host Work writer returns for terminal Work.
+///
+/// Exported because callers outside the Store classify on it — the GitHub
+/// evidence poll absorbs exactly this refusal and stays fatal on every other —
+/// and a copied string literal would drift silently.
+pub const WORK_TERMINAL_IMMUTABLE: &str = "WORK_TERMINAL_IMMUTABLE";
+
+/// The one terminal-immutability choke point for Work writes.
+///
+/// Closed Work is immutable (docs/current/product/agent-team-works.md). Every
+/// Host-side writer routes its terminal refusal through the `firm-core`
+/// kernel predicate so one code answers for all of them; `detail` carries the
+/// verb-specific guidance, including the historical refusal code where a CLI
+/// or doc already publishes one.
+pub(crate) fn require_mutable_work(work: &Work, detail: &str) -> StoreResult<()> {
+    firm_core::ensure_work_mutable(work).map_err(|error| {
+        StoreError::Conflict(format!("{WORK_TERMINAL_IMMUTABLE}: {error}; {detail}"))
+    })
+}
+
+/// The `firm-core` lifecycle table is the Store's transition authority. Each
+/// command keeps its own positive precondition guards; this call is the last
+/// fence before an operation is appended, so no writer can invent a phase,
+/// condition or resolution the kernel does not name.
+pub(crate) fn require_valid_work_transition(
+    current: &Work,
+    next: &Work,
+    kind: WorkEventKind,
+) -> StoreResult<()> {
+    firm_core::validate_work_transition(current, next, kind).map_err(|error| match error {
+        firm_core::WorkLifecycleError::TerminalWork { .. } => {
+            StoreError::Conflict(format!("{WORK_TERMINAL_IMMUTABLE}: {error}"))
+        }
+        firm_core::WorkLifecycleError::InvalidTransition { .. } => StoreError::Conflict(format!(
+            "WORK_TRANSITION_INVALID: {error} for Work {}",
+            current.id
+        )),
+    })
+}
+
 fn require_host_actor(actor: &firm_core::TeamActorRef) -> StoreResult<()> {
     if actor.kind == firm_core::TeamActorKind::Host && !actor.id.trim().is_empty() {
         Ok(())

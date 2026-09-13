@@ -1001,8 +1001,7 @@ fn work_summary(facts: &Facts, team: &AgentTeam, work: &Work) -> Value {
         .reasons
         .iter()
         .filter_map(|reason| match reason {
-            WorkReadinessReason::PrerequisiteFailed { work_id }
-            | WorkReadinessReason::PrerequisiteCancelled { work_id } => Some(work_id.clone()),
+            WorkReadinessReason::PrerequisiteCancelled { work_id } => Some(work_id.clone()),
             _ => None,
         })
         .collect::<Vec<_>>();
@@ -1043,7 +1042,6 @@ fn work_summary(facts: &Facts, team: &AgentTeam, work: &Work) -> Value {
             WorkReadinessReason::WorkConditionNotNormal { .. } => "work_condition_not_normal",
             WorkReadinessReason::PrerequisiteMissing { .. } => "prerequisite_missing",
             WorkReadinessReason::PrerequisitePending { .. } => "prerequisite_pending",
-            WorkReadinessReason::PrerequisiteFailed { .. } => "prerequisite_failed",
             WorkReadinessReason::PrerequisiteCancelled { .. } => "prerequisite_cancelled",
         })
         .collect::<Vec<_>>();

@@ -16,7 +16,7 @@
     "agent_session_generation": {"type": "integer", "minimum": 1},
     "delivery_id": {"type": "string", "minLength": 1},
     "binding_generation": {"type": "integer", "minimum": 1},
-    "status": {"enum": ["offered", "accepted", "active", "released", "completed", "invalidated"]},
+    "status": {"enum": ["active", "released"]},
     "version": {"type": "integer", "minimum": 1},
     "created_by": {"$ref": "#/$defs/actor_ref"},
     "bound_at": {"type": "string", "minLength": 1},

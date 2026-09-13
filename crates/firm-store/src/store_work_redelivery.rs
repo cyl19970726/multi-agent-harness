@@ -39,14 +39,9 @@ pub struct SupersededWorkDelivery {
     pub stale_because: String,
 }
 
-/// Only these binding states can still carry a delivery to the provider.
+/// Only an Active binding can still carry a delivery to the provider.
 fn binding_can_still_execute(status: WorkExecutionBindingStatus) -> bool {
-    matches!(
-        status,
-        WorkExecutionBindingStatus::Offered
-            | WorkExecutionBindingStatus::Accepted
-            | WorkExecutionBindingStatus::Active
-    )
+    matches!(status, WorkExecutionBindingStatus::Active)
 }
 
 impl HarnessStore {
@@ -89,11 +84,10 @@ impl HarnessStore {
         let current = self.current_work_unlocked(work_id, expected_version)?;
         self.require_exact_team_run_host_actor(&context.performed_by_actor, &current.team_run_id)?;
         let work_execution_space_id = require_work_execution_space(&current)?;
-        if current.is_terminal() {
-            return Err(StoreError::Conflict(format!(
-                "WORK_TERMINAL_NOT_REDELIVERABLE: Work {work_id} is closed; create a new Work instead of redelivering a terminal one"
-            )));
-        }
+        require_mutable_work(
+            &current,
+            "create a new Work instead of redelivering a terminal one (WORK_TERMINAL_NOT_REDELIVERABLE)",
+        )?;
         if current.phase != WorkPhase::Open {
             return Err(StoreError::Conflict(format!(
                 "WORK_ALREADY_STARTED: Work {work_id} is in phase {:?}; its delivery already began execution, so use request-changes or release instead of redelivery",
@@ -198,10 +192,6 @@ pub(crate) fn delivery_staleness(binding: Option<&WorkExecutionBinding>) -> &'st
     };
     match binding.status {
         WorkExecutionBindingStatus::Released => "work_execution_binding_released",
-        WorkExecutionBindingStatus::Completed => "work_execution_binding_completed",
-        WorkExecutionBindingStatus::Invalidated => "work_execution_binding_invalidated",
-        WorkExecutionBindingStatus::Offered
-        | WorkExecutionBindingStatus::Accepted
-        | WorkExecutionBindingStatus::Active => "work_execution_binding_live_unexpected",
+        WorkExecutionBindingStatus::Active => "work_execution_binding_live_unexpected",
     }
 }

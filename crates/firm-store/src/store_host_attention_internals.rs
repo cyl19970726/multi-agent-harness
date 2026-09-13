@@ -438,7 +438,6 @@ impl HarnessStore {
             | WorkEventKind::Resumed
             | WorkEventKind::Updated
             | WorkEventKind::Rebound
-            | WorkEventKind::Failed
             | WorkEventKind::DependenciesChanged
             | WorkEventKind::ExecutionRetargeted
             | WorkEventKind::ExecutionRecovered => HostAttentionKind::WorkChanged,

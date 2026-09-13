@@ -121,8 +121,8 @@ Three orthogonal axes, not one long chain:
 
 ```
 phase:      Open ──start──▶ Active ──submit──▶ Review ──Host decides──▶ Closed
-condition:  Normal ⇄ Blocked ⇄ OnHold          (overlay; does not change phase)
-resolution: Accepted | Cancelled | Failed       (exists only at Closed)
+condition:  Normal ⇄ Blocked                   (overlay; does not change phase)
+resolution: Accepted | Cancelled                (exists only at Closed)
 ```
 
 - Every change is an ordered, append-only `WorkOperation`/`WorkEvent` — that

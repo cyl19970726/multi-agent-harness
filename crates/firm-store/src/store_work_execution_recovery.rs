@@ -144,12 +144,7 @@ pub struct LostWorkExecutionScan {
 }
 
 fn binding_can_still_execute(status: WorkExecutionBindingStatus) -> bool {
-    matches!(
-        status,
-        WorkExecutionBindingStatus::Offered
-            | WorkExecutionBindingStatus::Accepted
-            | WorkExecutionBindingStatus::Active
-    )
+    matches!(status, WorkExecutionBindingStatus::Active)
 }
 
 /// The durable facts one classification reads, loaded once per call so a scan
@@ -327,11 +322,10 @@ impl HarnessStore {
         let current = self.current_work_unlocked(work_id, expected_version)?;
         self.require_exact_team_run_host_actor(&context.performed_by_actor, &current.team_run_id)?;
         let work_execution_space_id = require_work_execution_space(&current)?;
-        if current.is_terminal() {
-            return Err(StoreError::Conflict(format!(
-                "WORK_TERMINAL_NOT_RECOVERABLE: Work {work_id} is closed; create a new Work instead of recovering a terminal one"
-            )));
-        }
+        require_mutable_work(
+            &current,
+            "create a new Work instead of recovering a terminal one (WORK_TERMINAL_NOT_RECOVERABLE)",
+        )?;
         if current.active_member_run_id.is_some()
             || (current.owner_member_id.is_some() && current.assignee_membership_id.is_none())
         {
@@ -345,12 +339,12 @@ impl HarnessStore {
                 "WORK_IN_REVIEW_NOT_RECOVERABLE: Work {work_id} is awaiting review; accept it or use request-changes"
             )));
         }
-        // A blocked or on-hold Work carries a durable condition record and a
-        // blocker reason that only `resume` resolves; recovery never clears a
-        // block silently.
+        // A blocked Work carries a durable condition record and a blocker
+        // reason that only `resume` resolves; recovery never clears a block
+        // silently.
         if current.condition != WorkCondition::Normal {
             return Err(StoreError::Conflict(format!(
-                "WORK_CONDITION_NOT_NORMAL: Work {work_id} is {:?}; resume it (team-run work resume) or resolve the hold before recovering its execution",
+                "WORK_CONDITION_NOT_NORMAL: Work {work_id} is {:?}; resume it (team-run work resume) before recovering its execution",
                 current.condition
             )));
         }

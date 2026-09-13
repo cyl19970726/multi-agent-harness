@@ -4,6 +4,8 @@ use super::*;
 mod canonical_surface_equivalence;
 #[path = "../general/create_team_value_missing_required_field_is_usage_error.rs"]
 mod create_team_value_missing_required_field_is_usage_error;
+#[path = "../general/github_poll_absorbs_only_the_terminal_refusal.rs"]
+mod github_poll_absorbs_only_the_terminal_refusal;
 #[path = "../general/partial_legacy_team_run_is_diagnostic_only_until_canonical_completeness_is_restored.rs"]
 mod partial_legacy_team_run_is_diagnostic_only_until_canonical_completeness_is_restored;
 #[path = "../general/provider_profiles_make_codex_app_server_the_team_default.rs"]
@@ -14,3 +16,5 @@ mod team_work_cli_recovers_lost_execution;
 mod team_work_cli_redelivers_and_derives_release_team_run;
 #[path = "../general/team_work_cli_replaces_dependencies_through_application.rs"]
 mod team_work_cli_replaces_dependencies_through_application;
+#[path = "../general/work_usage_lines_name_only_real_verbs.rs"]
+mod work_usage_lines_name_only_real_verbs;

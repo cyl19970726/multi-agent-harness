@@ -9,7 +9,7 @@
     "id": { "type": "string", "minLength": 1 },
     "work_id": { "type": "string", "minLength": 1 },
     "expected_work_version": { "type": "integer", "minimum": 1 },
-    "kind": { "type": "string", "enum": ["accept", "revise", "cancel", "fail", "waive_gate"] },
+    "kind": { "type": "string", "enum": ["accept", "cancel"] },
     "decided_by_actor": { "$ref": "#/$defs/actor" },
     "rationale": { "type": "string", "minLength": 1 },
     "work_report_id": { "type": ["string", "null"], "minLength": 1 },

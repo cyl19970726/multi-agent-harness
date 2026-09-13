@@ -9,7 +9,7 @@
     "id": { "type": "string", "minLength": 1 },
     "work_id": { "type": "string", "minLength": 1 },
     "work_version": { "type": "integer", "minimum": 1 },
-    "condition": { "type": "string", "enum": ["blocked", "on_hold"] },
+    "condition": { "type": "string", "enum": ["blocked"] },
     "owner_actor": { "$ref": "#/$defs/actor" },
     "impact": { "type": "string", "minLength": 1 },
     "resume_condition": { "type": "string", "minLength": 1 },

@@ -9,10 +9,14 @@ pub enum WorkLifecycleError {
     InvalidTransition { operation: WorkEventKind },
 }
 
-/// Pure reference statement of the Work lifecycle rules. The Store write path
-/// enforces transitions through each command's own guards and does not call
-/// this function yet; it is exercised by its unit tests only, so a rule here
-/// documents intent and must be mirrored by the command that writes it.
+/// The Work lifecycle table the Store consults on every write.
+///
+/// Each Store command keeps its own positive preconditions — who may call it,
+/// which delivery/binding evidence it needs, which exact phase it demands —
+/// and this table is the last fence before an operation is appended. It is
+/// deliberately no wider than the commands it fences: a rule here that no
+/// command can produce would be a claim, not an invariant.
+///
 /// Dependency changes are permitted only while the Work is non-terminal; the
 /// dependency kernel separately validates graph semantics.
 pub fn validate_work_transition(
@@ -66,14 +70,6 @@ pub fn validate_work_transition(
                     Some(WorkResolution::Cancelled),
                 )
         }
-        WorkEventKind::Failed => {
-            after
-                == (
-                    WorkPhase::Closed,
-                    WorkCondition::Normal,
-                    Some(WorkResolution::Failed),
-                )
-        }
         WorkEventKind::DependenciesChanged
         | WorkEventKind::Assigned
         | WorkEventKind::Claimed
@@ -82,11 +78,14 @@ pub fn validate_work_transition(
         | WorkEventKind::Rebound
         | WorkEventKind::ExecutionRetargeted => before == after,
         // A lost execution returns an open or started Work to the dispatchable
-        // state; the responsibility fields are untouched by this rule.
+        // state; the responsibility fields are untouched by this rule. No
+        // precondition on the current resolution: `is_terminal` is phase-only,
+        // and the command deliberately clears a stray resolution a legacy
+        // non-terminal row may carry, so demanding `None` here would be
+        // narrower than the command it fences.
         WorkEventKind::ExecutionRecovered => {
             matches!(before.0, WorkPhase::Open | WorkPhase::Active)
                 && before.1 == WorkCondition::Normal
-                && before.2.is_none()
                 && after == (WorkPhase::Open, WorkCondition::Normal, None)
         }
         WorkEventKind::Created => false,
@@ -99,8 +98,10 @@ pub fn validate_work_transition(
     }
 }
 
-/// Closed Works are never reopened. This helper makes the terminal rule
-/// explicit for callers that do not yet construct a full proposed projection.
+/// Closed Works are never reopened. This is the one terminal-immutability
+/// predicate for the whole system: Store commands call it before mutating,
+/// the dependency kernel delegates to it, and [`validate_work_transition`]
+/// applies it to every proposed transition.
 pub fn ensure_work_mutable(work: &Work) -> Result<(), WorkLifecycleError> {
     if work.is_terminal() {
         Err(WorkLifecycleError::TerminalWork {
@@ -154,6 +155,84 @@ mod tests {
     }
 
     #[test]
+    fn table_is_no_wider_than_the_commands_it_fences() {
+        let open = work();
+        let mut active = open.clone();
+        active.phase = WorkPhase::Active;
+        let mut review = open.clone();
+        review.phase = WorkPhase::Review;
+
+        // Creation is not a transition: `insert_work` writes the first row and
+        // never proposes a predecessor projection.
+        assert_eq!(
+            validate_work_transition(&open, &open, WorkEventKind::Created),
+            Err(WorkLifecycleError::InvalidTransition {
+                operation: WorkEventKind::Created
+            })
+        );
+
+        // `recover-lost-execution` refuses a Work awaiting review, so the
+        // table must not offer Review -> Open under that event.
+        assert_eq!(
+            validate_work_transition(&review, &open, WorkEventKind::ExecutionRecovered),
+            Err(WorkLifecycleError::InvalidTransition {
+                operation: WorkEventKind::ExecutionRecovered
+            })
+        );
+        assert_eq!(
+            validate_work_transition(&active, &open, WorkEventKind::ExecutionRecovered),
+            Ok(())
+        );
+
+        // The command refuses only Review and a non-Normal condition; it
+        // clears a stray resolution on a legacy non-terminal row rather than
+        // refusing it, so the table must admit that repair too.
+        let mut legacy_active = active.clone();
+        legacy_active.resolution = Some(WorkResolution::Cancelled);
+        assert!(!legacy_active.is_terminal());
+        assert_eq!(
+            validate_work_transition(&legacy_active, &open, WorkEventKind::ExecutionRecovered),
+            Ok(())
+        );
+        let mut blocked = active.clone();
+        blocked.condition = WorkCondition::Blocked;
+        assert_eq!(
+            validate_work_transition(&blocked, &open, WorkEventKind::ExecutionRecovered),
+            Err(WorkLifecycleError::InvalidTransition {
+                operation: WorkEventKind::ExecutionRecovered
+            })
+        );
+
+        // Responsibility and evidence events keep the lifecycle triple fixed.
+        for kind in [
+            WorkEventKind::Assigned,
+            WorkEventKind::Claimed,
+            WorkEventKind::Released,
+            WorkEventKind::Updated,
+            WorkEventKind::Rebound,
+            WorkEventKind::ExecutionRetargeted,
+            WorkEventKind::DependenciesChanged,
+        ] {
+            assert_eq!(validate_work_transition(&open, &open, kind), Ok(()));
+            assert_eq!(
+                validate_work_transition(&open, &active, kind),
+                Err(WorkLifecycleError::InvalidTransition { operation: kind })
+            );
+        }
+
+        // Cancellation is the one edge every non-terminal phase may take.
+        let mut cancelled = open.clone();
+        cancelled.phase = WorkPhase::Closed;
+        cancelled.resolution = Some(WorkResolution::Cancelled);
+        for current in [&open, &active, &review] {
+            assert_eq!(
+                validate_work_transition(current, &cancelled, WorkEventKind::Cancelled),
+                Ok(())
+            );
+        }
+    }
+
+    #[test]
     fn lifecycle_accepts_normal_path_and_rejects_reopen() {
         let open = work();
         let mut active = open.clone();
@@ -190,23 +269,5 @@ mod tests {
                 work_id: "work-1".into()
             })
         );
-    }
-
-    #[test]
-    fn failed_is_terminal_without_accepting_downstream_work() {
-        let active = {
-            let mut value = work();
-            value.phase = WorkPhase::Active;
-            value
-        };
-        let mut failed = active.clone();
-        failed.phase = WorkPhase::Closed;
-        failed.resolution = Some(WorkResolution::Failed);
-        assert_eq!(
-            validate_work_transition(&active, &failed, WorkEventKind::Failed),
-            Ok(())
-        );
-        assert!(failed.is_terminal());
-        assert!(!failed.is_accepted());
     }
 }
