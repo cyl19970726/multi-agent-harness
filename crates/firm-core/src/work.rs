@@ -24,7 +24,6 @@ pub enum WorkPhase {
 pub enum WorkCondition {
     Normal,
     Blocked,
-    OnHold,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -32,7 +31,6 @@ pub enum WorkCondition {
 pub enum WorkResolution {
     Accepted,
     Cancelled,
-    Failed,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -134,10 +132,7 @@ pub struct WorkEvidence {
 #[serde(rename_all = "snake_case")]
 pub enum WorkDecisionKind {
     Accept,
-    Revise,
     Cancel,
-    Fail,
-    WaiveGate,
 }
 
 /// Immutable Host/Operator decision. Store operations validate authority and
@@ -280,21 +275,9 @@ impl Validate for WorkOperationalDecision {
             });
         }
         match self.kind {
-            WorkDecisionKind::Accept | WorkDecisionKind::Revise
-                if self.work_report_id.is_none() =>
-            {
+            WorkDecisionKind::Accept if self.work_report_id.is_none() => {
                 return Err(ValidationError::Required {
                     field: "WorkOperationalDecision.work_report_id",
-                });
-            }
-            WorkDecisionKind::WaiveGate if self.gate_requirement_ref.is_none() => {
-                return Err(ValidationError::Required {
-                    field: "WorkOperationalDecision.gate_requirement_ref",
-                });
-            }
-            WorkDecisionKind::Fail if self.failure_analysis_ref.is_none() => {
-                return Err(ValidationError::Required {
-                    field: "WorkOperationalDecision.failure_analysis_ref",
                 });
             }
             _ => {}
@@ -804,7 +787,6 @@ pub enum WorkEventKind {
     ChangesRequested,
     Accepted,
     Cancelled,
-    Failed,
     Updated,
     /// Canonical replacement of the Work's hard `depends_on` edge set. The
     /// event payload is [`WorkDependenciesChangedPayload`].

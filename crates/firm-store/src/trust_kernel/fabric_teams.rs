@@ -897,12 +897,7 @@ impl HarnessStore {
                 .iter()
                 .any(|binding| {
                     binding.team_id == team.id
-                        && matches!(
-                            binding.status,
-                            WorkExecutionBindingStatus::Offered
-                                | WorkExecutionBindingStatus::Accepted
-                                | WorkExecutionBindingStatus::Active
-                        )
+                        && binding.status == WorkExecutionBindingStatus::Active
                 })
             || self
                 .fabric_agent_sessions(&context.execution_space_id)?

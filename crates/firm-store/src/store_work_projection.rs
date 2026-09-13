@@ -499,16 +499,6 @@ impl HarnessStore {
                             .unwrap_or_else(|| "target Work accepted".to_string()),
                         None,
                     )),
-                    Some(WorkResolution::Failed) => Some((
-                        WorkDelegationState::Failed,
-                        WorkDelegationTransition::Failed,
-                        target
-                            .result_summary
-                            .clone()
-                            .or_else(|| target.blocker_reason.clone())
-                            .unwrap_or_else(|| "target Work failed".to_string()),
-                        None,
-                    )),
                     Some(WorkResolution::Cancelled) => Some((
                         WorkDelegationState::Cancelled,
                         WorkDelegationTransition::Cancelled,

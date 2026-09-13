@@ -144,12 +144,7 @@ pub struct LostWorkExecutionScan {
 }
 
 fn binding_can_still_execute(status: WorkExecutionBindingStatus) -> bool {
-    matches!(
-        status,
-        WorkExecutionBindingStatus::Offered
-            | WorkExecutionBindingStatus::Accepted
-            | WorkExecutionBindingStatus::Active
-    )
+    matches!(status, WorkExecutionBindingStatus::Active)
 }
 
 /// The durable facts one classification reads, loaded once per call so a scan

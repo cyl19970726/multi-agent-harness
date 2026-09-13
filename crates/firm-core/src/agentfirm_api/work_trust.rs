@@ -1,15 +1,14 @@
 use super::*;
 use serde::{Deserialize, Serialize};
 
+/// Only two states are ever written: a binding is `Active` while it is the
+/// exact execution authority for one Work revision, and `Released` once the
+/// runtime settles or a lost runtime generation invalidates it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkExecutionBindingStatus {
-    Offered,
-    Accepted,
     Active,
     Released,
-    Completed,
-    Invalidated,
 }
 
 /// Exact accountable binding from Work to identity + membership + current

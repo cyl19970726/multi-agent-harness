@@ -12,7 +12,6 @@ fn continuation_is_emitted_only_for_in_progress_work() {
     for (label, phase, condition, resolution) in [
         ("open", WorkPhase::Open, WorkCondition::Normal, None),
         ("blocked", WorkPhase::Active, WorkCondition::Blocked, None),
-        ("on_hold", WorkPhase::Active, WorkCondition::OnHold, None),
         ("review", WorkPhase::Review, WorkCondition::Normal, None),
         (
             "accepted",

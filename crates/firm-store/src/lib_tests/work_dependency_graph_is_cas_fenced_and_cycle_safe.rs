@@ -240,20 +240,19 @@ fn failed_prerequisite_commits_replayable_cross_team_run_reconciliation_outbox()
         )
         .expect("cross-TeamRun dependency in one accountable Team");
 
-    let failed = store
-        .fail_work(
+    let cancelled = store
+        .cancel_work(
             &prerequisite.id,
             prerequisite.version,
             "Host determined the prerequisite cannot complete",
-            "failure-analysis-prerequisite",
             host_work_context(
-                "event-prerequisite-failed",
-                "key-prerequisite-failed",
+                "event-prerequisite-cancelled",
+                "key-prerequisite-cancelled",
                 "unix-ms:6",
             ),
         )
-        .expect("fail prerequisite");
-    assert_eq!(failed.resolution, Some(WorkResolution::Failed));
+        .expect("cancel prerequisite");
+    assert_eq!(cancelled.resolution, Some(WorkResolution::Cancelled));
 
     let operation = store
         .canonical_operations()
@@ -261,9 +260,9 @@ fn failed_prerequisite_commits_replayable_cross_team_run_reconciliation_outbox()
         .into_iter()
         .find(|operation| {
             operation.event.aggregate_id == prerequisite.id
-                && operation.event.transition == "failed"
+                && operation.event.transition == "cancelled"
         })
-        .expect("failed operation");
+        .expect("cancelled operation");
     let outbox = &operation.initial_outbox_records;
     assert_eq!(outbox.len(), 1);
     assert_eq!(outbox[0]["work_id"], dependent.id);

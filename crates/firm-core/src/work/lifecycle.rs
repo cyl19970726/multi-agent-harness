@@ -66,14 +66,6 @@ pub fn validate_work_transition(
                     Some(WorkResolution::Cancelled),
                 )
         }
-        WorkEventKind::Failed => {
-            after
-                == (
-                    WorkPhase::Closed,
-                    WorkCondition::Normal,
-                    Some(WorkResolution::Failed),
-                )
-        }
         WorkEventKind::DependenciesChanged
         | WorkEventKind::Assigned
         | WorkEventKind::Claimed
@@ -190,23 +182,5 @@ mod tests {
                 work_id: "work-1".into()
             })
         );
-    }
-
-    #[test]
-    fn failed_is_terminal_without_accepting_downstream_work() {
-        let active = {
-            let mut value = work();
-            value.phase = WorkPhase::Active;
-            value
-        };
-        let mut failed = active.clone();
-        failed.phase = WorkPhase::Closed;
-        failed.resolution = Some(WorkResolution::Failed);
-        assert_eq!(
-            validate_work_transition(&active, &failed, WorkEventKind::Failed),
-            Ok(())
-        );
-        assert!(failed.is_terminal());
-        assert!(!failed.is_accepted());
     }
 }

@@ -39,14 +39,9 @@ pub struct SupersededWorkDelivery {
     pub stale_because: String,
 }
 
-/// Only these binding states can still carry a delivery to the provider.
+/// Only an Active binding can still carry a delivery to the provider.
 fn binding_can_still_execute(status: WorkExecutionBindingStatus) -> bool {
-    matches!(
-        status,
-        WorkExecutionBindingStatus::Offered
-            | WorkExecutionBindingStatus::Accepted
-            | WorkExecutionBindingStatus::Active
-    )
+    matches!(status, WorkExecutionBindingStatus::Active)
 }
 
 impl HarnessStore {
@@ -198,10 +193,6 @@ pub(crate) fn delivery_staleness(binding: Option<&WorkExecutionBinding>) -> &'st
     };
     match binding.status {
         WorkExecutionBindingStatus::Released => "work_execution_binding_released",
-        WorkExecutionBindingStatus::Completed => "work_execution_binding_completed",
-        WorkExecutionBindingStatus::Invalidated => "work_execution_binding_invalidated",
-        WorkExecutionBindingStatus::Offered
-        | WorkExecutionBindingStatus::Accepted
-        | WorkExecutionBindingStatus::Active => "work_execution_binding_live_unexpected",
+        WorkExecutionBindingStatus::Active => "work_execution_binding_live_unexpected",
     }
 }

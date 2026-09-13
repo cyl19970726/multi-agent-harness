@@ -21,7 +21,6 @@ fn work_lifecycle_axes_have_exact_wire_contracts() {
     for (condition, wire) in [
         (WorkCondition::Normal, "normal"),
         (WorkCondition::Blocked, "blocked"),
-        (WorkCondition::OnHold, "on_hold"),
     ] {
         assert_eq!(serde_json::to_value(condition).unwrap(), json!(wire));
         assert_eq!(
@@ -32,7 +31,6 @@ fn work_lifecycle_axes_have_exact_wire_contracts() {
     for (resolution, wire) in [
         (WorkResolution::Accepted, "accepted"),
         (WorkResolution::Cancelled, "cancelled"),
-        (WorkResolution::Failed, "failed"),
     ] {
         assert_eq!(serde_json::to_value(resolution).unwrap(), json!(wire));
         assert_eq!(
@@ -43,6 +41,14 @@ fn work_lifecycle_axes_have_exact_wire_contracts() {
 
     assert!(serde_json::from_value::<WorkPhase>(json!("blocked")).is_err());
     assert!(serde_json::from_value::<WorkCondition>(json!("done")).is_err());
+    assert!(
+        serde_json::from_value::<WorkCondition>(json!("on_hold")).is_err(),
+        "the retired on_hold condition has no writer and no reader"
+    );
+    assert!(
+        serde_json::from_value::<WorkResolution>(json!("failed")).is_err(),
+        "the retired failed resolution has no writer and no reader"
+    );
     assert!(serde_json::from_value::<WorkResolution>(json!("open")).is_err());
 }
 
@@ -54,7 +60,7 @@ fn closed_work_requires_normal_condition_and_resolution() {
     work.resolution = None;
     assert!(work.validate().is_err(), "closed Work needs a resolution");
 
-    work.resolution = Some(WorkResolution::Failed);
+    work.resolution = Some(WorkResolution::Cancelled);
     work.condition = WorkCondition::Blocked;
     assert!(
         work.validate().is_err(),
@@ -112,7 +118,7 @@ fn report_revision_binding_is_exact() {
 }
 
 #[test]
-fn accept_and_revise_decisions_require_an_exact_report() {
+fn accept_decisions_require_an_exact_report() {
     let mut decision = WorkOperationalDecision {
         id: "decision-1".into(),
         work_id: "work-1".into(),

@@ -561,17 +561,14 @@ pub(super) fn parse_work_phase(value: &str) -> CliResult<WorkPhase> {
 }
 
 pub(super) fn parse_work_condition(value: &str) -> CliResult<WorkCondition> {
-    serde_json::from_value(serde_json::Value::String(value.to_string())).map_err(|_| {
-        CliError::Usage(format!(
-            "unknown Work condition `{value}` (normal|blocked|on_hold)"
-        ))
-    })
+    serde_json::from_value(serde_json::Value::String(value.to_string()))
+        .map_err(|_| CliError::Usage(format!("unknown Work condition `{value}` (normal|blocked)")))
 }
 
 pub(super) fn parse_work_resolution(value: &str) -> CliResult<WorkResolution> {
     serde_json::from_value(serde_json::Value::String(value.to_string())).map_err(|_| {
         CliError::Usage(format!(
-            "unknown Work resolution `{value}` (accepted|cancelled|failed)"
+            "unknown Work resolution `{value}` (accepted|cancelled)"
         ))
     })
 }
@@ -579,7 +576,6 @@ pub(super) fn parse_work_resolution(value: &str) -> CliResult<WorkResolution> {
 pub(super) fn work_lifecycle_label(work: &Work) -> String {
     match (work.phase, work.condition, work.resolution) {
         (_, WorkCondition::Blocked, _) => "blocked".to_string(),
-        (_, WorkCondition::OnHold, _) => "on_hold".to_string(),
         (WorkPhase::Closed, _, Some(resolution)) => serde_snake_label(&resolution),
         (phase, _, _) => serde_snake_label(&phase),
     }

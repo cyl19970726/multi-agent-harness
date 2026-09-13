@@ -148,7 +148,7 @@ impl HarnessStore {
     ) -> StoreResult<Vec<HostAttention>> {
         let successor_kind = match work.resolution {
             Some(WorkResolution::Accepted) => HostAttentionKind::WorkPrerequisiteCompleted,
-            Some(WorkResolution::Failed | WorkResolution::Cancelled) => {
+            Some(WorkResolution::Cancelled) => {
                 HostAttentionKind::WorkPrerequisiteNeedsReconciliation
             }
             None => return Ok(Vec::new()),
@@ -261,7 +261,6 @@ impl HarnessStore {
     ) -> StoreResult<serde_json::Value> {
         let outcome = match kind {
             WorkEventKind::Accepted => "accepted",
-            WorkEventKind::Failed => "failed",
             WorkEventKind::Cancelled => "cancelled",
             _ => return Ok(payload),
         };

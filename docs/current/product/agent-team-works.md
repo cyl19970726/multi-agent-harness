@@ -20,8 +20,8 @@ only as the implementation-bound remainder below.
 
 ```text
 phase:      open -> active -> review -> closed
-condition:  normal | blocked | on_hold
-resolution: accepted | cancelled | failed   # closed only
+condition:  normal | blocked
+resolution: accepted | cancelled            # closed only
 ```
 
 `team_id` is a deprecated pre-cutover alias of `accountable_team_id`,
