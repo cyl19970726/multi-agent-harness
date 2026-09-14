@@ -440,34 +440,10 @@ const fn default_member_runtime_generation() -> u64 {
 /// A provider-owned conversation/runtime that contains the execution truth for
 /// one member. Harness persists this locator and capability snapshot, but does
 /// not copy the provider's transcript, tool stream, command output, or turns.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct NativeSessionRef {
-    pub provider: String,
-    pub execution_mode: String,
-    pub native_session_id: String,
-    pub native_locator_kind: String,
-    #[serde(default)]
-    pub provider_version: Option<String>,
-    pub adapter_contract_version: String,
-    #[serde(default)]
-    pub availability: NativeSessionAvailability,
-    pub supports_resume: bool,
-    #[serde(default)]
-    pub last_verified_at: Option<String>,
-    #[serde(default)]
-    pub parent_native_session_id: Option<String>,
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum NativeSessionAvailability {
-    Available,
-    Stale,
-    Missing,
-    Incompatible,
-    #[default]
-    Unknown,
-}
+///
+/// There is ONE such type. The ledger projection and the trust journal name the
+/// same struct so a pointer cannot mean two structurally different things.
+pub use crate::agentfirm_api::{NativeSessionAvailability, NativeSessionRef};
 
 /// Provider-neutral control lifecycle for one requested execution setting.
 ///

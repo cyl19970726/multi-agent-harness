@@ -63,13 +63,14 @@ pub struct AgentMember {
     pub updated_at: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum NativeSessionAvailability {
     Available,
     Stale,
     Missing,
     Incompatible,
+    #[default]
     Unknown,
 }
 
@@ -455,6 +456,14 @@ pub struct AgentTeamPurgeTombstone {
     pub recorded_at: String,
 }
 
+/// The one provider-native session pointer type.
+///
+/// Both the trust journal (`AgentSession.native_session_ref`) and the ledger
+/// projections (`MemberRun.native_session`, `member_runs.jsonl`) name THIS
+/// struct: a pointer that means two structurally different things is a pointer
+/// with two authorities. `deny_unknown_fields` is kept because every row in the
+/// real stores satisfies it; `availability` decodes as `Unknown` when a legacy
+/// `member_runs.jsonl` row omits it, so both historical wire shapes still read.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct NativeSessionRef {
@@ -465,6 +474,7 @@ pub struct NativeSessionRef {
     #[serde(default)]
     pub provider_version: Option<String>,
     pub adapter_contract_version: String,
+    #[serde(default)]
     pub availability: NativeSessionAvailability,
     pub supports_resume: bool,
     #[serde(default)]
@@ -489,6 +499,28 @@ impl NativeSessionRef {
 
 pub fn native_session_identity_matches(left: &NativeSessionRef, right: &NativeSessionRef) -> bool {
     left.same_identity_as(right)
+}
+
+/// The one deliberately ASYMMETRIC identity comparison, used only where a
+/// resume locator is admitted against an observed session.
+///
+/// A `--resume-member` seed names the conversation but cannot know which
+/// provider version opened it, so `expected.provider_version` is `None` while
+/// the observed session carries the version the provider just reported. Every
+/// other identity field must still match exactly. This is NOT a weaker
+/// `same_identity_as`: it accepts one specific, named direction of ignorance
+/// and rejects the reverse, so it can never be used as a general fallback.
+pub fn native_session_admits_resume_seed(
+    observed: &NativeSessionRef,
+    expected_seed: &NativeSessionRef,
+) -> bool {
+    observed.provider_version.is_some()
+        && expected_seed.provider_version.is_none()
+        && observed.provider == expected_seed.provider
+        && observed.execution_mode == expected_seed.execution_mode
+        && observed.native_session_id == expected_seed.native_session_id
+        && observed.native_locator_kind == expected_seed.native_locator_kind
+        && observed.adapter_contract_version == expected_seed.adapter_contract_version
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
