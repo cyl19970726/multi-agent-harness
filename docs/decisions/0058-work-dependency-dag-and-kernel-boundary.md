@@ -1,5 +1,10 @@
 # ADR 0058: Work Dependency DAG And Kernel Boundary
 
+> Amended by [ADR 0066](0066-retire-the-work-ledger-delegation-stack.md): the
+> Work-ledger `WorkDelegation` relation named below is retired. A Team's Work is
+> accountable to that Team and `depends_on` is the only Work-to-Work edge; the
+> dependency rules and kernel boundary below are unchanged.
+
 ```text
 status: accepted; implementation cutover owned by DEV-60
 date: 2026-08-22

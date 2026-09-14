@@ -61,6 +61,14 @@ Retirement never costs a store its history, and two shapes are pinned by
   The files are left exactly as the store held them, no reader folds them, and
   their rows never become Work.
 
+The ignore is silent: nothing enumerates unknown ledgers on open, so no warning
+is emitted for a leftover delegation file. That is acceptable because there is
+nothing to warn about. The inventory found zero rows in every store, so no
+operator can be holding unread delegation history, and the write path was
+already closed before this ADR — `work_cli.rs` refuses `team-run work
+delegate|delegation` and the HTTP route refuses the legacy writers, both with
+`RETIRED_WRITE_AUTHORITY` — so no new file can appear either.
+
 ## Consequences
 
 - The Work model has no cross-Team edge. Cross-machine collaboration is the

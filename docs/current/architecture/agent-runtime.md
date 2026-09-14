@@ -404,7 +404,7 @@ revision can never be written under a name the reader cannot label. Its
 `expected_version`/`resulting_version` are the Work versions, its
 `resulting_projection` is the Work, and its immutable side records carry the
 complete `WorkOperation`: the `WorkEvent`, the same projection, and the
-condition records, reports, evidence and decisions the ledger row carried. That
+condition records, reports and evidence the ledger row carried. That
 is what makes the commit crash-atomic in exactly the way a single JSONL append
 used to be.
 

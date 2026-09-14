@@ -84,17 +84,26 @@ fn retired_delegation_files_are_ignored_and_legacy_rows_still_fold() {
         )
         .expect("seed a retired delegation ledger");
     }
-    let works = store.latest_works().expect("Works still read");
-    assert_eq!(
-        works
-            .iter()
-            .map(|work| work.id.as_str())
-            .collect::<Vec<_>>(),
-        vec![work.id.as_str()],
-        "the retired ledgers contribute no Work"
-    );
-    store.work_journal_records().expect("journal still reads");
-    store.work_events().expect("events still read");
+    // Open the seeded directory as a store that has never seen it, which is
+    // what "a store holding the files opens" actually means: `init` runs
+    // against a root that already contains both retired ledgers.
+    let reopened = HarnessStore::new(store.root());
+    reopened
+        .init()
+        .expect("a store holding the retired ledgers opens");
+    for opened in [store, &reopened] {
+        let works = opened.latest_works().expect("Works still read");
+        assert_eq!(
+            works
+                .iter()
+                .map(|work| work.id.as_str())
+                .collect::<Vec<_>>(),
+            vec![work.id.as_str()],
+            "the retired ledgers contribute no Work"
+        );
+        opened.work_journal_records().expect("journal still reads");
+        opened.work_events().expect("events still read");
+    }
     for ledger in [
         "work_delegation_operations.jsonl",
         "work_delegation_events.jsonl",
