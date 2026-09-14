@@ -76,7 +76,9 @@ server logs:
   server_version }`. `git_rev`/`built_at` are embedded at **compile time** by
   `crates/firm-cli/build.rs` (a full `git rev-parse --verify HEAD^{commit}` build-script
   call, never shelled out per-request); `latest_op_seq` is a monotonic cursor
-  over the store's `work_operations.jsonl` append log.
+  over the store's one Work journal (the `work` transitions in
+  `agentfirm_trust_operations.jsonl`, plus any pre-cutover
+  `work_operations.jsonl` rows).
 - The Workbench's persistent footer shows that server `git_rev` +
   `latest_op_seq` next to this frontend bundle's OWN build rev (injected by
   `vite.config.ts` via `import.meta.env.VITE_DASHBOARD_GIT_REV`, the same

@@ -173,7 +173,10 @@ doc carries the contract behind each rule.
    artifact/check references, and control acknowledgements.
    Agent Team responsibility is proven by the latest `Work` rebuilt from
    ordered `WorkOperation` rows, each preserving its append-only `WorkEvent`
-   and `WorkDelivery` deltas. A `Message` is authored conversation only and may
+   and `WorkDelivery` deltas. Those rows live in the trust journal, as the
+   immutable side records of the `work` aggregate envelope each transition
+   commits; `work_operations.jsonl` is legacy read-only input holding the
+   pre-cutover rows. A `Message` is authored conversation only and may
    link a `work_id`; correlated provider requests and responses are Message
    kinds, not a second interaction object. `Work`, Message delivery, and
    `RuntimeCommand` are independent planes and cannot authorize or mutate one

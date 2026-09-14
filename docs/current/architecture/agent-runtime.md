@@ -384,69 +384,120 @@ Canonical source rows fold before lifecycle rows. A matching legacy-only
 HostAttention lifecycle row remains readable, but it is not canonical Work or
 delivery authority and cannot synthesize a WorkDelivery. See ADR 0060.
 
-### Work journal reads
+### One journal for Work
 
-A Work's version chain is one chain, but its rows are persisted in two files
-and every reader folds both:
+**Every Work transition commits one `work` aggregate envelope to
+`agentfirm_trust_operations.jsonl`, and nothing else writes a Work revision.**
+`work_operations.jsonl` (with its crash-atomic
+`work_delegation_operations.jsonl` composite) is legacy read-only input: it
+holds the rows a pre-cutover binary wrote, it keeps reading forever, and a
+store created after the cutover never gains the file at all.
 
-| Journal | Rows |
-| --- | --- |
-| `work_operations.jsonl` (plus the crash-atomic `work_delegation_operations.jsonl` composite) | `WorkOperation` rows: Created, Assigned, Claimed, Started, Released, Blocked, Resumed, ChangesRequested, Updated, Rebound, ExecutionRetargeted, ExecutionRecovered |
-| `agentfirm_trust_operations.jsonl`, `work` aggregate | Submitted, Accepted, Cancelled, DependenciesChanged |
+The envelope's transition is the `WorkEventKind` in snake_case — `created`,
+`assigned`, `claimed`, `started`, `released`, `blocked`, `resumed`,
+`submitted`, `changes_requested`, `accepted`, `cancelled`, `updated`,
+`dependencies_changed`, `rebound`, `execution_retargeted`,
+`execution_recovered` — from one map that the writer and the reader share, so a
+revision can never be written under a name the reader cannot label. Its
+`expected_version`/`resulting_version` are the Work versions, its
+`resulting_projection` is the Work, and its immutable side records carry the
+complete `WorkOperation`: the `WorkEvent`, the same projection, and the
+condition records, reports, evidence and decisions the ledger row carried. Any
+Delegation revision the transition caused is committed as its own side record
+in the same write. That is what makes the commit crash-atomic in exactly the
+way a single JSONL append used to be.
 
-Each trust `work` transition commits the `WorkEvent` the ledger row would have
-carried, as an immutable side record of the same canonical operation. Two
-journals cannot hold one Work version: every writer resolves its expected
-revision through the merged reader under the store write lock, and the
-current-delivery projection compares projections at one `(id, version)` across
-both sources and refuses a mismatch. A Result
-submission writes its `work`/`submitted` envelope in the SAME atomic ledger
+Idempotency is the trust kernel's replay check and nothing else. A command
+resolves its Work, builds its `MutationContext`, and asks for a replay *before*
+its own guards and version fence — a retry of a command that already committed
+must return that committed result, not a `VERSION_CONFLICT` against the
+revision its own first attempt produced. The replay is exact: the same key with
+different request content is `IDEMPOTENCY_KEY_REUSED`, never a substitution. A
+Result submission writes its `work`/`submitted` envelope in the SAME atomic
 rewrite as its `work_report/created` envelope, so the report and the Review
 revision it produced can never exist without one another; the paired envelope
 derives its idempotency key from the report's by appending `#<transition>`, and
 an exact replay re-appends neither. `#` is therefore reserved in a canonical
-idempotency key, and both trust entrances refuse a caller key containing it as
-a request-shape error — never as a replay. The reservation binds the trust
-journal, where derived keys live; ledger writers keep their own key namespace
-in `work_operations.jsonl`, looked up only against ledger rows, so a `#` there
-can collide with nothing. W4 moves those writers into this journal and must
-route their keys through the same check when it does. Pre-cutover rows carry no such side record and are read as the
-`WorkEvent` their canonical operation already implies — never rewritten.
+idempotency key, and EVERY Work entrance refuses a caller key containing it as
+a request-shape error — never as a replay. The responsibility migration plans
+every write and then commits them all in one atomic multi-envelope write: a
+partially applied sweep has no single revision to reconcile from.
 
-One Store reader owns the fold. It answers four shapes: the merged latest Work
-per id (the ledger and delegation fold overlaid by the trust fold on a greater
-version, the ledger winning an exact tie); one Work's history, strictly in
-version order; every Work event in the store in one deterministic total order;
-and a monotonic **Work journal position** that advances on a row in EITHER
-journal. Every shape has an Execution-Space-scoped form, and a caller holding a
-space uses it: `work_operations.jsonl` is the store's own file and carries no
-space of its own, but the trust journal is explicitly scoped and a physical
-store may temporarily hold more than one space during recovery or import, so a
-scoped read folds this store's ledger rows plus only that space's trust
-transitions. No current-phase, event, count or cursor reader may read one journal
-alone: the RoleView, `work show`, `work list`, the dashboard projection, the
-TeamRun canonical-state fingerprint and the delta cursor all consume this one
-surface, so they cannot disagree about a Work's version or phase.
+**The performer is an identity, not a runtime generation.** A member command
+still arrives signed by the exact MemberRun the caller-context gates fence
+against (`ProviderRuntimeProjection/<member-run-id>`), and those gates are
+unchanged. What is persisted is the durable AgentMember — `TeamActorKind::AgentMember`
+with the `agent_member_id`, the caller's `authn_source` preserved — and the
+MemberRun is recorded beside it in `WorkEvent.executed_by_member_run_id`. The
+canonical actor on the envelope follows the same one mapping:
 
-The journal position carries one component per journal, because the two files
-share no comparable clock and both are still written: a ledger row appended
-after a trust row must not have to sort below an already-issued watermark. A
+| caller `TeamActorRef` | canonical `ActorRef` |
+| --- | --- |
+| `Host/<host-agent-id>` | `AgentMember/<host-agent-id>` |
+| `ProviderRuntimeProjection/<member-run-id>` | `AgentMember/<agent-member-id>` |
+| `AgentMember/<id>` | `AgentMember/<id>` |
+| `Operator/<id>` | `Human/<id>` |
+| `Service/<id>` | `Service/<id>` |
+
+The Host row is an identity, not a widening: the Host gate has already proven
+that id is the AgentTeam's `host_agent_id` with the one active Host membership.
+A persisted `WorkEvent` for a Host write keeps `TeamActorKind::Host`, which is
+what the Host-suppression and re-authorization predicates read. Legacy rows keep
+their shape forever, and every predicate that reads member provenance accepts
+both through `WorkEvent::executing_member_run_id`. Peer review of Host-owned
+Work re-authorizes the next execution admission on an explicit marker that only
+the peer-reviewer gate writes (plus the legacy shape whose performer *was* the
+reviewing runtime) — never on "some AgentMember requested changes".
+
+One Store reader owns the fold. It answers four shapes: the latest Work per id;
+one Work's history, strictly in version order; every Work record in the store in
+one deterministic total order; and a monotonic **Work journal position**. It
+folds immutable additive provenance forward across both journals, so a sparse
+row a stale binary appends still inherits the `accountable_team_id` and
+`created_by_member_id` its creation established. A Work version persisted in
+both journals with different content is refused
+(`WORK_JOURNAL_REVISION_CONFLICT`), not tie-broken: with one writer, two
+disagreeing accounts of one revision are corruption, and picking either would
+make the answer depend on which file a reader looked at first.
+
+Every shape has an Execution-Space-scoped form, and a caller holding a space
+uses it. The scope is a type — `ExecutionSpaceId` — because a TeamRun id and an
+Execution Space id are both bare strings and have already been confused for one
+another. **Writer and reader resolve in the same scope**: the writer's CAS reads
+through the space-scoped fold using its command's own Execution Space, so a Host
+that read scoped and wrote with that version never meets a `VERSION_CONFLICT`
+against a revision written in another space it cannot see. `work_operations.jsonl`
+is the store's own file and carries no space of its own, so a scoped read folds
+this store's ledger rows plus only that space's trust transitions. No
+current-phase, event, record, count or cursor reader may read one journal alone:
+the RoleView, `work show`, `work list`, the dashboard projection, the TeamRun
+canonical-state fingerprint and the delta cursor all consume this one surface,
+so they cannot disagree about a Work's version or phase.
+
+**`RemoteWorkRef.work_event_id` binds to the `work` transition that produced the
+revision** — one revision, one transition, one id, the same id `work_history`
+reports and the same id a HostAttention and a delivery name it by. Later
+revisions never rebind it. The canonical scan behind that rule remains only for
+a revision persisted solely as an atomic side projection of another aggregate's
+envelope, which has no `work` transition of its own to name.
+
+The journal position still carries one component per journal, because the two
+files share no comparable clock. The ledger component is frozen at the
+pre-cutover row count and only the trust component advances for new writes. A
 position advances past a cursor when EITHER component is strictly greater. The
 single-integer transport used by `firm team-run work list --since` packs it as
 `trust * 2^32 + ledger`, so an integer cursor issued before this contract — a
-bare ledger row count — decodes unchanged to that same ledger position, and
-any position carrying a trust row orders after every such legacy value.
-Comparison always decodes first: comparing packed integers directly would be
-trust-major and would skip a Work whose only new row is a ledger row. A
-position neither component of that packing can name is refused
+bare ledger row count — decodes unchanged to that same ledger position, and any
+position carrying a trust row orders after every such legacy value. Comparison
+always decodes first: comparing packed integers directly would be trust-major
+and would skip a Work whose only new row is a ledger row. A position neither
+component of that packing can name is refused
 (`WORK_JOURNAL_CURSOR_OVERFLOW`), never clamped: a clamped ledger component
 would freeze a Host's `--since` loop with nothing to act on.
 
-This shape is transitional. The next slice moves every remaining Work writer
-into the trust journal, after which `work_operations.jsonl` becomes read-only
-legacy input and the fold collapses to one file. Only that file's raw rows are
-readable on their own, through an explicitly named legacy reader, for
-migration, export and historical inspection of the file itself.
+The legacy file's raw rows stay readable on their own, through an explicitly
+named legacy reader, for migration, export and historical inspection of that
+file itself.
 
 ### Runtime control
 
