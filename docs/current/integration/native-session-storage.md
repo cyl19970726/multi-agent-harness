@@ -87,7 +87,7 @@ projections name the same struct.
 `NativeSessionRef` is stored in three places today:
 
 - canonical `MemberRun.native_session`
-  (`crates/firm-core/src/agentfirm_api/identity_session.rs:575`);
+  (`crates/firm-core/src/agentfirm_api/identity_session.rs:591`);
 - `AgentSession.native_session_ref` (same file, `:310`);
 - the legacy `member_runs.jsonl` `ProviderRuntimeProjection.native_session`
   (`crates/firm-core/src/team_runtime.rs:878`).
