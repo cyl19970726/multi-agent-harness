@@ -312,29 +312,3 @@ pub struct CanonicalMessageDelivery {
     pub created_at: String,
     pub updated_at: String,
 }
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum RouteJournalStatus {
-    Pending,
-    Routed,
-    Received,
-    Failed,
-}
-
-/// Cross-node route metadata only. It contains no provider/session ownership.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct MessageRouteJournal {
-    pub id: String,
-    pub message_id: String,
-    pub source_node_id: String,
-    pub target_node_id: String,
-    pub target_execution_space_id: String,
-    pub attempt: u32,
-    pub status: RouteJournalStatus,
-    #[serde(default)]
-    pub receipt_id: Option<String>,
-    pub version: u64,
-    pub updated_at: String,
-}

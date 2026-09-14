@@ -125,8 +125,8 @@ substitutes for exact runtime admission.
 `CompanyNode.id` is the existing `ExecutionNode.id`. A NodeGateway is a child
 of the exact current NodeDaemonLease generation, not a second Node authority.
 For cross-Node operations, FabricStore `RoutedOperation`, `RouteAttempt`, and
-`RouteReceipt` are the sole route truth. Never dual-write or replay from
-MessageRouteJournal. A routed Message must carry the canonical immutable
+`RouteReceipt` are the sole route truth; there is no second route record to
+dual-write or replay from. A routed Message must carry the canonical immutable
 Message envelope or an authenticated content-addressed reference; the target
 persists and verifies it before creating MessageDelivery. RouteAttempt proves
 transport only; only a generation-fenced target result proves application

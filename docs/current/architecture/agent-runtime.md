@@ -851,9 +851,10 @@ Control Plane. They do not expose an inbound collaboration listener and do not
 connect directly to sibling Nodes.
 
 `FabricStore` operations, attempts and receipts are the sole cross-Node route
-truth. A cross-Node `MessageRouteJournal` may exist only as a read-only
-projection. It is not written in parallel and cannot drive replay, delivery or
-application claims. A `RouteAttempt` proves transport only. Application effect
+truth. There is no second route record: ADR 0069 deleted the writer-less,
+reader-less `MessageRouteJournal` type, so nothing can be written in parallel
+or drive replay, delivery or application claims. A `RouteAttempt` proves
+transport only. Application effect
 is `none | not_applied | applied | unknown` and only a generation-fenced target
 result/receipt may assert it.
 

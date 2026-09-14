@@ -28,9 +28,9 @@ FabricStore is Firm-scoped and owns `RoutedOperation`, transport-only
 route truth. Node-local Stores own pre-acceptance outboxes, target inboxes and
 application results. `firm-store` owns their filesystem roots.
 
-Wave 4C MessageRouteJournal is not a second route ledger. For cross-Node work it
-may only project FabricStore state read-only. There is no dual write, fallback
-reader, migration or replay from MessageRouteJournal.
+There is no second route ledger. The Wave 4C `MessageRouteJournal` type was
+deleted by ADR 0069 with no writer and no reader ever built, so no dual write,
+fallback reader, migration or replay from it is possible.
 
 ```text
 source outbox persisted

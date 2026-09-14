@@ -88,7 +88,6 @@ const requiredSchemas = [
   "message",
   "message-subscription",
   "canonical-message-delivery",
-  "message-route-journal",
   "control-command-envelope",
   "runtime-command-record",
   "canonical-work-delivery",
