@@ -11,7 +11,7 @@ impl HttpExchange<'_> {
         let path = &self.path;
         let path_only = &self.path_only;
         let project_param = &self.project_param;
-        let project_id = &self.project_id;
+        let coordination_store_id = &self.coordination_store_id;
         let store_owned = &self.store;
         let store = store_owned;
         let company_os_path = self.company_os_path;
@@ -125,7 +125,7 @@ impl HttpExchange<'_> {
             match fabric_runtime::queue_collaboration_proposal(
                 store_owned,
                 &firm_home,
-                project_id,
+                coordination_store_id,
                 &local_node_id,
                 &credential,
                 idempotency_key,
@@ -225,7 +225,7 @@ impl HttpExchange<'_> {
             match fabric_runtime::queue_remote_fact_publication(
                 store_owned,
                 &firm_home,
-                project_id,
+                coordination_store_id,
                 &local_node_id,
                 &credential,
                 idempotency_key,
@@ -342,7 +342,7 @@ impl HttpExchange<'_> {
                             match fabric_runtime::resolve_collaboration_message_authority(
                                     store_owned,
                                     &firm_home,
-                                    project_id,
+                                    coordination_store_id,
                                     &local_node_id,
                                     &credential,
                                     &intent.draft,
@@ -368,7 +368,7 @@ impl HttpExchange<'_> {
                             match resolve_peer_team_message_admission_authority(
                                     store_owned,
                                     &firm_home,
-                                    project_id,
+                                    coordination_store_id,
                                     &local_node_id,
                                     &credential.actor,
                                     &intent.draft,
@@ -445,7 +445,7 @@ impl HttpExchange<'_> {
                         }
                     };
                     let identity = store_owned
-                        .fabric_agent_identities(project_id)?
+                        .fabric_agent_identities(coordination_store_id)?
                         .into_iter()
                         .find(|identity| identity.id == intent.agent_member_id)
                         .ok_or_else(|| CliError::Usage("AGENT_IDENTITY_NOT_FOUND".into()))?;
@@ -467,7 +467,7 @@ impl HttpExchange<'_> {
                         return Ok(true);
                     }
                     let member = store_owned
-                        .trust_agent_members(project_id)?
+                        .trust_agent_members(coordination_store_id)?
                         .into_iter()
                         .find(|member| member.id == identity.id)
                         .ok_or_else(|| {
@@ -493,7 +493,7 @@ impl HttpExchange<'_> {
                         })?;
                     let provider_profile = team_member_provider_profile(provider_kind);
                     let workspace_cwd = projects
-                        .exact_project_context_for(project_param.as_deref(), project_id)?
+                        .exact_project_context_for(project_param.as_deref(), coordination_store_id)?
                         .project_root
                         .display()
                         .to_string();
@@ -524,7 +524,7 @@ impl HttpExchange<'_> {
                         id: session_id.clone(),
                         agent_member_id: identity.id.clone(),
                         node_id: target_node_id.clone(),
-                        execution_space_id: project_id.clone(),
+                        execution_space_id: coordination_store_id.clone(),
                         node_daemon_id: String::new(),
                         node_daemon_generation: 0,
                         provider_kind: provider_kind.to_string(),
@@ -578,7 +578,7 @@ impl HttpExchange<'_> {
                         }
                     };
                     let session = store_owned
-                        .fabric_agent_sessions(project_id)?
+                        .fabric_agent_sessions(coordination_store_id)?
                         .into_iter()
                         .find(|session| session.id == intent.session_id)
                         .ok_or_else(|| CliError::Usage("AGENT_SESSION_NOT_FOUND".into()))?;
@@ -611,7 +611,7 @@ impl HttpExchange<'_> {
                         }
                     };
                     let session = store_owned
-                        .fabric_agent_sessions(project_id)?
+                        .fabric_agent_sessions(coordination_store_id)?
                         .into_iter()
                         .find(|session| session.id == intent.session_id)
                         .ok_or_else(|| CliError::Usage("AGENT_SESSION_NOT_FOUND".into()))?;
@@ -638,7 +638,7 @@ impl HttpExchange<'_> {
                 .into_iter()
                 .any(|registration| {
                     registration.node_id == target_node_id
-                        && registration.execution_space_id == *project_id
+                        && registration.execution_space_id == *coordination_store_id
                         && registration.status == NodeProjectRegistrationStatus::Active
                 });
             let lease = store_owned.latest_node_daemon_lease(&target_node_id)?;
@@ -725,7 +725,13 @@ impl HttpExchange<'_> {
             if request.command != RuntimeCommandKind::AuthorMessage {
                 let command_id = format!("runtime-command:{idempotency_key}");
                 let original = store_owned
-                    .canonical_operations_for_space(&ExecutionSpaceId::new(project_id))?
+                    // The resolved coordination store IS an Execution Space:
+                    // `store_for` returns either a registered space id or, in
+                    // compatibility mode, a legacy project-scoped store whose
+                    // id is that store's own space identity. Reading it as an
+                    // ExecutionSpaceId scopes the replay to the same store the
+                    // request already committed against.
+                    .canonical_operations_for_space(&ExecutionSpaceId::new(coordination_store_id))?
                     .into_iter()
                     .find(|operation| {
                         operation.event.aggregate_kind == "runtime_command"
@@ -762,7 +768,7 @@ impl HttpExchange<'_> {
                         return Ok(true);
                     }
                     let record = store_owned
-                        .runtime_commands(project_id)?
+                        .runtime_commands(coordination_store_id)?
                         .into_iter()
                         .find(|record| record.id == command_id)
                         .ok_or_else(|| {
@@ -829,7 +835,7 @@ impl HttpExchange<'_> {
                     })?;
                 Some(
                     store_owned
-                        .fabric_agent_sessions(project_id)?
+                        .fabric_agent_sessions(coordination_store_id)?
                         .into_iter()
                         .find(|session| session.id == session_id)
                         .ok_or_else(|| CliError::Usage("AGENT_SESSION_NOT_FOUND".into()))?,
@@ -838,7 +844,11 @@ impl HttpExchange<'_> {
             let command_binding = command_target_session
                 .as_ref()
                 .map(|session| {
-                    runtime_command_binding_for_current_session(store_owned, project_id, session)
+                    runtime_command_binding_for_current_session(
+                        store_owned,
+                        coordination_store_id,
+                        session,
+                    )
                 })
                 .transpose()?
                 .unwrap_or_default();
@@ -856,7 +866,7 @@ impl HttpExchange<'_> {
                 .unwrap_or_default();
             let envelope = harness_core::agentfirm_api::ControlCommandEnvelope {
                 id: format!("runtime-command:{}", idempotency_key),
-                execution_space_id: project_id.clone(),
+                execution_space_id: coordination_store_id.clone(),
                 target_node_id,
                 target_node_daemon_id: lease.daemon_id,
                 target_node_daemon_generation: lease.generation,
@@ -935,7 +945,7 @@ impl HttpExchange<'_> {
                             };
                             match fabric_runtime::queue_collaboration_message(
                                 &firm_home,
-                                project_id,
+                                coordination_store_id,
                                 &envelope.target_node_id,
                                 &credential.actor,
                                 &envelope.idempotency_key,
@@ -1028,7 +1038,7 @@ impl HttpExchange<'_> {
                 return Ok(true);
             };
             let auth = agentfirm_api::AuthenticatedMutation {
-                execution_space_id: project_id.clone(),
+                execution_space_id: coordination_store_id.clone(),
                 actor: credential.actor,
                 authorized_authority_actors: credential.authority_actors,
                 idempotency_key,
@@ -1069,7 +1079,7 @@ impl HttpExchange<'_> {
             if role_actions_api::is_http_mutation_path(path_only) {
                 let role_store = match projects.scoped_store_for_project(
                     store_owned,
-                    project_id,
+                    coordination_store_id,
                     project_param.as_deref(),
                 ) {
                     Ok(store) => store,
@@ -1332,7 +1342,7 @@ impl HttpExchange<'_> {
                                 )? {
                                     delegate_team_run_to_node_daemon_in_space(
                                         &role_store,
-                                        project_id,
+                                        coordination_store_id,
                                         &reopened.team_run_id,
                                         TEAM_RUN_START_DEFAULT_CONCURRENCY,
                                     )?;

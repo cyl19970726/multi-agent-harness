@@ -10,7 +10,7 @@ impl HttpExchange<'_> {
         let path = &self.path;
         let path_only = &self.path_only;
         let project_param = &self.project_param;
-        let project_id = &self.project_id;
+        let coordination_store_id = &self.coordination_store_id;
         let store_owned = &self.store;
         let store = store_owned;
         let company_os_path = self.company_os_path;
@@ -167,9 +167,9 @@ impl HttpExchange<'_> {
                 )?;
                 let run = latest_team_run(store_owned, &team_run_id)?;
                 let current_execution_space_id = team_run_execution_space_id(store_owned, &run)?;
-                if current_execution_space_id != *project_id {
+                if current_execution_space_id != *coordination_store_id {
                     return Err(CliError::Usage(format!(
-                        "EXECUTION_SPACE_SCOPE_MISMATCH: TeamRun {team_run_id} belongs to Execution Space {current_execution_space_id}, not {project_id}"
+                        "EXECUTION_SPACE_SCOPE_MISMATCH: TeamRun {team_run_id} belongs to Execution Space {current_execution_space_id}, not {coordination_store_id}"
                     )));
                 }
                 let project_binding_id = run.project_binding_id.clone();
@@ -205,7 +205,7 @@ impl HttpExchange<'_> {
                 });
                 Ok(broadcast_native_session_wake(
                     &sse_manager,
-                    project_id,
+                    coordination_store_id,
                     &project_binding_id,
                     &member.agent_member_id,
                     event,
@@ -242,7 +242,7 @@ impl HttpExchange<'_> {
                     )? {
                         Some(delegate_team_run_to_node_daemon_in_space(
                             store,
-                            project_id,
+                            coordination_store_id,
                             team_run_id,
                             TEAM_RUN_START_DEFAULT_CONCURRENCY,
                         )?)
@@ -285,7 +285,7 @@ impl HttpExchange<'_> {
                     )? {
                         Some(delegate_team_run_to_node_daemon_in_space(
                             store,
-                            project_id,
+                            coordination_store_id,
                             team_run_id,
                             TEAM_RUN_START_DEFAULT_CONCURRENCY,
                         )?)
@@ -338,7 +338,7 @@ impl HttpExchange<'_> {
                     })?;
                 let delegated = delegate_team_run_to_node_daemon_in_space(
                     store,
-                    project_id,
+                    coordination_store_id,
                     team_run_id,
                     max_concurrency,
                 )?;
@@ -370,14 +370,13 @@ impl HttpExchange<'_> {
 
         // Raw --store compatibility mode has no registered project_root. Do not
         // mislabel its centralized store_root as an execution workspace.
-        let project_context = projects
-            .firm_home
-            .as_ref()
-            .map(|_| projects.context_for(project_param.as_deref(), Some(project_id), store));
+        let project_context = projects.firm_home.as_ref().map(|_| {
+            projects.context_for(project_param.as_deref(), Some(coordination_store_id), store)
+        });
         match handle_http_action(
             store,
             project_context.as_ref(),
-            project_id,
+            coordination_store_id,
             path_only,
             &body_json,
         ) {

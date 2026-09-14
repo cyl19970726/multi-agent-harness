@@ -582,7 +582,7 @@ fn handle_http_connection(
     } else {
         space_param.as_deref().or(project_param.as_deref())
     };
-    let (project_id, store_owned) = match projects.store_for(store_selector) {
+    let (coordination_store_id, store_owned) = match projects.store_for(store_selector) {
         Ok(resolved) => resolved,
         Err(error) => {
             let detail = error.to_string();
@@ -671,7 +671,7 @@ fn handle_http_connection(
         path,
         path_only,
         project_param,
-        project_id,
+        coordination_store_id,
         store: store_owned,
         company_os_path,
         body,
