@@ -51,6 +51,21 @@ unavailableTeam.data.collaboration={state:"unavailable",reason:"central projecti
 assert.equal(teamValidate(unavailableTeam),true,`explicit unavailable collaboration: ${ajv.errorsText(teamValidate.errors)}`);
 assert.equal(unavailableTeam.allowed_actions.some(action=>String(action.kind).startsWith("collaboration_")||String(action.kind).startsWith("delegation_")),false,"unavailable projection advertises no collaboration-dependent action");
 
+// A `work_event` activity row carries the Work version the event resulted in;
+// the feed orders on it, so the closed row schema must admit it. The live
+// runtime check validates real server rows against this same $def, and an
+// activityRow that refused `resulting_version` failed every populated team.
+const activityTeam=JSON.parse(fs.readFileSync(path.join(fixtureDir,"team-workspace.json"),"utf8"));
+const workEventRow={source:"work_event",id:"work-event-1",work_id:"work-1",actor_ref:{kind:"agent_member",id:"agent-a",display_name:"Agent A"},status:"submitted",summary:"submitted for review",created_at:"unix-ms:1788786625134",resulting_version:4};
+activityTeam.data.activity=[workEventRow];
+assert.equal(teamValidate(activityTeam),true,`work_event activity row carries its resulting Work version: ${ajv.errorsText(teamValidate.errors)}`);
+activityTeam.data.activity=[{...workEventRow,resulting_version:null}];
+assert.equal(teamValidate(activityTeam),true,`activity row without a resulting version stays valid: ${ajv.errorsText(teamValidate.errors)}`);
+activityTeam.data.activity=[{...workEventRow,__browser_invented_version:9}];
+assert.equal(teamValidate(activityTeam),false,"activity row still rejects unknown fields");
+activityTeam.data.activity=[{...workEventRow,resulting_version:"4"}];
+assert.equal(teamValidate(activityTeam),false,"activity row rejects a browser-coerced string version");
+
 const memberWorkbenchValidate=ajv.getSchema("agentfirm.role_views.v1/member-workbench.schema.json");
 const memberWorkbenchFixture=JSON.parse(fs.readFileSync(path.join(fixtureDir,"member-workbench.json"),"utf8"));
 assert.deepEqual(memberWorkbenchFixture.data.reviewable_host_works,[],"MemberWorkbench fixture carries the explicit Host-owned Work review pool");
