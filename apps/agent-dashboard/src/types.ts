@@ -740,19 +740,9 @@ export interface TeamMessageProjection {
 
 export type AgentSessionStatus = "starting" | "idle" | "running" | "waiting" | "disconnected" | "stopped" | "failed";
 
-export interface AgentIdentity {
-  id: string;
-  display_name: string;
-  organization_status: "active" | "paused" | "retired";
-  permission_ceiling: "read_only" | "workspace_write" | "full_access";
-  version: number;
-  created_at: string;
-  updated_at: string;
-}
-
 export interface AgentSession {
   id: string;
-  agent_identity_id: string;
+  agent_member_id: string;
   node_id: string;
   execution_space_id: string;
   node_daemon_id: string;
@@ -770,7 +760,9 @@ export interface AgentSession {
 export interface TeamMembership {
   id: string;
   team_id: string;
-  /** Durable AgentMember identity (legacy payloads may spell it agent_identity_id). */
+  /** Durable AgentMember identity. ADR 0069 retired the AgentIdentity name;
+   * already-persisted rows may still spell it `agent_identity_id`, which the
+   * Rust serde alias decodes and no writer re-emits. */
   agent_member_id?: string;
   agent_identity_id?: string;
   node_id: string;
@@ -787,7 +779,7 @@ export interface WorkExecutionBinding {
   work_id: string;
   work_revision: number;
   team_membership_id: string;
-  agent_identity_id: string;
+  agent_member_id: string;
   agent_session_id: string;
   agent_session_generation: number;
   status: "active" | "released" | "completed" | "cancelled";
@@ -803,7 +795,7 @@ export interface CanonicalMessage {
   author_node_daemon_id: string;
   author_node_daemon_generation: number;
   sender_identity_id: string;
-  recipients: Array<{kind: "agent_identity" | "team"; id: string}>;
+  recipients: Array<{kind: "agent_member" | "team"; id: string}>;
   team_id?: string | null;
   team_run_id?: string | null;
   work_id?: string | null;
@@ -1109,7 +1101,6 @@ export interface DashboardSnapshot {
   member_runs?: MemberRun[];
   team_messages?: TeamMessageProjection[];
   /** Development batch Wave 4C canonical runtime/message fabric. Legacy `team_messages` is read-only history. */
-  agent_identities?: AgentIdentity[];
   agent_sessions?: AgentSession[];
   team_memberships?: TeamMembership[];
   work_execution_bindings?: WorkExecutionBinding[];

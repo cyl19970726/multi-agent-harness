@@ -127,10 +127,11 @@ NodeDaemon -> durable RuntimeCommand -> provider effect
 ```
 
 `AgentMember` is the sole durable agent identity; `TeamMembership` records only
-participation and never carries identity. The legacy `AgentIdentity` name survives
-solely as a deprecated same-ID read-only projection of `AgentMember`: the
-legacy compatibility edge `AgentIdentity -> AgentSession` names the exact same
-edge as `AgentMember -> AgentSession` above, never a second identity root.
+participation and never carries identity. The legacy `AgentIdentity` name is
+retired (ADR 0069): no type, projection, schema, reader or RoleView field
+carries it, and `AgentMember -> AgentSession` above is the only identity edge.
+Rows already written with the `agent_identity` spelling stay readable through
+retained serde aliases that no writer re-emits.
 
 `Mission` is retired (DOC-108): pre-cutover rows remain read-only legacy
 provenance through `harness mission list|show|log show`,
@@ -184,9 +185,11 @@ doc carries the contract behind each rule.
    link a `work_id`; correlated provider requests and responses are Message
    kinds, not a second interaction object. `Work`, Message delivery, and
    `RuntimeCommand` are independent planes and cannot authorize or mutate one
-   another. `TeamMessage`, `TeamMessageProjection`, `team_messages.jsonl`, and
-   their ACK/manual-ACK writers are Legacy read/export evidence only. There is
-   no Assignment Message compatibility path. Dynamic Workflow is retired: its
+   another. `TeamMessage`, `team_messages.jsonl`, and their ACK/manual-ACK
+   writers are Legacy read/export evidence only; `TeamMessageProjection` is
+   not legacy — it is the live in-memory prompt/inbox shape that canonical
+   claims, member prompts, and `firm member inbox` render, and it owns no
+   durable state. There is no Assignment Message compatibility path. Dynamic Workflow is retired: its
    historical records are legacy archive evidence only and no current surface
    may write or project them as live state. For `host`, record the observable
    outcome and artifacts without inventing controlled child objects or another

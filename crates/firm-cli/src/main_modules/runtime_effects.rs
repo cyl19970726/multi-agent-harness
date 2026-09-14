@@ -602,7 +602,7 @@ fn require_provider_session_authority_inner(
         [member] => member,
         rows => {
             return Err(CliError::Usage(format!(
-                "MEMBER_RUN_SCOPE_MISMATCH: TeamRun {} has {} members for AgentIdentity {}",
+                "MEMBER_RUN_SCOPE_MISMATCH: TeamRun {} has {} members for AgentMember {}",
                 ledger.run_id,
                 rows.len(),
                 agent_member_id

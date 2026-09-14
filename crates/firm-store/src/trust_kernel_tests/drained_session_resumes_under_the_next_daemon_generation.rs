@@ -10,18 +10,16 @@ use super::*;
 #[test]
 fn drained_session_resumes_under_the_next_daemon_generation() {
     let (store, root) = fabric_store();
-    store
-        .migrate_legacy_agent_identity_same_id(
-            &context("host", "identity.create", "drain-mid-turn", 0),
-            identity("drain-mid-turn"),
-        )
-        .unwrap();
-    store
-        .migrate_legacy_agent_identity_same_id(
-            &context("host", "identity.create", "drain-idle", 0),
-            identity("drain-idle"),
-        )
-        .unwrap();
+    seed_agent_member(
+        &store,
+        &context("host", "identity.create", "drain-mid-turn", 0),
+        "drain-mid-turn",
+    );
+    seed_agent_member(
+        &store,
+        &context("host", "identity.create", "drain-idle", 0),
+        "drain-idle",
+    );
 
     let mut mid_turn = session("session-drain-mid-turn", "drain-mid-turn");
     mid_turn.native_session_ref = Some(drain_native_session("native-drain-mid-turn"));
@@ -222,12 +220,11 @@ fn drained_session_resumes_under_the_next_daemon_generation() {
 #[test]
 fn interrupted_session_resume_requires_a_provably_terminated_lane() {
     let (store, root) = fabric_store();
-    store
-        .migrate_legacy_agent_identity_same_id(
-            &context("host", "identity.create", "drain-fenced", 0),
-            identity("drain-fenced"),
-        )
-        .unwrap();
+    seed_agent_member(
+        &store,
+        &context("host", "identity.create", "drain-fenced", 0),
+        "drain-fenced",
+    );
     let mut target = session("session-drain-fenced", "drain-fenced");
     target.native_session_ref = Some(drain_native_session("native-drain-fenced"));
     store

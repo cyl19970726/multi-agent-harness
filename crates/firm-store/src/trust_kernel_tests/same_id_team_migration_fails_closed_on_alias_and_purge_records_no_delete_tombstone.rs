@@ -4,12 +4,11 @@ use super::*;
 fn same_id_team_migration_fails_closed_on_alias_and_purge_records_no_delete_tombstone() {
     let (store, root) = fabric_store();
     for id in ["legacy-host", "legacy-member"] {
-        store
-            .migrate_legacy_agent_identity_same_id(
-                &context("operator", "identity.migrate", &format!("identity-{id}"), 0),
-                identity(id),
-            )
-            .unwrap();
+        seed_agent_member(
+            &store,
+            &context("operator", "identity.migrate", &format!("identity-{id}"), 0),
+            id,
+        );
     }
     let source = firm_core::agentfirm_api::LegacyAgentTeamProjection {
         id: "legacy-team".into(),

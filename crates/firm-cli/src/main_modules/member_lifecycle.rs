@@ -949,26 +949,14 @@ pub(super) fn poll_idle_member_wake(
                         )));
                     }
                 }
-                // Then terminal-work notifications (informational messages
-                // for Done / Cancelled works the member still owns) and
-                // response-required messages. Deliver both in one batch so
-                // members that exit after single turns (e.g. test fakes with
-                // EXIT_AFTER_FIRST_TURN=1) do not lose queued follow-up
-                // messages to disconnect handling between separate deliveries.
-                let mut notifs = ledger.claim_terminal_work_notifications_for(&member_row.id)?;
-                let mut claimed = ledger.claim_canonical_round_messages_for(&member_row.id)?;
-                notifs.append(&mut claimed);
-                // Deduplicate by message id: claim_canonical_round_messages_for
-                // may re-claim messages that claim_terminal_work_notifications_for
-                // already published (informational work notifications). Keep the
-                // last entry — the claimed version — because
-                // mark_message_delivered requires a durable claim_id.
-                notifs.reverse();
-                {
-                    let mut seen = BTreeSet::new();
-                    notifs.retain(|msg| seen.insert(msg.id.clone()));
-                }
-                notifs.reverse();
+                // Then the claimable queued messages for this member. ADR 0069
+                // removed the second source that used to be merged here: the
+                // terminal-work notification claim was a permanent empty stub,
+                // so the append-and-dedup around it could never change the
+                // batch. `claim_canonical_round_messages_for` claims at most
+                // one delivery per Message per recipient, so the batch is
+                // already id-unique and stays in claim order.
+                let notifs = ledger.claim_canonical_round_messages_for(&member_row.id)?;
                 if !notifs.is_empty() {
                     backoff.reset();
                     let expected = member_row.clone();

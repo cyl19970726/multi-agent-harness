@@ -3,12 +3,11 @@ use super::*;
 #[test]
 fn runtime_command_settlement_rechecks_the_prepared_semantic_snapshot() {
     let (store, root) = fabric_store();
-    store
-        .migrate_legacy_agent_identity_same_id(
-            &context("host", "identity.create", "settle-precondition", 0),
-            identity("settle-precondition"),
-        )
-        .unwrap();
+    seed_agent_member(
+        &store,
+        &context("host", "identity.create", "settle-precondition", 0),
+        "settle-precondition",
+    );
     let target = session("session-settle-precondition", "settle-precondition");
     store
         .create_agent_session(

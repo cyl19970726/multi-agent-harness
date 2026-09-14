@@ -25,12 +25,11 @@ fn frozen_dynamic_commands_are_readable_but_new_prepare_has_zero_delta() {
     for name in FROZEN_WIRE_NAMES {
         let (store, root) = fabric_store();
         let kind = serde_json::from_value(serde_json::json!(name)).unwrap();
-        store
-            .migrate_legacy_agent_identity_same_id(
-                &context("host", "identity.create", "frozen-member", 0),
-                identity("member"),
-            )
-            .unwrap();
+        seed_agent_member(
+            &store,
+            &context("host", "identity.create", "frozen-member", 0),
+            "member",
+        );
         store
             .create_agent_session(
                 &service_context("session.create", "frozen-session", 0),

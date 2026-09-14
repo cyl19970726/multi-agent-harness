@@ -3,12 +3,11 @@ use super::*;
 #[test]
 fn control_state_binding_is_quiescent_generation_fenced_and_exactly_replayable() {
     let (store, root) = fabric_store();
-    store
-        .migrate_legacy_agent_identity_same_id(
-            &context("host", "identity.create", "control-bind-agent", 0),
-            identity("control-bind-agent"),
-        )
-        .unwrap();
+    seed_agent_member(
+        &store,
+        &context("host", "identity.create", "control-bind-agent", 0),
+        "control-bind-agent",
+    );
     let mut target = session("session-control-bind", "control-bind-agent");
     target.control_state.runtime_residency = RuntimeResidency::Detached;
     target.control_state.activity = RuntimeActivity::Idle;

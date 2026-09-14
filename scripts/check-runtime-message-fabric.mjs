@@ -82,15 +82,12 @@ function productionRustTree(paths) {
 }
 
 const requiredSchemas = [
-  "agent-identity",
   "agent-session",
   "team-membership",
   "work-execution-binding",
   "message",
   "message-subscription",
-  "subscription-cursor",
   "canonical-message-delivery",
-  "message-route-journal",
   "control-command-envelope",
   "runtime-command-record",
   "canonical-work-delivery",
@@ -143,12 +140,10 @@ const providerRuntimeSources = {
 };
 
 for (const token of [
-  "pub struct AgentIdentity",
   "pub struct AgentSession",
   "pub struct TeamMembership",
   "pub struct WorkExecutionBinding",
   "pub struct MessageSubscription",
-  "pub struct SubscriptionCursor",
   "pub struct CanonicalMessageDelivery",
   "pub struct ControlCommandEnvelope",
   "pub struct RuntimeCommandRecord",
@@ -221,8 +216,8 @@ if (!storeProduction.includes("AgentSession RuntimeCommand requires exact self o
 if (!storeProduction.includes("AgentSession stop requires explicit release, rebind, or quiesce of active WorkExecutionBindings first")) {
   failures.push("Store does not fence StopSession from active WorkExecutionBindings");
 }
-if (!storeProduction.includes("StartSession cannot widen the frozen AgentIdentity permission ceiling")) {
-  failures.push("Store does not enforce the AgentIdentity permission ceiling");
+if (!storeProduction.includes("StartSession cannot widen the frozen AgentMember permission ceiling")) {
+  failures.push("Store does not enforce the AgentMember permission ceiling");
 }
 if (!storeProduction.includes("resolve_runtime_command_recovery")) {
   failures.push("Operator RecoveryRequired resolution authority is missing");
@@ -511,7 +506,7 @@ for (const path of [
 const runtimeDoc = readFileSync("docs/current/architecture/agent-runtime.md", "utf8");
 const rootRules = readFileSync("AGENTS.md", "utf8");
 for (const token of [
-  "AgentIdentity",
+  "AgentMember",
   "AgentSession",
   "TeamMembership",
   "WorkExecutionBinding",
@@ -527,7 +522,7 @@ if (!runtimeDoc.includes("Team `close-member` closes only that")) {
   failures.push("canonical runtime doc does not separate Team close from machine Session stop");
 }
 for (const token of [
-  "AgentIdentity -> AgentSession",
+  "AgentMember -> AgentSession",
   "Work -> WorkExecutionBinding",
   "Message -> MessageSubscription",
   "NodeDaemon -> durable RuntimeCommand",

@@ -7,12 +7,11 @@ fn prepared() -> (
     MutationContext,
 ) {
     let (store, root) = fabric_store();
-    store
-        .migrate_legacy_agent_identity_same_id(
-            &context("host", "identity.create", "phase-identity", 0),
-            identity("phase-agent"),
-        )
-        .unwrap();
+    seed_agent_member(
+        &store,
+        &context("host", "identity.create", "phase-identity", 0),
+        "phase-agent",
+    );
     store
         .create_agent_session(
             &service_context("session.create", "phase-session", 0),

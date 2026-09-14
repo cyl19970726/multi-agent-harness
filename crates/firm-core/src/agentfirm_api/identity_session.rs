@@ -23,19 +23,6 @@ pub struct ActorRef {
     pub id: String,
 }
 
-/// Stable organizational identity. Provider-native state never lives here.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct AgentIdentity {
-    pub id: String,
-    pub display_name: String,
-    pub organization_status: AgentMemberOrganizationStatus,
-    pub permission_ceiling: PermissionCeiling,
-    pub version: u64,
-    pub created_at: String,
-    pub updated_at: String,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PermissionCeiling {
@@ -409,7 +396,7 @@ pub struct LegacyAgentTeamProjection {
     pub updated_at: String,
 }
 
-/// Closed, reviewable migration bundle. Every legacy AgentIdentity id must map
+/// Closed, reviewable migration bundle. Every legacy identity id must map
 /// to the same AgentMember id; ambiguity or inferred identity is invalid.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

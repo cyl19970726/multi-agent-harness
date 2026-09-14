@@ -528,35 +528,6 @@ impl HarnessStore {
         delivery.status = CanonicalMessageDeliveryStatus::Acknowledged;
         delivery.version += 1;
         delivery.updated_at = updated_at.to_string();
-        let current_cursor = self
-            .latest_trust_envelopes_unlocked(&context.execution_space_id, "subscription_cursor")?
-            .remove(&delivery.subscription_id)
-            .map(|envelope| event_projection::<SubscriptionCursor>(&envelope))
-            .transpose()?;
-        let cursor = SubscriptionCursor {
-            subscription_id: delivery.subscription_id.clone(),
-            recipient_agent_member_id: delivery
-                .recipient_agent_member_id
-                .clone()
-                .expect("recipient checked above"),
-            last_visible_store_sequence: current_cursor
-                .as_ref()
-                .map(|cursor| cursor.last_visible_store_sequence.saturating_add(1))
-                .unwrap_or(1),
-            last_delivered_store_sequence: current_cursor
-                .as_ref()
-                .map(|cursor| cursor.last_delivered_store_sequence.saturating_add(1))
-                .unwrap_or(1),
-            last_read_store_sequence: current_cursor
-                .as_ref()
-                .map(|cursor| cursor.last_read_store_sequence.saturating_add(1))
-                .unwrap_or(1),
-            cursor_revision: current_cursor
-                .as_ref()
-                .map(|cursor| cursor.cursor_revision + 1)
-                .unwrap_or(1),
-            updated_at: updated_at.to_string(),
-        };
         self.commit_trust_projection_unlocked(
             context,
             "message_delivery_ack",
@@ -564,10 +535,7 @@ impl HarnessStore {
             "acknowledged",
             serde_json::json!({"delivery_id": delivery_id, "updated_at": updated_at}),
             &delivery,
-            vec![
-                serde_json::to_value(&delivery)?,
-                serde_json::to_value(cursor)?,
-            ],
+            vec![serde_json::to_value(&delivery)?],
             Vec::new(),
         )
     }
@@ -619,35 +587,6 @@ impl HarnessStore {
         delivery.status = CanonicalMessageDeliveryStatus::Acknowledged;
         delivery.version += 1;
         delivery.updated_at = updated_at.to_string();
-        let current_cursor = self
-            .latest_trust_envelopes_unlocked(&context.execution_space_id, "subscription_cursor")?
-            .remove(&delivery.subscription_id)
-            .map(|envelope| event_projection::<SubscriptionCursor>(&envelope))
-            .transpose()?;
-        let cursor = SubscriptionCursor {
-            subscription_id: delivery.subscription_id.clone(),
-            recipient_agent_member_id: delivery
-                .recipient_agent_member_id
-                .clone()
-                .expect("recipient checked above"),
-            last_visible_store_sequence: current_cursor
-                .as_ref()
-                .map(|cursor| cursor.last_visible_store_sequence.saturating_add(1))
-                .unwrap_or(1),
-            last_delivered_store_sequence: current_cursor
-                .as_ref()
-                .map(|cursor| cursor.last_delivered_store_sequence.saturating_add(1))
-                .unwrap_or(1),
-            last_read_store_sequence: current_cursor
-                .as_ref()
-                .map(|cursor| cursor.last_read_store_sequence.saturating_add(1))
-                .unwrap_or(1),
-            cursor_revision: current_cursor
-                .as_ref()
-                .map(|cursor| cursor.cursor_revision + 1)
-                .unwrap_or(1),
-            updated_at: updated_at.to_string(),
-        };
         self.commit_trust_projection_unlocked(
             context,
             "external_message_delivery_ack",
@@ -655,10 +594,7 @@ impl HarnessStore {
             "externally_acknowledged",
             serde_json::json!({"delivery_id": delivery_id, "updated_at": updated_at}),
             &delivery,
-            vec![
-                serde_json::to_value(&delivery)?,
-                serde_json::to_value(cursor)?,
-            ],
+            vec![serde_json::to_value(&delivery)?],
             Vec::new(),
         )
     }

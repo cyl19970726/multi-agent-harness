@@ -338,7 +338,6 @@ pub(crate) fn global_work_view(spaces: &[(String, HarnessStore)], query: &Query)
         provider_runtime_projections: vec![],
         messages: vec![],
         message_deliveries: vec![],
-        agent_identities: vec![],
         agent_sessions: vec![],
         team_memberships: vec![],
         message_subscriptions: vec![],

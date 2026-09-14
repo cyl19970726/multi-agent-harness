@@ -21,12 +21,11 @@ fn runtime_command_failure_certainty_and_torn_rows_recover_without_duplicate_eff
     ];
     for (label, status, certainty) in outcomes {
         let (store, root) = fabric_store();
-        store
-            .migrate_legacy_agent_identity_same_id(
-                &context("host", "identity.create", &format!("identity-{label}"), 0),
-                identity(label),
-            )
-            .unwrap();
+        seed_agent_member(
+            &store,
+            &context("host", "identity.create", &format!("identity-{label}"), 0),
+            label,
+        );
         let session_id = format!("session-{label}");
         store
             .create_agent_session(

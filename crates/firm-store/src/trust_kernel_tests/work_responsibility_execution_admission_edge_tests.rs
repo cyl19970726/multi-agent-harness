@@ -25,17 +25,16 @@ fn start_distinguishes_assigned_undispatched_foreign_and_dispatched_work() {
     let (store, _root) = fabric_store();
     append_runtime_team(&store, "team-admission", "run-admission");
     for agent_member_id in ["worker-start", "other-start"] {
-        store
-            .migrate_legacy_agent_identity_same_id(
-                &context(
-                    "operator",
-                    "identity.create",
-                    &format!("identity-{agent_member_id}"),
-                    0,
-                ),
-                identity(agent_member_id),
-            )
-            .unwrap();
+        seed_agent_member(
+            &store,
+            &context(
+                "operator",
+                "identity.create",
+                &format!("identity-{agent_member_id}"),
+                0,
+            ),
+            agent_member_id,
+        );
     }
     let membership = join_runtime_membership(
         &store,
@@ -173,12 +172,11 @@ fn start_requires_provider_received_delivery() {
         let suffix = if claimed { "claimed" } else { "queued" };
         let (store, _root) = fabric_store();
         append_runtime_team(&store, "team-admission", "run-admission");
-        store
-            .migrate_legacy_agent_identity_same_id(
-                &context("operator", "identity.create", "identity-worker", 0),
-                identity("worker-admission"),
-            )
-            .unwrap();
+        seed_agent_member(
+            &store,
+            &context("operator", "identity.create", "identity-worker", 0),
+            "worker-admission",
+        );
         let membership = join_runtime_membership(
             &store,
             "membership-worker-admission",
@@ -289,12 +287,11 @@ fn every_member_work_authoring_path_requires_provider_received_delivery() {
         let suffix = if claimed { "claimed" } else { "queued" };
         let (store, _root) = fabric_store();
         append_runtime_team(&store, "team-admission", "run-admission");
-        store
-            .migrate_legacy_agent_identity_same_id(
-                &context("operator", "identity.create", "identity-worker", 0),
-                identity("worker-admission"),
-            )
-            .unwrap();
+        seed_agent_member(
+            &store,
+            &context("operator", "identity.create", "identity-worker", 0),
+            "worker-admission",
+        );
         let membership = join_runtime_membership(
             &store,
             "membership-worker-admission",
@@ -523,17 +520,16 @@ fn responsibility_aba_and_stale_session_generation_do_not_revive_old_binding() {
     let (store, _root) = fabric_store();
     append_runtime_team(&store, "team-admission", "run-admission");
     for member_id in ["worker-admission", "alternate-admission"] {
-        store
-            .migrate_legacy_agent_identity_same_id(
-                &context(
-                    "operator",
-                    "identity.create",
-                    &format!("identity-{member_id}"),
-                    0,
-                ),
-                identity(member_id),
-            )
-            .unwrap();
+        seed_agent_member(
+            &store,
+            &context(
+                "operator",
+                "identity.create",
+                &format!("identity-{member_id}"),
+                0,
+            ),
+            member_id,
+        );
     }
     let worker = join_runtime_membership(
         &store,
@@ -722,17 +718,16 @@ fn responsibility_aba_and_stale_session_generation_do_not_revive_old_binding() {
 fn missing_or_ambiguous_current_member_run_fails_before_delivery() {
     let (store, _root) = fabric_store();
     append_runtime_team(&store, "team-admission", "run-admission");
-    store
-        .migrate_legacy_agent_identity_same_id(
-            &context(
-                "operator",
-                "identity.create",
-                "identity-worker-admission",
-                0,
-            ),
-            identity("worker-admission"),
-        )
-        .unwrap();
+    seed_agent_member(
+        &store,
+        &context(
+            "operator",
+            "identity.create",
+            "identity-worker-admission",
+            0,
+        ),
+        "worker-admission",
+    );
     let membership = join_runtime_membership(
         &store,
         "membership-worker-admission",
@@ -802,17 +797,16 @@ fn missing_or_ambiguous_current_member_run_fails_before_delivery() {
 fn member_run_cutover_linearizes_before_stale_execution_admission() {
     let (store, _root) = fabric_store();
     append_runtime_team(&store, "team-admission", "run-admission");
-    store
-        .migrate_legacy_agent_identity_same_id(
-            &context(
-                "operator",
-                "identity.create",
-                "identity-worker-admission",
-                0,
-            ),
-            identity("worker-admission"),
-        )
-        .unwrap();
+    seed_agent_member(
+        &store,
+        &context(
+            "operator",
+            "identity.create",
+            "identity-worker-admission",
+            0,
+        ),
+        "worker-admission",
+    );
     let membership = join_runtime_membership(
         &store,
         "membership-worker-admission",
@@ -911,12 +905,11 @@ fn member_run_cutover_linearizes_before_stale_execution_admission() {
 fn start_reports_member_busy_before_a_queued_second_delivery() {
     let (store, _root) = fabric_store();
     append_runtime_team(&store, "team-admission", "run-admission");
-    store
-        .migrate_legacy_agent_identity_same_id(
-            &context("operator", "identity.create", "identity-busy-worker", 0),
-            identity("busy-worker"),
-        )
-        .unwrap();
+    seed_agent_member(
+        &store,
+        &context("operator", "identity.create", "identity-busy-worker", 0),
+        "busy-worker",
+    );
     let membership = join_runtime_membership(
         &store,
         "membership-busy-worker",

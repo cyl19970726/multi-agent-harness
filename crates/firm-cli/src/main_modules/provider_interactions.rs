@@ -1022,7 +1022,7 @@ pub(crate) fn team_messages_prompt(
             prompt.push_str(&format!("Reply canonically with: {reply_command}\n"));
         } else {
             prompt.push_str(
-                "This historical Message has no typed sender identity. Resolve the sender's stable AgentIdentity from the Team roster before replying.\n",
+                "This historical Message has no typed sender identity. Resolve the sender's stable AgentMember from the Team roster before replying.\n",
             );
         }
         prompt.push('\n');

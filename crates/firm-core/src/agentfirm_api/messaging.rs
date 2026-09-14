@@ -230,8 +230,9 @@ pub enum MessageHistoryPolicy {
     AuthorizedHistory,
 }
 
-/// Durable routing policy. Consumption progress is held separately in
-/// [`SubscriptionCursor`] so changing a policy cannot rewrite inbox history.
+/// Durable routing policy. It never carries consumption progress, so changing
+/// a policy cannot rewrite inbox history; per-recipient progress is
+/// [`CanonicalMessageDelivery`] status.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MessageSubscription {
@@ -257,19 +258,6 @@ pub struct MessageSubscription {
     pub created_at: String,
     #[serde(default)]
     pub revoked_at: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct SubscriptionCursor {
-    pub subscription_id: String,
-    #[serde(alias = "recipient_agent_id")]
-    pub recipient_agent_member_id: String,
-    pub last_visible_store_sequence: u64,
-    pub last_delivered_store_sequence: u64,
-    pub last_read_store_sequence: u64,
-    pub cursor_revision: u64,
-    pub updated_at: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -322,31 +310,5 @@ pub struct CanonicalMessageDelivery {
     pub failure_detail: Option<String>,
     pub version: u64,
     pub created_at: String,
-    pub updated_at: String,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum RouteJournalStatus {
-    Pending,
-    Routed,
-    Received,
-    Failed,
-}
-
-/// Cross-node route metadata only. It contains no provider/session ownership.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct MessageRouteJournal {
-    pub id: String,
-    pub message_id: String,
-    pub source_node_id: String,
-    pub target_node_id: String,
-    pub target_execution_space_id: String,
-    pub attempt: u32,
-    pub status: RouteJournalStatus,
-    #[serde(default)]
-    pub receipt_id: Option<String>,
-    pub version: u64,
     pub updated_at: String,
 }

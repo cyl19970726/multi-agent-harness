@@ -1214,26 +1214,6 @@ impl TeamRunLedger {
         Ok(())
     }
 
-    /// Claim queued terminal-work notifications for an idle member.
-    ///
-    /// When a Work the member owns reaches a terminal status (Done or
-    /// Cancelled), the store may hold a queued compatibility delivery for that
-    /// transition. This method claims those notification deliveries and
-    /// converts each into an informational [`TeamMessageProjection`] from the Host
-    /// so the member sees the transition as mail rather than as a new
-    /// work assignment.
-    ///
-    /// Only terminal Work belonging to the stable AgentMember responsibility
-    /// is eligible — this is a notification, not a
-    /// handoff. No slot-occupancy fence is applied because a terminal-work
-    /// notification never blocks an active execution assignment.
-    pub(super) fn claim_terminal_work_notifications_for(
-        &self,
-        _member_id: &str,
-    ) -> CliResult<Vec<TeamMessageProjection>> {
-        Ok(Vec::new())
-    }
-
     /// Claim queued mail for an idle member only when at least one queued
     /// message requires a response round (ADR 0046 §4). When a round is
     /// triggered, every queued message — including informational mail — is

@@ -31,7 +31,6 @@ const requiredSchemas = [
   "schemas/gate-evaluation.schema.json",
   "schemas/gate-waiver.schema.json",
   "schemas/trust-error.schema.json",
-  "schemas/agent-identity.schema.json",
   "schemas/agent-session.schema.json",
   "schemas/team-membership.schema.json",
   "schemas/work-execution-binding.schema.json",
@@ -46,6 +45,9 @@ for (const path of requiredSchemas) {
 }
 
 const retiredPaths = [
+  // ADR 0069 retired the same-ID AgentIdentity projection.
+  "schemas/agent-identity.schema.json",
+  "schemas/fixtures/agent-identity",
   "schemas/durable-agent-member.schema.json",
   "schemas/agent-runtime.schema.json",
   "schemas/agent-event.schema.json",

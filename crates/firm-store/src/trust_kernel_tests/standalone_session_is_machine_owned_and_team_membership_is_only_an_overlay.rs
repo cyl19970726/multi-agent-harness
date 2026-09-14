@@ -3,12 +3,11 @@ use super::*;
 #[test]
 fn standalone_session_is_machine_owned_and_team_membership_is_only_an_overlay() {
     let (store, root) = fabric_store();
-    store
-        .migrate_legacy_agent_identity_same_id(
-            &context("operator", "identity.create", "standalone-identity", 0),
-            identity("standalone-agent"),
-        )
-        .unwrap();
+    seed_agent_member(
+        &store,
+        &context("operator", "identity.create", "standalone-identity", 0),
+        "standalone-agent",
+    );
     assert!(store
         .fabric_team_memberships("space-test")
         .unwrap()

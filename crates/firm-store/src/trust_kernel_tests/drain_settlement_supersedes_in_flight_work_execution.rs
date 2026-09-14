@@ -156,17 +156,16 @@ fn hand_lane_to_provider(store: &HarnessStore, lane: &Lane, daemon_id: &str, gen
 
 fn drain_scope(store: &HarnessStore, name: &str) -> TeamMembership {
     append_runtime_team(store, "team-admission", "run-admission");
-    store
-        .migrate_legacy_agent_identity_same_id(
-            &context(
-                "operator",
-                "identity.create",
-                &format!("identity-{name}"),
-                0,
-            ),
-            identity(name),
-        )
-        .unwrap();
+    seed_agent_member(
+        store,
+        &context(
+            "operator",
+            "identity.create",
+            &format!("identity-{name}"),
+            0,
+        ),
+        name,
+    );
     join_runtime_membership(
         store,
         &format!("membership-{name}"),

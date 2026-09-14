@@ -60,16 +60,37 @@ fn service_context(command: &str, key: &str, expected: u64) -> MutationContext {
     }
 }
 
-fn identity(id: &str) -> AgentIdentity {
-    AgentIdentity {
+/// The durable AgentMember every runtime fixture seeds. It keeps the field
+/// values the retired same-ID `AgentIdentity` projection used to carry, so the
+/// permission ceiling the StartSession fence reads is unchanged, and it takes
+/// `created_by` from the mutation context because `create_trust_agent_member`
+/// requires `created_by == authenticated_actor` — the rule the retired
+/// migration writer used to satisfy on the caller's behalf.
+fn seeded_member(context: &MutationContext, id: &str) -> AgentMember {
+    AgentMember {
         id: id.into(),
-        display_name: id.into(),
-        organization_status: AgentMemberOrganizationStatus::Active,
+        name: id.into(),
+        description: "Seeded durable AgentMember".into(),
+        role: "agent".into(),
+        capabilities: Vec::new(),
+        skill_refs: Vec::new(),
+        provider_profile_ref: None,
+        model_preference: None,
+        workspace_policy: "managed-worktree".into(),
         permission_ceiling: PermissionCeiling::WorkspaceWrite,
+        organization_status: AgentMemberOrganizationStatus::Active,
         version: 1,
+        created_by: context.authenticated_actor.clone(),
         created_at: "t1".into(),
         updated_at: "t1".into(),
     }
+}
+
+/// Seed that AgentMember under the exact authority the context carries.
+fn seed_agent_member(store: &HarnessStore, context: &MutationContext, id: &str) {
+    store
+        .create_trust_agent_member(context, seeded_member(context, id))
+        .unwrap();
 }
 
 fn session(id: &str, identity_id: &str) -> AgentSession {
@@ -553,12 +574,11 @@ fn assign_runtime_work(
 
 fn seed_membership_scope(store: &HarnessStore) {
     append_runtime_team(store, "team-membership-test", "team-run-membership-test");
-    store
-        .migrate_legacy_agent_identity_same_id(
-            &context("host", "identity.create", "identity-membership-agent", 0),
-            identity("membership-agent"),
-        )
-        .unwrap();
+    seed_agent_member(
+        store,
+        &context("host", "identity.create", "identity-membership-agent", 0),
+        "membership-agent",
+    );
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -673,12 +693,11 @@ fn seed_peer_message_scope(
     TeamMembership,
     TeamMembership,
 ) {
-    store
-        .migrate_legacy_agent_identity_same_id(
-            &context("operator", "identity.migrate", "peer-sender", 0),
-            identity("remote-sender"),
-        )
-        .unwrap();
+    seed_agent_member(
+        store,
+        &context("operator", "identity.migrate", "peer-sender", 0),
+        "remote-sender",
+    );
     store
         .create_agent_session(
             &service_context("session.create", "peer-sender-session", 0),

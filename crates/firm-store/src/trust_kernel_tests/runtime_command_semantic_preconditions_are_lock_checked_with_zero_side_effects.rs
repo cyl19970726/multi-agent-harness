@@ -16,12 +16,11 @@ fn runtime_command_semantic_preconditions_are_lock_checked_with_zero_side_effect
         let (store, root) = fabric_store();
         let identity_id = format!("precondition-{case}");
         let session_id = format!("session-precondition-{case}");
-        store
-            .migrate_legacy_agent_identity_same_id(
-                &context("host", "identity.create", &identity_id, 0),
-                identity(&identity_id),
-            )
-            .unwrap();
+        seed_agent_member(
+            &store,
+            &context("host", "identity.create", &identity_id, 0),
+            &identity_id,
+        );
         let target = session(&session_id, &identity_id);
         store
             .create_agent_session(

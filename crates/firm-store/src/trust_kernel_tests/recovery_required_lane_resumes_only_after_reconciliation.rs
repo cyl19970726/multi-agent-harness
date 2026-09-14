@@ -16,12 +16,11 @@ fn current(store: &HarnessStore, session_id: &str) -> AgentSession {
 }
 
 fn create_identity(store: &HarnessStore, member: &str) {
-    store
-        .migrate_legacy_agent_identity_same_id(
-            &context("host", "identity.create", &format!("identity-{member}"), 0),
-            identity(member),
-        )
-        .unwrap();
+    seed_agent_member(
+        store,
+        &context("host", "identity.create", &format!("identity-{member}"), 0),
+        member,
+    );
 }
 
 /// An attached, mid-cycle lane: Active with an open turn.

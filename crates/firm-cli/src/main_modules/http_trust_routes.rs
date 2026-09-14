@@ -444,11 +444,11 @@ impl HttpExchange<'_> {
                             return Ok(true);
                         }
                     };
-                    let identity = store_owned
-                        .fabric_agent_identities(coordination_store_id)?
+                    let member = store_owned
+                        .trust_agent_members(coordination_store_id)?
                         .into_iter()
-                        .find(|identity| identity.id == intent.agent_member_id)
-                        .ok_or_else(|| CliError::Usage("AGENT_IDENTITY_NOT_FOUND".into()))?;
+                        .find(|member| member.id == intent.agent_member_id)
+                        .ok_or_else(|| CliError::Usage("AGENT_MEMBER_NOT_FOUND".into()))?;
                     // AgentSession placement is machine runtime truth, independent
                     // of TeamMembership. This machine's immutable Node identity
                     // and active project registration are the server-resolved
@@ -466,16 +466,6 @@ impl HttpExchange<'_> {
                         )?;
                         return Ok(true);
                     }
-                    let member = store_owned
-                        .trust_agent_members(coordination_store_id)?
-                        .into_iter()
-                        .find(|member| member.id == identity.id)
-                        .ok_or_else(|| {
-                            CliError::Usage(
-                                "SERVER_PROVIDER_PROFILE_UNAVAILABLE: AgentIdentity has no canonical AgentMember profile"
-                                    .into(),
-                            )
-                        })?;
                     let provider_profile_ref = member.provider_profile_ref.ok_or_else(|| {
                         CliError::Usage(
                             "SERVER_PROVIDER_PROFILE_UNAVAILABLE: AgentMember has no frozen provider profile"
@@ -506,11 +496,18 @@ impl HttpExchange<'_> {
                             availability.provider, availability.binary
                         )));
                     }
+                    // Frozen persisted spellings. The `identity` fingerprint key
+                    // and the `agent-identity:` permission-envelope prefix are
+                    // durable AgentSession/RuntimeCommand payload values: a
+                    // rename would change the derived session id and the
+                    // payload fingerprint of an otherwise identical request,
+                    // so ADR 0069 freezes them exactly as written (the same
+                    // treatment ADR 0067/0068 gave retired command kinds).
                     let session_id = format!(
                         "session:{}:{}",
-                        identity.id,
+                        member.id,
                         harness_store::canonical_json_fingerprint(&serde_json::json!({
-                            "identity":identity.id,
+                            "identity":member.id,
                             "node":target_node_id,
                             "key":idempotency_key,
                         }))
@@ -522,7 +519,7 @@ impl HttpExchange<'_> {
                     let session_observed_at = format!("runtime-command:{}", idempotency_key);
                     let session = AgentSession {
                         id: session_id.clone(),
-                        agent_member_id: identity.id.clone(),
+                        agent_member_id: member.id.clone(),
                         node_id: target_node_id.clone(),
                         execution_space_id: coordination_store_id.clone(),
                         node_daemon_id: String::new(),
@@ -531,10 +528,10 @@ impl HttpExchange<'_> {
                         provider_profile_ref,
                         permission_envelope_ref: format!(
                             "agent-identity:{}:permission:v{}",
-                            identity.id, identity.version
+                            member.id, member.version
                         ),
-                        effective_permission_ceiling: identity.permission_ceiling,
-                        workspace_cwd: (identity.permission_ceiling
+                        effective_permission_ceiling: member.permission_ceiling,
+                        workspace_cwd: (member.permission_ceiling
                             == harness_core::agentfirm_api::PermissionCeiling::FullAccess)
                             .then_some(workspace_cwd),
                         lifecycle: AgentSessionStatus::Cold,
@@ -555,7 +552,7 @@ impl HttpExchange<'_> {
                     };
                     (
                         target_node_id,
-                        Some(identity.id),
+                        Some(member.id),
                         serde_json::json!({
                             "session_id": session_id,
                             "session_generation": 1,

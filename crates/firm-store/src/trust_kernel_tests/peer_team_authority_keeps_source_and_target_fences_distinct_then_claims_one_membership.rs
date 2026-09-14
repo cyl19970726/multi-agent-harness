@@ -3,12 +3,11 @@ use super::*;
 #[test]
 fn peer_team_authority_keeps_source_and_target_fences_distinct_then_claims_one_membership() {
     let (store, root) = fabric_store();
-    store
-        .migrate_legacy_agent_identity_same_id(
-            &context("operator", "identity.migrate", "peer-sender", 0),
-            identity("remote-sender"),
-        )
-        .unwrap();
+    seed_agent_member(
+        &store,
+        &context("operator", "identity.migrate", "peer-sender", 0),
+        "remote-sender",
+    );
     store
         .create_agent_session(
             &service_context("session.create", "peer-sender-session", 0),
@@ -307,12 +306,11 @@ fn peer_team_authority_keeps_source_and_target_fences_distinct_then_claims_one_m
         remote_deliveries[0].subscription_revision,
         peer.target_subscription_revision
     );
-    store
-        .migrate_legacy_agent_identity_same_id(
-            &context("operator", "identity.migrate", "peer-extra", 0),
-            identity("peer-extra"),
-        )
-        .unwrap();
+    seed_agent_member(
+        &store,
+        &context("operator", "identity.migrate", "peer-extra", 0),
+        "peer-extra",
+    );
     let extra_membership = TeamMembership {
         id: "target-team-extra-membership".into(),
         team_id: "target-team".into(),

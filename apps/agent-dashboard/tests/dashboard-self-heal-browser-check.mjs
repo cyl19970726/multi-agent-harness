@@ -181,7 +181,7 @@ const api = createHttpServer((request, response) => {
       reports: [], findings: [], failures: [],
       gate_requirements: [], gate_evaluations: [], gate_waivers: [], workspace_attention: [], delegation_provenance: [],
       page: {as_of_event_sequence: 1, item_count: 0, next_cursor: null},
-      runtime_fabric: {agent_identities:[],agent_sessions:[],team_memberships:[],work_execution_bindings:[],messages:[],message_deliveries:[]},
+      runtime_fabric: {agent_sessions:[],team_memberships:[],work_execution_bindings:[],messages:[],message_deliveries:[]},
     },
     attention: [], allowed_actions: [],
   });

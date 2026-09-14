@@ -3,12 +3,11 @@ use super::*;
 #[test]
 fn runtime_command_replay_and_ambiguous_effect_fail_closed() {
     let (store, root) = fabric_store();
-    store
-        .migrate_legacy_agent_identity_same_id(
-            &context("host", "identity.create", "identity-runtime", 0),
-            identity("runtime-agent"),
-        )
-        .unwrap();
+    seed_agent_member(
+        &store,
+        &context("host", "identity.create", "identity-runtime", 0),
+        "runtime-agent",
+    );
     store
         .create_agent_session(
             &service_context("session.create", "runtime-session", 0),

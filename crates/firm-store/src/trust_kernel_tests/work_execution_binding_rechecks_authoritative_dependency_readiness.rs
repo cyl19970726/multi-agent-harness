@@ -4,17 +4,16 @@ use super::*;
 fn work_execution_binding_rechecks_authoritative_dependency_readiness() {
     let (store, _root) = fabric_store();
     for identity_id in ["builder", "host-a"] {
-        store
-            .migrate_legacy_agent_identity_same_id(
-                &context(
-                    "operator",
-                    "identity.create",
-                    &format!("identity-{identity_id}"),
-                    0,
-                ),
-                identity(identity_id),
-            )
-            .unwrap();
+        seed_agent_member(
+            &store,
+            &context(
+                "operator",
+                "identity.create",
+                &format!("identity-{identity_id}"),
+                0,
+            ),
+            identity_id,
+        );
     }
     let session = session("session-builder", "builder");
     store

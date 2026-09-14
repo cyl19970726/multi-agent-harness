@@ -4,17 +4,16 @@ use super::*;
 fn team_host_cannot_stop_shared_session_and_active_bindings_require_explicit_release() {
     let (store, root) = fabric_store();
     for identity_id in ["shared-agent", "host-a", "host-b"] {
-        store
-            .migrate_legacy_agent_identity_same_id(
-                &context(
-                    "operator",
-                    "identity.create",
-                    &format!("identity-{identity_id}"),
-                    0,
-                ),
-                identity(identity_id),
-            )
-            .unwrap();
+        seed_agent_member(
+            &store,
+            &context(
+                "operator",
+                "identity.create",
+                &format!("identity-{identity_id}"),
+                0,
+            ),
+            identity_id,
+        );
     }
     let shared_session = session("session-shared", "shared-agent");
     store

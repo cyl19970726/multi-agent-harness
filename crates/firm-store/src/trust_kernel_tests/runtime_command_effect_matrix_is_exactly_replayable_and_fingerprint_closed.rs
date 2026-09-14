@@ -61,17 +61,16 @@ fn runtime_command_effect_matrix_is_exactly_replayable_and_fingerprint_closed() 
         let (store, root) = fabric_store();
         let identity_id = format!("runtime-{operation}");
         let session_id = format!("session-{operation}");
-        store
-            .migrate_legacy_agent_identity_same_id(
-                &context(
-                    "host",
-                    "identity.create",
-                    &format!("identity-{operation}"),
-                    0,
-                ),
-                identity(&identity_id),
-            )
-            .unwrap();
+        seed_agent_member(
+            &store,
+            &context(
+                "host",
+                "identity.create",
+                &format!("identity-{operation}"),
+                0,
+            ),
+            &identity_id,
+        );
         store
             .create_agent_session(
                 &service_context("session.create", &format!("session-create-{operation}"), 0),

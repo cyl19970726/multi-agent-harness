@@ -19,12 +19,11 @@ fn runtime_command_team_supervisor_generation_is_live_fenced_at_prepare_and_sett
             60_000,
         )
         .unwrap();
-    store
-        .migrate_legacy_agent_identity_same_id(
-            &context("host", "identity.create", "supervised-agent", 0),
-            identity("supervised-agent"),
-        )
-        .unwrap();
+    seed_agent_member(
+        &store,
+        &context("host", "identity.create", "supervised-agent", 0),
+        "supervised-agent",
+    );
     join_runtime_membership(
         &store,
         "membership-supervised-agent",
@@ -219,12 +218,11 @@ fn runtime_command_team_supervisor_generation_is_live_fenced_at_prepare_and_sett
         team_supervisor_id: successor.supervisor_id,
         team_supervisor_generation: successor.generation.saturating_add(1),
     };
-    store
-        .migrate_legacy_agent_identity_same_id(
-            &context("host", "identity.create", "another-supervised-agent", 0),
-            identity("another-supervised-agent"),
-        )
-        .unwrap();
+    seed_agent_member(
+        &store,
+        &context("host", "identity.create", "another-supervised-agent", 0),
+        "another-supervised-agent",
+    );
     join_runtime_membership(
         &store,
         "membership-another-supervised-agent",

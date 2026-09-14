@@ -6,12 +6,11 @@ fn runtime_command_exact_binding_rejects_stale_fields_before_acceptance() {
         let (store, root) = fabric_store();
         let identity_id = format!("binding-{field}");
         let session_id = format!("session-binding-{field}");
-        store
-            .migrate_legacy_agent_identity_same_id(
-                &context("host", "identity.create", &identity_id, 0),
-                identity(&identity_id),
-            )
-            .unwrap();
+        seed_agent_member(
+            &store,
+            &context("host", "identity.create", &identity_id, 0),
+            &identity_id,
+        );
         let target = session(&session_id, &identity_id);
         store
             .create_agent_session(

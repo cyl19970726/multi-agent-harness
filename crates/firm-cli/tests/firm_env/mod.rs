@@ -623,7 +623,7 @@ impl ServeHandle {
                         .map(|run| run.agent_member_id.as_str())
                         .unwrap_or(recipient)
                 };
-                serde_json::json!({"kind": "agent_identity", "id": stable_id})
+                serde_json::json!({"kind": "agent_member", "id": stable_id})
             })
             .collect::<Vec<_>>();
         let generation = COUNTER.fetch_add(1, Ordering::SeqCst);

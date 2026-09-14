@@ -14,12 +14,11 @@ use super::*;
 fn work_bound_before_first_open_is_claimable_after_native_session_attaches() {
     let (store, root) = fabric_store();
     append_runtime_team(&store, "team-admission", "run-admission");
-    store
-        .migrate_legacy_agent_identity_same_id(
-            &context("operator", "identity.create", "identity-pre-open", 0),
-            identity("pre-open"),
-        )
-        .unwrap();
+    seed_agent_member(
+        &store,
+        &context("operator", "identity.create", "identity-pre-open", 0),
+        "pre-open",
+    );
     let membership = join_runtime_membership(
         &store,
         "membership-pre-open",

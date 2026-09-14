@@ -120,7 +120,7 @@ fn close_cancels_kimi_provider_request_without_resuming_member() {
     assert_eq!(latest["status"].as_str(), Some("stopped"));
     let agent_member_id = latest["agent_member_id"]
         .as_str()
-        .expect("member carries canonical AgentIdentity")
+        .expect("member carries canonical AgentMember id")
         .to_string();
     let session = snapshot["agent_sessions"]
         .as_array()

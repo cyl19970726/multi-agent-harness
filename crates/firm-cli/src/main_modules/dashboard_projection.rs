@@ -125,7 +125,6 @@ pub(super) fn dashboard_snapshot_with_team_run(
         .iter()
         .map(|work| work.id.clone())
         .collect::<HashSet<_>>();
-    let mut agent_identities = Vec::new();
     let mut agent_sessions = Vec::new();
     let mut team_memberships = Vec::new();
     let mut work_execution_bindings = Vec::new();
@@ -134,10 +133,6 @@ pub(super) fn dashboard_snapshot_with_team_run(
     let mut canonical_message_deliveries = Vec::new();
     for execution_space_id in trust_scopes {
         if let Some(selected) = &selected_run {
-            agent_identities.extend(
-                store
-                    .fabric_agent_identities_for_members(&execution_space_id, &agent_member_ids)?,
-            );
             agent_sessions.extend(
                 store.fabric_agent_sessions_for_members(&execution_space_id, &agent_member_ids)?,
             );
@@ -160,7 +155,6 @@ pub(super) fn dashboard_snapshot_with_team_run(
                 store.fabric_message_deliveries_for_messages(&execution_space_id, &message_ids)?,
             );
         } else {
-            agent_identities.extend(store.fabric_agent_identities(&execution_space_id)?);
             agent_sessions.extend(store.fabric_agent_sessions(&execution_space_id)?);
             team_memberships.extend(store.fabric_team_memberships(&execution_space_id)?);
             work_execution_bindings
@@ -414,7 +408,6 @@ pub(super) fn dashboard_snapshot_with_team_run(
         "team_runs": team_runs,
         "member_runs": member_runs,
         "team_messages": team_messages,
-        "agent_identities": agent_identities,
         "agent_sessions": agent_sessions,
         "team_memberships": team_memberships,
         "work_execution_bindings": work_execution_bindings,

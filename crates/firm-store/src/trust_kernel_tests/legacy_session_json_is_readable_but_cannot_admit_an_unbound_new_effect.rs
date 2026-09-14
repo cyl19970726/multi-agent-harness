@@ -16,12 +16,11 @@ fn legacy_session_json_is_readable_but_cannot_admit_an_unbound_new_effect() {
     let rewritten = serde_json::to_value(&legacy).unwrap();
     assert_eq!(rewritten["agent_member_id"], "legacy-agent");
     assert!(rewritten.get("agent_identity_id").is_none());
-    store
-        .migrate_legacy_agent_identity_same_id(
-            &context("host", "identity.create", "legacy-agent", 0),
-            identity("legacy-agent"),
-        )
-        .unwrap();
+    seed_agent_member(
+        &store,
+        &context("host", "identity.create", "legacy-agent", 0),
+        "legacy-agent",
+    );
     store
         .create_agent_session(
             &service_context("session.create", "legacy-session", 0),

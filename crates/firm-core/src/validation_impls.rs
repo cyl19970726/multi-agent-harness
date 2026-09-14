@@ -164,7 +164,7 @@ impl Validate for agentfirm_api::AgentTeamMigrationBundle {
         {
             return Err(ValidationError::Invalid {
                 field: "AgentTeamMigrationBundle.identity_id_map",
-                reason: "every AgentIdentity must map to the same AgentMember id with no omission or alias",
+                reason: "every legacy identity id must map to the same AgentMember id with no omission or alias",
             });
         }
         let membership_ids = self
@@ -340,23 +340,6 @@ impl Validate for agentfirm_api::MessageSubscription {
         }
         require_non_empty(&self.created_by.id, "MessageSubscription.created_by.id")?;
         require_non_empty(&self.created_at, "MessageSubscription.created_at")
-    }
-}
-
-impl Validate for agentfirm_api::SubscriptionCursor {
-    fn validate(&self) -> Result<(), ValidationError> {
-        require_non_empty(&self.subscription_id, "SubscriptionCursor.subscription_id")?;
-        require_non_empty(
-            &self.recipient_agent_member_id,
-            "SubscriptionCursor.recipient_agent_member_id",
-        )?;
-        if self.cursor_revision == 0 {
-            return Err(ValidationError::Invalid {
-                field: "SubscriptionCursor.cursor_revision",
-                reason: "must be at least 1",
-            });
-        }
-        require_non_empty(&self.updated_at, "SubscriptionCursor.updated_at")
     }
 }
 

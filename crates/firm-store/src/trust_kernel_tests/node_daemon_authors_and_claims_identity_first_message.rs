@@ -4,12 +4,11 @@ use super::*;
 fn node_daemon_authors_and_claims_identity_first_message() {
     let (store, root) = fabric_store();
     for id in ["sender", "recipient"] {
-        store
-            .migrate_legacy_agent_identity_same_id(
-                &context("host", "identity.create", &format!("identity-{id}"), 0),
-                identity(id),
-            )
-            .unwrap();
+        seed_agent_member(
+            &store,
+            &context("host", "identity.create", &format!("identity-{id}"), 0),
+            id,
+        );
     }
     store
         .create_agent_session(

@@ -180,7 +180,6 @@ pub(crate) struct Facts {
     provider_runtime_projections: Vec<Value>,
     messages: Vec<Value>,
     message_deliveries: Vec<Value>,
-    agent_identities: Vec<Value>,
     agent_sessions: Vec<Value>,
     team_memberships: Vec<Value>,
     message_subscriptions: Vec<Value>,
@@ -446,12 +445,6 @@ impl Facts {
                 .into_iter()
                 .map(|value| serde_json::to_value(value).unwrap_or(Value::Null))
                 .collect(),
-            agent_identities: store
-                .fabric_agent_identities(space_id)
-                .map_err(|error| error.to_string())?
-                .into_iter()
-                .map(|value| serde_json::to_value(value).unwrap_or(Value::Null))
-                .collect(),
             agent_sessions: store
                 .fabric_agent_sessions(space_id)
                 .map_err(|error| error.to_string())?
@@ -542,7 +535,7 @@ fn ensure_active_membership_cardinality(team_memberships: &[Value]) -> Result<()
         );
         if !active_membership_keys.insert(key.clone()) {
             return Err(format!(
-                "IDENTITY_CONFLICT: Team {} and AgentIdentity {} have multiple active TeamMembership generations",
+                "IDENTITY_CONFLICT: Team {} and AgentMember {} have multiple active TeamMembership generations",
                 key.0, key.1
             ));
         }
@@ -1272,7 +1265,6 @@ fn envelope(
         object.insert(
             "runtime_fabric".into(),
             json!({
-                "agent_identities": record_summaries("agent_identity", facts.agent_identities.clone()),
                 "agent_sessions": record_summaries("agent_session", facts.agent_sessions.clone()),
                 "team_memberships": record_summaries("team_membership", facts.team_memberships.clone()),
                 "work_execution_bindings": record_summaries("work_execution_binding", facts.work_execution_bindings.clone()),

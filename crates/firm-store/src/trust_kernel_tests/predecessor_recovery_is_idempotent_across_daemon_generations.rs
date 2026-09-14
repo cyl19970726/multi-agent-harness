@@ -20,12 +20,11 @@ fn predecessor_recovery_is_idempotent_across_daemon_generations() {
     let (store, root) = fabric_store();
     let node_id = "11111111-1111-4111-8111-111111111111";
     for member_id in ["r5c-kimi", "r5c-codex"] {
-        store
-            .migrate_legacy_agent_identity_same_id(
-                &context("host", "identity.create", member_id, 0),
-                identity(member_id),
-            )
-            .unwrap();
+        seed_agent_member(
+            &store,
+            &context("host", "identity.create", member_id, 0),
+            member_id,
+        );
     }
 
     // `attached` is mid-lane when authority is lost; `partially_drained` models
@@ -325,12 +324,11 @@ fn daemon_context(daemon_id: &str, command: &str, key: &str, expected: u64) -> M
 #[test]
 fn predecessor_recovery_preserves_unknown_effect_refusal() {
     let (store, root) = fabric_store();
-    store
-        .migrate_legacy_agent_identity_same_id(
-            &context("host", "identity.create", "unknown-agent", 0),
-            identity("unknown-agent"),
-        )
-        .unwrap();
+    seed_agent_member(
+        &store,
+        &context("host", "identity.create", "unknown-agent", 0),
+        "unknown-agent",
+    );
     let target = session("unknown-session", "unknown-agent");
     store
         .create_agent_session(

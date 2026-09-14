@@ -121,9 +121,13 @@ fingerprint, and last reconciliation time. These fields are control fences and
 projections only; they do not mirror native turns, tool calls, commands,
 files, transcript, or provider reasoning.
 
-The `AgentIdentity` name is a deprecated same-ID read-only compatibility
-projection of `AgentMember`: legacy readers resolve the same row, and nothing
-may be bound to it as a second identity root.
+The `AgentIdentity` name is retired (ADR 0069). No retired `AgentIdentity`
+type, store projection, schema or RoleView field is left anywhere in the tree:
+`AgentMember` is the only identity root, and the StartSession
+permission-ceiling fence reads the `AgentMember` ceiling directly. Rows
+persisted before the cutover may still spell the legacy field
+`agent_identity_id`; retained serde aliases decode them and no writer re-emits
+that spelling.
 
 ## Team Host runtime
 
@@ -205,7 +209,10 @@ provider effect goes through a `RuntimeCommand`.
 ### Same-node messaging
 
 1. The authenticated source AgentSession sends an authoring RuntimeCommand to
-   its current NodeDaemon.
+   its current NodeDaemon. An `external_interactive` Host has no AgentSession:
+   it authors through the same NodeDaemon under its own AgentMember identity,
+   and acknowledges its deliveries by explicit pull/read, with no provider
+   claim or receipt to prove.
 2. The source NodeDaemon freezes sender identity/session, immutable content,
    sequence, Team/Work relation, recipients, and content fingerprint.
 3. Canonical subscriptions produce one delivery per authorized recipient.
@@ -213,7 +220,8 @@ provider effect goes through a `RuntimeCommand`.
    AgentSession generation.
 5. Only after the durable claim does it build a `ProviderInvocation` and touch
    the provider.
-6. Provider receipt and recipient ACK/cursor are separate durable facts.
+6. Provider receipt and recipient ACK are separate durable facts on the same
+   `CanonicalMessageDelivery` row.
 
 The source and target may be the same NodeDaemon. That does not allow a second
 Message, sequence, or delivery authority.
@@ -242,11 +250,11 @@ or acted on the text. Native input and an explicit correlated response are
 needed to establish those separate observations. Failed or uncertain handoffs
 retain the existing explicit reconciliation boundary; no blind replay.
 
-Ordinary Messages never interrupt a running turn. Explicit Steer remains a
-separate capability-checked RuntimeCommand; adapter support alone does not
-establish an ordinary-Message injection path. Kimi ACP without reviewed steer
-support waits for a real turn boundary. Interrupt ends a turn, not its Work,
-and does not by itself pause automatic continuation.
+Ordinary Messages never interrupt a running turn, and ADR 0068 retired
+mid-cycle Steer for every provider, so no injection path of any kind reaches a
+running cycle. To change a busy member's course, Interrupt the cycle and send
+the correction as ordinary mail. Interrupt ends a turn, not its Work, and does
+not by itself pause automatic continuation.
 
 ### Cross-node messaging
 
@@ -846,9 +854,10 @@ Control Plane. They do not expose an inbound collaboration listener and do not
 connect directly to sibling Nodes.
 
 `FabricStore` operations, attempts and receipts are the sole cross-Node route
-truth. A cross-Node `MessageRouteJournal` may exist only as a read-only
-projection. It is not written in parallel and cannot drive replay, delivery or
-application claims. A `RouteAttempt` proves transport only. Application effect
+truth. There is no second route record: ADR 0069 deleted the writer-less,
+reader-less `MessageRouteJournal` type, so nothing can be written in parallel
+or drive replay, delivery or application claims. A `RouteAttempt` proves
+transport only. Application effect
 is `none | not_applied | applied | unknown` and only a generation-fenced target
 result/receipt may assert it.
 
@@ -879,7 +888,9 @@ operator procedure.
 
 Server-built RoleViews project current canonical state. Browsers refetch after
 SSE invalidation; they do not fold raw ledgers or invent lifecycle truth.
-Current inboxes use `CanonicalMessageDelivery` and `SubscriptionCursor`. Current
+Current inboxes use `CanonicalMessageDelivery`; its per-recipient status is
+the only recipient-progress record (ADR 0069 deleted `SubscriptionCursor`,
+which no reader ever read). Current
 runtime state uses AgentSession and RuntimeCommand. Historical TeamRun,
 MemberRun, native-session locator, and legacy export rows are labeled history
 and cannot enable actions.

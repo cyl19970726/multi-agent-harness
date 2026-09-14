@@ -10,12 +10,11 @@ use super::*;
 #[test]
 fn runtime_command_prepared_before_native_bind_settles_after_it() {
     let (store, root) = fabric_store();
-    store
-        .migrate_legacy_agent_identity_same_id(
-            &context("host", "identity.create", "identity-bind-race", 0),
-            identity("bind-race"),
-        )
-        .unwrap();
+    seed_agent_member(
+        &store,
+        &context("host", "identity.create", "identity-bind-race", 0),
+        "bind-race",
+    );
     let session = session("session-bind-race", "bind-race");
     assert!(session.native_session_ref.is_none());
     store

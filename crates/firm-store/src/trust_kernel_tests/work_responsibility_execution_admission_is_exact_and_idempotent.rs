@@ -314,17 +314,16 @@ fn create_direct_subscription(store: &HarnessStore, sender_id: &str, recipient: 
 fn responsibility_resolves_one_current_member_run_and_repeated_admission_replays() {
     let (store, root) = fabric_store();
     append_runtime_team(&store, "team-admission", "run-admission");
-    store
-        .migrate_legacy_agent_identity_same_id(
-            &context(
-                "operator",
-                "identity.create",
-                "identity-worker-admission",
-                0,
-            ),
-            identity("worker-admission"),
-        )
-        .unwrap();
+    seed_agent_member(
+        &store,
+        &context(
+            "operator",
+            "identity.create",
+            "identity-worker-admission",
+            0,
+        ),
+        "worker-admission",
+    );
     let membership = join_runtime_membership(
         &store,
         "membership-worker-admission",
@@ -448,17 +447,16 @@ fn responsibility_resolves_one_current_member_run_and_repeated_admission_replays
 fn terminal_member_runtime_cannot_bind_or_claim_provider_work() {
     let (store, _root) = fabric_store();
     append_runtime_team(&store, "team-admission", "run-admission");
-    store
-        .migrate_legacy_agent_identity_same_id(
-            &context(
-                "operator",
-                "identity.create",
-                "identity-worker-admission",
-                0,
-            ),
-            identity("worker-admission"),
-        )
-        .unwrap();
+    seed_agent_member(
+        &store,
+        &context(
+            "operator",
+            "identity.create",
+            "identity-worker-admission",
+            0,
+        ),
+        "worker-admission",
+    );
     let membership = join_runtime_membership(
         &store,
         "membership-worker-admission",
@@ -923,17 +921,16 @@ fn membership_work_binding_authorizes_message_and_result_without_accepting_work(
     let (store, root) = fabric_store();
     append_runtime_team(&store, "team-admission", "run-admission");
     for member_id in ["worker-admission", "reviewer-admission"] {
-        store
-            .migrate_legacy_agent_identity_same_id(
-                &context(
-                    "operator",
-                    "identity.create",
-                    &format!("identity-{member_id}"),
-                    0,
-                ),
-                identity(member_id),
-            )
-            .unwrap();
+        seed_agent_member(
+            &store,
+            &context(
+                "operator",
+                "identity.create",
+                &format!("identity-{member_id}"),
+                0,
+            ),
+            member_id,
+        );
     }
     let worker_membership = join_runtime_membership(
         &store,
