@@ -37,6 +37,8 @@ impl ClaudeTeamRuntime {
 
 impl rt::TeamRuntimeAdapter for ClaudeTeamRuntime {
     type Error = crate::CliError;
+    const NATIVE_LOCATOR: harness_core::native_locator::NativeLocatorKindEntry =
+        <harness_provider_claude::ClaudeTeamRuntime as rt::TeamRuntimeAdapter>::NATIVE_LOCATOR;
 
     fn provider(&self) -> &'static str {
         rt::TeamRuntimeAdapter::provider(&self.0)
@@ -57,10 +59,6 @@ impl rt::TeamRuntimeAdapter for ClaudeTeamRuntime {
 
     fn native_session_locator(&self) -> &str {
         rt::TeamRuntimeAdapter::native_session_locator(&self.0)
-    }
-
-    fn native_locator_kind(&self) -> &'static str {
-        rt::TeamRuntimeAdapter::native_locator_kind(&self.0)
     }
 
     fn bind_authority_session(

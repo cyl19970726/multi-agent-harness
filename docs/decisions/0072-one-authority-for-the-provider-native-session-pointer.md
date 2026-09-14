@@ -47,8 +47,25 @@ identity, not a label. Three independent producers spelled it:
 | `provider_native_session_ref` | same | same | same | same | **`provider_native_session`** |
 | `--resume-member` seeding | same | same | same | **`provider_native`** | **`provider_native`** |
 
-A `--resume-member` seed for Pi therefore carried a kind no adapter produces,
-so the pointer could never match the session it named.
+A `--resume-member` seed for Pi or DeepSeek Harness therefore carried a kind no
+adapter produces, so the pointer could never match the session it named. This is
+not hypothetical: 12 such objects in 8 rows of the
+`dev109-final-20260827-6d71ea3e` Execution Space carry
+`native_locator_kind: "provider_native"` — one `deepseek_harness` and one `pi`
+MemberRun, each with `provider_version: null`, `availability: "unknown"` and
+`parent_native_session_id == native_session_id`, the exact signature of the
+resume seed. They are the defect's fingerprint on disk, and the shape is pinned
+as a fixture.
+
+Nothing existing is stranded by the fix, for three reasons worth stating
+because they are the actual argument: no read path consults the table (all of
+its call sites are write/seed paths); `native_locator_kind` stays an unvalidated
+`String` on decode and `same_identity_as` compares the same six fields as
+before, so those rows decode and compare exactly as they did; and every one of
+the 12 sits under `native_session` and never under `native_session_ref`, so no
+AgentSession ever bound them and they remain valid pre-session *requested*
+intents. They were already unmatchable against their own adapters — that is the
+defect, not a regression introduced here.
 
 ## Decision
 
@@ -81,11 +98,14 @@ requested pointer is an intent, never an execution claim. An
 pointer is never promoted to authority.
 
 **One locator-kind table.** `harness_core::native_locator` holds one entry per
-reviewed (provider, execution_mode) pair. Each adapter's
-`native_locator_kind()` returns its own entry, and every seeding path reads the
-same table, so a seeded pointer carries the kind its adapter will produce. An
-unregistered pair resolves to `None` and the caller fails closed with a named
-error instead of substituting a placeholder.
+reviewed (provider, execution_mode) pair. The Team runtime adapters declare
+theirs as the associated const `TeamRuntimeAdapter::NATIVE_LOCATOR`, and the
+trait's provided `native_locator_kind()` returns that entry's kind — so an
+adapter cannot answer with a literal, and the guarantee is in the type system
+rather than in a comment. Every seeding path reads the same table, so a seeded
+pointer carries the kind its adapter will produce. An unregistered pair resolves
+to `None` and the caller fails closed with a named error instead of substituting
+a placeholder.
 
 The NodeDaemon-owned Codex session adapter keeps its own `codex_thread` kind
 alongside the Team-runtime `codex_rollout`: they are different adapters, and

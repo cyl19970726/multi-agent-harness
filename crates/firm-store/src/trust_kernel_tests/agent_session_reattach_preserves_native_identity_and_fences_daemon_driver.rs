@@ -15,7 +15,9 @@ fn agent_session_reattach_preserves_native_identity_and_fences_daemon_driver() {
         provider: "codex".into(),
         execution_mode: "codex_app_server".into(),
         native_session_id: "thread-native-1".into(),
-        native_locator_kind: "codex_thread".into(),
+        native_locator_kind: firm_core::native_locator::CODEX_APP_SERVER
+            .native_locator_kind
+            .into(),
         provider_version: Some("0.148.0-alpha.9".into()),
         adapter_contract_version: "codex-app-server-v1".into(),
         availability: firm_core::agentfirm_api::NativeSessionAvailability::Available,

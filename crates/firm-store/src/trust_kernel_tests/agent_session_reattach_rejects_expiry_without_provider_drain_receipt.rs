@@ -15,7 +15,9 @@ fn agent_session_reattach_rejects_expiry_without_provider_drain_receipt() {
         provider: "codex".into(),
         execution_mode: "codex_app_server".into(),
         native_session_id: "thread-native-expired".into(),
-        native_locator_kind: "codex_thread".into(),
+        native_locator_kind: firm_core::native_locator::CODEX_APP_SERVER
+            .native_locator_kind
+            .into(),
         provider_version: Some("0.148.0-alpha.9".into()),
         adapter_contract_version: "codex-app-server-v1".into(),
         availability: firm_core::agentfirm_api::NativeSessionAvailability::Available,
@@ -125,7 +127,9 @@ fn hard_crash_recovery_requires_exact_operator_evidence_and_detaches_the_predece
         provider: "claude".into(),
         execution_mode: "claude_agent_sdk".into(),
         native_session_id: "claude-native-crash".into(),
-        native_locator_kind: "claude_session".into(),
+        native_locator_kind: firm_core::native_locator::CLAUDE_AGENT_SDK
+            .native_locator_kind
+            .into(),
         provider_version: None,
         adapter_contract_version: "claude-agent-sdk-v1".into(),
         availability: firm_core::agentfirm_api::NativeSessionAvailability::Available,

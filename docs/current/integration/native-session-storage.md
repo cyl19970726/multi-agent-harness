@@ -81,6 +81,9 @@ raw provider event.
 
 ## Binding contract
 
+There is ONE `NativeSessionRef` type: the trust journal and both ledger
+projections name the same struct.
+
 `NativeSessionRef` is stored in three places today:
 
 - canonical `MemberRun.native_session`
@@ -107,6 +110,20 @@ against, and they live in different layers:
 Neither fence silently picks a winner; both fail closed. Neither is a single
 Store-level check over all three copies.
 
+Those three copies are also written by three separate Store calls in three
+separate write-lock acquisitions — `compare_and_append_member_run`, then
+`bind_member_run_native_session`, then `bind_agent_session_native_session`
+(all three inside `save_member_run` / `sync_trust_native_session_binding`,
+`crates/firm-cli/src/main_modules/member_work_coordination.rs:689`, `:764`,
+`:823`) — ledger row first, best-effort, under the documented
+`MEMBER_RUN_DUAL_LEDGER_COMMIT_INCOMPLETE` caveat
+(`crates/firm-store/src/trust_kernel/trust_members.rs:570`).
+
+ADR 0072 decides that `AgentSession.native_session_ref` becomes the single
+authority and the other two become projections of it, written in one
+transaction. That change is not in this revision; see the ADR for the decided
+model and its status.
+
 Fields:
 
 | Field | Meaning |
@@ -125,10 +142,11 @@ Fields:
 `native_locator_kind` is part of identity comparison and of the persisted-session
 read fingerprint, so it is identity rather than a label. One table in
 `harness_core::native_locator` names the kind for every reviewed
-(provider, execution_mode) pair, each adapter returns its own entry, and every
-seeding path reads the same table — a seeded pointer therefore carries the kind
-its adapter will produce. An unregistered pair fails closed instead of taking a
-placeholder kind:
+(provider, execution_mode) pair. Each adapter declares its entry as
+`TeamRuntimeAdapter::NATIVE_LOCATOR` and the trait returns that entry's kind, so
+an adapter cannot answer with a literal; every seeding path reads the same
+table. A seeded pointer therefore carries the kind its adapter will produce. An
+unregistered pair fails closed instead of taking a placeholder kind:
 
 | Provider / mode | `native_locator_kind` |
 | --- | --- |

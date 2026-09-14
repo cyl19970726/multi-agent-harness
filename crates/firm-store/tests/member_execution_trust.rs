@@ -150,7 +150,9 @@ fn native_session(id: &str) -> NativeSessionRef {
         provider: "codex".into(),
         execution_mode: "persistent".into(),
         native_session_id: id.into(),
-        native_locator_kind: "thread".into(),
+        native_locator_kind: firm_core::native_locator::CODEX_APP_SERVER
+            .native_locator_kind
+            .into(),
         provider_version: Some("test".into()),
         adapter_contract_version: "1".into(),
         availability: NativeSessionAvailability::Available,

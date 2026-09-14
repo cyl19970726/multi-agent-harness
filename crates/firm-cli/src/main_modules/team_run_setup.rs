@@ -265,20 +265,6 @@ pub(super) fn build_member_run_for_team(
     })
 }
 
-/// Whether two optional native-session pointers name the same provider-native
-/// conversation. There is ONE identity predicate — `NativeSessionRef::
-/// same_identity_as` — and this only lifts it over `Option`.
-pub(super) fn native_session_identity_matches(
-    left: Option<&NativeSessionRef>,
-    right: Option<&NativeSessionRef>,
-) -> bool {
-    match (left, right) {
-        (None, None) => true,
-        (Some(left), Some(right)) => left.same_identity_as(right),
-        _ => false,
-    }
-}
-
 /// Whether an existing AgentSession's pointer may be admitted against the
 /// pointer the MemberRun asserts.
 ///
@@ -289,7 +275,10 @@ pub(super) fn session_native_session_is_admissible(
     session_native: Option<&NativeSessionRef>,
     member_run_native: Option<&NativeSessionRef>,
 ) -> bool {
-    if native_session_identity_matches(session_native, member_run_native) {
+    if harness_core::agentfirm_api::native_session_identity_matches_opt(
+        session_native,
+        member_run_native,
+    ) {
         return true;
     }
     matches!(

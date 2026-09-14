@@ -660,9 +660,8 @@ impl<'a, B: CodexAppServerBridge> TeamRuntimeAdapter for CodexTeamRuntime<'a, B>
         self.bridge.thread_id()
     }
 
-    fn native_locator_kind(&self) -> &'static str {
-        harness_core::native_locator::CODEX_APP_SERVER.native_locator_kind
-    }
+    const NATIVE_LOCATOR: harness_core::native_locator::NativeLocatorKindEntry =
+        harness_core::native_locator::CODEX_APP_SERVER;
 
     fn bind_authority_session(
         &mut self,

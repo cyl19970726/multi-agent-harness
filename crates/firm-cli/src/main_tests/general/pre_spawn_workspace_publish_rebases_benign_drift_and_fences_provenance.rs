@@ -54,7 +54,9 @@ fn pre_spawn_workspace_publish_rebases_benign_drift_and_fences_provenance() {
         provider: second.provider.clone(),
         execution_mode: "codex_app_server".into(),
         native_session_id: "new-generation-session".into(),
-        native_locator_kind: "thread_id".into(),
+        native_locator_kind: harness_core::native_locator::CODEX_APP_SERVER
+            .native_locator_kind
+            .into(),
         provider_version: None,
         adapter_contract_version: "test".into(),
         availability: NativeSessionAvailability::Available,

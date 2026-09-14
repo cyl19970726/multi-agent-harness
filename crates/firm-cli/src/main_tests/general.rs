@@ -213,7 +213,9 @@ fn native_open_test_member(
             provider: provider.into(),
             execution_mode: mode.into(),
             native_session_id: session_id.into(),
-            native_locator_kind: "claude_project_jsonl".into(),
+            native_locator_kind: harness_core::native_locator::CLAUDE_AGENT_SDK
+                .native_locator_kind
+                .into(),
             provider_version: None,
             adapter_contract_version: "test".into(),
             availability: NativeSessionAvailability::Available,
@@ -296,7 +298,9 @@ fn persisted_native_test_member(
         provider: provider.into(),
         execution_mode: mode.into(),
         native_session_id: session_id.into(),
-        native_locator_kind: "test_native_session".into(),
+        native_locator_kind: harness_core::native_locator::CODEX_APP_SERVER
+            .native_locator_kind
+            .into(),
         provider_version: None,
         adapter_contract_version: "test".into(),
         availability: NativeSessionAvailability::Available,
@@ -1230,7 +1234,9 @@ fn capacity_test_session() -> NativeSessionRef {
         provider: "codex".into(),
         execution_mode: "codex_app_server".into(),
         native_session_id: "thread-capacity-recovery".into(),
-        native_locator_kind: "thread_id".into(),
+        native_locator_kind: harness_core::native_locator::CODEX_APP_SERVER
+            .native_locator_kind
+            .into(),
         provider_version: Some("test".into()),
         adapter_contract_version: "test".into(),
         availability: NativeSessionAvailability::Available,
@@ -1466,6 +1472,8 @@ mod host_binding;
 mod member_runtime;
 #[path = "general_suites/messaging_delivery.rs"]
 mod messaging_delivery;
+#[path = "general/native_locator_table_is_the_only_source_of_the_kind.rs"]
+mod native_locator_table_is_the_only_source_of_the_kind;
 #[path = "general_suites/protocol_and_utilities.rs"]
 mod protocol_and_utilities;
 #[path = "general_suites/provider_admission_capacity.rs"]

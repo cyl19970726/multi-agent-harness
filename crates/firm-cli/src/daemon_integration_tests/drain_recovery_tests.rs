@@ -41,7 +41,9 @@ fn drain_native_session(native_session_id: &str) -> NativeSessionRef {
         provider: "codex".into(),
         execution_mode: "codex_app_server".into(),
         native_session_id: native_session_id.into(),
-        native_locator_kind: "thread_id".into(),
+        native_locator_kind: harness_core::native_locator::CODEX_APP_SERVER
+            .native_locator_kind
+            .into(),
         provider_version: Some("test".into()),
         adapter_contract_version: "test".into(),
         availability: NativeSessionAvailability::Available,

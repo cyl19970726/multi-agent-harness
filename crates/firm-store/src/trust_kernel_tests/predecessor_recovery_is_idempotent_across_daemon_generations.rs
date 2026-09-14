@@ -287,7 +287,9 @@ fn recovery_native_session(native_session_id: &str) -> NativeSessionRef {
         provider: "kimi".into(),
         execution_mode: "kimi_acp".into(),
         native_session_id: native_session_id.into(),
-        native_locator_kind: "kimi_session".into(),
+        native_locator_kind: firm_core::native_locator::KIMI_ACP
+            .native_locator_kind
+            .into(),
         provider_version: None,
         adapter_contract_version: "kimi-acp-v1".into(),
         availability: firm_core::agentfirm_api::NativeSessionAvailability::Available,

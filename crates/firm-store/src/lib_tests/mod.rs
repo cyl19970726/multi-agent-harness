@@ -717,7 +717,9 @@ fn seed_provider_interaction_bridge(
                 provider: "codex".into(),
                 execution_mode: "codex_app_server".into(),
                 native_session_id: session_id.clone(),
-                native_locator_kind: "thread".into(),
+                native_locator_kind: harness_core::native_locator::CODEX_APP_SERVER
+                    .native_locator_kind
+                    .into(),
                 provider_version: None,
                 adapter_contract_version: "test".into(),
                 availability: NativeSessionAvailability::Available,

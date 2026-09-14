@@ -11,9 +11,14 @@
 //! arm defaulting to `"provider_native_session"`, and a `--resume-member` match
 //! covering only codex/kimi/claude defaulting to `"provider_native"`.
 //!
-//! Every producer now reads THIS table, and a compile-linked parity test in
-//! `firm-cli` asserts that each adapter's `native_locator_kind()` equals the
-//! entry recorded here.
+//! Every producer reads THIS table. For the Team runtime adapters that is
+//! enforced by the type system: `TeamRuntimeAdapter::NATIVE_LOCATOR` is a
+//! [`NativeLocatorKindEntry`], and the trait's provided `native_locator_kind()`
+//! returns that entry's kind, so an adapter cannot answer with a literal. A
+//! test in `firm-cli` (the only crate that links all six) additionally asserts
+//! that each adapter's declared entry is the one this table registers for its
+//! own `(provider, execution_mode)`, and that every registered Team runtime
+//! mode resolves here at all.
 
 /// One reviewed (provider, execution_mode) pair and the locator kind its
 /// adapter produces.

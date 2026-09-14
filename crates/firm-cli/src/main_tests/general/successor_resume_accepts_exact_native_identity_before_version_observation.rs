@@ -151,22 +151,28 @@ fn successor_resume_accepts_exact_native_identity_before_version_observation() {
     );
     let mut wrong_native_id = expected_admission.clone();
     wrong_native_id.native_session_id = "thread-foreign".into();
-    assert!(!native_session_identity_matches(
-        Some(&observed),
-        Some(&wrong_native_id)
-    ));
+    assert!(
+        !harness_core::agentfirm_api::native_session_identity_matches_opt(
+            Some(&observed),
+            Some(&wrong_native_id)
+        )
+    );
     let mut wrong_contract = expected_admission.clone();
     wrong_contract.adapter_contract_version = "foreign-contract".into();
-    assert!(!native_session_identity_matches(
-        Some(&observed),
-        Some(&wrong_contract)
-    ));
+    assert!(
+        !harness_core::agentfirm_api::native_session_identity_matches_opt(
+            Some(&observed),
+            Some(&wrong_contract)
+        )
+    );
     let mut wrong_version = expected_admission;
     wrong_version.provider_version = Some("0.149.0".into());
-    assert!(!native_session_identity_matches(
-        Some(&observed),
-        Some(&wrong_version)
-    ));
+    assert!(
+        !harness_core::agentfirm_api::native_session_identity_matches_opt(
+            Some(&observed),
+            Some(&wrong_version)
+        )
+    );
 
     std::fs::remove_dir_all(root).expect("cleanup");
 }

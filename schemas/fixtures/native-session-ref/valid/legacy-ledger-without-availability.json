@@ -1,0 +1,8 @@
+{
+  "provider": "codex",
+  "execution_mode": "codex_app_server",
+  "native_session_id": "thread-legacy-no-availability",
+  "native_locator_kind": "codex_rollout",
+  "adapter_contract_version": "codex-app-server-v1",
+  "supports_resume": true
+}

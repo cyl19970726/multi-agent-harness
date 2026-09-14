@@ -7,8 +7,8 @@
 
 use firm_core::agentfirm_api::{
     AgentSession, AgentTeamMigrationBundle, AgentTeamPurgeRequest, AgentTeamPurgeTombstone,
-    CanonicalMessageDelivery, Message, MessageSubscription, TeamMembership, TeamMessage,
-    TeamMessageDeliveryClaim, WorkExecutionBinding,
+    CanonicalMessageDelivery, Message, MessageSubscription, NativeSessionRef, TeamMembership,
+    TeamMessage, TeamMessageDeliveryClaim, WorkExecutionBinding,
 };
 use firm_core::collaboration::{
     CollaborationScope, CrossNodeDeliveryProjection, DelegationCancellationDecision,
@@ -120,6 +120,14 @@ fn wave_three_identity_and_runtime_fixtures_match_rust_contracts() {
 #[test]
 fn dev_35_member_membership_and_message_fixtures_match_rust_contracts() {
     assert_fixture_contract::<AgentSession>("agent-session");
+    // The pointer type itself, not only the records that embed it: N2a merged
+    // two structurally different `NativeSessionRef`s into one and relaxed
+    // `availability`, and nothing made the schema and serde halves agree. It is
+    // a closed wire type with no `Validate` rules of its own, so the closed-wire
+    // contract is the right half here.
+    assert_closed_wire_fixture_contract::<NativeSessionRef>(
+        &fixture_root().join("native-session-ref"),
+    );
     assert_fixture_contract::<TeamMembership>("team-membership");
     assert_fixture_contract::<WorkExecutionBinding>("work-execution-binding");
     assert_fixture_contract::<Message>("message");

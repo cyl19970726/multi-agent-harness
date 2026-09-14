@@ -501,6 +501,22 @@ pub fn native_session_identity_matches(left: &NativeSessionRef, right: &NativeSe
     left.same_identity_as(right)
 }
 
+/// `same_identity_as` lifted over `Option`: two absent pointers name the same
+/// (absent) conversation, one absent and one present do not.
+///
+/// This lives beside the predicate it lifts so that "same session?" has one
+/// answer per shape, rather than each module growing its own Option wrapper.
+pub fn native_session_identity_matches_opt(
+    left: Option<&NativeSessionRef>,
+    right: Option<&NativeSessionRef>,
+) -> bool {
+    match (left, right) {
+        (None, None) => true,
+        (Some(left), Some(right)) => left.same_identity_as(right),
+        _ => false,
+    }
+}
+
 /// The one deliberately ASYMMETRIC identity comparison, used only where a
 /// resume locator is admitted against an observed session.
 ///
