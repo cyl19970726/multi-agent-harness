@@ -170,8 +170,9 @@ Harness authority.
 
 ## Busy-turn delivery boundary
 
-Kimi ACP does not currently expose a reviewed Harness mid-turn steer operation.
-Its ordinary-message boundary is `next_round_batched`:
+Harness has no mid-turn injection operation for any provider (ADR 0068), and
+Kimi ACP exposes no native equivalent either. Its ordinary-message boundary is
+`next_round_batched`:
 
 - authenticated AgentFirm Message authoring first proves only durable canonical
   `Message` acceptance; the retired `team-run send` CLI is not a fallback and it does

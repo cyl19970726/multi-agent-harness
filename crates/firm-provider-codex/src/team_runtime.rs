@@ -28,8 +28,7 @@ use harness_runtime_contract::{
 };
 use harness_runtime_contract::{
     CapabilityBinding, CapabilityStatus, ControlTransportReceipt, CycleControl,
-    CycleRuntimeObservation, ExecutionCycleOutcome, SteerProviderResult, SteerRequest,
-    TeamRuntimeAdapter,
+    CycleRuntimeObservation, ExecutionCycleOutcome, TeamRuntimeAdapter,
 };
 use harness_runtime_contract::{
     CycleSettlement, CycleTimeouts, InterruptCause, ProviderTerminalFailure,
@@ -54,7 +53,6 @@ pub trait CodexAppServerBridge {
     fn ensure_transport_alive(&mut self) -> CliResult<()>;
     fn thread_id(&self) -> &str;
     fn start_turn(&mut self, text: &str, acceptance: Duration) -> CliResult<String>;
-    fn steer(&mut self, turn_id: &str, text: &str) -> CliResult<String>;
     fn interrupt(&mut self, turn_id: &str) -> CliResult<()>;
     fn recv(&self, timeout: Duration) -> Result<Value, RecvTimeoutError>;
     fn read_thread(&mut self, include_turns: bool) -> CliResult<Value>;
@@ -74,10 +72,6 @@ impl CodexAppServerBridge for CodexAppServerClient {
 
     fn start_turn(&mut self, text: &str, acceptance: Duration) -> CliResult<String> {
         CodexAppServerClient::start_turn(self, text, acceptance)
-    }
-
-    fn steer(&mut self, turn_id: &str, text: &str) -> CliResult<String> {
-        CodexAppServerClient::steer(self, turn_id, text)
     }
 
     fn interrupt(&mut self, turn_id: &str) -> CliResult<()> {
@@ -546,7 +540,7 @@ impl<'a, B: CodexAppServerBridge> CodexTeamRuntime<'a, B> {
 }
 
 pub fn capability_bindings() -> Vec<CapabilityBinding> {
-    use CapabilityStatus::{Degraded, Experimental, Supported, Unsupported};
+    use CapabilityStatus::{Degraded, Supported, Unsupported};
     vec![
         CapabilityBinding {
             capability: "open_or_resume",
@@ -558,18 +552,6 @@ pub fn capability_bindings() -> Vec<CapabilityBinding> {
             capability: "start_cycle",
             status: Supported,
             evidence: "turn/start returns the exact turn id; turn/completed plus thread/read status=idle proves the later cycle boundary".into(),
-            security_enforcement_locus: None,
-        },
-        CapabilityBinding {
-            capability: "inject_current_cycle",
-            status: Experimental,
-            evidence: "0.148.0-alpha.9 schema review and deterministic tests cover turn/steer with expectedTurnId, but the DEV-26 live upgrade canary did not exercise steer".into(),
-            security_enforcement_locus: None,
-        },
-        CapabilityBinding {
-            capability: "queue_at_native_boundary",
-            status: Unsupported,
-            evidence: "Codex app-server exposes current-turn steer, not a provider-native ordinary-message queue; Harness retains next-round mail".into(),
             security_enforcement_locus: None,
         },
         CapabilityBinding {
@@ -746,7 +728,6 @@ impl<'a, B: CodexAppServerBridge> TeamRuntimeAdapter for CodexTeamRuntime<'a, B>
         input: &str,
         timeouts: CycleTimeouts,
         on_input_accepted: &mut dyn FnMut(&ControlTransportReceipt) -> CliResult<()>,
-        on_steer_result: &mut dyn FnMut(&SteerRequest, &SteerProviderResult) -> CliResult<()>,
         on_event: &mut dyn FnMut(&Value),
         poll_control: &mut dyn FnMut() -> CycleControl,
     ) -> CliResult<ExecutionCycleOutcome> {
@@ -831,36 +812,6 @@ impl<'a, B: CodexAppServerBridge> TeamRuntimeAdapter for CodexTeamRuntime<'a, B>
             let control = poll_control();
             if let Some(error) = control.fatal_error {
                 return Err(CliError::Usage(error));
-            }
-            for pending in control.injects {
-                match self.bridge.steer(&turn_id, &pending.content) {
-                    Ok(active_turn) if active_turn == turn_id => {
-                        let receipt = ControlTransportReceipt {
-                            command: "turn/steer".to_string(),
-                            response_id: Some(active_turn),
-                            success: true,
-                        };
-                        on_steer_result(
-                            &pending,
-                            &SteerProviderResult::Acknowledged(receipt.clone()),
-                        )?;
-                        control_receipts.push(receipt);
-                    }
-                    Ok(other_turn) => {
-                        let detail = format!(
-                            "CODEX_ONE_DRIVER_VIOLATION: turn/steer rebound {turn_id} to {other_turn}"
-                        );
-                        on_steer_result(&pending, &SteerProviderResult::Unknown(detail.clone()))?;
-                        return Err(CliError::Usage(detail));
-                    }
-                    Err(error) => {
-                        let detail = format!(
-                            "Codex turn/steer outcome is unknown after RPC failure: {error}"
-                        );
-                        on_steer_result(&pending, &SteerProviderResult::Unknown(detail.clone()))?;
-                        return Err(CliError::Usage(detail));
-                    }
-                }
             }
             if (control.interrupt || control.close) && !interrupt_sent {
                 self.bridge.interrupt(&turn_id)?;
@@ -1017,7 +968,7 @@ impl<'a, B: CodexAppServerBridge> TeamRuntimeAdapter for CodexTeamRuntime<'a, B>
                                     process_alive: true,
                                     is_streaming: Some(false),
                                     pending_message_count: Some(0),
-                                    steering_mode: Some("turn/steer".to_string()),
+                                    steering_mode: None,
                                     follow_up_mode: Some("harness_next_round".to_string()),
                                     settled_boundary_observed: true,
                                 },
@@ -1055,10 +1006,6 @@ impl<'a, B: CodexAppServerBridge> TeamRuntimeAdapter for CodexTeamRuntime<'a, B>
         interrupt: &'b mut bool,
     ) -> Box<dyn ProviderNativeControl + 'b> {
         Box::new(CodexDeferredNativeControl { close, interrupt })
-    }
-
-    fn supports_inject_current_cycle(&self) -> bool {
-        true
     }
 }
 
@@ -1116,7 +1063,6 @@ impl<'a, B: CodexAppServerBridge> harness_runtime_contract::RuntimeAdapter
                         accepted = receipt.response_id.clone();
                         Ok(())
                     },
-                    &mut |_pending, _result| Ok(()),
                     &mut |_event| {},
                     &mut CycleControl::default,
                 )
@@ -1138,25 +1084,6 @@ impl<'a, B: CodexAppServerBridge> harness_runtime_contract::RuntimeAdapter
                     ),
                 ]));
             }
-            ControlIntent::InjectCurrentCycle { input } => {
-                let turn_id = match self.active_turn_id.clone() {
-                    Some(turn_id) => Some(turn_id),
-                    None => self.active_native_turn().map_err(bridge_error)?,
-                }
-                .ok_or_else(|| bridge_error("turn/steer requires an exact active turn"))?;
-                self.active_turn_id = Some(turn_id.clone());
-                let observed = self.bridge.steer(&turn_id, &input).map_err(bridge_error)?;
-                if observed != turn_id {
-                    return Err(RuntimeContractError::StaleContinuation {
-                        fields: vec!["active_turn_id".to_string()],
-                    });
-                }
-                (
-                    RuntimeEffectCertainty::Applied,
-                    RuntimePostconditionStatus::Satisfied,
-                    vec![format!("codex.turn/steer:{turn_id}")],
-                )
-            }
             ControlIntent::Interrupt => {
                 let turn_id = match self.active_turn_id.clone() {
                     Some(turn_id) => Some(turn_id),
@@ -1172,9 +1099,6 @@ impl<'a, B: CodexAppServerBridge> harness_runtime_contract::RuntimeAdapter
                     RuntimePostconditionStatus::Unknown,
                     vec![format!("codex.turn/interrupt:{turn_id}")],
                 )
-            }
-            ControlIntent::QueueNativeBoundary { .. } => {
-                unreachable!("unsupported Codex queue must fail canonical preflight")
             }
         };
         Ok(EffectReceipt::for_control(
@@ -1324,7 +1248,7 @@ impl<'a, B: CodexAppServerBridge> harness_runtime_contract::RuntimeAdapter
             RuntimePostconditionStatus::Satisfied,
             "matching turn/completed and thread/read status=idle",
         )?;
-        builder.record(QuiesceStep::DrainNativeQueue, RuntimePostconditionStatus::Satisfied, "app-server has no provider-native ordinary-message queue; turn/steer is active-turn only")?;
+        builder.record(QuiesceStep::DrainNativeQueue, RuntimePostconditionStatus::Satisfied, "app-server has no provider-native ordinary-message queue; ordinary mail stays in the Harness queue until the next round")?;
         builder.record(QuiesceStep::DrainWritableChildren, RuntimePostconditionStatus::Unknown, "Codex FullAccess may leave detached writable descendants; app-server exposes no complete job inventory")?;
         builder.record(
             QuiesceStep::ObserveIdle,

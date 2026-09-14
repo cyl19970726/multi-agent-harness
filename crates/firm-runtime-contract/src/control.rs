@@ -63,8 +63,6 @@ pub struct RuntimeDescription {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ControlIntent {
     StartCycle { input: String },
-    InjectCurrentCycle { input: String },
-    QueueNativeBoundary { input: String },
     Interrupt,
 }
 
@@ -75,8 +73,6 @@ impl ControlIntent {
         use harness_core::agentfirm_api::RuntimeCommandKind;
         match self {
             Self::StartCycle { .. } => RuntimeCommandKind::StartCycle,
-            Self::InjectCurrentCycle { .. } => RuntimeCommandKind::InjectCurrentCycle,
-            Self::QueueNativeBoundary { .. } => RuntimeCommandKind::QueueAtNativeBoundary,
             Self::Interrupt => RuntimeCommandKind::InterruptCurrentCycle,
         }
     }
@@ -84,8 +80,6 @@ impl ControlIntent {
     pub fn capability(&self) -> SemanticCapability {
         match self {
             Self::StartCycle { .. } => SemanticCapability::StartCycle,
-            Self::InjectCurrentCycle { .. } => SemanticCapability::InjectCurrentCycle,
-            Self::QueueNativeBoundary { .. } => SemanticCapability::QueueNativeBoundary,
             Self::Interrupt => SemanticCapability::Interrupt,
         }
     }

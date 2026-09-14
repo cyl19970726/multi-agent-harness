@@ -245,10 +245,10 @@ version.
   the Harness-owned ACP process; it does not claim a provider-native close or
   cancellation receipt. Reopen starts a higher adapter generation and resumes
   the exact recorded ACP session.
-  Kimi ACP still does not support same-turn steer, so
-  ordinary Message is queued for the next provider round. An attempted Steer
-  fails rather than being silently converted. Close records `stopped`; Reopen
-  returns the same MemberRun to a new active runtime generation.
+  Ordinary Message is queued for the next provider round: Kimi ACP exposes no
+  same-turn steer, and after ADR 0068 neither does Harness for any provider.
+  Close records `stopped`; Reopen returns the same MemberRun to a new active
+  runtime generation.
 - The target NodeDaemon under the current durable Team Supervisor generation
   atomically claims one queued CanonicalMessageDelivery before
   `session/prompt`, resolves and freezes its exact recipient AgentSession, and

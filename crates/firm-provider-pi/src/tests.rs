@@ -66,7 +66,6 @@ for line in sys.stdin:
                 std::time::Duration::from_secs(2),
             ),
             |_| Ok(()),
-            |_, _| Ok(()),
             |_| {},
             harness_runtime_contract::CycleControl::default,
         )
@@ -89,10 +88,11 @@ for line in sys.stdin:
 }
 
 /// Spawn a minimal fake `pi --mode rpc` shim and exercise the RPC-level
-/// adapter surface: handshake, follow_up acknowledgement, queue
-/// observation, and the --tools permission compilation in the spawn argv.
+/// adapter surface: handshake, queue observation, and the --tools permission
+/// compilation in the spawn argv. ADR 0068 retired the `follow_up` native
+/// boundary queue; the read-only `get_state` queue snapshot is retained.
 #[test]
-fn follow_up_queue_snapshot_and_tools_compilation() {
+fn queue_snapshot_and_tools_compilation() {
     let dir = std::env::temp_dir().join(format!(
         "pi-rpc-rpc-test-{}-{}",
         std::process::id(),
@@ -168,9 +168,6 @@ for line in sys.stdin:
         Some("read,grep,find,ls"),
         "restricted ceiling must compile to --tools in the spawn argv: {argv:?}"
     );
-
-    let ack = client.follow_up("queued at the native boundary").unwrap();
-    assert_eq!(ack.get("success").and_then(|v| v.as_bool()), Some(true));
 
     let snapshot = client.queue_snapshot().unwrap();
     assert_eq!(
@@ -432,7 +429,6 @@ mod cycle_conformance {
                 "conformance cycle",
                 timeouts,
                 &mut |_receipt| Ok(()),
-                &mut |_pending, _result| Ok(()),
                 &mut |_event| {},
                 &mut control,
             )

@@ -1,10 +1,20 @@
 use super::*;
 
-// Historical run-addressed post-interrupt message flow. Its second round is
-// driven through the retired `/v1/team-runs/:id/messages` writer and races the
-// canonical AgentSession recovery contract. Codex control remains covered by
-// the live steer/interrupt terminal tests; canonical follow-up delivery is
-// covered by the RoleView Message/Delivery journey.
+// Historical run-addressed post-interrupt message flow, disabled since the
+// canonical message cutover: its second round is driven through the retired
+// `/v1/team-runs/:id/messages` writer and races the canonical AgentSession
+// recovery contract. It is neither compiled nor run — the body below is kept
+// only so the shape stays readable, and ADR 0068 removed the `/steer` call it
+// used to reach a busy turn.
+//
+// What actually covers "interrupt waits for the provider terminal event"
+// today: `interrupt_is_transport_ack_until_matching_terminal_frame`
+// (firm-provider-codex) proves it for Codex at the adapter boundary, and
+// `pi_busy_interrupt_waits_for_abort_receipt_and_agent_settled` proves it
+// end to end through the HTTP surface for Pi. The open gap is an end-to-end
+// HTTP-level interrupt-terminal test for Codex specifically; re-enabling this
+// file is not the fix, because the race that disabled it is unrelated to
+// interrupt and still present.
 #[cfg(any())]
 #[test]
 fn codex_app_server_member_interrupt_waits_for_provider_terminal_event() {
@@ -110,11 +120,8 @@ fn codex_app_server_member_interrupt_waits_for_provider_terminal_event() {
         std::thread::sleep(Duration::from_millis(20));
     }
     assert!(resumed, "queued mail did not wake the interrupted Member");
-    let (status, steered) = serve.post_json(
-        &format!("/v1/team-runs/{run_id}/members/{member_id}/steer"),
-        &serde_json::json!({"content": "finish resumed turn", "requested_by": "host"}),
-    );
-    assert_eq!(status, 200, "body: {steered}");
+    // ADR 0068 retired /steer: the resumed turn settles on the queued mail
+    // alone, which is the only input path a member has.
     let mut idle_after_resume = false;
     // The resumed turn includes durable delivery, provider receipt, and the
     // terminal callback. Two seconds is below the normal loaded-run latency.

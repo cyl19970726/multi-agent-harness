@@ -238,9 +238,9 @@ Harness remains the communication authority in both driver modes:
 | --- | --- |
 | Member idle under `host_driven` | Claim and deliver the next eligible message. |
 | Provider transport unhealthy before claim | Leave mail queued; current Supervisor reconnects the recorded native session first. |
-| Member busy | Queue ordinary messages; never silently interrupt. |
-| Provider continuation active | Inject only through a verified safe provider operation or cycle boundary; otherwise leave mail queued. |
-| Host chooses Steer | Use the selected mode's real current-activity injection and terminal acknowledgement. |
+| Member busy | Queue ordinary messages; never silently interrupt. ADR 0068 retired the injection path, so the queue is the only option. |
+| Observed native continuation active | Leave mail queued for the next cycle boundary. |
+| Host wants the member to change course now | Interrupt the current cycle, then send the correction as ordinary mail. There is no mid-cycle Steer. |
 | Provider asks a question | Create a correlated Message and wait for its correlated reply. |
 | Provider asks for a protected project action | Require the appropriate Human or policy approval and record the decision on the Work record; do not create a generic interaction object, do not revive the retired Approval ledger, and never infer approval from tool completion. |
 | Native continuation satisfies its condition | Record/project the provider fact, then await explicit Work submission/Host acceptance as required. |
@@ -300,7 +300,7 @@ uniform mailbox promise:
 
 | Team execution mode | `ordinary_message_boundary` | Host expectation |
 | --- | --- | --- |
-| Claude `claude_agent_sdk` | `in_turn` | Streaming input may reach the active provider turn. |
+| Claude `claude_agent_sdk` | `in_turn` | The AsyncIterable can present input to the active turn; Harness never uses it as a control channel. |
 | Codex `codex_app_server` | `next_round` | Mail remains queued until the next native round. |
 | Kimi `kimi_acp` | `next_round_batched` | Mail is claimed and rendered together at the next round boundary. |
 | DeepSeek Harness `deepseek_sdk` | `next_round_batched` | Mail enters the next host-driven DSH cycle through `Agent.followup`; native Goal plugins are absent. |
@@ -333,16 +333,16 @@ After ADR 0067 the continuation entries (`inspect_continuation`,
 `inhibit_continuation`, `resume_continuation`) are gone from that set — a
 provider declares only what it can be asked to do, and nothing can ask it to
 control a continuation. What remains relevant to continuation is observational
-and terminal:
+and terminal (ADR 0068 also retired the injection declarations):
 
 ```text
 observe                     is the native continuation visible at all?
-can_inject_while_running    can ordinary mail reach an active cycle?
 can_interrupt_current_activity
 emits_cycle_boundaries      can the Host see one cycle end?
 emits_completion_reason
-quiesce                     can the adapter prove the continuation is disarmed,
-                            the cycle terminal, and the lane drained?
+quiesce                     can the adapter prove the continuation cannot start
+                            another cycle, the cycle terminal, and the lane
+                            drained?
 ```
 
 Capability is proven in four layers:
@@ -416,7 +416,7 @@ The Host:
 3. gives writable members disjoint worktrees or explicit shared-file
    coordination;
 4. observes Works, WorkDelivery, Inbox, correlated questions and native continuation;
-5. uses explicit Steer, Interrupt, driver change and Close operations;
+5. uses explicit Interrupt and Close operations;
 6. accepts submitted Work separately from provider completion.
 
 The Member:
@@ -456,8 +456,8 @@ A continuation integration is not accepted until tests prove:
 1. exactly one execution driver can own a Member/session/Workspace;
 2. an observed native continuation never overlaps an independent Harness start,
    and Close pauses it before the terminal observation;
-3. ordinary busy mail remains queued or is injected through a verified safe
-   operation;
+3. ordinary busy mail remains queued — there is no verified safe injection
+   operation left to use;
 4. permissions remain correct for every provider-created cycle;
 5. observation and interrupt report real provider state, and the retired
    control kinds stay frozen rather than silently readmitted;

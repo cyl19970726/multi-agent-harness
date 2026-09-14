@@ -388,7 +388,8 @@ fn member_resume_route_rejects_active_and_resumes_closed_member() {
     assert_eq!(status, 202, "body: {body}");
     wait_for_member_runtime_ready(&serve, &project_id, &member_id, Duration::from_secs(15));
 
-    // An active member is continued by message/steer, never by resume.
+    // An active member is continued by ordinary mail at its next cycle,
+    // never by resume.
     let (status, body) = serve.post_json(
         &format!("/v1/team-runs/{run_id}/members/{member_id}/resume?project={project_id}"),
         &serde_json::json!({}),

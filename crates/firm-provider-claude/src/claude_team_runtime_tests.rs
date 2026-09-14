@@ -59,7 +59,7 @@ fn start_frame_uses_the_shared_versioned_runner_contract() {
 }
 
 #[test]
-fn capability_surface_does_not_overclaim_goal_steer_or_strict_quiesce() {
+fn capability_surface_does_not_overclaim_goal_or_strict_quiesce() {
     let bindings = ClaudeTeamRuntime::capability_bindings();
     let status = |name: &str| {
         bindings
@@ -74,9 +74,15 @@ fn capability_surface_does_not_overclaim_goal_steer_or_strict_quiesce() {
         CapabilityStatus::Supported
     );
     assert_eq!(status("close_runtime"), CapabilityStatus::Supported);
-    assert_eq!(
-        status("inject_current_cycle"),
-        CapabilityStatus::Unsupported
+    // ADR 0067/0068: the retired continuation and injection control planes
+    // must not reappear as bindings.
+    assert!(
+        !bindings.iter().any(|binding| {
+            binding.capability.contains("continuation")
+                || binding.capability.contains("inject")
+                || binding.capability.contains("queue_at_native")
+        }),
+        "retired control planes must not reappear as capability bindings"
     );
     assert_eq!(status("quiesce"), CapabilityStatus::Degraded);
     assert_eq!(status("release"), CapabilityStatus::Degraded);
@@ -240,7 +246,6 @@ for await (const line of input) {
                 accepted = receipt.response_id.clone();
                 Ok(())
             },
-            &mut |_pending, _result| Ok(()),
             &mut |_event| {},
             &mut || CycleControl {
                 interrupt: true,
@@ -346,7 +351,6 @@ for await (const line of input) {
                 accepted = true;
                 Ok(())
             },
-            &mut |_pending, _result| Ok(()),
             &mut |_event| {},
             &mut CycleControl::default,
         )
@@ -417,7 +421,6 @@ for await (const line of input) {
                 accepted = true;
                 Ok(())
             },
-            &mut |_pending, _result| Ok(()),
             &mut |_event| {},
             &mut CycleControl::default,
         )
@@ -488,7 +491,6 @@ for await (const line of input) {
                 accepted = true;
                 Ok(())
             },
-            &mut |_pending, _result| Ok(()),
             &mut |_event| {},
             &mut CycleControl::default,
         )
@@ -526,7 +528,6 @@ fn live_claude_21220_round_interrupt_close_and_same_session_resume() {
         resume_session_id,
         environment: harness_runtime_contract::CollaborationCapabilityEnvironment::empty(),
     };
-    let mut no_steer = |_pending: &SteerRequest, _result: &SteerProviderResult| Ok(());
     let mut no_event = |_event: &Value| {};
 
     let mut first = ClaudeRunnerTransport::spawn(&config(None)).unwrap();
@@ -537,7 +538,6 @@ fn live_claude_21220_round_interrupt_close_and_same_session_resume() {
                 120,
             )),
             &mut |_receipt| Ok(()),
-            &mut no_steer,
             &mut no_event,
             &mut CycleControl::default,
         )
@@ -557,7 +557,6 @@ fn live_claude_21220_round_interrupt_close_and_same_session_resume() {
                 120,
             )),
             &mut |_receipt| Ok(()),
-            &mut no_steer,
             &mut no_event,
             &mut || CycleControl {
                 interrupt: true,
@@ -588,7 +587,6 @@ fn live_claude_21220_round_interrupt_close_and_same_session_resume() {
                 120,
             )),
             &mut |_receipt| Ok(()),
-            &mut no_steer,
             &mut no_event,
             &mut CycleControl::default,
         )
@@ -787,7 +785,6 @@ fn drive_claude_cycle_with_silence(
             "conformance cycle",
             *timeouts,
             &mut |_receipt| Ok(()),
-            &mut |_pending, _result| Ok(()),
             &mut |_event| {},
             &mut control,
         )

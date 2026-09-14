@@ -227,17 +227,6 @@ pub(super) fn register_live_member_control(
                 execution_mode: profile
                     .map(|profile| profile.execution_mode.clone())
                     .unwrap_or_else(|| "unknown".to_string()),
-                // Steer requires a real current-cycle injection channel:
-                // codex app-server `turn/steer`, or pi RPC `steer` compiled at
-                // the cycle control boundary (proven by
-                // tests/pi_team_member.rs steer conformance). Everything else
-                // keeps failing closed here.
-                supports_steer: profile.is_some_and(|profile| {
-                    matches!(
-                        profile.execution_mode.as_str(),
-                        "codex_app_server" | "pi_rpc"
-                    )
-                }),
                 supports_interrupt: profile.is_some_and(|profile| {
                     has_active_verified_provider_capability(profile, "interrupt_current_cycle")
                 }),
@@ -711,12 +700,6 @@ where
         return serde_json::to_value(result).map_err(CliError::Json);
     }
     match request.requirement() {
-        LiveMemberControlRequirement::Steer if !control.supports_steer => {
-            return Err(CliError::Usage(format!(
-                "{} does not support mid-turn steer; send a queued TeamMessageProjection instead",
-                control.execution_mode
-            )));
-        }
         LiveMemberControlRequirement::Interrupt if !control.supports_interrupt => {
             return Err(CliError::Usage(format!(
                 "{} does not support live interruption",
@@ -805,15 +788,6 @@ where
     };
     let (reply_tx, reply_rx) = sync_channel(1);
     let command = match request {
-        LiveMemberControlRequest::Steer {
-            content,
-            requested_by,
-            ..
-        } => MemberControlCommand::Steer {
-            content,
-            requested_by,
-            reply: reply_tx,
-        },
         LiveMemberControlRequest::Interrupt {
             reason,
             requested_by,

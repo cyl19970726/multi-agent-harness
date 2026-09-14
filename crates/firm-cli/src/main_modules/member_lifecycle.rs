@@ -797,12 +797,6 @@ pub(super) fn poll_idle_member_wake(
                         "provider_ack": "no_active_turn",
                     })));
                 }
-                MemberControlCommand::Steer { reply, .. } => {
-                    let _ = reply.send(Err(CliError::Usage(
-                        "member is idle; assign Work or send a response-required TeamMessageProjection to start a new turn"
-                            .to_string(),
-                    )));
-                }
             }
         }
         if let Some(close) = pending_member_close(&ledger.store, &member_row.id)? {

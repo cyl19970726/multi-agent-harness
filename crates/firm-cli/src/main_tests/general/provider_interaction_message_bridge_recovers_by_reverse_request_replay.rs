@@ -212,7 +212,7 @@ fn provider_interaction_message_bridge_recovers_by_reverse_request_replay() {
         .expect("response message");
     assert!(response_message.deliveries.iter().any(|delivery| {
         delivery.member_id == running.id
-            && delivery.policy == TeamDeliveryPolicy::Inject
+            && delivery.policy == TeamDeliveryPolicy::Queue
             && delivery.status == TeamDeliveryStatus::Delivered
             && delivery.provider_receipt_id.as_deref()
                 == Some("test-provider-receipt-after-restart")

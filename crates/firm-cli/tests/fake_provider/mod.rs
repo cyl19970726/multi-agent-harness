@@ -565,7 +565,7 @@ if [ "$1" = "app-server" ]; then
           thread_status="${FAKE_CODEX_FAILURE_THREAD_STATUS:-systemError}"
           continue
         fi
-        if [ "${FAKE_CODEX_AUTO_COMPLETE:-0}" = "1" ] || { [ "${FAKE_CODEX_AUTO_COMPLETE_AFTER_STEER:-0}" = "1" ] && [ "$turn_seq" -gt "1" ]; }; then
+        if [ "${FAKE_CODEX_AUTO_COMPLETE:-0}" = "1" ]; then
           printf '{"method":"item/agentMessage/delta","params":{"threadId":"%s","turnId":"%s","itemId":"message-app-1","delta":"## RESULT\\ndone\\n## SUMMARY\\nexecuted approved plan\\n"}}\n' "$thread_id" "$turn_id"
           printf '{"method":"turn/completed","params":{"threadId":"%s","turn":{"id":"%s","status":"completed","items":[{"id":"message-app-1","type":"agentMessage","text":"## RESULT\\ndone\\n## SUMMARY\\nexecuted approved plan\\n"}]}}}\n' "$thread_id" "$turn_id"
           thread_status="idle"
@@ -599,12 +599,6 @@ if [ "$1" = "app-server" ]; then
         elif [ "${FAKE_CODEX_ASK:-0}" = "1" ]; then
           printf '{"id":700,"method":"item/tool/requestUserInput","params":{"threadId":"%s","turnId":"%s","itemId":"ask-app-1","isBlocking":true,"questions":[{"id":"implementation","header":"Contract","question":"Which implementation should be used?","isSecret":false,"options":[{"label":"Use native contract","description":"Use the provider-native path."},{"label":"Stop","description":"Do not continue."}]}]}}\n' "$thread_id" "$turn_id"
         fi
-        ;;
-      *'"method":"turn/steer"'*)
-        printf '{"id":%s,"result":{"turnId":"%s"}}\n' "$id" "$turn_id"
-        printf '{"method":"item/agentMessage/delta","params":{"threadId":"%s","turnId":"%s","itemId":"message-app-1","delta":"## RESULT\\ndone\\n## SUMMARY\\nsteered app-server member\\n"}}\n' "$thread_id" "$turn_id"
-        printf '{"method":"turn/completed","params":{"threadId":"%s","turn":{"id":"%s","status":"completed","items":[{"id":"message-app-1","type":"agentMessage","text":"## RESULT\\ndone\\n## SUMMARY\\nsteered app-server member\\n"}]}}}\n' "$thread_id" "$turn_id"
-        thread_status="idle"
         ;;
       *'"method":"turn/interrupt"'*)
         printf '{"id":%s,"result":{}}\n' "$id"
@@ -863,7 +857,7 @@ for line in sys.stdin:
             resp = {{'id': cid, 'type': 'response', 'command': 'prompt', 'success': True}}
             print(json.dumps(resp), flush=True)
             raise SystemExit(0)
-        if os.environ.get('FAKE_PI_WAIT_FOR_STEER') == '1' and prompt_count == 1:
+        if os.environ.get('FAKE_PI_HOLD_FIRST_CYCLE') == '1' and prompt_count == 1:
             pm = os.environ.get('FAKE_PI_PROMPT_MARKER')
             if pm:
                 with open(pm, 'a') as f:
@@ -872,7 +866,10 @@ for line in sys.stdin:
             print(json.dumps(resp), flush=True)
             print(json.dumps({{"type": "agent_start"}}), flush=True)
             print(json.dumps({{"type": "turn_start"}}), flush=True)
-            # Hold the cycle open until an explicit steer (or abort) arrives.
+            # Hold the cycle open until an abort arrives. The steer branch is
+            # kept so a stray native steer frame is still recorded: ADR 0068
+            # retired the Harness path, and the test asserts the marker stays
+            # absent.
             while True:
                 line2 = sys.stdin.readline()
                 if not line2:

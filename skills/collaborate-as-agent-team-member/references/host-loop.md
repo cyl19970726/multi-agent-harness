@@ -235,8 +235,9 @@ immediately but does not interrupt your current reasoning.
   `response-required` when a response is needed from an eligible idle member.
 - A queued Message is not current-turn steering. Its boundary is the input
   assembled from successful claims and handed to the provider; later arrivals
-  wait for another cycle. Steer is a separate capability-checked control. Kimi ACP without
-  reviewed steering cannot consume new text inside its active prompt.
+  wait for another cycle. ADR 0068 retired mid-cycle Steer for every provider:
+  to change a busy member's course now, Interrupt the cycle and send the
+  correction as ordinary mail.
 - To make a busy member read a correction before continuing: persist a linked
   response-required Message first. If continuing the current Work would be
   wrong, explicitly block that Work at its current version. If sending or

@@ -335,7 +335,6 @@ mod cycle_conformance {
                 "conformance cycle",
                 *timeouts,
                 &mut |_receipt| Ok(()),
-                &mut |_pending, _result| Ok(()),
                 &mut |_event| {},
                 &mut control,
             )

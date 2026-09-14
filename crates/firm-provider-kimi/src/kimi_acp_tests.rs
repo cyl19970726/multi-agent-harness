@@ -1094,7 +1094,6 @@ fn drive_kimi_cycle(
             "conformance cycle",
             timeouts,
             &mut |_receipt| Ok(()),
-            &mut |_pending, _result| Ok(()),
             &mut |_event| {},
             &mut control,
         )

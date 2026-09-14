@@ -2257,7 +2257,7 @@
       "status": "stable",
       "lifecycle": "stable",
       "canonicalFor": [
-        "mode-specific chat steer interrupt and stop semantics",
+        "mode-specific chat interrupt and stop semantics",
         "provider version drift review contract",
         "daily provider release-check cadence and Agent-managed staged updates",
         "Codex and Kimi interactive mode selection"
@@ -2577,7 +2577,7 @@
       "lastVerifiedWith": [
         "npx pnpm@9.15.4 acceptance:legacy-retirement"
       ],
-      "reorgTrigger": "Member autonomy, Inbox delivery, peer messaging, provider subagent attribution, Steer truth, or Host replan semantics change.",
+      "reorgTrigger": "Member autonomy, Inbox delivery, peer messaging, provider subagent attribution, or Host replan semantics change.",
       "authorityClass": "canonical_contract",
       "implementationState": "verified",
       "truthRefs": [
@@ -2663,7 +2663,7 @@
         },
         {
           "kind": "test",
-          "ref": "apps/agent-dashboard/tests/operator-controls-check.mjs"
+          "ref": "apps/agent-dashboard/tests/local-agentfirm-product-loop.mjs"
         },
         {
           "kind": "api",

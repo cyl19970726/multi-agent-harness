@@ -117,7 +117,7 @@ coordination boundary:
 | provider asks a user question | correlated request `Message` |
 | Lead answers | correlated reply `Message` + provider receipt |
 | provider requests more permission | fail closed against the frozen AgentSession ceiling |
-| operator steers/interrupts/resumes | control request + provider acknowledgement |
+| operator interrupts/resumes | control request + provider acknowledgement |
 | member submits owned Work for review | `WorkSubmitted` with result/evidence refs |
 | member explains or coordinates with another actor | Work-linked canonical `Message` |
 | member/Host declares an outcome | explicit outcome summary + refs |

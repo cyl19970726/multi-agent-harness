@@ -9,6 +9,8 @@ const FROZEN_RUNTIME_COMMAND_KINDS: &[RuntimeCommandKind] = &[
     RuntimeCommandKind::ReopenMember,
     RuntimeCommandKind::RetireMember,
     RuntimeCommandKind::DeleteNativeSession,
+    RuntimeCommandKind::InjectCurrentCycle,
+    RuntimeCommandKind::QueueAtNativeBoundary,
     RuntimeCommandKind::CancelPendingInput,
     RuntimeCommandKind::InspectContinuation,
     RuntimeCommandKind::ActivateContinuation,
@@ -426,10 +428,7 @@ impl HarnessStore {
                 })
                 .collect::<Vec<_>>();
             match command.command {
-                RuntimeCommandKind::DispatchProvider
-                | RuntimeCommandKind::StartCycle
-                | RuntimeCommandKind::InjectCurrentCycle
-                | RuntimeCommandKind::QueueAtNativeBoundary => {
+                RuntimeCommandKind::DispatchProvider | RuntimeCommandKind::StartCycle => {
                     if session.lifecycle != AgentSessionStatus::Active {
                         return Err(trust_error(
                             TrustErrorCode::InvalidStateTransition,
@@ -531,6 +530,8 @@ impl HarnessStore {
                 }
                 RuntimeCommandKind::RetireMember
                 | RuntimeCommandKind::DeleteNativeSession
+                | RuntimeCommandKind::InjectCurrentCycle
+                | RuntimeCommandKind::QueueAtNativeBoundary
                 | RuntimeCommandKind::InspectContinuation
                 | RuntimeCommandKind::ActivateContinuation
                 | RuntimeCommandKind::InhibitContinuation

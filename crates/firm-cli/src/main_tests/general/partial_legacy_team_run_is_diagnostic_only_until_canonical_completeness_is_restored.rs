@@ -220,17 +220,17 @@ fn partial_legacy_team_run_is_diagnostic_only_until_canonical_completeness_is_re
             lease.generation,
             &AtomicBool::new(true),
             &Mutex::new(()),
-            LiveMemberControlRequest::Steer {
+            LiveMemberControlRequest::Interrupt {
                 team_run_id: partial.id.clone(),
                 member_run_id: created.member_runs[0].id.clone(),
-                content: "must never reach provider".into(),
+                reason: "must never reach provider".into(),
                 requested_by: "host".into(),
             },
             || {
                 close_admission_hook_calls.fetch_add(1, Ordering::SeqCst);
             },
         )
-        .expect_err("Steer must reject before touching the live provider control"),
+        .expect_err("Interrupt must reject before touching the live provider control"),
     );
     expect_incomplete(
         dispatch_local_live_member_control_with_close_admission_hook(

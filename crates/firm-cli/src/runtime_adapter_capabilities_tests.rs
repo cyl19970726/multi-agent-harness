@@ -154,21 +154,18 @@ fn kimi_capability_bindings_match_the_reviewed_acp_surface() {
         assert_eq!(binding.status, CapabilityStatus::Supported, "{capability}");
         assert!(!binding.evidence.trim().is_empty(), "{capability}");
     }
-    for capability in [
-        "inject_current_cycle",
-        "queue_at_native_boundary",
-        "reconcile_effect",
-    ] {
-        let binding = bindings
-            .iter()
-            .find(|binding| binding.capability == capability)
-            .unwrap();
-        assert_eq!(
-            binding.status,
-            CapabilityStatus::Unsupported,
-            "{capability}"
-        );
-    }
+    let binding = bindings
+        .iter()
+        .find(|binding| binding.capability == "reconcile_effect")
+        .unwrap();
+    assert_eq!(binding.status, CapabilityStatus::Unsupported);
+    // ADR 0068: the retired injection control plane must not reappear.
+    assert!(
+        !bindings.iter().any(|binding| {
+            binding.capability.contains("inject") || binding.capability.contains("queue_at_native")
+        }),
+        "the Inject delivery policy is retired (ADR 0068)"
+    );
     for capability in ["quiesce", "release", "permission_enforcement"] {
         let binding = bindings
             .iter()

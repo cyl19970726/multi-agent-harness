@@ -1168,9 +1168,7 @@ impl TeamRunLedger {
             .filter(|message| message.sender_runtime_id != member_id)
             .filter(|message| {
                 message.deliveries.iter().any(|delivery| {
-                    delivery.member_id == member_id
-                        && delivery.policy != TeamDeliveryPolicy::Inject
-                        && delivery.status == TeamDeliveryStatus::Queued
+                    delivery.member_id == member_id && delivery.status == TeamDeliveryStatus::Queued
                 })
             })
             .collect())

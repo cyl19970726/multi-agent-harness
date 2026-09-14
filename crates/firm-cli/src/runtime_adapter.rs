@@ -18,15 +18,14 @@
 //!   the binding cannot execute fails closed with
 //!   `PROVIDER_CAPABILITY_UNSUPPORTED`, never a silent no-op;
 //! - ordinary Messages stay in the durable Harness queue until the cycle
-//!   settles — only an explicit Steer control command may compile into
-//!   current-cycle injection (DOC-89 §13.1);
+//!   settles. ADR 0068 retired the mid-cycle Steer path entirely: no control
+//!   command compiles into current-cycle injection;
 //! - capability claims carry evidence; a bare `true` that the code cannot
 //!   back is an overclaim and a defect;
 //! - one execution driver per native session + writable workspace: the
 //!   supervisor lease + generation fencing stays the single-driver seam.
 
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
 use std::sync::mpsc::SyncSender;
 use std::time::Duration;
 
@@ -107,25 +106,8 @@ pub(crate) use capabilities::*;
 /// Harness control intents delivered mid-cycle. Ordinary Messages never
 /// appear here — they remain in the durable queue until the cycle settles.
 pub(crate) use harness_runtime_contract::{
-    CapabilityBinding, CapabilityStatus, CycleControl, SteerProviderResult, SteerRequest,
-    TeamRuntimeAdapter,
+    CapabilityBinding, CapabilityStatus, CycleControl, TeamRuntimeAdapter,
 };
-
-struct PendingSteerSettlement {
-    success_reply: Value,
-    reply: Option<std::sync::mpsc::SyncSender<CliResult<Value>>>,
-    admission: crate::ProviderEffectAdmission,
-}
-
-impl Drop for PendingSteerSettlement {
-    fn drop(&mut self) {
-        if let Some(reply) = self.reply.take() {
-            let _ = reply.send(Err(CliError::RuntimeRecoveryRequired(
-                "steer ended without provider settlement".to_string(),
-            )));
-        }
-    }
-}
 
 // ---------------------------------------------------------------------------
 // Generic member loop
@@ -298,7 +280,6 @@ struct RuntimeSupervisorState<'a, A> {
     adapter: &'a mut A,
     live_control: &'a ControlReceiver<MemberControlCommand>,
     live_control_registration: Option<LiveMemberControlRegistration>,
-    supports_inject: bool,
     provider: &'static str,
     display: &'static str,
     wake_policy: WakePolicy,
@@ -355,7 +336,6 @@ pub(crate) fn run_team_member_with_adapter<A: TeamRuntimeAdapter<Error = CliErro
     live_control_registration: Option<LiveMemberControlRegistration>,
     provider_attempt: u64,
 ) -> CliResult<MemberOutcome> {
-    let supports_inject = adapter.supports_inject_current_cycle();
     let provider = adapter.provider();
     let display = adapter.display_name();
 
@@ -369,7 +349,6 @@ pub(crate) fn run_team_member_with_adapter<A: TeamRuntimeAdapter<Error = CliErro
         adapter,
         live_control,
         live_control_registration,
-        supports_inject,
         provider,
         display,
         wake_policy: crate::supervisor_wake::effective_wake_policy(),
@@ -413,7 +392,6 @@ pub(crate) fn run_team_member_with_adapter<A: TeamRuntimeAdapter<Error = CliErro
                 context,
                 adapter,
                 live_control,
-                supports_inject,
                 provider,
                 ..
             } = state;
@@ -422,7 +400,6 @@ pub(crate) fn run_team_member_with_adapter<A: TeamRuntimeAdapter<Error = CliErro
             let context = *context;
             let adapter = &mut **adapter;
             let live_control = *live_control;
-            let supports_inject = *supports_inject;
             let provider = *provider;
             let prompt = cycle.prompt.clone();
             let source_record_id = cycle
@@ -505,9 +482,6 @@ pub(crate) fn run_team_member_with_adapter<A: TeamRuntimeAdapter<Error = CliErro
             // against the same Idle activity snapshot. Preserve that snapshot
             // until both commands settle, then publish the terminal Idle state.
             let terminal_control_dispatched = Cell::new(false);
-            let pending_steers: RefCell<HashMap<u64, PendingSteerSettlement>> =
-                RefCell::new(HashMap::new());
-            let next_steer_token = Cell::new(0u64);
             let early_native_binding_error = RefCell::new(None::<String>);
             let native_locator_kind = adapter.native_locator_kind().to_string();
 
@@ -592,71 +566,6 @@ pub(crate) fn run_team_member_with_adapter<A: TeamRuntimeAdapter<Error = CliErro
                     }
                     Ok(())
                 },
-                &mut |request, result| {
-                    ledger.require_supervisor_lease()?;
-                    require_provider_session_authority(
-                        ledger,
-                        &member_row.agent_member_id,
-                        true,
-                    )?;
-                    let mut pending = pending_steers
-                        .borrow_mut()
-                        .remove(&request.token)
-                        .ok_or_else(|| {
-                            CliError::RuntimeRecoveryRequired(format!(
-                                "unknown steer token {}",
-                                request.token
-                            ))
-                        })?;
-                    match result {
-                        SteerProviderResult::Acknowledged(receipt) => {
-                            settle_provider_effect(
-                                ledger,
-                                &pending.admission,
-                                APPLIED_SATISFIED,
-                                Some(serde_json::json!({
-                                    "phase": "provider_input_accepted",
-                                    "provider_receipt": receipt,
-                                })),
-                                None,
-                            )?;
-                            if let Some(response_id) = receipt.response_id.as_ref() {
-                                pending.success_reply["provider_response_id"] =
-                                    response_id.clone().into();
-                            }
-                            if let Some(reply) = pending.reply.take() {
-                                let _ = reply.send(Ok(pending.success_reply.clone()));
-                            }
-                            Ok(())
-                        }
-                        SteerProviderResult::Unknown(detail) => {
-                            settle_provider_effect(
-                                ledger,
-                                &pending.admission,
-                                UNPROVEN,
-                                None,
-                                Some(detail.clone()),
-                            )?;
-                            if let Some(reply) = pending.reply.take() {
-                                let _ = reply.send(Err(CliError::RuntimeRecoveryRequired(
-                                    detail.clone(),
-                                )));
-                            }
-                            Ok(())
-                        }
-                        SteerProviderResult::NotApplied(detail) => {
-                            settle_provider_effect_not_applied(
-                                ledger,
-                                &pending.admission,
-                                detail.clone(),
-                            )?;
-                            if let Some(reply) = pending.reply.take() {
-                                let _ = reply.send(Err(CliError::Usage(detail.clone())));
-                            }
-                            Ok(())
-                        }
-                    }
-                },
                 &mut |event| {
                     if provider == "claude"
                         && event.get("event").and_then(serde_json::Value::as_str)
@@ -686,7 +595,10 @@ pub(crate) fn run_team_member_with_adapter<A: TeamRuntimeAdapter<Error = CliErro
                         control.fatal_error = Some(error);
                         return control;
                     }
-                    while let Ok(command) = live_control.try_recv() {
+                    // Both remaining control commands settle the cycle and
+                    // return, so at most one is consumed per poll. ADR 0068
+                    // retired Steer, which was the only non-terminal one.
+                    if let Ok(command) = live_control.try_recv() {
                         match command {
                             MemberControlCommand::Close {
                                 reason,
@@ -814,54 +726,6 @@ pub(crate) fn run_team_member_with_adapter<A: TeamRuntimeAdapter<Error = CliErro
                                     }
                                 }
                                 return control;
-                            }
-                            MemberControlCommand::Steer {
-                                content,
-                                requested_by,
-                                reply,
-                            } => {
-                                // Only an explicit Steer command may compile
-                                // into current-cycle injection. Ordinary
-                                // Messages never reach this channel.
-                                if supports_inject {
-                                    let steer_source = format!(
-                                        "{source_record_id}:steer:{requested_by}"
-                                    );
-                                    match crate::prepare_provider_effect_kind(
-                                        ledger,
-                                        member_row,
-                                        &steer_source,
-                                        &content,
-                                        harness_core::agentfirm_api::RuntimeCommandKind::InjectCurrentCycle,
-                                        "cycle.inject_current",
-                                        None,
-                                    ) {
-                                        Ok(admission) => {
-                                            let token = next_steer_token.get();
-                                            next_steer_token.set(token.saturating_add(1));
-                                            pending_steers.borrow_mut().insert(token, PendingSteerSettlement {
-                                                success_reply: serde_json::json!({
-                                                "member_run_id": member_row.id,
-                                                "status": "steer_accepted",
-                                                "delivery": "steered",
-                                                "provider_ack": format!(
-                                                    "{provider}_native_input_accepted"
-                                                ),
-                                                }),
-                                                reply: Some(reply),
-                                                admission,
-                                            });
-                                            control.injects.push(SteerRequest { token, content });
-                                        }
-                                        Err(error) => {
-                                            let _ = reply.send(Err(error));
-                                        }
-                                    }
-                                } else {
-                                    let _ = reply.send(Err(CliError::Usage(format!(
-                                        "PROVIDER_CAPABILITY_UNSUPPORTED: {provider} has no current-cycle injection"
-                                    ))));
-                                }
                             }
                         }
                     }

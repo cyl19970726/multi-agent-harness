@@ -271,7 +271,8 @@ impl HttpExchange<'_> {
 
         // POST /v1/team-runs/{id}/members/{member-id}/resume — capability-gated
         // alias over the reopen machinery for resuming the recorded native
-        // session; refuses active members (message/steer is their continuation).
+        // session; refuses active members (ordinary mail at their next cycle
+        // is their continuation).
         if let Some(rest) = path_only.strip_prefix("/v1/team-runs/") {
             let parts = rest.split('/').collect::<Vec<_>>();
             if let [team_run_id, "members", member_run_id, "resume"] = parts.as_slice() {

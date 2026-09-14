@@ -58,10 +58,6 @@ impl rt::TeamRuntimeAdapter for PiTeamRuntime {
         input: &str,
         timeouts: rt::CycleTimeouts,
         on_input_accepted: &mut dyn FnMut(&rt::ControlTransportReceipt) -> crate::CliResult<()>,
-        on_steer_result: &mut dyn FnMut(
-            &rt::SteerRequest,
-            &rt::SteerProviderResult,
-        ) -> crate::CliResult<()>,
         on_event: &mut dyn FnMut(&serde_json::Value),
         poll_control: &mut dyn FnMut() -> rt::CycleControl,
     ) -> crate::CliResult<rt::ExecutionCycleOutcome> {
@@ -70,7 +66,6 @@ impl rt::TeamRuntimeAdapter for PiTeamRuntime {
             input,
             timeouts,
             &mut |receipt| on_input_accepted(receipt).map_err(callback_error),
-            &mut |request, result| on_steer_result(request, result).map_err(callback_error),
             on_event,
             poll_control,
         )
@@ -82,14 +77,6 @@ impl rt::TeamRuntimeAdapter for PiTeamRuntime {
         interrupt: &'a mut bool,
     ) -> Box<dyn rt::ProviderNativeControl + 'a> {
         harness_provider_pi::PiTeamRuntime::native_control(close, interrupt)
-    }
-
-    fn supports_inject_current_cycle(&self) -> bool {
-        rt::TeamRuntimeAdapter::supports_inject_current_cycle(&self.0)
-    }
-
-    fn supports_native_boundary_queue(&self) -> bool {
-        rt::TeamRuntimeAdapter::supports_native_boundary_queue(&self.0)
     }
 }
 

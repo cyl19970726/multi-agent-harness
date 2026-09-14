@@ -466,9 +466,7 @@ pub(super) fn finalize_provider_integration_profile(profile: &mut ProviderIntegr
                         }));
                     let required_dependencies = match binding.capability {
                         "start_cycle" => vec!["open_or_resume", "observe"],
-                        "inject_current_cycle"
-                        | "queue_at_native_boundary"
-                        | "interrupt_current_cycle" => vec!["observe"],
+                        "interrupt_current_cycle" => vec!["observe"],
                         "close_runtime" => vec!["open_or_resume", "observe"],
                         "quiesce" => vec!["interrupt_current_cycle", "observe"],
                         "release" => vec!["quiesce"],

@@ -120,7 +120,6 @@ pub(super) fn provider_interaction_request_message(
             None,
             Some(correlation_id.clone()),
             None,
-            TeamMessageDeliveryMode::Routed,
             Some(ProviderResponseIntent::ResponseRequired),
         )?;
         replay.id = existing_request.id.clone();

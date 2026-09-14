@@ -255,9 +255,6 @@ pub(super) fn handle_http_action(
                 "UNAUTHORIZED_ACTOR: provider answer route {team_run_id}/{message_id} requires authenticated mutation dispatch"
             )));
         }
-        if let [team_run_id, "members", member_run_id, "steer"] = parts.as_slice() {
-            return steer_team_member_value(store, team_run_id, member_run_id, body);
-        }
         if let [team_run_id, "members", member_run_id, "interrupt"] = parts.as_slice() {
             return interrupt_team_member_value(store, team_run_id, member_run_id, body);
         }

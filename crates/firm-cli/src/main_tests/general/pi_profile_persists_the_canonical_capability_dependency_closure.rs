@@ -15,7 +15,7 @@ fn pi_profile_persists_the_canonical_capability_dependency_closure() {
         vec!["open_or_resume", "observe"]
     );
     assert_eq!(
-        binding("inject_current_cycle").required_dependencies,
+        binding("interrupt_current_cycle").required_dependencies,
         vec!["observe"]
     );
     assert_eq!(

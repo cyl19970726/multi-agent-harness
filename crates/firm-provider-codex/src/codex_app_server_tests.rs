@@ -376,15 +376,10 @@ fn requested_permission_controls_require_effective_native_confirmation() {
 }
 
 #[test]
-fn resume_and_steer_receipts_require_exact_native_ids() {
+fn resume_receipts_require_exact_native_ids() {
     require_resumed_thread_identity(Some("thread-1"), "thread-1").expect("exact resumed thread");
     require_resumed_thread_identity(None, "thread-new").expect("new thread has no prior id");
     assert!(require_resumed_thread_identity(Some("thread-1"), "thread-other").is_err());
-
-    let exact = serde_json::json!({"result": {"turnId": "turn-1"}});
-    assert_eq!(exact_steer_receipt(&exact, "turn-1").unwrap(), "turn-1");
-    assert!(exact_steer_receipt(&exact, "turn-other").is_err());
-    assert!(exact_steer_receipt(&serde_json::json!({"result": {}}), "turn-1").is_err());
 }
 
 #[test]
