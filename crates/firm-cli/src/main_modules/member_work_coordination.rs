@@ -719,7 +719,7 @@ impl TeamRunLedger {
         let Some(space_id) = self.store.trust_member_run_scope(&next.id)? else {
             return Ok(());
         };
-        let native_ref = agentfirm_native_session_ref(native);
+        let native_ref = native.clone();
         let binding_fingerprint = harness_store::canonical_json_fingerprint(
             &serde_json::to_value(&native_ref).map_err(CliError::Json)?,
         );

@@ -117,7 +117,7 @@ fn successor_resume_accepts_exact_native_identity_before_version_observation() {
         .as_mut()
         .expect("provider profile")
         .provider_version = Some("0.148.0-alpha.9".into());
-    let expected_admission = expected_agentfirm_native_session_ref(successor_resume)
+    let expected_admission = expected_member_run_native_session_ref(successor_resume)
         .expect("durable resume locator supplies the admission identity");
     assert_eq!(
         expected_admission.provider_version.as_deref(),
@@ -139,31 +139,31 @@ fn successor_resume_accepts_exact_native_identity_before_version_observation() {
     )
     .expect("exact native identity resumes before provider-version observation is refreshed");
 
-    let observed = agentfirm_native_session_ref(
-        settled
-            .native_session
-            .as_ref()
-            .expect("settled native session"),
+    let observed = settled
+        .native_session
+        .clone()
+        .expect("settled native session");
+    assert!(
+        harness_core::agentfirm_api::native_session_admits_resume_seed(
+            &observed,
+            &expected_admission
+        )
     );
-    assert!(agentfirm_native_session_identity_matches_for_admission(
-        Some(&observed),
-        Some(&expected_admission)
-    ));
     let mut wrong_native_id = expected_admission.clone();
     wrong_native_id.native_session_id = "thread-foreign".into();
-    assert!(!agentfirm_native_session_identity_matches(
+    assert!(!native_session_identity_matches(
         Some(&observed),
         Some(&wrong_native_id)
     ));
     let mut wrong_contract = expected_admission.clone();
     wrong_contract.adapter_contract_version = "foreign-contract".into();
-    assert!(!agentfirm_native_session_identity_matches(
+    assert!(!native_session_identity_matches(
         Some(&observed),
         Some(&wrong_contract)
     ));
     let mut wrong_version = expected_admission;
     wrong_version.provider_version = Some("0.149.0".into());
-    assert!(!agentfirm_native_session_identity_matches(
+    assert!(!native_session_identity_matches(
         Some(&observed),
         Some(&wrong_version)
     ));

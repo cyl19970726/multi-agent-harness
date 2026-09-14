@@ -11,22 +11,17 @@ impl HarnessStore {
         runtime: &ProviderRuntimeProjection,
         canonical: &CanonicalMemberRunAdmission,
     ) -> StoreResult<()> {
-        // Both projections will be persisted by this admission. Validate their
-        // immutable identity before inspecting historical Sessions, including
-        // when no Session exists yet or the member is external-interactive.
+        // Both of these are PROJECTIONS of one pointer. Admission publishes the
+        // same snapshot into two ledgers, so this guard asserts that the copies
+        // agree with each other before either is written — it never chooses a
+        // winner. Once an AgentSession binds the pointer, that AgentSession is
+        // the authority and these two are checked against it below.
         let projections_match = match (
             runtime.native_session.as_ref(),
             canonical.run.native_session.as_ref(),
         ) {
             (None, None) => true,
-            (Some(runtime), Some(canonical)) => {
-                runtime.provider == canonical.provider
-                    && runtime.execution_mode == canonical.execution_mode
-                    && runtime.native_session_id == canonical.native_session_id
-                    && runtime.native_locator_kind == canonical.native_locator_kind
-                    && runtime.provider_version == canonical.provider_version
-                    && runtime.adapter_contract_version == canonical.adapter_contract_version
-            }
+            (Some(runtime), Some(canonical)) => runtime.same_identity_as(canonical),
             _ => false,
         };
         if !projections_match {
@@ -35,12 +30,10 @@ impl HarnessStore {
                 canonical.run.id
             )));
         }
-        // Observations are not identity, but admission publishes one snapshot
-        // in two ledgers. The existing Run reader requires those snapshots to
-        // agree. Reject conflicting inputs rather than silently choosing one.
-        if serde_json::to_value(&runtime.native_session)?
-            != serde_json::to_value(&canonical.run.native_session)?
-        {
+        // Observations are not identity, but two projections of one pointer
+        // must still carry the same observation. Reject conflicting inputs
+        // rather than silently choosing one.
+        if runtime.native_session != canonical.run.native_session {
             return Err(StoreError::Conflict(format!(
                 "MEMBER_ADMISSION_NATIVE_PROJECTION_MISMATCH: canonical MemberRun {} and runtime projection have inconsistent native-session observations",
                 canonical.run.id
@@ -72,14 +65,14 @@ impl HarnessStore {
             canonical.run.native_session.as_ref(),
         ) {
             (None, None) => true,
-            (Some(current), Some(expected)) => {
-                // A resume locator does not know the version that opened the
-                // conversation until the provider observes it again.
-                let mut observed = current.clone();
-                if expected.provider_version.is_none() {
-                    observed.provider_version = None;
-                }
+            (Some(observed), Some(expected)) => {
+                // Exact identity, or the one named asymmetry: a resume locator
+                // does not know the version that opened the conversation until
+                // the provider observes it again.
                 observed.same_identity_as(expected)
+                    || firm_core::agentfirm_api::native_session_admits_resume_seed(
+                        observed, expected,
+                    )
             }
             _ => false,
         };

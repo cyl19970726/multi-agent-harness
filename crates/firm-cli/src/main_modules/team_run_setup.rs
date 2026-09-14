@@ -179,21 +179,30 @@ pub(super) fn build_member_run_for_team(
 ) -> CliResult<ProviderRuntimeProjection> {
     let profile =
         team_member_provider_profile_for_mode(&member.provider, member.execution_mode.as_deref());
-    let native_session =
-        member
-            .resume_native_session_id
-            .as_ref()
-            .map(|session_id| NativeSessionRef {
+    // A seeded resume pointer must carry the kind its adapter will actually
+    // produce: `native_locator_kind` is part of identity comparison, so a
+    // placeholder here makes the pointer unmatchable the moment the provider
+    // reports its session back.
+    let native_session = member
+        .resume_native_session_id
+        .as_ref()
+        .map(|session_id| -> CliResult<NativeSessionRef> {
+            let native_locator_kind = harness_core::native_locator_kind_for_mode(
+                &member.provider,
+                &profile.execution_mode,
+            )
+            .ok_or_else(|| {
+                CliError::Usage(format!(
+                    "RESUME_NATIVE_SESSION_UNSUPPORTED: {} mode {} has no reviewed adapter that \
+                     produces a provider-native session, so --resume-member cannot name one",
+                    member.provider, profile.execution_mode
+                ))
+            })?;
+            Ok(NativeSessionRef {
                 provider: member.provider.clone(),
                 execution_mode: profile.execution_mode.clone(),
                 native_session_id: session_id.clone(),
-                native_locator_kind: match member.provider.as_str() {
-                    "codex" => "codex_rollout",
-                    "kimi" => "kimi_code_session",
-                    "claude" => "claude_project_session",
-                    _ => "provider_native",
-                }
-                .to_string(),
+                native_locator_kind: native_locator_kind.to_string(),
                 provider_version: profile.provider_version.clone(),
                 adapter_contract_version: profile
                     .adapter_contract_version
@@ -203,7 +212,9 @@ pub(super) fn build_member_run_for_team(
                 supports_resume: profile.supports_resume,
                 last_verified_at: None,
                 parent_native_session_id: Some(session_id.clone()),
-            });
+            })
+        })
+        .transpose()?;
     Ok(ProviderRuntimeProjection {
         id: generated_id("member-run"),
         team_run_id: team_run_id.to_string(),
@@ -254,98 +265,54 @@ pub(super) fn build_member_run_for_team(
     })
 }
 
-/// Convert the ledger-facing NativeSessionRef into the trust-fabric
-/// agentfirm_api shape. Only the binding fields cross this boundary; the
-/// provider stream itself never enters the trust store.
-pub(super) fn agentfirm_native_session_ref(
-    session: &NativeSessionRef,
-) -> harness_core::agentfirm_api::NativeSessionRef {
-    harness_core::agentfirm_api::NativeSessionRef {
-        provider: session.provider.clone(),
-        execution_mode: session.execution_mode.clone(),
-        native_session_id: session.native_session_id.clone(),
-        native_locator_kind: session.native_locator_kind.clone(),
-        provider_version: session.provider_version.clone(),
-        adapter_contract_version: session.adapter_contract_version.clone(),
-        availability: match session.availability {
-            NativeSessionAvailability::Available => {
-                harness_core::agentfirm_api::NativeSessionAvailability::Available
-            }
-            NativeSessionAvailability::Stale => {
-                harness_core::agentfirm_api::NativeSessionAvailability::Stale
-            }
-            NativeSessionAvailability::Missing => {
-                harness_core::agentfirm_api::NativeSessionAvailability::Missing
-            }
-            NativeSessionAvailability::Incompatible => {
-                harness_core::agentfirm_api::NativeSessionAvailability::Incompatible
-            }
-            NativeSessionAvailability::Unknown => {
-                harness_core::agentfirm_api::NativeSessionAvailability::Unknown
-            }
-        },
-        supports_resume: session.supports_resume,
-        last_verified_at: session.last_verified_at.clone(),
-        parent_native_session_id: session.parent_native_session_id.clone(),
-    }
-}
-
-pub(super) fn agentfirm_native_session_identity_matches(
-    left: Option<&harness_core::agentfirm_api::NativeSessionRef>,
-    right: Option<&harness_core::agentfirm_api::NativeSessionRef>,
+/// Whether two optional native-session pointers name the same provider-native
+/// conversation. There is ONE identity predicate — `NativeSessionRef::
+/// same_identity_as` — and this only lifts it over `Option`.
+pub(super) fn native_session_identity_matches(
+    left: Option<&NativeSessionRef>,
+    right: Option<&NativeSessionRef>,
 ) -> bool {
     match (left, right) {
         (None, None) => true,
-        (Some(left), Some(right)) => {
-            left.provider == right.provider
-                && left.execution_mode == right.execution_mode
-                && left.native_session_id == right.native_session_id
-                && left.native_locator_kind == right.native_locator_kind
-                && left.provider_version == right.provider_version
-                && left.adapter_contract_version == right.adapter_contract_version
-        }
+        (Some(left), Some(right)) => left.same_identity_as(right),
         _ => false,
     }
 }
 
-pub(super) fn agentfirm_native_session_identity_matches_for_admission(
-    current: Option<&harness_core::agentfirm_api::NativeSessionRef>,
-    expected: Option<&harness_core::agentfirm_api::NativeSessionRef>,
+/// Whether an existing AgentSession's pointer may be admitted against the
+/// pointer the MemberRun asserts.
+///
+/// Exact identity, OR the one named asymmetry: a `--resume-member` seed names
+/// the conversation without knowing which provider version opened it, and the
+/// observed session carries the version the provider just reported.
+pub(super) fn session_native_session_is_admissible(
+    session_native: Option<&NativeSessionRef>,
+    member_run_native: Option<&NativeSessionRef>,
 ) -> bool {
-    match (current, expected) {
-        (Some(current), Some(expected)) => {
-            current.provider == expected.provider
-                && current.execution_mode == expected.execution_mode
-                && current.native_session_id == expected.native_session_id
-                && current.native_locator_kind == expected.native_locator_kind
-                && current.provider_version.is_some()
-                && expected.provider_version.is_none()
-                && current.adapter_contract_version == expected.adapter_contract_version
-        }
-        _ => false,
+    if native_session_identity_matches(session_native, member_run_native) {
+        return true;
     }
+    matches!(
+        (session_native, member_run_native),
+        (Some(observed), Some(seed))
+            if harness_core::agentfirm_api::native_session_admits_resume_seed(observed, seed)
+    )
 }
 
 /// Build the native-session identity asserted by durable MemberRun truth.
 /// ProviderProfile is only an executable compatibility observation; it cannot
 /// claim which provider version successfully opened this native session.
-pub(super) fn expected_agentfirm_native_session_ref(
+pub(super) fn expected_member_run_native_session_ref(
     member: &ProviderRuntimeProjection,
-) -> Option<harness_core::agentfirm_api::NativeSessionRef> {
-    member
-        .native_session
-        .as_ref()
-        .map(agentfirm_native_session_ref)
+) -> Option<NativeSessionRef> {
+    member.native_session.clone()
 }
 
 pub(super) fn canonical_member_run_admission(
     execution_space_id: &str,
     runtime: &ProviderRuntimeProjection,
 ) -> CanonicalMemberRunAdmission {
-    let native_session = runtime
-        .native_session
-        .as_ref()
-        .map(agentfirm_native_session_ref);
+    let native_session = runtime.native_session.as_ref().cloned();
     let run = harness_core::agentfirm_api::MemberRun {
         id: runtime.id.clone(),
         agent_member_id: runtime.agent_member_id.clone(),
