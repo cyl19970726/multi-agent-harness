@@ -51,6 +51,7 @@ fn provider_interaction_request_body() -> ProviderInteractionRequestBody {
     }
 }
 
+mod github_link_url_describes_its_own_object;
 mod historical_rows_without_sender_fall_back_to_from_member_id;
 mod ordinary_message_intent_treats_operator_and_service_as_coordination_plane;
 mod ordinary_message_response_intent_defaults_from_sender;

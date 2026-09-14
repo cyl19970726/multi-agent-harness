@@ -10,7 +10,7 @@ impl HttpExchange<'_> {
         let path = &self.path;
         let path_only = &self.path_only;
         let project_param = &self.project_param;
-        let project_id = &self.project_id;
+        let coordination_store_id = &self.coordination_store_id;
         let store_owned = &self.store;
         let store = store_owned;
         let company_os_path = self.company_os_path;
@@ -80,7 +80,7 @@ impl HttpExchange<'_> {
                 .filter(|project| !project.is_empty() && !project.contains('/'))
             {
                 let project = match projects
-                    .exact_project_context_for(Some(route_project), project_id)
+                    .exact_project_context_for(Some(route_project), coordination_store_id)
                 {
                     Ok(project) => project,
                     Err(error) => {
@@ -96,7 +96,7 @@ impl HttpExchange<'_> {
                     path,
                     &project,
                     store_owned,
-                    project_id,
+                    coordination_store_id,
                 ) {
                     Ok(response) => write_http_json(stream, "200 OK", &response)?,
                     Err(detail) => write_http_json(
@@ -110,7 +110,7 @@ impl HttpExchange<'_> {
             let role_view_store = if path_only.starts_with("/v1/views/") {
                 match projects.scoped_store_for_project(
                     store_owned,
-                    project_id,
+                    coordination_store_id,
                     project_param.as_deref(),
                 ) {
                     Ok(store) => store,
@@ -130,7 +130,7 @@ impl HttpExchange<'_> {
             if let Some(response) = role_views_api::handle_get(
                 &role_view_store,
                 &execution_space_stores,
-                project_id,
+                coordination_store_id,
                 path_only,
                 path,
                 build_git_rev(),
@@ -502,9 +502,10 @@ impl HttpExchange<'_> {
                         }
                     };
                     let selected_project_binding_id = if selected_agent_member_id.is_some() {
-                        match projects
-                            .exact_project_context_for(project_param.as_deref(), project_id)
-                        {
+                        match projects.exact_project_context_for(
+                            project_param.as_deref(),
+                            coordination_store_id,
+                        ) {
                             Ok(project) => Some(project.id),
                             Err(error) => {
                                 write_http_json(
@@ -563,7 +564,7 @@ impl HttpExchange<'_> {
                     // selected AgentMember and Team/local read boundary.
                     handle_sse_stream(
                         store_owned,
-                        project_id,
+                        coordination_store_id,
                         SseSelection {
                             project_binding_id: selected_project_binding_id.as_deref(),
                             company_scope_id: None,

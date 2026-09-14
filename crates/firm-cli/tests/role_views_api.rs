@@ -1,5 +1,7 @@
 #[path = "role_views_api/action_matrix_and_projection.rs"]
 mod action_matrix_and_projection;
+#[path = "role_views_api/agent_workspace_read_scope.rs"]
+mod agent_workspace_read_scope;
 #[path = "role_views_api/authorization_and_store_purity.rs"]
 mod authorization_and_store_purity;
 #[path = "role_views_api/canonical_team_message.rs"]
@@ -16,12 +18,16 @@ mod firm_env;
 mod provider_received_work_attempt;
 #[path = "role_views_api/remote_fabric_health.rs"]
 mod remote_fabric_health;
+#[path = "role_views_api/role_action_fixture.rs"]
+mod role_action_fixture;
 #[path = "role_views_api/standalone_codex_session.rs"]
 mod standalone_codex_session;
 #[path = "role_views_api/store_reads.rs"]
 mod store_reads;
 #[path = "role_views_api/submission_evidence_refusal.rs"]
 mod submission_evidence_refusal;
+#[path = "role_views_api/submission_revision_loop.rs"]
+mod submission_revision_loop;
 
 use action_matrix_and_projection::{
     assert_action_matrix_and_final_projections, ActionMatrixContext,
@@ -130,197 +136,23 @@ fn assert_exact_role_action_replay(
 
 #[test]
 fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
-    let home = TempHome::new("role-action-loop");
-    let root = home.base().join("project");
-    std::fs::create_dir_all(&root).expect("project root");
-    let initialized = run_firm(&home, &root, &["init"]);
-    assert!(initialized.status.success(), "init failed: {initialized:?}");
-    let project_id = current_project_id(&home);
-    let space_id = current_space_id(&home);
-    let worker_native_session_id = "019f-role-view-owner-session";
-    let rollout_dir = home.home().join(".codex/sessions/2026/08/13");
-    std::fs::create_dir_all(&rollout_dir).expect("Codex rollout fixture root");
-    std::fs::write(
-        rollout_dir.join(format!(
-            "rollout-2026-08-13T00-00-00-{worker_native_session_id}.jsonl"
-        )),
-        format!(
-            "{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"{worker_native_session_id}\"}}}}\n\
-             {{\"type\":\"event_msg\",\"payload\":{{\"type\":\"agent_reasoning\",\"turn_id\":\"turn-owner-1\",\"text\":\"raw-chain-of-thought-must-not-appear\"}}}}\n\
-             {{\"type\":\"event_msg\",\"payload\":{{\"type\":\"agent_message\",\"turn_id\":\"turn-owner-1\",\"message\":\"display-safe authored result\"}}}}\n\
-             {{\"type\":\"event_msg\",\"payload\":{{\"type\":\"task_complete\",\"turn_id\":\"turn-owner-1\"}}}}\n"
-        ),
-    )
-    .expect("Codex rollout fixture");
-    let run = |args: &[&str]| {
-        let mut full = vec!["--project", project_id.as_str()];
-        full.extend_from_slice(args);
-        let output = run_firm(&home, &root, &full);
-        assert!(output.status.success(), "fixture {args:?}: {output:?}");
-        output
-    };
-    let node: serde_json::Value =
-        serde_json::from_slice(&run(&["node", "init"]).stdout).expect("node JSON");
-    let node_id = node["id"].as_str().expect("node id");
-    run(&[
-        "node",
-        "project",
-        "register",
-        "--node-id",
+    let role_action_fixture::RoleActionFixture {
+        home,
+        root,
+        project_id,
+        space_id,
         node_id,
-        "--project-binding-id",
-        &project_id,
-    ]);
-    // DOC-108 retired the Mission writers; seed legacy provenance directly.
-    let mission_id = "mission-role-action-loop".to_string();
-    firm_env::seed_historical_mission(&home, &project_id, &mission_id, "Role action loop");
-    let host_id = "agent-role-action-host";
-    let host = create_canonical_agent_member(
-        &home,
-        &root,
-        &project_id,
-        host_id,
-        "Role Action Host",
-        "host",
-        "codex",
-        &[],
-    );
-    assert!(host.status.success(), "host: {host:?}");
-    let worker_id = "agent-role-action-worker";
-    let worker = create_canonical_agent_member(
-        &home,
-        &root,
-        &project_id,
-        worker_id,
-        "Role Action Worker",
-        "builder",
-        "codex",
-        &[],
-    );
-    assert!(worker.status.success(), "worker: {worker:?}");
-    let sibling_worker_id = "agent-role-action-sibling";
-    let sibling_worker = create_canonical_agent_member(
-        &home,
-        &root,
-        &project_id,
-        sibling_worker_id,
-        "Role Action Sibling",
-        "builder",
-        "codex",
-        &[],
-    );
-    assert!(
-        sibling_worker.status.success(),
-        "sibling worker: {sibling_worker:?}"
-    );
-    run(&[
-        "team",
-        "create",
-        "--name",
-        "Role action team",
-        "--description",
-        "Store-live action integration",
-        "--mission-id",
-        &mission_id,
-        "--host-agent-id",
-        host_id,
-        "--node-id",
-        node_id,
-        "--member",
-        host_id,
-        "--member",
-        worker_id,
-        "--member",
-        sibling_worker_id,
-    ]);
-    let store = HarnessStore::new(home.spaces_dir().join(&space_id));
-    let sibling_node_id = "10000000-0000-4000-8000-000000000002";
-    store
-        .insert_execution_node(&ExecutionNode {
-            id: sibling_node_id.into(),
-            display_name: "Sibling execution node".into(),
-            status: ExecutionNodeStatus::Active,
-            created_at: "2026-08-10T00:00:00Z".into(),
-            updated_at: "2026-08-10T00:00:00Z".into(),
-        })
-        .expect("insert sibling Node");
-    store
-        .register_node_project(
-            &NodeProjectRegistration {
-                node_id: sibling_node_id.into(),
-                execution_space_id: space_id.clone(),
-                project_binding_id: project_id.clone(),
-                status: NodeProjectRegistrationStatus::Active,
-                created_at: "2026-08-10T00:00:00Z".into(),
-                updated_at: "2026-08-10T00:00:00Z".into(),
-            },
-            &space_id,
-        )
-        .expect("register sibling Node");
-    let team = store
-        .latest_teams()
-        .expect("teams")
-        .into_values()
-        .next()
-        .expect("default team");
-    let credentials = serde_json::json!([{
-        "token": TOKEN,
-        "actor": {"kind":"agent_member","id":team.host_agent_id},
-        "authority_actors": []
-    },{
-        "token": MEMBER_TOKEN,
-        "actor": {"kind":"agent_member","id":worker_id},
-        "authority_actors": []
-    },{
-        "token": SIBLING_MEMBER_TOKEN,
-        "actor": {"kind":"agent_member","id":sibling_worker_id},
-        "authority_actors": []
-    },{
-        "token": OPERATOR_TOKEN,
-        "actor": {"kind":"service","id":node_id},
-        "authority_actors": []
-    },{
-        "token": WRONG_OPERATOR_TOKEN,
-        "actor": {"kind":"service","id":sibling_node_id},
-        "authority_actors": []
-    },{
-        "token": DELEGATED_OPERATOR_TOKEN,
-        "actor": {"kind":"human","id":"operator-human"},
-        "authority_actors": [{"kind":"service","id":node_id}]
-    }])
-    .to_string();
-    let other_space = run_firm(
-        &home,
-        &root,
-        &[
-            "space",
-            "init",
-            "--id",
-            "role-action-empty-space",
-            "--name",
-            "Role Action Empty Space",
-            "--project-binding",
-            &project_id,
-        ],
-    );
-    assert!(other_space.status.success(), "other space: {other_space:?}");
-    let other_project_root = home.base().join("other-project-binding");
-    std::fs::create_dir_all(&other_project_root).expect("other project root");
-    let other_project = run_firm(&home, &other_project_root, &["init"]);
-    assert!(
-        other_project.status.success(),
-        "other Project Binding: {other_project:?}"
-    );
-    let other_project_id = current_project_id(&home);
-    assert_ne!(
-        other_project_id, project_id,
-        "cross-binding test requires two distinct Project Bindings"
-    );
-    let restored_project = run_firm(&home, &root, &["project", "switch", project_id.as_str()]);
-    assert!(
-        restored_project.status.success(),
-        "restore primary Project Binding: {restored_project:?}"
-    );
+        mission_id,
+        store,
+        team,
+        credentials,
+        other_project_id,
+    } = role_action_fixture::seed_role_action_fixture();
+    let node_id = node_id.as_str();
+    let host_id = role_action_fixture::HOST_ID;
+    let worker_id = role_action_fixture::WORKER_ID;
+    let sibling_worker_id = role_action_fixture::SIBLING_WORKER_ID;
+    let worker_native_session_id = role_action_fixture::WORKER_NATIVE_SESSION_ID;
     let fake_bin =
         fake_provider::install_codex_team_shim(&home.base().join("role-action-codex-bin"));
     let path = format!(
@@ -640,279 +472,22 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
         status, 410,
         "run-addressed native history reader must remain retired: {retired_native_activity}"
     );
-    let member_agent_workspace_route =
-        format!("/v1/views/agent-workspace/{run_id}?project={project_id}&agent_id={worker_id}");
-    let (status, host_selected_member) = serve.get_json_with_headers(
-        &member_agent_workspace_route,
-        &[("X-AgentFirm-Token", TOKEN)],
+    agent_workspace_read_scope::assert_agent_workspace_read_scope(
+        agent_workspace_read_scope::AgentWorkspaceReadScopeContext {
+            serve: &serve,
+            home: &home,
+            root: &root,
+            store: &store,
+            space_id: &space_id,
+            project_id: &project_id,
+            other_project_id: &other_project_id,
+            run_id,
+            worker_id,
+            sibling_worker_id,
+            member_run_id,
+            team: &team,
+        },
     );
-    assert_eq!(
-        status, 200,
-        "Host-selected Member AgentWorkspace: {host_selected_member}"
-    );
-    assert_eq!(host_selected_member["view_kind"], "agent_workspace");
-    assert_eq!(
-        host_selected_member["data"]["projection_scope"],
-        "team_session_read"
-    );
-    assert_eq!(
-        host_selected_member["data"]["selected_agent"]["agent_member_ref"]["id"],
-        worker_id
-    );
-    assert_eq!(
-        host_selected_member["data"]["selected_agent"]["current_member_run_ref"], member_run_id,
-        "Host-selected Team Session read resolves the exact MemberRun binding"
-    );
-    assert!(host_selected_member["data"]
-        .get("persisted_session_projection")
-        .is_some());
-    assert!(host_selected_member["data"]
-        .get("current_session")
-        .is_some());
-    assert!(host_selected_member["data"]
-        .get("live_provider_activity")
-        .is_none());
-    assert!(host_selected_member["data"]
-        .get("session_event_projection")
-        .is_none());
-    assert!(host_selected_member["data"].get("runtime_fabric").is_none());
-    assert!(
-        host_selected_member["allowed_actions"]
-            .as_array()
-            .expect("Host public controls")
-            .iter()
-            .any(|action| action["kind"] == "close_member_run"
-                && action["target_ref"]["id"] == member_run_id),
-        "Host control projection remains available beside the Team Session read"
-    );
-    let before_owner_projection_ledgers = ledger_digest(serve.fixture_store_root());
-    let before_owner_projection_source = file_tree_digest(&home.home().join(".codex"));
-    let (status, member_self_workspace) = serve.get_json_with_headers(
-        &member_agent_workspace_route,
-        &[("X-AgentFirm-Token", MEMBER_TOKEN)],
-    );
-    assert_eq!(
-        status, 200,
-        "exact-self Member AgentWorkspace: {member_self_workspace}"
-    );
-    assert!(member_self_workspace["data"]
-        .get("live_provider_activity")
-        .is_none());
-    assert!(
-        member_self_workspace["data"]
-            .get("persisted_session_projection")
-            .is_some(),
-        "exact-self view must carry a persisted Session projection or an explicit unavailable result"
-    );
-    let current_session = &member_self_workspace["data"]["current_session"];
-    assert!(current_session["agent_session_id"]
-        .as_str()
-        .is_some_and(|id| id.starts_with("agent-session:")));
-    assert_eq!(current_session["provider"], "codex");
-    assert_eq!(
-        member_self_workspace["data"]["configuration"]["effective_permission_ceiling"],
-        current_session["effective_permission_ceiling"]
-    );
-    let owner_projection = &member_self_workspace["data"]["persisted_session_projection"];
-    assert_eq!(owner_projection["available"], true);
-    assert!(owner_projection["records"]
-        .as_array()
-        .expect("persisted native records")
-        .iter()
-        .any(|record| record["provider_turn_id"] == "turn-owner-1"));
-    let serialized_owner_projection =
-        serde_json::to_string(owner_projection).expect("projection JSON");
-    assert!(serialized_owner_projection.contains("display-safe authored result"));
-    assert!(serialized_owner_projection.contains("raw-chain-of-thought-must-not-appear"));
-    assert_eq!(
-        ledger_digest(serve.fixture_store_root()),
-        before_owner_projection_ledgers,
-        "on-demand provider projection must not write Harness ledgers"
-    );
-    assert_eq!(
-        file_tree_digest(&home.home().join(".codex")),
-        before_owner_projection_source,
-        "on-demand provider projection must not rewrite provider-native storage"
-    );
-    let cross_binding_route = format!(
-        "/v1/views/agent-workspace/{run_id}?project={other_project_id}&agent_id={worker_id}"
-    );
-    let (status, cross_binding_workspace) =
-        serve.get_json_with_headers(&cross_binding_route, &[("X-AgentFirm-Token", MEMBER_TOKEN)]);
-    assert_eq!(status, 200, "cross-binding owner view");
-    let cross_binding_projection = &cross_binding_workspace["data"]["persisted_session_projection"];
-    assert!(
-        cross_binding_projection["available"] == false,
-        "same Execution Space must not expose a Session through another Project Binding: {cross_binding_workspace}"
-    );
-    assert_eq!(
-        cross_binding_projection["agent_session_id"],
-        serde_json::Value::Null,
-        "cross-binding projection must not expose an AgentSession id"
-    );
-    assert_eq!(
-        cross_binding_workspace["data"].get("live_provider_activity"),
-        None,
-        "same Execution Space must not expose the retired live overlay"
-    );
-    for retired_history_field in ["sessions", "selected_session_id", "session_activity"] {
-        assert!(
-            member_self_workspace["data"]
-                .get(retired_history_field)
-                .is_none(),
-            "legacy provider field {retired_history_field} must remain retired"
-        );
-    }
-    let (status, sibling_local_operator) = serve.get_json_with_headers(
-        &member_agent_workspace_route,
-        &[("X-AgentFirm-Token", SIBLING_MEMBER_TOKEN)],
-    );
-    assert_eq!(
-        status, 200,
-        "loopback sibling context gets only the local Operator read projection: {sibling_local_operator}"
-    );
-    assert_eq!(
-        sibling_local_operator["data"]["projection_scope"],
-        "team_session_read"
-    );
-    assert_eq!(
-        sibling_local_operator["allowed_actions"],
-        serde_json::json!([]),
-        "local Operator read must not borrow sibling mutation authority"
-    );
-    let sibling_self_route = format!(
-        "/v1/views/agent-workspace/{run_id}?project={project_id}&agent_id={sibling_worker_id}"
-    );
-    let (status, sibling_self_unavailable) = serve.get_json_with_headers(
-        &sibling_self_route,
-        &[("X-AgentFirm-Token", SIBLING_MEMBER_TOKEN)],
-    );
-    assert_eq!(status, 200, "unavailable exact-self projection");
-    let unavailable = &sibling_self_unavailable["data"]["persisted_session_projection"];
-    assert_eq!(unavailable["available"], false);
-    assert!(unavailable["reason_code"].as_str().is_some());
-    let host_agent_workspace_route = format!(
-        "/v1/views/agent-workspace/{run_id}?project={project_id}&agent_id={}",
-        team.host_agent_id
-    );
-    let (status, exact_host_workspace) =
-        serve.get_json_with_headers(&host_agent_workspace_route, &[("X-AgentFirm-Token", TOKEN)]);
-    assert_eq!(
-        status, 200,
-        "exact Host AgentWorkspace: {exact_host_workspace}"
-    );
-    assert_eq!(
-        exact_host_workspace["data"]["selected_agent"]["is_host"],
-        true
-    );
-    assert!(
-        exact_host_workspace["data"]
-            .get("persisted_session_projection")
-            .is_some(),
-        "exact Host self view carries an explicit owner projection state"
-    );
-    let (status, member_local_operator_host) = serve.get_json_with_headers(
-        &host_agent_workspace_route,
-        &[("X-AgentFirm-Token", MEMBER_TOKEN)],
-    );
-    assert_eq!(
-        status, 200,
-        "loopback Member context gets only the local Operator Host projection: {member_local_operator_host}"
-    );
-    assert_eq!(
-        member_local_operator_host["data"]["projection_scope"],
-        "team_session_read"
-    );
-    assert_eq!(
-        member_local_operator_host["allowed_actions"],
-        serde_json::json!([]),
-        "local Operator Host read must not borrow Host mutation authority"
-    );
-    let member_run_version = store
-        .trust_member_runs(&space_id)
-        .expect("MemberRuns")
-        .into_iter()
-        .find(|run| run.id == member_run_id)
-        .expect("canonical MemberRun")
-        .version
-        .to_string();
-    for args in [
-        vec!["init"],
-        vec!["config", "user.email", "role-view@example.invalid"],
-        vec!["config", "user.name", "Role View Test"],
-        vec!["add", "-A"],
-        vec!["commit", "--allow-empty", "-m", "workspace proof fixture"],
-    ] {
-        let output = std::process::Command::new("git")
-            .current_dir(&root)
-            .args(&args)
-            .output()
-            .expect("run git workspace fixture command");
-        assert!(output.status.success(), "git {args:?}: {output:?}");
-    }
-    let before_hostile_workspace = ledger_digest(serve.fixture_store_root());
-    let workspace_route = format!(
-        "/v1/agentfirm/member-runs/{member_run_id}/workspace/provision?project={project_id}"
-    );
-    let workspace_headers = action_headers(
-        MEMBER_TOKEN,
-        "hostile-workspace-escape",
-        member_run_version.as_str(),
-    );
-    let (status, workspace_rejected) = serve.post_json_with_headers(
-        &workspace_route,
-        &serde_json::json!({
-            "action":"provision_workspace",
-            "project_binding_id":project_id,
-            "mode":"inherit",
-            "ownership":"shared_project",
-            "canonical_root":home.base()
-        }),
-        &workspace_headers,
-    );
-    assert_eq!(
-        status, 409,
-        "workspace escape must fail closed: {workspace_rejected}"
-    );
-    assert_eq!(
-        ledger_digest(serve.fixture_store_root()),
-        before_hostile_workspace,
-        "hostile workspace intent changed durable state"
-    );
-    let safe_workspace_headers = action_headers(
-        TOKEN,
-        "safe-workspace-provision",
-        member_run_version.as_str(),
-    );
-    let (status, provisioned_workspace) = serve.post_json_with_headers(
-        &workspace_route,
-        &serde_json::json!({
-            "action":"provision_workspace",
-            "project_binding_id":project_id,
-            "mode":"worktree",
-            "ownership":"managed",
-            "canonical_root":root
-        }),
-        &safe_workspace_headers,
-    );
-    assert_eq!(
-        status, 200,
-        "server-observed workspace provision: {provisioned_workspace}"
-    );
-    assert!(provisioned_workspace["projection"]["git_common_dir"]
-        .as_str()
-        .is_some());
-    assert_eq!(provisioned_workspace["projection"]["lifecycle"], "ready");
-    let attach_workspace_route =
-        format!("/v1/agentfirm/member-runs/{member_run_id}/workspace/attach?project={project_id}");
-    let attached_workspace = assert_exact_role_action_replay(
-        &serve,
-        &attach_workspace_route,
-        &serde_json::json!({"action":"attach_workspace"}),
-        &action_headers(TOKEN, "safe-workspace-attach", "3"),
-        "workspace attach",
-    );
-    assert_eq!(attached_workspace["projection"]["lifecycle"], "attached");
     let member_view_route =
         format!("/v1/views/member-workbench/{member_run_id}?project={project_id}");
     let (status, member_view) =
@@ -1231,176 +806,26 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
         "progress replay with changed If-Match must fail: {changed_progress}"
     );
 
-    // #787: a submission that names a candidate revision but omits the
-    // mandatory Verbatim evidence is refused before any durable effect.
-    submission_evidence_refusal::assert_submission_evidence_refusals(
-        &serve,
-        &store,
-        run_id,
-        &project_id,
+    submission_revision_loop::assert_submission_refusal_then_revision_and_accept(
+        submission_revision_loop::SubmissionRevisionContext {
+            serve: &serve,
+            store: &store,
+            space_id: &space_id,
+            project_id: &project_id,
+            node_id,
+            run_id,
+            worker_id,
+            member_run_id,
+            team: &team,
+            daemon: &daemon,
+            worker_membership: &worker_membership,
+            worker_session: &worker_session,
+            view_route: &view_route,
+            start_route: &start_route,
+            first_attempt: &first_attempt,
+            journal_before,
+        },
     );
-    submission_evidence_refusal::assert_report_only_refusals(&serve, run_id, &project_id);
-
-    submission_evidence_refusal::assert_compliant_result_submission(
-        &serve,
-        &store,
-        &space_id,
-        run_id,
-        &project_id,
-        journal_before,
-        &first_attempt,
-    );
-    let (status, review_view) =
-        serve.get_json_with_headers(&view_route, &[("X-AgentFirm-Token", TOKEN)]);
-    assert_eq!(status, 200, "review Host RoleView: {review_view}");
-    assert!(review_view["allowed_actions"]
-        .as_array()
-        .is_some_and(|actions| actions
-            .iter()
-            .any(|action| action["kind"] == "accept_work" && action["required_version"] == 4)));
-    let request_changes_route = format!(
-        "/v1/agentfirm/teams/{}/works/work-store-live-1/request-changes?project={project_id}",
-        team.id
-    );
-    let request_changes_headers = action_headers(TOKEN, "request-changes-store-live-1", "4");
-    let request_changes_intent =
-        serde_json::json!({"action":"request_changes","reason":"tighten exact replay evidence"});
-    let (status, changes_requested) = serve.post_json_with_headers(
-        &request_changes_route,
-        &request_changes_intent,
-        &request_changes_headers,
-    );
-    assert_eq!(status, 200, "request changes: {changes_requested}");
-    assert_eq!(changes_requested["projection"]["version"], 5);
-    assert_eq!(
-        changes_requested["projection"]["phase"], "open",
-        "Host changes return stable responsibility to canonical scheduling"
-    );
-    let (status, changes_replay) = serve.post_json_with_headers(
-        &request_changes_route,
-        &request_changes_intent,
-        &request_changes_headers,
-    );
-    assert_eq!(status, 200, "request changes replay: {changes_replay}");
-    assert_eq!(changes_replay["event_id"], changes_requested["event_id"]);
-    assert_eq!(changes_replay["replayed"], true);
-    let changes_requested_work = store
-        .latest_works()
-        .expect("Works after request changes")
-        .into_iter()
-        .find(|work| work.id == "work-store-live-1")
-        .expect("Work awaiting revised Result");
-    assert_eq!(changes_requested_work.version, 5);
-    let revised_attempt = admit_provider_received_work_attempt(ProviderReceivedWorkAttemptInput {
-        store: &store,
-        space_id: &space_id,
-        node_id,
-        daemon: &daemon,
-        member_run_id,
-        work: &changes_requested_work,
-        team: &team,
-        membership: &worker_membership,
-        worker_id,
-        session: &worker_session,
-        binding_generation: 2,
-    });
-    let revised_start_headers = action_headers(MEMBER_TOKEN, "start-store-live-1-revision", "5");
-    let (status, revised_started) = serve.post_json_with_headers(
-        &start_route,
-        &serde_json::json!({"action":"start_work"}),
-        &revised_start_headers,
-    );
-    assert_eq!(
-        status, 200,
-        "member starts revised attempt: {revised_started}"
-    );
-    assert_eq!(revised_started["projection"]["version"], 6);
-    assert_eq!(revised_started["projection"]["phase"], "active");
-    let revise_route = format!(
-        "/v1/agentfirm/teams/{}/works/work-store-live-1/revise?project={project_id}",
-        team.id
-    );
-    let revise_headers = action_headers(MEMBER_TOKEN, "revise-store-live-1", "6");
-    let revise_intent = serde_json::json!({"action":"revise_work","result_summary":"Revised Store-live loop","candidate_revision":"1123456789abcdef0123456789abcdef01234567","check_refs":["check:role-action-revise"]});
-    let (status, revised) =
-        serve.post_json_with_headers(&revise_route, &revise_intent, &revise_headers);
-    assert_eq!(status, 200, "member revise: {revised}");
-    assert_eq!(revised["projection"]["work_revision"], 7);
-    assert_released_provider_received_attempt(&store, &space_id, &revised_attempt);
-    let (status, revise_replay) =
-        serve.post_json_with_headers(&revise_route, &revise_intent, &revise_headers);
-    assert_eq!(status, 200, "member revise replay: {revise_replay}");
-    assert_eq!(revise_replay["event_id"], revised["event_id"]);
-    assert_eq!(revise_replay["replayed"], true);
-    let accept_route = format!(
-        "/v1/agentfirm/teams/{}/works/work-store-live-1/accept?project={project_id}",
-        team.id
-    );
-    let canonical_before_accept = store
-        .canonical_operations_for_space(&ExecutionSpaceId::new(&space_id))
-        .expect("before accept")
-        .len();
-    let no_confirm_headers = action_headers(TOKEN, "accept-no-confirm", "7");
-    let (status, no_confirm) = serve.post_json_with_headers(
-        &accept_route,
-        &serde_json::json!({"action":"accept_work"}),
-        &no_confirm_headers,
-    );
-    assert_eq!(status, 409, "missing confirmation: {no_confirm}");
-    let member_accept_headers = [
-        ("X-AgentFirm-Token", MEMBER_TOKEN),
-        ("Idempotency-Key", "accept-member-spoof"),
-        ("If-Match", "7"),
-        ("X-AgentFirm-Confirm", "accept"),
-    ];
-    let (status, member_accept) = serve.post_json_with_headers(
-        &accept_route,
-        &serde_json::json!({"action":"accept_work"}),
-        &member_accept_headers,
-    );
-    assert_eq!(status, 409, "Member authority spoof: {member_accept}");
-    let stale_accept_headers = [
-        ("X-AgentFirm-Token", TOKEN),
-        ("Idempotency-Key", "accept-stale"),
-        ("If-Match", "6"),
-        ("X-AgentFirm-Confirm", "accept"),
-    ];
-    let (status, stale_accept) = serve.post_json_with_headers(
-        &accept_route,
-        &serde_json::json!({"action":"accept_work"}),
-        &stale_accept_headers,
-    );
-    assert_eq!(status, 409, "stale accept: {stale_accept}");
-    assert_eq!(
-        store
-            .canonical_operations_for_space(&ExecutionSpaceId::new(&space_id))
-            .expect("rejected accepts")
-            .len(),
-        canonical_before_accept,
-        "rejected critical actions must have zero canonical side effects"
-    );
-    let accept_headers = [
-        ("X-AgentFirm-Token", TOKEN),
-        ("Idempotency-Key", "accept-store-live-1"),
-        ("If-Match", "7"),
-        ("X-AgentFirm-Confirm", "accept"),
-    ];
-    let (status, accepted) = serve.post_json_with_headers(
-        &accept_route,
-        &serde_json::json!({"action":"accept_work"}),
-        &accept_headers,
-    );
-    assert_eq!(status, 200, "Host accept: {accepted}");
-    assert_eq!(accepted["projection"]["phase"], "closed");
-    assert_eq!(accepted["projection"]["resolution"], "accepted");
-    let (status, accept_replay) = serve.post_json_with_headers(
-        &accept_route,
-        &serde_json::json!({"action":"accept_work"}),
-        &accept_headers,
-    );
-    assert_eq!(status, 200, "accept replay: {accept_replay}");
-    assert_eq!(accept_replay["event_id"], accepted["event_id"]);
-    assert_eq!(accept_replay["replayed"], true);
     // Exactly the create, the membership assignment, the two exact starts, the
     // submission's Review revision, the request-changes, the second submission
     // and this accept — every one of them a `work` transition, none of them a

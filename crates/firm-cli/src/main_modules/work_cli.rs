@@ -343,21 +343,12 @@ pub(super) fn team_run_work_command(
             let mut check_refs = Vec::new();
             if let Some(raw) = value(args, "--github-issue") {
                 let link = github_issue_link(&raw)?;
-                if !artifact_refs.contains(&link.url) {
-                    artifact_refs.push(link.url.clone());
-                }
+                merge_github_link_refs(&link, &mut artifact_refs, &mut check_refs);
                 github_links.push(link);
             }
             if let Some(raw) = value(args, "--github-pr") {
                 let link = github_pr_link(&raw)?;
-                if !artifact_refs.contains(&link.url) {
-                    artifact_refs.push(link.url.clone());
-                }
-                if let Some(ci_url) = &link.ci_url {
-                    if !check_refs.contains(ci_url) {
-                        check_refs.push(ci_url.clone());
-                    }
-                }
+                merge_github_link_refs(&link, &mut artifact_refs, &mut check_refs);
                 github_links.push(link);
             }
             let context_markdown = value(args, "--context").unwrap_or_default();

@@ -257,7 +257,6 @@ impl HarnessStore {
                     condition_records: Vec::new(),
                     reports: Vec::new(),
                     evidence_records: Vec::new(),
-                    decisions: Vec::new(),
                     delegation_revisions: Vec::new(),
                 };
                 self.validate_work_operation_records_unlocked(&operation)?;
@@ -800,7 +799,6 @@ impl HarnessStore {
                     .map(|record| record.id.as_str())
                     .chain(row.reports.iter().map(|record| record.id.as_str()))
                     .chain(row.evidence_records.iter().map(|record| record.id.as_str()))
-                    .chain(row.decisions.iter().map(|record| record.id.as_str()))
             })
             .collect::<std::collections::BTreeSet<_>>();
         let mut new_record_ids = std::collections::BTreeSet::new();
@@ -822,13 +820,6 @@ impl HarnessStore {
                 )
             }))
             .chain(operation.evidence_records.iter().map(|record| {
-                (
-                    record.id.as_str(),
-                    record.work_id.as_str(),
-                    record.validate(),
-                )
-            }))
-            .chain(operation.decisions.iter().map(|record| {
                 (
                     record.id.as_str(),
                     record.work_id.as_str(),

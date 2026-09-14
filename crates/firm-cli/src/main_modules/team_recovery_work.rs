@@ -1165,10 +1165,16 @@ pub(crate) struct GithubPollSummary {
 }
 
 impl GithubPollSummary {
+    /// Whether the pass observed nothing worth writing a TeamRun ledger event
+    /// for. A Work skipped because the Host closed it mid-pass is an
+    /// observation about this pass, so it keeps the pass off the no-op path
+    /// (#946): otherwise the only record that evidence was left unrefreshed
+    /// would be the command's own stdout.
     pub fn is_noop(&self) -> bool {
         self.links_refreshed == 0
             && self.blocked_on_failure.is_empty()
             && self.gate_ready.is_empty()
+            && self.terminal_skipped.is_empty()
     }
 }
 
@@ -1183,6 +1189,34 @@ impl GithubPollSummary {
 /// constant so the two sides cannot drift.
 pub(super) fn github_poll_refusal_is_terminal_skip(error: &str) -> bool {
     error.contains(harness_store::WORK_TERMINAL_IMMUTABLE)
+}
+
+/// Whether a refusal means "the Host settled this Work between the pass reading
+/// the Work list and writing its refreshed evidence".
+///
+/// Closing a Work advances its revision, and the Store checks the expected
+/// version before it checks mutability -- so an ordinary Host accept or cancel
+/// makes the refresh refuse with VERSION_CONFLICT, never with
+/// WORK_TERMINAL_IMMUTABLE. Absorbing only the terminal code therefore never
+/// absorbed the race it was written for; the pass died instead. Both refusals
+/// mean the same thing about the same Work, and external CI evidence never
+/// reopens a settled responsibility, so both are a per-Work skip.
+///
+/// It stays fail-closed on everything else: a version conflict on a Work that
+/// is still open is a real concurrent writer, and a fenced node, a stale daemon
+/// generation or a missing lease means the pass itself is wrong.
+pub(super) fn github_poll_refusal_is_settled_work(error: &str, terminal_now: bool) -> bool {
+    github_poll_refusal_is_terminal_skip(error)
+        || (terminal_now && error.contains("VERSION_CONFLICT"))
+}
+
+/// Re-read one Work's settled state after its evidence refresh was refused.
+fn work_is_terminal_now(store: &HarnessStore, work_id: &str) -> CliResult<bool> {
+    Ok(store
+        .latest_works()?
+        .into_iter()
+        .find(|work| work.id == work_id)
+        .is_some_and(|work| work.is_terminal()))
 }
 
 /// Refresh the stored GitHub linkage snapshot for every Work on the run that
@@ -1221,9 +1255,14 @@ pub(crate) fn poll_team_run_github_linkages(
         if pr_links.is_empty() {
             continue;
         }
-        summary.works_checked += 1;
+        // `works_checked` and `links_refreshed` state what this pass actually
+        // persisted, so both stay pending until the write commits (#946). A
+        // Work whose write the Store refuses as terminal is reported only as
+        // `terminal_skipped`; counting it here would claim refreshed evidence
+        // that was never stored.
         let mut refreshed_links = work.github_links.clone();
         let mut changed = false;
+        let mut pending_links_refreshed = 0usize;
         for link in &pr_links {
             let raw = format!("{}/{}#{}", link.owner, link.repo, link.number);
             let Ok(fresh) = github_pr_link(&raw) else {
@@ -1245,7 +1284,7 @@ pub(crate) fn poll_team_run_github_linkages(
                 changed = true;
             }
             if *link != fresh {
-                summary.links_refreshed += 1;
+                pending_links_refreshed += 1;
             }
             if fresh.status.as_deref() == Some("MERGED")
                 && fresh.ci_status.as_deref() == Some("failure")
@@ -1283,7 +1322,11 @@ pub(crate) fn poll_team_run_github_linkages(
                 &daemon,
                 context,
             ) {
-                if github_poll_refusal_is_terminal_skip(&error.to_string()) {
+                let error = error.to_string();
+                if github_poll_refusal_is_settled_work(
+                    &error,
+                    work_is_terminal_now(store, &work.id)?,
+                ) {
                     summary.terminal_skipped.push(work.id.clone());
                     continue;
                 }
@@ -1292,6 +1335,11 @@ pub(crate) fn poll_team_run_github_linkages(
                 )));
             }
         }
+        // Reached only when this Work's evidence is durable: either the write
+        // committed, or nothing about its links changed and there was nothing
+        // to write.
+        summary.works_checked += 1;
+        summary.links_refreshed += pending_links_refreshed;
     }
     Ok(summary)
 }

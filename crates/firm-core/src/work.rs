@@ -130,35 +130,6 @@ pub struct WorkEvidence {
     pub created_at: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum WorkDecisionKind {
-    Accept,
-    Cancel,
-}
-
-/// Immutable Host/Operator decision. Store operations validate authority and
-/// apply the resulting Work transition atomically with this record.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct WorkOperationalDecision {
-    pub id: String,
-    pub work_id: String,
-    pub expected_work_version: u64,
-    pub kind: WorkDecisionKind,
-    pub decided_by_actor: TeamActorRef,
-    pub rationale: String,
-    #[serde(default)]
-    pub work_report_id: Option<String>,
-    #[serde(default)]
-    pub gate_requirement_ref: Option<String>,
-    #[serde(default)]
-    pub failure_analysis_ref: Option<String>,
-    #[serde(default)]
-    pub evidence_refs: Vec<String>,
-    pub created_at: String,
-}
-
 impl Validate for WorkConditionRecord {
     fn validate(&self) -> Result<(), ValidationError> {
         require_non_empty(&self.id, "WorkConditionRecord.id")?;
@@ -260,56 +231,6 @@ impl Validate for WorkEvidence {
     }
 }
 
-impl Validate for WorkOperationalDecision {
-    fn validate(&self) -> Result<(), ValidationError> {
-        require_non_empty(&self.id, "WorkOperationalDecision.id")?;
-        require_non_empty(&self.work_id, "WorkOperationalDecision.work_id")?;
-        require_non_empty(
-            &self.decided_by_actor.id,
-            "WorkOperationalDecision.decided_by_actor.id",
-        )?;
-        require_non_empty(&self.rationale, "WorkOperationalDecision.rationale")?;
-        require_non_empty(&self.created_at, "WorkOperationalDecision.created_at")?;
-        if self.expected_work_version == 0 {
-            return Err(ValidationError::Invalid {
-                field: "WorkOperationalDecision.expected_work_version",
-                reason: "must be greater than zero",
-            });
-        }
-        match self.kind {
-            WorkDecisionKind::Accept if self.work_report_id.is_none() => {
-                return Err(ValidationError::Required {
-                    field: "WorkOperationalDecision.work_report_id",
-                });
-            }
-            _ => {}
-        }
-        for (value, field) in [
-            (
-                self.work_report_id.as_deref(),
-                "WorkOperationalDecision.work_report_id",
-            ),
-            (
-                self.gate_requirement_ref.as_deref(),
-                "WorkOperationalDecision.gate_requirement_ref",
-            ),
-            (
-                self.failure_analysis_ref.as_deref(),
-                "WorkOperationalDecision.failure_analysis_ref",
-            ),
-        ] {
-            if let Some(value) = value {
-                require_non_empty(value, field)?;
-            }
-        }
-        validate_non_empty_unique_strings(
-            &self.evidence_refs,
-            "WorkOperationalDecision.evidence_refs",
-            true,
-        )
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkCommandContext {
     pub event_id: String,
@@ -398,17 +319,27 @@ pub struct GitHubLink {
 }
 
 impl GitHubLink {
-    /// The canonical GitHub object URL this link's own structured fields
-    /// describe: `https://github.com/<owner>/<repo>/(issues|pull)/<number>`.
-    pub fn canonical_url(&self) -> String {
+    /// The canonical object path this link's own structured fields describe:
+    /// `/<owner>/<repo>/(issues|pull)/<number>`.
+    ///
+    /// The host is deliberately not part of it. GitHub Enterprise serves the
+    /// same object path from a private host, so consistency is checked against
+    /// the path while the url keeps whatever host the caller linked.
+    pub fn canonical_path(&self) -> String {
         let segment = match self.kind {
             GitHubLinkKind::Issue => "issues",
             GitHubLinkKind::PullRequest => "pull",
         };
-        format!(
-            "https://github.com/{}/{}/{segment}/{}",
-            self.owner, self.repo, self.number
-        )
+        format!("/{}/{}/{segment}/{}", self.owner, self.repo, self.number)
+    }
+
+    /// The canonical github.com URL this link's own structured fields
+    /// describe: `https://github.com/<owner>/<repo>/(issues|pull)/<number>`.
+    ///
+    /// This is the url minted for a link the harness itself creates. A link
+    /// supplied by a caller keeps its own host; see [`Self::canonical_path`].
+    pub fn canonical_url(&self) -> String {
+        format!("https://github.com{}", self.canonical_path())
     }
 
     /// A submitted link is evidence, and #369 lets a link stand in for the
@@ -425,16 +356,67 @@ impl GitHubLink {
                 self.owner, self.repo, self.number
             ));
         }
-        let canonical = self.canonical_url();
+        let canonical = self.canonical_path();
         let supplied = self.url.trim().trim_end_matches('/');
-        if supplied != canonical {
+        if !url_describes_object_path(supplied, &canonical) {
             return Err(format!(
-                "GitHub link url {} does not describe its own {:?} {}/{}#{} (expected {canonical})",
+                "GitHub link url {} does not describe its own {:?} {}/{}#{} (expected a host serving {canonical})",
                 self.url, self.kind, self.owner, self.repo, self.number
             ));
         }
         Ok(())
     }
+}
+
+/// Whether `url` is an absolute http(s) url whose entire path is `expected`.
+///
+/// Owner and repo are compared case-insensitively because GitHub treats them
+/// that way -- `/Cyl19970726/Multi-Agent-Harness/pull/1` and its lowercase
+/// spelling name the same pull request -- while the `issues`/`pull` segment
+/// and the number must match exactly, so a link can never stand in for a
+/// different object. The host is not inspected, which is what lets a GitHub
+/// Enterprise url pass; the path must still be exactly the four canonical
+/// segments, so a look-alike url that merely *contains* the object path fails
+/// closed.
+fn url_describes_object_path(url: &str, expected: &str) -> bool {
+    let Some((scheme, rest)) = url.split_once("://") else {
+        return false;
+    };
+    if !scheme.eq_ignore_ascii_case("http") && !scheme.eq_ignore_ascii_case("https") {
+        return false;
+    }
+    let Some((host, path)) = rest.split_once('/') else {
+        return false;
+    };
+    if host.is_empty() {
+        return false;
+    }
+    // Query and fragment are not part of the object identity, and a url
+    // carrying either names something other than the bare object.
+    if path.contains('?') || path.contains('#') {
+        return false;
+    }
+    let supplied = path.split('/').collect::<Vec<_>>();
+    let canonical = expected
+        .trim_start_matches('/')
+        .split('/')
+        .collect::<Vec<_>>();
+    if supplied.len() != canonical.len() {
+        return false;
+    }
+    supplied
+        .iter()
+        .zip(canonical.iter())
+        .enumerate()
+        .all(|(index, (left, right))| {
+            // Segments 0 and 1 are owner and repo (case-insensitive on
+            // GitHub); 2 is `issues`/`pull` and 3 is the number, both exact.
+            if index < 2 {
+                left.eq_ignore_ascii_case(right)
+            } else {
+                left == right
+            }
+        })
 }
 
 /// Current-write input for a new Work. Historical decode-only fields and
@@ -892,8 +874,6 @@ pub struct WorkOperation {
     pub reports: Vec<WorkReport>,
     #[serde(default)]
     pub evidence_records: Vec<WorkEvidence>,
-    #[serde(default)]
-    pub decisions: Vec<WorkOperationalDecision>,
     /// Delegation projection transitions caused by this exact Work mutation.
     /// Keeping them in the same row closes the crash gap between target Work
     /// state and its cross-Team responsibility projection.

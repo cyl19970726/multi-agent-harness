@@ -57,7 +57,6 @@ fn sparse_mixed_version_update_recovers_and_repersists_work_provenance() {
         condition_records: Vec::new(),
         reports: Vec::new(),
         evidence_records: Vec::new(),
-        decisions: Vec::new(),
         delegation_revisions: Vec::new(),
     };
     let refused = store

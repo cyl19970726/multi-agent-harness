@@ -381,7 +381,6 @@ pub fn append_legacy_work_row(
         condition_records: Vec::new(),
         reports: Vec::new(),
         evidence_records: Vec::new(),
-        decisions: Vec::new(),
         delegation_revisions: Vec::new(),
     };
     let mut row = serde_json::to_value(&operation).expect("operation JSON");
@@ -391,6 +390,51 @@ pub fn append_legacy_work_row(
     if let Some(team_id) = legacy_team_key {
         projection.insert("team_id".to_string(), serde_json::json!(team_id));
     }
+    append_raw_row(store, "work_operations.jsonl", &row);
+}
+
+/// Append a pre-cutover WorkOperation row whose Work folds but cannot satisfy
+/// the current `Work` contract -- here an empty title. Only a raw legacy row
+/// can carry one: every current writer validates the projection before it
+/// appends, so this is the exact shape a plan-phase validation must catch.
+pub fn append_legacy_work_row_with_invalid_projection(
+    store: &HarnessStore,
+    run_id: &str,
+    host_member_id: &str,
+    work_id: &str,
+) {
+    let mut work = work_fixture(run_id, host_member_id, work_id);
+    work.version = 1;
+    work.created_at = "t0".into();
+    work.updated_at = "t0".into();
+    work.title = String::new();
+    let operation = WorkOperation {
+        event: firm_core::WorkEvent {
+            id: format!("legacy-event-{work_id}"),
+            team_run_id: run_id.into(),
+            work_id: work_id.into(),
+            sequence: 1,
+            kind: WorkEventKind::Created,
+            expected_version: 0,
+            resulting_version: 1,
+            performed_by_actor: work.created_by_actor.clone(),
+            authority_actor: None,
+            causation_ref: None,
+            idempotency_key: format!("legacy-create-{work_id}"),
+            payload: serde_json::Value::Null,
+            created_at: "t0".into(),
+            executed_by_member_run_id: None,
+        },
+        work,
+        condition_records: Vec::new(),
+        reports: Vec::new(),
+        evidence_records: Vec::new(),
+        delegation_revisions: Vec::new(),
+    };
+    let mut row = serde_json::to_value(&operation).expect("operation JSON");
+    let projection = row["work"].as_object_mut().expect("Work object");
+    projection.remove("accountable_team_id");
+    projection.remove("assignee_membership_id");
     append_raw_row(store, "work_operations.jsonl", &row);
 }
 
@@ -434,7 +478,6 @@ pub fn append_legacy_terminal_work_row(
         condition_records: Vec::new(),
         reports: Vec::new(),
         evidence_records: Vec::new(),
-        decisions: Vec::new(),
         delegation_revisions: Vec::new(),
     };
     let mut row = serde_json::to_value(&operation).expect("operation JSON");
