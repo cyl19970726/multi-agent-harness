@@ -124,10 +124,17 @@ under either name.
   partial write is now repairable by re-projecting from the AgentSession
   instead of requiring an operator to choose between two peers.
 - Honest scope: the type unification, the two identity predicates, and the
-  locator table landed in the N2a slice; the authority projection and the reader
-  redirection land in N2b. Until N2b merges, the three copies are still written
-  in separate transactions and this document is ahead of the checkout on that
-  one point.
+  locator table landed in the N2a slice. **Everything this ADR says about
+  authority is decided, not shipped, until N2b merges**, and that is more than
+  one point: the three copies are still written in three separate transactions;
+  no reader resolves the pointer through an authority; nothing refuses a
+  disagreeing projection; `requested` has no predicate; and the paired-aggregate
+  commit, `deciding_native_session*`,
+  `member_run_native_session_is_requested` and
+  `derive_member_runs_jsonl_native_session` do not exist in the checkout. The
+  section below on the `member_runs.jsonl` copy describes N2b's behaviour in the
+  same way. Read every authority claim in this document as a decision with a
+  named implementing slice.
 
 ## How far "projection" goes for the `member_runs.jsonl` copy
 
@@ -152,19 +159,19 @@ trust-kernel tests failed that way when N2b first tried to leave the legacy row
 to be derived later (`work_bound_before_first_open_is_claimable_after_native_session_attaches`
 and two arms of `lost_work_live_requires_full_fence`).
 
-So the decision is:
+So the decision, which N2b implements, is:
 
-- the legacy row is appended **under the same write lock**, exactly as every
-  other MemberRun writer in this Store does
+- N2b appends the legacy row **under the same write lock**, exactly as every
+  other MemberRun writer in this Store already does
   (`transition_current_team_member_lifecycle`,
   `compare_and_advance_member_run_generation`), accepting the **pre-existing**
   `MEMBER_RUN_DUAL_LEDGER_COMMIT_INCOMPLETE` caveat. A cross-file pair cannot be
   made atomic without a journal this Store deliberately does not keep, and that
   is a property of every MemberRun write here rather than something this ADR
   introduces;
-- there is **no second escape hatch on the shared trust-commit primitive**: the
+- N2b adds **no second escape hatch on the shared trust-commit primitive**: the
   two trust aggregates land in one atomic rewrite, and only the established
   dual-ledger append follows it;
-- `derive_member_runs_jsonl_native_session` stays as the explicit repair verb
-  for a row left stale by a failure between the two writes, and is asserted to
-  be a no-op when the row already agrees, so it is safe to call at any time.
+- N2b adds `derive_member_runs_jsonl_native_session` as the explicit repair verb
+  for a row left stale by a failure between the two writes, asserted there to be
+  a no-op when the row already agrees, so that it is safe to call at any time.
