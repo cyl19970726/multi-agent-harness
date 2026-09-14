@@ -189,23 +189,30 @@ fn work_readers_agree_across_both_journals() {
     assert_eq!(idle["next_since"].as_u64(), Some(tip));
 
     // A pre-W3 cursor is a bare ledger row count and must still be accepted.
-    // At the tip's own ledger count it names every ledger row already written,
-    // so a Work whose latest change is a ledger row is not replayed; the
-    // Works whose latest change is a trust transition come back, which is the
-    // correction this slice exists to make.
+    // Since the W4 writer cutover no current command produces a ledger row, so
+    // the mixed store this reader exists for is staged deliberately: one Work
+    // whose only revision is a pre-cutover `work_operations.jsonl` row.
+    let legacy_work_id = stage_legacy_ledger_work(&fixture, "legacy-ledger-only-work");
+    let tip = list_since(&tip.to_string())["next_since"]
+        .as_u64()
+        .expect("next_since after the staged legacy row");
     let legacy_cursor = tip % (1u64 << 32);
-    assert!(
-        legacy_cursor > 0,
-        "the fixture writes ledger rows: {legacy_cursor}"
+    assert_eq!(
+        legacy_cursor, 1,
+        "exactly the one staged legacy ledger row: {legacy_cursor}"
     );
     let from_legacy = changed_ids(&list_since(&legacy_cursor.to_string()));
     assert!(
-        !from_legacy.contains(&fixture.work_in_progress_id),
+        !from_legacy.contains(&legacy_work_id),
         "a ledger-only Work at or below the cursor is not replayed: {from_legacy:?}"
     );
     assert!(
         from_legacy.contains(&fixture.work_review_id),
         "a Work whose latest change is a trust transition is reported: {from_legacy:?}"
+    );
+    assert!(
+        changed_ids(&list_since("0")).contains(&legacy_work_id),
+        "and a cursor before every row still reports the legacy Work"
     );
 
     // ---- 3. every reader reports the same version and phase -----------
@@ -272,6 +279,88 @@ fn work_readers_agree_across_both_journals() {
         role_view_work["latest_event"]["kind"].as_str(),
         Some("accepted"),
         "the RoleView's latest event follows the version chain, not append order: {role_view_work}"
+    );
+
+    // ---- 3b. one journal: every revision is a `work` envelope ---------
+    // The file-level half of the W4 claim, on the same real-CLI store the
+    // reader assertions above just ran against: a whole lifecycle
+    // (create, assign, start, block, submit, accept, cancel) has been driven
+    // through the real binary, and every revision it produced is a canonical
+    // `work` transition carrying its complete WorkOperation.
+    let space = fixture.home.spaces_dir().join(&fixture.project_id);
+    let trust_rows = std::fs::read_to_string(space.join("agentfirm_trust_operations.jsonl"))
+        .expect("canonical trust ledger")
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .filter(|row| row["operation"]["event"]["aggregate_kind"] == "work")
+        .collect::<Vec<_>>();
+    let mut transitions = trust_rows
+        .iter()
+        .map(|row| {
+            row["operation"]["event"]["transition"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string()
+        })
+        .collect::<Vec<_>>();
+    transitions.sort();
+    transitions.dedup();
+    for expected in [
+        "created",
+        "assigned",
+        "started",
+        "blocked",
+        "submitted",
+        "accepted",
+        "cancelled",
+    ] {
+        assert!(
+            transitions.iter().any(|name| name == expected),
+            "the lifecycle committed a `work`/{expected} envelope: {transitions:?}"
+        );
+    }
+    for row in &trust_rows {
+        let event = &row["operation"]["event"];
+        let records = row["operation"]["immutable_side_records"]
+            .as_array()
+            .expect("side records");
+        // A transition ported from the ledger carries the whole WorkOperation,
+        // because that is what the ledger row carried. The trust entrances that
+        // already owned their transition before W4 — submitted, accepted,
+        // cancelled, dependencies_changed — carry the WorkEvent beside the
+        // projection that produced it, unchanged.
+        let carries_operation = records.iter().any(|record| {
+            record["work"]["id"] == event["aggregate_id"]
+                && record["work"]["version"] == event["resulting_version"]
+                && record["event"]["kind"].is_string()
+        });
+        let carries_event = records.iter().any(|record| {
+            record["work_id"] == event["aggregate_id"]
+                && record["resulting_version"] == event["resulting_version"]
+                && record["kind"].is_string()
+        });
+        assert!(
+            carries_operation || carries_event,
+            "`work`/{} must carry the WorkEvent for its revision: {event}",
+            event["transition"]
+        );
+        if matches!(
+            event["transition"].as_str(),
+            Some("created" | "assigned" | "started" | "blocked" | "resumed")
+        ) {
+            assert!(
+                carries_operation,
+                "a ported ledger transition carries its whole WorkOperation: {event}"
+            );
+        }
+    }
+    assert_eq!(
+        std::fs::read_to_string(space.join("work_operations.jsonl"))
+            .expect("the legacy ledger holds exactly the staged row")
+            .lines()
+            .count(),
+        1,
+        "no verb in that lifecycle appended to the legacy Work ledger"
     );
 
     // ---- 4. a LEDGER row after a TRUST row for the same Work -----------
@@ -382,4 +471,45 @@ fn work_readers_agree_across_both_journals() {
         Some("assigned"),
         "and its latest event is the ledger one: {role_view_work}"
     );
+}
+
+/// Append one pre-cutover `work_operations.jsonl` row, cloned from a Work
+/// revision this fixture already committed to the trust journal.
+///
+/// Cloning the persisted shape rather than hand-writing it keeps the staged
+/// row a real legacy row — every field a pre-cutover binary wrote, none this
+/// one invented — which is the only thing that makes the mixed-journal
+/// assertions above worth anything.
+fn stage_legacy_ledger_work(fixture: &BoardReadFixture, work_id: &str) -> String {
+    let space = fixture.home.spaces_dir().join(&fixture.project_id);
+    let source = std::fs::read_to_string(space.join("agentfirm_trust_operations.jsonl"))
+        .expect("canonical trust ledger")
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .filter(|row| {
+            row["operation"]["event"]["aggregate_kind"] == "work"
+                && row["operation"]["event"]["transition"] == "created"
+        })
+        .find_map(|row| {
+            row["operation"]["immutable_side_records"]
+                .as_array()?
+                .iter()
+                .find(|record| record["work"]["version"] == 1)
+                .cloned()
+        })
+        .expect("a committed creation WorkOperation to clone");
+    let mut operation = source;
+    operation["work"]["id"] = work_id.into();
+    operation["work"]["title"] = "Legacy ledger-only Work".into();
+    operation["event"]["id"] = format!("legacy-event-{work_id}").into();
+    operation["event"]["work_id"] = work_id.into();
+    operation["event"]["idempotency_key"] = format!("legacy-key-{work_id}").into();
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(space.join("work_operations.jsonl"))
+        .expect("open the legacy Work ledger");
+    use std::io::Write;
+    writeln!(file, "{operation}").expect("append the legacy Work row");
+    work_id.to_string()
 }

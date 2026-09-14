@@ -77,17 +77,32 @@ fn membership_assignment_is_cas_fenced_and_needs_no_runtime() {
     assert_eq!(assigned.owner_member_id.as_deref(), Some("worker-assign"));
     assert_eq!(assigned.active_member_run_id, None);
     assert_eq!(assigned.phase, WorkPhase::Open);
-    // The persisted row shape is a ledger-file fact, so it is asserted on the
-    // bytes rather than through a Work reader: `work_history` returns the
-    // merged version chain, not one journal's row schema.
-    let wire = std::fs::read_to_string(fixture.root.join("work_operations.jsonl"))
-        .expect("work operations ledger")
+    // The persisted row shape is a file fact, so it is asserted on the bytes
+    // rather than through a Work reader. Since W4 those bytes are the
+    // WorkOperation side record of the `work` trust envelope.
+    let wire = std::fs::read_to_string(fixture.root.join("agentfirm_trust_operations.jsonl"))
+        .expect("canonical trust ledger")
         .lines()
-        .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("ledger row"))
-        .find(|row| row["work"]["id"] == "work-assign-1" && row["work"]["version"] == 2)
-        .expect("assignment operation");
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("trust row"))
+        .filter(|row| {
+            row["operation"]["event"]["aggregate_kind"] == "work"
+                && row["operation"]["event"]["aggregate_id"] == "work-assign-1"
+                && row["operation"]["event"]["transition"] == "assigned"
+        })
+        .flat_map(|row| {
+            row["operation"]["immutable_side_records"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default()
+        })
+        .find(|record| record["work"]["id"] == "work-assign-1" && record["work"]["version"] == 2)
+        .expect("assignment WorkOperation side record");
     assert!(wire.get("deliveries").is_none());
     assert!(wire.get("delivery_updates").is_none());
+    assert!(
+        !fixture.root.join("work_operations.jsonl").exists(),
+        "no current Work writer appends to the legacy ledger file"
+    );
 
     // Reassignment is the same CAS path and records the previous assignee.
     let stale_reassign = store
@@ -832,11 +847,25 @@ fn responsibility_migration_is_append_only_reported_and_never_guesses() {
         WorkResponsibilityResolution::AlreadyCanonical
     );
 
-    // Append-only: every pre-existing row is byte-identical, exactly two new
-    // rows were appended, and Work history before migration is preserved.
+    // Append-only, and since W4 the legacy file is not touched at all: every
+    // pre-existing row is byte-identical and no row was added to it. The two
+    // migration revisions are `work` trust envelopes, committed in one atomic
+    // write so a refusal on a later Work cannot leave an earlier one applied.
     let after_rows = work_operations_raw(store);
-    assert_eq!(after_rows.len(), before_rows.len() + 2);
-    assert_eq!(&after_rows[..before_rows.len()], before_rows.as_slice());
+    assert_eq!(after_rows, before_rows);
+    let migrated = std::fs::read_to_string(store.root().join("agentfirm_trust_operations.jsonl"))
+        .expect("canonical trust ledger")
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("trust row"))
+        .filter(|row| {
+            row["operation"]["event"]["aggregate_kind"] == "work"
+                && row["operation"]["event"]["payload"]["responsibility_migration"] == true
+        })
+        .count();
+    assert_eq!(
+        migrated, 2,
+        "exactly two migration revisions were committed"
+    );
 
     let works = store.latest_works().expect("latest works");
     let owned_work = works
@@ -892,11 +921,10 @@ fn responsibility_migration_is_append_only_reported_and_never_guesses() {
         )
         .expect("second migration run");
     assert!(second.migrated_work_ids.is_empty());
-    let third_rows = work_operations_raw(store);
     assert_eq!(
-        third_rows.len(),
-        after_rows.len() + 1,
-        "only the post-migration assignment appended"
+        work_operations_raw(store),
+        after_rows,
+        "no Work write touches the legacy ledger file"
     );
     assert!(second.entries.iter().any(|entry| {
         entry.work_id == "work-legacy-owned"

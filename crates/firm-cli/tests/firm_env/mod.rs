@@ -286,13 +286,18 @@ pub fn store_jsonl_rows(home: &TempHome, project_id: &str, file: &str) -> Vec<se
     unreachable!("the final attempt either parses or panics")
 }
 
+/// The legacy `work_operations.jsonl` fold, by raw row.
+///
+/// Since the W4 writer cutover no writer appends to that file, so this helper
+/// answers only about pre-cutover rows and returns nothing for a fresh store.
+#[allow(dead_code)]
 pub fn latest_works(home: &TempHome, project_id: &str) -> Vec<serde_json::Value> {
     let operations = std::fs::read_to_string(
         home.spaces_dir()
             .join(project_id)
             .join("work_operations.jsonl"),
     )
-    .expect("work operations");
+    .unwrap_or_default();
     let mut order = Vec::<String>::new();
     let mut by_id = std::collections::HashMap::<String, serde_json::Value>::new();
     for line in operations.lines().filter(|line| !line.trim().is_empty()) {

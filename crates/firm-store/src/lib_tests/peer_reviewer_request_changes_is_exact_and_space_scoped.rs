@@ -134,11 +134,14 @@ fn exact_active_peer_returns_host_owned_work_and_reauthorizes_the_next_admission
             event.work_id == submitted.id && event.kind == WorkEventKind::ChangesRequested
         })
         .expect("committed ChangesRequested event");
+    // The performer is the durable AgentMember; the MemberRun that carried the
+    // review is evidence beside it, not the identity.
     assert_eq!(
         event.performed_by_actor.kind,
-        firm_core::TeamActorKind::ProviderRuntimeProjection
+        firm_core::TeamActorKind::AgentMember
     );
-    assert_eq!(event.performed_by_actor.id, peer.id);
+    assert_eq!(event.performed_by_actor.id, peer.agent_member_id);
+    assert_eq!(event.executing_member_run_id(), Some(peer.id.as_str()));
 
     // A peer-performed ChangesRequested re-authorizes the next admission
     // exactly as the Host's does; otherwise the Work would be re-openable but

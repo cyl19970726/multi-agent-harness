@@ -352,10 +352,17 @@ pub(super) fn assert_compliant_result_submission(
     );
     assert_eq!(
         store
-            .legacy_work_operation_rows()
-            .expect("submission is canonical-only")
+            .work_journal_records()
+            .expect("Work journal records")
             .len(),
-        before + 3,
+        before + 4,
         "result submission advances Work through its canonical WorkReport without a second Work operation"
+    );
+    assert!(
+        store
+            .legacy_work_operation_rows()
+            .expect("legacy ledger rows")
+            .is_empty(),
+        "and nothing in that path appends to the legacy Work ledger"
     );
 }

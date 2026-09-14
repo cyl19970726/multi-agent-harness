@@ -40,7 +40,11 @@ pub(super) fn start_claimed_work_for_test(
                 "test-node-daemon",
                 "test-node-daemon-instance",
                 now_unix_ms,
-                60_000,
+                // Wall-clock TTL in a shared fixture: a test that is not about
+                // lease expiry must never fail because a loaded parallel suite
+                // took longer than the lease. One hour is unreachable for a
+                // unit test and still a real, fenced lease.
+                3_600_000,
             )
             .expect("acquire test NodeDaemon lease");
     }

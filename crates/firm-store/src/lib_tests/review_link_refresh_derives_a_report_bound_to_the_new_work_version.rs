@@ -152,8 +152,28 @@ fn non_evidence_review_revision_drift_cannot_reuse_an_older_result() {
     );
     let drifted = {
         let _lock = store.acquire_write_lock().expect("lock test Store");
+        let context = host_work_context("semantic-drift", "semantic-drift", "unix-ms:6");
+        let mutation_context = match store
+            .enter_work_command_unlocked(
+                &submitted.id,
+                submitted.version,
+                WorkEventKind::Updated,
+                &context,
+                &serde_json::json!({"reason": "semantic_review_edit"}),
+            )
+            .expect("enter the semantic drift command")
+        {
+            crate::store_work_journal_writer::WorkCommandEntrance::Admitted(context) => context,
+            crate::store_work_journal_writer::WorkCommandEntrance::Replayed(_) => {
+                panic!("fresh idempotency key must not replay")
+            }
+        };
         let current = store
-            .current_work_unlocked(&submitted.id, submitted.version)
+            .current_work_unlocked(
+                &crate::store_work_journal_writer::command_space(&mutation_context),
+                &submitted.id,
+                submitted.version,
+            )
             .expect("current submitted Work");
         let mut next = current.clone();
         next.version += 1;
@@ -163,7 +183,8 @@ fn non_evidence_review_revision_drift_cannot_reuse_an_older_result() {
                 current,
                 next,
                 WorkEventKind::Updated,
-                host_work_context("semantic-drift", "semantic-drift", "unix-ms:6"),
+                context,
+                &mutation_context,
                 serde_json::json!({"reason": "semantic_review_edit"}),
             )
             .expect("append non-evidence semantic drift")
