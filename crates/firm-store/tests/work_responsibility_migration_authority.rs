@@ -237,3 +237,53 @@ fn migration_revisions(store: &firm_store::HarnessStore) -> usize {
         })
         .unwrap_or_default()
 }
+
+/// The sweep plans every write before appending any, so a Work that folds but
+/// cannot satisfy the current `Work` contract must refuse the whole migration
+/// rather than abort after earlier Works already landed (#946). `Work::validate`
+/// runs in the plan phase through `validate_work_operation_records_unlocked`;
+/// this pins that it does, with the invalid Work sorting *after* a perfectly
+/// migratable one so a plan-phase refusal is the only thing that can keep the
+/// ledger untouched.
+#[test]
+fn migration_validates_every_planned_work_before_appending_any() {
+    let fixture = TestStore::new("migrate-invalid-projection");
+    let store = &fixture.store;
+    let run = seed_team(
+        store,
+        "migrate-invalid-projection",
+        &["host-invalid-projection", "agent-owner"],
+    );
+    append_legacy_work_row(
+        store,
+        &run.id,
+        "host-invalid-projection",
+        "work-legacy-a-valid",
+        Some("agent-owner"),
+        None,
+    );
+    append_legacy_work_row_with_invalid_projection(
+        store,
+        &run.id,
+        "host-invalid-projection",
+        "work-legacy-b-invalid",
+    );
+    let before = work_operations_raw(store);
+
+    let error = store
+        .migrate_work_responsibility(
+            SPACE,
+            None,
+            host_work_context("host-invalid-projection", "migrate-invalid", "t1"),
+        )
+        .expect_err("a Work that cannot satisfy the Work contract refuses the sweep");
+    assert!(
+        error.to_string().contains("INVALID_WORK_PROJECTION"),
+        "unexpected error: {error}"
+    );
+    assert_eq!(
+        work_operations_raw(store),
+        before,
+        "a refused plan appends nothing, including the Work that would have migrated cleanly"
+    );
+}

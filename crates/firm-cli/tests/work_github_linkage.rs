@@ -1071,3 +1071,163 @@ fn github_ref_malformed_input_is_rejected() {
         );
     }
 }
+
+/// The poll reads the Work list once and writes per Work, so the Host can
+/// close a Work in between. That one refusal is a per-Work skip, and the pass
+/// must stay successful, leave the closed Work's evidence exactly as it
+/// settled, and report nothing it did not persist (#946).
+///
+/// The race is forced rather than waited for: the offline `gh` shim closes the
+/// Work itself, on the same `pr view` call whose fresh snapshot is what makes
+/// the pass decide to write. No lock is held across that call, so the cancel
+/// commits before the refresh is attempted — exactly the interleaving the skip
+/// exists for.
+#[test]
+fn github_poll_skips_a_work_the_host_closed_mid_pass() {
+    let (home, project_id, run_id, member_id) = github_fixture("github-poll-terminal-skip");
+    let fake_bin = home.base().join("fake-gh-terminal-skip");
+    std::fs::create_dir_all(&fake_bin).expect("fake gh bin");
+    let fake_gh = fake_bin.join("gh");
+    let write_shim = |body: &str| {
+        std::fs::write(&fake_gh, body).expect("fake gh");
+        let mut permissions = std::fs::metadata(&fake_gh)
+            .expect("fake gh metadata")
+            .permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&fake_gh, permissions).expect("fake gh executable");
+    };
+    // Link time: an open PR with green checks.
+    write_shim(
+        r##"#!/bin/sh
+if [ "$1" = "--version" ]; then
+  printf '%s\n' 'gh version test'
+elif [ "$2" = "view" ]; then
+  printf '%s\n' '{"state":"OPEN","url":"https://github.com/example/project/pull/471"}'
+else
+  printf '%s\n' '[{"name":"unit","state":"SUCCESS","link":"https://github.com/example/project/actions/runs/471"}]'
+fi
+"##,
+    );
+    let path = format!(
+        "{}:{}",
+        fake_bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let created = run_firm_with_env(
+        &home,
+        home.base(),
+        &[
+            "--project",
+            &project_id,
+            "team-run",
+            "work",
+            "create",
+            "--team-run-id",
+            &run_id,
+            "--title",
+            "Closed before its evidence refresh",
+            "--completion-criteria",
+            "the poll leaves a closed Work exactly as it settled",
+            "--github-pr",
+            "example/project#471",
+        ],
+        &[("PATH", &path)],
+    );
+    assert!(created.status.success(), "create failed: {created:?}");
+    let created: serde_json::Value =
+        serde_json::from_slice(&created.stdout).expect("created Work JSON");
+    let work_id = created["id"].as_str().expect("work id").to_string();
+    // The evidence refresh writes as the current NodeDaemon, so the Work needs
+    // a bound execution the fixture's daemon lease covers.
+    let assigned = firm_env::work_execution::assign_work_for_member_run(
+        &home,
+        &project_id,
+        &work_id,
+        &member_id,
+        true,
+    );
+    let work_version = assigned.version;
+
+    // Poll time: the PR now reports MERGED — a real change, so the pass will
+    // try to write — and the shim closes the Work first.
+    write_shim(&format!(
+        r##"#!/bin/sh
+if [ "$1" = "--version" ]; then
+  printf '%s\n' 'gh version test'
+elif [ "$2" = "view" ]; then
+  if [ ! -f "$0.closed" ]; then
+    : > "$0.closed"
+    "{firm}" --project "{project}" team-run work cancel --work-id "{work}" \
+      --expected-version {version} --reason "Host closed it mid-pass" >/dev/null 2>&1
+  fi
+  printf '%s\n' '{{"state":"MERGED","url":"https://github.com/example/project/pull/471"}}'
+else
+  printf '%s\n' '[{{"name":"unit","state":"SUCCESS","link":"https://github.com/example/project/actions/runs/471"}}]'
+fi
+"##,
+        firm = env!("CARGO_BIN_EXE_firm"),
+        project = project_id,
+        work = work_id,
+        version = work_version,
+    ));
+
+    let store = harness_store::HarnessStore::new(home.spaces_dir().join(&project_id));
+    let before_links = store
+        .latest_works()
+        .expect("Works")
+        .into_iter()
+        .find(|work| work.id == work_id)
+        .expect("linked Work")
+        .github_links;
+    assert_eq!(
+        before_links[0].status.as_deref(),
+        Some("OPEN"),
+        "the stored snapshot is the one taken at link time"
+    );
+
+    let polled = run_firm_with_env(
+        &home,
+        home.base(),
+        &[
+            "--project",
+            &project_id,
+            "team-run",
+            "work",
+            "poll-github-ci",
+            "--team-run-id",
+            &run_id,
+        ],
+        &[("PATH", &path)],
+    );
+    assert!(
+        polled.status.success(),
+        "a Work closed mid-pass is a per-Work skip, not a fatal pass: {polled:?}"
+    );
+    let polled: serde_json::Value = serde_json::from_slice(&polled.stdout).expect("poll JSON");
+    assert_eq!(polled["gh_unavailable"].as_bool(), Some(false));
+    assert_eq!(
+        polled["terminal_skipped"],
+        serde_json::json!([work_id]),
+        "the skipped Work is named"
+    );
+    // Nothing was persisted for it, so the pass reports nothing for it.
+    assert_eq!(polled["works_checked"].as_u64(), Some(0));
+    assert_eq!(polled["links_refreshed"].as_u64(), Some(0));
+
+    let after = store
+        .latest_works()
+        .expect("Works after poll")
+        .into_iter()
+        .find(|work| work.id == work_id)
+        .expect("Work after poll");
+    assert!(
+        after.is_terminal(),
+        "the shim really did close the Work: {:?}/{:?}",
+        after.phase,
+        after.resolution
+    );
+    assert_eq!(
+        after.github_links, before_links,
+        "external CI evidence never advances a closed Work revision"
+    );
+}
