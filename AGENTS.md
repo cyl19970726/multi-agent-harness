@@ -145,8 +145,12 @@ own a provider process or authorize a provider effect. Every provider effect is
 prepared and settled through a durable `RuntimeCommand` bound to the exact
 NodeDaemon and AgentSession generations. Messages, Work delivery, and runtime
 control are separate planes and cannot impersonate one another.
-Cross-Team responsibility uses explicit WorkDelegation rather than parent/child
-Team topology. AgentMember is the one durable organization-agent identity.
+A Team's Work is accountable to that Team, `depends_on` is the only Work-to-Work
+edge, and parent/child Team topology remains forbidden. Cross-machine
+collaboration keeps its own records on the Remote Fabric surface; where it lands
+responsibility on another node it creates an ordinary Work accountable to that
+node's Team, never a second Work-to-Work edge.
+AgentMember is the one durable organization-agent identity.
 Global Work (DOC-106) is a read-only aggregate over authoritative TeamWork and
 must never regain a second task ledger or mutation path; it replaced the
 former Company Work aggregate. Repository self-hosting remains the first

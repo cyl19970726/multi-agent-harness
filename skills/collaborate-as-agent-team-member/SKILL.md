@@ -105,8 +105,9 @@ same-ID read-only compatibility projection of `AgentMember`.)
 
 A Team is durable and Mission-less (legacy `legacy_mission_id` provenance is
 read-only history, DOC-108). It lives on exactly one immutable `node_id`.
-Teams are flat peers — no nesting; cross-Team execution is an explicit
-Host-coordinated `WorkDelegation`, never hierarchy. Lifecycle:
+Teams are flat peers — no nesting, and never hierarchy. A Team's Work is
+accountable to that Team; the Work model carries no cross-Team edge.
+Cross-machine collaboration is the separate Remote Fabric surface. Lifecycle:
 `Active | Inactive | Trashed`; an Active Team has exactly one Active Host
 membership. One machine-scoped NodeDaemon owns every local Team's sessions;
 each Team's live run is fenced by a Supervisor generation — whoever starts the

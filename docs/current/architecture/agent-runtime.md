@@ -388,10 +388,12 @@ delivery authority and cannot synthesize a WorkDelivery. See ADR 0060.
 
 **Every Work transition commits one `work` aggregate envelope to
 `agentfirm_trust_operations.jsonl`, and nothing else writes a Work revision.**
-`work_operations.jsonl` (with its crash-atomic
-`work_delegation_operations.jsonl` composite) is legacy read-only input: it
-holds the rows a pre-cutover binary wrote, it keeps reading forever, and a
-store created after the cutover never gains the file at all.
+`work_operations.jsonl` is legacy read-only input: it holds the rows a
+pre-cutover binary wrote, it keeps reading forever, and a store created after
+the cutover never gains the file at all. Its crash-atomic
+`work_delegation_operations.jsonl` composite retired with the Work-ledger
+delegation stack: a store that still holds that file keeps it, and no reader
+folds it.
 
 The envelope's transition is the `WorkEventKind` in snake_case — `created`,
 `assigned`, `claimed`, `started`, `released`, `blocked`, `resumed`,
@@ -402,10 +404,9 @@ revision can never be written under a name the reader cannot label. Its
 `expected_version`/`resulting_version` are the Work versions, its
 `resulting_projection` is the Work, and its immutable side records carry the
 complete `WorkOperation`: the `WorkEvent`, the same projection, and the
-condition records, reports, evidence and decisions the ledger row carried. Any
-Delegation revision the transition caused is committed as its own side record
-in the same write. That is what makes the commit crash-atomic in exactly the
-way a single JSONL append used to be.
+condition records, reports and evidence the ledger row carried. That
+is what makes the commit crash-atomic in exactly the way a single JSONL append
+used to be.
 
 Idempotency is the trust kernel's replay check and nothing else. A command
 checks its caller-context authority, resolves its Work, builds its

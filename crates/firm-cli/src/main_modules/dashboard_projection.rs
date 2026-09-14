@@ -184,14 +184,6 @@ pub(super) fn dashboard_snapshot_with_team_run(
             .cmp(&right.created_at)
             .then_with(|| left.id.cmp(&right.id))
     });
-    let mut work_delegations = match &selected_run {
-        Some(selected) => store.latest_work_delegations_for_team_run(&selected.id)?,
-        None => store.latest_work_delegations()?,
-    };
-    let mut work_delegation_events = match &selected_run {
-        Some(selected) => store.work_delegation_events_for_team_run(&selected.id)?,
-        None => store.work_delegation_events()?,
-    };
     let mut execution_nodes = match &selected_run {
         Some(selected) => store
             .latest_execution_node(&selected.execution_node_id)?
@@ -242,15 +234,6 @@ pub(super) fn dashboard_snapshot_with_team_run(
     };
     if let Some(selected) = &selected_run {
         work_events.retain(|event| work_ids.contains(&event.work_id));
-        work_delegations.retain(|delegation| {
-            delegation.source_work_ref.team_run_id == selected.id
-                || delegation.target_work_ref.team_run_id == selected.id
-        });
-        let delegation_ids = work_delegations
-            .iter()
-            .map(|delegation| delegation.id.clone())
-            .collect::<HashSet<_>>();
-        work_delegation_events.retain(|event| delegation_ids.contains(&event.delegation_id));
         execution_nodes.retain(|node| node.id == selected.execution_node_id);
         node_project_registrations.retain(|registration| {
             registration.node_id == selected.execution_node_id
@@ -440,8 +423,6 @@ pub(super) fn dashboard_snapshot_with_team_run(
         "works": works,
         "work_events": work_events,
         "work_deliveries": work_deliveries,
-        "work_delegations": work_delegations,
-        "work_delegation_events": work_delegation_events,
         "execution_nodes": execution_nodes,
         "node_project_registrations": node_project_registrations,
         "node_daemon_leases": node_daemon_leases,

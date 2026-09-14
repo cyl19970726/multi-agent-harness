@@ -517,7 +517,6 @@ fn insert_legacy_ledger_work(
         condition_records: Vec::new(),
         reports: Vec::new(),
         evidence_records: Vec::new(),
-        delegation_revisions: Vec::new(),
     };
     mutate(&mut operation);
     let _lock = store.acquire_write_lock().unwrap();

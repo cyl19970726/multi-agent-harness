@@ -1,6 +1,5 @@
 use super::*;
 use harness_core::CurrentWorkDraft;
-use harness_core::{WorkDelegationState, WorkRef};
 
 fn create_unrelated_run_with_work(store: &HarnessStore, index: usize) -> CreatedTeamRun {
     let worker_id = format!("bounded-worker-{index}");
@@ -149,193 +148,6 @@ fn acquire_fixture_lease(
         .expect("acquire fixture TeamRun Supervisor")
 }
 
-fn member_context(member_run_id: &str, event_id: &str) -> WorkCommandContext {
-    WorkCommandContext {
-        event_id: event_id.into(),
-        performed_by_actor: TeamActorRef {
-            kind: TeamActorKind::ProviderRuntimeProjection,
-            id: member_run_id.into(),
-            display_name: None,
-            authn_source: Some("bound-runtime:test".into()),
-        },
-        authority_actor: None,
-        causation_ref: None,
-        idempotency_key: event_id.into(),
-        created_at: "unix-ms:1200".into(),
-        duplicate_ok: false,
-    }
-}
-
-fn dispatch_fixture_work(
-    store: &HarnessStore,
-    lease: &TeamSupervisorLease,
-    created: &CreatedTeamRun,
-    work: &Work,
-) {
-    let delivery = store
-        .fabric_work_deliveries(&lease.execution_space_id)
-        .expect("read fixture Work deliveries")
-        .into_iter()
-        .find(|delivery| delivery.work_id == work.id)
-        .expect("fixture Work delivery exists");
-    let claim_id = format!("{}:claim", work.id);
-    store
-        .claim_work_for_provider(
-            &canonical_delivery_context(
-                &lease.execution_space_id,
-                &lease.node_daemon_id,
-                "test.scoped_retained.work.claim",
-                claim_id.clone(),
-                0,
-            ),
-            &delivery.id,
-            &created.team_run.execution_node_id,
-            &lease.node_daemon_id,
-            lease.node_daemon_generation,
-            &claim_id,
-            harness_core::agentfirm_api::RuntimeDispatchMode::StartIfIdle,
-            "unix-ms:1150",
-        )
-        .expect("claim fixture Work delivery");
-    store
-        .record_work_provider_receipt(
-            &canonical_delivery_context(
-                &lease.execution_space_id,
-                &lease.node_daemon_id,
-                "test.scoped_retained.work.provider_received",
-                format!("{}:receipt", work.id),
-                0,
-            ),
-            &delivery.id,
-            &created.team_run.execution_node_id,
-            &lease.node_daemon_id,
-            lease.node_daemon_generation,
-            &claim_id,
-            &format!("{}:provider-receipt", work.id),
-            "unix-ms:1160",
-        )
-        .expect("record fixture Work provider receipt");
-}
-
-fn add_cross_team_delegation_fixture(
-    store: &HarnessStore,
-    source_run: &CreatedTeamRun,
-    target_run: &CreatedTeamRun,
-) {
-    let source_lease = acquire_fixture_lease(store, source_run, "delegation-source");
-    let target_lease = acquire_fixture_lease(store, target_run, "delegation-target");
-    ensure_test_runtime_fabric(store, source_run, &source_lease);
-    ensure_test_runtime_fabric(store, target_run, &target_lease);
-
-    let source_member = &source_run.member_runs[0];
-    let source = insert_fixture_work(
-        store,
-        source_run,
-        "bounded-delegation-source",
-        "bounded-delegation-source-created",
-    );
-    let source = assign_test_work_to_member(
-        store,
-        &source_lease.execution_space_id,
-        source_run,
-        source_member,
-        &source,
-    );
-    let mut target = CurrentWorkDraft::new(
-        "bounded-delegation-target".into(),
-        target_run.team_run.id.clone(),
-        target_run.team_run.agent_team_id.clone(),
-        "Cross-Team projection target".into(),
-        "Emit the Delegation rollup on the target Work ledger".into(),
-        "Both scoped projections retain the latest Delegation".into(),
-        WorkClaimMode::HostAssign,
-        WorkPriority::Normal,
-        target_run
-            .team_run
-            .host_actor
-            .clone()
-            .expect("target Host actor"),
-        "unix-ms:1100".into(),
-    )
-    .into_work();
-    target.eligible_member_ids = vec![target_run.member_runs[0].agent_member_id.clone()];
-    let delegation = WorkDelegation {
-        id: "bounded-cross-team-delegation".into(),
-        source_work_ref: WorkRef {
-            team_run_id: source.team_run_id.clone(),
-            work_id: source.id.clone(),
-        },
-        source_work_version: source.version,
-        source_owner_member_id: source
-            .owner_member_id
-            .clone()
-            .expect("assigned source owner"),
-        created_by_member_run_id: None,
-        target_agent_team_id: target_run.team_run.agent_team_id.clone(),
-        target_work_ref: WorkRef {
-            team_run_id: String::new(),
-            work_id: String::new(),
-        },
-        delegated_by_actor: source_run
-            .team_run
-            .host_actor
-            .clone()
-            .expect("source Host actor"),
-        state: WorkDelegationState::Active,
-        resolution_summary: None,
-        blocker_reason: None,
-        version: 0,
-        created_at: String::new(),
-        updated_at: String::new(),
-    };
-    let (_, target) = store
-        .create_work_delegation_with_target_work(
-            delegation,
-            target,
-            WorkCommandContext {
-                event_id: "bounded-cross-team-delegation-created".into(),
-                performed_by_actor: source_run
-                    .team_run
-                    .host_actor
-                    .clone()
-                    .expect("source Host actor"),
-                authority_actor: None,
-                causation_ref: None,
-                idempotency_key: "bounded-cross-team-delegation-created".into(),
-                created_at: "unix-ms:1100".into(),
-                duplicate_ok: false,
-            },
-        )
-        .expect("create cross-Team Delegation");
-    let target_member = &target_run.member_runs[0];
-    let target = assign_test_work_to_member(
-        store,
-        &target_lease.execution_space_id,
-        target_run,
-        target_member,
-        &target,
-    );
-    bind_test_responsible_work_execution(store, &target_lease, target_member, &target);
-    dispatch_fixture_work(store, &target_lease, target_run, &target);
-    let target = store
-        .start_work(
-            &target.id,
-            target.version,
-            &target_member.id,
-            member_context(&target_member.id, "bounded-delegation-target-started"),
-        )
-        .expect("start delegated target Work");
-    store
-        .block_work(
-            &target.id,
-            target.version,
-            &target_member.id,
-            "projection fixture blocker",
-            member_context(&target_member.id, "bounded-delegation-target-blocked"),
-        )
-        .expect("block target and emit Delegation rollup");
-}
-
 fn add_retarget_fixture(
     store: &HarnessStore,
     root: &std::path::Path,
@@ -467,7 +279,15 @@ fn retained_projected_rows_remain_bounded_with_200_unrelated_team_runs_and_works
     let unrelated = (0..3)
         .map(|index| create_unrelated_run_with_work(&store, index))
         .collect::<Vec<_>>();
-    add_cross_team_delegation_fixture(&store, &selected, &unrelated[0]);
+    // The retired cross-Team delegation fixture established the selected and
+    // first unrelated runs' runtime fabric here before the baseline snapshot.
+    // The delegation is gone; that setup is not, or the baseline would carry
+    // no AgentSession and no machine-scoped NodeDaemon lease while the later
+    // unrelated runs would hand the selected run one.
+    let selected_lease = acquire_fixture_lease(&store, &selected, "selected-runtime");
+    ensure_test_runtime_fabric(&store, &selected, &selected_lease);
+    let unrelated_lease = acquire_fixture_lease(&store, &unrelated[0], "unrelated-runtime");
+    ensure_test_runtime_fabric(&store, &unrelated[0], &unrelated_lease);
     let successor = add_retarget_fixture(&store, &root, &selected);
     assert_scoped_matches_filtered_global(&store, &selected.team_run.id);
     assert_scoped_matches_filtered_global(&store, &successor.team_run.id);
@@ -497,14 +317,6 @@ fn retained_projected_rows_remain_bounded_with_200_unrelated_team_runs_and_works
         .expect("source Works")
         .iter()
         .any(|work| work["id"] == "bounded-retargeted-work"));
-    assert!(source_snapshot["work_delegations"]
-        .as_array()
-        .expect("source Delegations")
-        .iter()
-        .any(|delegation| {
-            delegation["id"] == "bounded-cross-team-delegation" && delegation["state"] == "blocked"
-        }));
-
     let scoped = source_snapshot;
 
     let baseline_counts = projected_row_counts(&scoped);
@@ -534,7 +346,6 @@ fn retained_projected_rows_remain_bounded_with_200_unrelated_team_runs_and_works
             condition_records: Vec::new(),
             reports: Vec::new(),
             evidence_records: Vec::new(),
-            delegation_revisions: Vec::new(),
         })
         .expect("seed Work operation exists");
     for index in 3..6 {

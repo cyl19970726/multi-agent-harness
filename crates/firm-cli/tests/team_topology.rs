@@ -1,7 +1,8 @@
 //! Integration coverage for the flat durable AgentTeam model: one active Host
 //! TeamMembership and one immutable ExecutionNode placement per Team. Mission
 //! linkage is optional legacy provenance, never Team creation or identity
-//! authority; cross-Team work uses WorkDelegation, never parent/child topology.
+//! authority; a Team's Work is accountable to that Team and the Work model
+//! carries no cross-Team edge, never parent/child topology.
 
 mod firm_env;
 

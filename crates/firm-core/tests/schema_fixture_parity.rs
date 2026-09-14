@@ -19,7 +19,7 @@ use firm_core::collaboration::{
 };
 use firm_core::{
     AgentTeam, AgentTeamRun, ExecutionNode, Mission, NodeDaemonLease, NodeProjectRegistration,
-    Review, TeamSupervisorLease, Validate, Work, WorkDelegation, WorkDelegationEvent,
+    Review, TeamSupervisorLease, Validate, Work,
 };
 use serde::de::DeserializeOwned;
 use std::fs;
@@ -115,8 +115,6 @@ fn wave_three_identity_and_runtime_fixtures_match_rust_contracts() {
     assert_fixture_contract::<NodeProjectRegistration>("node-project-registration");
     assert_fixture_contract::<NodeDaemonLease>("node-daemon-lease");
     assert_fixture_contract::<TeamSupervisorLease>("team-supervisor-lease");
-    assert_fixture_contract::<WorkDelegation>("work-delegation");
-    assert_fixture_contract::<WorkDelegationEvent>("work-delegation-event");
 }
 
 #[test]

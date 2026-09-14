@@ -59,7 +59,6 @@ fn fixture(label: &str) -> (PathBuf, HarnessStore, HostAttention) {
         condition_records: vec![],
         reports: vec![],
         evidence_records: vec![],
-        delegation_revisions: vec![],
     };
     {
         let _lock = store.acquire_write_lock().unwrap();

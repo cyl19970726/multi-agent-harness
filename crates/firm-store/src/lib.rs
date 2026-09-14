@@ -20,10 +20,9 @@ use firm_core::{
     RegistryDeliveryAttempt, RegistryDeliveryStatus, RegistryMessage, Review, TeamActorKind,
     TeamActorRef, TeamMemberCloseRequest, TeamMemberCloseStatus, TeamMessageProjection,
     TeamRunEvent, TeamRunStatus, TeamSupervisorLease, TeamSupervisorLeaseStatus, Validate, Vision,
-    Work, WorkClaimMode, WorkCommandContext, WorkCondition, WorkConditionRecord, WorkDelegation,
-    WorkDelegationEvent, WorkDelegationRevision, WorkDelegationState, WorkDelegationTransition,
-    WorkEvent, WorkEventKind, WorkEvidence, WorkOperation, WorkPhase, WorkRef, WorkReport,
-    WorkResolution, WorkflowArtifactManifest, WorkflowPatch, WorkflowRun, WorkflowStep,
+    Work, WorkClaimMode, WorkCommandContext, WorkCondition, WorkConditionRecord, WorkEvent,
+    WorkEventKind, WorkEvidence, WorkOperation, WorkPhase, WorkReport, WorkResolution,
+    WorkflowArtifactManifest, WorkflowPatch, WorkflowRun, WorkflowStep,
 };
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use thiserror::Error;
@@ -83,22 +82,6 @@ fn process_node_daemon_admission_is_closed(daemon_id: &str, instance_id: &str) -
             daemon_id: daemon_id.to_string(),
             instance_id: instance_id.to_string(),
         })
-}
-fn work_event_order(left: &WorkEvent, right: &WorkEvent) -> std::cmp::Ordering {
-    let left_ms = left
-        .created_at
-        .strip_prefix("unix-ms:")
-        .and_then(|value| value.parse::<u128>().ok());
-    let right_ms = right
-        .created_at
-        .strip_prefix("unix-ms:")
-        .and_then(|value| value.parse::<u128>().ok());
-    match (left_ms, right_ms) {
-        (Some(left_ms), Some(right_ms)) => left_ms.cmp(&right_ms),
-        _ => left.created_at.cmp(&right.created_at),
-    }
-    .then(left.sequence.cmp(&right.sequence))
-    .then(left.id.cmp(&right.id))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -274,74 +257,6 @@ impl StoreError {
 }
 
 pub type StoreResult<T> = Result<T, StoreError>;
-
-/// Crash-atomic composite row for cross-Team delegation. The target Work
-/// creation event and Delegation creation event are committed in one JSONL
-/// record; ordinary Work readers fold the embedded operation as native Work.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct WorkDelegationOperation {
-    delegation: WorkDelegation,
-    event: WorkDelegationEvent,
-    target_work_operation: WorkOperation,
-}
-
-/// Canonical semantic request identity for WorkDelegation creation. Entity ids
-/// are included (callers derive omitted ids from the idempotency key), while
-/// only envelope ids and timestamps are excluded. Every persisted creation
-/// field that can change responsibility or target Work intent is therefore
-/// conflict-significant.
-fn work_delegation_request_fingerprint(
-    delegation: &WorkDelegation,
-    target_work: &Work,
-    context: &WorkCommandContext,
-) -> serde_json::Value {
-    serde_json::json!({
-        "delegation": {
-            "id": delegation.id,
-            "source_work_ref": delegation.source_work_ref,
-            "source_work_version": delegation.source_work_version,
-            "source_owner_member_id": delegation.source_owner_member_id,
-            "created_by_member_run_id": delegation.created_by_member_run_id,
-            "target_agent_team_id": delegation.target_agent_team_id,
-            "target_work_ref": delegation.target_work_ref,
-            "delegated_by_actor": delegation.delegated_by_actor,
-            "state": delegation.state,
-            "resolution_summary": delegation.resolution_summary,
-            "blocker_reason": delegation.blocker_reason,
-            "version": delegation.version,
-        },
-        "target_work": {
-            "id": target_work.id,
-            "team_run_id": target_work.team_run_id,
-            "team_id": target_work.accountable_team_id,
-            "title": target_work.title,
-            "context_markdown": target_work.context_markdown,
-            "completion_criteria_markdown": target_work.completion_criteria_markdown,
-            "phase": target_work.phase,
-            "condition": target_work.condition,
-            "resolution": target_work.resolution,
-            "owner_member_id": target_work.owner_member_id,
-            "active_member_run_id": target_work.active_member_run_id,
-            "claim_mode": target_work.claim_mode,
-            "eligible_member_ids": target_work.eligible_member_ids,
-            "prerequisite_work_ids": target_work.prerequisite_work_ids,
-            "priority": target_work.priority,
-            "created_by_actor": target_work.created_by_actor,
-            "created_by_member_id": target_work.created_by_member_id,
-            "result_summary": target_work.result_summary,
-            "blocker_reason": target_work.blocker_reason,
-            "artifact_refs": target_work.artifact_refs,
-            "check_refs": target_work.check_refs,
-            "github_links": target_work.github_links,
-            "version": target_work.version,
-        },
-        "performed_by_actor": context.performed_by_actor,
-        "authority_actor": context.authority_actor,
-        "causation_ref": context.causation_ref,
-        "duplicate_ok": context.duplicate_ok,
-    })
-}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MessageDeliveryClaimResult {
@@ -635,6 +550,16 @@ fn require_non_empty_store(value: &str, label: &str) -> StoreResult<()> {
 /// and a copied string literal would drift silently.
 pub const WORK_TERMINAL_IMMUTABLE: &str = "WORK_TERMINAL_IMMUTABLE";
 
+/// The two exact codes a Work write uses when it lost its expected-version
+/// fence. Both spellings are live: the trust-kernel writers emit
+/// `WORK_VERSION_CONFLICT: Work <id> ...` and the legacy ledger writers emit
+/// `VERSION_CONFLICT: work <id> ...`. They are deliberately disjoint as
+/// substrings -- the second carries its lowercase `work` -- so a caller can
+/// test for a Work version fence without also matching an unrelated code that
+/// merely ends in `VERSION_CONFLICT`.
+pub const WORK_VERSION_CONFLICT: &str = "WORK_VERSION_CONFLICT: Work ";
+pub const LEGACY_WORK_VERSION_CONFLICT: &str = "VERSION_CONFLICT: work ";
+
 /// The one terminal-immutability choke point for Work writes.
 ///
 /// Closed Work is immutable (docs/current/product/agent-team-works.md). Every
@@ -787,38 +712,6 @@ impl HarnessStore {
                 "TEAM_RUN_HOST_AUTHORITY_MISMATCH: Work command actor {:?}:{} is not exact Host {:?}:{} for TeamRun {team_run_id}",
                 actor.kind, actor.id, expected.kind, expected.id
             )))
-        }
-    }
-
-    pub(crate) fn require_work_delegation_actor_unlocked(
-        &self,
-        actor: &TeamActorRef,
-        source_team_run_id: &str,
-        source_owner_member_id: &str,
-        action: &str,
-    ) -> StoreResult<Option<String>> {
-        match actor.kind {
-            TeamActorKind::Host => {
-                self.require_exact_team_run_host_actor(actor, source_team_run_id)?;
-                Ok(None)
-            }
-            TeamActorKind::Operator | TeamActorKind::Service => Err(StoreError::Conflict(
-                "DELEGATION_NOT_AUTHORIZED: Operator/Service cannot impersonate the exact TeamRun Host"
-                    .to_string(),
-            )),
-            TeamActorKind::ProviderRuntimeProjection => {
-                let member = self.require_member_run_unlocked(&actor.id, source_team_run_id)?;
-                if member_identity(&member) != source_owner_member_id {
-                    return Err(StoreError::Conflict(format!(
-                        "DELEGATION_NOT_AUTHORIZED: only source owner or Host may {action}"
-                    )));
-                }
-                Ok(Some(member.id))
-            }
-            TeamActorKind::AgentMember if actor.id == source_owner_member_id => Ok(None),
-            TeamActorKind::AgentMember => Err(StoreError::Conflict(format!(
-                "DELEGATION_NOT_AUTHORIZED: only source owner or Host may {action}"
-            ))),
         }
     }
 }

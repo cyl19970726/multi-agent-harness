@@ -929,25 +929,6 @@ export interface WorkDelivery {
   integrity_annotations?: string[];
 }
 
-export type WorkDelegationState = "active" | "blocked" | "completed" | "failed" | "cancelled";
-
-export interface WorkDelegation {
-  id: string;
-  source_work_ref: { team_run_id: string; work_id: string };
-  source_work_version: number;
-  source_owner_member_id: string;
-  created_by_member_run_id?: string | null;
-  target_agent_team_id: string;
-  target_work_ref: { team_run_id: string; work_id: string };
-  delegated_by_actor: TeamActorRef;
-  state: WorkDelegationState | string;
-  resolution_summary?: string | null;
-  blocker_reason?: string | null;
-  version: number;
-  created_at: string;
-  updated_at: string;
-}
-
 export interface ExecutionNode {
   id: string;
   display_name: string;
@@ -1137,7 +1118,6 @@ export interface DashboardSnapshot {
   works?: Work[];
   work_events?: WorkEvent[];
   work_deliveries?: WorkDelivery[];
-  work_delegations?: WorkDelegation[];
   execution_nodes?: ExecutionNode[];
   node_project_registrations?: NodeProjectRegistration[];
   node_daemon_leases?: NodeDaemonLease[];

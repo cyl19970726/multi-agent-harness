@@ -26,8 +26,7 @@ use firm_core::{
     AgentTeam, AgentTeamRun, AgentTeamStatus, ExecutionNode, ExecutionNodeStatus, MemberRunStatus,
     Mission, MissionStatus, NodeProjectRegistration, NodeProjectRegistrationStatus,
     ProviderRuntimeProjection as RuntimeMemberRun, TeamActorKind, TeamActorRef, TeamRunStatus,
-    Work, WorkClaimMode, WorkCommandContext, WorkCondition, WorkDelegation, WorkDelegationState,
-    WorkPhase, WorkPriority, WorkRef,
+    Work, WorkClaimMode, WorkCommandContext, WorkCondition, WorkPhase, WorkPriority,
 };
 use firm_store::{
     canonical_json_fingerprint, CurrentTeamMemberLifecycleTransition, HarnessStore, StoreError,
@@ -929,8 +928,6 @@ fn workspace_binding(id: &str, root: &str, creator: &ActorRef) -> MemberWorkspac
     }
 }
 
-#[path = "member_execution_trust/canonical_acceptance_rolls_up_delegation_in_the_same_operation.rs"]
-mod canonical_acceptance_rolls_up_delegation_in_the_same_operation;
 #[path = "member_execution_trust/canonical_ledger_recovers_old_torn_tail_and_ignores_uncommitted_next_file.rs"]
 mod canonical_ledger_recovers_old_torn_tail_and_ignores_uncommitted_next_file;
 #[cfg(any())]

@@ -722,17 +722,6 @@ pub(super) fn migration_host_work_context(
     ))
 }
 
-pub(super) fn roll_up_target_work_delegations(
-    store: &HarnessStore,
-    work: &Work,
-    args: &[String],
-) -> CliResult<Vec<WorkDelegation>> {
-    let mut context = host_work_context(store, &work.team_run_id, args)?;
-    context.event_id = generated_id("delegation-rollup");
-    context.idempotency_key = format!("delegation-rollup:{}:{}", work.id, work.version);
-    Ok(store.transition_work_and_roll_up_delegation(&work.id, context)?)
-}
-
 // ---------------------------------------------------------------------------
 // Decision-shaped board reads (issue #305).
 //
@@ -1207,7 +1196,17 @@ pub(super) fn github_poll_refusal_is_terminal_skip(error: &str) -> bool {
 /// generation or a missing lease means the pass itself is wrong.
 pub(super) fn github_poll_refusal_is_settled_work(error: &str, terminal_now: bool) -> bool {
     github_poll_refusal_is_terminal_skip(error)
-        || (terminal_now && error.contains("VERSION_CONFLICT"))
+        || (terminal_now && github_poll_refusal_is_work_version_fence(error))
+}
+
+/// Whether a refusal is a Work expected-version fence, named by the Store's own
+/// exported codes rather than a bare `VERSION_CONFLICT` substring. The bare
+/// substring also matched any unrelated code ending in `VERSION_CONFLICT`, so
+/// it could have absorbed a refusal that has nothing to do with this Work's
+/// revision.
+fn github_poll_refusal_is_work_version_fence(error: &str) -> bool {
+    error.contains(harness_store::WORK_VERSION_CONFLICT)
+        || error.contains(harness_store::LEGACY_WORK_VERSION_CONFLICT)
 }
 
 /// Re-read one Work's settled state after its evidence refresh was refused.
@@ -1217,6 +1216,35 @@ fn work_is_terminal_now(store: &HarnessStore, work_id: &str) -> CliResult<bool> 
         .into_iter()
         .find(|work| work.id == work_id)
         .is_some_and(|work| work.is_terminal()))
+}
+
+/// The TeamRun ledger line one GitHub evidence poll writes.
+///
+/// `is_noop` counts `terminal_skipped`, so a pass that only skipped Work the
+/// Host closed mid-pass does write an event. Reporting only refreshed links and
+/// red-CI holds made that event read "0 link(s) refreshed" and name nothing at
+/// all, which is exactly the pass an operator needs to see. The skipped Work is
+/// named the same way a held one is.
+pub(super) fn github_poll_event_detail(summary: &GithubPollSummary) -> String {
+    let mut detail = format!(
+        "github linkage poll: {} link(s) refreshed",
+        summary.links_refreshed
+    );
+    if !summary.blocked_on_failure.is_empty() {
+        detail.push_str(&format!(
+            "; held {} on red CI: {}",
+            summary.blocked_on_failure.len(),
+            summary.blocked_on_failure.join(", ")
+        ));
+    }
+    if !summary.terminal_skipped.is_empty() {
+        detail.push_str(&format!(
+            "; skipped {} closed mid-pass: {}",
+            summary.terminal_skipped.len(),
+            summary.terminal_skipped.join(", ")
+        ));
+    }
+    detail
 }
 
 /// Refresh the stored GitHub linkage snapshot for every Work on the run that

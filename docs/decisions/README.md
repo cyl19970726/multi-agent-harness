@@ -63,6 +63,7 @@ consequences, affected modules, and validation path.
 | [0063](0063-retire-plugin-package-and-in-repo-retirement-evidence.md) | accepted; 2026-09-05 cleanup | The plugin package, the in-repo Dynamic Workflow retirement register/archive, archived operator skills, superseded specs, and the skill evaluation workspace live only in git history (last tree `918e9002`); one retired-path gate replaces four path-policing gates and the installer publishes the binary only |
 | [0064](0064-host-attention-is-a-delivery-ledger.md) | accepted; Owner 2026-09-05 (SPEC-ADAPTATION-REFACTOR-01 D-A) | Three authority planes stay; HostAttention is the Host-notification delivery ledger whose ACK is the Host-intake precondition of exactly one Work verb (retarget) and whose review-requested rows are terminal-Work provenance |
 | [0065](0065-two-runtime-epochs.md) | accepted; Owner 2026-09-05 (SPEC-ADAPTATION-REFACTOR-01 D-B) | `MemberRun.runtime_generation` is the adapter-process epoch and fence authority; `AgentSession.runtime_generation` is the immutable provider-session epoch; deliberately independent, related only for the minting MemberRun; no schema change |
+| [0066](0066-retire-the-work-ledger-delegation-stack.md) | accepted; W5a Work ledger slice | The Work-ledger WorkDelegation relation, its ledgers, gate and readers are retired; the Work model carries no cross-Team edge and the Remote Fabric's `WorkDelegationV1` is untouched |
 
 ## Split Rule
 

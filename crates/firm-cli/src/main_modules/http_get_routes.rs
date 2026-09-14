@@ -187,36 +187,6 @@ impl HttpExchange<'_> {
                 }
                 return Ok(true);
             }
-            if path_only == "/v1/work-delegations" {
-                let source_work_id = query_param(path, "source_work_id");
-                let target_team_id = query_param(path, "target_agent_team_id");
-                let state = query_param(path, "state");
-                let delegations = store
-                    .latest_work_delegations()?
-                    .into_iter()
-                    .filter(|delegation| {
-                        source_work_id
-                            .as_deref()
-                            .is_none_or(|id| delegation.source_work_ref.work_id == id)
-                    })
-                    .filter(|delegation| {
-                        target_team_id
-                            .as_deref()
-                            .is_none_or(|id| delegation.target_agent_team_id == id)
-                    })
-                    .filter(|delegation| {
-                        state
-                            .as_deref()
-                            .is_none_or(|expected| serde_snake_label(&delegation.state) == expected)
-                    })
-                    .collect::<Vec<_>>();
-                write_http_json(
-                    stream,
-                    "200 OK",
-                    &serde_json::json!({"delegations": delegations}),
-                )?;
-                return Ok(true);
-            }
             if path_only == "/v1/execution-nodes" {
                 write_http_json(
                     stream,
@@ -256,33 +226,6 @@ impl HttpExchange<'_> {
                             stream,
                             "404 Not Found",
                             &serde_json::json!({"error": "execution_node_not_found"}),
-                        )?;
-                    }
-                    return Ok(true);
-                }
-            }
-            if let Some(delegation_id) = path_only.strip_prefix("/v1/work-delegations/") {
-                if !delegation_id.contains('/') {
-                    let delegation = store
-                        .latest_work_delegations()?
-                        .into_iter()
-                        .find(|delegation| delegation.id == delegation_id);
-                    if let Some(delegation) = delegation {
-                        let events = store
-                            .work_delegation_events()?
-                            .into_iter()
-                            .filter(|event| event.delegation_id == delegation_id)
-                            .collect::<Vec<_>>();
-                        write_http_json(
-                            stream,
-                            "200 OK",
-                            &serde_json::json!({"delegation": delegation, "events": events}),
-                        )?;
-                    } else {
-                        write_http_json(
-                            stream,
-                            "404 Not Found",
-                            &serde_json::json!({"error": "work_delegation_not_found"}),
                         )?;
                     }
                     return Ok(true);

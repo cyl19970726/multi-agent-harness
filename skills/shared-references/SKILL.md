@@ -91,8 +91,9 @@ Works are flat peer nodes, never containment nodes. A Work may have many
 hard prerequisites and many derived successors. Claim or start only when the
 server says every prerequisite is accepted. A failed or cancelled prerequisite
 requires Host replan; do not infer downstream failure, cancellation, rewiring,
-or acceptance. Cross-Team responsibility uses explicit WorkDelegation. An
-accepted prerequisite or delegated target never auto-submits or auto-accepts
+or acceptance. A Team's Work is accountable to that Team and the Work model
+carries no cross-Team edge; cross-machine collaboration is the separate Remote
+Fabric surface. An accepted prerequisite never auto-submits or auto-accepts
 another Work; its owner remains accountable for integration and submission.
 
 ## 8. No Plan Mode / No Plan Gate

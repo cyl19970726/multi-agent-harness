@@ -170,6 +170,9 @@ fn legacy_rows_carrying_a_retired_decisions_array_still_decode() {
             "evidence_refs": [],
             "created_at": "unix-ms:2",
         }],
+        // Deliberate extra evidence: `delegation_revisions` retired with the
+        // Work-ledger delegation stack (ADR 0066), so this row proves both
+        // retired fields fold away as unknown.
         "delegation_revisions": [],
     });
     let operation: firm_core::WorkOperation =

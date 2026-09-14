@@ -125,14 +125,6 @@ fn scope_dashboard_snapshot(snapshot: &mut serde_json::Value, team_run_id: &str)
                 .is_some_and(|id| json_field_eq(row, "mission_id", id))
         });
     }
-    retain_json_rows(snapshot, "work_delegations", |row| {
-        json_nested_field_eq(row, "source_work_ref", "team_run_id", team_run_id)
-            || json_nested_field_eq(row, "target_work_ref", "team_run_id", team_run_id)
-    });
-    let delegation_ids = json_string_set(snapshot, "work_delegations", "id");
-    retain_json_rows(snapshot, "work_delegation_events", |row| {
-        json_field_in(row, "delegation_id", &delegation_ids)
-    });
     retain_json_rows(snapshot, "execution_nodes", |row| {
         execution_node_id
             .as_deref()
@@ -180,18 +172,6 @@ fn json_field_eq(row: &serde_json::Value, field: &str, expected: &str) -> bool {
 }
 
 #[cfg(test)]
-fn json_nested_field_eq(
-    row: &serde_json::Value,
-    parent: &str,
-    field: &str,
-    expected: &str,
-) -> bool {
-    row.get(parent)
-        .and_then(|value| value.get(field))
-        .and_then(serde_json::Value::as_str)
-        == Some(expected)
-}
-
 #[cfg(test)]
 fn json_field_in(row: &serde_json::Value, field: &str, expected: &HashSet<String>) -> bool {
     row.get(field)

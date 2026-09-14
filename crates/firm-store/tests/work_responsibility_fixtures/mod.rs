@@ -381,7 +381,6 @@ pub fn append_legacy_work_row(
         condition_records: Vec::new(),
         reports: Vec::new(),
         evidence_records: Vec::new(),
-        delegation_revisions: Vec::new(),
     };
     let mut row = serde_json::to_value(&operation).expect("operation JSON");
     let projection = row["work"].as_object_mut().expect("Work object");
@@ -429,7 +428,6 @@ pub fn append_legacy_work_row_with_invalid_projection(
         condition_records: Vec::new(),
         reports: Vec::new(),
         evidence_records: Vec::new(),
-        delegation_revisions: Vec::new(),
     };
     let mut row = serde_json::to_value(&operation).expect("operation JSON");
     let projection = row["work"].as_object_mut().expect("Work object");
@@ -478,7 +476,6 @@ pub fn append_legacy_terminal_work_row(
         condition_records: Vec::new(),
         reports: Vec::new(),
         evidence_records: Vec::new(),
-        delegation_revisions: Vec::new(),
     };
     let mut row = serde_json::to_value(&operation).expect("operation JSON");
     let projection = row["work"].as_object_mut().expect("Work object");

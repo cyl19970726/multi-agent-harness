@@ -77,3 +77,77 @@ fn github_poll_absorbs_a_settled_work_whatever_refusal_the_close_produced() {
         );
     }
 }
+
+/// The settled-Work skip is keyed on the Store's own exported version-fence
+/// codes, not on a bare `VERSION_CONFLICT` substring. The bare substring also
+/// matched any unrelated code ending in those characters, so a refusal with
+/// nothing to do with this Work's revision could have been absorbed the moment
+/// the Work happened to be closed.
+#[test]
+fn github_poll_version_fence_is_named_by_the_stores_own_codes() {
+    // Both live spellings are covered: the trust-kernel writers and the legacy
+    // ledger writers word the same fence differently.
+    for fence in [
+        "conflict: WORK_VERSION_CONFLICT: Work work-1 is version 3, expected 2",
+        "conflict: VERSION_CONFLICT: work work-1 is version 3, expected 2",
+        "conflict: VERSION_CONFLICT: work work-1 is at version 3, expected 2",
+    ] {
+        assert!(
+            github_poll_refusal_is_settled_work(fence, true),
+            "`{fence}` is a Work version fence"
+        );
+        assert!(
+            !github_poll_refusal_is_settled_work(fence, false),
+            "`{fence}` on an open Work is a real concurrent writer"
+        );
+    }
+
+    // Codes that merely end in VERSION_CONFLICT are not this Work's fence, and
+    // a closed Work never launders them.
+    for other in [
+        "conflict: DELEGATION_VERSION_CONFLICT: delegation-1 changed concurrently",
+        "conflict: TEAM_VERSION_CONFLICT: Team team-1 is revision 4, expected 3",
+        "conflict: WORK_GITHUB_EVIDENCE_NODE_FENCED: Work work-1 TeamRun is placed on node-b",
+    ] {
+        assert!(
+            !github_poll_refusal_is_settled_work(other, true),
+            "`{other}` must not be absorbed as this Work's version fence"
+        );
+    }
+}
+
+/// A pass that only skipped Work the Host closed mid-pass is not a no-op, so it
+/// writes a TeamRun event. That event has to say what happened: reporting only
+/// refreshed links made it read "0 link(s) refreshed" and name nothing.
+#[test]
+fn github_poll_event_detail_names_every_observation_it_reports() {
+    let mut summary = GithubPollSummary {
+        terminal_skipped: vec!["work-closed-1".into(), "work-closed-2".into()],
+        ..Default::default()
+    };
+    assert!(
+        !summary.is_noop(),
+        "a skip-only pass still writes its event"
+    );
+    let detail = github_poll_event_detail(&summary);
+    assert!(
+        detail.contains("skipped 2 closed mid-pass: work-closed-1, work-closed-2"),
+        "skip-only detail must name the Work: {detail}"
+    );
+
+    summary.links_refreshed = 3;
+    summary.blocked_on_failure = vec!["work-red-1".into()];
+    let detail = github_poll_event_detail(&summary);
+    assert!(
+        detail.starts_with("github linkage poll: 3 link(s) refreshed"),
+        "{detail}"
+    );
+    assert!(detail.contains("held 1 on red CI: work-red-1"), "{detail}");
+    assert!(detail.contains("skipped 2 closed mid-pass"), "{detail}");
+
+    // Nothing observed: the line stays exactly what it always was.
+    assert_eq!(
+        github_poll_event_detail(&GithubPollSummary::default()),
+        "github linkage poll: 0 link(s) refreshed"
+    );
+}
