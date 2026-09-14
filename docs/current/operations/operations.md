@@ -183,6 +183,27 @@ observed generations and paths. Preserve both files and the error for explicit
 inspection. This is failure diagnosis, not a WAL, atomicity guarantee, automatic
 repair or permission to replay effects or manually rewrite ledger rows.
 
+Three further fail-closed strings come from the provider-native session pointer,
+whose one authority is `AgentSession.native_session_ref` (ADR 0072):
+
+- `NATIVE_SESSION_PROJECTION_DISAGREES` — the MemberRun already names a
+  different provider-native conversation than the AgentSession is binding. The
+  refusal happens before anything is written, so neither record changed. Decide
+  which conversation is real; do not edit either row to match the other.
+- `NATIVE_SESSION_PROJECTION_INCOMPLETE` — the authority and the canonical
+  MemberRun are durable and only the legacy `member_runs.jsonl` row is stale.
+  This is the one case with a supported repair: re-derive the row from the
+  authority. It is idempotent and a no-op when the row already agrees.
+- `NATIVE_SESSION_SEED_AFTER_AUTHORITY` — something tried to seed a
+  `requested` pointer onto a MemberRun after an AgentSession already owned one.
+  A seed is only legal before any session binds; after that, only binding the
+  authority may change the projection. Treat this as a caller bug, not a row to
+  fix.
+
+`MEMBER_RUN_PROJECTION_AMBIGUOUS` reports more than one MemberRun for a member
+at one runtime generation; like the mismatch above it is a read-boundary
+detection, not a repair.
+
 Real self-hosting follows the canonical
 [Agent Team Dogfood Loop](../product/agent-team-dogfood-loop.md). A failed live
 scenario becomes a Host-triaged repair batch or tracked issue, then the original

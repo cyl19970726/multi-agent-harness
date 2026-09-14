@@ -14,11 +14,13 @@ impl HarnessStore {
         // Both of these are copies of one pointer. Admission publishes the same
         // snapshot into two ledgers, so this guard asserts that they agree with
         // each other before either is written — it never chooses a winner.
-        // Below, an existing AgentSession must match the pointer this MemberRun
-        // admission carries; the MemberRun copy is the expectation, which is
-        // why the refusal there names "new MemberRun native-session truth".
-        // ADR 0072 decides that the AgentSession becomes the authority and
-        // these two become projections of it; the N2b slice implements that.
+        // The AgentSession is the authority for this pointer and both MemberRun
+        // rows are projections of it (ADR 0072), so this guard asserts that the
+        // two projections agree with each other before either is written; it
+        // never chooses a winner. Below, an existing AgentSession must match
+        // the pointer this MemberRun admission carries — the refusal there
+        // still names "new MemberRun native-session truth" because admission is
+        // the one path that runs before any session has bound.
         let projections_match = match (
             runtime.native_session.as_ref(),
             canonical.run.native_session.as_ref(),

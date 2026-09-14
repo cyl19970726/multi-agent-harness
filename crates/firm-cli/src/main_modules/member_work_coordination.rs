@@ -796,6 +796,20 @@ impl TeamRunLedger {
                 native_ref.clone(),
             ) {
                 Ok(_) => break,
+                // A half-written dual ledger is never retried away: the
+                // authority and the canonical MemberRun are already durable and
+                // only the legacy row is stale, so a retry would find both trust
+                // records agreeing, short-circuit, and return Ok while the row
+                // stayed stale — the caller would see success and the next
+                // admission read would fail closed with no error at the point of
+                // failure. Surface it instead; the message names the repair verb.
+                Err(error)
+                    if error
+                        .to_string()
+                        .contains("NATIVE_SESSION_PROJECTION_INCOMPLETE") =>
+                {
+                    return Err(CliError::Store(error))
+                }
                 Err(error) if attempt == 0 => {
                     let _ = error;
                     continue;

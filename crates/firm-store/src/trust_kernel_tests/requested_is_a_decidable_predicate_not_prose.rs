@@ -106,6 +106,85 @@ fn requested_is_decided_by_whether_an_agent_session_owns_the_pointer() {
         "the predicate is per member AND runtime generation"
     );
 
+    // Closing the session does NOT make the pointer requested again. Which
+    // provider-native conversation this lane owned survives Close — the
+    // resolver deliberately does not filter lifecycle — and a closed lane whose
+    // pointer suddenly read as an unfulfilled intent would invite a caller to
+    // re-seed over real history.
+    let bound = store
+        .fabric_agent_sessions("space-test")
+        .unwrap()
+        .into_iter()
+        .find(|candidate| candidate.id == "session-requested")
+        .expect("bound AgentSession");
+    store
+        .transition_agent_session(
+            &service_context("session.close", "requested-close", bound.version),
+            "session-requested",
+            AgentSessionStatus::Closed,
+            "t-closed",
+        )
+        .expect("close the bound session");
+    assert!(
+        !store
+            .member_run_native_session_is_requested(
+                "space-test",
+                "requested-member",
+                session.runtime_generation
+            )
+            .unwrap(),
+        "a closed lane still owned its conversation; the pointer is not an intent again"
+    );
+
+    std::fs::remove_dir_all(root).expect("cleanup");
+}
+
+/// When a live and a closed session both own a ref for one member and
+/// generation, the live lane answers. The resolver sorts closed last
+/// (`owned.sort_by_key(|s| s.lifecycle == Closed)`) precisely so a stale closed
+/// lane cannot shadow the one currently running.
+#[test]
+fn a_live_lane_outranks_a_closed_one_when_both_own_a_ref() {
+    let (store, root) = fabric_store();
+    seed_agent_member(
+        &store,
+        &context("host", "identity.create", "identity-tiebreak", 0),
+        "tiebreak-member",
+    );
+
+    let mut closed = session("session-closed", "tiebreak-member");
+    closed.native_session_ref = Some(settled_native_session("thread-closed"));
+    closed.lifecycle = AgentSessionStatus::Closed;
+    store
+        .create_agent_session(
+            &service_context("session.create", "session-closed", 0),
+            closed,
+        )
+        .unwrap();
+
+    let mut live = session("session-live", "tiebreak-member");
+    live.native_session_ref = Some(settled_native_session("thread-live"));
+    store
+        .create_agent_session(
+            &service_context("session.create", "session-live", 0),
+            live.clone(),
+        )
+        .unwrap();
+
+    let decided = store
+        .deciding_native_session(
+            "space-test",
+            "tiebreak-member",
+            live.runtime_generation,
+            None,
+        )
+        .expect("resolve across a live and a closed lane")
+        .expect("one of them answers");
+    assert_eq!(
+        decided.native_session_id, "thread-live",
+        "the live lane answers; a closed one must not shadow it"
+    );
+
     std::fs::remove_dir_all(root).expect("cleanup");
 }
 

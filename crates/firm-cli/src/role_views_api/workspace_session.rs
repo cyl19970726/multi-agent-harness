@@ -48,7 +48,27 @@ pub(super) fn workspace_session<'a>(
             // The authority has bound and the projection has not caught up.
             // Before the reader redirect this dropped the session entirely,
             // which is exactly deciding from a projection.
-            (None, Some(_)) => session["provider_kind"] == member_run["provider"],
+            //
+            // Scoped to the SAME runtime generation on purpose. A lagging
+            // projection is a within-generation race: the bind is generation
+            // fenced, so the authority and the MemberRun always share one. A
+            // member with no pointer must still not borrow an older
+            // generation's session, which is what `unbound_external_host_does_
+            // not_fabricate_a_session` pins.
+            //
+            // `member_run` is a canonical `MemberRun`, which has no `provider`
+            // field — only `provider_profile_snapshot`, whose real values are
+            // `"<provider>/<execution_mode>"` ("kimi/kimi_acp",
+            // "claude/claude_agent_sdk"). Comparing against a key that does not
+            // exist is how the first version of this arm compared a String to
+            // Null and never fired.
+            (None, Some(_)) => {
+                session["runtime_generation"] == member_run["runtime_generation"]
+                    && member_run["provider_profile_snapshot"]
+                        .as_str()
+                        .and_then(|snapshot| snapshot.split('/').next())
+                        .is_none_or(|provider| session["provider_kind"] == provider)
+            }
             // A newly admitted managed Session may not have settled a native
             // id yet. Preserve its current projection only with exact driver
             // provenance; an external pull-only Host never gains a Session.
@@ -100,6 +120,73 @@ mod tests {
             "agent_member_id":"agent-a", "provider_kind":"codex", "runtime_generation":2,
             "lifecycle":"closed", "native_session_ref":native(),
             "control_state":{"runtime_residency":"detached", "activity":"idle"}})
+    }
+
+    /// The authority has bound and the MemberRun projection has not caught up.
+    /// The first version of this arm compared `member_run["provider"]`, a key
+    /// canonical MemberRuns do not have, so it was `String == Null` — always
+    /// false, and the session was still dropped.
+    #[test]
+    fn a_bound_session_is_selected_while_the_member_run_projection_still_lags() {
+        let mut lagging = member();
+        lagging["native_session"] = Value::Null;
+        lagging["provider_profile_snapshot"] = json!("codex/codex_app_server");
+        lagging["runtime_generation"] = json!(2);
+        let sessions = vec![session()];
+        let selected = workspace_session("space-a", &run(), &lagging, &sessions);
+        assert_eq!(
+            selected.map(|s| &s["id"]),
+            Some(&json!("session-a")),
+            "a lagging projection must not drop a session the authority has bound"
+        );
+    }
+
+    /// The snapshot is optional on real rows, and an absent one must not
+    /// silently disqualify a lane the authority owns.
+    #[test]
+    fn a_lagging_projection_without_a_provider_snapshot_still_selects() {
+        let mut lagging = member();
+        lagging["native_session"] = Value::Null;
+        lagging["runtime_generation"] = json!(2);
+        let sessions = vec![session()];
+        assert_eq!(
+            workspace_session("space-a", &run(), &lagging, &sessions).map(|s| &s["id"]),
+            Some(&json!("session-a"))
+        );
+    }
+
+    /// Widening that arm must not widen the fences that precede it.
+    #[test]
+    fn a_lagging_projection_does_not_reach_across_member_node_or_space() {
+        let mut lagging = member();
+        lagging["native_session"] = Value::Null;
+        lagging["provider_profile_snapshot"] = json!("codex/codex_app_server");
+        lagging["runtime_generation"] = json!(2);
+
+        let mut foreign_generation = session();
+        foreign_generation["runtime_generation"] = json!(3);
+        assert!(
+            workspace_session("space-a", &run(), &lagging, &[foreign_generation]).is_none(),
+            "a member with no pointer must not borrow another generation's session"
+        );
+
+        let mut foreign_member = session();
+        foreign_member["agent_member_id"] = json!("agent-other");
+        assert!(workspace_session("space-a", &run(), &lagging, &[foreign_member]).is_none());
+
+        let mut foreign_node = session();
+        foreign_node["node_id"] = json!("node-other");
+        assert!(workspace_session("space-a", &run(), &lagging, &[foreign_node]).is_none());
+
+        let foreign_space = session();
+        assert!(workspace_session("space-other", &run(), &lagging, &[foreign_space]).is_none());
+
+        let mut foreign_provider = session();
+        foreign_provider["provider_kind"] = json!("kimi");
+        assert!(
+            workspace_session("space-a", &run(), &lagging, &[foreign_provider]).is_none(),
+            "a snapshot that names another provider still disqualifies"
+        );
     }
 
     #[test]

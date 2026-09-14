@@ -132,6 +132,101 @@ fn native_session_bind_projects_both_copies_atomically() {
     std::fs::remove_dir_all(root).expect("cleanup");
 }
 
+/// The repair verb must actually repair, not only decline to act.
+///
+/// ADR 0072 names `derive_member_runs_jsonl_native_session` as the recovery for
+/// a legacy row left stale by a failure between the trust rewrite and the
+/// dual-ledger append. Every other test asserts only its no-op direction, so
+/// the recovery path itself had no coverage: this one makes the row stale on
+/// purpose and proves the verb rebuilds it from the authority.
+#[test]
+fn the_repair_verb_rebuilds_a_stale_legacy_row_from_the_authority() {
+    let (store, root) = fabric_store();
+    seed_agent_member(
+        &store,
+        &context("host", "identity.create", "identity-repair", 0),
+        "repair-member",
+    );
+    let session = session("session-repair", "repair-member");
+    store
+        .create_agent_session(
+            &service_context("session.create", "session-repair", 0),
+            session.clone(),
+        )
+        .unwrap();
+    append_runtime_team(&store, "team-repair", "team-run-repair");
+    join_runtime_membership(
+        &store,
+        "membership-repair",
+        "team-repair",
+        "repair-member",
+        firm_core::agentfirm_api::TeamMembershipRole::Member,
+    );
+    let run_id = admit_fixture_member_run_for_session(&store, "team-run-repair", &session);
+
+    let native = settled_native_session("thread-repair");
+    store
+        .bind_agent_session_native_session(
+            &service_context("session.native.bind", "repair-bind", 1),
+            "session-repair",
+            1,
+            native.clone(),
+        )
+        .expect("bind the authority");
+
+    // Simulate the half-written dual ledger the caveat describes: the authority
+    // and the canonical MemberRun are durable, the legacy row is behind.
+    let mut stale = store
+        .latest_member_runs()
+        .unwrap()
+        .into_iter()
+        .find(|row| row.id == run_id)
+        .expect("legacy row");
+    assert_eq!(stale.native_session.as_ref(), Some(&native));
+    stale.native_session = None;
+    store
+        .append_member_run_fixture_row(&stale)
+        .expect("write the stale legacy row");
+    assert_eq!(
+        store
+            .latest_member_runs()
+            .unwrap()
+            .into_iter()
+            .find(|row| row.id == run_id)
+            .expect("legacy row")
+            .native_session,
+        None,
+        "the row is stale before the repair"
+    );
+
+    assert!(
+        store
+            .derive_member_runs_jsonl_native_session("space-test", &run_id)
+            .expect("repair"),
+        "the verb reports that it rewrote the row"
+    );
+    assert_eq!(
+        store
+            .latest_member_runs()
+            .unwrap()
+            .into_iter()
+            .find(|row| row.id == run_id)
+            .expect("legacy row")
+            .native_session
+            .as_ref(),
+        Some(&native),
+        "and the row now equals the authority"
+    );
+    assert!(
+        !store
+            .derive_member_runs_jsonl_native_session("space-test", &run_id)
+            .expect("second repair"),
+        "a repaired row is a no-op on the next call"
+    );
+
+    std::fs::remove_dir_all(root).expect("cleanup");
+}
+
 /// A projection that would disagree with the authority is refused, and the
 /// refusal leaves NEITHER record written — the whole point of one rewrite.
 #[test]
@@ -271,6 +366,12 @@ fn a_closed_member_run_refuses_the_projection_and_the_authority_write() {
         .into_iter()
         .find(|run| run.id == run_id)
         .expect("fixture MemberRun");
+    let session_before = store
+        .fabric_agent_sessions("space-test")
+        .unwrap()
+        .into_iter()
+        .find(|candidate| candidate.id == "session-closed-run")
+        .expect("fixture AgentSession");
     store
         .transition_current_team_member_lifecycle(
             &context(
@@ -297,15 +398,37 @@ fn a_closed_member_run_refuses_the_projection_and_the_authority_write() {
         refused.to_string().contains("only an active MemberRun"),
         "{refused}"
     );
+    // Both records against their pre-call snapshots, exactly as the
+    // disagreeing-projection path does: a refusal must leave NEITHER written.
     let session_after = store
         .fabric_agent_sessions("space-test")
         .unwrap()
         .into_iter()
         .find(|candidate| candidate.id == "session-closed-run")
         .expect("AgentSession still readable");
+    let run_after = store
+        .trust_member_runs("space-test")
+        .unwrap()
+        .into_iter()
+        .find(|run| run.id == run_id)
+        .expect("MemberRun still readable");
     assert_eq!(
-        session_after.native_session_ref, None,
+        session_after, session_before,
         "the authority write is refused with the projection, not left behind"
+    );
+    assert_eq!(
+        run_after.native_session, None,
+        "the closed MemberRun acquires no pointer from the refused bind"
+    );
+    let legacy_after = store
+        .latest_member_runs()
+        .unwrap()
+        .into_iter()
+        .find(|row| row.id == run_id)
+        .expect("legacy row still readable");
+    assert_eq!(
+        legacy_after.native_session, None,
+        "and neither does the legacy row"
     );
 
     std::fs::remove_dir_all(root).expect("cleanup");

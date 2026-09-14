@@ -100,11 +100,17 @@ impl HarnessStore {
     /// `AgentSession.native_session_ref` is the authority (ADR 0071). This
     /// binds it and, in the SAME atomic ledger rewrite, projects the exact same
     /// value onto the `MemberRun` that runs this session, then projects it onto
-    /// the legacy `member_runs.jsonl` row under the same write lock. Callers
-    /// cannot write a projection on their own, so a projection can never be
-    /// observed without its authority, and no caller can pair the wrong
-    /// MemberRun: it is resolved here from the session's own
+    /// the legacy `member_runs.jsonl` row under the same write lock. No caller
+    /// can pair the wrong MemberRun: it is resolved here from the session's own
     /// `agent_member_id` + `runtime_generation`.
+    ///
+    /// Once an AgentSession owns a ref, this is the ONLY entrance that may
+    /// change the projection: `bind_member_run_native_session` refuses with
+    /// `NATIVE_SESSION_SEED_AFTER_AUTHORITY` from that moment on. That other
+    /// entrance survives for exactly one case — seeding the pre-session
+    /// `requested` pointer of a `--resume-member` attachment (#845), which by
+    /// definition happens while no AgentSession owns a ref for that member and
+    /// generation.
     ///
     /// A fresh-start session is materialized before the provider thread exists
     /// (`native_session_ref` starts unset), so the settled binding lands later
@@ -241,10 +247,9 @@ impl HarnessStore {
         // Deliberately unconditional, including on an idempotent replay: the
         // append is a no-op when the row already agrees, so a replay repairs a
         // row left stale by an earlier failure here.
-        if paired.is_some() {
+        if let Some(run) = paired.as_ref() {
             self.project_native_session_onto_member_runs_jsonl_unlocked(
-                &session.agent_member_id,
-                session.runtime_generation,
+                &run.id,
                 &native_session_ref,
             )?;
         }
@@ -324,18 +329,19 @@ impl HarnessStore {
     /// `member_runs.jsonl` row for this member has no pair to keep whole.
     fn project_native_session_onto_member_runs_jsonl_unlocked(
         &self,
-        agent_member_id: &str,
-        runtime_generation: u64,
+        member_run_id: &str,
         native_session_ref: &NativeSessionRef,
     ) -> StoreResult<()> {
+        // Resolved by id, not by (agent_member_id, runtime_generation): the
+        // canonical half fails closed on an ambiguous pair
+        // (MEMBER_RUN_PROJECTION_AMBIGUOUS) and the caller already holds the
+        // exact id it chose, so matching on it makes the two halves incapable
+        // of picking different rows.
         let Some(mut row) = latest_by_id(
             self.read_jsonl::<ProviderRuntimeProjection>("member_runs.jsonl")?,
             |row| row.id.clone(),
         )
-        .into_values()
-        .find(|row| {
-            row.agent_member_id == agent_member_id && row.runtime_generation == runtime_generation
-        }) else {
+        .remove(member_run_id) else {
             return Ok(());
         };
         if row.native_session.as_ref() == Some(native_session_ref) {
@@ -345,11 +351,24 @@ impl HarnessStore {
         self.append_jsonl_unlocked("member_runs.jsonl", &row)
             .map_err(|error| {
                 StoreError::Conflict(format!(
-                    "NATIVE_SESSION_PROJECTION_INCOMPLETE: agent_member_id={agent_member_id} runtime_generation={runtime_generation}; the authoritative AgentSession binding and the canonical MemberRun are durable, the {} half is not; re-derive it with derive_member_runs_jsonl_native_session (no automatic replay): {error}",
+                    "NATIVE_SESSION_PROJECTION_INCOMPLETE: member_run_id={member_run_id}; the authoritative AgentSession binding and the canonical MemberRun are durable, the {} half is not; re-derive it with derive_member_runs_jsonl_native_session (no automatic replay): {error}",
                     self.root.join("member_runs.jsonl").display(),
                 ))
             })
     }
+    /// Append a raw legacy runtime row. Test-only: it is how a test makes the
+    /// dual ledger half-written on purpose, which no production path may do.
+    #[cfg(any(test, feature = "test-support"))]
+    #[doc(hidden)]
+    pub fn append_member_run_fixture_row(
+        &self,
+        row: &ProviderRuntimeProjection,
+    ) -> StoreResult<()> {
+        self.init()?;
+        let _lock = self.acquire_write_lock()?;
+        self.append_jsonl_unlocked("member_runs.jsonl", row)
+    }
+
     /// Rebuild the legacy `member_runs.jsonl` pointer from the authority.
     ///
     /// This is a DERIVATION, not a second write path: it reads the committed
