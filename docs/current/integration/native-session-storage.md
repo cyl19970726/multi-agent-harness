@@ -81,21 +81,31 @@ raw provider event.
 
 ## Binding contract
 
-`NativeSessionRef` is stored in three places today, and the Store rejects
-disagreement between them rather than picking a winner:
+`NativeSessionRef` is stored in three places today:
 
-- `AgentSession.native_session_ref`
-  (`crates/firm-core/src/agentfirm_api/identity_session.rs:301-302`);
-- canonical `MemberRun.native_session` (same file, `:524-525`);
+- canonical `MemberRun.native_session`
+  (`crates/firm-core/src/agentfirm_api/identity_session.rs:524-525`);
+- `AgentSession.native_session_ref` (same file, `:301-302`);
 - the legacy `member_runs.jsonl` `ProviderRuntimeProjection.native_session`
   (`crates/firm-core/src/team_runtime.rs:901-902`).
 
-Member admission validates the canonical MemberRun against the legacy runtime
-projection under one writer lock and fails closed with
-`MEMBER_ADMISSION_NATIVE_IDENTITY_MISMATCH` when the identity fields disagree,
-or `MEMBER_ADMISSION_NATIVE_PROJECTION_MISMATCH` when the full observation
-differs (`crates/firm-store/src/store_team_admission.rs:17-48`). No surface
-nominates one of the three as the authority.
+The canonical `MemberRun.native_session` is the expectation both fences compare
+against, and they live in different layers:
+
+- **Member admission**, in the Store under one writer lock, validates the
+  canonical MemberRun against the legacy runtime projection and fails closed
+  with `MEMBER_ADMISSION_NATIVE_IDENTITY_MISMATCH` when the identity fields
+  disagree, or `MEMBER_ADMISSION_NATIVE_PROJECTION_MISMATCH` when the full
+  observation differs. Its own code calls one side `canonical` and the other
+  the `runtime projection` (`crates/firm-store/src/store_team_admission.rs:14-47`).
+- **NodeDaemon adoption**, in `firm-cli` rather than the Store, validates
+  `AgentSession.native_session_ref` against a ref derived from the MemberRun and
+  refuses with `AGENT_SESSION_RECOVERY_REQUIRED: <session> does not match
+  MemberRun <member> native-session truth`
+  (`crates/firm-cli/src/main_modules/member_orchestration.rs:158-172`).
+
+Neither fence silently picks a winner; both fail closed. Neither is a single
+Store-level check over all three copies.
 
 Fields:
 
@@ -247,7 +257,7 @@ new binding records the parent native session id.
 | Claude `claude_agent_sdk` | `claude_project_session` | real `system(init).session_id` captured | `~/.claude/projects/**/<session>.jsonl` | streaming mailbox, SDK interrupt/close, and the SDK `resume` option carrying the exact session id (`apps/claude-member-runner/src/member-runner.mjs:157`); `listSessions` is not on the shipped resume path | Only Claude Team mode; `system(init).claude_code_version` owns the version claim; Desktop visibility is opt-in through `claude://resume?session=<id>`, and Desktop stays observation-only while Harness drives |
 | Claude `claude_cli` | `claude_project_session` | real one-shot session id | `~/.claude/projects/**/<session>.jsonl` | exact-session resume remains only in the separately fenced external Host/direct-delivery compatibility path | rejected for managed Host and Member runs; historical Team records remain read-only |
 | Pi `pi_rpc` | `pi_session` | exact provider JSONL locator captured from provider state | exact regular JSONL under `<store_root>/pi_sessions/<member_run_id>/`, i.e. beneath the managed Execution Space root (`crates/firm-cli/src/main_modules/pi_runner_state.rs:96-98`) | exact provider session path is retained for explicit continuation | absolute paths are accepted only from the canonical NativeSessionRef and must remain beneath the resolved managed root |
-| DeepSeek Harness `deepseek_sdk` | `deepseek_harness_session` | exact native `SessionId` | official `@deepseek-ai/dsh-session-persistence-jsonl` reader over the reviewed zstd store, invoked as a bounded Node child process (3 s deadline, 16 MiB stdout cap, `crates/firm-cli/src/native_session/deepseek.rs:10`, `:53-62`) | `ctx.agents.resume` with the exact SessionId | Harness never reimplements or copies DSH zstd/packed persistence; the official package returns a bounded response-local logical JSONL view |
+| DeepSeek Harness `deepseek_sdk` | `deepseek_harness_session` | exact native `SessionId` | official `@deepseek-ai/dsh-session-persistence-jsonl` reader over the reviewed zstd store, invoked as a bounded Node child process (3 s deadline, 16 MiB stdout cap, `crates/firm-cli/src/native_session/deepseek.rs:10`, `:53-62`) | `ctx.agents.resume` with the exact SessionId, reached through the runner's injected `runtime.resume` wrapper (`apps/deepseek-member-runner/bin/deepseek-member-runner.mjs:25`) | Harness never reimplements or copies DSH zstd/packed persistence; the official package returns a bounded response-local logical JSONL view |
 
 The `native_locator_kind` column is what each Team adapter's
 `native_locator_kind()` emits
@@ -257,10 +267,13 @@ The `native_locator_kind` column is what each Team adapter's
 `crates/firm-provider-deepseek/src/lib.rs:992`,
 `crates/firm-provider-pi/src/team_runtime.rs:185-187`). The two provider-keyed
 helpers that build a ref before an adapter is bound — for an explicit
-`resume_native_session_id`, and for a provider-native ref — have no `pi` arm and
-fall through to `provider_native` / `provider_native_session`
-(`crates/firm-cli/src/main_modules/team_run_setup.rs:190-195`,
-`crates/firm-cli/src/main_modules/provider_native_identity.rs:44-50`).
+`resume_native_session_id`, and for a provider-native ref — do not cover every
+provider. Neither has a `pi` arm;
+`crates/firm-cli/src/main_modules/team_run_setup.rs:190-195` also has no
+`deepseek_harness` arm, while
+`crates/firm-cli/src/main_modules/provider_native_identity.rs:44-50` does. An
+uncovered provider falls through to `provider_native` /
+`provider_native_session` instead of the adapter's own kind.
 
 Unknown providers and unregistered execution modes have no executable Team
 Member adapter and fail explicitly. A provider brand, installed binary, native

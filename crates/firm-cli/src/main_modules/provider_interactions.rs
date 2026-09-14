@@ -301,6 +301,33 @@ pub(super) fn complete_provider_interaction_reply(
     Ok(())
 }
 
+/// The reverse-RPC method selectors these handlers dispatch on.
+///
+/// A selector is a machine-readable transport identifier, not provider-authored
+/// text, so a MemberAction may name it under the same carve-out
+/// `provider_status` has. Bounding the recorded value to this set is what keeps
+/// that true: a frame carrying an arbitrary or absent `method` records the
+/// fixed token below instead of a free-form provider string.
+pub(super) const REVIEWED_PROVIDER_CALLBACK_METHODS: [&str; 5] = [
+    "item/commandExecution/requestApproval",
+    "item/fileChange/requestApproval",
+    "item/permissions/requestApproval",
+    "item/tool/requestUserInput",
+    "session/request_permission",
+];
+
+pub(super) fn reviewed_provider_callback_method(frame: &serde_json::Value) -> &'static str {
+    frame
+        .get("method")
+        .and_then(|value| value.as_str())
+        .and_then(|method| {
+            REVIEWED_PROVIDER_CALLBACK_METHODS
+                .into_iter()
+                .find(|reviewed| *reviewed == method)
+        })
+        .unwrap_or("unreviewed_provider_method")
+}
+
 /// Durable trace for a reverse-RPC handler that failed closed.
 ///
 /// A handler error is turned into a JSON-RPC error frame by the provider
@@ -308,8 +335,9 @@ pub(super) fn complete_provider_interaction_reply(
 /// error never reaches `run_cycle` and no `ExecutionCycleOutcome` field
 /// carries it, so without this the Supervisor logs an ordinary "completed
 /// provider round" while the member has silently lost the capability. Append
-/// one MemberAction naming the request method and the exact error so the
-/// denial is reconstructable from the Harness coordination ledger alone.
+/// one MemberAction naming the reviewed request selector and the exact
+/// Harness-authored error so the denial is reconstructable from the Harness
+/// coordination ledger alone.
 ///
 /// Best effort by construction: the trace must never mask or replace the
 /// fail-closed rejection, so a failure to record it is swallowed.
@@ -323,15 +351,11 @@ pub(super) fn trace_provider_callback_rejection<T>(
         Ok(value) => return Ok(value),
         Err(error) => error,
     };
-    let method = frame
-        .get("method")
-        .and_then(|value| value.as_str())
-        .unwrap_or("unknown");
     let _ = ledger.append_action(
         member_run_id,
         "provider_callback_rejected",
         MemberActionStatus::Failed,
-        method,
+        reviewed_provider_callback_method(frame),
         &error.to_string(),
     );
     Err(error)

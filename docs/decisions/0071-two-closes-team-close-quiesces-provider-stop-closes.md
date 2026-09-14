@@ -44,10 +44,20 @@ cannot stop it or rewrite another Team's bindings."
 
 ### 2. Provider Close is a settled `StopSession` RuntimeCommand
 
-`AgentSessionStatus::Closed` has one writer: the NodeDaemon control protocol,
-when a `StopSession` RuntimeCommand settles
-(`crates/firm-node-daemon/src/supervisor_daemon/control_protocol.rs:709-717`;
-the sibling `ResumeSession` writes `Cold`).
+`AgentSessionStatus::Closed` is written on two paths, both gated on the same
+exact settled `StopSession`:
+
+- the NodeDaemon control protocol, when a `StopSession` RuntimeCommand settles
+  (`crates/firm-node-daemon/src/supervisor_daemon/control_protocol.rs:709-717`;
+  the sibling `ResumeSession` writes `Cold`);
+- the runtime-effect projection, whose desired-status ladder admits
+  `* -> Closed` (`crates/firm-cli/src/main_modules/runtime_effects.rs:286-292`)
+  but refuses the step unless exactly one `StopSession` command matching the
+  session id, session generation, daemon id, and daemon generation is
+  `Settled`/`Applied`, and then carries that command's idempotency key into the
+  Store transition (`:327-350`).
+
+There is no third path and no ungated one.
 
 The Store admits the write only on an ordinary edge — `Idle -> Closed`,
 `Waiting -> Closed`, `Interrupted -> Closed` — or, from `Cold`/`Active`, under

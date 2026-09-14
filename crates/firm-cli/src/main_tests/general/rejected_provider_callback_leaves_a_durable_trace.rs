@@ -41,4 +41,36 @@ fn rejected_provider_callback_leaves_a_durable_trace() {
         error.to_string(),
         "the trace must carry the exact rejection the provider saw"
     );
+
+    // A MemberAction may name a reviewed protocol selector because that is a
+    // machine-readable transport identifier, not provider-authored text. An
+    // unrecognized or absent `method` must therefore not reach the ledger as a
+    // free-form provider string.
+    for hostile in [
+        serde_json::json!({"method": "totally/unreviewed", "params": {}}),
+        serde_json::json!({"method": {"not": "a string"}, "params": {}}),
+        serde_json::json!({"params": {}}),
+    ] {
+        let outcome: CliResult<()> = trace_provider_callback_rejection(
+            &ledger,
+            &supplied.id,
+            &hostile,
+            Err(CliError::Usage("denied fail-closed".into())),
+        );
+        assert!(outcome.is_err());
+        let recorded = store
+            .member_actions()
+            .expect("member actions")
+            .into_iter()
+            .filter(|action| action.action_type == "provider_callback_rejected")
+            .map(|action| action.title)
+            .collect::<Vec<_>>();
+        assert!(
+            recorded
+                .iter()
+                .all(|title| title == "session/request_permission"
+                    || title == "unreviewed_provider_method"),
+            "an unreviewed callback selector must not reach a MemberAction title: {recorded:?}"
+        );
+    }
 }

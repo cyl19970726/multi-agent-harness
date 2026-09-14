@@ -113,9 +113,17 @@ Harness coordination records
   -> response-local read model (ephemeral, rebuildable, non-authoritative)
 ```
 
-`NativeActivityProjection` was this ADR's placeholder name and was never
-implemented as a type. The shipped read model is
-`PersistedSessionReadResponse`, a page of `ProviderNativeEventRecord`
+`NativeActivityProjection` was this ADR's placeholder name. No Rust type and no
+durable record was ever built for it. A same-named Dashboard TypeScript
+interface does survive (`apps/agent-dashboard/src/types.ts:555`, returned by
+`fetchNativeMemberActivity` at `apps/agent-dashboard/src/api.ts:273-283`), but
+it is dead code: nothing in the app calls that function, and the
+`/v1/member-runs/{id}/native-activity` route it fetches is retired and answers
+`410 Gone` pointing at the AgentWorkspace `persisted_session_projection`
+(`crates/firm-cli/src/main_modules/http_get_routes.rs:533-545`).
+
+The shipped read model is `PersistedSessionReadResponse`, a page of
+`ProviderNativeEventRecord`
 (`crates/firm-node-daemon/src/daemon_protocol.rs:57-62`,
 `crates/firm-provider-events/src/persisted_model.rs:257-259`); its contract is
 [docs/current/architecture/provider-event-projection.md](../current/architecture/provider-event-projection.md).
@@ -159,9 +167,11 @@ Resume is provider- and execution-mode-specific:
    (`crates/firm-provider-kimi/src/lib.rs:518-533`); Claude the Agent SDK
    `resume` option (`apps/claude-member-runner/src/member-runner.mjs:157`); Pi
    `--session <file>` (`crates/firm-provider-pi/src/lib.rs:286-288`); DeepSeek
-   Harness `runtime.resume` with the exact `SessionId`
-   (`apps/deepseek-member-runner/src/member-runner.mjs:40`). The legacy
-   one-shot compatibility paths use `codex exec resume` and `--resume`;
+   Harness `ctx.agents.resume` with the exact `SessionId`, reached through the
+   runner's injected `runtime.resume` wrapper
+   (`apps/deepseek-member-runner/bin/deepseek-member-runner.mjs:25`,
+   `apps/deepseek-member-runner/src/member-runner.mjs:40`). The legacy one-shot
+   compatibility paths use `codex exec resume` and `--resume`;
 4. record a Harness control request/acknowledgement and resume lineage, without
    copying the resumed transcript;
 5. fail honestly when the native session is missing or incompatible.

@@ -513,6 +513,14 @@ impl TeamRunLedger {
     /// (`docs/current/integration/native-session-storage.md`, "Write
     /// boundary"). A MemberAction that needs to name such text references that
     /// Message by id instead of restating it.
+    ///
+    /// One carve-out, the same one `provider_status` has below: a
+    /// machine-readable transport identifier — a reviewed protocol method
+    /// selector, a transport status token — is not authored text and may be
+    /// named, including where a Harness-authored error quotes it. Bind such a
+    /// value to a known set before recording it (see
+    /// `provider_interactions::reviewed_provider_callback_method`); never
+    /// record a free-form provider string.
     pub(super) fn append_action(
         &self,
         member_run_id: &str,

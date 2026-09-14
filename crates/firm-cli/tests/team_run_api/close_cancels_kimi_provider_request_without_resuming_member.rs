@@ -151,6 +151,24 @@ fn close_cancels_kimi_provider_request_without_resuming_member() {
         .expect("closed member remains visible");
     assert_eq!(latest["coordination_status"].as_str(), Some("closed"));
     assert_eq!(latest["status"].as_str(), Some("stopped"));
+    // The cancel-path resolution write is the Kimi twin of the Codex answer
+    // path, and carries the same Harness template.
+    let resolved_action = snapshot["member_actions"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|action| {
+            action["member_run_id"].as_str() == Some(member_id.as_str())
+                && action["action_type"].as_str() == Some("provider_question_resolved")
+        })
+        .unwrap_or_else(|| {
+            panic!("the cancelled Kimi question must journal one MemberAction; snapshot={snapshot}")
+        });
+    assert_provider_question_action_is_harness_owned(
+        resolved_action,
+        &request_id,
+        &KIMI_QUESTION_PROVIDER_TEXT,
+    );
     let agent_member_id = latest["agent_member_id"]
         .as_str()
         .expect("member carries canonical AgentMember id")
