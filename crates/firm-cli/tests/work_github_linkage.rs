@@ -842,7 +842,7 @@ fi
         .find(|work| work.id == work_id)
         .expect("active Work");
     let before_operations = store.canonical_operations().expect("canonical operations");
-    let before_work_operations = store.legacy_work_operation_rows().expect("Work operations");
+    let before_work_journal = store.work_journal_records().expect("Work journal records");
     let before_attentions = store.host_attentions().expect("HostAttentions");
     let before_binding = store
         .fabric_work_execution_bindings(&project_id)
@@ -886,20 +886,36 @@ fi
         refreshed.github_links[0].ci_status.as_deref(),
         Some("success")
     );
-    assert_eq!(store.canonical_operations().unwrap(), before_operations);
-    let after_work_operations = store
-        .legacy_work_operation_rows()
-        .expect("Work operations after poll");
+    // The refresh is exactly one `work`/`updated` revision and nothing else:
+    // no report, no delivery, no binding, no attention. Since the W4 writer
+    // cutover that revision is a canonical envelope, so the canonical ledger
+    // grows by exactly that one row.
+    let after_operations = store.canonical_operations().unwrap();
+    assert_eq!(after_operations.len(), before_operations.len() + 1);
     assert_eq!(
-        after_work_operations.len(),
-        before_work_operations.len() + 1
+        after_operations[..before_operations.len()],
+        before_operations[..]
     );
-    let refresh_operation = after_work_operations.last().expect("refresh operation");
+    let appended = after_operations.last().expect("the refresh envelope");
+    assert_eq!(appended.event.aggregate_kind, "work");
+    assert_eq!(appended.event.transition, "updated");
+    assert_eq!(appended.event.aggregate_id, work_id);
+    assert!(
+        store
+            .legacy_work_operation_rows()
+            .expect("legacy Work ledger")
+            .is_empty(),
+        "and no Work write reaches the legacy ledger file"
+    );
+    let after_work_journal = store
+        .work_journal_records()
+        .expect("Work journal after poll");
+    assert_eq!(after_work_journal.len(), before_work_journal.len() + 1);
+    let refresh_operation = after_work_journal.last().expect("refresh revision");
     assert_eq!(
         refresh_operation.event.kind,
         harness_core::WorkEventKind::Updated
     );
-    assert!(refresh_operation.reports.is_empty());
     assert_eq!(store.host_attentions().unwrap(), before_attentions);
     assert_eq!(
         store
