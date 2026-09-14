@@ -20,8 +20,15 @@ NativeSessionRef
                      |
 Provider adapter reads native store on demand
                      |
-NativeActivityProjection (ephemeral, sanitized, rebuildable)
+response-local read model (ephemeral, sanitized, rebuildable)
 ```
+
+That read model is `PersistedSessionReadResponse`, a page of
+`ProviderNativeEventRecord` (`crates/firm-node-daemon/src/daemon_protocol.rs:57-62`,
+`crates/firm-provider-events/src/persisted_model.rs:257-259`). The older
+`NativeActivityProjection` name was never built in Rust; the same-named
+Dashboard TypeScript interface is dead code against the retired
+`/v1/member-runs/{id}/native-activity` route (ADR 0032).
 
 Harness never persists the provider transcript, stdout/stderr, NDJSON stream,
 tool lifecycle, command output, file-event stream, or reasoning as an

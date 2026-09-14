@@ -51,10 +51,16 @@ Source: `crates/firm-provider-kimi/src/lib.rs`.
 
 ## Bounded Workflow Delivery (Not Agent Team)
 
-This compatibility section describes the one-shot `kimi_exec` path used by
-bounded workflows and the older standalone provider-process API. It is not the
-Agent Team delivery algorithm. New Team Members always use the persistent ACP
-contract below; do not copy `kimi -p` behavior into Team lifecycle code.
+This section, **Event Sources**, and **Reducer Mapping** describe the one-shot
+`kimi_exec` path used by bounded workflows and the older standalone
+provider-process API. It is not the Agent Team delivery algorithm, and its code
+lives only in `crates/firm-provider-kimi/src/compatibility.rs` (the "historical
+direct-delivery compatibility binding"), reached from one caller,
+`crates/firm-cli/src/main_modules/provider_adapters.rs:239`. `kimi -p`,
+`--session <id>`, `session.resume_hint`, and `extract_kimi_session_id` are all
+legacy; a Team member's native-session binding is the ACP client's own session id
+(`crates/firm-provider-kimi/src/team_runtime.rs:226`). Do not copy `kimi -p`
+behavior into Team lifecycle code.
 
 每次投递消息时，harness 构造一个包含：
 
@@ -77,7 +83,8 @@ kimi -p "{structured_prompt}" --output-format stream-json --session <session_id>
 
 `run_kimi_exec_delivery_real` 会把 developer instructions 折叠进 prompt，因为 Kimi 没有
 Claude 的 `--append-system-prompt`；resume 使用 `--session <id>`；model 使用 `--model <model>`
-(`crates/firm-cli/src/main.rs:14587-14606`)。
+(`crates/firm-cli/src/main_modules/provider_adapters.rs:212`,
+`crates/firm-provider-kimi/src/compatibility.rs:25-35`)。
 
 Kimi delivery 明确不传这些 Claude-only 或非真实 headless flags：
 
@@ -101,15 +108,18 @@ Kimi 执行时产生 flat NDJSON transport frames，Harness 在内存归约并�
 - 当前调用可消费的内存态 assistant response；
 - 仅描述 delivery 成功/失败的 `DeliveryOutcome.summary`，不含 assistant content；
 - no native usage/model/cost/structured frame in `-p` mode，走 degraded fallback
-  (`crates/firm-cli/src/main.rs:14658-14763`)。
+  (`crates/firm-cli/src/main_modules/provider_adapters.rs:277-283`)。
 
 ## Event Sources
+
+> Legacy one-shot path only; a Team member's events arrive over ACP.
 
 Kimi 产生的事件通过以下源进来：
 
 1. **Kimi stdout flat NDJSON** — 直接解析 `kimi -p --output-format stream-json` 输出：
    - assistant reply frame: `{"role":"assistant","content":"..."}`
-   - resume hint frame:
+   - resume hint frame (its `command` is the provider's own suggestion; no
+     `kimi -r` invocation exists in this checkout):
      `{"role":"meta","type":"session.resume_hint","session_id":"...","command":"kimi -r ..."}`
    - no Claude `system.init`
    - no Claude terminal `result`
@@ -123,9 +133,11 @@ Kimi 产生的事件通过以下源进来：
    fabricate Evidence or an authored report Message; those require explicit
    canonical collaboration writes.
 
-Source: `crates/firm-cli/src/main.rs:14687-14733`.
+Source: `crates/firm-cli/src/main_modules/provider_adapters.rs:277-316`.
 
 ## Reducer Mapping
+
+> Legacy one-shot path only; nothing below runs in Team mode.
 
 Kimi 事件 -> harness objects：
 
@@ -138,13 +150,13 @@ Kimi 事件 -> harness objects：
 
 Kimi uses kimi-native parsing:
 
-- `parse_kimi_frames` parses one JSON frame per non-empty NDJSON line;
+- `run_ndjson_child` parses one JSON frame per non-empty NDJSON line;
 - `extract_kimi_reply_text` concatenates every assistant frame's content;
 - `extract_kimi_session_id` reads `session_id` from `type=="session.resume_hint"`;
 - `infer_kimi_status` treats clean exit with frames as success, clean empty output as stale,
   and non-zero exit as failed.
 
-Source: `crates/firm-cli/src/main.rs:14360-14430`.
+Source: `crates/firm-provider-kimi/src/compatibility.rs:18-102`.
 
 Kimi frames are reduced in memory to a delivery result and a mode-aware native
 session binding. There is no durable Kimi stream-ingest ledger; chat, tool,

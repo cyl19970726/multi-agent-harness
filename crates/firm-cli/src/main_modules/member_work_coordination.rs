@@ -503,6 +503,24 @@ impl TeamRunLedger {
 
     /// Append one MemberAction (seq = max existing action seq for the run + 1,
     /// assigned under the lock).
+    ///
+    /// `title` and `summary` are Harness-owned coordination facts on every
+    /// `append_action` variant. Neither may copy provider-authored text — a
+    /// question header, prompt, plan, answer, tool argument, or transcript
+    /// fragment. The provider's native session is the sole truth for that text,
+    /// and the one authorized Harness copy is the canonical Message created
+    /// when the interaction crosses the coordination boundary
+    /// (`docs/current/integration/native-session-storage.md`, "Write
+    /// boundary"). A MemberAction that needs to name such text references that
+    /// Message by id instead of restating it.
+    ///
+    /// One carve-out, the same one `provider_status` has below: a
+    /// machine-readable transport identifier — a reviewed protocol method
+    /// selector, a transport status token — is not authored text and may be
+    /// named, including where a Harness-authored error quotes it. Bind such a
+    /// value to a known set before recording it (see
+    /// `provider_interactions::reviewed_provider_callback_method`); never
+    /// record a free-form provider string.
     pub(super) fn append_action(
         &self,
         member_run_id: &str,
@@ -524,8 +542,9 @@ impl TeamRunLedger {
 
     /// `provider_status` carries the transport's OWN terminal metadata in a
     /// machine-readable token. It is the only field a capacity classifier may
-    /// read. `summary` is a Harness-owned coordination fact and must never copy
-    /// the provider-authored response or transcript.
+    /// read. `title` and `summary` are Harness-owned coordination facts and
+    /// must never copy the provider-authored request, response, or transcript —
+    /// see [`Self::append_action`] for the full writer contract.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn append_action_with_provider_status(
         &self,

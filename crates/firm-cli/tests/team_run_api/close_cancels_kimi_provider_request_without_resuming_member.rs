@@ -1,5 +1,15 @@
 use super::*;
 
+/// The provider-authored strings the Kimi ACP shim emits for this question.
+/// None of them may reach a MemberAction; the canonical Message keeps the only
+/// copy.
+const KIMI_QUESTION_PROVIDER_TEXT: [&str; 4] = [
+    "AskUserQuestion",
+    "Which implementation should be used?",
+    "Use native contract",
+    "Skip",
+];
+
 #[test]
 fn close_cancels_kimi_provider_request_without_resuming_member() {
     let home = TempHome::new("team-run-kimi-waiting-close");
@@ -69,6 +79,29 @@ fn close_cancels_kimi_provider_request_without_resuming_member() {
         )
     });
 
+    // The waiting MemberAction names the classified interaction kind and the
+    // canonical Message; the Kimi toolCall title, prompt, and option labels stay
+    // provider-native.
+    let (_, waiting_snapshot) = serve.get_json("/v1/snapshot");
+    let waiting_action = waiting_snapshot["member_actions"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|action| {
+            action["member_run_id"].as_str() == Some(member_id.as_str())
+                && action["action_type"].as_str() == Some("waiting_for_input")
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "Kimi question must journal one waiting_for_input MemberAction; snapshot={waiting_snapshot}"
+            )
+        });
+    assert_provider_question_action_is_harness_owned(
+        waiting_action,
+        &request_id,
+        &KIMI_QUESTION_PROVIDER_TEXT,
+    );
+
     let (status, closed) = serve.post_json(
         &format!("/v1/team-runs/{run_id}/members/{member_id}/close"),
         &serde_json::json!({"reason": "close while waiting", "requested_by": "operator"}),
@@ -118,6 +151,24 @@ fn close_cancels_kimi_provider_request_without_resuming_member() {
         .expect("closed member remains visible");
     assert_eq!(latest["coordination_status"].as_str(), Some("closed"));
     assert_eq!(latest["status"].as_str(), Some("stopped"));
+    // The cancel-path resolution write is the Kimi twin of the Codex answer
+    // path, and carries the same Harness template.
+    let resolved_action = snapshot["member_actions"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|action| {
+            action["member_run_id"].as_str() == Some(member_id.as_str())
+                && action["action_type"].as_str() == Some("provider_question_resolved")
+        })
+        .unwrap_or_else(|| {
+            panic!("the cancelled Kimi question must journal one MemberAction; snapshot={snapshot}")
+        });
+    assert_provider_question_action_is_harness_owned(
+        resolved_action,
+        &request_id,
+        &KIMI_QUESTION_PROVIDER_TEXT,
+    );
     let agent_member_id = latest["agent_member_id"]
         .as_str()
         .expect("member carries canonical AgentMember id")

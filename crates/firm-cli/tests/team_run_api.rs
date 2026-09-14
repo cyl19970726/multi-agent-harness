@@ -127,6 +127,43 @@ fn member_semantic_row_counts(store: &HarnessStore, member_id: &str) -> (usize, 
     (member_rows, actions, handoffs)
 }
 
+/// A `MemberAction` is a Harness coordination record, so a provider interaction
+/// may only journal the classified kind and a reference to the canonical
+/// interaction request `Message`. The provider's own question header, prompt,
+/// and option labels keep exactly one authorized Harness copy — that Message
+/// body — and must never be mirrored into the action title or summary.
+fn assert_provider_question_action_is_harness_owned(
+    action: &serde_json::Value,
+    interaction_id: &str,
+    provider_text: &[&str],
+) {
+    let action_type = action["action_type"].as_str().unwrap_or_default();
+    let title = action["title"].as_str().unwrap_or_default();
+    let summary = action["summary"].as_str().unwrap_or_default();
+    for needle in provider_text {
+        assert!(
+            !title.contains(needle),
+            "{action_type} title mirrored provider text {needle:?}: {title}"
+        );
+        assert!(
+            !summary.contains(needle),
+            "{action_type} summary mirrored provider text {needle:?}: {summary}"
+        );
+    }
+    assert_eq!(
+        title, "provider interaction (question)",
+        "{action_type} title must be the Harness template plus the classified kind"
+    );
+    assert!(
+        summary.contains(&format!("see Message {interaction_id}")),
+        "{action_type} summary must reference the canonical Message: {summary}"
+    );
+    assert!(
+        summary.contains("provider text remains provider-native"),
+        "{action_type} summary must name where the provider text stays: {summary}"
+    );
+}
+
 fn init_project_selector_clean(home: &TempHome, name: &str) -> String {
     let root = home.base().join(name);
     std::fs::create_dir_all(&root).unwrap();
