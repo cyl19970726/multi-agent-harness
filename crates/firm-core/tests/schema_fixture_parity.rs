@@ -7,8 +7,8 @@
 
 use firm_core::agentfirm_api::{
     AgentSession, AgentTeamMigrationBundle, AgentTeamPurgeRequest, AgentTeamPurgeTombstone,
-    CanonicalMessageDelivery, Message, MessageSubscription, SubscriptionCursor, TeamMembership,
-    TeamMessage, TeamMessageDeliveryClaim, WorkExecutionBinding,
+    CanonicalMessageDelivery, Message, MessageSubscription, TeamMembership, TeamMessage,
+    TeamMessageDeliveryClaim, WorkExecutionBinding,
 };
 use firm_core::collaboration::{
     CollaborationScope, CrossNodeDeliveryProjection, DelegationCancellationDecision,
@@ -124,7 +124,6 @@ fn dev_35_member_membership_and_message_fixtures_match_rust_contracts() {
     assert_fixture_contract::<WorkExecutionBinding>("work-execution-binding");
     assert_fixture_contract::<Message>("message");
     assert_fixture_contract::<MessageSubscription>("message-subscription");
-    assert_fixture_contract::<SubscriptionCursor>("subscription-cursor");
     assert_fixture_contract::<CanonicalMessageDelivery>("canonical-message-delivery");
     assert_fixture_contract::<TeamMessageDeliveryClaim>("team-message-delivery-claim");
     assert_fixture_contract::<MessageAdmissionAuthority>("message-admission-authority");

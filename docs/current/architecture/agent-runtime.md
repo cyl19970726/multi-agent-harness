@@ -217,7 +217,8 @@ provider effect goes through a `RuntimeCommand`.
    AgentSession generation.
 5. Only after the durable claim does it build a `ProviderInvocation` and touch
    the provider.
-6. Provider receipt and recipient ACK/cursor are separate durable facts.
+6. Provider receipt and recipient ACK are separate durable facts on the same
+   `CanonicalMessageDelivery` row.
 
 The source and target may be the same NodeDaemon. That does not allow a second
 Message, sequence, or delivery authority.
@@ -883,7 +884,9 @@ operator procedure.
 
 Server-built RoleViews project current canonical state. Browsers refetch after
 SSE invalidation; they do not fold raw ledgers or invent lifecycle truth.
-Current inboxes use `CanonicalMessageDelivery` and `SubscriptionCursor`. Current
+Current inboxes use `CanonicalMessageDelivery`; its per-recipient status is
+the only recipient-progress record (ADR 0069 deleted `SubscriptionCursor`,
+which no reader ever read). Current
 runtime state uses AgentSession and RuntimeCommand. Historical TeamRun,
 MemberRun, native-session locator, and legacy export rows are labeled history
 and cannot enable actions.

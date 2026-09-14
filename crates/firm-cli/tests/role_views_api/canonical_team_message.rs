@@ -2,7 +2,7 @@ use super::*;
 use harness_core::ExecutionSpaceId;
 
 #[test]
-fn canonical_team_message_journey_uses_node_daemon_sessions_deliveries_and_cursor() {
+fn canonical_team_message_journey_uses_node_daemon_sessions_and_deliveries() {
     let home = TempHome::new("canonical-role-message-journey");
     let root = home.base().join("project");
     std::fs::create_dir_all(&root).expect("project root");
@@ -1124,7 +1124,7 @@ fn canonical_team_message_journey_uses_node_daemon_sessions_deliveries_and_curso
             &host_delivery.id,
             "unix-ms:102",
         )
-        .expect("recipient ACK and cursor advance");
+        .expect("recipient ACK");
     let acknowledged = store
         .fabric_message_deliveries(&space_id)
         .expect("acknowledged deliveries")
@@ -1135,7 +1135,11 @@ fn canonical_team_message_journey_uses_node_daemon_sessions_deliveries_and_curso
         acknowledged.status,
         harness_core::agentfirm_api::CanonicalMessageDeliveryStatus::Acknowledged
     );
-    assert!(store
+    // ADR 0069: the ack no longer writes a SubscriptionCursor side record. The
+    // old write was unreadable by construction (it was committed under the ack
+    // aggregate and read back by the `subscription_cursor` aggregate kind), so
+    // every ack rewrote revision 1. Recipient progress is delivery status.
+    assert!(!store
         .canonical_operations()
         .expect("canonical operations")
         .iter()

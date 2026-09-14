@@ -343,23 +343,6 @@ impl Validate for agentfirm_api::MessageSubscription {
     }
 }
 
-impl Validate for agentfirm_api::SubscriptionCursor {
-    fn validate(&self) -> Result<(), ValidationError> {
-        require_non_empty(&self.subscription_id, "SubscriptionCursor.subscription_id")?;
-        require_non_empty(
-            &self.recipient_agent_member_id,
-            "SubscriptionCursor.recipient_agent_member_id",
-        )?;
-        if self.cursor_revision == 0 {
-            return Err(ValidationError::Invalid {
-                field: "SubscriptionCursor.cursor_revision",
-                reason: "must be at least 1",
-            });
-        }
-        require_non_empty(&self.updated_at, "SubscriptionCursor.updated_at")
-    }
-}
-
 impl Validate for agentfirm_api::CanonicalMessageDelivery {
     fn validate(&self) -> Result<(), ValidationError> {
         require_non_empty(&self.id, "CanonicalMessageDelivery.id")?;

@@ -230,8 +230,9 @@ pub enum MessageHistoryPolicy {
     AuthorizedHistory,
 }
 
-/// Durable routing policy. Consumption progress is held separately in
-/// [`SubscriptionCursor`] so changing a policy cannot rewrite inbox history.
+/// Durable routing policy. It never carries consumption progress, so changing
+/// a policy cannot rewrite inbox history; per-recipient progress is
+/// [`CanonicalMessageDelivery`] status.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MessageSubscription {
@@ -257,19 +258,6 @@ pub struct MessageSubscription {
     pub created_at: String,
     #[serde(default)]
     pub revoked_at: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct SubscriptionCursor {
-    pub subscription_id: String,
-    #[serde(alias = "recipient_agent_id")]
-    pub recipient_agent_member_id: String,
-    pub last_visible_store_sequence: u64,
-    pub last_delivered_store_sequence: u64,
-    pub last_read_store_sequence: u64,
-    pub cursor_revision: u64,
-    pub updated_at: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

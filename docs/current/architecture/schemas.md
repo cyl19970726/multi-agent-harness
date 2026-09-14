@@ -16,8 +16,8 @@ outputs, adapters, and the Agent Dashboard.
 | `Work` / `WorkOperation` / `WorkEvent` / `WorkDelivery` | Team-accountable flat DAG node, crash-atomic replay row, append-only semantic/dependency transition, and versioned runtime delivery |
 | `WorkModuleDefinition` / `WorkModuleBinding` / Gate records | Closed built-in Module definition, exact version/config binding, and candidate verification contract; not an open registry |
 | `Message` | Immutable identity-first conversation envelope with typed author, correlation/causation, optional Work relation, and closed semantic kind. Provider requests and responses are Message kinds. |
-| `MessageSubscription` / `SubscriptionCursor` | Authorized recipient policy and recipient progress without copying or mutating Message content. |
-| `CanonicalMessageDelivery` | One recipient's queue, claim, exact AgentSession generation, provider receipt, and acknowledgement/cursor state. |
+| `MessageSubscription` | Authorized recipient policy, without copying or mutating Message content. It carries no consumption progress; per-recipient progress is `CanonicalMessageDelivery` status (ADR 0069 deleted the unreadable `SubscriptionCursor`). |
+| `CanonicalMessageDelivery` | One recipient's queue, claim, exact AgentSession generation, provider receipt, and acknowledgement state. |
 | `TeamMessage` / `TeamMessageProjection` | Legacy pre-cutover conversation projection with embedded delivery/manual ACK state; read/export only through explicitly Legacy surfaces. |
 | `ExecutionNode` / `NodeProjectRegistration` / `NodeDaemonLease` | Machine identity, available Project Bindings, and the one daemon generation that owns all local TeamRuns |
 | `TeamSupervisorLease` | Latest-wins TeamRun control owner parent-fenced by NodeDaemon generation |
@@ -53,7 +53,7 @@ dependency DAG is defined by ADR 0058 and does not revive those objects.
 | `AgentMember` | Rust + JSON schema | yes |
 | `Task` | historical compatibility schema; retired for new coordination | no for new work |
 | `Message` | Rust + JSON schema + canonical Store/API projection; identity-first current conversation authority | yes |
-| `MessageSubscription` / `SubscriptionCursor` | Rust + JSON schemas + canonical Store/API projection | yes |
+| `MessageSubscription` | Rust + JSON schema + canonical Store/API projection | yes |
 | `CanonicalMessageDelivery` | Rust + JSON schema + canonical Store/API projection | yes |
 | `TeamMessage` / `TeamMessageProjection` | historical JSONL/schema reads and export only; current writes and ACK routes retired | legacy only |
 | `MemberRun` | Rust + JSON schema | yes |
@@ -89,7 +89,6 @@ schema contracts are checked with valid and invalid fixtures.
 | Provider-native session locator | [native-session-ref.schema.json](../../../schemas/native-session-ref.schema.json) |
 | Message | [message.schema.json](../../../schemas/message.schema.json) |
 | Message subscription | [message-subscription.schema.json](../../../schemas/message-subscription.schema.json) |
-| Subscription cursor | [subscription-cursor.schema.json](../../../schemas/subscription-cursor.schema.json) |
 | Canonical message delivery | [canonical-message-delivery.schema.json](../../../schemas/canonical-message-delivery.schema.json) |
 | Legacy Team message projection | [team-message.schema.json](../../../schemas/team-message.schema.json) |
 | Member execution trust error | [trust-error.schema.json](../../../schemas/trust-error.schema.json) |
