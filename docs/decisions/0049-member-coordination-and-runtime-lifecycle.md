@@ -52,7 +52,9 @@ deletion, retirement, or a provider session close (ADR 0071).
   releasing a process-local control handle.
 - A managed Codex, Claude, or Kimi adapter terminates its Harness-owned process.
 - The machine-owned AgentSession is quiesced to `idle` when it is not already
-  idle, written under the NodeDaemon actor rather than the Host's. Team Close
+  idle, written under the exact machine NodeDaemon Service actor rather than the
+  Host's (`crates/firm-cli/src/main_modules/runtime_effects.rs:215-234`,
+  `:236-251`, command `node_daemon.agent_session.provider_state`). Team Close
   never writes AgentSession `closed`: a Team Host cannot issue an
   AgentSession-targeted RuntimeCommand at all, which is why the Team lifecycle
   may only quiesce (ADR 0071 §4).

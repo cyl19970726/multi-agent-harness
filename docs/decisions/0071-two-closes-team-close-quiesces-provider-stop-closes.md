@@ -50,9 +50,11 @@ exact settled `StopSession`:
 - the NodeDaemon control protocol, when a `StopSession` RuntimeCommand settles
   (`crates/firm-node-daemon/src/supervisor_daemon/control_protocol.rs:709-717`;
   the sibling `ResumeSession` writes `Cold`);
-- the runtime-effect projection, whose desired-status ladder admits
-  `* -> Closed` (`crates/firm-cli/src/main_modules/runtime_effects.rs:286-292`)
-  but refuses the step unless exactly one `StopSession` command matching the
+- the runtime-effect projection, whose desired-status ladder admits every
+  non-`Closed` source to `Closed`
+  (`crates/firm-cli/src/main_modules/runtime_effects.rs:286-292`; an `Active`
+  lane goes through `Interrupted` first) but refuses the step unless exactly
+  one `StopSession` command matching the
   session id, session generation, daemon id, and daemon generation is
   `Settled`/`Applied`, and then carries that command's idempotency key into the
   Store transition (`:327-350`).
