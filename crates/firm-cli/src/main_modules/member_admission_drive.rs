@@ -389,17 +389,7 @@ pub(crate) fn drive_prepared_team_run(
             last_github_ci_poll = Instant::now();
             match poll_team_run_github_linkages(&ledger.store, &run_id) {
                 Ok(summary) if !summary.is_noop() => {
-                    let mut detail = format!(
-                        "github linkage poll: {} link(s) refreshed",
-                        summary.links_refreshed
-                    );
-                    if !summary.blocked_on_failure.is_empty() {
-                        detail.push_str(&format!(
-                            "; held {} on red CI: {}",
-                            summary.blocked_on_failure.len(),
-                            summary.blocked_on_failure.join(", ")
-                        ));
-                    }
+                    let detail = github_poll_event_detail(&summary);
                     ledger.fold_event(
                         TeamRunEventSourceKind::Host,
                         None,

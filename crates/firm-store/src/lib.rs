@@ -550,6 +550,16 @@ fn require_non_empty_store(value: &str, label: &str) -> StoreResult<()> {
 /// and a copied string literal would drift silently.
 pub const WORK_TERMINAL_IMMUTABLE: &str = "WORK_TERMINAL_IMMUTABLE";
 
+/// The two exact codes a Work write uses when it lost its expected-version
+/// fence. Both spellings are live: the trust-kernel writers emit
+/// `WORK_VERSION_CONFLICT: Work <id> ...` and the legacy ledger writers emit
+/// `VERSION_CONFLICT: work <id> ...`. They are deliberately disjoint as
+/// substrings -- the second carries its lowercase `work` -- so a caller can
+/// test for a Work version fence without also matching an unrelated code that
+/// merely ends in `VERSION_CONFLICT`.
+pub const WORK_VERSION_CONFLICT: &str = "WORK_VERSION_CONFLICT: Work ";
+pub const LEGACY_WORK_VERSION_CONFLICT: &str = "VERSION_CONFLICT: work ";
+
 /// The one terminal-immutability choke point for Work writes.
 ///
 /// Closed Work is immutable (docs/current/product/agent-team-works.md). Every
