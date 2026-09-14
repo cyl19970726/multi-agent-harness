@@ -1,12 +1,12 @@
 use super::*;
 
-/// W3 — one reader for Work.
+/// W3/W4 — one reader for Work.
 ///
-/// A Work's version chain is one chain, but its rows live in two journals
-/// until the W4 writer cutover: `work_operations.jsonl` and the `work`
-/// aggregate of the trust journal. Before this slice every consumer that read
-/// only the ledger saw half of it. This test pins the three consequences a
-/// Host actually feels, on a fixture whose Works span both journals:
+/// A Work's version chain is one chain, written to the `work` aggregate of the
+/// trust journal and read from both it and the pre-cutover
+/// `work_operations.jsonl`. Before W3 every consumer that read only the ledger
+/// saw half of it. This test pins the three consequences a Host actually
+/// feels, on a fixture whose Works span both journals:
 ///
 /// 1. `work show` names the trust transitions (`submitted`, `accepted`,
 ///    `cancelled`) — they had no writer at all and no reader could see them.

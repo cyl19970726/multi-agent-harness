@@ -1,4 +1,5 @@
 use super::*;
+use harness_core::ExecutionSpaceId;
 
 #[test]
 fn canonical_team_message_journey_uses_node_daemon_sessions_deliveries_and_cursor() {
@@ -522,7 +523,7 @@ fn canonical_team_message_journey_uses_node_daemon_sessions_deliveries_and_curso
     assert_eq!(status, 200, "Host message: {host_message}");
     let host_message_id = host_message["projection"]["id"].as_str().unwrap();
     let message_operations_after_first = store
-        .canonical_operations_for_space(&space_id)
+        .canonical_operations_for_space(&ExecutionSpaceId::new(&space_id))
         .expect("message operations after first authoring");
     let messages_after_first = store
         .fabric_messages(&space_id)
@@ -537,7 +538,7 @@ fn canonical_team_message_journey_uses_node_daemon_sessions_deliveries_and_curso
     assert_eq!(host_replay["projection"], host_message["projection"]);
     assert_eq!(
         store
-            .canonical_operations_for_space(&space_id)
+            .canonical_operations_for_space(&ExecutionSpaceId::new(&space_id))
             .expect("operations after replay"),
         message_operations_after_first,
         "exact Message replay must append no canonical operation"
@@ -570,7 +571,7 @@ fn canonical_team_message_journey_uses_node_daemon_sessions_deliveries_and_curso
     assert_eq!(changed_message["error"]["code"], "RUNTIME_COMMAND_REJECTED");
     assert_eq!(
         store
-            .canonical_operations_for_space(&space_id)
+            .canonical_operations_for_space(&ExecutionSpaceId::new(&space_id))
             .expect("operations after changed replay"),
         message_operations_after_first,
         "changed Message replay must have zero canonical delta"
@@ -607,7 +608,7 @@ fn canonical_team_message_journey_uses_node_daemon_sessions_deliveries_and_curso
         assert_eq!(conflict["error"]["code"], "RUNTIME_COMMAND_REJECTED");
         assert_eq!(
             store
-                .canonical_operations_for_space(&space_id)
+                .canonical_operations_for_space(&ExecutionSpaceId::new(&space_id))
                 .expect("operations after semantic conflict"),
             message_operations_after_first
         );
@@ -642,7 +643,7 @@ fn canonical_team_message_journey_uses_node_daemon_sessions_deliveries_and_curso
         serde_json::json!(linked_work_id)
     );
     let linked_operations = store
-        .canonical_operations_for_space(&space_id)
+        .canonical_operations_for_space(&ExecutionSpaceId::new(&space_id))
         .expect("linked Message operations");
     let linked_messages = store.fabric_messages(&space_id).expect("linked Messages");
     let linked_deliveries = store
@@ -676,7 +677,7 @@ fn canonical_team_message_journey_uses_node_daemon_sessions_deliveries_and_curso
     );
     assert_eq!(
         store
-            .canonical_operations_for_space(&space_id)
+            .canonical_operations_for_space(&ExecutionSpaceId::new(&space_id))
             .expect("operations after Work-link replay/conflict"),
         linked_operations
     );
@@ -825,7 +826,7 @@ fn canonical_team_message_journey_uses_node_daemon_sessions_deliveries_and_curso
     assert_eq!(status, 200, "Member message: {member_message}");
     let member_message_id = member_message["projection"]["id"].as_str().unwrap();
     let decision_operations = store
-        .canonical_operations_for_space(&space_id)
+        .canonical_operations_for_space(&ExecutionSpaceId::new(&space_id))
         .expect("decision operations");
     let decision_messages = store.fabric_messages(&space_id).expect("decision messages");
     let decision_deliveries = store
@@ -838,7 +839,7 @@ fn canonical_team_message_journey_uses_node_daemon_sessions_deliveries_and_curso
     assert_eq!(decision_replay["projection"], member_message["projection"]);
     assert_eq!(
         store
-            .canonical_operations_for_space(&space_id)
+            .canonical_operations_for_space(&ExecutionSpaceId::new(&space_id))
             .expect("decision replay operations"),
         decision_operations
     );
@@ -869,7 +870,7 @@ fn canonical_team_message_journey_uses_node_daemon_sessions_deliveries_and_curso
     );
     assert_eq!(
         store
-            .canonical_operations_for_space(&space_id)
+            .canonical_operations_for_space(&ExecutionSpaceId::new(&space_id))
             .expect("decision conflict operations"),
         decision_operations
     );
@@ -928,7 +929,7 @@ fn canonical_team_message_journey_uses_node_daemon_sessions_deliveries_and_curso
     assert_eq!(status, 200, "Host reply: {host_reply}");
     let host_reply_id = host_reply["projection"]["id"].as_str().unwrap();
     let reply_operations = store
-        .canonical_operations_for_space(&space_id)
+        .canonical_operations_for_space(&ExecutionSpaceId::new(&space_id))
         .expect("reply operations");
     let reply_messages = store.fabric_messages(&space_id).expect("reply messages");
     let reply_deliveries = store
@@ -941,7 +942,7 @@ fn canonical_team_message_journey_uses_node_daemon_sessions_deliveries_and_curso
     assert_eq!(reply_replay["projection"], host_reply["projection"]);
     assert_eq!(
         store
-            .canonical_operations_for_space(&space_id)
+            .canonical_operations_for_space(&ExecutionSpaceId::new(&space_id))
             .expect("reply replay operations"),
         reply_operations
     );
@@ -972,7 +973,7 @@ fn canonical_team_message_journey_uses_node_daemon_sessions_deliveries_and_curso
     assert_eq!(reply_conflict["error"]["code"], "RUNTIME_COMMAND_REJECTED");
     assert_eq!(
         store
-            .canonical_operations_for_space(&space_id)
+            .canonical_operations_for_space(&ExecutionSpaceId::new(&space_id))
             .expect("reply conflict operations"),
         reply_operations
     );

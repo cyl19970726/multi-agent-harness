@@ -8,7 +8,7 @@ use harness_application::{WorkAction, WorkActionKind, WorkApplication};
 use harness_core::agentfirm_api::{
     CandidateKind, CandidateRef, Confidence, WorkReport, WorkReportKind,
 };
-use harness_core::Work;
+use harness_core::{ExecutionSpaceId, Work};
 use harness_store::{canonical_json_fingerprint, HarnessStore, StoreError};
 use serde::Serialize;
 use serde_json::Value;
@@ -132,13 +132,13 @@ fn execute_lifecycle(
 ) -> Result<CanonicalWorkActionOutcome, StoreError> {
     let before_work = store.work_journal_position()?;
     let before_canonical = store
-        .canonical_operations_for_space(&auth.execution_space_id)?
+        .canonical_operations_for_space(&ExecutionSpaceId::new(&auth.execution_space_id))?
         .len();
     let executed = WorkApplication::new(store).execute(action)?;
     let projection = serde_json::to_value(&executed.work)?;
 
     if let Some(operation) = store
-        .canonical_operations_for_space(&auth.execution_space_id)?
+        .canonical_operations_for_space(&ExecutionSpaceId::new(&auth.execution_space_id))?
         .into_iter()
         .find(|operation| operation.event.idempotency_key == auth.idempotency_key)
     {
@@ -174,7 +174,7 @@ fn execute_lifecycle(
             ));
         }
         let current_len = store
-            .canonical_operations_for_space(&auth.execution_space_id)?
+            .canonical_operations_for_space(&ExecutionSpaceId::new(&auth.execution_space_id))?
             .len();
         let event_id = journal_event_id(store, &executed.work.id, executed.work.version)?
             .unwrap_or(operation.event.id);
@@ -239,7 +239,7 @@ fn execute_local_lifecycle(
     let canonical_space_ids = store.canonical_execution_space_ids()?;
     let before_canonical = if canonical_space_ids.len() == 1 {
         store
-            .canonical_operations_for_space(&canonical_space_ids[0])?
+            .canonical_operations_for_space(&ExecutionSpaceId::new(&canonical_space_ids[0]))?
             .len()
     } else {
         0
@@ -247,7 +247,7 @@ fn execute_local_lifecycle(
     let executed = WorkApplication::new(store).execute(action)?;
     let projection = serde_json::to_value(&executed.work)?;
     let canonical = if canonical_space_ids.len() == 1 {
-        store.canonical_operations_for_space(&canonical_space_ids[0])?
+        store.canonical_operations_for_space(&ExecutionSpaceId::new(&canonical_space_ids[0]))?
     } else {
         Vec::new()
     };
@@ -303,7 +303,7 @@ fn submit_result(
     submission: ResultSubmission,
 ) -> Result<CanonicalWorkActionOutcome, StoreError> {
     if let Some(operation) = store
-        .canonical_operations_for_space(&auth.execution_space_id)?
+        .canonical_operations_for_space(&ExecutionSpaceId::new(&auth.execution_space_id))?
         .into_iter()
         .find(|operation| operation.event.idempotency_key == auth.idempotency_key)
     {
@@ -342,7 +342,7 @@ fn submit_result(
         }
         let work = current_work(
             store,
-            &harness_core::ExecutionSpaceId::new(&auth.execution_space_id),
+            &ExecutionSpaceId::new(&auth.execution_space_id),
             work_id,
         )?;
         if work.accountable_team_id.as_deref() != Some(team_id)
@@ -357,7 +357,7 @@ fn submit_result(
     }
     let current = current_work(
         store,
-        &harness_core::ExecutionSpaceId::new(&auth.execution_space_id),
+        &ExecutionSpaceId::new(&auth.execution_space_id),
         work_id,
     )?;
     if current.accountable_team_id.as_deref() != Some(team_id) {
@@ -448,7 +448,7 @@ fn create_report(
         ));
     }
     if let Some(operation) = store
-        .canonical_operations_for_space(&auth.execution_space_id)?
+        .canonical_operations_for_space(&ExecutionSpaceId::new(&auth.execution_space_id))?
         .into_iter()
         .find(|operation| operation.event.idempotency_key == auth.idempotency_key)
     {
@@ -484,7 +484,7 @@ fn create_report(
         }
         let work = current_work(
             store,
-            &harness_core::ExecutionSpaceId::new(&auth.execution_space_id),
+            &ExecutionSpaceId::new(&auth.execution_space_id),
             &report.work_id,
         )?;
         if work.accountable_team_id.as_deref() != Some(team_id) {
@@ -509,7 +509,7 @@ fn create_report(
     }
     let current = current_work(
         store,
-        &harness_core::ExecutionSpaceId::new(&auth.execution_space_id),
+        &ExecutionSpaceId::new(&auth.execution_space_id),
         &report.work_id,
     )?;
     if current.accountable_team_id.as_deref() != Some(team_id) {
@@ -551,7 +551,7 @@ fn accept(
     work_id: &str,
 ) -> Result<CanonicalWorkActionOutcome, StoreError> {
     if let Some(operation) = store
-        .canonical_operations_for_space(&auth.execution_space_id)?
+        .canonical_operations_for_space(&ExecutionSpaceId::new(&auth.execution_space_id))?
         .into_iter()
         .find(|operation| operation.event.idempotency_key == auth.idempotency_key)
     {
@@ -619,11 +619,7 @@ fn outcome_from_trust(
 ) -> Result<CanonicalWorkActionOutcome, StoreError> {
     Ok(CanonicalWorkActionOutcome {
         kind,
-        work: current_work(
-            store,
-            &harness_core::ExecutionSpaceId::new(execution_space_id),
-            work_id,
-        )?,
+        work: current_work(store, &ExecutionSpaceId::new(execution_space_id), work_id)?,
         projection: result.projection,
         event_id: result.event_id,
         store_sequence: result.store_sequence,

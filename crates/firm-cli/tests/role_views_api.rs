@@ -36,6 +36,7 @@ use harness_core::agentfirm_api::{
     RuntimeActivity, RuntimeCommandBinding, RuntimeDispatchMode, RuntimeDriverRef,
     RuntimeResidency, WorkDeliveryStatus, WorkExecutionBinding, WorkExecutionBindingStatus,
 };
+use harness_core::ExecutionSpaceId;
 use harness_core::{
     ExecutionNode, ExecutionNodeStatus, MemberCoordinationStatus, MemberRunStatus,
     NodeProjectRegistration, NodeProjectRegistrationStatus, ProviderCompatibilityStatus,
@@ -1336,7 +1337,7 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
         team.id
     );
     let canonical_before_accept = store
-        .canonical_operations_for_space(&space_id)
+        .canonical_operations_for_space(&ExecutionSpaceId::new(&space_id))
         .expect("before accept")
         .len();
     let no_confirm_headers = action_headers(TOKEN, "accept-no-confirm", "7");
@@ -1372,7 +1373,7 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
     assert_eq!(status, 409, "stale accept: {stale_accept}");
     assert_eq!(
         store
-            .canonical_operations_for_space(&space_id)
+            .canonical_operations_for_space(&ExecutionSpaceId::new(&space_id))
             .expect("rejected accepts")
             .len(),
         canonical_before_accept,
@@ -1410,7 +1411,7 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
         "and no Work write reaches the legacy ledger file"
     );
     assert!(store
-        .canonical_operations_for_space(&space_id)
+        .canonical_operations_for_space(&ExecutionSpaceId::new(&space_id))
         .expect("canonical operations")
         .iter()
         .any(|operation| operation.event.aggregate_kind == "work"

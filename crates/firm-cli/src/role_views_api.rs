@@ -8,6 +8,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use harness_core::agentfirm_api::{ActorKind, ActorRef};
+use harness_core::ExecutionSpaceId;
 use harness_core::{
     derive_work_successor_ids, work_readiness, AgentTeam, AgentTeamRun, HostControlMode, Work,
     WorkClaimMode, WorkReadinessReason,
@@ -290,14 +291,15 @@ impl Facts {
         // landed before a later ledger revision silently overwrote the newer
         // projection and the RoleView disagreed with `work show` and the
         // dashboard about the same Work's phase (architecture seam F).
-        // Space-scoped, like the `canonical_operations_for_space` read below:
-        // this store's own ledger rows plus only the trust Work transitions
-        // written in this Execution Space.
+        // Both journals narrowed by the same checked scope: this store's own
+        // ledger rows plus only the trust rows written in this Execution
+        // Space.
+        let scope = ExecutionSpaceId::new(space_id);
         let work_records = store
-            .work_journal_records_for_space(&harness_core::ExecutionSpaceId::new(space_id))
+            .work_journal_records_for_space(&scope)
             .map_err(|error| error.to_string())?;
         let operations = store
-            .canonical_operations_for_space(space_id)
+            .canonical_operations_for_space(&scope)
             .map_err(|error| error.to_string())?;
         let sequence = operations
             .iter()

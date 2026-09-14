@@ -1,4 +1,5 @@
 use super::*;
+use harness_core::ExecutionSpaceId;
 
 pub(super) fn execute_canonical_role_action(
     store: &HarnessStore,
@@ -60,7 +61,9 @@ pub(super) fn execute_canonical_role_action(
                     ));
                 }
                 let event = store
-                    .canonical_operations_for_space(&auth.execution_space_id)?
+                    .canonical_operations_for_space(&ExecutionSpaceId::new(
+                        &auth.execution_space_id,
+                    ))?
                     .into_iter()
                     .filter(|operation| {
                         operation.event.aggregate_kind == "message"
@@ -131,7 +134,7 @@ pub(super) fn execute_canonical_role_action(
                     )
                 })?;
             let event = store
-                .canonical_operations_for_space(&auth.execution_space_id)?
+                .canonical_operations_for_space(&ExecutionSpaceId::new(&auth.execution_space_id))?
                 .into_iter()
                 .filter(|operation| {
                     operation.event.aggregate_kind == "message"

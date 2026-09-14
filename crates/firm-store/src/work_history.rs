@@ -1,33 +1,35 @@
 //! The one reader for Work.
 //!
-//! A Work's version chain is one chain, but until the W4 writer cutover its
-//! rows live in two journals:
+//! A Work's version chain is one chain, written to one journal and read from
+//! two files — because a store that predates the writer cutover still holds
+//! half its history in the other one:
 //!
+//! * `agentfirm_trust_operations.jsonl` is the Work journal. Every Work
+//!   transition is a `work` aggregate envelope carrying its complete
+//!   [`WorkOperation`] as an immutable side record. A pre-cutover envelope
+//!   carries Submitted, Accepted, Cancelled or DependenciesChanged with a bare
+//!   `WorkEvent`, and a `work_report/created` envelope carries a pre-cutover
+//!   Review snapshot.
 //! * `work_operations.jsonl` (plus the crash-atomic
-//!   `work_delegation_operations.jsonl` composite) holds [`WorkOperation`]
-//!   rows — Created, Assigned, Claimed, Started, Released, Blocked, Resumed,
-//!   ChangesRequested, Updated, Rebound, ExecutionRetargeted,
-//!   ExecutionRecovered.
-//! * `agentfirm_trust_operations.jsonl` holds the canonical trust envelopes
-//!   whose `work` aggregate carries Submitted, Accepted, Cancelled and
-//!   DependenciesChanged, and whose `work_report/created` envelope carries a
-//!   pre-cutover Review snapshot as an immutable side record.
+//!   `work_delegation_operations.jsonl` composite) is legacy read-only input:
+//!   the [`WorkOperation`] rows a pre-cutover binary appended. Nothing writes
+//!   it, and a store created after the cutover never has it.
 //!
-//! Every current-phase, event, count and cursor reader goes through this
-//! module so no consumer can see half the chain. The module offers exactly
-//! four shapes:
+//! Every current-phase, event, record, count and cursor reader goes through
+//! this module so no consumer can see half the chain. The module offers
+//! exactly four shapes:
 //!
 //! 1. [`HarnessStore::latest_works`] / [`HarnessStore::current_work`] — the
-//!    merged latest Work per id (ledger + delegation fold, overlaid by the
-//!    trust fold on greater version; the ledger wins an exact tie).
-//! 2. [`HarnessStore::work_history`] — one Work's versions from both
-//!    journals, strictly in version order, as event + snapshot records.
+//!    latest Work per id, plus any higher revision persisted only as an atomic
+//!    side projection of another aggregate's envelope.
+//! 2. [`HarnessStore::work_history`] — one Work's versions from both files,
+//!    strictly in version order, as event + snapshot records.
 //! 3. [`HarnessStore::work_journal_records`] / [`HarnessStore::work_events`] —
 //!    every Work record in the store in one deterministic total order.
 //! 4. [`HarnessStore::work_journal_position`] and
 //!    [`HarnessStore::work_journal_cursors_for_team_run`] — a monotonic
-//!    journal position that advances on BOTH a ledger row and a trust Work
-//!    transition.
+//!    journal position whose trust component advances on every new write and
+//!    whose ledger component is frozen at the pre-cutover row count.
 //!
 //! **Total order.** The two files share no comparable clock: ledger rows are
 //! stamped with an ISO `created_at` and trust events with `unix-ms:`, and both
@@ -37,11 +39,12 @@
 //! *within one Work* is a real order available, and that one is the version
 //! chain, which [`HarnessStore::work_history`] uses.
 //!
-//! **What is still ledger-only.** Ledger writers keep private ledger reads for
-//! their own append-time concerns (idempotency lookup, record/event id
-//! availability, next ledger sequence, provenance recovery, and the
-//! ledger-shaped submission provenance proof). Those are writer internals of
-//! one file, not readers of Work state; W4 retires them with the file.
+//! **What is still ledger-only.** Two reads deliberately answer about the
+//! legacy file alone: [`HarnessStore::legacy_work_operation_rows`], which is
+//! what "read the pre-cutover rows" means, and the raw fold
+//! `reconcile_work_projection_provenance` repairs from — that verb exists to
+//! repair a sparse row *in that file*, so the sparse row is the thing it is
+//! asked about. Everything else reads the journal.
 use super::*;
 use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
@@ -421,7 +424,8 @@ fn refuse_divergent_duplicate_revisions(records: &[WorkJournalRecord]) -> StoreR
         match seen.get(&key) {
             Some(existing) if **existing != record.work => {
                 return Err(StoreError::Conflict(format!(
-                    "WORK_JOURNAL_REVISION_CONFLICT: Work {} version {} is persisted twice with                      different content; one revision cannot have two projections",
+                    "WORK_JOURNAL_REVISION_CONFLICT: Work {} version {} is persisted twice \
+                     with different content; one revision cannot have two projections",
                     record.work.id, record.event.resulting_version
                 )));
             }

@@ -99,10 +99,18 @@ pub(super) fn team_run_canonical_state_fingerprint(
         .collect::<Vec<_>>();
     members.sort_by(|left, right| left["id"].as_str().cmp(&right["id"].as_str()));
 
-    // The Work plane advances in two journals until the W4 writer cutover.
-    // Counting only `work_operations.jsonl` made an accept, a cancellation or
-    // a dependency change look like no canonical progress at all, so a hold
-    // that those settled kept holding.
+    // Count this run's Work progress through the one Work journal. Counting
+    // only `work_operations.jsonl` made an accept, a cancellation or a
+    // dependency change look like no canonical progress at all, so a hold that
+    // those settled kept holding (#949 item 2); since the writer cutover that
+    // file holds no current transition at all, so a ledger-only count would
+    // see none of them.
+    //
+    // The filter is the Work event's own `team_run_id`, which is the run that
+    // performed the transition — a Work retargeted to a successor run stops
+    // moving its predecessor's counter and starts moving the successor's,
+    // which is what a per-run hold wants. Pinned by
+    // `work_journal_is_one_reader_across_both_journals`.
     let work_operations = store.work_journal_cursors_for_team_run(run_id)?.watermark;
 
     let member_run_ids = members

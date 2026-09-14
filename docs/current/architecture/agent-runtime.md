@@ -408,11 +408,22 @@ in the same write. That is what makes the commit crash-atomic in exactly the
 way a single JSONL append used to be.
 
 Idempotency is the trust kernel's replay check and nothing else. A command
-resolves its Work, builds its `MutationContext`, and asks for a replay *before*
-its own guards and version fence — a retry of a command that already committed
-must return that committed result, not a `VERSION_CONFLICT` against the
-revision its own first attempt produced. The replay is exact: the same key with
-different request content is `IDEMPOTENCY_KEY_REUSED`, never a substitution. A
+checks its caller-context authority, resolves its Work, builds its
+`MutationContext`, and asks for a replay — in that order, all *before* its own
+guards and version fence. A retry of a command that already committed must
+return that committed result, not a `VERSION_CONFLICT` against the revision its
+own first attempt produced; and the caller-shape refusal a command applies to
+its write applies to its replay too, because `Host/<id>` and `AgentMember/<id>`
+canonicalise to the same actor and the replay alone could not tell them apart.
+The replay is exact: the same key with different request content is
+`IDEMPOTENCY_KEY_REUSED`, never a substitution.
+
+**Where the retry's repair went.** The retired ledger idempotency lookup did
+one thing besides answering: it re-derived the operation's HostAttention rows,
+so a crash between the Work write and its derived wake was repaired by whatever
+retried. The HostAttention reconciler now derives from the whole Work journal
+instead, so the same gap is closed for every entrance whether or not anything
+ever retries, and a replay is a pure read again. A
 Result submission writes its `work`/`submitted` envelope in the SAME atomic
 rewrite as its `work_report/created` envelope, so the report and the Review
 revision it produced can never exist without one another; the paired envelope

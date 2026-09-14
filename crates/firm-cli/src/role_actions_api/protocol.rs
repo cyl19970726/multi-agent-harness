@@ -1,4 +1,5 @@
 use super::*;
+use harness_core::ExecutionSpaceId;
 
 #[derive(Debug, Deserialize)]
 #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
@@ -388,7 +389,7 @@ pub(super) fn canonical_report_count(
     work_id: &str,
 ) -> Result<u64, StoreError> {
     Ok(store
-        .canonical_operations_for_space(space_id)?
+        .canonical_operations_for_space(&ExecutionSpaceId::new(space_id))?
         .into_iter()
         .filter(|operation| {
             operation.event.aggregate_kind == "work_report"
@@ -960,7 +961,7 @@ pub(super) fn canonical_replay(
     aggregate_id: &str,
 ) -> Result<Option<RoleActionResult>, StoreError> {
     let Some(operation) = store
-        .canonical_operations_for_space(&auth.execution_space_id)?
+        .canonical_operations_for_space(&ExecutionSpaceId::new(&auth.execution_space_id))?
         .into_iter()
         .find(|operation| operation.event.idempotency_key == auth.idempotency_key)
     else {

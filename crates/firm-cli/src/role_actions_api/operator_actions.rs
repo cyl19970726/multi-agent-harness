@@ -1,4 +1,5 @@
 use super::*;
+use harness_core::ExecutionSpaceId;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -422,7 +423,9 @@ pub(super) fn execute_operator_action(
                 event_id: format!("diagnostic:{}", auth.idempotency_key),
                 resulting_version: auth.expected_version,
                 store_sequence: store
-                    .canonical_operations_for_space(&auth.execution_space_id)?
+                    .canonical_operations_for_space(&ExecutionSpaceId::new(
+                        &auth.execution_space_id,
+                    ))?
                     .len() as u64,
                 replayed: false,
             })
@@ -491,7 +494,9 @@ pub(super) fn execute_operator_action(
                     event_id: format!("daemon-start:{}", auth.idempotency_key),
                     resulting_version: node_revision,
                     store_sequence: store
-                        .canonical_operations_for_space(&auth.execution_space_id)?
+                        .canonical_operations_for_space(&ExecutionSpaceId::new(
+                            &auth.execution_space_id,
+                        ))?
                         .len() as u64,
                     replayed: false,
                 })
@@ -598,7 +603,9 @@ pub(super) fn execute_operator_action(
                     event_id: format!("daemon-stop:{}", auth.idempotency_key),
                     resulting_version: node_revision,
                     store_sequence: store
-                        .canonical_operations_for_space(&auth.execution_space_id)?
+                        .canonical_operations_for_space(&ExecutionSpaceId::new(
+                            &auth.execution_space_id,
+                        ))?
                         .len() as u64,
                     replayed: false,
                 })
@@ -657,7 +664,9 @@ pub(super) fn execute_operator_action(
                     event_id: format!("daemon-recover-predecessor:{}", auth.idempotency_key),
                     resulting_version: node_revision,
                     store_sequence: store
-                        .canonical_operations_for_space(&auth.execution_space_id)?
+                        .canonical_operations_for_space(&ExecutionSpaceId::new(
+                            &auth.execution_space_id,
+                        ))?
                         .len() as u64,
                     replayed: false,
                 })

@@ -163,6 +163,37 @@ fn work_journal_is_one_reader_across_both_journals() {
         "a pre-cutover Work keeps the ledger position it was written at"
     );
 
+    // Run cursors are filtered by the Work event's own `team_run_id` — the run
+    // that performed the transition. Another run's Work never moves this run's
+    // watermark, which is what the per-run canonical-state hold depends on.
+    append_runtime_team(&store, "team-journal", "team-run-journal-sibling");
+    insert_runtime_work(
+        &store,
+        "work-journal-sibling",
+        "team-journal",
+        "team-run-journal-sibling",
+    );
+    let after_sibling = store
+        .work_journal_cursors_for_team_run("team-run-journal")
+        .unwrap();
+    assert_eq!(
+        after_sibling.watermark, cursors.watermark,
+        "a sibling run's Work transition does not move this run's watermark"
+    );
+    assert!(
+        !after_sibling.by_work.contains_key("work-journal-sibling"),
+        "nor does it enter this run's per-Work cursors"
+    );
+    assert_eq!(
+        store
+            .work_journal_cursors_for_team_run("team-run-journal-sibling")
+            .unwrap()
+            .watermark
+            .trust,
+        1,
+        "the sibling run counts exactly its own transition"
+    );
+
     // A pre-W3 integer cursor decodes to exactly the ledger position it named.
     let legacy_cursor = crate::WorkJournalPosition::from_packed(ledger_only.ledger);
     assert_eq!(legacy_cursor.ledger, ledger_only.ledger);

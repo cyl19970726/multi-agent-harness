@@ -1,4 +1,5 @@
 use super::*;
+use firm_core::ExecutionSpaceId;
 
 #[test]
 fn report_id_is_create_only_even_for_direct_store_callers() {
@@ -72,7 +73,10 @@ fn report_only_accepts_atomic_submission_and_replays_original_snapshot() {
         Some(firm_core::WorkResolution::Accepted)
     );
     assert_eq!(accepted.projection.version, 5);
-    let operations = harness.store.canonical_operations_for_space(SPACE).unwrap();
+    let operations = harness
+        .store
+        .canonical_operations_for_space(&ExecutionSpaceId::new(SPACE))
+        .unwrap();
     let acceptance = operations
         .iter()
         .find(|op| op.event.id == accepted.event.id)
@@ -107,7 +111,10 @@ fn report_only_accepts_atomic_submission_and_replays_original_snapshot() {
         .accept_current_trust_work(&ctx, &team, "foreign-work", "t5")
         .is_err());
     assert_eq!(
-        harness.store.canonical_operations_for_space(SPACE).unwrap(),
+        harness
+            .store
+            .canonical_operations_for_space(&ExecutionSpaceId::new(SPACE))
+            .unwrap(),
         operations
     );
 }
@@ -387,7 +394,7 @@ fn ordinary_acceptance_replays_after_two_outer_misses_with_different_generated_t
     for _ in 0..2 {
         assert!(!harness
             .store
-            .canonical_operations_for_space(SPACE)
+            .canonical_operations_for_space(&ExecutionSpaceId::new(SPACE))
             .unwrap()
             .iter()
             .any(|operation| operation.event.idempotency_key == ctx.idempotency_key));

@@ -1,4 +1,5 @@
 use super::*;
+use harness_core::ExecutionSpaceId;
 
 pub(crate) fn fabric_command(
     store: &HarnessStore,
@@ -312,7 +313,7 @@ pub(super) fn exact_work_projection_at_revision(
             .filter(|work| work.id == work_id && work.version == work_revision)
     };
     for operation in store
-        .canonical_operations_for_space(execution_space_id)
+        .canonical_operations_for_space(&ExecutionSpaceId::new(execution_space_id))
         .map_err(|error| FabricError::none(FabricErrorCode::StoreUnavailable, error.to_string()))?
         .into_iter()
         .rev()
@@ -341,7 +342,7 @@ pub(super) fn accepted_work_decision_ref(
     target_host_id: &str,
 ) -> Result<Option<harness_core::collaboration::WorkOperationalDecisionRef>, FabricError> {
     let operation = store
-        .canonical_operations_for_space(execution_space_id)
+        .canonical_operations_for_space(&ExecutionSpaceId::new(execution_space_id))
         .map_err(|error| FabricError::none(FabricErrorCode::StoreUnavailable, error.to_string()))?
         .into_iter()
         .rev()

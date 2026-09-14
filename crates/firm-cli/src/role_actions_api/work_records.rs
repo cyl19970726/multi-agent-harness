@@ -1,4 +1,5 @@
 use super::*;
+use harness_core::ExecutionSpaceId;
 
 pub(super) fn execute_work_record_action(
     store: &HarnessStore,
@@ -329,7 +330,7 @@ pub(super) fn execute_work_record_action(
         ) => {
             require_host(&auth, &team.host_agent_id, "work", work_id)?;
             let report = store
-                .canonical_operations_for_space(&auth.execution_space_id)?
+                .canonical_operations_for_space(&ExecutionSpaceId::new(&auth.execution_space_id))?
                 .into_iter()
                 .filter(|op| op.event.aggregate_kind == "work_report")
                 .filter_map(|op| serde_json::from_value::<WorkReport>(op.resulting_projection).ok())
@@ -503,7 +504,7 @@ pub(super) fn execute_gate_action(
         )
     })?;
     let requirement = store
-        .canonical_operations_for_space(&auth.execution_space_id)?
+        .canonical_operations_for_space(&ExecutionSpaceId::new(&auth.execution_space_id))?
         .into_iter()
         .filter(|operation| operation.event.aggregate_kind == "gate_requirement")
         .flat_map(|operation| {
