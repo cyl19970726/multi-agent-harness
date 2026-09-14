@@ -217,7 +217,7 @@ fn hard_crash_recovery_requires_exact_operator_evidence_and_detaches_the_predece
         recovered.control_state.runtime_residency,
         RuntimeResidency::Detached
     );
-    assert!(recovered.current_turn_id.is_none());
+    assert!(recovered.current_cycle_marker.is_none());
     store
         .acquire_node_daemon_lease(
             &released.lease.node_id,

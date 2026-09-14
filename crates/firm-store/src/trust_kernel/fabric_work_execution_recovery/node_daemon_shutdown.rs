@@ -120,7 +120,7 @@ impl HarnessStore {
                 })
             {
                 if session.control_state.runtime_residency == RuntimeResidency::Detached
-                    && session.current_turn_id.is_none()
+                    && session.current_cycle_marker.is_none()
                 {
                     continue;
                 }
@@ -131,7 +131,7 @@ impl HarnessStore {
                 session.control_state.continuation.activation =
                     NativeContinuationActivation::Disarmed;
                 session.control_state.last_reconciled_at = Some(updated_at.to_string());
-                session.current_turn_id = None;
+                session.current_cycle_marker = None;
                 session.queued_input_count = 0;
                 if !matches!(
                     session.lifecycle,

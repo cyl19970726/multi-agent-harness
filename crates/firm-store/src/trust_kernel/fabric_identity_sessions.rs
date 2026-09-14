@@ -669,7 +669,7 @@ impl HarnessStore {
         // fresh cycle on the same provider-native session. This is the one exit
         // from `Interrupted` back into the ordinary lane, and it is admitted
         // only while the lane still proves the killed runtime is gone — no live
-        // handle, no cycle, no turn, continuation disarmed, no queued native
+        // handle, no open cycle, continuation disarmed, no queued native
         // input, and no ambiguous RuntimeCommand that a resume could replay.
         // The exact-current-NodeDaemon fence above is the other half of the
         // proof: a drained Session still carries its dead daemon generation and
@@ -682,7 +682,7 @@ impl HarnessStore {
                 == firm_core::agentfirm_api::DriverHandoffState::None
             && session.control_state.continuation.activation
                 == NativeContinuationActivation::Disarmed
-            && session.current_turn_id.is_none()
+            && session.current_cycle_marker.is_none()
             && session.queued_input_count == 0
             && !ambiguous_effect_for_session;
         let resumes_terminated_interrupted_lane = session.lifecycle
@@ -708,16 +708,12 @@ impl HarnessStore {
                 )
                 | (AgentSessionStatus::Idle, AgentSessionStatus::Active)
                 | (AgentSessionStatus::Idle, AgentSessionStatus::Closed)
-                | (AgentSessionStatus::Active, AgentSessionStatus::Waiting)
                 | (AgentSessionStatus::Active, AgentSessionStatus::Idle)
                 | (AgentSessionStatus::Active, AgentSessionStatus::Interrupted)
                 | (
                     AgentSessionStatus::Active,
                     AgentSessionStatus::RecoveryRequired
                 )
-                | (AgentSessionStatus::Waiting, AgentSessionStatus::Active)
-                | (AgentSessionStatus::Waiting, AgentSessionStatus::Idle)
-                | (AgentSessionStatus::Waiting, AgentSessionStatus::Closed)
                 | (AgentSessionStatus::Interrupted, AgentSessionStatus::Cold)
                 | (AgentSessionStatus::Interrupted, AgentSessionStatus::Closed)
         ) || (matches!(
@@ -791,15 +787,14 @@ impl HarnessStore {
         session.last_active_at = updated_at.to_string();
         match next_status {
             AgentSessionStatus::Active => {
-                session.current_turn_id =
-                    Some(format!("provider-turn:{}:{}", session.id, session.version));
+                session.current_cycle_marker =
+                    Some(format!("harness-cycle:{}:{}", session.id, session.version));
                 session.queued_input_count = session.queued_input_count.saturating_sub(1);
             }
             AgentSessionStatus::Idle
-            | AgentSessionStatus::Waiting
             | AgentSessionStatus::Interrupted
             | AgentSessionStatus::RecoveryRequired
-            | AgentSessionStatus::Closed => session.current_turn_id = None,
+            | AgentSessionStatus::Closed => session.current_cycle_marker = None,
             AgentSessionStatus::Cold => {}
         }
         if next_status == AgentSessionStatus::Closed {
@@ -893,7 +888,7 @@ impl HarnessStore {
                 Some(session.version),
             ));
         }
-        // A reconciled `RecoveryRequired` lane (detached, turn-free) is skipped
+        // A reconciled `RecoveryRequired` lane (detached, cycle-free) is skipped
         // by both drain settlements, so it can outlive its daemon generation;
         // the successor must be able to reattach it, or no writer could ever
         // reach it again (GitHub #755). The clauses below plus the released
@@ -904,7 +899,7 @@ impl HarnessStore {
                 | AgentSessionStatus::Idle
                 | AgentSessionStatus::Interrupted
                 | AgentSessionStatus::RecoveryRequired
-        ) && session.current_turn_id.is_none()
+        ) && session.current_cycle_marker.is_none()
             && session.queued_input_count == 0
             && matches!(
                 session.control_state.runtime_residency,
@@ -1189,7 +1184,7 @@ impl HarnessStore {
             || session.control_state.capability_fingerprint
                 != next_control_state.capability_fingerprint;
         if driver_changed || composition_changed {
-            let lane_is_quiet = session.current_turn_id.is_none()
+            let lane_is_quiet = session.current_cycle_marker.is_none()
                 && (session.control_state.runtime_residency == RuntimeResidency::Detached
                     || session.control_state.activity == RuntimeActivity::Idle);
             if !lane_is_quiet {

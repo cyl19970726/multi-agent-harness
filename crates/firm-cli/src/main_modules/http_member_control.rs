@@ -301,8 +301,8 @@ pub(super) fn close_team_member_value(
     }))
 }
 
-/// Whether this Session sits at a terminal turn boundary: no cycle activity and
-/// no turn in flight.
+/// Whether this Session sits at a terminal cycle boundary: no cycle activity
+/// and no open cycle marker.
 ///
 /// `Interrupted` counts alongside `Idle` here. It records only that the cycle
 /// never reached its own end — typically because a NodeDaemon drain killed the
@@ -310,11 +310,11 @@ pub(super) fn close_team_member_value(
 /// residency is `Detached`, so no live handle can be executing either way.
 /// Fencing the Host's Close on the lifecycle label alone would leave a member
 /// whose runtime is provably dead with no exit at all.
-pub(super) fn session_is_at_terminal_turn_boundary(
+pub(super) fn session_is_at_terminal_cycle_boundary(
     session: &harness_core::agentfirm_api::AgentSession,
 ) -> bool {
     // One definition shared with `team-run recover` (GitHub #841).
-    lane_is_at_terminal_turn_boundary(session)
+    lane_is_at_terminal_cycle_boundary(session)
 }
 
 /// POST /v1/team-runs/{id}/members/{m}/resume — dedicated entry for resuming

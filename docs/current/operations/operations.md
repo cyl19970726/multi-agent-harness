@@ -645,7 +645,7 @@ resume only from a detached, disarmed lane…`, the lane still claims a live
 provider handle or carries an ambiguous `RuntimeCommand`: reconcile that command
 through `runtime-commands/{id}/resolve` first. When the member should not come
 back at all, `team-run close-member` is the escape hatch and works on an
-`Interrupted` Session whose runtime is detached at a terminal turn boundary.
+`Interrupted` Session whose runtime is detached at a terminal cycle boundary.
 A Session the runner left in `RecoveryRequired` (an unrecoverable provider
 error on an open cycle or a failed open; the member is journaled `Blocked`)
 has exactly one exit (GitHub #755): `team-run recover` returns it to `Idle`
@@ -692,7 +692,7 @@ firm team-run recover --id <run>
 
 It applies on two proofs, both required. The member's own AgentSession must
 prove no runtime can be driving it — detached residency, idle activity,
-disarmed continuation, no open turn, no queued native input and no ambiguous
+disarmed continuation, no open cycle, no queued native input and no ambiguous
 `RuntimeCommand` — and the block must carry no typed provenance: no
 `provider_compatibility_block_cause`, no known-unavailable
 `provider_capacity` snapshot, and no zero-output streak that has actually

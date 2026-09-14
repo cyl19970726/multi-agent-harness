@@ -95,7 +95,7 @@ fn provider_exit_detaches_terminal_session_before_same_native_reopen() {
         RuntimeResidency::Detached
     );
     assert_eq!(released.control_state.activity, RuntimeActivity::Idle);
-    assert!(released.current_turn_id.is_none());
+    assert!(released.current_cycle_marker.is_none());
 
     let mut closed = terminal.clone();
     closed.coordination_status = MemberCoordinationStatus::Closed;

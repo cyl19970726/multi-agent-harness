@@ -608,7 +608,7 @@ mod tests {
                     ..Default::default()
                 },
                 native_session_ref: Some(member_native_session),
-                current_turn_id: None,
+                current_cycle_marker: None,
                 queued_input_count: 0,
                 version: 1,
                 opened_at: "t1".into(),

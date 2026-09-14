@@ -33,7 +33,7 @@ fn recover_names_the_blocker_of_a_blocked_member_whose_lane_is_still_live() {
     let blocker = crate::member_lane_blocker(&fixture.store, DRAIN_SPACE_ID, &blocked)
         .expect("the failing clause is named");
     assert!(
-        blocker.contains("not at a terminal turn boundary"),
+        blocker.contains("not at a terminal cycle boundary"),
         "the first failing clause is the open cycle: {blocker}"
     );
     // The report and the repair decision derive from one proof.
@@ -59,28 +59,27 @@ fn recover_names_the_blocker_of_a_blocked_member_whose_lane_is_still_live() {
 }
 
 #[test]
-fn recover_and_close_share_one_terminal_turn_boundary_predicate() {
+fn recover_and_close_share_one_terminal_cycle_boundary_predicate() {
     let fixture = drain_fixture("shared-boundary-predicate");
     let base = agent_session(&fixture.store, MID_TURN_MEMBER);
     let lifecycles = [
         AgentSessionStatus::Cold,
         AgentSessionStatus::Idle,
         AgentSessionStatus::Active,
-        AgentSessionStatus::Waiting,
         AgentSessionStatus::Interrupted,
         AgentSessionStatus::RecoveryRequired,
         AgentSessionStatus::Closed,
     ];
     for lifecycle in lifecycles {
         for activity in [RuntimeActivity::Idle, RuntimeActivity::Running] {
-            for turn in [None, Some("provider-turn:x".to_string())] {
+            for cycle in [None, Some("harness-cycle:x".to_string())] {
                 let mut session = base.clone();
                 session.lifecycle = lifecycle;
                 session.control_state.activity = activity;
-                session.current_turn_id = turn;
+                session.current_cycle_marker = cycle;
                 assert_eq!(
-                    crate::lane_is_at_terminal_turn_boundary(&session),
-                    crate::session_is_at_terminal_turn_boundary(&session),
+                    crate::lane_is_at_terminal_cycle_boundary(&session),
+                    crate::session_is_at_terminal_cycle_boundary(&session),
                     "recover and close disagree on {lifecycle:?}/{activity:?}"
                 );
             }
@@ -90,7 +89,7 @@ fn recover_and_close_share_one_terminal_turn_boundary_predicate() {
     // including a reconciled RecoveryRequired one (#755), and nothing else.
     let mut quiet = base.clone();
     quiet.control_state.activity = RuntimeActivity::Idle;
-    quiet.current_turn_id = None;
+    quiet.current_cycle_marker = None;
     for lifecycle in [
         AgentSessionStatus::Cold,
         AgentSessionStatus::Idle,
@@ -99,18 +98,14 @@ fn recover_and_close_share_one_terminal_turn_boundary_predicate() {
     ] {
         quiet.lifecycle = lifecycle;
         assert!(
-            crate::lane_is_at_terminal_turn_boundary(&quiet),
+            crate::lane_is_at_terminal_cycle_boundary(&quiet),
             "{lifecycle:?}"
         );
     }
-    for lifecycle in [
-        AgentSessionStatus::Active,
-        AgentSessionStatus::Waiting,
-        AgentSessionStatus::Closed,
-    ] {
+    for lifecycle in [AgentSessionStatus::Active, AgentSessionStatus::Closed] {
         quiet.lifecycle = lifecycle;
         assert!(
-            !crate::lane_is_at_terminal_turn_boundary(&quiet),
+            !crate::lane_is_at_terminal_cycle_boundary(&quiet),
             "{lifecycle:?}"
         );
     }
@@ -214,7 +209,7 @@ fn recover_names_the_clause_that_keeps_a_recovery_required_lane_shut() {
     let blocker = crate::member_lane_blocker(&fixture.store, DRAIN_SPACE_ID, &blocked)
         .expect("the attached handle is named");
     assert!(
-        blocker.contains("not at a terminal turn boundary") || blocker.contains("attached"),
+        blocker.contains("not at a terminal cycle boundary") || blocker.contains("attached"),
         "{blocker}"
     );
 
@@ -311,7 +306,7 @@ fn dormant_continuation_is_refused_unless_the_close_tolerates_it() {
     armed.lifecycle = AgentSessionStatus::Idle;
     armed.control_state.runtime_residency = RuntimeResidency::Detached;
     armed.control_state.activity = RuntimeActivity::Idle;
-    armed.current_turn_id = None;
+    armed.current_cycle_marker = None;
     armed.control_state.continuation.activation = NativeContinuationActivation::Armed {
         runtime_generation: armed.runtime_generation,
         driver_generation: armed.control_state.driver_generation,
@@ -392,7 +387,7 @@ fn recovery_required_lane_reaches_active_only_through_the_proved_idle_hop() {
         .expect("a reconciled lane reaches Active through the proved Idle hop");
     let lane = agent_session(&fixture.store, MID_TURN_MEMBER);
     assert_eq!(lane.lifecycle, AgentSessionStatus::Active);
-    assert!(lane.current_turn_id.is_some());
+    assert!(lane.current_cycle_marker.is_some());
 }
 
 /// The Close hop sits behind the authority and generation gates: a Close that
@@ -502,7 +497,7 @@ fn readoption_hops_a_reconciled_recovery_required_lane_to_idle() {
     );
     assert_eq!(adopted.node_daemon_generation, successor_generation);
     assert_eq!(adopted.runtime_generation, reconciled.runtime_generation);
-    assert!(adopted.current_turn_id.is_none());
+    assert!(adopted.current_cycle_marker.is_none());
     assert_eq!(
         adopted
             .native_session_ref

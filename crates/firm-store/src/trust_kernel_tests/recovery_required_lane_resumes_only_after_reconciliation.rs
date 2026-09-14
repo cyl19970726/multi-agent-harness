@@ -46,7 +46,7 @@ fn active_lane(store: &HarnessStore, suffix: &str) -> AgentSession {
         )
         .unwrap()
         .projection;
-    assert!(active.current_turn_id.is_some());
+    assert!(active.current_cycle_marker.is_some());
     active
 }
 
@@ -84,7 +84,7 @@ fn mark_recovery_required(store: &HarnessStore, lane: &AgentSession) -> AgentSes
         .expect("the runner records an unrecoverable provider error")
         .projection;
     assert_eq!(failed.lifecycle, AgentSessionStatus::RecoveryRequired);
-    assert!(failed.current_turn_id.is_none());
+    assert!(failed.current_cycle_marker.is_none());
     failed
 }
 
@@ -266,7 +266,7 @@ fn recovery_required_lane_resumes_only_after_reconciliation() {
         .projection;
     assert_eq!(resumed.lifecycle, AgentSessionStatus::Idle);
     assert_eq!(resumed.runtime_generation, resumable.runtime_generation);
-    assert!(resumed.current_turn_id.is_none());
+    assert!(resumed.current_cycle_marker.is_none());
     assert!(resumed.native_session_ref.is_some());
     // From Idle the ordinary paths apply again, e.g. an ordinary Close.
     let closed = store

@@ -236,7 +236,6 @@ pub(crate) fn prepare_provider_effect_kind(
             AgentSessionStatus::Cold
                 | AgentSessionStatus::Active
                 | AgentSessionStatus::Idle
-                | AgentSessionStatus::Waiting
                 | AgentSessionStatus::Interrupted
         ),
         harness_core::agentfirm_api::RuntimeCommandKind::StopSession => matches!(
@@ -244,7 +243,6 @@ pub(crate) fn prepare_provider_effect_kind(
             AgentSessionStatus::Cold
                 | AgentSessionStatus::Active
                 | AgentSessionStatus::Idle
-                | AgentSessionStatus::Waiting
                 | AgentSessionStatus::Interrupted
         ),
         _ => false,

@@ -594,7 +594,7 @@ fn completed_never_started_member_closes_through_real_cli() {
             ..Default::default()
         },
         native_session_ref: None,
-        current_turn_id: None,
+        current_cycle_marker: None,
         queued_input_count: 0,
         version: 1,
         opened_at: "unix-ms:cold-fixture".into(),

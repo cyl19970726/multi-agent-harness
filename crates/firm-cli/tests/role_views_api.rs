@@ -253,7 +253,7 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
                     last_verified_at: Some("2026-08-13T00:00:00Z".into()),
                     parent_native_session_id: None,
                 }),
-                current_turn_id: None,
+                current_cycle_marker: None,
                 queued_input_count: 0,
                 version: 1,
                 opened_at: "2026-08-13T00:00:00Z".into(),

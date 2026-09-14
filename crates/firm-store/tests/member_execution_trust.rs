@@ -514,7 +514,7 @@ fn seed_active_team_work(store: &HarnessStore, label: &str, work_id: &str) -> St
             ..Default::default()
         },
         native_session_ref: Some(native_session("session-runtime-worker")),
-        current_turn_id: None,
+        current_cycle_marker: None,
         queued_input_count: 0,
         version: 1,
         opened_at: "t2".into(),

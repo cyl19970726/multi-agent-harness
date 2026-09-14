@@ -3,7 +3,7 @@
 //!
 //! DEV-171 (#748) admitted exactly one exit from `Interrupted`: back to `Idle`,
 //! and only while the killed runtime is still provably gone — detached,
-//! disarmed, at a terminal turn boundary, with no ambiguous RuntimeCommand.
+//! disarmed, at a terminal cycle boundary, with no ambiguous RuntimeCommand.
 //! The fence is correct and is not weakened here. What was wrong is *when* the
 //! successor generation used it.
 //!
@@ -77,18 +77,18 @@ pub(super) struct LaneTerminationProof {
 }
 
 /// The terminated-lane proof. This is the Store fence's own predicate
-/// (residency, activity, handoff, continuation, turn, queued input, ambiguous
-/// RuntimeCommand), read from outside the writer lock so a caller can decide
-/// *whether to try* and can say *why not*. It never grants a transition: the
-/// Store re-proves all of it under its lock. Every reader of the proof
-/// derives from this one function, so the reason named and the decision
-/// taken cannot drift apart (GitHub #841).
+/// (residency, activity, handoff, continuation, open cycle, queued input,
+/// ambiguous RuntimeCommand), read from outside the writer lock so a caller
+/// can decide *whether to try* and can say *why not*. It never grants a
+/// transition: the Store re-proves all of it under its lock. Every reader of
+/// the proof derives from this one function, so the reason named and the
+/// decision taken cannot drift apart (GitHub #841).
 ///
 /// `tolerate_dormant_continuation` is for the coordination Close of a Completed
 /// TeamRun's member (#812): an armed native continuation on that lane will
 /// never be driven, so refusing the Close on it would strand the member
 /// forever; the residue is recorded on the Close receipt instead. A driver
-/// handoff, an open turn, queued input, or an ambiguous command is never
+/// handoff, an open cycle, queued input, or an ambiguous command is never
 /// tolerated.
 pub(super) fn lane_termination_proof(
     store: &HarnessStore,
@@ -136,9 +136,9 @@ pub(super) fn lane_termination_proof(
             return blocked(residue);
         }
     }
-    if let Some(turn) = session.current_turn_id.as_deref() {
+    if let Some(cycle) = session.current_cycle_marker.as_deref() {
         return blocked(format!(
-            "AgentSession {} still has an open turn {turn}",
+            "AgentSession {} still has an open cycle {cycle}",
             session.id
         ));
     }
@@ -190,14 +190,14 @@ pub(super) fn lane_proves_runtime_is_terminated(
     Ok(lane_termination_blocker(store, execution_space_id, session)?.is_none())
 }
 
-/// The one definition of "this lane sits at a terminal turn boundary with no
+/// The one definition of "this lane sits at a terminal cycle boundary with no
 /// cycle open" shared by `team-run recover` (may a coordination-only repair
 /// touch it?) and the detached-recovery Close fence (may the Host close it?).
 /// Both verbs must agree, or recover reports a lane as repairable that Close
 /// then refuses (GitHub #841). `RecoveryRequired` belongs here since GitHub
 /// #755: the Store admits its exit to `Idle` under the terminated-lane proof.
-pub(super) fn lane_is_at_terminal_turn_boundary(session: &AgentSession) -> bool {
-    session.is_at_terminal_turn_boundary()
+pub(super) fn lane_is_at_terminal_cycle_boundary(session: &AgentSession) -> bool {
+    session.is_at_terminal_cycle_boundary()
 }
 
 /// Why this member's one current AgentSession does NOT prove that no runtime
@@ -223,13 +223,13 @@ pub(super) fn member_lane_blocker(
     if current.next().is_some() {
         return Some("more than one current AgentSession".into());
     }
-    if !lane_is_at_terminal_turn_boundary(&session) {
+    if !lane_is_at_terminal_cycle_boundary(&session) {
         return Some(format!(
-            "AgentSession {} is not at a terminal turn boundary (lifecycle {:?}, activity {:?}, turn {})",
+            "AgentSession {} is not at a terminal cycle boundary (lifecycle {:?}, activity {:?}, cycle {})",
             session.id,
             session.lifecycle,
             session.control_state.activity,
-            session.current_turn_id.as_deref().unwrap_or("none")
+            session.current_cycle_marker.as_deref().unwrap_or("none")
         ));
     }
     match lane_termination_blocker(store, execution_space_id, &session) {
@@ -291,7 +291,8 @@ pub(super) enum DrainedLaneResume {
 /// DEV-171 fence under its own lock either way.
 ///
 /// For a lane a drain left `Interrupted`, the drain settlement already
-/// detached it, disarmed its continuation, cleared its turn and settled every
+/// detached it, disarmed its continuation, cleared its cycle marker and
+/// settled every
 /// RuntimeCommand of the dead generation, so the proof holds by construction.
 ///
 /// For a lane a runner left `RecoveryRequired` (#755), the drain skipped it as
@@ -383,7 +384,7 @@ pub(super) fn resume_drained_lane_for_adoption(
 ///
 /// Fail closed: the lane must be readable and must currently prove the killed
 /// runtime gone. A lane still holding an ambiguous RuntimeCommand, an attached
-/// handle or an open turn keeps the ordinary `Blocked` diagnosis.
+/// handle or an open cycle keeps the ordinary `Blocked` diagnosis.
 pub(super) fn provider_failure_awaits_drain_lane_resume(
     ledger: &TeamRunLedger,
     member: &ProviderRuntimeProjection,

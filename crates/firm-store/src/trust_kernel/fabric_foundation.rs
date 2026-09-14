@@ -503,7 +503,7 @@ impl HarnessStore {
                     "RuntimeCommand cycle revision/fingerprint cannot be proven from canonical AgentSession control state",
                 ));
             }
-            if session.current_turn_id.as_deref() != Some(expected.id.as_str()) {
+            if session.current_cycle_marker.as_deref() != Some(expected.id.as_str()) {
                 return Err(fenced(
                     "RuntimeCommand expected_cycle_ref no longer matches the current provider cycle",
                 ));
@@ -538,7 +538,7 @@ impl HarnessStore {
             RuntimeSafePointRequirement::Unknown | RuntimeSafePointRequirement::Immediate => true,
             RuntimeSafePointRequirement::CurrentCycle => {
                 session.lifecycle == AgentSessionStatus::Active
-                    && session.current_turn_id.is_some()
+                    && session.current_cycle_marker.is_some()
                     && matches!(
                         session.control_state.activity,
                         RuntimeActivity::Running

@@ -246,9 +246,9 @@ fn detached_blocked_member_recovery_close_is_exact_and_fail_closed() {
     .expect_err("an active provider turn must fence recovery Close");
     assert!(active_turn
         .to_string()
-        .contains("not detached+idle at a terminal turn boundary"));
+        .contains("not detached+idle at a terminal cycle boundary"));
     transition_provider_session_for_member(&ledger, &blocked, AgentSessionStatus::Idle)
-        .expect("return to terminal turn boundary");
+        .expect("return to terminal cycle boundary");
 
     let (execution_space_id, detached_session) =
         provider_session_for_member(&ledger, &blocked).expect("detached recovery Session");

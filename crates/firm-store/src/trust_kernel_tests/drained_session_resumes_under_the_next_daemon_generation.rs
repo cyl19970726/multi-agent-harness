@@ -50,7 +50,7 @@ fn drained_session_resumes_under_the_next_daemon_generation() {
         )
         .unwrap()
         .projection;
-    assert!(activated.current_turn_id.is_some());
+    assert!(activated.current_cycle_marker.is_some());
     let (mut start, mut start_context) = runtime_command_fixture(
         "runtime-drain-start-cycle",
         RuntimeCommandKind::StartCycle,
@@ -109,7 +109,7 @@ fn drained_session_resumes_under_the_next_daemon_generation() {
         drained.control_state.runtime_residency,
         RuntimeResidency::Detached
     );
-    assert!(drained.current_turn_id.is_none());
+    assert!(drained.current_cycle_marker.is_none());
     let untouched_idle = drain_session(&store, &idle.id);
     assert_eq!(
         untouched_idle.lifecycle,
@@ -169,7 +169,7 @@ fn drained_session_resumes_under_the_next_daemon_generation() {
         .expect("a drained Session with a provably terminated runtime must resume")
         .projection;
     assert_eq!(resumed.lifecycle, AgentSessionStatus::Idle);
-    assert!(resumed.current_turn_id.is_none());
+    assert!(resumed.current_cycle_marker.is_none());
     assert_eq!(
         resumed
             .native_session_ref

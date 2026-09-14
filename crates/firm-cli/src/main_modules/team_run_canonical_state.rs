@@ -166,20 +166,7 @@ pub(super) fn team_run_canonical_state_fingerprint(
                         && session.lifecycle
                             != harness_core::agentfirm_api::AgentSessionStatus::Closed
                 })
-                .map(|session| {
-                    serde_json::json!({
-                        "id": session.id,
-                        "lifecycle": session.lifecycle,
-                        "runtime_generation": session.runtime_generation,
-                        "node_daemon_generation": session.node_daemon_generation,
-                        "runtime_residency": session.control_state.runtime_residency,
-                        "activity": session.control_state.activity,
-                        "continuation_activation": session.control_state.continuation.activation,
-                        "handoff_state": session.control_state.handoff_state,
-                        "in_turn": session.current_turn_id.is_some(),
-                        "queued_input_count": session.queued_input_count,
-                    })
-                })
+                .map(|session| agent_session_lane_projection(&session))
                 .collect::<Vec<_>>();
             agent_session_lanes
                 .sort_by(|left, right| left["id"].as_str().cmp(&right["id"].as_str()));
@@ -193,21 +180,76 @@ pub(super) fn team_run_canonical_state_fingerprint(
     };
 
     Ok(harness_store::canonical_json_fingerprint(
-        &serde_json::json!({
-            "team_run": {
+        &canonical_state_document(
+            // Frozen durable hash input, like every key below.
+            serde_json::json!({
                 "id": run.id,
                 "status": run.status,
                 "completed": run.completed_at.is_some(),
                 "member_run_ids": run.member_run_ids,
-            },
-            "member_runs": members,
-            "work_operations": work_operations.total(),
-            "execution_space_id": execution_space_id,
-            "messages": messages,
-            "runtime_commands": runtime_commands,
-            "agent_session_lanes": agent_session_lanes,
-        }),
+            }),
+            members,
+            work_operations.total(),
+            execution_space_id,
+            messages,
+            runtime_commands,
+            agent_session_lanes,
+        ),
     ))
+}
+
+/// The hashed shape of one AgentSession lane.
+///
+/// **Every key here is a frozen durable hash input, not vocabulary.** The
+/// fingerprint this feeds is written into the TeamRun ledger as a
+/// `team-run-canonical-state:` evidence ref on a `team_supervisor_no_progress`
+/// hold, and a later NodeDaemon generation — possibly a different binary —
+/// recomputes it and compares the two for equality. `canonical_json_fingerprint`
+/// hashes object keys, so renaming one silently invalidates every hold written
+/// before the rename: adoption is re-enabled on an unchanged run and burns a
+/// fresh TeamSupervisor generation (#671, #704), on the heartbeat-starvation
+/// path (#836). `in_turn` therefore keeps its spelling even though the field it
+/// reflects is now `current_cycle_marker` (ADR 0070) — the key names a durable
+/// hash slot, and the value is still exactly "this lane has a cycle open".
+/// `canonical_state_document_keys_are_frozen_durable_hash_inputs` pins this.
+fn agent_session_lane_projection(
+    session: &harness_core::agentfirm_api::AgentSession,
+) -> serde_json::Value {
+    serde_json::json!({
+        "id": session.id,
+        "lifecycle": session.lifecycle,
+        "runtime_generation": session.runtime_generation,
+        "node_daemon_generation": session.node_daemon_generation,
+        "runtime_residency": session.control_state.runtime_residency,
+        "activity": session.control_state.activity,
+        "continuation_activation": session.control_state.continuation.activation,
+        "handoff_state": session.control_state.handoff_state,
+        "in_turn": session.current_cycle_marker.is_some(),
+        "queued_input_count": session.queued_input_count,
+    })
+}
+
+/// The hashed document itself. Same frozen-key rule as the lane projection
+/// above: these spellings are durable hash inputs compared across daemon
+/// generations, so changing one is a behaviour change, not a rename.
+fn canonical_state_document(
+    team_run: serde_json::Value,
+    member_runs: Vec<serde_json::Value>,
+    work_operations: u64,
+    execution_space_id: Option<&str>,
+    messages: Option<usize>,
+    runtime_commands: Option<usize>,
+    agent_session_lanes: Option<Vec<serde_json::Value>>,
+) -> serde_json::Value {
+    serde_json::json!({
+        "team_run": team_run,
+        "member_runs": member_runs,
+        "work_operations": work_operations,
+        "execution_space_id": execution_space_id,
+        "messages": messages,
+        "runtime_commands": runtime_commands,
+        "agent_session_lanes": agent_session_lanes,
+    })
 }
 
 /// Build the evidence ref that binds a durable outcome to one fingerprint.
@@ -240,5 +282,93 @@ mod tests {
             None
         );
         assert_eq!(canonical_state_from_evidence(&[]), None);
+    }
+
+    /// The hashed key spellings are durable: a `team_supervisor_no_progress`
+    /// hold stores this fingerprint in the TeamRun ledger and a later daemon
+    /// generation recomputes and compares it. Renaming a key silently
+    /// invalidates every hold written before the rename, re-enabling adoption
+    /// on an unchanged run. This test is the trip-wire so that lands here
+    /// rather than in a dogfood run.
+    #[test]
+    fn canonical_state_document_keys_are_frozen_durable_hash_inputs() {
+        let session: harness_core::agentfirm_api::AgentSession =
+            serde_json::from_value(serde_json::json!({
+                "id": "agent-session:member:node:1:1",
+                "agent_member_id": "member",
+                "node_id": "node",
+                "execution_space_id": "space",
+                "node_daemon_id": "node-daemon:node",
+                "node_daemon_generation": 1,
+                "provider_kind": "codex",
+                "provider_profile_ref": "codex-default",
+                "permission_envelope_ref": "agent-member:member:permission",
+                "effective_permission_ceiling": "workspace_write",
+                "lifecycle": "active",
+                "runtime_generation": 1,
+                "current_cycle_marker": "harness-cycle:agent-session:member:node:1:1:4",
+                "queued_input_count": 0,
+                "version": 4,
+                "opened_at": "t1",
+                "last_active_at": "t1"
+            }))
+            .expect("lane fixture decodes");
+
+        let lane = agent_session_lane_projection(&session);
+        assert_eq!(
+            lane.as_object()
+                .expect("lane is an object")
+                .keys()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            [
+                "activity",
+                "continuation_activation",
+                "handoff_state",
+                "id",
+                "in_turn",
+                "lifecycle",
+                "node_daemon_generation",
+                "queued_input_count",
+                "runtime_generation",
+                "runtime_residency",
+            ],
+            "renaming a hashed lane key invalidates every stored hold; \
+             `in_turn` stays spelled that way even though the field it \
+             reflects is now `current_cycle_marker` (ADR 0070)"
+        );
+        assert_eq!(
+            lane["in_turn"],
+            serde_json::json!(true),
+            "the value is still exactly `this lane has a cycle open`"
+        );
+
+        let document = canonical_state_document(
+            serde_json::json!({"id": "run-1"}),
+            vec![],
+            0,
+            Some("space"),
+            Some(0),
+            Some(0),
+            Some(vec![lane]),
+        );
+        assert_eq!(
+            document
+                .as_object()
+                .expect("document is an object")
+                .keys()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            [
+                "agent_session_lanes",
+                "execution_space_id",
+                "member_runs",
+                "messages",
+                "runtime_commands",
+                "team_run",
+                "work_operations",
+            ],
+            "renaming a hashed top-level key invalidates every stored hold"
+        );
     }
 }

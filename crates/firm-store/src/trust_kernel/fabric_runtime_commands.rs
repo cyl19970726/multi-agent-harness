@@ -443,7 +443,7 @@ impl HarnessStore {
                 | RuntimeCommandKind::InterruptCurrentCycle
                 | RuntimeCommandKind::CancelPendingInput => {
                     if session.lifecycle != AgentSessionStatus::Active
-                        || session.current_turn_id.is_none()
+                        || session.current_cycle_marker.is_none()
                     {
                         return Err(trust_error(
                             TrustErrorCode::InvalidStateTransition,
@@ -460,7 +460,6 @@ impl HarnessStore {
                         AgentSessionStatus::Cold
                             | AgentSessionStatus::Active
                             | AgentSessionStatus::Idle
-                            | AgentSessionStatus::Waiting
                             | AgentSessionStatus::Interrupted
                     ) {
                         return Err(trust_error(
@@ -497,7 +496,6 @@ impl HarnessStore {
                         AgentSessionStatus::Cold
                             | AgentSessionStatus::Active
                             | AgentSessionStatus::Idle
-                            | AgentSessionStatus::Waiting
                             | AgentSessionStatus::Interrupted
                     ) {
                         return Err(trust_error(

@@ -937,7 +937,7 @@ mod tests {
                 ..Default::default()
             },
             native_session_ref: Some(native_session_ref),
-            current_turn_id: None,
+            current_cycle_marker: None,
             queued_input_count: 0,
             version: 1,
             opened_at: "2026-08-15T00:00:00Z".to_string(),

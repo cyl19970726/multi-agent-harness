@@ -97,8 +97,9 @@ pub(crate) fn node_session_capabilities(provider: &str) -> Option<NodeSessionCap
             start: true,
             resume: true,
             // Standalone DispatchProvider is not yet wired to this handle, so
-            // a synthetic AgentSession turn id cannot be advertised as a
-            // native Codex turn cancellation capability.
+            // the synthetic AgentSession cycle marker is not a provider turn
+            // id, so it cannot be advertised as a native Codex turn
+            // cancellation capability.
             cancel_turn: false,
             stop: true,
         },

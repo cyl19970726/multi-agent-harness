@@ -243,7 +243,7 @@ fn close_profile_and_session() -> (ProviderIntegrationProfile, AgentSession) {
             last_verified_at: None,
             parent_native_session_id: None,
         }),
-        current_turn_id: None,
+        current_cycle_marker: None,
         queued_input_count: 0,
         version: 1,
         opened_at: "2026-08-15T00:00:00Z".to_string(),

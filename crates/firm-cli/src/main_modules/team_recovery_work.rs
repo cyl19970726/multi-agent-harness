@@ -11,7 +11,7 @@ pub(super) enum MemberRecoveryPath {
     Closed,
     /// The member is Blocked with no typed provenance, while its AgentSession
     /// lane already proves the runtime that blocked it is gone — detached,
-    /// disarmed, at a terminal turn boundary, with no ambiguous RuntimeCommand.
+    /// disarmed, at a terminal cycle boundary, with no ambiguous RuntimeCommand.
     /// Return it to a startable status in place; the lane, its native-session
     /// identity and the runtime generation are untouched.
     RestartBlockedDetachedLane,
@@ -47,7 +47,7 @@ impl MemberRecoveryPath {
 /// mutation. Unit-testable across every edge case without a store.
 ///
 /// `lane_proves_runtime_gone` is the caller's read of this member's AgentSession
-/// control state: the lane is detached, disarmed, at a terminal turn boundary
+/// control state: the lane is detached, disarmed, at a terminal cycle boundary
 /// and free of any ambiguous RuntimeCommand. It is supplied rather than derived
 /// so this function stays pure and so the proof always comes from the Store's
 /// own predicate rather than a second definition of "dead runtime".

@@ -132,7 +132,7 @@ pub fn assign_work_for_member_run(
                     ..Default::default()
                 },
                 native_session_ref: None,
-                current_turn_id: None,
+                current_cycle_marker: None,
                 queued_input_count: 0,
                 version: 1,
                 opened_at: "unix-ms:test-session".into(),

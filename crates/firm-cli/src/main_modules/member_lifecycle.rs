@@ -266,7 +266,7 @@ pub(super) fn require_latched_close_runtime_postcondition(
     let (execution_space_id, session) = provider_session_for_member(ledger, member)?;
     let detached_idle = session.control_state.runtime_residency == RuntimeResidency::Detached
         && session.control_state.activity == RuntimeActivity::Idle
-        && session.current_turn_id.is_none();
+        && session.current_cycle_marker.is_none();
     if member.native_session.is_none() && session.native_session_ref.is_none() && detached_idle {
         return Ok(());
     }
@@ -288,12 +288,12 @@ pub(super) fn require_latched_close_runtime_postcondition(
         return Ok(());
     }
     Err(CliError::RuntimeRecoveryRequired(format!(
-        "pending Close for {} lacks an exact verified provider CloseMember postcondition (native_session_bound={}, residency={:?}, activity={:?}, current_turn={}, close_applied={exact_close_applied})",
+        "pending Close for {} lacks an exact verified provider CloseMember postcondition (native_session_bound={}, residency={:?}, activity={:?}, open_cycle={}, close_applied={exact_close_applied})",
         member.id,
         member.native_session.is_some() || session.native_session_ref.is_some(),
         session.control_state.runtime_residency,
         session.control_state.activity,
-        session.current_turn_id.is_some(),
+        session.current_cycle_marker.is_some(),
     )))
 }
 
@@ -330,7 +330,7 @@ fn detached_recovery_session_matches_current_authority(
         && session.node_daemon_generation == fence.node_daemon_generation
         && session.control_state.runtime_residency == RuntimeResidency::Detached
         && session.control_state.activity == RuntimeActivity::Idle
-        && session.current_turn_id.is_none()
+        && session.current_cycle_marker.is_none()
         && !ambiguous_effect
         && session
             .native_session_ref
@@ -539,10 +539,10 @@ pub(super) fn stop_member_for_latched_close_with_pending_hook(
     require_latched_close_runtime_postcondition(ledger, member_row)?;
     let session = require_provider_session_authority(ledger, &member_row.agent_member_id, false)?;
     if session.lifecycle == harness_core::agentfirm_api::AgentSessionStatus::Active
-        && session.current_turn_id.is_some()
+        && session.current_cycle_marker.is_some()
     {
         return Err(CliError::RuntimeRecoveryRequired(format!(
-            "latched Team close {} found an active provider turn without its owning live adapter",
+            "latched Team close {} found an open execution cycle without its owning live adapter",
             close.id
         )));
     }
