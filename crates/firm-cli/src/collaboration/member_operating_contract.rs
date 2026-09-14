@@ -163,7 +163,10 @@ pub(crate) enum WakeBehavior {
 impl WakeBehavior {
     fn label(self) -> &'static str {
         match self {
-            Self::DoesNotWakeIdleRecipient => "does not wake an idle recipient",
+            Self::DoesNotWakeIdleRecipient => {
+                "does not wake an idle recipient, but rides along with that recipient's next \
+                 Work, continuation, acceptance, attention or message cycle"
+            }
             Self::WakesExactIdleManagedRecipient => "wakes the exact idle managed recipient",
             Self::FollowsCallerSelectedResponseIntent => {
                 "wakes only when the caller selects response-required"
@@ -458,6 +461,23 @@ mod tests {
         ] {
             assert_ne!(rendered, changed.render_projection("work-7"));
         }
+    }
+
+    /// The informational wake label is rendered into every member prompt. A
+    /// member that reads only "does not wake an idle recipient" concludes its
+    /// informational mail may never arrive; #941 made queued mail ride along
+    /// with any otherwise-selected cycle, so the contract has to say so.
+    #[test]
+    fn informational_wake_label_states_the_ride_along_boundary() {
+        let spec = action_spec(MemberOperatingAction::SendInformational);
+        let rendered = spec.render_projection("work-7");
+        assert!(
+            rendered.contains(
+                "wake=does not wake an idle recipient, but rides along with that recipient's \
+                 next Work, continuation, acceptance, attention or message cycle."
+            ),
+            "informational contract line lost the ride-along boundary: {rendered}"
+        );
     }
 
     #[test]

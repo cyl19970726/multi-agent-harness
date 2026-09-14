@@ -228,11 +228,10 @@ immediately but does not interrupt your current reasoning.
 
   A managed Host uses the same `member message send|reply|request-decision`
   Role Actions as any member.
-- `informational` does not start a member round by itself. On builds with
-  managed boundary-context delivery, it joins the next otherwise-selected
-  cycle; older builds may retain it until a response-required round. Verify
-  the installed build before relying on that guarantee. Use
-  `response-required` when a response is needed from an eligible idle member.
+- `informational` does not start a member round by itself. It joins the next
+  otherwise-selected cycle — Work, continuation, acceptance, Host attention or
+  Messages — as ride-along context (#941). Use `response-required` when a
+  response is needed from an eligible idle member.
 - A queued Message is not current-turn steering. Its boundary is the input
   assembled from successful claims and handed to the provider; later arrivals
   wait for another cycle. ADR 0068 retired mid-cycle Steer for every provider:

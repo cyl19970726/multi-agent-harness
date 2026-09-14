@@ -182,9 +182,23 @@ Message (immutable, identity-authored)
     → CanonicalMessageDelivery (per-recipient state machine, owned by the
       target NodeDaemon)
 
-Queued → Routed → Claimed → ProviderReceived → Acknowledged
-                └─────────▶ Failed | Expired | Invalidated
+Queued ──────────────────▶ Claimed → ProviderReceived → Acknowledged
+   └─▶ Routed ────────────▶ ┘                    │
+       (Team-subject only)  ▲                    │
+                            └── Claimed → Queued ┘  (retry-safe failure,
+                                attempt + 1)
+
+Queued | Routed ─────────▶ Acknowledged
+       (external_interactive Host: explicit pull/read ACK, no provider claim
+        or receipt to prove)
 ```
+
+Those are all the transitions that have a writer. `Routed` appears only when a
+Team-subject delivery is resolved to one membership; a direct delivery goes
+`Queued → Claimed`. `Failed`, `Expired` and `Invalidated` exist in the enum and
+in read-side classification, but no writer produces them — an uncertain or
+failed handoff goes back to `Queued` with `attempt + 1` through explicit
+reconciliation, never by blind replay.
 
 - Delivery rows appear **automatically** for admitted recipients — inboxes
   (Team Inbox, member inbox, Host inbox) are projections of deliveries, never
@@ -192,13 +206,11 @@ Queued → Routed → Claimed → ProviderReceived → Acknowledged
 - A Team-subject delivery is claimed by one member as an atomic transition on
   the same row; a stale or duplicate claim has zero side effects.
 - Ordinary mail is supplied at a recipient provider-cycle boundary; it does
-  not interrupt the current turn. On builds with managed boundary-context
-  delivery, already queued mail accompanies an otherwise-selected cycle,
-  including Work continuation. Older builds may hold informational mail until
-  a response-required round: verify the installed version. There is no
-  mid-cycle Steer (ADR 0068) — Interrupt, then send ordinary mail.
-  Offline/Detached recipients keep delivery honestly Queued — no invented
-  sessions.
+  not interrupt the current turn. Already queued mail rides along with any
+  otherwise-selected cycle — Work, continuation, acceptance, Host attention or
+  Messages — including informational mail (#941). There is no mid-cycle Steer
+  (ADR 0068) — Interrupt, then send ordinary mail. Offline/Detached recipients
+  keep delivery honestly Queued — no invented sessions.
 - `informational` intent does not start a provider round by itself; select
   `response-required` only when an answer or action is genuinely needed. This
   is what prevents two agents from bouncing acknowledgement mail forever.

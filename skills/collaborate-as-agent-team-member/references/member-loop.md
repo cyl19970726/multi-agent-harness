@@ -190,11 +190,12 @@ another Member's identity. Author through the authenticated Member Role Action
 of the server-built member view — the three `member message` commands. The
 server resolves your stable AgentMember, exact current AgentSession
 generation, TeamMembership, Work/Team scope, NodeDaemon generation, and
-subscription cursor from the envelope; never supply or override those facts
+message subscription from the envelope; never supply or override those facts
 from a prompt, browser, or shell.
 
 ```bash
-# informational note to a peer or the Host (does not wake an idle recipient)
+# informational note to a peer or the Host (does not wake an idle recipient;
+# it rides along with that recipient's next cycle)
 "$FIRM_BIN" member message send --recipient-agent-id <agent-member-id> \
   --body "<markdown>" [--work-id <discussed-work-id>] [--evidence-ref <ref>]
 

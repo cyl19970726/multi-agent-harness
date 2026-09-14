@@ -209,7 +209,10 @@ provider effect goes through a `RuntimeCommand`.
 ### Same-node messaging
 
 1. The authenticated source AgentSession sends an authoring RuntimeCommand to
-   its current NodeDaemon.
+   its current NodeDaemon. An `external_interactive` Host has no AgentSession:
+   it authors through the same NodeDaemon under its own AgentMember identity,
+   and acknowledges its deliveries by explicit pull/read, with no provider
+   claim or receipt to prove.
 2. The source NodeDaemon freezes sender identity/session, immutable content,
    sequence, Team/Work relation, recipients, and content fingerprint.
 3. Canonical subscriptions produce one delivery per authorized recipient.
@@ -247,11 +250,11 @@ or acted on the text. Native input and an explicit correlated response are
 needed to establish those separate observations. Failed or uncertain handoffs
 retain the existing explicit reconciliation boundary; no blind replay.
 
-Ordinary Messages never interrupt a running turn. Explicit Steer remains a
-separate capability-checked RuntimeCommand; adapter support alone does not
-establish an ordinary-Message injection path. Kimi ACP without reviewed steer
-support waits for a real turn boundary. Interrupt ends a turn, not its Work,
-and does not by itself pause automatic continuation.
+Ordinary Messages never interrupt a running turn, and ADR 0068 retired
+mid-cycle Steer for every provider, so no injection path of any kind reaches a
+running cycle. To change a busy member's course, Interrupt the cycle and send
+the correction as ordinary mail. Interrupt ends a turn, not its Work, and does
+not by itself pause automatic continuation.
 
 ### Cross-node messaging
 
