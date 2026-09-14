@@ -1,7 +1,6 @@
-use harness_core::agentfirm_api::{AgentSession, NativeContinuationProjection};
 use harness_core::ProviderCapabilityBinding;
 
-use crate::{validate_continuation_exact, RuntimeContractError, SemanticCapability};
+use crate::SemanticCapability;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -63,22 +62,10 @@ pub struct RuntimeDescription {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ControlIntent {
-    StartCycle {
-        input: String,
-    },
-    InjectCurrentCycle {
-        input: String,
-    },
-    QueueNativeBoundary {
-        input: String,
-    },
+    StartCycle { input: String },
+    InjectCurrentCycle { input: String },
+    QueueNativeBoundary { input: String },
     Interrupt,
-    InhibitContinuation {
-        expected: NativeContinuationProjection,
-    },
-    ResumeContinuation {
-        expected: NativeContinuationProjection,
-    },
 }
 
 impl ControlIntent {
@@ -91,8 +78,6 @@ impl ControlIntent {
             Self::InjectCurrentCycle { .. } => RuntimeCommandKind::InjectCurrentCycle,
             Self::QueueNativeBoundary { .. } => RuntimeCommandKind::QueueAtNativeBoundary,
             Self::Interrupt => RuntimeCommandKind::InterruptCurrentCycle,
-            Self::InhibitContinuation { .. } => RuntimeCommandKind::InhibitContinuation,
-            Self::ResumeContinuation { .. } => RuntimeCommandKind::ResumeContinuation,
         }
     }
 
@@ -102,17 +87,6 @@ impl ControlIntent {
             Self::InjectCurrentCycle { .. } => SemanticCapability::InjectCurrentCycle,
             Self::QueueNativeBoundary { .. } => SemanticCapability::QueueNativeBoundary,
             Self::Interrupt => SemanticCapability::Interrupt,
-            Self::InhibitContinuation { .. } => SemanticCapability::InhibitContinuation,
-            Self::ResumeContinuation { .. } => SemanticCapability::ResumeContinuation,
-        }
-    }
-
-    pub(crate) fn validate(&self, session: &AgentSession) -> Result<(), RuntimeContractError> {
-        match self {
-            Self::InhibitContinuation { expected } | Self::ResumeContinuation { expected } => {
-                validate_continuation_exact(expected, session)
-            }
-            _ => Ok(()),
         }
     }
 }

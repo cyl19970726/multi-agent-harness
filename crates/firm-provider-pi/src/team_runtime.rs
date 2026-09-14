@@ -140,24 +140,6 @@ impl harness_runtime_contract::TeamRuntimeAdapter for PiTeamRuntime {
                 security_enforcement_locus: None,
             },
             CapabilityBinding {
-                capability: "inspect_continuation",
-                status: CapabilityStatus::Unsupported,
-                evidence: "Pi has no native Goal/continuation object".into(),
-                security_enforcement_locus: None,
-            },
-            CapabilityBinding {
-                capability: "inhibit_continuation",
-                status: CapabilityStatus::Unsupported,
-                evidence: "Pi has no native Goal/continuation object".into(),
-                security_enforcement_locus: None,
-            },
-            CapabilityBinding {
-                capability: "resume_continuation",
-                status: CapabilityStatus::Unsupported,
-                evidence: "Pi has no native Goal/continuation object".into(),
-                security_enforcement_locus: None,
-            },
-            CapabilityBinding {
                 capability: "observe_native_queue",
                 status: CapabilityStatus::Supported,
                 evidence: "get_state steering/followUp/pendingMessageCount snapshot".into(),
@@ -461,10 +443,6 @@ impl harness_runtime_contract::RuntimeAdapter for PiTeamRuntime {
                     RuntimePostconditionStatus::Unknown,
                     vec![format!("pi.abort.response:{id}")],
                 )
-            }
-            ControlIntent::InhibitContinuation { .. }
-            | ControlIntent::ResumeContinuation { .. } => {
-                unreachable!("unsupported Pi continuation operation must fail canonical preflight")
             }
         };
 

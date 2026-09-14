@@ -837,14 +837,17 @@ fn close_reaps_once_and_retains_the_native_thread_without_claiming_quiesce() {
     assert_eq!(error, RuntimeContractError::AlreadyReleased);
 }
 
+/// The NativeContinuation control plane is retired (ADR 0067), but Codex can
+/// still observe a native Goal a member activated inside its own session.
+/// Close must pause that Goal before the terminal observation, or the Goal can
+/// start a successor turn and race Close.
 #[test]
-fn close_inhibits_provider_driven_goal_before_interrupting_its_active_turn() {
-    let (profile, mut session) = close_profile_and_session();
-    session.control_state.execution_driver = MemberExecutionDriver::ProviderDriven;
-    session.control_state.continuation.activation = NativeContinuationActivation::Armed {
-        runtime_generation: session.runtime_generation,
-        driver_generation: session.control_state.driver_generation,
-    };
+fn close_inhibits_an_observed_active_native_goal_before_interrupting_its_turn() {
+    let (profile, session) = close_profile_and_session();
+    assert_eq!(
+        session.control_state.execution_driver,
+        MemberExecutionDriver::HostDriven
+    );
     let fence = admitted_fence(&session);
     let mut bridge = FakeBridge::completed("interrupted");
     bridge.thread_status_before_terminal = "active";
@@ -864,13 +867,8 @@ fn close_inhibits_provider_driven_goal_before_interrupting_its_active_turn() {
 
 #[test]
 fn strong_quiesce_controls_an_active_goal_but_fails_closed_on_unprovable_drain_and_flush() {
-    let (mut profile, mut session) = close_profile_and_session();
+    let (mut profile, session) = close_profile_and_session();
     profile.capability_bindings[0].capability = SemanticCapability::Quiesce.as_str().to_string();
-    session.control_state.execution_driver = MemberExecutionDriver::ProviderDriven;
-    session.control_state.continuation.activation = NativeContinuationActivation::Armed {
-        runtime_generation: session.runtime_generation,
-        driver_generation: session.control_state.driver_generation,
-    };
     let fence = admitted_fence(&session);
     let mut bridge = FakeBridge::completed("interrupted");
     bridge.thread_status_before_terminal = "active";
