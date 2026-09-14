@@ -33,6 +33,14 @@ try {
     "authoritative Work operation invalidation affects Works plus read-model convergence only",
   );
   check(
+    freshnessDomainsForInvalidation(invalidation("execution_space", "agentfirm_trust_operations.jsonl")).join(",") === "works,runtime",
+    "canonical trust write invalidates Works: the Work journal lives in that file since the W4 writer cutover",
+  );
+  check(
+    freshnessDomainsForInvalidation(invalidation("execution_space", "member_runs.jsonl")).join(",") === "runtime",
+    "an Execution Space ledger that carries no Work leaves the Works domain alone",
+  );
+  check(
     freshnessDomainsForInvalidation(invalidation("execution_space", "team_supervisor_leases.jsonl")).length === 0,
     "Supervisor heartbeat lease churn dirties no product domain",
   );
