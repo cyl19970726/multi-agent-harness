@@ -96,7 +96,6 @@ pub(super) struct LiveMemberControl {
     pub(super) capability_fingerprint: String,
     pub(super) collaboration_binding: harness_runtime_contract::CollaborationCapabilityBinding,
     pub(super) execution_mode: String,
-    pub(super) supports_steer: bool,
     pub(super) supports_interrupt: bool,
     pub(super) supports_close: bool,
     pub(super) sender: SyncSender<MemberControlCommand>,
@@ -105,12 +104,6 @@ pub(super) struct LiveMemberControl {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "command", rename_all = "snake_case")]
 pub(super) enum LiveMemberControlRequest {
-    Steer {
-        team_run_id: String,
-        member_run_id: String,
-        content: String,
-        requested_by: String,
-    },
     Interrupt {
         team_run_id: String,
         member_run_id: String,
@@ -144,8 +137,7 @@ pub(super) enum LiveMemberControlRequest {
 impl LiveMemberControlRequest {
     pub(super) fn team_run_id(&self) -> &str {
         match self {
-            Self::Steer { team_run_id, .. }
-            | Self::Interrupt { team_run_id, .. }
+            Self::Interrupt { team_run_id, .. }
             | Self::Close { team_run_id, .. }
             | Self::ReadInbox { team_run_id, .. }
             | Self::RoleAction { team_run_id, .. } => team_run_id,
@@ -154,8 +146,7 @@ impl LiveMemberControlRequest {
 
     pub(super) fn member_run_id(&self) -> &str {
         match self {
-            Self::Steer { member_run_id, .. }
-            | Self::Interrupt { member_run_id, .. }
+            Self::Interrupt { member_run_id, .. }
             | Self::Close { member_run_id, .. }
             | Self::ReadInbox { member_run_id, .. }
             | Self::RoleAction { member_run_id, .. } => member_run_id,
@@ -164,7 +155,6 @@ impl LiveMemberControlRequest {
 
     pub(super) fn requirement(&self) -> LiveMemberControlRequirement {
         match self {
-            Self::Steer { .. } => LiveMemberControlRequirement::Steer,
             Self::Interrupt { .. } => LiveMemberControlRequirement::Interrupt,
             Self::Close { .. } => LiveMemberControlRequirement::Close,
             Self::ReadInbox { .. } => LiveMemberControlRequirement::RoleAction,
@@ -185,11 +175,6 @@ pub(super) struct LiveMemberControlResponse {
 }
 
 pub(super) enum MemberControlCommand {
-    Steer {
-        content: String,
-        requested_by: String,
-        reply: SyncSender<CliResult<serde_json::Value>>,
-    },
     Interrupt {
         reason: String,
         requested_by: String,
@@ -904,7 +889,7 @@ pub(super) fn claim_canonical_messages_with_before_claim(
                 .collect(),
             deliveries: vec![ProviderDispatchAttempt {
                 member_id: member.id.clone(),
-                policy: TeamDeliveryPolicy::Inject,
+                policy: TeamDeliveryPolicy::Queue,
                 status: TeamDeliveryStatus::Claimed,
                 attempt: delivery.attempt,
                 claim_id: Some(claim_id),
@@ -924,7 +909,6 @@ pub(super) fn claim_canonical_messages_with_before_claim(
 
 #[derive(Clone, Copy)]
 pub(super) enum LiveMemberControlRequirement {
-    Steer,
     Interrupt,
     Close,
     RoleAction,

@@ -12,8 +12,8 @@
 //!     uncontained workspace-write fails before spawn, and thinking is forced
 //!     off;
 //!   - an ordinary Message stays in the Harness queue while the member is
-//!     busy (never compiled to steer), and only an explicit Steer control
-//!     command compiles into native current-cycle injection (DOC-89 §13.1).
+//!     busy and arrives as the NEXT round. ADR 0068 retired the injection
+//!     path outright, so no frame can reach the native runtime mid-cycle.
 
 use std::path::Path;
 use std::time::Duration;
@@ -235,13 +235,17 @@ where
 }
 
 fn member_turn_count(snapshot: &serde_json::Value, member_id: &str) -> usize {
+    member_action_count(snapshot, member_id, "turn_completed")
+}
+
+fn member_action_count(snapshot: &serde_json::Value, member_id: &str, action_type: &str) -> usize {
     snapshot["member_actions"]
         .as_array()
         .into_iter()
         .flatten()
         .filter(|action| {
             action["member_run_id"].as_str() == Some(member_id)
-                && action["action_type"].as_str() == Some("turn_completed")
+                && action["action_type"].as_str() == Some(action_type)
         })
         .count()
 }
@@ -492,12 +496,16 @@ fn pi_rpc_member_two_round_journey_via_canonical_message() {
     );
 }
 
-/// DOC-89 §13.1 both arms: while the member is busy, an ordinary Message
-/// stays in the durable Harness queue (never compiled into native injection);
-/// only an explicit Steer control command compiles into current-cycle
-/// injection — and the queued ordinary message then arrives as the NEXT round.
+/// ADR 0068 replaced mid-cycle Steer with the two controls that survive:
+/// Interrupt the current cycle, then let the queued mail arrive as the NEXT
+/// round. This proves both halves against a real fake-Pi transport — the
+/// ordinary Message stays queued while the member is busy, Interrupt settles
+/// the held cycle, and the queued Message then completes on the same native
+/// session. The retired path is proven absent end to end: the shim still
+/// records any native `steer` frame into `FAKE_PI_STEER_MARKER`, and the
+/// marker must never appear, because no Harness path can produce one.
 #[test]
-fn pi_member_busy_queue_and_explicit_steer_conformance() {
+fn pi_busy_mail_waits_for_interrupt_then_arrives_as_the_next_round() {
     let home = TempHome::new("pi-steer-conformance");
     let project_id = init_pi_project(&home, "pi-steer");
     create_pi_identity_with_ceiling(&home, &project_id, "agent-pi-steer-full", "full_access");
@@ -518,10 +526,9 @@ fn pi_member_busy_queue_and_explicit_steer_conformance() {
         &[
             ("PI_BIN", fake_pi.as_str()),
             ("FAKE_PI_RESULT", "DONE"),
-            ("FAKE_PI_WAIT_FOR_STEER", "1"),
+            ("FAKE_PI_HOLD_FIRST_CYCLE", "1"),
             ("FAKE_PI_PROMPT_MARKER", prompt_marker.to_str().unwrap()),
             ("FAKE_PI_STEER_MARKER", steer_marker.to_str().unwrap()),
-            ("FAKE_PI_STEER_RESPONSE_DELAY_MS", "350"),
         ],
     );
 
@@ -556,8 +563,8 @@ fn pi_member_busy_queue_and_explicit_steer_conformance() {
         std::thread::sleep(Duration::from_millis(25));
     }
 
-    // Arm 1: an ordinary Message while busy must NOT compile into native
-    // injection — it stays in the Harness queue.
+    // While the member is busy an ordinary Message must stay in the Harness
+    // queue; nothing may compile it into a native frame.
     let (status, sent) = serve.post_json(
         &format!("/v1/team-runs/{run_id}/messages"),
         &serde_json::json!({
@@ -575,45 +582,23 @@ fn pi_member_busy_queue_and_explicit_steer_conformance() {
         "an ordinary Message must never compile into a steer frame"
     );
 
-    // Arm 2: the explicit Steer control command compiles into native
-    // current-cycle injection and is acknowledged.
-    let steer_started = std::time::Instant::now();
-    let (status, steer) = serve.post_json(
-        &format!("/v1/team-runs/{run_id}/members/{member_id}/steer"),
+    // Interrupt is the retained way to reach a busy member. It settles the
+    // held cycle, and the queued Message then completes as the NEXT round on
+    // the same native session.
+    let (status, interrupted) = serve.post_json(
+        &format!("/v1/team-runs/{run_id}/members/{member_id}/interrupt"),
         &serde_json::json!({
-            "content": "Steer: also check the tests before you settle",
             "requested_by": "host",
+            "reason": "also check the tests before you settle",
         }),
     );
-    assert!(
-        steer_started.elapsed() >= Duration::from_millis(300),
-        "HTTP steer must wait for Pi's matching command response, not acknowledge a local append"
-    );
-    assert_eq!(status, 200, "steer dispatch failed: {steer}");
-    assert!(
-        steer.to_string().contains("steer_accepted"),
-        "explicit Steer must be acknowledged as accepted for injection: {steer}"
-    );
+    assert_eq!(status, 200, "interrupt dispatch failed: {interrupted}");
 
-    // The steer reached the native runtime, and the queued ordinary message
-    // then completed as the NEXT round on the same session.
-    let deadline = std::time::Instant::now() + Duration::from_secs(30);
-    while !steer_marker.exists() {
-        assert!(
-            std::time::Instant::now() < deadline,
-            "steer frame never reached the shim"
-        );
-        std::thread::sleep(Duration::from_millis(25));
-    }
-    let steered = std::fs::read_to_string(&steer_marker).unwrap();
-    assert!(
-        steered.contains("also check the tests"),
-        "steer body must reach the native runtime verbatim: {steered}"
-    );
-
+    // The interrupted cycle is recorded honestly as `interrupted`, never as a
+    // completed turn; the queued Message then produces the real next round.
     poll_snapshot(
         &serve,
-        "queued message completing as the next round",
+        "interrupted cycle followed by the queued message completing as the next round",
         |snapshot| {
             snapshot["team_messages"]
                 .as_array()
@@ -623,8 +608,13 @@ fn pi_member_busy_queue_and_explicit_steer_conformance() {
                 .is_some_and(|message| {
                     message["deliveries"][0]["status"].as_str() == Some("acknowledged")
                 })
-                && member_turn_count(snapshot, &member_id) >= 2
+                && member_action_count(snapshot, &member_id, "interrupted") >= 1
+                && member_turn_count(snapshot, &member_id) >= 1
         },
+    );
+    assert!(
+        !steer_marker.exists(),
+        "ADR 0068 retired injection: no native steer frame may ever be produced"
     );
 }
 
@@ -802,7 +792,7 @@ fn pi_full_access_busy_close_reopens_same_session_without_overclaiming_quiesce()
         &[
             ("PI_BIN", fake_pi.as_str()),
             ("FAKE_PI_RESULT", "DONE"),
-            ("FAKE_PI_WAIT_FOR_STEER", "1"),
+            ("FAKE_PI_HOLD_FIRST_CYCLE", "1"),
             ("FAKE_PI_PROMPT_MARKER", prompt_marker.to_str().unwrap()),
         ],
     );
@@ -934,7 +924,7 @@ fn pi_full_access_close_reaps_owned_group_without_claiming_strong_quiesce() {
         &[
             ("PI_BIN", fake_pi.as_str()),
             ("FAKE_PI_RESULT", "DONE"),
-            ("FAKE_PI_WAIT_FOR_STEER", "1"),
+            ("FAKE_PI_HOLD_FIRST_CYCLE", "1"),
             ("FAKE_PI_PROMPT_MARKER", prompt_marker.to_str().unwrap()),
             ("FAKE_PI_BACKGROUND_WRITER", writer_marker.to_str().unwrap()),
         ],
@@ -1042,7 +1032,7 @@ fn pi_busy_interrupt_waits_for_abort_receipt_and_agent_settled() {
         &[
             ("PI_BIN", fake_pi.as_str()),
             ("FAKE_PI_RESULT", "DONE"),
-            ("FAKE_PI_WAIT_FOR_STEER", "1"),
+            ("FAKE_PI_HOLD_FIRST_CYCLE", "1"),
             ("FAKE_PI_PROMPT_MARKER", prompt_marker.to_str().unwrap()),
         ],
     );
@@ -1148,11 +1138,14 @@ fn pi_rpc_provider_profile_validation() {
         .get("runtime_capability_bindings")
         .and_then(|v| v.as_array())
         .expect("pi must publish executable capability bindings");
-    let steer = bindings
-        .iter()
-        .find(|binding| binding["capability"] == "inject_current_cycle")
-        .expect("inject_current_cycle binding");
-    assert_eq!(steer["status"].as_str(), Some("supported"));
+    // ADR 0068: the retired injection control plane must not reappear here.
+    assert!(
+        !bindings.iter().any(|binding| {
+            let capability = binding["capability"].as_str().unwrap_or_default();
+            capability.contains("inject") || capability.contains("queue_at_native")
+        }),
+        "Pi must not publish a retired injection binding: {bindings:?}"
+    );
     let reconcile = bindings
         .iter()
         .find(|binding| binding["capability"] == "reconcile_effect")
@@ -1181,10 +1174,10 @@ fn pi_rpc_provider_profile_validation() {
         assert_eq!(binding["status"], "verified");
         assert_eq!(binding["admission"], "active");
     }
-    let steer_admission = admitted_bindings
+    let observe_queue = admitted_bindings
         .iter()
-        .find(|binding| binding["capability"] == "inject_current_cycle")
-        .expect("inject_current_cycle binding");
-    assert_eq!(steer_admission["status"], "review_required");
-    assert_eq!(steer_admission["admission"], "pending_dependency");
+        .find(|binding| binding["capability"] == "observe_native_queue")
+        .expect("observe_native_queue binding");
+    assert_eq!(observe_queue["status"], "review_required");
+    assert_eq!(observe_queue["admission"], "pending_dependency");
 }

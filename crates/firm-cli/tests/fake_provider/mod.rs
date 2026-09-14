@@ -863,7 +863,7 @@ for line in sys.stdin:
             resp = {{'id': cid, 'type': 'response', 'command': 'prompt', 'success': True}}
             print(json.dumps(resp), flush=True)
             raise SystemExit(0)
-        if os.environ.get('FAKE_PI_WAIT_FOR_STEER') == '1' and prompt_count == 1:
+        if os.environ.get('FAKE_PI_HOLD_FIRST_CYCLE') == '1' and prompt_count == 1:
             pm = os.environ.get('FAKE_PI_PROMPT_MARKER')
             if pm:
                 with open(pm, 'a') as f:
@@ -872,7 +872,10 @@ for line in sys.stdin:
             print(json.dumps(resp), flush=True)
             print(json.dumps({{"type": "agent_start"}}), flush=True)
             print(json.dumps({{"type": "turn_start"}}), flush=True)
-            # Hold the cycle open until an explicit steer (or abort) arrives.
+            # Hold the cycle open until an abort arrives. The steer branch is
+            # kept so a stray native steer frame is still recorded: ADR 0068
+            # retired the Harness path, and the test asserts the marker stays
+            # absent.
             while True:
                 line2 = sys.stdin.readline()
                 if not line2:

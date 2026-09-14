@@ -1,48 +1,5 @@
 use super::*;
 
-pub(super) fn steer_team_member_value(
-    store: &HarnessStore,
-    team_run_id: &str,
-    member_run_id: &str,
-    body: &serde_json::Value,
-) -> CliResult<serde_json::Value> {
-    let content = required_json_string(body, "content")?;
-    let requested_by =
-        optional_json_string(body, "requested_by")?.unwrap_or_else(|| "operator".to_string());
-    let result = dispatch_live_member_control(
-        store,
-        LiveMemberControlRequest::Steer {
-            team_run_id: team_run_id.to_string(),
-            member_run_id: member_run_id.to_string(),
-            content: content.clone(),
-            requested_by: requested_by.clone(),
-        },
-    )?;
-    let correlation_id = json_string(&result, "correlation_id");
-    let causation_id = json_string(&result, "causation_id");
-    let sender = TeamActorRef {
-        kind: TeamActorKind::Operator,
-        id: requested_by,
-        display_name: None,
-        authn_source: Some("http_control".to_string()),
-    };
-    let message = prepare_team_message_as(
-        store,
-        team_run_id,
-        &sender,
-        vec![member_run_id.to_string()],
-        ProviderDispatchIntent::Control,
-        &content,
-        None,
-        correlation_id,
-        causation_id,
-        TeamMessageDeliveryMode::InjectDelivered,
-        None,
-    )?;
-    let message = publish_team_message(store, &sender, message)?;
-    Ok(serde_json::json!({"control": result, "message": message}))
-}
-
 pub(super) fn interrupt_team_member_value(
     store: &HarnessStore,
     team_run_id: &str,
@@ -891,7 +848,7 @@ pub(super) fn answer_provider_message_value_with_hook(
         evidence_refs: Vec::new(),
         deliveries: vec![ProviderDispatchAttempt {
             member_id: request_body.member.clone(),
-            policy: TeamDeliveryPolicy::Inject,
+            policy: TeamDeliveryPolicy::Queue,
             status: TeamDeliveryStatus::Queued,
             attempt: 0,
             claim_id: None,

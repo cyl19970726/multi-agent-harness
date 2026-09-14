@@ -410,13 +410,11 @@ impl ClaudeRunnerTransport {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn run_cycle(
         &mut self,
         input: &str,
         timeouts: CycleTimeouts,
         on_input_accepted: &mut dyn FnMut(&ControlTransportReceipt) -> CliResult<()>,
-        on_steer_result: &mut dyn FnMut(&SteerRequest, &SteerProviderResult) -> CliResult<()>,
         on_event: &mut dyn FnMut(&Value),
         poll_control: &mut dyn FnMut() -> CycleControl,
     ) -> CliResult<ExecutionCycleOutcome> {
@@ -437,15 +435,6 @@ impl ClaudeRunnerTransport {
             let control = poll_control();
             if let Some(error) = control.fatal_error {
                 return Err(CliError::Usage(error));
-            }
-            for pending in control.injects {
-                on_steer_result(
-                    &pending,
-                    &SteerProviderResult::NotApplied(
-                        "CLAUDE_CURRENT_CYCLE_INJECTION_UNSUPPORTED: use an ordinary queued Message"
-                            .into(),
-                    ),
-                )?;
             }
             interrupt_requested |= control.interrupt || control.close;
             close_requested |= control.close;

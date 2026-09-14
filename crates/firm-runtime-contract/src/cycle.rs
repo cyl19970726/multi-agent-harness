@@ -330,24 +330,10 @@ pub struct ExecutionCycleOutcome {
     pub terminal_observation: CycleRuntimeObservation,
 }
 
-#[derive(Debug)]
-pub enum SteerProviderResult {
-    Acknowledged(ControlTransportReceipt),
-    Unknown(String),
-    NotApplied(String),
-}
-
-#[derive(Debug)]
-pub struct SteerRequest {
-    pub token: u64,
-    pub content: String,
-}
-
 #[derive(Debug, Default)]
 pub struct CycleControl {
     pub close: bool,
     pub interrupt: bool,
-    pub injects: Vec<SteerRequest>,
     pub fatal_error: Option<String>,
 }
 
@@ -370,16 +356,11 @@ pub trait TeamRuntimeAdapter: RuntimeAdapter {
         session: AgentSession,
         profile: &harness_core::ProviderIntegrationProfile,
     ) -> Result<(), Self::Error>;
-    #[allow(clippy::type_complexity)]
     fn run_cycle(
         &mut self,
         input: &str,
         timeouts: CycleTimeouts,
         on_input_accepted: &mut dyn FnMut(&ControlTransportReceipt) -> Result<(), Self::Error>,
-        on_steer_result: &mut dyn FnMut(
-            &SteerRequest,
-            &SteerProviderResult,
-        ) -> Result<(), Self::Error>,
         on_event: &mut dyn FnMut(&serde_json::Value),
         poll_control: &mut dyn FnMut() -> CycleControl,
     ) -> Result<ExecutionCycleOutcome, Self::Error>;
@@ -395,10 +376,4 @@ pub trait TeamRuntimeAdapter: RuntimeAdapter {
     ) -> Box<dyn ProviderNativeControl + 'a>
     where
         Self: Sized;
-    fn supports_inject_current_cycle(&self) -> bool {
-        false
-    }
-    fn supports_native_boundary_queue(&self) -> bool {
-        false
-    }
 }

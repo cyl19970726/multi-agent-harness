@@ -459,79 +459,17 @@ impl PiRpcClient {
     }
 
     /// Compile one cycle's control intents into Pi request/response commands.
-    /// Pi 0.84 steer and abort responses are transport receipts only. A
-    /// Steer caller is answered after its matching response succeeds; abort
-    /// still needs `agent_settled` plus a post-abort state observation before
-    /// the durable RuntimeCommand can settle.
+    /// Pi 0.84 abort responses are transport receipts only: abort still needs
+    /// `agent_settled` plus a post-abort state observation before the durable
+    /// RuntimeCommand can settle.
     fn apply_cycle_control(
         &mut self,
         control: &mut harness_runtime_contract::CycleControl,
-        on_steer_result: &mut dyn FnMut(
-            &harness_runtime_contract::SteerRequest,
-            &harness_runtime_contract::SteerProviderResult,
-        ) -> CliResult<()>,
     ) -> CliResult<Vec<harness_runtime_contract::ControlTransportReceipt>> {
         if let Some(error) = control.fatal_error.take() {
             return Err(CliError::Usage(error));
         }
         let mut receipts = Vec::new();
-        let mut injects = std::mem::take(&mut control.injects).into_iter();
-        while let Some(pending) = injects.next() {
-            match self.request_blocking(
-                "steer",
-                serde_json::json!({"message": pending.content.clone()}),
-                HANDSHAKE_TIMEOUT,
-            ) {
-                Ok(response) => {
-                    let response_id = response
-                        .get("id")
-                        .and_then(|value| value.as_str())
-                        .map(str::to_string);
-                    let response_id = response_id.ok_or_else(|| {
-                        CliError::Usage(
-                            "PI_STEER_RECEIPT_UNKNOWN: successful steer response had no id"
-                                .to_string(),
-                        )
-                    })?;
-                    let receipt = harness_runtime_contract::ControlTransportReceipt {
-                        command: "steer".to_string(),
-                        response_id: Some(response_id.clone()),
-                        success: true,
-                    };
-                    // Durable settlement happens before the API caller sees
-                    // success. A provider transport receipt without a settled
-                    // RuntimeCommand must never escape as `steer_accepted`.
-                    on_steer_result(
-                        &pending,
-                        &harness_runtime_contract::SteerProviderResult::Acknowledged(
-                            receipt.clone(),
-                        ),
-                    )?;
-                    receipts.push(receipt);
-                }
-                Err(error) => {
-                    let detail = format!(
-                        "PI_STEER_RECEIPT_UNKNOWN: provider did not acknowledge steer: {error}"
-                    );
-                    on_steer_result(
-                        &pending,
-                        &harness_runtime_contract::SteerProviderResult::Unknown(detail.clone()),
-                    )?;
-                    for undispatched in injects {
-                        let not_applied = format!(
-                            "PI_STEER_NOT_DISPATCHED: an earlier steer failed before this command: {detail}"
-                        );
-                        on_steer_result(
-                            &undispatched,
-                            &harness_runtime_contract::SteerProviderResult::NotApplied(
-                                not_applied.clone(),
-                            ),
-                        )?;
-                    }
-                    return Err(CliError::Usage(detail));
-                }
-            }
-        }
         if control.close || control.interrupt {
             let response =
                 self.request_blocking("abort", serde_json::json!({}), HANDSHAKE_TIMEOUT)?;
@@ -545,20 +483,6 @@ impl PiRpcClient {
             });
         }
         Ok(receipts)
-    }
-
-    /// Queue input at Pi's native session boundary (`follow_up`): consumed by
-    /// the current session-level run before it fully settles. This is NOT the
-    /// Harness message queue — ordinary TeamMessages stay durable-side by
-    /// design (DOC-89 §13.1), so production has no caller yet; the RPC-level
-    /// unit test is the conformance consumer.
-    #[allow(dead_code)]
-    pub fn follow_up(&mut self, text: &str) -> CliResult<serde_json::Value> {
-        self.request_blocking(
-            "follow_up",
-            serde_json::json!({"message": text}),
-            HANDSHAKE_TIMEOUT,
-        )
     }
 
     /// Point-in-time native queue observation (steering/follow-up mode and
@@ -682,28 +606,21 @@ impl PiRpcClient {
     ///
     /// `on_event` receives every non-response event so the orchestrator can
     /// project live tool activity. `poll_control` returns a
-    /// [`CycleControl`](harness_runtime_contract::CycleControl): explicit Steer
-    /// bodies are compiled into `steer` frames at this boundary, and
-    /// close/interrupt sends `abort` while the loop continues reading until
-    /// `agent_settled`.
+    /// [`CycleControl`](harness_runtime_contract::CycleControl): close/interrupt
+    /// sends `abort` while the loop continues reading until `agent_settled`.
     ///
     /// Returns `PiTurnOutcome` with `final_text` extracted from the last
     /// `turn_end.message` content blocks.
-    pub fn prompt<A, S, F, C>(
+    pub fn prompt<A, F, C>(
         &mut self,
         text: &str,
         timeouts: harness_runtime_contract::CycleTimeouts,
         mut on_input_accepted: A,
-        mut on_steer_result: S,
         mut on_event: F,
         mut poll_control: C,
     ) -> CliResult<PiTurnOutcome>
     where
         A: FnMut(&harness_runtime_contract::ControlTransportReceipt) -> CliResult<()>,
-        S: FnMut(
-            &harness_runtime_contract::SteerRequest,
-            &harness_runtime_contract::SteerProviderResult,
-        ) -> CliResult<()>,
         F: FnMut(&serde_json::Value),
         C: FnMut() -> harness_runtime_contract::CycleControl,
     {
@@ -711,7 +628,6 @@ impl PiRpcClient {
             text,
             timeouts,
             &mut on_input_accepted,
-            &mut on_steer_result,
             &mut on_event,
             &mut poll_control,
         )
@@ -723,10 +639,6 @@ impl PiRpcClient {
         timeouts: harness_runtime_contract::CycleTimeouts,
         on_input_accepted: &mut dyn FnMut(
             &harness_runtime_contract::ControlTransportReceipt,
-        ) -> CliResult<()>,
-        on_steer_result: &mut dyn FnMut(
-            &harness_runtime_contract::SteerRequest,
-            &harness_runtime_contract::SteerProviderResult,
         ) -> CliResult<()>,
         on_event: &mut dyn FnMut(&serde_json::Value),
         poll_control: &mut dyn FnMut() -> harness_runtime_contract::CycleControl,
@@ -788,8 +700,7 @@ impl PiRpcClient {
                         close_requested = control.close;
                         control_sent_at.get_or_insert_with(Instant::now);
                     }
-                    control_receipts
-                        .extend(self.apply_cycle_control(&mut control, on_steer_result)?);
+                    control_receipts.extend(self.apply_cycle_control(&mut control)?);
 
                     match event_type {
                         "tool_execution_start" => {
@@ -830,8 +741,7 @@ impl PiRpcClient {
                     // adapter-initiated abort; only transport death fails
                     // closed (the Disconnected branch below).
                     let mut control = poll_control();
-                    control_receipts
-                        .extend(self.apply_cycle_control(&mut control, on_steer_result)?);
+                    control_receipts.extend(self.apply_cycle_control(&mut control)?);
                     if control.close || control.interrupt {
                         interrupt = Some(harness_runtime_contract::InterruptCause::HostControl);
                         close_requested = control.close;

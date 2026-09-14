@@ -110,11 +110,8 @@ fn codex_app_server_member_interrupt_waits_for_provider_terminal_event() {
         std::thread::sleep(Duration::from_millis(20));
     }
     assert!(resumed, "queued mail did not wake the interrupted Member");
-    let (status, steered) = serve.post_json(
-        &format!("/v1/team-runs/{run_id}/members/{member_id}/steer"),
-        &serde_json::json!({"content": "finish resumed turn", "requested_by": "host"}),
-    );
-    assert_eq!(status, 200, "body: {steered}");
+    // ADR 0068 retired /steer: the resumed turn settles on the queued mail
+    // alone, which is the only input path a member has.
     let mut idle_after_resume = false;
     // The resumed turn includes durable delivery, provider receipt, and the
     // terminal callback. Two seconds is below the normal loaded-run latency.

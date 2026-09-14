@@ -715,9 +715,6 @@ impl crate::codex_team_runtime::CodexAppServerBridge for AcceptanceBridge {
         self.inputs.borrow_mut().push(text.into());
         Ok("turn-acceptance-fixture".into())
     }
-    fn steer(&mut self, _: &str, _: &str) -> harness_provider_codex::CodexResult<String> {
-        unreachable!()
-    }
     fn interrupt(&mut self, _: &str) -> harness_provider_codex::CodexResult<()> {
         unreachable!()
     }

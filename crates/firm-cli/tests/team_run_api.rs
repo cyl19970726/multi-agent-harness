@@ -1092,15 +1092,11 @@ mod busy_kimi_member_batches_mail_in_order_and_withholds_stale_handoff;
 mod canonical_team_message_routes_member_to_host_identity_without_special_inbox_authority;
 #[path = "team_run_api/close_cancels_kimi_provider_request_without_resuming_member.rs"]
 mod close_cancels_kimi_provider_request_without_resuming_member;
-#[path = "team_run_api/codex_app_server_member_can_be_steered_in_place.rs"]
-mod codex_app_server_member_can_be_steered_in_place;
 #[cfg(any())]
 #[path = "team_run_api/codex_app_server_member_interrupt_waits_for_provider_terminal_event.rs"]
 mod codex_app_server_member_interrupt_waits_for_provider_terminal_event;
 #[path = "team_run_api/codex_app_server_multi_question_fails_closed_without_interaction_rows.rs"]
 mod codex_app_server_multi_question_fails_closed_without_interaction_rows;
-#[path = "team_run_api/codex_app_server_post_handoff_steer_is_independent_and_converges_before_follow_up_round.rs"]
-mod codex_app_server_post_handoff_steer_is_independent_and_converges_before_follow_up_round;
 #[path = "team_run_api/codex_app_server_question_routes_to_lead_and_resumes_same_turn.rs"]
 mod codex_app_server_question_routes_to_lead_and_resumes_same_turn;
 #[path = "team_run_api/codex_provider_reported_interruption_is_not_attributed_to_harness.rs"]

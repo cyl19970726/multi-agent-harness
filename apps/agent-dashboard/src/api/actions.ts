@@ -558,20 +558,6 @@ export function answerProviderMessage(
   };
 }
 
-/** Inject input into the currently active provider turn. This is only valid
- * when the MemberRun's mode advertises live steer (currently codex_app_server). */
-export function steerTeamMember(
-  teamRunId: string,
-  memberRunId: string,
-  content: string,
-): ActionDescriptor {
-  return {
-    method: "POST",
-    path: `/v1/team-runs/${encodeId(teamRunId)}/members/${encodeId(memberRunId)}/steer`,
-    body: { content, requested_by: "operator" },
-  };
-}
-
 /** Cooperatively interrupt the active provider turn. */
 export function interruptTeamMember(
   teamRunId: string,

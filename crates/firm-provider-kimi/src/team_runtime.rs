@@ -158,19 +158,6 @@ impl harness_runtime_contract::TeamRuntimeAdapter for KimiTeamRuntime<'_> {
                 security_enforcement_locus: None,
             },
             CapabilityBinding {
-                capability: "inject_current_cycle",
-                status: CapabilityStatus::Unsupported,
-                evidence: "Reviewed Kimi ACP exposes no content-steer method".into(),
-                security_enforcement_locus: None,
-            },
-            CapabilityBinding {
-                capability: "queue_at_native_boundary",
-                status: CapabilityStatus::Unsupported,
-                evidence: "ordinary Messages stay in the Harness next-round queue; ACP exposes no native follow-up queue"
-                    .into(),
-                security_enforcement_locus: None,
-            },
-            CapabilityBinding {
                 capability: "interrupt_current_cycle",
                 status: CapabilityStatus::Supported,
                 evidence: "session/cancel notification plus correlated prompt stopReason=cancelled"
@@ -312,10 +299,6 @@ impl harness_runtime_contract::TeamRuntimeAdapter for KimiTeamRuntime<'_> {
         on_input_accepted: &mut dyn FnMut(
             &harness_runtime_contract::ControlTransportReceipt,
         ) -> CliResult<()>,
-        on_steer_result: &mut dyn FnMut(
-            &harness_runtime_contract::SteerRequest,
-            &harness_runtime_contract::SteerProviderResult,
-        ) -> CliResult<()>,
         on_event: &mut dyn FnMut(&Value),
         poll_control: &mut dyn FnMut() -> harness_runtime_contract::CycleControl,
     ) -> CliResult<harness_runtime_contract::ExecutionCycleOutcome> {
@@ -356,9 +339,7 @@ impl harness_runtime_contract::TeamRuntimeAdapter for KimiTeamRuntime<'_> {
                     if let Some(text) = update.pointer("/content/text").and_then(Value::as_str) {
                         final_text.push_str(text);
                     }
-                } else if update.get("sessionUpdate").and_then(Value::as_str)
-                    == Some("tool_call")
-                {
+                } else if update.get("sessionUpdate").and_then(Value::as_str) == Some("tool_call") {
                     tool_call_count = tool_call_count.saturating_add(1);
                 }
                 (on_event.borrow_mut())(update);
@@ -367,9 +348,7 @@ impl harness_runtime_contract::TeamRuntimeAdapter for KimiTeamRuntime<'_> {
                 (on_event.borrow_mut())(request);
                 request_handler(request)
             },
-            |request| {
-                request_written_handler(request)
-            },
+            |request| request_written_handler(request),
             || {
                 let control = poll_control();
                 if let Some(error) = control.fatal_error {
@@ -377,16 +356,6 @@ impl harness_runtime_contract::TeamRuntimeAdapter for KimiTeamRuntime<'_> {
                     return Err(CliError::Usage(
                         control_error.clone().expect("just assigned"),
                     ));
-                }
-                for pending in &control.injects {
-                    on_steer_result(
-                        pending,
-                        &harness_runtime_contract::SteerProviderResult::NotApplied(
-                            "PROVIDER_CAPABILITY_UNSUPPORTED: kimi_acp has no current-cycle injection"
-                                .to_string(),
-                        ),
-                    )
-                    ?;
                 }
                 if control.close || control.interrupt {
                     interrupt = Some(harness_runtime_contract::InterruptCause::HostControl);
@@ -580,7 +549,6 @@ impl harness_runtime_contract::RuntimeAdapter for KimiTeamRuntime<'_> {
                             accepted = receipt.response_id.clone();
                             Ok(())
                         },
-                        &mut |_pending, _result| Ok(()),
                         &mut |_event| {},
                         &mut harness_runtime_contract::CycleControl::default,
                     )
@@ -611,10 +579,6 @@ impl harness_runtime_contract::RuntimeAdapter for KimiTeamRuntime<'_> {
                 Err(Self::unsupported(
                     "standalone interrupt outside an active run_cycle control boundary",
                 ))
-            }
-            ControlIntent::InjectCurrentCycle { .. }
-            | ControlIntent::QueueNativeBoundary { .. } => {
-                Err(Self::unsupported(capability.as_str()))
             }
         }
     }
@@ -1088,9 +1052,12 @@ mod tests {
             status("release"),
             harness_runtime_contract::CapabilityStatus::Degraded
         );
-        assert_eq!(
-            status("inject_current_cycle"),
-            harness_runtime_contract::CapabilityStatus::Unsupported
+        assert!(
+            !bindings
+                .iter()
+                .any(|binding| binding.capability.contains("inject")
+                    || binding.capability.contains("queue_at_native")),
+            "the Inject delivery policy is retired (ADR 0068)"
         );
     }
 

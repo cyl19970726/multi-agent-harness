@@ -27,7 +27,6 @@ struct FakeBridge {
     turn_id: String,
     starts: usize,
     interrupts: usize,
-    steers: Vec<String>,
     shutdowns: usize,
 }
 
@@ -55,7 +54,6 @@ impl FakeBridge {
             turn_id: "turn-1".to_string(),
             starts: 0,
             interrupts: 0,
-            steers: Vec::new(),
             shutdowns: 0,
         }
     }
@@ -74,10 +72,6 @@ impl CodexAppServerBridge for FakeBridge {
             return Err(CliError::Usage(error));
         }
         Ok(self.turn_id.clone())
-    }
-    fn steer(&mut self, turn_id: &str, text: &str) -> CliResult<String> {
-        self.steers.push(text.to_string());
-        Ok(turn_id.to_string())
     }
     fn interrupt(&mut self, _turn_id: &str) -> CliResult<()> {
         self.interrupts += 1;
@@ -353,9 +347,15 @@ fn capability_report_separates_close_from_strong_release() {
     assert_eq!(status("close_runtime"), CapabilityStatus::Supported);
     assert_eq!(status("quiesce"), CapabilityStatus::Degraded);
     assert_eq!(status("release"), CapabilityStatus::Degraded);
-    assert_eq!(
-        status("queue_at_native_boundary"),
-        CapabilityStatus::Unsupported
+    // ADR 0067/0068: the retired continuation and injection control planes
+    // must not reappear as bindings.
+    assert!(
+        !bindings.iter().any(|binding| {
+            binding.capability.contains("continuation")
+                || binding.capability.contains("inject")
+                || binding.capability.contains("queue_at_native")
+        }),
+        "retired control planes must not reappear as capability bindings"
     );
 }
 
@@ -371,7 +371,6 @@ fn cycle_requires_turn_completed_and_exact_idle_observation() {
             accepted = receipt.response_id.clone();
             Ok(())
         },
-        &mut |_pending, _result| Ok(()),
         &mut |_event| {},
         &mut CycleControl::default,
     )
@@ -403,7 +402,6 @@ fn unknown_thread_status_fails_closed_after_terminal_frame() {
         "hello",
         harness_runtime_contract::CycleTimeouts::with_input_acceptance(Duration::from_secs(1)),
         &mut |_receipt| Ok(()),
-        &mut |_pending, _result| Ok(()),
         &mut |_event| {},
         &mut CycleControl::default,
     )
@@ -427,7 +425,6 @@ fn started_and_terminal_frames_require_the_exact_owned_thread() {
         "hello",
         harness_runtime_contract::CycleTimeouts::with_input_acceptance(Duration::from_secs(1)),
         &mut |_receipt| Ok(()),
-        &mut |_pending, _result| Ok(()),
         &mut |_event| {},
         &mut CycleControl::default,
     )
@@ -446,7 +443,6 @@ fn started_and_terminal_frames_require_the_exact_owned_thread() {
         "hello",
         harness_runtime_contract::CycleTimeouts::with_input_acceptance(Duration::from_secs(1)),
         &mut |_receipt| Ok(()),
-        &mut |_pending, _result| Ok(()),
         &mut |_event| {},
         &mut CycleControl::default,
     )
@@ -466,7 +462,6 @@ fn run_native_descendant_frames(frames: Vec<Value>) -> CliResult<ExecutionCycleO
         "hello",
         harness_runtime_contract::CycleTimeouts::with_input_acceptance(Duration::from_secs(1)),
         &mut |_receipt| Ok(()),
-        &mut |_pending, _result| Ok(()),
         &mut |_event| {},
         &mut CycleControl::default,
     )
@@ -653,7 +648,6 @@ fn failed_terminal_is_settled_and_close_does_not_interrupt_it_again() {
         "hello",
         harness_runtime_contract::CycleTimeouts::with_input_acceptance(Duration::from_secs(1)),
         &mut |_receipt| Ok(()),
-        &mut |_pending, _result| Ok(()),
         &mut |_event| {},
         &mut CycleControl::default,
     )
@@ -742,7 +736,6 @@ fn interrupt_is_transport_ack_until_matching_terminal_frame() {
         "hello",
         harness_runtime_contract::CycleTimeouts::with_input_acceptance(Duration::from_secs(1)),
         &mut |_receipt| Ok(()),
-        &mut |_pending, _result| Ok(()),
         &mut |_event| {},
         &mut || {
             if std::mem::take(&mut first) {
@@ -778,7 +771,6 @@ fn host_driven_cycle_fails_before_turn_start_when_native_goal_is_active() {
         "must not start",
         harness_runtime_contract::CycleTimeouts::with_input_acceptance(Duration::from_secs(1)),
         &mut |_receipt| Ok(()),
-        &mut |_pending, _result| Ok(()),
         &mut |_event| {},
         &mut CycleControl::default,
     )
@@ -802,7 +794,6 @@ fn host_driven_cycle_fails_closed_on_an_unclassified_native_goal() {
         "must not start",
         harness_runtime_contract::CycleTimeouts::with_input_acceptance(Duration::from_secs(1)),
         &mut |_receipt| Ok(()),
-        &mut |_pending, _result| Ok(()),
         &mut |_event| {},
         &mut CycleControl::default,
     )
@@ -920,7 +911,6 @@ fn drive_cycle(
         "conformance cycle",
         *timeouts,
         &mut |_receipt| Ok(()),
-        &mut |_pending, _result| Ok(()),
         &mut |_event| {},
         poll_control,
     )
@@ -1101,7 +1091,6 @@ fn codex_a4_silence_no_longer_interrupts_and_b4_no_policy_interrupt() {
         "conformance cycle",
         conformance_timeouts(),
         &mut |_receipt| Ok(()),
-        &mut |_pending, _result| Ok(()),
         &mut |_event| {},
         &mut harness_runtime_contract::CycleControl::default,
     )
@@ -1121,7 +1110,6 @@ fn codex_c1_terminal_failure_settles_unsatisfied() {
         "hello",
         harness_runtime_contract::CycleTimeouts::with_input_acceptance(Duration::from_secs(1)),
         &mut |_receipt| Ok(()),
-        &mut |_pending, _result| Ok(()),
         &mut |_event| {},
         &mut CycleControl::default,
     )
@@ -1152,7 +1140,6 @@ fn quota_diagnostic_survives_unknown_idle_without_authorizing_another_turn() {
                 accepted += 1;
                 Ok(())
             },
-            &mut |_, _| Ok(()),
             &mut |_| {},
             &mut CycleControl::default,
         );
@@ -1223,7 +1210,6 @@ fn failed_turn_diagnostic_requires_exact_accepted_turn_and_never_leaks() {
                 "input",
                 CycleTimeouts::with_input_acceptance(Duration::from_secs(1)),
                 &mut |_| Ok(()),
-                &mut |_, _| Ok(()),
                 &mut |_| {},
                 &mut CycleControl::default,
             )

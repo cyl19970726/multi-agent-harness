@@ -115,18 +115,6 @@ impl harness_runtime_contract::TeamRuntimeAdapter for PiTeamRuntime {
                 security_enforcement_locus: None,
             },
             CapabilityBinding {
-                capability: "inject_current_cycle",
-                status: CapabilityStatus::Supported,
-                evidence: "steer RPC frame compiled at the cycle control boundary".into(),
-                security_enforcement_locus: None,
-            },
-            CapabilityBinding {
-                capability: "queue_at_native_boundary",
-                status: CapabilityStatus::Supported,
-                evidence: "follow_up RPC; ordinary Harness Messages never use it".into(),
-                security_enforcement_locus: None,
-            },
-            CapabilityBinding {
                 capability: "interrupt_current_cycle",
                 status: CapabilityStatus::Supported,
                 evidence: "abort RPC + agent_settled observation".into(),
@@ -252,10 +240,6 @@ impl harness_runtime_contract::TeamRuntimeAdapter for PiTeamRuntime {
         on_input_accepted: &mut dyn FnMut(
             &harness_runtime_contract::ControlTransportReceipt,
         ) -> CliResult<()>,
-        on_steer_result: &mut dyn FnMut(
-            &harness_runtime_contract::SteerRequest,
-            &harness_runtime_contract::SteerProviderResult,
-        ) -> CliResult<()>,
         on_event: &mut dyn FnMut(&serde_json::Value),
         poll_control: &mut dyn FnMut() -> harness_runtime_contract::CycleControl,
     ) -> CliResult<harness_runtime_contract::ExecutionCycleOutcome> {
@@ -263,7 +247,6 @@ impl harness_runtime_contract::TeamRuntimeAdapter for PiTeamRuntime {
             input,
             timeouts,
             on_input_accepted,
-            on_steer_result,
             &mut *on_event,
             &mut *poll_control,
         )?;
@@ -284,14 +267,6 @@ impl harness_runtime_contract::TeamRuntimeAdapter for PiTeamRuntime {
         interrupt: &'a mut bool,
     ) -> Box<dyn harness_runtime_contract::ProviderNativeControl + 'a> {
         Box::new(PiNativeControl { close, interrupt })
-    }
-
-    fn supports_inject_current_cycle(&self) -> bool {
-        true
-    }
-
-    fn supports_native_boundary_queue(&self) -> bool {
-        true
     }
 }
 
@@ -368,7 +343,6 @@ impl harness_runtime_contract::RuntimeAdapter for PiTeamRuntime {
                         input_receipt = receipt.response_id.clone();
                         Ok(())
                     },
-                    &mut |_pending, _result| Ok(()),
                     &mut |_event| {},
                     &mut harness_runtime_contract::CycleControl::default,
                 )
@@ -391,40 +365,6 @@ impl harness_runtime_contract::RuntimeAdapter for PiTeamRuntime {
                         outcome.terminal_observation.pending_message_count
                     ),
                 ]));
-            }
-            ControlIntent::InjectCurrentCycle { input } => {
-                let response = self
-                    .client
-                    .request_blocking(
-                        "steer",
-                        serde_json::json!({"message": input}),
-                        HANDSHAKE_TIMEOUT,
-                    )
-                    .map_err(pi_contract_bridge_error)?;
-                let id = response
-                    .get("id")
-                    .and_then(serde_json::Value::as_str)
-                    .ok_or_else(|| pi_contract_bridge_error("steer response lacked id"))?;
-                (
-                    RuntimeEffectCertainty::Applied,
-                    RuntimePostconditionStatus::Satisfied,
-                    vec![format!("pi.steer.response:{id}")],
-                )
-            }
-            ControlIntent::QueueNativeBoundary { input } => {
-                let response = self
-                    .client
-                    .follow_up(&input)
-                    .map_err(pi_contract_bridge_error)?;
-                let id = response
-                    .get("id")
-                    .and_then(serde_json::Value::as_str)
-                    .ok_or_else(|| pi_contract_bridge_error("follow_up response lacked id"))?;
-                (
-                    RuntimeEffectCertainty::Applied,
-                    RuntimePostconditionStatus::Satisfied,
-                    vec![format!("pi.follow_up.response:{id}")],
-                )
             }
             ControlIntent::Interrupt => {
                 let response = self

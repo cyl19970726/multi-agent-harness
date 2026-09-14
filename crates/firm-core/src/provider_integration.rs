@@ -746,12 +746,16 @@ pub struct TeamRecipientRef {
 }
 
 /// How a [`TeamMessageProjection`] should be delivered to one recipient.
+///
+/// ADR 0068 retired `Inject` with the mid-cycle steer path, and `Interrupt`,
+/// which never had a single reference anywhere. Neither value was ever
+/// persisted, so they are deleted rather than reserved: a document carrying
+/// one now fails decoding instead of implying a delivery mode no writer can
+/// produce.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TeamDeliveryPolicy {
     Queue,
-    Inject,
-    Interrupt,
     ManualAck,
 }
 

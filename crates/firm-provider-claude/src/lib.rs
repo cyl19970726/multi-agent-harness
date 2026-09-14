@@ -25,7 +25,7 @@ use harness_runtime_contract::{
     ProviderControlPlan, ProviderNativeControl, ProviderTerminalFailure, QuiesceReceipt,
     QuiesceReceiptBuilder, QuiesceStep, ReconcileReceipt, ReleaseReceipt, RuntimeAdapter,
     RuntimeBindingFence, RuntimeContractError, RuntimeDescription, SemanticCapability,
-    SteerProviderResult, SteerRequest, TeamRuntimeAdapter,
+    TeamRuntimeAdapter,
 };
 
 mod cycle_correlation;
@@ -256,14 +256,6 @@ impl TeamRuntimeAdapter for ClaudeTeamRuntime {
                 "start_cycle",
                 "AsyncIterable streaming input; consumed(id,sessionId) accepts input and matching turn_complete(triggerMessageId) is the terminal boundary",
             ),
-            unsupported(
-                "inject_current_cycle",
-                "Agent SDK mailbox input is not a reviewed same-cycle content-steer primitive",
-            ),
-            unsupported(
-                "queue_at_native_boundary",
-                "ordinary Messages remain on the Harness queue until the next safe cycle boundary",
-            ),
             supported(
                 "interrupt_current_cycle",
                 "query.interrupt + query iterator retirement + member_resumed_after_interrupt on the same native session",
@@ -371,18 +363,11 @@ impl TeamRuntimeAdapter for ClaudeTeamRuntime {
         input: &str,
         timeouts: CycleTimeouts,
         on_input_accepted: &mut dyn FnMut(&ControlTransportReceipt) -> CliResult<()>,
-        on_steer_result: &mut dyn FnMut(&SteerRequest, &SteerProviderResult) -> CliResult<()>,
         on_event: &mut dyn FnMut(&Value),
         poll_control: &mut dyn FnMut() -> CycleControl,
     ) -> CliResult<ExecutionCycleOutcome> {
-        self.transport.run_cycle(
-            input,
-            timeouts,
-            on_input_accepted,
-            on_steer_result,
-            on_event,
-            poll_control,
-        )
+        self.transport
+            .run_cycle(input, timeouts, on_input_accepted, on_event, poll_control)
     }
 
     fn native_control<'a>(
@@ -438,7 +423,6 @@ impl RuntimeAdapter for ClaudeTeamRuntime {
                             accepted = receipt.response_id.clone();
                             Ok(())
                         },
-                        &mut |_pending, _result| Ok(()),
                         &mut |_event| {},
                         &mut CycleControl::default,
                     )
@@ -475,7 +459,6 @@ impl RuntimeAdapter for ClaudeTeamRuntime {
                     vec!["claude.query.interrupt dispatched".into()],
                 ))
             }
-            _ => unreachable!("unsupported Claude control must fail canonical preflight"),
         }
     }
 

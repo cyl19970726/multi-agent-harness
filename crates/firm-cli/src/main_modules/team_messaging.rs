@@ -61,12 +61,6 @@ pub(super) fn ensure_member_coordination_open(member: &ProviderRuntimeProjection
     Ok(())
 }
 
-#[derive(Clone, Copy)]
-pub(super) enum TeamMessageDeliveryMode {
-    Routed,
-    InjectDelivered,
-}
-
 /// Route a message inside a team run and fold it into the event log. Shared
 /// by the `team-run send` CLI arm and POST /v1/team-runs/{id}/messages. v0
 /// does not drive the member state machine: a handoff/blocker from a member is
@@ -162,7 +156,6 @@ pub(super) fn send_team_message_as_work(
         work_id,
         correlation_id,
         causation_id,
-        TeamMessageDeliveryMode::Routed,
         response_intent,
     )?;
     publish_team_message(store, &sender, message)
@@ -179,7 +172,6 @@ pub(super) fn prepare_team_message_as(
     work_id: Option<String>,
     correlation_id: Option<String>,
     causation_id: Option<String>,
-    delivery_mode: TeamMessageDeliveryMode,
     response_intent: Option<ProviderResponseIntent>,
 ) -> CliResult<TeamMessageProjection> {
     // Fail fast on an unknown run id rather than journaling an orphan message.
@@ -322,36 +314,22 @@ pub(super) fn prepare_team_message_as(
                 // The Host control plane receives member-originated mail at
                 // creation time. Provider members, by contrast, consume
                 // ordinary coordination mail at their next available round.
-                policy: match delivery_mode {
-                    TeamMessageDeliveryMode::InjectDelivered => TeamDeliveryPolicy::Inject,
-                    TeamMessageDeliveryMode::Routed
-                        if member_id == &host_member_run_id
-                            && sender.kind != TeamActorKind::Host =>
-                    {
-                        TeamDeliveryPolicy::ManualAck
-                    }
-                    TeamMessageDeliveryMode::Routed => TeamDeliveryPolicy::Queue,
+                // ADR 0068 retired the Inject delivery mode: there is no
+                // longer a path that marks a provider member's mail delivered
+                // at creation time.
+                policy: if member_id == &host_member_run_id && sender.kind != TeamActorKind::Host {
+                    TeamDeliveryPolicy::ManualAck
+                } else {
+                    TeamDeliveryPolicy::Queue
                 },
-                status: match delivery_mode {
-                    TeamMessageDeliveryMode::InjectDelivered => TeamDeliveryStatus::Delivered,
-                    TeamMessageDeliveryMode::Routed
-                        if member_id == &host_member_run_id
-                            && sender.kind != TeamActorKind::Host =>
-                    {
-                        TeamDeliveryStatus::Delivered
-                    }
-                    TeamMessageDeliveryMode::Routed => TeamDeliveryStatus::Queued,
+                status: if member_id == &host_member_run_id && sender.kind != TeamActorKind::Host {
+                    TeamDeliveryStatus::Delivered
+                } else {
+                    TeamDeliveryStatus::Queued
                 },
-                attempt: match delivery_mode {
-                    TeamMessageDeliveryMode::InjectDelivered => 1,
-                    TeamMessageDeliveryMode::Routed
-                        if member_id == &host_member_run_id
-                            && sender.kind != TeamActorKind::Host =>
-                    {
-                        1
-                    }
-                    TeamMessageDeliveryMode::Routed => 0,
-                },
+                attempt: u32::from(
+                    member_id == &host_member_run_id && sender.kind != TeamActorKind::Host,
+                ),
                 claim_id: None,
                 claimed_by_supervisor_id: None,
                 claimed_generation: None,

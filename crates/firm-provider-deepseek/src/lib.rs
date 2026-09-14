@@ -33,7 +33,7 @@ use harness_runtime_contract::{
     ProviderControlPlan, ProviderNativeControl, ProviderTerminalFailure, QuiesceReceipt,
     QuiesceReceiptBuilder, QuiesceStep, ReconcileReceipt, ReleaseReceipt, RuntimeAdapter,
     RuntimeBindingFence, RuntimeContractError, RuntimeDescription, SemanticCapability,
-    SteerProviderResult, SteerRequest, TeamRuntimeAdapter,
+    TeamRuntimeAdapter,
 };
 
 mod capability_transport;
@@ -527,13 +527,11 @@ impl DeepSeekRunnerTransport {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn run_cycle(
         &mut self,
         input: &str,
         timeouts: CycleTimeouts,
         on_input_accepted: &mut dyn FnMut(&ControlTransportReceipt) -> CliResult<()>,
-        on_steer_result: &mut dyn FnMut(&SteerRequest, &SteerProviderResult) -> CliResult<()>,
         on_event: &mut dyn FnMut(&Value),
         poll_control: &mut dyn FnMut() -> CycleControl,
     ) -> CliResult<ExecutionCycleOutcome> {
@@ -554,15 +552,6 @@ impl DeepSeekRunnerTransport {
             let control = poll_control();
             if let Some(error) = control.fatal_error {
                 return Err(CliError::Usage(error));
-            }
-            for pending in control.injects {
-                on_steer_result(
-                    &pending,
-                    &SteerProviderResult::NotApplied(
-                        "DEEPSEEK_CURRENT_CYCLE_INJECTION_UNSUPPORTED: use an ordinary queued Message"
-                            .into(),
-                    ),
-                )?;
             }
             interrupt_requested |= control.interrupt || control.close;
             close_requested |= control.close;
@@ -948,14 +937,6 @@ impl TeamRuntimeAdapter for DeepSeekTeamRuntime {
                 "start_cycle",
                 "Agent.followup input with matching agent/inbox/spliced receipt; matching turn_complete(triggerMessageId) is the terminal boundary",
             ),
-            unsupported(
-                "inject_current_cycle",
-                "DSH followup is reserved for the next safe cycle; steer is not claimed",
-            ),
-            unsupported(
-                "queue_at_native_boundary",
-                "ordinary Messages remain on the Harness queue until the next safe cycle boundary",
-            ),
             supported(
                 "interrupt_current_cycle",
                 "Agent.cancel + whenIdle + flush on the same native DSH Session",
@@ -1063,18 +1044,11 @@ impl TeamRuntimeAdapter for DeepSeekTeamRuntime {
         input: &str,
         timeouts: CycleTimeouts,
         on_input_accepted: &mut dyn FnMut(&ControlTransportReceipt) -> CliResult<()>,
-        on_steer_result: &mut dyn FnMut(&SteerRequest, &SteerProviderResult) -> CliResult<()>,
         on_event: &mut dyn FnMut(&Value),
         poll_control: &mut dyn FnMut() -> CycleControl,
     ) -> CliResult<ExecutionCycleOutcome> {
-        self.transport.run_cycle(
-            input,
-            timeouts,
-            on_input_accepted,
-            on_steer_result,
-            on_event,
-            poll_control,
-        )
+        self.transport
+            .run_cycle(input, timeouts, on_input_accepted, on_event, poll_control)
     }
 
     fn native_control<'a>(
@@ -1130,7 +1104,6 @@ impl RuntimeAdapter for DeepSeekTeamRuntime {
                             accepted = receipt.response_id.clone();
                             Ok(())
                         },
-                        &mut |_pending, _result| Ok(()),
                         &mut |_event| {},
                         &mut CycleControl::default,
                     )
@@ -1167,7 +1140,6 @@ impl RuntimeAdapter for DeepSeekTeamRuntime {
                     vec!["deepseek.query.interrupt dispatched".into()],
                 ))
             }
-            _ => unreachable!("unsupported DeepSeek control must fail canonical preflight"),
         }
     }
 

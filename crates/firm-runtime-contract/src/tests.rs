@@ -51,9 +51,7 @@ fn full_bindings() -> Vec<ProviderCapabilityBinding> {
     for binding in &mut bindings {
         binding.required_dependencies = match binding.capability.as_str() {
             "start_cycle" => vec!["open_or_resume".to_string(), "observe".to_string()],
-            "inject_current_cycle" | "queue_at_native_boundary" | "interrupt_current_cycle" => {
-                vec!["observe".to_string()]
-            }
+            "interrupt_current_cycle" => vec!["observe".to_string()],
             "quiesce" => vec!["interrupt_current_cycle".to_string(), "observe".to_string()],
             "release" => vec!["quiesce".to_string()],
             _ => Vec::new(),
@@ -510,7 +508,7 @@ fn optional_missing_is_degraded_but_executable() {
     let decision = resolver
         .require_effect(
             SemanticCapability::StartCycle,
-            &[SemanticCapability::QueueNativeBoundary],
+            &[SemanticCapability::Observe],
         )
         .unwrap();
     assert_eq!(decision.admission, ProviderBindingAdmission::Degraded);
@@ -665,15 +663,7 @@ fn composable_shim_exercises_the_complete_operational_contract() {
         .open_or_resume(fence_view(&durable_binding), None)
         .unwrap();
 
-    let controls = [
-        ControlIntent::InjectCurrentCycle {
-            input: "steer".to_string(),
-        },
-        ControlIntent::QueueNativeBoundary {
-            input: "follow up".to_string(),
-        },
-        ControlIntent::Interrupt,
-    ];
+    let controls = [ControlIntent::Interrupt];
     for (index, intent) in controls.into_iter().enumerate() {
         adapter
             .execute_control(
@@ -698,7 +688,7 @@ fn composable_shim_exercises_the_complete_operational_contract() {
     adapter.release(fence_view(&durable_binding)).unwrap();
 
     assert_eq!(adapter.session_bridge.calls, 2);
-    assert_eq!(adapter.cycle_bridge.calls, 3);
+    assert_eq!(adapter.cycle_bridge.calls, 1);
     assert_eq!(adapter.observation_bridge.calls, 3);
     assert_eq!(dispose_count.get(), 1);
 }
@@ -713,20 +703,6 @@ fn control_intents_bind_exact_durable_kinds_without_queue_or_lifecycle_fallback(
             },
             Kind::StartCycle,
             SemanticCapability::StartCycle,
-        ),
-        (
-            ControlIntent::InjectCurrentCycle {
-                input: String::new(),
-            },
-            Kind::InjectCurrentCycle,
-            SemanticCapability::InjectCurrentCycle,
-        ),
-        (
-            ControlIntent::QueueNativeBoundary {
-                input: String::new(),
-            },
-            Kind::QueueAtNativeBoundary,
-            SemanticCapability::QueueNativeBoundary,
         ),
         (
             ControlIntent::Interrupt,

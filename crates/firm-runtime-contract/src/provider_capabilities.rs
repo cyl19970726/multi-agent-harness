@@ -40,8 +40,6 @@ pub struct CapabilityBinding {
 pub enum SemanticCapability {
     OpenOrResume,
     StartCycle,
-    InjectCurrentCycle,
-    QueueNativeBoundary,
     Interrupt,
     /// Reversible Team-member runtime shutdown. This closes only the owned
     /// adapter/process handle and retains the provider-native session for
@@ -56,11 +54,9 @@ pub enum SemanticCapability {
 }
 
 impl SemanticCapability {
-    pub const ALL: [Self; 11] = [
+    pub const ALL: [Self; 9] = [
         Self::OpenOrResume,
         Self::StartCycle,
-        Self::InjectCurrentCycle,
-        Self::QueueNativeBoundary,
         Self::Interrupt,
         Self::CloseRuntime,
         Self::Observe,
@@ -74,8 +70,6 @@ impl SemanticCapability {
         match self {
             Self::OpenOrResume => "open_or_resume",
             Self::StartCycle => "start_cycle",
-            Self::InjectCurrentCycle => "inject_current_cycle",
-            Self::QueueNativeBoundary => "queue_at_native_boundary",
             Self::Interrupt => "interrupt_current_cycle",
             Self::CloseRuntime => "close_runtime",
             Self::Observe => "observe",

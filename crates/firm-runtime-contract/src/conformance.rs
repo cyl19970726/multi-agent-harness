@@ -186,8 +186,6 @@ pub enum RuntimeContractError {
     },
     #[error("runtime fence mismatch: {fields:?}")]
     FenceMismatch { fields: Vec<String> },
-    #[error("stale continuation projection: {fields:?}")]
-    StaleContinuation { fields: Vec<String> },
     #[error("quiesce checks are incomplete: {fields:?}")]
     QuiesceIncomplete { fields: Vec<String> },
     #[error("unsafe quiesce order: expected {expected:?}, got {actual:?}")]

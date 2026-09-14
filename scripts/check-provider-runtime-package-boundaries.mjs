@@ -39,8 +39,6 @@ const runtimeContractModules = new Map([
     "struct NativeCycleCorrelation",
     "struct QuiesceOutcome",
     "struct ExecutionCycleOutcome",
-    "enum SteerProviderResult",
-    "struct SteerRequest",
     "struct CycleControl",
     "trait TeamRuntimeAdapter",
     "enum InterruptCause",

@@ -262,24 +262,6 @@ fn exact_goal_projection(
     Ok(Some(goal.clone()))
 }
 
-fn exact_steer_receipt(response: &serde_json::Value, expected_turn_id: &str) -> CliResult<String> {
-    let observed_turn_id = response
-        .pointer("/result/turnId")
-        .and_then(serde_json::Value::as_str)
-        .filter(|turn_id| !turn_id.trim().is_empty())
-        .ok_or_else(|| {
-            CliError::Usage(format!(
-                "codex turn/steer omitted required turnId receipt: {response}"
-            ))
-        })?;
-    if observed_turn_id != expected_turn_id {
-        return Err(CliError::Usage(format!(
-            "codex turn/steer receipt changed active turn: expected {expected_turn_id}, got {observed_turn_id}"
-        )));
-    }
-    Ok(observed_turn_id.to_string())
-}
-
 pub struct CodexAppServerClient {
     child: Child,
     owned_process_group: OwnedProcessGroupRegistration,
@@ -617,19 +599,6 @@ impl CodexAppServerClient {
             .and_then(|value| value.as_str())
             .map(str::to_string)
             .ok_or_else(|| CliError::Usage(format!("codex turn/start omitted turn id: {response}")))
-    }
-
-    pub fn steer(&mut self, turn_id: &str, text: &str) -> CliResult<String> {
-        let response = self.request_blocking(
-            "turn/steer",
-            serde_json::json!({
-                "threadId": self.thread_id,
-                "expectedTurnId": turn_id,
-                "input": [{"type": "text", "text": text}]
-            }),
-            HANDSHAKE_TIMEOUT,
-        )?;
-        exact_steer_receipt(&response, turn_id)
     }
 
     pub fn interrupt(&mut self, turn_id: &str) -> CliResult<()> {
