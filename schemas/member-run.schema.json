@@ -52,7 +52,7 @@
     "workspace_binding_id": { "type": ["string", "null"], "minLength": 1 },
     "native_session": {
       "anyOf": [
-        { "$ref": "native-session-ref.schema.json" },
+        { "$ref": "#/$defs/nativeSessionRef" },
         { "type": "null" }
       ]
     },
@@ -60,5 +60,77 @@
     "started_at": { "type": "string", "minLength": 1 },
     "last_event_at": { "type": ["string", "null"], "minLength": 1 },
     "finished_at": { "type": ["string", "null"], "minLength": 1 }
-  }
+  },
+  "$defs": {
+      "nativeSessionRef": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "provider",
+          "execution_mode",
+          "native_session_id",
+          "native_locator_kind",
+          "adapter_contract_version",
+          "supports_resume"
+        ],
+        "properties": {
+          "provider": {
+            "type": "string",
+            "minLength": 1
+          },
+          "execution_mode": {
+            "type": "string",
+            "minLength": 1
+          },
+          "native_session_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "native_locator_kind": {
+            "type": "string",
+            "minLength": 1
+          },
+          "provider_version": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "minLength": 1
+          },
+          "adapter_contract_version": {
+            "type": "string",
+            "minLength": 1
+          },
+          "availability": {
+            "type": "string",
+            "enum": [
+              "available",
+              "stale",
+              "missing",
+              "incompatible",
+              "unknown"
+            ],
+            "default": "unknown",
+            "description": "Optional: a legacy member_runs.jsonl row may omit it, and an omitted availability decodes as unknown \u2014 never as an implied available."
+          },
+          "supports_resume": {
+            "type": "boolean"
+          },
+          "last_verified_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "minLength": 1
+          },
+          "parent_native_session_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "minLength": 1
+          }
+        }
+      }
+    }
 }
