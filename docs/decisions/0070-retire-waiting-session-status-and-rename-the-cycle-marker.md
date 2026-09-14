@@ -19,7 +19,7 @@ struct had drifted across that line in opposite directions.
 tree produced it. What it did produce was surface area: the Store's transition
 table carried four edges that named it (`Active -> Waiting` and
 `Waiting -> Active | Idle | Closed`), a post-write arm cleared the cycle on it,
-and three command-eligibility lists plus the CLI's projection table treated it
+and four command-eligibility lists plus the CLI's projection table treated it
 as a drivable lane. Every one of those was a rule about a state the system
 cannot enter, and each one silently widened what a reader would admit if a row
 ever claimed it.
@@ -101,10 +101,11 @@ At `406f5f9e` the repository and every real store agree:
   struct is `deny_unknown_fields` with no alias for the new spelling, so a
   downgrade after any new session write is one-way. This matches the existing
   DEV-230 downgrade boundary documented in `operations.md`.
-- The transition table shrinks from thirteen edges to nine. Three
-  RuntimeCommand eligibility lists (`StopSession`, the
-  quiesce/release/close/drain group, and the CLI's admission preflight) and the
-  CLI's desired-lifecycle projection each lose one arm.
+- The transition table shrinks from thirteen edges to nine. Four RuntimeCommand
+  eligibility lists lose their `waiting` arm — the Store's `StopSession` guard
+  and its quiesce/release/close/drain guard, plus the CLI admission preflight's
+  two counterparts — and the CLI's desired-lifecycle projection loses three
+  arms (`Waiting -> Active | Idle | Closed`).
 - Operator-visible strings change wording: "not at a terminal turn boundary"
   becomes "not at a terminal cycle boundary", "still has an open turn" becomes
   "still has an open cycle", and the predecessor-drain conflict says "an open
