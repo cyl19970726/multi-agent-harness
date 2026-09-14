@@ -438,7 +438,7 @@ fn drained_mid_turn_member_resumes_under_the_next_supervisor_generation() {
         interrupted.control_state.runtime_residency,
         RuntimeResidency::Detached
     );
-    assert!(interrupted.current_turn_id.is_none());
+    assert!(interrupted.current_cycle_marker.is_none());
     assert_eq!(
         agent_session(&fixture.store, IDLE_MEMBER).lifecycle,
         AgentSessionStatus::Idle,

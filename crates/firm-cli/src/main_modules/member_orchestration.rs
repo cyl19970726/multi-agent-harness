@@ -274,7 +274,7 @@ pub(crate) fn ensure_team_runtime_fabric(
                         member.runtime_generation,
                     ),
                     native_session_ref,
-                    current_turn_id: None,
+                    current_cycle_marker: None,
                     queued_input_count: 0,
                     version: 1,
                     opened_at: timestamp.clone(),

@@ -307,8 +307,18 @@ pub struct AgentSession {
     pub control_state: AgentSessionControlState,
     #[serde(default)]
     pub native_session_ref: Option<NativeSessionRef>,
-    #[serde(default)]
-    pub current_turn_id: Option<String>,
+    /// Opaque marker of the one execution cycle this lane currently has open,
+    /// synthesized by Harness (`harness-cycle:{session_id}:{version}`) and
+    /// cleared when the cycle ends. It is a presence fact, never a
+    /// provider-native turn id: the provider's own session store owns turn
+    /// identity (ADR 0032), and no Harness surface may resolve, resume, or
+    /// cancel a provider turn from this value.
+    ///
+    /// ADR 0070 renamed the field from `current_turn_id`, whose spelling the
+    /// alias keeps readable so every pre-cutover row still decodes under
+    /// `deny_unknown_fields`. No writer emits the old spelling any more.
+    #[serde(default, alias = "current_turn_id")]
+    pub current_cycle_marker: Option<String>,
     pub queued_input_count: u64,
     pub version: u64,
     pub opened_at: String,
@@ -318,16 +328,17 @@ pub struct AgentSession {
 }
 
 impl AgentSession {
-    /// Whether this lane sits at a terminal turn boundary with no cycle open:
-    /// a lifecycle that owns no executing turn (`Cold`, `Idle`, `Interrupted`,
-    /// or a `RecoveryRequired` lane awaiting reconciliation), idle runtime
-    /// activity, and no current turn id. This is the one definition the
-    /// Store's detached-recovery fence, `team-run recover`, and `close-member`
-    /// all evaluate, so no two of them can disagree about the same lane
-    /// (GitHub #841). It says nothing about residency, handoff, continuation,
-    /// queued input, or ambiguous RuntimeCommands — those are the rest of the
-    /// terminated-lane proof and are checked separately by each writer.
-    pub fn is_at_terminal_turn_boundary(&self) -> bool {
+    /// Whether this lane sits at a terminal cycle boundary with no cycle open:
+    /// a lifecycle that owns no executing cycle (`Cold`, `Idle`,
+    /// `Interrupted`, or a `RecoveryRequired` lane awaiting reconciliation),
+    /// idle runtime activity, and no open-cycle marker. This is the one
+    /// definition the Store's detached-recovery fence, `team-run recover`, and
+    /// `close-member` all evaluate, so no two of them can disagree about the
+    /// same lane (GitHub #841). It says nothing about residency, handoff,
+    /// continuation, queued input, or ambiguous RuntimeCommands — those are
+    /// the rest of the terminated-lane proof and are checked separately by
+    /// each writer.
+    pub fn is_at_terminal_cycle_boundary(&self) -> bool {
         matches!(
             self.lifecycle,
             AgentSessionStatus::Cold
@@ -335,7 +346,7 @@ impl AgentSession {
                 | AgentSessionStatus::Interrupted
                 | AgentSessionStatus::RecoveryRequired
         ) && self.control_state.activity == RuntimeActivity::Idle
-            && self.current_turn_id.is_none()
+            && self.current_cycle_marker.is_none()
     }
 }
 

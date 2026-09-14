@@ -149,10 +149,10 @@ turn, no queued input, and no ambiguous `RuntimeCommand`. The killed cycle's own
 replayed; the resume opens a new cycle on the same provider-native session.
 
 `Close` follows the same rule. An `Interrupted` Session whose residency is
-`Detached` with no cycle activity and no turn is at a terminal turn boundary,
-so the Host's Close and the detached-recovery Close both apply to it. Fencing
-Close on the lifecycle label alone would leave a member whose runtime is
-provably dead with no exit at all.
+`Detached` with no cycle activity and no open cycle marker is at a terminal
+cycle boundary, so the Host's Close and the detached-recovery Close both apply
+to it. Fencing Close on the lifecycle label alone would leave a member whose
+runtime is provably dead with no exit at all.
 
 ### The Lane's In-Flight Work Is Superseded, Not Resumed
 

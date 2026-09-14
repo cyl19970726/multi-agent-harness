@@ -22,7 +22,7 @@
     "runtime_generation": {"type": "integer", "minimum": 1},
     "control_state": {"$ref": "#/$defs/control_state"},
     "native_session_ref": {"anyOf": [{"$ref": "native-session-ref.schema.json"}, {"type": "null"}]},
-    "current_turn_id": {"type": ["string", "null"]},
+    "current_cycle_marker": {"type": ["string", "null"]},
     "queued_input_count": {"type": "integer", "minimum": 0},
     "version": {"type": "integer", "minimum": 1},
     "opened_at": {"type": "string", "minLength": 1},

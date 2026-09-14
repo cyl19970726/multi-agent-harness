@@ -523,7 +523,7 @@ mod tests {
             "workspace_cwd": "/tmp",
             "permission_envelope_ref": "permission:member",
             "native_session_ref": null,
-            "current_turn_id": null,
+            "current_cycle_marker": null,
             "queued_input_count": 0,
             "control_state": {
                 "runtime_residency": "attached",

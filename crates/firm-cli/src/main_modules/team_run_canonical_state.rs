@@ -176,7 +176,7 @@ pub(super) fn team_run_canonical_state_fingerprint(
                         "activity": session.control_state.activity,
                         "continuation_activation": session.control_state.continuation.activation,
                         "handoff_state": session.control_state.handoff_state,
-                        "in_turn": session.current_turn_id.is_some(),
+                        "has_open_cycle": session.current_cycle_marker.is_some(),
                         "queued_input_count": session.queued_input_count,
                     })
                 })

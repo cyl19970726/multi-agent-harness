@@ -185,7 +185,7 @@ impl HarnessStore {
                 })
             {
                 if session.control_state.runtime_residency == RuntimeResidency::Detached
-                    && session.current_turn_id.is_none()
+                    && session.current_cycle_marker.is_none()
                 {
                     // Already settled by this generation's own partial drain or
                     // by an earlier recovery attempt: recovery records the skip
@@ -199,7 +199,7 @@ impl HarnessStore {
                 session.control_state.continuation.activation =
                     NativeContinuationActivation::Disarmed;
                 session.control_state.last_reconciled_at = Some(updated_at.to_string());
-                session.current_turn_id = None;
+                session.current_cycle_marker = None;
                 session.queued_input_count = 0;
                 if !matches!(
                     session.lifecycle,
@@ -320,11 +320,11 @@ impl HarnessStore {
                         && session.node_daemon_id == lease.daemon_id
                         && session.node_daemon_generation == lease.generation
                         && (session.control_state.runtime_residency != RuntimeResidency::Detached
-                            || session.current_turn_id.is_some())
+                            || session.current_cycle_marker.is_some())
                 })
             {
                 return Err(StoreError::Conflict(format!(
-                    "NODE_DAEMON_PREDECESSOR_UNSETTLED: AgentSession {} still has {:?} residency or an active turn",
+                    "NODE_DAEMON_PREDECESSOR_UNSETTLED: AgentSession {} still has {:?} residency or an open cycle",
                     session.id, session.control_state.runtime_residency
                 )));
             }

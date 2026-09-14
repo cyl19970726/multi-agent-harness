@@ -543,7 +543,7 @@ impl HttpExchange<'_> {
                             1,
                         ),
                         native_session_ref: None,
-                        current_turn_id: None,
+                        current_cycle_marker: None,
                         queued_input_count: 0,
                         version: 1,
                         opened_at: session_observed_at.clone(),

@@ -61,9 +61,9 @@ impl HarnessStore {
             // `Idle`: the label records only how the cycle ended, while the
             // residency, activity and turn checks still prove no live runtime
             // owns this lane. Close must not be fenced on the label alone; the
-            // shared `AgentSession::is_at_terminal_turn_boundary` is the one
+            // shared `AgentSession::is_at_terminal_cycle_boundary` is the one
             // definition `team-run recover` and `close-member` evaluate too.
-            && session.is_at_terminal_turn_boundary()
+            && session.is_at_terminal_cycle_boundary()
             && session.control_state.runtime_residency == RuntimeResidency::Detached
             && session.native_session_ref.as_ref().is_some_and(|native| {
                 native.native_session_id == fence.native_session_id

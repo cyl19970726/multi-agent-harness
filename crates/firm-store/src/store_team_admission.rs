@@ -366,7 +366,7 @@ impl HarnessStore {
                 && !expected.is_external_interactive()
                 && expected_session.native_session_ref.is_none()
                 && expected_session.lifecycle == AgentSessionStatus::Cold
-                && expected_session.is_at_terminal_turn_boundary()
+                && expected_session.is_at_terminal_cycle_boundary()
                 && expected_session.control_state.runtime_residency == RuntimeResidency::Detached
                 && expected_session.control_state.handoff_state == DriverHandoffState::None
                 && expected_session.control_state.continuation.activation

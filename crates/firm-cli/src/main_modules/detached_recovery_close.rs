@@ -85,9 +85,9 @@ pub(super) fn close_detached_blocked_member_for_recovery_with_hooks(
     if session.control_state.runtime_residency != RuntimeResidency::Detached {
         return Ok(None);
     }
-    if !session_is_at_terminal_turn_boundary(&session) {
+    if !session_is_at_terminal_cycle_boundary(&session) {
         return Err(CliError::RuntimeRecoveryRequired(format!(
-            "DETACHED_MEMBER_RECOVERY_FENCED: member {} session {} is not detached+idle at a terminal turn boundary",
+            "DETACHED_MEMBER_RECOVERY_FENCED: member {} session {} is not detached+idle at a terminal cycle boundary",
             member.id, session.id
         )));
     }
@@ -414,7 +414,7 @@ pub(super) fn close_detached_blocked_member_for_recovery_with_hooks(
             if current_session.version != session.version
                 || current_session.lifecycle != session.lifecycle
                 || current_session.control_state.runtime_residency != RuntimeResidency::Detached
-                || !session_is_at_terminal_turn_boundary(&current_session)
+                || !session_is_at_terminal_cycle_boundary(&current_session)
             {
                 return Err(CliError::RuntimeRecoveryRequired(format!(
                     "DETACHED_MEMBER_RECOVERY_FENCED: AgentSession {} changed after recovery admission",
