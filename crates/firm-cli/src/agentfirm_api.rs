@@ -386,7 +386,10 @@ pub(crate) fn work_review_authorized(
     // The one Store Work reader, the same fold acceptance itself resolves
     // through: review authority may never be decided on half the chain.
     let Some(work) = store
-        .current_work_in_space(execution_space_id, work_id)?
+        .current_work_in_space(
+            &harness_core::ExecutionSpaceId::new(execution_space_id),
+            work_id,
+        )?
         .filter(|work| work.accountable_team_id.as_deref() == Some(team_id))
     else {
         return Ok(false);

@@ -294,7 +294,7 @@ impl Facts {
         // this store's own ledger rows plus only the trust Work transitions
         // written in this Execution Space.
         let work_records = store
-            .work_journal_records_for_space(space_id)
+            .work_journal_records_for_space(&harness_core::ExecutionSpaceId::new(space_id))
             .map_err(|error| error.to_string())?;
         let operations = store
             .canonical_operations_for_space(space_id)

@@ -711,7 +711,7 @@ pub(super) fn team_run_work_command(
                 })?;
             let current = crate::work_action_service::current_work(
                 store,
-                &execution_space_id,
+                &harness_core::ExecutionSpaceId::new(&execution_space_id),
                 &work_id,
             )?;
             let team_id = current.accountable_team_id.clone().ok_or_else(|| {

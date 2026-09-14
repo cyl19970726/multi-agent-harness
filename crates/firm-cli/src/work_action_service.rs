@@ -107,6 +107,24 @@ pub fn execute(
     }
 }
 
+/// The one event id a Work revision answers to.
+///
+/// A canonical envelope has its own `trust-event-N` identity, but the id every
+/// Work reader reports for a revision — and the id a HostAttention, a delivery
+/// and a `RemoteWorkRef` all name it by — is the WorkEvent's. Returning the
+/// envelope's would hand a caller an id no Work reader answers to.
+fn journal_event_id(
+    store: &HarnessStore,
+    work_id: &str,
+    version: u64,
+) -> Result<Option<String>, StoreError> {
+    Ok(store
+        .work_history(work_id)?
+        .into_iter()
+        .find(|record| record.work.version == version)
+        .map(|record| record.event.id))
+}
+
 fn execute_lifecycle(
     store: &HarnessStore,
     auth: &AuthenticatedMutation,
@@ -158,11 +176,13 @@ fn execute_lifecycle(
         let current_len = store
             .canonical_operations_for_space(&auth.execution_space_id)?
             .len();
+        let event_id = journal_event_id(store, &executed.work.id, executed.work.version)?
+            .unwrap_or(operation.event.id);
         return Ok(CanonicalWorkActionOutcome {
             kind: CanonicalWorkActionKind::Lifecycle(executed.kind),
             projection,
             work: executed.work,
-            event_id: operation.event.id,
+            event_id,
             store_sequence: operation.event.store_sequence,
             resulting_version: operation.event.resulting_version,
             replayed: current_len == before_canonical,
@@ -238,11 +258,13 @@ fn execute_local_lifecycle(
             && (operation.event.idempotency_key == idempotency_key
                 || operation.resulting_projection == projection)
     }) {
+        let event_id = journal_event_id(store, &executed.work.id, executed.work.version)?
+            .unwrap_or_else(|| operation.event.id.clone());
         return Ok(CanonicalWorkActionOutcome {
             kind: CanonicalWorkActionKind::Lifecycle(executed.kind),
             projection,
             work: executed.work,
-            event_id: operation.event.id.clone(),
+            event_id,
             store_sequence: operation.event.store_sequence,
             resulting_version: operation.event.resulting_version,
             replayed: canonical.len() == before_canonical,
@@ -318,7 +340,11 @@ fn submit_result(
                 "submission replay actor does not match the committed actor",
             ));
         }
-        let work = current_work(store, &auth.execution_space_id, work_id)?;
+        let work = current_work(
+            store,
+            &harness_core::ExecutionSpaceId::new(&auth.execution_space_id),
+            work_id,
+        )?;
         if work.accountable_team_id.as_deref() != Some(team_id)
             || work.owner_member_id.as_deref() != Some(auth.actor.id.as_str())
         {
@@ -329,7 +355,11 @@ fn submit_result(
         }
         return create_report(store, auth, team_id, report);
     }
-    let current = current_work(store, &auth.execution_space_id, work_id)?;
+    let current = current_work(
+        store,
+        &harness_core::ExecutionSpaceId::new(&auth.execution_space_id),
+        work_id,
+    )?;
     if current.accountable_team_id.as_deref() != Some(team_id) {
         return Err(conflict(
             "UNAUTHORIZED_ACTOR",
@@ -452,7 +482,11 @@ fn create_report(
                 "idempotency key is already bound to a different authenticated WorkReport request",
             ));
         }
-        let work = current_work(store, &auth.execution_space_id, &report.work_id)?;
+        let work = current_work(
+            store,
+            &harness_core::ExecutionSpaceId::new(&auth.execution_space_id),
+            &report.work_id,
+        )?;
         if work.accountable_team_id.as_deref() != Some(team_id) {
             return Err(conflict(
                 "IDEMPOTENCY_KEY_REUSED",
@@ -473,7 +507,11 @@ fn create_report(
             replayed: true,
         });
     }
-    let current = current_work(store, &auth.execution_space_id, &report.work_id)?;
+    let current = current_work(
+        store,
+        &harness_core::ExecutionSpaceId::new(&auth.execution_space_id),
+        &report.work_id,
+    )?;
     if current.accountable_team_id.as_deref() != Some(team_id) {
         return Err(conflict(
             "UNAUTHORIZED_ACTOR",
@@ -581,7 +619,11 @@ fn outcome_from_trust(
 ) -> Result<CanonicalWorkActionOutcome, StoreError> {
     Ok(CanonicalWorkActionOutcome {
         kind,
-        work: current_work(store, execution_space_id, work_id)?,
+        work: current_work(
+            store,
+            &harness_core::ExecutionSpaceId::new(execution_space_id),
+            work_id,
+        )?,
         projection: result.projection,
         event_id: result.event_id,
         store_sequence: result.store_sequence,
@@ -616,7 +658,7 @@ fn outcome_from_trust(
 /// with it.
 pub fn current_work(
     store: &HarnessStore,
-    execution_space_id: &str,
+    execution_space_id: &harness_core::ExecutionSpaceId,
     work_id: &str,
 ) -> Result<Work, StoreError> {
     store

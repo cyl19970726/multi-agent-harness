@@ -319,13 +319,16 @@ pub fn execute(
             } else if operation != "release" || !is_host(&auth, &team.host_agent_id) {
                 let _ = resolve_member_run(store, &auth, route.team_run_id)?;
             }
-            // `protocol::current_work`, whose second argument is a TeamRun id
-            // by design: it folds `latest_works()` — the merged both-journals
-            // reader — and then checks that the Work belongs to the addressed
-            // run. This is NOT `work_action_service::current_work`, which takes
-            // an Execution Space; that one is only ever reached here through
-            // its fully-qualified path.
-            let current = current_work(store, route.team_run_id, work_id)?;
+            // Both narrowings, in the one reader: the caller's Execution Space
+            // scopes the fold and the addressed TeamRun must own the result.
+            // The scope is an `ExecutionSpaceId`, so the two ids can no longer
+            // be transposed here.
+            let current = current_work(
+                store,
+                &harness_core::ExecutionSpaceId::new(&auth.execution_space_id),
+                route.team_run_id,
+                work_id,
+            )?;
             match (operation, intent) {
                 ("assign", RoleActionIntent::AssignWork { membership_id }) => {
                     let host_id = require_host(&auth, &team.host_agent_id, "work", work_id)?;

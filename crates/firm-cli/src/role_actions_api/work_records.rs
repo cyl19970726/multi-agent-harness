@@ -27,7 +27,25 @@ pub(super) fn execute_work_record_action(
             None,
         )
     })?;
-    let current = current_canonical_work(store, &auth.execution_space_id, work_id)?;
+    // The one reader, scoped to the caller's Execution Space, with the
+    // addressed TeamRun's ownership proven below by the accountable Team check.
+    // The private canonical re-fold this used to run is gone: it rebuilt Work
+    // from side records in append order with a `>=` tie-break, so a stale
+    // revision could overwrite the reader's newer one.
+    let current = store
+        .current_work_in_space(
+            &harness_core::ExecutionSpaceId::new(&auth.execution_space_id),
+            work_id,
+        )?
+        .ok_or_else(|| {
+            encoded_error(
+                "INVALID_STATE_TRANSITION",
+                "Work does not exist",
+                "work",
+                work_id,
+                None,
+            )
+        })?;
     if current.accountable_team_id.as_deref() != Some(team_id) {
         return Err(encoded_error(
             "UNAUTHORIZED_ACTOR",

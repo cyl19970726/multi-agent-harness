@@ -865,15 +865,21 @@ pub(super) fn resolve_member_run(
     Ok(runs.remove(0).id)
 }
 
+/// The Work an addressed TeamRun owns, read through the one store reader.
+///
+/// Two narrowings, and they are not the same question: the Execution Space is
+/// the scope the reader folds in, and the TeamRun is the route the caller
+/// addressed. Both are checked — a Work read in the caller's own scope, then
+/// proven to belong to the run the request named. The scope is typed so a
+/// TeamRun id can never arrive in its place.
 pub(super) fn current_work(
     store: &HarnessStore,
+    execution_space_id: &harness_core::ExecutionSpaceId,
     team_run_id: &str,
     work_id: &str,
 ) -> Result<Work, StoreError> {
     let work = store
-        .latest_works()?
-        .into_iter()
-        .find(|work| work.id == work_id)
+        .current_work_in_space(execution_space_id, work_id)?
         .ok_or_else(|| {
             encoded_error(
                 "INVALID_STATE_TRANSITION",
@@ -893,38 +899,6 @@ pub(super) fn current_work(
         ));
     }
     Ok(work)
-}
-
-pub(super) fn current_canonical_work(
-    store: &HarnessStore,
-    execution_space_id: &str,
-    work_id: &str,
-) -> Result<Work, StoreError> {
-    let mut current = store
-        .latest_works()?
-        .into_iter()
-        .find(|work| work.id == work_id)
-        .ok_or_else(|| {
-            encoded_error(
-                "INVALID_STATE_TRANSITION",
-                "Work does not exist",
-                "work",
-                work_id,
-                None,
-            )
-        })?;
-    for operation in store.canonical_operations_for_space(execution_space_id)? {
-        let candidates = std::iter::once(&operation.resulting_projection)
-            .chain(operation.immutable_side_records.iter());
-        for candidate in candidates {
-            if let Ok(work) = serde_json::from_value::<Work>(candidate.clone()) {
-                if work.id == work_id && work.version >= current.version {
-                    current = work;
-                }
-            }
-        }
-    }
-    Ok(current)
 }
 
 pub(super) fn require_confirmed(
