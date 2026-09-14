@@ -72,7 +72,9 @@ fn make_member(
                 provider: "codex".into(),
                 execution_mode: execution_mode.clone(),
                 native_session_id: "ns-1".into(),
-                native_locator_kind: "codex_sqlite".into(),
+                native_locator_kind: harness_core::native_locator::CODEX_APP_SERVER
+                    .native_locator_kind
+                    .into(),
                 provider_version: None,
                 adapter_contract_version: "1.0".into(),
                 availability: session_availability,

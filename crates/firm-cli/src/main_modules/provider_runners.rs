@@ -549,8 +549,11 @@ pub(super) fn run_codex_member_shared(
     let actual_model = app_server.model().to_string();
     let actual_effort = app_server.reasoning_effort().map(str::to_string);
     let actual_tier = app_server.service_tier().map(str::to_string);
-    let bound_native_session =
-        native_session_ref(&member_row, app_server.thread_id(), "codex_rollout");
+    let bound_native_session = native_session_ref(
+        &member_row,
+        app_server.thread_id(),
+        harness_core::native_locator::CODEX_APP_SERVER.native_locator_kind,
+    );
     let callback_member = {
         let mut member = member_row.clone();
         member.native_session = Some(bound_native_session.clone());
@@ -654,7 +657,6 @@ pub(super) fn run_codex_member_shared(
         adapter.native_session_locator(),
         bound_native_session.native_session_id
     );
-    debug_assert_eq!(adapter.native_locator_kind(), "codex_rollout");
     member_row.native_session = Some(bound_native_session);
     member_row.provider_controls.model.mark_effective(
         Some(actual_model),
@@ -1277,8 +1279,11 @@ pub(super) fn run_kimi_member_shared(
         })?
         .to_string();
     let mut callback_member = member_row.clone();
-    let bound_native_session =
-        native_session_ref(&callback_member, &session_id, "kimi_code_session");
+    let bound_native_session = native_session_ref(
+        &callback_member,
+        &session_id,
+        harness_core::native_locator::KIMI_ACP.native_locator_kind,
+    );
     callback_member.native_session = Some(bound_native_session.clone());
     if let Some(model) = effective_model.clone() {
         callback_member
@@ -1411,7 +1416,6 @@ pub(super) fn run_kimi_member_shared(
     )?;
     let expected = member_row.clone();
     debug_assert_eq!(adapter.native_session_locator(), session_id);
-    debug_assert_eq!(adapter.native_locator_kind(), "kimi_code_session");
     member_row.native_session = Some(bound_native_session);
     if let Some(model) = effective_model {
         member_row

@@ -18,7 +18,9 @@ fn provider_interaction_message_bridge_recovers_by_reverse_request_replay() {
         provider: running.provider.clone(),
         execution_mode: "codex_app_server".into(),
         native_session_id: "codex-session-bridge".into(),
-        native_locator_kind: "codex_thread".into(),
+        native_locator_kind: harness_core::native_locator::CODEX_APP_SERVER
+            .native_locator_kind
+            .into(),
         provider_version: None,
         adapter_contract_version: "test".into(),
         availability: NativeSessionAvailability::Available,

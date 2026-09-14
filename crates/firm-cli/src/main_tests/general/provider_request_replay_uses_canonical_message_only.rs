@@ -26,7 +26,9 @@ fn provider_request_replay_uses_canonical_message_only() {
         provider: member.provider.clone(),
         execution_mode: "codex_app_server".into(),
         native_session_id: "canonical-replay-session".into(),
-        native_locator_kind: "codex_thread".into(),
+        native_locator_kind: harness_core::native_locator::CODEX_APP_SERVER
+            .native_locator_kind
+            .into(),
         provider_version: None,
         adapter_contract_version: "test".into(),
         availability: NativeSessionAvailability::Available,

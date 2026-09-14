@@ -1,0 +1,12 @@
+{
+  "provider": "deepseek_harness",
+  "execution_mode": "deepseek_sdk",
+  "native_session_id": "star-eca626c0-164a-47d0-be42-67b28b2a94f2",
+  "native_locator_kind": "provider_native",
+  "provider_version": null,
+  "adapter_contract_version": "deepseek-harness-native-v1",
+  "availability": "unknown",
+  "supports_resume": false,
+  "last_verified_at": null,
+  "parent_native_session_id": "star-eca626c0-164a-47d0-be42-67b28b2a94f2"
+}

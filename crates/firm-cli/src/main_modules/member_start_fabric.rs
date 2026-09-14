@@ -230,15 +230,12 @@ pub(crate) fn member_needs_agent_session(
     match sessions.as_slice() {
         [] => Ok(true),
         [session] => {
-            let expected_native = expected_agentfirm_native_session_ref(member);
+            let expected_native = expected_member_run_native_session_ref(member);
             if session.provider_kind != member.provider
-                || !(agentfirm_native_session_identity_matches(
+                || !session_native_session_is_admissible(
                     session.native_session_ref.as_ref(),
                     expected_native.as_ref(),
-                ) || agentfirm_native_session_identity_matches_for_admission(
-                    session.native_session_ref.as_ref(),
-                    expected_native.as_ref(),
-                ))
+                )
             {
                 return Err(CliError::Usage(format!(
                     "AGENT_SESSION_RECOVERY_REQUIRED: {} does not match MemberRun {} native-session truth; explicitly resume the exact native session or close its execution lane before fresh admission",

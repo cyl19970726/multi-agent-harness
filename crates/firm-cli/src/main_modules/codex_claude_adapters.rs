@@ -113,7 +113,8 @@ pub(super) fn run_codex_exec_delivery(
     let _ = fs::remove_dir_all(&session_dir);
     let native_session = provider_thread_id
         .as_ref()
-        .map(|id| provider_native_session_ref("codex", id));
+        .map(|id| provider_native_session_ref("codex", id))
+        .transpose()?;
     Ok(DeliveryOutcome {
         status: status.clone(),
         native_session,
@@ -337,7 +338,8 @@ fn run_claude_delivery_surface(
     Ok(DeliveryOutcome {
         native_session: resumable_session_id
             .as_ref()
-            .map(|id| provider_native_session_ref("claude", id)),
+            .map(|id| provider_native_session_ref("claude", id))
+            .transpose()?,
         // Surface the real claude session id as the member's provider thread so
         // the next delivery resumes this conversation (memory across deliveries).
         provider_thread_id: resumable_session_id,

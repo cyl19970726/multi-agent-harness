@@ -226,9 +226,8 @@ impl harness_runtime_contract::TeamRuntimeAdapter for KimiTeamRuntime<'_> {
         self.client.session_id().unwrap_or("")
     }
 
-    fn native_locator_kind(&self) -> &'static str {
-        "kimi_code_session"
-    }
+    const NATIVE_LOCATOR: harness_core::native_locator::NativeLocatorKindEntry =
+        harness_core::native_locator::KIMI_ACP;
 
     fn bind_authority_session(
         &mut self,

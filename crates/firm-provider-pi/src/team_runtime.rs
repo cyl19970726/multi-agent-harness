@@ -182,9 +182,8 @@ impl harness_runtime_contract::TeamRuntimeAdapter for PiTeamRuntime {
         self.client.session_file()
     }
 
-    fn native_locator_kind(&self) -> &'static str {
-        "pi_session"
-    }
+    const NATIVE_LOCATOR: harness_core::native_locator::NativeLocatorKindEntry =
+        harness_core::native_locator::PI_RPC;
 
     fn bind_authority_session(
         &mut self,

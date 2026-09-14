@@ -79,6 +79,16 @@ Host acceptance decision.
 
 ### Native session binding
 
+> **Amended by ADR 0072 (2026-09-15).** This ADR named the reference but not
+> its owner, and three records each held a copy. ADR 0072 makes
+> `AgentSession.native_session_ref` the one authority once a session binds;
+> `MemberRun.native_session` and the legacy `member_runs.jsonl` row are
+> projections of it, and before a session exists the MemberRun pointer carries
+> `requested` semantics. ADR 0072 also collapses the two structurally different
+> `NativeSessionRef` types into one and makes a single table the source of
+> `native_locator_kind`. Everything below about the reference *contract*
+> remains current.
+
 `AgentSession` and its exact MemberRun/runtime-generation binding use the
 implemented `NativeSessionRef` contract:
 
@@ -96,8 +106,10 @@ parent_native_session_id?   # retry/resume lineage when the provider exposes it
 ```
 
 `native_locator_kind` describes how the provider adapter resolves the session;
-it need not expose a private absolute path to every caller. The binding is a
-reference and compatibility snapshot, not a mirrored session body.
+it need not expose a private absolute path to every caller. It is compared as
+identity, so ADR 0072 gives it one table shared by every adapter and every
+seeding path. The binding is a reference and compatibility snapshot, not a
+mirrored session body.
 
 The retired Harness session mirror, its ledger/schema, and the former
 `MemberRun` session-id fields have been removed. New adapters must bind the

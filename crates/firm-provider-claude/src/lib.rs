@@ -307,9 +307,8 @@ impl TeamRuntimeAdapter for ClaudeTeamRuntime {
         &self.transport.native_session_id
     }
 
-    fn native_locator_kind(&self) -> &'static str {
-        "claude_project_session"
-    }
+    const NATIVE_LOCATOR: harness_core::native_locator::NativeLocatorKindEntry =
+        harness_core::native_locator::CLAUDE_AGENT_SDK;
 
     fn bind_authority_session(
         &mut self,

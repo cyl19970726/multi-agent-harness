@@ -8,6 +8,7 @@ pub use agentfirm_api::MemberExecutionDriver;
 pub use collaboration::*;
 
 mod legacy_mission;
+pub mod native_locator;
 mod provider_capabilities;
 mod provider_integration;
 mod provider_launch;
@@ -20,6 +21,7 @@ pub mod work_acceptance;
 mod workflow;
 
 pub use legacy_mission::*;
+pub use native_locator::*;
 pub use provider_capabilities::*;
 pub use provider_integration::*;
 pub use provider_launch::*;

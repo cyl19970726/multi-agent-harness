@@ -169,11 +169,12 @@ pub(crate) fn open_node_session(
                 },
             )
             .map_err(|error| format!("PROVIDER_SESSION_START_FAILED: {error}"))?;
+            let entry = harness_core::native_locator::CODEX_NODE_DAEMON_APP_SERVER;
             let native_session_ref = NativeSessionRef {
-                provider: "codex".into(),
-                execution_mode: "node_daemon_app_server".into(),
+                provider: entry.provider.into(),
+                execution_mode: entry.execution_mode.into(),
                 native_session_id: client.thread_id().to_string(),
-                native_locator_kind: "codex_thread".into(),
+                native_locator_kind: entry.native_locator_kind.into(),
                 provider_version: availability.version_probe,
                 adapter_contract_version: "agentfirm-node-session-v1".into(),
                 availability: NativeSessionAvailability::Available,

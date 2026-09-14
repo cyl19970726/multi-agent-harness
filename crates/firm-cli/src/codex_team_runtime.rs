@@ -33,6 +33,8 @@ impl<'a, B: CodexAppServerBridge> CodexTeamRuntime<'a, B> {
 
 impl<B: CodexAppServerBridge> rt::TeamRuntimeAdapter for CodexTeamRuntime<'_, B> {
     type Error = crate::CliError;
+    const NATIVE_LOCATOR: harness_core::native_locator::NativeLocatorKindEntry =
+        <harness_provider_codex::CodexTeamRuntime<'_, B> as rt::TeamRuntimeAdapter>::NATIVE_LOCATOR;
 
     fn provider(&self) -> &'static str {
         rt::TeamRuntimeAdapter::provider(&self.0)
@@ -53,10 +55,6 @@ impl<B: CodexAppServerBridge> rt::TeamRuntimeAdapter for CodexTeamRuntime<'_, B>
 
     fn native_session_locator(&self) -> &str {
         rt::TeamRuntimeAdapter::native_session_locator(&self.0)
-    }
-
-    fn native_locator_kind(&self) -> &'static str {
-        rt::TeamRuntimeAdapter::native_locator_kind(&self.0)
     }
 
     fn bind_authority_session(

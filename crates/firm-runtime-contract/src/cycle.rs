@@ -350,7 +350,19 @@ pub trait TeamRuntimeAdapter: RuntimeAdapter {
         Self: Sized;
     fn ensure_alive(&mut self) -> Result<(), Self::Error>;
     fn native_session_locator(&self) -> &str;
-    fn native_locator_kind(&self) -> &'static str;
+    /// The adapter's entry in the ONE locator-kind table
+    /// (`harness_core::native_locator`).
+    ///
+    /// This is an associated const rather than a returned string so that an
+    /// adapter CANNOT answer with a literal: `native_locator_kind` is compared
+    /// as provider-native identity and is part of the persisted-session read
+    /// fingerprint, so a hand-written kind that drifts from the table is a
+    /// pointer that fails to match its own session. Three independent spellings
+    /// of this value used to exist; the type system now permits one.
+    const NATIVE_LOCATOR: harness_core::native_locator::NativeLocatorKindEntry;
+    fn native_locator_kind(&self) -> &'static str {
+        Self::NATIVE_LOCATOR.native_locator_kind
+    }
     fn bind_authority_session(
         &mut self,
         session: AgentSession,

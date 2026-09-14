@@ -58,7 +58,7 @@ exact settled `StopSession`:
   `Idle` first (`:300`, `:308`). It refuses the step unless exactly one
   `StopSession` command matching the session id, session generation, daemon id,
   and daemon generation is `Settled`/`Applied`, and then carries that command's
-  idempotency key into the Store transition (`:327-350`).
+  idempotency key into the Store transition (`:322-352`).
 
 There is no third path and no ungated one.
 

@@ -354,7 +354,9 @@ fn drain_native_session(native_session_id: &str) -> NativeSessionRef {
         provider: "codex".into(),
         execution_mode: "codex_app_server".into(),
         native_session_id: native_session_id.into(),
-        native_locator_kind: "codex_thread".into(),
+        native_locator_kind: firm_core::native_locator::CODEX_APP_SERVER
+            .native_locator_kind
+            .into(),
         provider_version: Some("0.148.0-alpha.9".into()),
         adapter_contract_version: "codex-app-server-v1".into(),
         availability: firm_core::agentfirm_api::NativeSessionAvailability::Available,

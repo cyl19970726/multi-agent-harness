@@ -36,19 +36,26 @@ pub(super) fn native_session_ref(
     }
 }
 
+/// Build a native-session pointer for a provider whose reviewed Team mode the
+/// profile resolves. The locator kind comes from the one table so this pointer
+/// is comparable with the one the adapter itself will produce; an unregistered
+/// (provider, mode) pair fails closed rather than inventing a placeholder kind.
 pub(super) fn provider_native_session_ref(
     provider: &str,
     native_session_id: impl Into<String>,
-) -> NativeSessionRef {
+) -> CliResult<NativeSessionRef> {
     let profile = team_member_provider_profile(provider);
-    let native_locator_kind = match provider {
-        "codex" => "codex_rollout",
-        "kimi" => "kimi_code_session",
-        "claude" => "claude_project_session",
-        "deepseek_harness" => "deepseek_harness_session",
-        _ => "provider_native_session",
-    };
-    NativeSessionRef {
+    let native_locator_kind =
+        harness_core::native_locator_kind_for_mode(provider, &profile.execution_mode).ok_or_else(
+            || {
+                CliError::Usage(format!(
+                    "NATIVE_LOCATOR_KIND_UNREVIEWED: {provider} mode {} has no reviewed adapter \
+                     that produces a provider-native session",
+                    profile.execution_mode
+                ))
+            },
+        )?;
+    Ok(NativeSessionRef {
         provider: provider.to_string(),
         execution_mode: profile.execution_mode,
         native_session_id: native_session_id.into(),
@@ -61,7 +68,7 @@ pub(super) fn provider_native_session_ref(
         supports_resume: profile.supports_resume,
         last_verified_at: Some(now_string()),
         parent_native_session_id: None,
-    }
+    })
 }
 
 pub(super) fn provider_version_output(provider: &str) -> Result<String, String> {

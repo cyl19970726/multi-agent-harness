@@ -294,7 +294,8 @@ pub(super) fn run_kimi_delivery(
     Ok(DeliveryOutcome {
         native_session: resumable_session_id
             .as_ref()
-            .map(|id| provider_native_session_ref("kimi", id)),
+            .map(|id| provider_native_session_ref("kimi", id))
+            .transpose()?,
         provider_thread_id: resumable_session_id,
         provider_turn_id: None,
         terminal_source,
