@@ -989,7 +989,7 @@ impl TeamRuntimeAdapter for DeepSeekTeamRuntime {
     }
 
     fn native_locator_kind(&self) -> &'static str {
-        "deepseek_harness_session"
+        harness_core::native_locator::DEEPSEEK_SDK.native_locator_kind
     }
 
     fn bind_authority_session(

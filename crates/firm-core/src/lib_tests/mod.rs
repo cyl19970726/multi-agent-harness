@@ -53,6 +53,7 @@ fn provider_interaction_request_body() -> ProviderInteractionRequestBody {
 
 mod github_link_url_describes_its_own_object;
 mod historical_rows_without_sender_fall_back_to_from_member_id;
+mod native_locator_kind_table_is_the_one_source_of_the_kind;
 mod native_session_ref_decodes_both_historical_wire_shapes;
 mod ordinary_message_intent_treats_operator_and_service_as_coordination_plane;
 mod ordinary_message_response_intent_defaults_from_sender;

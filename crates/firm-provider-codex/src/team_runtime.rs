@@ -661,7 +661,7 @@ impl<'a, B: CodexAppServerBridge> TeamRuntimeAdapter for CodexTeamRuntime<'a, B>
     }
 
     fn native_locator_kind(&self) -> &'static str {
-        "codex_rollout"
+        harness_core::native_locator::CODEX_APP_SERVER.native_locator_kind
     }
 
     fn bind_authority_session(
