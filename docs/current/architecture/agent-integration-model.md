@@ -368,7 +368,7 @@ plane is retired (DOC-108); Work review/acceptance carries what it carried.
 ```text
 provider event
   -> response-local read model  (not persisted; `PersistedSessionReadResponse`,
-                                 never the retired `NativeActivityProjection`
+                                 never the never-built `NativeActivityProjection`
                                  placeholder name — ADR 0032)
   -> correlated Message         (when a question/reply crosses systems)
   -> existing Approval          (only for a protected project action)

@@ -375,6 +375,11 @@ pub(super) fn handle_codex_provider_request(
         .get("method")
         .and_then(|value| value.as_str())
         .unwrap_or("unknown");
+    // `trace_provider_callback_rejection` records the fail-closed errors below
+    // as a MemberAction summary, so they name the bounded selector rather than
+    // the raw frame value. `method` itself stays the dispatch key and the
+    // canonical Message body's own field, which is the authorized copy.
+    let reviewed_method = reviewed_provider_callback_method(frame);
     let params = frame.get("params").unwrap_or(frame);
     let provider_request_id = frame
         .get("id")
@@ -462,7 +467,7 @@ pub(super) fn handle_codex_provider_request(
         )
     } else {
         return Err(CliError::Usage(format!(
-            "unsupported Codex app-server request {method}; denied fail-closed"
+            "unsupported Codex app-server request {reviewed_method}; denied fail-closed"
         )));
     };
 
@@ -558,7 +563,7 @@ pub(super) fn handle_codex_provider_request(
         });
     }
     Err(CliError::Usage(format!(
-        "unsupported Codex app-server response path for {method}; denied fail-closed"
+        "unsupported Codex app-server response path for {reviewed_method}; denied fail-closed"
     )))
 }
 
