@@ -279,6 +279,11 @@ impl HarnessStore {
                         && member_run.team_run_id == work.team_run_id
                         && member_run.agent_member_id == delivery.recipient_agent_member_id
                         && member_run.has_live_runtime_authority()
+                        // A projection guard, not a decision: the AgentSession
+                        // is the authority for this pointer and the MemberRun
+                        // row projects it (ADR 0071), so a disagreement here
+                        // means the projection is stale and this delivery must
+                        // not be claimed against it.
                         && match (
                             member_run.native_session.as_ref(),
                             session.native_session_ref.as_ref(),

@@ -53,6 +53,66 @@ impl HarnessStore {
             .collect()
     }
 
+    /// The read-path entry to the authoritative provider-native pointer, for
+    /// callers outside the Store. See `deciding_native_session_unlocked`: this
+    /// takes no lock either, because it only reads the trust journal.
+    pub fn deciding_native_session(
+        &self,
+        execution_space_id: &str,
+        agent_member_id: &str,
+        runtime_generation: u64,
+        projected: Option<&NativeSessionRef>,
+    ) -> StoreResult<Option<NativeSessionRef>> {
+        self.deciding_native_session_unlocked(
+            execution_space_id,
+            agent_member_id,
+            runtime_generation,
+            projected,
+        )
+    }
+
+    /// The pointer a decision must be made from, for one member at one runtime
+    /// generation.
+    ///
+    /// Authority first (ADR 0071): when an AgentSession for this exact member
+    /// and generation owns a pointer, that is the answer. The MemberRun
+    /// projection answers only when no session owns one — before any session
+    /// exists it is the `requested` pointer (a `--resume-member` seed, #845
+    /// pre-Open attachment), and an `external_interactive` Host never has an
+    /// AgentSession at all.
+    ///
+    /// Lifecycle is deliberately NOT filtered here. This answers "which
+    /// provider-native conversation does the authority name", which survives
+    /// Close; whether a lane is live enough to act on is a separate question
+    /// each caller already asks in its own terms.
+    ///
+    /// Callers must already hold the Store write lock or be inside a read that
+    /// tolerates none: this performs no locking of its own.
+    pub(crate) fn deciding_native_session_unlocked(
+        &self,
+        execution_space_id: &str,
+        agent_member_id: &str,
+        runtime_generation: u64,
+        projected: Option<&NativeSessionRef>,
+    ) -> StoreResult<Option<NativeSessionRef>> {
+        let mut owned = self
+            .fabric_agent_sessions(execution_space_id)?
+            .into_iter()
+            .filter(|session| {
+                session.agent_member_id == agent_member_id
+                    && session.runtime_generation == runtime_generation
+                    && session.native_session_ref.is_some()
+            })
+            .collect::<Vec<_>>();
+        // A live lane's answer wins over a closed one's when both exist; a
+        // reader must not fail on an ambiguity it cannot repair.
+        owned.sort_by_key(|session| session.lifecycle == AgentSessionStatus::Closed);
+        match owned.into_iter().next() {
+            Some(session) => Ok(session.native_session_ref),
+            None => Ok(projected.cloned()),
+        }
+    }
+
     pub fn fabric_agent_sessions_for_members(
         &self,
         execution_space_id: &str,
@@ -1001,12 +1061,22 @@ impl HarnessStore {
         )
     }
 
-    /// Write the settled provider-native Session binding onto the canonical
-    /// AgentSession. A fresh-start session is materialized before the provider
-    /// thread exists (`native_session_ref` starts unset), so the settled binding
-    /// lands later as its own CAS + generation-fenced mutation. Lifecycle and
-    /// runtime generation are untouched. The write is idempotent for the same
-    /// native id and rejects a conflicting rebind to another id.
+    /// The ONE entrance that writes a settled provider-native Session pointer.
+    ///
+    /// `AgentSession.native_session_ref` is the authority (ADR 0071). This
+    /// binds it and, in the SAME atomic ledger rewrite, projects the exact same
+    /// value onto the `MemberRun` that runs this session, then projects it onto
+    /// the legacy `member_runs.jsonl` row under the same write lock. Callers
+    /// cannot write a projection on their own, so a projection can never be
+    /// observed without its authority, and no caller can pair the wrong
+    /// MemberRun: it is resolved here from the session's own
+    /// `agent_member_id` + `runtime_generation`.
+    ///
+    /// A fresh-start session is materialized before the provider thread exists
+    /// (`native_session_ref` starts unset), so the settled binding lands later
+    /// as its own CAS + generation-fenced mutation. Lifecycle and runtime
+    /// generation are untouched. The write is idempotent for the same native id
+    /// and rejects a conflicting rebind to another id — on either record.
     pub fn bind_agent_session_native_session(
         &self,
         context: &MutationContext,
@@ -1077,7 +1147,19 @@ impl HarnessStore {
         }
         session.native_session_ref = Some(native_session_ref.clone());
         session.version += 1;
-        self.commit_trust_projection_unlocked(
+
+        // Resolve the MemberRun this session runs under, and refuse a
+        // projection that would disagree with the authority we are about to
+        // write. `same_identity_as` is the test: availability and verification
+        // timestamps are observations that legitimately differ between a
+        // projection written earlier and this settlement.
+        let paired = self.member_run_projection_for_session_unlocked(
+            &context.execution_space_id,
+            &session,
+            &native_session_ref,
+        )?;
+
+        let committed = self.commit_trust_projection_with_paired_aggregate_unlocked(
             context,
             "agent_session",
             session_id,
@@ -1090,7 +1172,137 @@ impl HarnessStore {
             &session,
             Vec::new(),
             Vec::new(),
+            paired.as_ref().map(|run| {
+                let mut projected = run.clone();
+                projected.native_session = Some(native_session_ref.clone());
+                projected.version = run.version + 1;
+                PairedAggregateTransition::MemberRun(PairedMemberRunProjection {
+                    transition: "native_session_projected",
+                    expected_version: run.version,
+                    run: projected,
+                })
+            }),
+        )?;
+
+        // The legacy runtime projection lives in its own file, so it cannot
+        // join the atomic rewrite above. It is written last and under the same
+        // lock, which is the deliberate order: if this fails, the authority is
+        // already durable and the stale row is repairable by re-projecting from
+        // the AgentSession. The old order wrote this row FIRST, which could
+        // leave a pointer with no authority to repair it from.
+        // Deliberately unconditional, including on an idempotent replay: the
+        // projection is a no-op when the row already agrees, so a replay also
+        // repairs a row left stale by an earlier failure here.
+        if paired.is_some() {
+            self.project_native_session_onto_member_runs_jsonl_unlocked(
+                &session.agent_member_id,
+                session.runtime_generation,
+                &native_session_ref,
+            )?;
+        }
+        Ok(committed)
+    }
+
+    /// Find the MemberRun that projects this session's pointer, or `None` when
+    /// this store holds no trust MemberRun for it (a session-only fixture
+    /// store). The returned run is the CURRENT one; the caller derives the
+    /// projected revision from it.
+    ///
+    /// Refuses a MemberRun that already names a different provider-native
+    /// conversation, and a MemberRun that is no longer active — a closed run
+    /// must not acquire a new binding just because its session can.
+    fn member_run_projection_for_session_unlocked(
+        &self,
+        execution_space_id: &str,
+        session: &AgentSession,
+        native_session_ref: &NativeSessionRef,
+    ) -> StoreResult<Option<firm_core::agentfirm_api::MemberRun>> {
+        let mut candidates = self
+            .latest_trust_envelopes_unlocked(execution_space_id, "member_run")?
+            .into_values()
+            .map(|envelope| event_projection::<firm_core::agentfirm_api::MemberRun>(&envelope))
+            .collect::<StoreResult<Vec<_>>>()?
+            .into_iter()
+            .filter(|run| {
+                run.agent_member_id == session.agent_member_id
+                    && run.runtime_generation == session.runtime_generation
+            })
+            .collect::<Vec<_>>();
+        let run = match candidates.len() {
+            0 => return Ok(None),
+            1 => candidates.remove(0),
+            found => {
+                return Err(trust_error(
+                    TrustErrorCode::InvalidStateTransition,
+                    format!(
+                        "MEMBER_RUN_PROJECTION_AMBIGUOUS: {} has {found} MemberRuns at runtime generation {}",
+                        session.agent_member_id, session.runtime_generation
+                    ),
+                    "agent_session",
+                    &session.id,
+                    Some(session.version),
+                ))
+            }
+        };
+        if run.coordination_status != MemberCoordinationStatus::Active {
+            return Err(trust_error(
+                TrustErrorCode::InvalidStateTransition,
+                format!(
+                    "only an active MemberRun can project a provider-native Session; MemberRun {} is {:?}",
+                    run.id, run.coordination_status
+                ),
+                "member_run",
+                &run.id,
+                Some(run.version),
+            ));
+        }
+        if let Some(current) = run.native_session.as_ref() {
+            if !current.same_identity_as(native_session_ref) {
+                return Err(trust_error(
+                    TrustErrorCode::InvalidStateTransition,
+                    format!(
+                        "NATIVE_SESSION_PROJECTION_DISAGREES: MemberRun {} already names provider-native session {}, which is not the session AgentSession {} is binding",
+                        run.id, current.native_session_id, session.id
+                    ),
+                    "member_run",
+                    &run.id,
+                    Some(run.version),
+                ));
+            }
+        }
+        Ok(Some(run))
+    }
+
+    /// Project the authority value onto the legacy runtime row. Absent rows are
+    /// skipped: a store with no `member_runs.jsonl` row for this member has no
+    /// projection to keep honest.
+    fn project_native_session_onto_member_runs_jsonl_unlocked(
+        &self,
+        agent_member_id: &str,
+        runtime_generation: u64,
+        native_session_ref: &NativeSessionRef,
+    ) -> StoreResult<()> {
+        let Some(mut row) = latest_by_id(
+            self.read_jsonl::<ProviderRuntimeProjection>("member_runs.jsonl")?,
+            |row| row.id.clone(),
         )
+        .into_values()
+        .find(|row| {
+            row.agent_member_id == agent_member_id && row.runtime_generation == runtime_generation
+        }) else {
+            return Ok(());
+        };
+        if row.native_session.as_ref() == Some(native_session_ref) {
+            return Ok(());
+        }
+        row.native_session = Some(native_session_ref.clone());
+        self.append_jsonl_unlocked("member_runs.jsonl", &row)
+            .map_err(|error| {
+                StoreError::Conflict(format!(
+                    "NATIVE_SESSION_PROJECTION_INCOMPLETE: agent_member_id={agent_member_id} runtime_generation={runtime_generation}; the authoritative AgentSession binding is durable, the {} projection is stale; re-project from the AgentSession (no automatic repair): {error}",
+                    self.root.join("member_runs.jsonl").display(),
+                ))
+            })
     }
 
     /// Replace the bounded runtime-control projection for one exact session

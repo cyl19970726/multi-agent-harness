@@ -376,18 +376,18 @@ impl HarnessStore {
             // reader that already binds acceptance to it; the paired `work`
             // envelope below is what makes the same revision a named Submitted
             // transition in the one Work journal.
-            paired_work = Some(PairedWorkTransition {
+            paired_work = Some(PairedAggregateTransition::Work(PairedWorkTransition {
                 transition: "submitted",
                 kind: firm_core::WorkEventKind::Submitted,
                 expected_version: current_work.version,
                 work: submitted_work.clone(),
-            });
+            }));
             side_records.push(serde_json::to_value(submitted_work)?);
             if let Some(released_binding) = released_binding {
                 side_records.push(serde_json::to_value(released_binding)?);
             }
         }
-        self.commit_trust_projection_with_work_transition_unlocked(
+        self.commit_trust_projection_with_paired_aggregate_unlocked(
             context,
             "work_report",
             &report.id,
