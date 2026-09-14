@@ -77,18 +77,18 @@ pub(super) struct LaneTerminationProof {
 }
 
 /// The terminated-lane proof. This is the Store fence's own predicate
-/// (residency, activity, handoff, continuation, turn, queued input, ambiguous
-/// RuntimeCommand), read from outside the writer lock so a caller can decide
-/// *whether to try* and can say *why not*. It never grants a transition: the
-/// Store re-proves all of it under its lock. Every reader of the proof
-/// derives from this one function, so the reason named and the decision
-/// taken cannot drift apart (GitHub #841).
+/// (residency, activity, handoff, continuation, open cycle, queued input,
+/// ambiguous RuntimeCommand), read from outside the writer lock so a caller
+/// can decide *whether to try* and can say *why not*. It never grants a
+/// transition: the Store re-proves all of it under its lock. Every reader of
+/// the proof derives from this one function, so the reason named and the
+/// decision taken cannot drift apart (GitHub #841).
 ///
 /// `tolerate_dormant_continuation` is for the coordination Close of a Completed
 /// TeamRun's member (#812): an armed native continuation on that lane will
 /// never be driven, so refusing the Close on it would strand the member
 /// forever; the residue is recorded on the Close receipt instead. A driver
-/// handoff, an open turn, queued input, or an ambiguous command is never
+/// handoff, an open cycle, queued input, or an ambiguous command is never
 /// tolerated.
 pub(super) fn lane_termination_proof(
     store: &HarnessStore,
@@ -291,7 +291,8 @@ pub(super) enum DrainedLaneResume {
 /// DEV-171 fence under its own lock either way.
 ///
 /// For a lane a drain left `Interrupted`, the drain settlement already
-/// detached it, disarmed its continuation, cleared its turn and settled every
+/// detached it, disarmed its continuation, cleared its cycle marker and
+/// settled every
 /// RuntimeCommand of the dead generation, so the proof holds by construction.
 ///
 /// For a lane a runner left `RecoveryRequired` (#755), the drain skipped it as
@@ -383,7 +384,7 @@ pub(super) fn resume_drained_lane_for_adoption(
 ///
 /// Fail closed: the lane must be readable and must currently prove the killed
 /// runtime gone. A lane still holding an ambiguous RuntimeCommand, an attached
-/// handle or an open turn keeps the ordinary `Blocked` diagnosis.
+/// handle or an open cycle keeps the ordinary `Blocked` diagnosis.
 pub(super) fn provider_failure_awaits_drain_lane_resume(
     ledger: &TeamRunLedger,
     member: &ProviderRuntimeProjection,

@@ -111,10 +111,21 @@ At `406f5f9e` the repository and every real store agree:
   "still has an open cycle", and the predecessor-drain conflict says "an open
   cycle". The typed `TrustErrorCode` values are untouched, so the generated
   member-trust error contract is unchanged.
-- The Team hold fingerprint in `team_run_canonical_state` renames its internal
-  key `in_turn` to `has_open_cycle`. The projection is hashed in-process and
-  never persisted or compared across binaries, so the only effect is a
-  different hash value computed consistently on both sides of a wait.
+- **The TeamRun hold fingerprint keeps its `in_turn` key, deliberately.** The
+  field it reflects is now `current_cycle_marker`, but that key is a durable
+  hash input, not vocabulary: the fingerprint is written into the TeamRun ledger
+  as a `team-run-canonical-state:` evidence ref on a `team_supervisor_no_progress`
+  hold (`supervisor_daemon/recovery.rs`), read back by a later NodeDaemon
+  generation — possibly a different binary — and compared for equality against a
+  freshly recomputed one. `canonical_json_fingerprint` hashes object keys, so
+  renaming it would invalidate every hold written before the cutover exactly
+  once: adoption would be re-enabled on a run whose canonical rows had not
+  changed, burning a fresh TeamSupervisor generation (#671, #704) on the
+  heartbeat-starvation path (#836), and breaking the "clears only when a
+  canonical row changes" contract in `operations.md`. The renaming rule for this
+  decision therefore stops at the wire: field names and enum values move, hashed
+  key spellings do not. `canonical_state_document_keys_are_frozen_durable_hash_inputs`
+  is the trip-wire.
 - ADR 0049 and ADR 0065 are amended in their wire-shape references only. Their
   Close/Reopen/Retire semantics and their two-epoch generation rule are
   untouched: this ADR renames a field and deletes an unreachable enum value,

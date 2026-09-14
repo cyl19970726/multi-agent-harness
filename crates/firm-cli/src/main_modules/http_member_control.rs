@@ -301,8 +301,8 @@ pub(super) fn close_team_member_value(
     }))
 }
 
-/// Whether this Session sits at a terminal cycle boundary: no cycle activity and
-/// no turn in flight.
+/// Whether this Session sits at a terminal cycle boundary: no cycle activity
+/// and no open cycle marker.
 ///
 /// `Interrupted` counts alongside `Idle` here. It records only that the cycle
 /// never reached its own end — typically because a NodeDaemon drain killed the
