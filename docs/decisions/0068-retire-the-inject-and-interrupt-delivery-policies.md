@@ -18,8 +18,10 @@ the product:
   the last thing that could put content into a running provider cycle. It ran
   through its own vertical slice: two `ControlIntent` variants, two
   `SemanticCapability` values, `SteerRequest` / `SteerProviderResult` /
-  `CycleControl.injects`, an `on_steer_result` callback threaded through
-  `run_cycle` in eleven implementations, a `PendingSteerSettlement` with a
+  `CycleControl.injects`, an `on_steer_result` callback threaded through the
+  `run_cycle` trait declaration and all twelve of its implementations plus
+  Pi's `prompt` / `prompt_dyn` / `apply_cycle_control`, a
+  `PendingSteerSettlement` with a
   `Drop` that had to fail a caller who never got a provider settlement, a
   `POST /v1/team-runs/{id}/members/{id}/steer` route, a
   `LiveMemberControlRequest::Steer`, a `TeamMessageDeliveryMode::InjectDelivered`
@@ -50,7 +52,7 @@ one path that could put content into a cycle the Host had not started.
    (`ALL` 11 → 9). `SteerRequest`, `SteerProviderResult`,
    `CycleControl.injects`, the `on_steer_result` callback,
    `supports_inject_current_cycle` and `supports_native_boundary_queue` are
-   gone from the contract and from all eleven `run_cycle` implementations; the
+   gone from the contract and from every `run_cycle` implementation; the
    Codex `turn/steer` client and bridge method, Pi's `steer` compilation and
    dead `follow_up()`, and the Claude/DeepSeek/Kimi "not applied" arms go with
    them.
