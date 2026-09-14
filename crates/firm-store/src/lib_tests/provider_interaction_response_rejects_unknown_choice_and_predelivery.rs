@@ -35,7 +35,7 @@ fn provider_interaction_response_rejects_unknown_choice_and_predelivery() {
         .push("other-member".into());
     extra_route.deliveries.push(ProviderDispatchAttempt {
         member_id: "other-member".into(),
-        policy: TeamDeliveryPolicy::Inject,
+        policy: TeamDeliveryPolicy::Queue,
         status: TeamDeliveryStatus::Queued,
         attempt: 0,
         claim_id: None,

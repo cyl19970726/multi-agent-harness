@@ -17,7 +17,7 @@
     {"path":"apps/agent-dashboard/tests/member-run-focus-mobile-check.mjs","disposition":"inactive-historical","replacement":"local-agentfirm-product-loop-browser-check.mjs"},
     {"path":"apps/agent-dashboard/tests/team-deep-link-large-store-browser-check.mjs","disposition":"inactive-historical","replacement":"local-agentfirm-product-loop-browser-check.mjs"},
     {"path":"apps/agent-dashboard/tests/workbench-visual-fixture-check.mjs","disposition":"inactive-historical","replacement":"role-view-contract-check.mjs"},
-    {"path":"apps/agent-dashboard/tests/operator-controls-check.mjs","disposition":"inactive-historical","replacement":"local-agentfirm-product-loop.mjs"},
+    {"path":"apps/agent-dashboard/tests/operator-controls-check.mjs","disposition":"delete","replacement":"local-agentfirm-product-loop.mjs"},
     {"path":"apps/agent-dashboard/tests/operator-console-browser-check.mjs","disposition":"inactive-historical","replacement":"local-agentfirm-product-loop-browser-check.mjs"},
     {"path":"apps/agent-dashboard/tests/team-selectors-check.mjs","disposition":"inactive-historical","replacement":"local-agentfirm-product-loop.mjs"},
     {"path":"apps/agent-dashboard/tests/company-os-docs-check.mjs","disposition":"inactive-historical","replacement":"dashboard-real-store-browser-check.mjs"},

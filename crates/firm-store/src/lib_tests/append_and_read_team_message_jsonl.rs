@@ -25,7 +25,7 @@ fn append_and_read_team_message_jsonl() {
         evidence_refs: vec!["ev-1".into()],
         deliveries: vec![ProviderDispatchAttempt {
             member_id: "mr-1".into(),
-            policy: TeamDeliveryPolicy::Inject,
+            policy: TeamDeliveryPolicy::Queue,
             status: TeamDeliveryStatus::Delivered,
             attempt: 1,
             claim_id: None,

@@ -841,7 +841,7 @@ fn provider_interaction_response(
         evidence_refs: Vec::new(),
         deliveries: vec![ProviderDispatchAttempt {
             member_id: request_body.member.clone(),
-            policy: TeamDeliveryPolicy::Inject,
+            policy: TeamDeliveryPolicy::Queue,
             status: TeamDeliveryStatus::Queued,
             attempt: 0,
             claim_id: None,

@@ -76,9 +76,21 @@ one path that could put content into a cycle the Host had not started.
    which existed solely for `InjectDelivered`, is gone.
 
 5. **Retire the dead reader clause with it.** `queued_messages_for` filtered
-   `delivery.policy != Inject && delivery.status == Queued`. An `Inject`
-   delivery was always created `Delivered`, so the first clause could never
-   change the result; removing it keeps the count semantics identical.
+   `delivery.policy != Inject && delivery.status == Queued`, and dropping the
+   first clause leaves the one production caller's count unchanged. The proof
+   is not "Inject rows were always Delivered" — two sites created them
+   otherwise — it is the caller:
+
+   `member_lifecycle.rs` is the only caller, and it post-filters
+   `.filter(|message| message.requires_response())` before counting.
+   `requires_response()` is true only for `ResponseRequired`. Every message
+   whose delivery carried `policy: Inject` was declared
+   `response_intent: Informational` — the provider-interaction response in
+   `http_member_control.rs`, and the transient in-memory projection in
+   `runtime_effects.rs`, which is `Claimed` rather than `Queued` and is never
+   persisted. So the `requires_response()` filter already excluded every row
+   the `policy != Inject` clause could have excluded, and the wake count is
+   identical before and after.
 
 ## What is kept
 
