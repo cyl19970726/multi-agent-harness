@@ -53,6 +53,36 @@ impl HarnessStore {
             .collect()
     }
 
+    /// Whether this member's `MemberRun.native_session` is a **requested**
+    /// pointer rather than a projection of an authority.
+    ///
+    /// The predicate is exact and decidable without reading the MemberRun at
+    /// all: *requested iff no AgentSession for this member at this runtime
+    /// generation owns a `native_session_ref`.* Prose alone would have left a
+    /// reader unable to tell "requested" from "asserted" without loading the
+    /// session anyway, so the rule is a function with a test.
+    ///
+    /// Two cases are requested and both must keep working: a `--resume-member`
+    /// / `resume_native_session_id` seed lands before any session exists (#845
+    /// pre-Open attachment), and an `external_interactive` Host never has an
+    /// AgentSession at all, so its pointer is requested for the lane's whole
+    /// life.
+    pub fn member_run_native_session_is_requested(
+        &self,
+        execution_space_id: &str,
+        agent_member_id: &str,
+        runtime_generation: u64,
+    ) -> StoreResult<bool> {
+        Ok(self
+            .deciding_native_session_unlocked(
+                execution_space_id,
+                agent_member_id,
+                runtime_generation,
+                None,
+            )?
+            .is_none())
+    }
+
     /// The read-path entry to the authoritative provider-native pointer, for
     /// callers outside the Store. See `deciding_native_session_unlocked`: this
     /// takes no lock either, because it only reads the trust journal.
@@ -1184,22 +1214,15 @@ impl HarnessStore {
             }),
         )?;
 
-        // The legacy runtime projection lives in its own file, so it cannot
-        // join the atomic rewrite above. It is written last and under the same
-        // lock, which is the deliberate order: if this fails, the authority is
-        // already durable and the stale row is repairable by re-projecting from
-        // the AgentSession. The old order wrote this row FIRST, which could
-        // leave a pointer with no authority to repair it from.
-        // Deliberately unconditional, including on an idempotent replay: the
-        // projection is a no-op when the row already agrees, so a replay also
-        // repairs a row left stale by an earlier failure here.
-        if paired.is_some() {
-            self.project_native_session_onto_member_runs_jsonl_unlocked(
-                &session.agent_member_id,
-                session.runtime_generation,
-                &native_session_ref,
-            )?;
-        }
+        // The legacy `member_runs.jsonl` row is deliberately NOT written here.
+        // A file append is not transactional with the trust journal in any
+        // useful sense, so co-committing it would reintroduce the partial state
+        // this entrance exists to remove — and would mean growing a second
+        // escape hatch on the shared commit primitive for no gain. That row is
+        // a derived display/export projection: every reader that DECIDES from
+        // the pointer resolves it through `deciding_native_session_unlocked`,
+        // which reads this AgentSession, so a lagging row decides nothing. It
+        // is rebuilt from the authority by `derive_member_runs_jsonl_native_session`.
         Ok(committed)
     }
 
@@ -1273,36 +1296,49 @@ impl HarnessStore {
         Ok(Some(run))
     }
 
-    /// Project the authority value onto the legacy runtime row. Absent rows are
-    /// skipped: a store with no `member_runs.jsonl` row for this member has no
-    /// projection to keep honest.
-    fn project_native_session_onto_member_runs_jsonl_unlocked(
+    /// Rebuild the legacy `member_runs.jsonl` pointer from the authority.
+    ///
+    /// This is a DERIVATION, not a second write path: it reads the committed
+    /// `AgentSession.native_session_ref` and makes the legacy row agree with
+    /// it. Nothing decides from that row — every deciding reader resolves the
+    /// pointer through `deciding_native_session_unlocked` — so this exists for
+    /// display, export, and operator sanity rather than correctness, and a
+    /// store that never calls it is not wrong, only stale.
+    ///
+    /// Returns whether a row was rewritten. Absent rows and already-agreeing
+    /// rows are no-ops.
+    pub fn derive_member_runs_jsonl_native_session(
         &self,
-        agent_member_id: &str,
-        runtime_generation: u64,
-        native_session_ref: &NativeSessionRef,
-    ) -> StoreResult<()> {
+        execution_space_id: &str,
+        member_run_id: &str,
+    ) -> StoreResult<bool> {
+        self.init()?;
+        let _lock = self.acquire_write_lock()?;
         let Some(mut row) = latest_by_id(
             self.read_jsonl::<ProviderRuntimeProjection>("member_runs.jsonl")?,
             |row| row.id.clone(),
         )
-        .into_values()
-        .find(|row| {
-            row.agent_member_id == agent_member_id && row.runtime_generation == runtime_generation
-        }) else {
-            return Ok(());
+        .remove(member_run_id) else {
+            return Ok(false);
         };
-        if row.native_session.as_ref() == Some(native_session_ref) {
-            return Ok(());
+        let authority = self.deciding_native_session_unlocked(
+            execution_space_id,
+            &row.agent_member_id,
+            row.runtime_generation,
+            None,
+        )?;
+        let Some(authority) = authority else {
+            // No AgentSession owns a pointer for this generation, so the row
+            // still carries the `requested` pointer and there is nothing to
+            // derive it from.
+            return Ok(false);
+        };
+        if row.native_session.as_ref() == Some(&authority) {
+            return Ok(false);
         }
-        row.native_session = Some(native_session_ref.clone());
-        self.append_jsonl_unlocked("member_runs.jsonl", &row)
-            .map_err(|error| {
-                StoreError::Conflict(format!(
-                    "NATIVE_SESSION_PROJECTION_INCOMPLETE: agent_member_id={agent_member_id} runtime_generation={runtime_generation}; the authoritative AgentSession binding is durable, the {} projection is stale; re-project from the AgentSession (no automatic repair): {error}",
-                    self.root.join("member_runs.jsonl").display(),
-                ))
-            })
+        row.native_session = Some(authority);
+        self.append_jsonl_unlocked("member_runs.jsonl", &row)?;
+        Ok(true)
     }
 
     /// Replace the bounded runtime-control projection for one exact session

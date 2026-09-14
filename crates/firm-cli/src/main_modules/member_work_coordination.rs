@@ -747,7 +747,14 @@ impl TeamRunLedger {
             let session = match sessions.as_slice() {
                 // No AgentSession yet: the pointer is still `requested`, so it
                 // lands on the MemberRun alone and is not authority.
-                [] => return self.seed_requested_member_run_native_session(&space_id, next, &native_ref, &binding_fingerprint),
+                [] => {
+                    return self.seed_requested_member_run_native_session(
+                        &space_id,
+                        next,
+                        &native_ref,
+                        &binding_fingerprint,
+                    )
+                }
                 [session] => session,
                 _ => {
                     return Err(CliError::RuntimeRecoveryRequired(format!(

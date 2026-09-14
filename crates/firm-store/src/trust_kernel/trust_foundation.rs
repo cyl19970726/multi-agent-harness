@@ -1129,25 +1129,31 @@ impl HarnessStore {
         if let Some(paired) = paired {
             // One builder for both arms: a paired envelope is constructed
             // identically whichever aggregate it carries.
-            let (paired_kind, paired_id, paired_transition, paired_expected, paired_resulting, paired_projection) =
-                match &paired {
-                    PairedAggregateTransition::Work(work) => (
-                        "work",
-                        work.work.id.clone(),
-                        work.transition,
-                        work.expected_version,
-                        work.work.version,
-                        serde_json::to_value(&work.work)?,
-                    ),
-                    PairedAggregateTransition::MemberRun(run) => (
-                        "member_run",
-                        run.run.id.clone(),
-                        run.transition,
-                        run.expected_version,
-                        run.run.version,
-                        serde_json::to_value(&run.run)?,
-                    ),
-                };
+            let (
+                paired_kind,
+                paired_id,
+                paired_transition,
+                paired_expected,
+                paired_resulting,
+                paired_projection,
+            ) = match &paired {
+                PairedAggregateTransition::Work(work) => (
+                    "work",
+                    work.work.id.clone(),
+                    work.transition,
+                    work.expected_version,
+                    work.work.version,
+                    serde_json::to_value(&work.work)?,
+                ),
+                PairedAggregateTransition::MemberRun(run) => (
+                    "member_run",
+                    run.run.id.clone(),
+                    run.transition,
+                    run.expected_version,
+                    run.run.version,
+                    serde_json::to_value(&run.run)?,
+                ),
+            };
             let previous = committed
                 .iter()
                 .filter(|envelope| {

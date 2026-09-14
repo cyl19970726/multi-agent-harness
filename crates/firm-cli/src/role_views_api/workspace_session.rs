@@ -36,11 +36,19 @@ pub(super) fn workspace_session<'a>(
         ) else {
             return false;
         };
+        // The AgentSession owns this pointer and the MemberRun row projects it
+        // (ADR 0072), so the session's ref decides the match and the MemberRun
+        // copy is only a guard: it can disqualify a session by naming a
+        // different conversation, never by merely lagging behind one.
         match (&native, &session_native) {
             (Some(native), Some(session_native)) => {
                 session["provider_kind"] == native.provider
                     && native.same_identity_as(session_native)
             }
+            // The authority has bound and the projection has not caught up.
+            // Before the reader redirect this dropped the session entirely,
+            // which is exactly deciding from a projection.
+            (None, Some(_)) => session["provider_kind"] == member_run["provider"],
             // A newly admitted managed Session may not have settled a native
             // id yet. Preserve its current projection only with exact driver
             // provenance; an external pull-only Host never gains a Session.
@@ -50,7 +58,9 @@ pub(super) fn workspace_session<'a>(
                     && session["control_state"]["driver_ref"]["kind"] == "team_supervisor"
                     && session["control_state"]["driver_ref"]["team_run_id"] == run.id
             }
-            _ => false,
+            // The MemberRun names a conversation no session owns. The authority
+            // has not bound it, so this session is not its lane.
+            (Some(_), None) => false,
         }
     });
     let selected = candidates.next()?;

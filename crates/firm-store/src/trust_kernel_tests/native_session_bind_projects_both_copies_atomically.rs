@@ -79,7 +79,16 @@ fn native_session_bind_projects_both_copies_atomically() {
         "the projection advances exactly one revision"
     );
 
-    // The legacy runtime row is projected under the same write lock.
+    // The legacy runtime row is deliberately NOT co-committed: a file append is
+    // not transactional with the trust journal, and nothing decides from that
+    // row any more. It is derived from the authority on demand.
+    let derived = store
+        .derive_member_runs_jsonl_native_session("space-test", &run_id)
+        .expect("derive the legacy projection from the authority");
+    assert!(
+        derived,
+        "the lagging legacy row is rebuilt from the AgentSession"
+    );
     let legacy = store
         .latest_member_runs()
         .unwrap()
@@ -89,7 +98,13 @@ fn native_session_bind_projects_both_copies_atomically() {
     assert_eq!(
         legacy.native_session.as_ref(),
         Some(&native),
-        "the member_runs.jsonl copy projects the same authority value"
+        "the derived member_runs.jsonl copy equals the authority value"
+    );
+    assert!(
+        !store
+            .derive_member_runs_jsonl_native_session("space-test", &run_id)
+            .expect("second derivation"),
+        "deriving an already-agreeing row is a no-op"
     );
 
     // One rewrite, so both envelopes share the store sequence neighbourhood and
@@ -192,7 +207,9 @@ fn a_disagreeing_projection_is_refused_without_a_partial_write() {
         )
         .expect_err("a projection that names another native session is refused");
     assert!(
-        refused.to_string().contains("NATIVE_SESSION_PROJECTION_DISAGREES"),
+        refused
+            .to_string()
+            .contains("NATIVE_SESSION_PROJECTION_DISAGREES"),
         "{refused}"
     );
 

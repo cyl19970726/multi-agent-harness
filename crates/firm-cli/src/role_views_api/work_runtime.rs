@@ -134,7 +134,7 @@ pub(super) fn current_work_runtime<'a>(
             member_run["team_run_id"] == work.team_run_id
                 && member_run["agent_member_id"] == agent_member_id
                 && current_run.has_live_runtime_authority()
-                && native_session_identity_matches(
+                && native_session_projection_admits(
                     &member_run["native_session"],
                     &session["native_session_ref"],
                 )
@@ -159,15 +159,28 @@ pub(super) fn current_work_runtime<'a>(
     })
 }
 
-fn native_session_identity_matches(left: &Value, right: &Value) -> bool {
+/// Whether this MemberRun row may be paired with this AgentSession on the
+/// provider-native pointer.
+///
+/// The AgentSession owns the pointer and the MemberRun row projects it
+/// (ADR 0072), so the session's ref decides and the MemberRun copy is a guard:
+/// a projection that lags the authority must not drop the pair, while one that
+/// names a DIFFERENT conversation must.
+fn native_session_projection_admits(member_run_native: &Value, session_native: &Value) -> bool {
     match (
-        serde_json::from_value::<AgentNativeSessionRef>(left.clone()),
-        serde_json::from_value::<AgentNativeSessionRef>(right.clone()),
+        serde_json::from_value::<AgentNativeSessionRef>(member_run_native.clone()),
+        serde_json::from_value::<AgentNativeSessionRef>(session_native.clone()),
     ) {
-        (Ok(left), Ok(right)) => {
-            harness_core::agentfirm_api::native_session_identity_matches(&left, &right)
+        (Ok(member_run_native), Ok(session_native)) => {
+            harness_core::agentfirm_api::native_session_identity_matches(
+                &member_run_native,
+                &session_native,
+            )
         }
-        _ => left.is_null() && right.is_null(),
+        // The authority has bound and the projection has not caught up.
+        (Err(_), Ok(_)) => member_run_native.is_null(),
+        // Both absent: nothing has bound yet, which is a consistent pair.
+        _ => member_run_native.is_null() && session_native.is_null(),
     }
 }
 
