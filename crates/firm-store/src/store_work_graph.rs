@@ -30,7 +30,7 @@ impl HarnessStore {
         let mut submitted_work = work.clone();
         submitted_work.version = work.version.saturating_sub(1);
         let mut sources = Vec::new();
-        for operation in self.work_record_operations_unlocked()? {
+        for operation in self.work_record_operations_unlocked()?.iter() {
             if operation.work.id != work.id
                 || operation.event.kind != WorkEventKind::Submitted
                 || !self.work_submission_revision_is_current_unlocked(

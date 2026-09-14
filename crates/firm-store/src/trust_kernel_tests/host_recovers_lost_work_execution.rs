@@ -57,11 +57,12 @@ fn recovery_operations(store: &HarnessStore, work_id: &str) -> Vec<firm_core::Wo
     store
         .work_record_operations_unlocked()
         .unwrap()
-        .into_iter()
+        .iter()
         .filter(|operation| {
             operation.work.id == work_id
                 && operation.event.kind == firm_core::WorkEventKind::ExecutionRecovered
         })
+        .cloned()
         .collect()
 }
 

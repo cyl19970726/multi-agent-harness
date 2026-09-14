@@ -491,19 +491,35 @@ impl HarnessStore {
     /// repair path for a crash between the Work write and that row. It must
     /// therefore see the same transitions the Work journal does, or a Work
     /// blocked after the W4 writer cutover would never have its wake repaired.
-    fn work_host_attention_sources_unlocked(&self) -> StoreResult<Vec<(bool, HostAttention)>> {
-        let mut sources = Vec::new();
-        for operation in self.work_record_operations_unlocked()? {
-            sources.extend(
-                Self::downstream_host_attentions_for_work_operation(&operation)?
-                    .into_iter()
-                    .map(|row| (true, row)),
-            );
-            if let Some(row) = Self::host_attention_for_work_operation(&operation) {
-                sources.push((false, row));
-            }
-        }
-        Ok(sources)
+    ///
+    /// It is also where the retired ledger idempotency lookup's repair went:
+    /// that lookup re-derived a retried operation's attention rows, so the gap
+    /// was closed only if something retried. Reconciling from the whole
+    /// journal closes it for every entrance instead. Memoized on the same
+    /// operation snapshot, because several HostAttention entrances ask per
+    /// call and the answer cannot change while that snapshot is unchanged.
+    fn work_host_attention_sources_unlocked(
+        &self,
+    ) -> StoreResult<std::sync::Arc<Vec<(bool, HostAttention)>>> {
+        let operations = self.work_record_operations_unlocked()?;
+        self.cached_combined_projection(
+            "work-host-attention-sources",
+            vec![operations.clone()],
+            || {
+                let mut sources = Vec::new();
+                for operation in operations.iter() {
+                    sources.extend(
+                        Self::downstream_host_attentions_for_work_operation(operation)?
+                            .into_iter()
+                            .map(|row| (true, row)),
+                    );
+                    if let Some(row) = Self::host_attention_for_work_operation(operation) {
+                        sources.push((false, row));
+                    }
+                }
+                Ok(sources)
+            },
+        )
     }
 
     pub(super) fn reconcile_work_host_attentions_unlocked(
@@ -511,8 +527,8 @@ impl HarnessStore {
     ) -> StoreResult<Vec<HostAttention>> {
         let mut projected = self.latest_host_attentions_unlocked()?;
         let mut reconciled = Vec::new();
-        let attentions = &self.work_host_attention_sources_unlocked()?;
-        for (downstream, attention) in attentions {
+        let attentions = self.work_host_attention_sources_unlocked()?;
+        for (downstream, attention) in attentions.iter() {
             if let Some(existing) = projected.get(&attention.id) {
                 if !Self::same_host_attention_fact(existing, attention) {
                     return Err(StoreError::Conflict(format!(

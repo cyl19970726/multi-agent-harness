@@ -574,32 +574,32 @@ impl HarnessStore {
     pub fn work_condition_records(&self) -> StoreResult<Vec<WorkConditionRecord>> {
         Ok(self
             .work_record_operations_unlocked()?
-            .into_iter()
-            .flat_map(|operation| operation.condition_records)
+            .iter()
+            .flat_map(|operation| operation.condition_records.iter().cloned())
             .collect())
     }
 
     pub fn work_reports(&self) -> StoreResult<Vec<WorkReport>> {
         Ok(self
             .work_record_operations_unlocked()?
-            .into_iter()
-            .flat_map(|operation| operation.reports)
+            .iter()
+            .flat_map(|operation| operation.reports.iter().cloned())
             .collect())
     }
 
     pub fn work_evidence(&self) -> StoreResult<Vec<WorkEvidence>> {
         Ok(self
             .work_record_operations_unlocked()?
-            .into_iter()
-            .flat_map(|operation| operation.evidence_records)
+            .iter()
+            .flat_map(|operation| operation.evidence_records.iter().cloned())
             .collect())
     }
 
     pub fn work_operational_decisions(&self) -> StoreResult<Vec<WorkOperationalDecision>> {
         Ok(self
             .work_record_operations_unlocked()?
-            .into_iter()
-            .flat_map(|operation| operation.decisions)
+            .iter()
+            .flat_map(|operation| operation.decisions.iter().cloned())
             .collect())
     }
 

@@ -122,10 +122,11 @@ fn sparse_mixed_version_update_recovers_and_repersists_work_provenance() {
     let repair = store
         .work_record_operations_unlocked()
         .expect("repaired WorkOperations")
-        .into_iter()
+        .iter()
         .find(|operation| {
             operation.work.id == repaired.id && operation.work.version == repaired.version
         })
+        .cloned()
         .expect("repair operation");
     assert_eq!(repair.work, repaired);
     assert_eq!(repair.event.kind, WorkEventKind::Updated);
