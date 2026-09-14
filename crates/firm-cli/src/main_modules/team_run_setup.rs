@@ -312,7 +312,7 @@ pub(super) fn canonical_member_run_admission(
     execution_space_id: &str,
     runtime: &ProviderRuntimeProjection,
 ) -> CanonicalMemberRunAdmission {
-    let native_session = runtime.native_session.as_ref().cloned();
+    let native_session = runtime.native_session.clone();
     let run = harness_core::agentfirm_api::MemberRun {
         id: runtime.id.clone(),
         agent_member_id: runtime.agent_member_id.clone(),
