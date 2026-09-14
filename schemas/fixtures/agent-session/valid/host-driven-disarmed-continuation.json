@@ -5,8 +5,8 @@
   "execution_space_id": "space-1",
   "node_daemon_id": "daemon-1",
   "node_daemon_generation": 2,
-  "provider_kind": "deepseek_harness",
-  "provider_profile_ref": "profile-deepseek-1",
+  "provider_kind": "codex",
+  "provider_profile_ref": "profile-codex-1",
   "permission_envelope_ref": "permission-2",
   "effective_permission_ceiling": "workspace_write",
   "lifecycle": "active",
@@ -14,13 +14,26 @@
   "control_state": {
     "runtime_residency": "attached",
     "activity": "running",
-    "execution_driver": "provider_driven",
+    "execution_driver": "host_driven",
     "driver_generation": 4,
-    "driver_ref": {"kind": "provider_continuation", "provider": "deepseek_harness", "continuation_id": "goal-1", "continuation_revision": 7, "runtime_generation": 3},
+    "driver_ref": {
+      "kind": "node_daemon",
+      "node_daemon_id": "daemon-1",
+      "node_daemon_generation": 2
+    },
     "handoff_state": "none",
     "continuation": {
-      "definition": {"continuation_ref": "goal-1", "revision": 7, "phase": "active", "budget": {"remaining_cycles": 10}},
-      "activation": {"state": "armed", "runtime_generation": 3, "driver_generation": 4},
+      "definition": {
+        "continuation_ref": "codex-goal:thread-1",
+        "revision": 7,
+        "phase": "inactive",
+        "budget": {
+          "remaining_cycles": 10
+        }
+      },
+      "activation": {
+        "state": "disarmed"
+      },
       "observed_at": "unix-ms:2"
     },
     "composition_fingerprint": "sha256:1111111111111111111111111111111111111111111111111111111111111111",

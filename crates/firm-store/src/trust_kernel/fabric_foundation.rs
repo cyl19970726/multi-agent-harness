@@ -394,41 +394,6 @@ impl HarnessStore {
                     ));
                 }
             }
-            (
-                MemberExecutionDriver::ProviderDriven,
-                RuntimeDriverRef::ProviderContinuation {
-                    provider,
-                    continuation_id,
-                    continuation_revision,
-                    runtime_generation,
-                },
-            ) => {
-                let continuation = &session.control_state.continuation;
-                let activation_matches = matches!(
-                    continuation.activation,
-                    NativeContinuationActivation::Armed {
-                        runtime_generation: armed_runtime_generation,
-                        driver_generation: armed_driver_generation,
-                    } if armed_runtime_generation == session.runtime_generation
-                        && armed_driver_generation == session.control_state.driver_generation
-                );
-                if provider != &session.provider_kind
-                    || *runtime_generation != session.runtime_generation
-                    || continuation.definition.continuation_ref.as_deref()
-                        != Some(continuation_id.as_str())
-                    || continuation.definition.revision != *continuation_revision
-                    || continuation.definition.phase != NativeContinuationPhase::Active
-                    || !activation_matches
-                {
-                    return Err(trust_error(
-                        TrustErrorCode::MemberRunGenerationFenced,
-                        "provider continuation is not the exact active and armed continuation for this runtime/driver generation",
-                        resource_kind,
-                        resource_id,
-                        current_version,
-                    ));
-                }
-            }
             (MemberExecutionDriver::UserDriven, _) => {
                 return Err(trust_error(
                     TrustErrorCode::UnauthorizedActor,
@@ -608,15 +573,16 @@ impl HarnessStore {
         }
 
         // One-driver authority is independent from a syntactically exact
-        // RuntimeDriverRef. A provider continuation may be the live driver,
-        // but that never authorizes Harness to start a second top-level cycle.
+        // RuntimeDriverRef. A declared external interactive runtime is driven
+        // by its human, and that never authorizes Harness to start a cycle on
+        // it.
         if matches!(
             command,
             RuntimeCommandKind::DispatchProvider | RuntimeCommandKind::StartCycle
         ) && session.control_state.execution_driver != MemberExecutionDriver::HostDriven
         {
             return Err(fenced(
-                "Harness cannot start a provider cycle while the AgentSession is provider-driven or user-driven",
+                "Harness cannot start a provider cycle while the AgentSession is user-driven",
             ));
         }
 

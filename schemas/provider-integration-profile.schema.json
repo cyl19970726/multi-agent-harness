@@ -16,7 +16,7 @@
     },
     "provider": {"type": "string", "minLength": 1},
     "execution_mode": {"type": "string", "minLength": 1},
-    "execution_driver": {"enum": ["host_driven", "provider_driven", "user_driven"]},
+    "execution_driver": {"enum": ["host_driven", "user_driven"]},
     "provider_version": {"type": ["string", "null"]},
     "adapter_contract_version": {"type": ["string", "null"]},
     "reviewed_provider_versions": {"type": "array", "items": {"type": "string"}},
