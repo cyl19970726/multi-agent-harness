@@ -10,6 +10,12 @@ Work-linked conversation. The provider-native session boundary remains active.
 ADR 0056 replaces this document's PendingInteraction examples with correlated
 provider question/reply Messages and a frozen AgentSession permission ceiling.
 
+Amended 2026-09-15 (CORE4-N3) against the checked-out code: the availability
+enum, the read-projection type name, the per-provider resume verbs, and the
+thinking clause below are corrected in place. The shipped read model is
+`PersistedSessionReadResponse` / `ProviderNativeEventRecord`, documented in
+[docs/current/architecture/provider-event-projection.md](../current/architecture/provider-event-projection.md).
+
 This ADR amends ADR 0010, ADR 0025, ADR 0030, and ADR 0031 where they imply
 that Harness must mirror a provider transcript, tool lifecycle, command stream,
 or file-event stream into durable Harness records.
@@ -83,7 +89,7 @@ native_session_id
 native_locator_kind
 provider_version
 adapter_contract_version
-availability = available | stale | missing | incompatible
+availability = available | stale | missing | incompatible | unknown
 supports_resume
 last_verified_at
 parent_native_session_id?   # retry/resume lineage when the provider exposes it
@@ -104,8 +110,15 @@ The Dashboard builds a joined projection:
 ```text
 Harness coordination records
   + provider adapter reads NativeSessionRef on demand
-  -> NativeActivityProjection (ephemeral, rebuildable, non-authoritative)
+  -> response-local read model (ephemeral, rebuildable, non-authoritative)
 ```
+
+`NativeActivityProjection` was this ADR's placeholder name and was never
+implemented as a type. The shipped read model is
+`PersistedSessionReadResponse`, a page of `ProviderNativeEventRecord`
+(`crates/firm-node-daemon/src/daemon_protocol.rs:57-62`,
+`crates/firm-provider-events/src/persisted_model.rs:257-259`); its contract is
+[docs/current/architecture/provider-event-projection.md](../current/architecture/provider-event-projection.md).
 
 The adapter may normalize native events in memory for display. A bounded cache
 is allowed only when it is deletable, rebuildable, explicitly non-evidence, and
@@ -119,10 +132,18 @@ Team Activity therefore contains two visibly different record classes:
 - live or on-demand native provider activity, labelled with provider source and
   availability.
 
-Thinking remains stricter than ordinary native activity: Harness does not read
-it into a durable projection, persist it, replay it, forward it, or use it as
-evidence. A provider may expose a sanitized transient live preview under the
-existing thinking policy.
+Thinking remains stricter than ordinary native activity: nothing durable is
+written for it. No Harness store holds a reasoning record — `firm-store` never
+reads or writes `ProviderNativeEventRecord` at all — and reasoning is never
+replayed, forwarded as coordination, or used as evidence.
+
+What does happen, precisely: the response-local projection is rebuilt from the
+provider's own session file on every read and may carry reasoning fragments
+(`SessionSemanticKind::Reasoning`) to the local Operator
+(`crates/firm-provider-events/src/persisted/projector.rs:200`, `:236-237`,
+`:318-319`, `:355`, `:655-659`). Team-managed Pi is launched with thinking off
+and its projector emits no reasoning fragment at all, keeping any persisted
+thinking block inside the untouched `native_event` (`projector.rs:470-473`).
 
 ### Resume
 
@@ -131,8 +152,16 @@ Resume is provider- and execution-mode-specific:
 1. resolve the MemberRun's `NativeSessionRef` through its provider adapter;
 2. verify provider version, adapter contract, availability, permissions, and
    workspace identity;
-3. invoke the provider-native resume operation (`thread/resume`,
-   `session/load`, `--resume`, or the verified equivalent);
+3. invoke that mode's verified provider-native resume operation. On this
+   checkout: Codex app-server `thread/resume`
+   (`crates/firm-provider-codex/src/lib.rs:319-323`); Kimi ACP `session/resume`,
+   falling back to `session/load` only on a JSON-RPC method-not-found
+   (`crates/firm-provider-kimi/src/lib.rs:518-533`); Claude the Agent SDK
+   `resume` option (`apps/claude-member-runner/src/member-runner.mjs:157`); Pi
+   `--session <file>` (`crates/firm-provider-pi/src/lib.rs:286-288`); DeepSeek
+   Harness `runtime.resume` with the exact `SessionId`
+   (`apps/deepseek-member-runner/src/member-runner.mjs:40`). The legacy
+   one-shot compatibility paths use `codex exec resume` and `--resume`;
 4. record a Harness control request/acknowledgement and resume lineage, without
    copying the resumed transcript;
 5. fail honestly when the native session is missing or incompatible.

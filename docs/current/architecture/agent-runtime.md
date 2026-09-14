@@ -194,8 +194,10 @@ the exact value before any provider effect (ADR 0065).
 `AgentSession.runtime_generation` is the **provider-session epoch**: immutable
 per session row, embedded in the session id, equal to the MemberRun epoch at
 mint for Team-path sessions, and deliberately independent afterwards —
-Close/Reopen advances the adapter-process epoch while retaining the same
-AgentSession, native transcript, and WorkExecutionBindings. The relation
+Team Close/Reopen advances the adapter-process epoch while retaining the same
+AgentSession, native transcript, and WorkExecutionBindings. A provider Close
+(a settled `StopSession`) instead ends that session row, and the next adoption
+pass mints a new one carrying the same native session id (ADR 0071). The relation
 between the two epochs holds only for the MemberRun that minted the session
 row; a session reused by a later MemberRun, a session minted by the
 standalone session-start route, and an `external_interactive` Host (no
@@ -666,9 +668,11 @@ registration independently of TeamMembership and enforces the frozen
 AgentMember permission ceiling under the same Store lock before any session,
 command, process, or provider side effect. Team join/leave does not create,
 resume, or close a Session. Likewise, Team `close-member` closes only that
-MemberRun generation and cancels its current provider turn; it leaves the
-machine-owned AgentSession available and never releases or rewrites Work
-bindings from this or another Team.
+MemberRun generation and cancels its current provider turn; it quiesces the
+machine-owned AgentSession to `idle`, leaves it available, and never releases or
+rewrites Work bindings from this or another Team. Only a settled `StopSession`
+RuntimeCommand writes AgentSession `closed`, and `closed` is terminal
+(ADR 0071).
 
 ## Effect certainty and recovery
 

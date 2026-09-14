@@ -13,7 +13,7 @@ AgentTeam 1 ── * Work / Evidence                # durable responsibility nod
      └── * AgentTeamRun ── * MemberRun          # run projection / coordination status + adapter-process epoch (ADR 0065)
                         └── WorkExecutionBinding
 
-AgentMember ── * AgentSession
+AgentMember ── * AgentSession                  # <=1 non-Closed per Execution Space
       └── authors Message ── * CanonicalMessageDelivery ──> AgentSession
 
 NodeDaemon ── * RuntimeCommand ──> provider effect
@@ -22,6 +22,13 @@ NodeDaemon ── * RuntimeCommand ──> provider effect
 `AgentMember` is the sole durable agent identity root; `TeamMembership` records
 only participation. The `AgentIdentity` name is retired (ADR 0069): only the
 serde aliases that decode pre-cutover rows remain, and no writer emits them.
+
+An AgentMember accumulates many AgentSession rows over time, but the Trust
+Kernel admits at most one non-`Closed` session per AgentMember per Execution
+Space and refuses a second with "AgentMember already has a current AgentSession;
+explicit stop or recovery is required"
+(`crates/firm-store/src/trust_kernel/fabric_identity_sessions.rs:134-150`).
+Closed rows are retained, never deleted.
 
 `AgentTeam` is the atomic agency unit: one Host membership, one immutable
 Node placement, and a flat Member set. Teams never nest. Pre-cutover Teams

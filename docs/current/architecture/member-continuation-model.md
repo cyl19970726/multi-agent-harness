@@ -244,9 +244,33 @@ Harness remains the communication authority in both driver modes:
 | Provider asks a question | Create a correlated Message and wait for its correlated reply. |
 | Provider asks for a protected project action | Require the appropriate Human or policy approval and record the decision on the Work record; do not create a generic interaction object, do not revive the retired Approval ledger, and never infer approval from tool completion. |
 | Native continuation satisfies its condition | Record/project the provider fact, then await explicit Work submission/Host acceptance as required. |
-| Host explicitly closes Member | Latch Close before teardown, release the managed runtime, and freeze delivery without deleting the MemberRun or native-session binding. |
-| Host explicitly reopens Member | Increment `runtime_generation`; a managed adapter resumes the exact recorded native session and frozen mail becomes actionable. |
+| Host explicitly closes Member | Latch Team Close before teardown, release the managed runtime, and freeze delivery without deleting the MemberRun or native-session binding. Quiesce the machine-owned AgentSession to `idle`; never write AgentSession `closed`. |
+| Host explicitly reopens Member | Increment `MemberRun.runtime_generation`; a managed adapter resumes the exact recorded native session id and frozen mail becomes actionable. |
 | Host deactivates/retires Member | End coordination permanently; delivery and Reopen are rejected. |
+
+Two different operations are called "Close", and only one of them is in that
+table (ADR 0071). **Team Close** is the Host verb `close-member`: it ends one
+MemberRun generation, releases the Harness-owned adapter process, freezes the
+mailbox, and quiesces the AgentSession to `idle`
+(`crates/firm-cli/src/main_modules/member_lifecycle.rs:549-559`, `:600-612`).
+**Provider Close** is a settled `StopSession` RuntimeCommand, the only writer of
+AgentSession `closed`
+(`crates/firm-node-daemon/src/supervisor_daemon/control_protocol.rs:709-717`),
+and `closed` has no outbound edge
+(`crates/firm-store/src/trust_kernel/fabric_identity_sessions.rs:702-729`). A
+Team Host cannot issue the second one: an AgentSession RuntimeCommand requires
+exact self or the exact machine NodeDaemon/Operator, because "Team Host
+authority is Team-scoped only"
+(`crates/firm-store/src/trust_kernel/fabric_runtime_commands.rs:382-396`).
+
+After a provider Close the member has no current AgentSession, so the next
+adoption pass mints a new row with a new id carrying the same native session id
+(`crates/firm-cli/src/main_modules/member_orchestration.rs:228-285`). Reopen
+does not resume that row — it advances `MemberRun.runtime_generation`
+(`crates/firm-cli/src/main_modules/http_member_control.rs:546-559`), and
+`AgentSession.runtime_generation` is immutable per row (ADR 0065). The
+provider-native session id is the continuity across both Closes; the
+AgentSession row is not.
 
 A detached recovery Close is a narrow provider-free case, not a generic
 replacement for provider Close. The Store admits its source fence only through

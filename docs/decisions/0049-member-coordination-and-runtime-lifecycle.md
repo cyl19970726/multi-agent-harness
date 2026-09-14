@@ -3,6 +3,8 @@
 > Successor note (DOC-16 Keep row, DEV-40 flip 2026-08-18): this ADR is kept; the governing successor context is [DOC-105](https://app.notion.com/p/3be49a4fa379817aa594fd8e7331c30d).
 >
 > Amended by [ADR 0065](0065-two-runtime-epochs.md) (2026-09-05): the meaning of `MemberRun.runtime_generation` (the adapter-process epoch) and its relation to `AgentSession.runtime_generation` (the provider-session epoch) are canonical there; this ADR keeps the coordination lifecycle (Close, Reopen, Retire, mailbox freezing, history continuity).
+>
+> Amended by [ADR 0071](0071-two-closes-team-close-quiesces-provider-stop-closes.md) (2026-09-15): "Close" below is the **Team** Close of one MemberRun generation. It quiesces the machine-owned AgentSession to `idle` and never writes `closed`; only a settled `StopSession` RuntimeCommand does, and that command requires exact self or the exact machine NodeDaemon/Operator. Reopen advances `MemberRun.runtime_generation` only, and after a provider Close the next adoption pass mints a new AgentSession row carrying the same native session id. The MCP Reopen surface named below was retired by [ADR 0061](0061-retire-harness-coordination-mcp.md).
 
 ```text
 status: accepted
@@ -43,11 +45,15 @@ MemberRun id.
 
 ### Close
 
-Close is reversible runtime shutdown, not deletion or retirement.
+Team Close is reversible runtime shutdown of one MemberRun generation, not
+deletion, retirement, or a provider session close (ADR 0071).
 
 - Harness durably latches Close and changes coordination to `closed` before
   releasing a process-local control handle.
 - A managed Codex, Claude, or Kimi adapter terminates its Harness-owned process.
+- The machine-owned AgentSession is quiesced to `idle` when it is not already
+  idle. Team Close never writes AgentSession `closed`; a Team Host has no
+  authority over a Session at all (ADR 0071).
 - The MemberRun, Work ownership, mailbox rows, NativeSessionRef, and
   provider-native transcript remain.
 - Mail queued before Close is frozen. Closed members cannot send, receive,
@@ -60,8 +66,10 @@ Close is reversible runtime shutdown, not deletion or retirement.
 Reopen is an explicit control operation on the same MemberRun.
 
 - It requires `coordination_status=closed` and a non-active runtime state.
-- It increments `runtime_generation`, clears `finished_at`, and returns
-  coordination to `active`.
+- It increments `MemberRun.runtime_generation`, clears `finished_at`, returns
+  coordination to `active`, and resets the run status. It writes no
+  AgentSession field: `AgentSession.runtime_generation` is immutable per row
+  (ADR 0065).
 - For a managed member, both the captured provider profile and NativeSessionRef
   must support resume. Missing or incompatible native sessions fail visibly.
 - A member closed before any native session was ever created may reopen into
@@ -70,12 +78,16 @@ Reopen is an explicit control operation on the same MemberRun.
 - Harness starts a new adapter process and invokes the provider's verified
   native resume operation with the recorded native session id. It never builds
   a transcript from TeamMessages and never silently substitutes a fresh
-  session.
+  session. What resumes is the provider-native session, addressed by id. If a
+  provider `StopSession` had closed the AgentSession, the next adoption pass
+  mints a new AgentSession row carrying that same native session id; the row is
+  not the continuity (ADR 0071).
 - Frozen mail becomes actionable again after coordination is active.
 
 An active Supervisor notices the higher runtime generation and starts it. If no
-Supervisor exists, Dashboard/HTTP and MCP Reopen start one; CLI Reopen reports
-that `team-run start` is required.
+Supervisor exists, Dashboard/HTTP Reopen starts one; CLI Reopen reports that
+`team-run start` is required. (The MCP Reopen surface this ADR originally named
+was retired by ADR 0061.)
 
 ### Retire / Deactivate
 
@@ -109,4 +121,5 @@ continuity remains user-owned and cannot be claimed as Harness evidence.
   same-MemberRun Reopen;
 - managed Codex acceptance proves generation 2 calls `thread/resume` with the
   exact prior native session id;
-- CLI, HTTP, MCP, Dashboard, hook, and Skill checks share the same semantics.
+- CLI, HTTP, Dashboard, hook, and Skill checks share the same semantics. (The
+  MCP surface was retired by ADR 0061.)

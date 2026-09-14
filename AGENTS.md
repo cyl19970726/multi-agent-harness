@@ -230,8 +230,10 @@ doc carries the contract behind each rule.
    policy rather than a repository invariant (see Repository Execution Rules).
 7. **Member lifecycle and control honesty.** New Agent Team members use only
    their persistent bidirectional mode: `codex_app_server`, `kimi_acp`, or
-   `claude_agent_sdk`. Interrupt stops one current turn; Close ends the member
-   runtime; TeamRun completion never implies Close. Cross-process
+   `claude_agent_sdk`. Interrupt stops one current turn; Team Close ends the
+   member runtime and quiesces the machine-owned AgentSession to `idle`, while
+   only a settled provider `StopSession` closes that Session (ADR 0071);
+   TeamRun completion never implies Close. Cross-process
    control routes through the durable Team Supervisor lease, revalidated
    immediately before every drive; uncertain claimed deliveries require
    explicit reconciliation, never blind replay. Replacing a runtime drains or
