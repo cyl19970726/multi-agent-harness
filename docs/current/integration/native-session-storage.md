@@ -84,8 +84,8 @@ raw provider event.
 `NativeSessionRef` is stored in three places today:
 
 - canonical `MemberRun.native_session`
-  (`crates/firm-core/src/agentfirm_api/identity_session.rs:524-525`);
-- `AgentSession.native_session_ref` (same file, `:301-302`);
+  (`crates/firm-core/src/agentfirm_api/identity_session.rs:543`);
+- `AgentSession.native_session_ref` (same file, `:309`);
 - the legacy `member_runs.jsonl` `ProviderRuntimeProjection.native_session`
   (`crates/firm-core/src/team_runtime.rs:901-902`).
 

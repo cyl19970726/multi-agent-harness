@@ -51,29 +51,28 @@ exact settled `StopSession`:
   (`crates/firm-node-daemon/src/supervisor_daemon/control_protocol.rs:709-717`;
   the sibling `ResumeSession` writes `Cold`);
 - the runtime-effect projection, whose desired-status ladder admits `Cold`,
-  `Idle`, `Waiting` and `Interrupted` straight to `Closed` and routes an
-  `Active` lane through `Interrupted` first
-  (`crates/firm-cli/src/main_modules/runtime_effects.rs:286-292`); a
+  `Idle` and `Interrupted` straight to `Closed` and routes an `Active` lane
+  through `Interrupted` first
+  (`crates/firm-cli/src/main_modules/runtime_effects.rs:283-288`); a
   `RecoveryRequired` lane has no Close arm at all and must be reconciled to
-  `Idle` first (`:305`, `:313`). It refuses the step unless exactly one
+  `Idle` first (`:300`, `:308`). It refuses the step unless exactly one
   `StopSession` command matching the session id, session generation, daemon id,
   and daemon generation is `Settled`/`Applied`, and then carries that command's
   idempotency key into the Store transition (`:327-350`).
 
 There is no third path and no ungated one.
 
-The Store admits the write only on an ordinary edge — `Idle -> Closed`,
-`Waiting -> Closed`, `Interrupted -> Closed` — or, from `Cold`/`Active`, under
-an `authorized_stop` proof that binds the write to that exact prepared
-`StopSession` command, its target session generation, and its target
-NodeDaemon generation
+The Store admits the write only on an ordinary edge — `Idle -> Closed` or
+`Interrupted -> Closed` — or, from `Cold`/`Active`, under an `authorized_stop`
+proof that binds the write to that exact prepared `StopSession` command, its
+target session generation, and its target NodeDaemon generation
 (`crates/firm-store/src/trust_kernel/fabric_identity_sessions.rs:634-653`,
-`:702-729`).
+`:702-725`).
 
 ### 3. `closed` is terminal
 
 `Closed` never appears as a source in the AgentSession transition table
-(`fabric_identity_sessions.rs:702-729`), and neither narrow re-entry lane
+(`fabric_identity_sessions.rs:702-725`), and neither narrow re-entry lane
 (`resumes_terminated_interrupted_lane`, `recovers_reconciled_lane`,
 `:688-701`) starts from it. A closed session is not reopened; a closed session
 row is not rewritten.
@@ -85,7 +84,7 @@ that owns the session — or the exact machine NodeDaemon/Operator Service actor
 The Trust Kernel rejects everyone else with
 "AgentSession RuntimeCommand requires exact self or exact machine
 NodeDaemon/Operator authority; Team Host authority is Team-scoped only"
-(`crates/firm-store/src/trust_kernel/fabric_runtime_commands.rs:382-396`). A
+(`crates/firm-store/src/trust_kernel/fabric_runtime_commands.rs:383-396`). A
 Team Host is neither actor, so it cannot issue the provider Close at all. This
 is why Team Close quiesces rather than stops.
 
@@ -96,7 +95,7 @@ Space (`fabric_identity_sessions.rs:134-150`), and closed rows are retained
 rather than deleted. After a provider Close the member therefore has no current
 session, so the next adoption pass takes the mint branch and creates a **new**
 AgentSession row
-(`crates/firm-cli/src/main_modules/member_orchestration.rs:228-285`). Its id is
+(`crates/firm-cli/src/main_modules/member_orchestration.rs:228-284`). Its id is
 `agent-session:<member>:<node>:<daemon generation>:<MemberRun runtime
 generation>`, and its `native_session_ref` is read back from
 `MemberRun.native_session`, so the new row carries the same provider-native

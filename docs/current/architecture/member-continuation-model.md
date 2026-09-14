@@ -144,7 +144,7 @@ generation reattaches the Session — which requires the predecessor lease to be
 explicitly `Released`, so lease expiry alone never counts — and may then move it
 `Interrupted -> Idle` and open a fresh cycle. The Store admits that one hop only
 while the lane still proves the killed runtime is gone: detached, disarmed, no
-turn, no queued input, and no ambiguous `RuntimeCommand`. The killed cycle's own
+open cycle marker, no queued input, and no ambiguous `RuntimeCommand`. The killed cycle's own
 `RuntimeCommand` stays settled against the dead daemon generation and is never
 replayed; the resume opens a new cycle on the same provider-native session.
 
@@ -257,15 +257,15 @@ mailbox, and quiesces the AgentSession to `idle`
 AgentSession `closed`
 (`crates/firm-node-daemon/src/supervisor_daemon/control_protocol.rs:709-717`),
 and `closed` has no outbound edge
-(`crates/firm-store/src/trust_kernel/fabric_identity_sessions.rs:702-729`). A
+(`crates/firm-store/src/trust_kernel/fabric_identity_sessions.rs:702-725`). A
 Team Host cannot issue the second one: an AgentSession RuntimeCommand requires
 exact self or the exact machine NodeDaemon/Operator, because "Team Host
 authority is Team-scoped only"
-(`crates/firm-store/src/trust_kernel/fabric_runtime_commands.rs:382-396`).
+(`crates/firm-store/src/trust_kernel/fabric_runtime_commands.rs:383-396`).
 
 After a provider Close the member has no current AgentSession, so the next
 adoption pass mints a new row with a new id carrying the same native session id
-(`crates/firm-cli/src/main_modules/member_orchestration.rs:228-285`). Reopen
+(`crates/firm-cli/src/main_modules/member_orchestration.rs:228-284`). Reopen
 does not resume that row — it advances `MemberRun.runtime_generation`
 (`crates/firm-cli/src/main_modules/http_member_control.rs:546-559`), and
 `AgentSession.runtime_generation` is immutable per row (ADR 0065). The
