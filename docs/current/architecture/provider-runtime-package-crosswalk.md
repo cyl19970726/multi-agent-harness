@@ -127,10 +127,11 @@ Landed milestones:
   owned by `firm-runtime-contract` instead of the CLI loop; provider-native
   interrupt/close plans and their executable control port now live there too,
   while RuntimeCommand preparation/settlement stays in the application layer;
-- current cycle-control slice: replaces provider-visible durable steer state
-  with opaque `SteerRequest` tokens and keeps admissions/API replies inside the
-  supervisor. Providers can observe content and return receipts, but cannot
-  settle RuntimeCommands or answer callers directly;
+- current cycle-control slice: keeps admissions and API replies inside the
+  supervisor. Providers return receipts but cannot settle RuntimeCommands or
+  answer callers directly. ADR 0068 retired the steer half of this slice
+  outright, so the opaque `SteerRequest` token it once carried is gone with
+  the injection path;
 - current adapter-port slice: moves the executable `TeamRuntimeAdapter` trait
   itself into `firm-runtime-contract`; the CLI supervisor currently consumes
   it with its local error adapter pending the provider-package error split;

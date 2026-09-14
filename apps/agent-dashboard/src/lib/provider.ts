@@ -59,21 +59,3 @@ export function memberModelLabel(member: {
   return undefined;
 }
 
-/**
- * Same-turn Steer is a live-control capability. Today only the Codex app
- * server mode implements it; keeping the predicate and its user-facing
- * reasons in one place lets every surface gate consistently.
- */
-export function liveSteerCapability(member: {
-  provider_profile?: { execution_mode?: string | null } | null;
-  status?: string | null;
-}): { allowed: boolean; reason?: string } {
-  const mode = member.provider_profile?.execution_mode;
-  if (mode !== "codex_app_server") {
-    return { allowed: false, reason: `${mode ?? "This provider mode"} does not support same-turn Steer.` };
-  }
-  if (member.status !== "running") {
-    return { allowed: false, reason: "Steer is available only while this Codex member has an active turn." };
-  }
-  return { allowed: true };
-}
