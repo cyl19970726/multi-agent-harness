@@ -3,12 +3,11 @@ use super::*;
 #[test]
 fn agent_session_reattach_rejects_expiry_without_provider_drain_receipt() {
     let (store, root) = fabric_store();
-    store
-        .migrate_legacy_agent_identity_same_id(
-            &context("host", "identity.create", "expired-agent", 0),
-            identity("expired-agent"),
-        )
-        .unwrap();
+    seed_agent_member(
+        &store,
+        &context("host", "identity.create", "expired-agent", 0),
+        "expired-agent",
+    );
     let mut target = session("session-expired-reattach", "expired-agent");
     target.control_state.runtime_residency = RuntimeResidency::Detached;
     target.control_state.activity = RuntimeActivity::Idle;
@@ -114,12 +113,11 @@ fn agent_session_reattach_rejects_expiry_without_provider_drain_receipt() {
 #[test]
 fn hard_crash_recovery_requires_exact_operator_evidence_and_detaches_the_predecessor() {
     let (store, root) = fabric_store();
-    store
-        .migrate_legacy_agent_identity_same_id(
-            &context("host", "identity.create", "crash-agent", 0),
-            identity("crash-agent"),
-        )
-        .unwrap();
+    seed_agent_member(
+        &store,
+        &context("host", "identity.create", "crash-agent", 0),
+        "crash-agent",
+    );
     let mut target = session("session-crash-recovery", "crash-agent");
     target.control_state.runtime_residency = RuntimeResidency::Attached;
     target.control_state.activity = RuntimeActivity::Idle;

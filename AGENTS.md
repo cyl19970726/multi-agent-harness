@@ -127,10 +127,11 @@ NodeDaemon -> durable RuntimeCommand -> provider effect
 ```
 
 `AgentMember` is the sole durable agent identity; `TeamMembership` records only
-participation and never carries identity. The legacy `AgentIdentity` name survives
-solely as a deprecated same-ID read-only projection of `AgentMember`: the
-legacy compatibility edge `AgentIdentity -> AgentSession` names the exact same
-edge as `AgentMember -> AgentSession` above, never a second identity root.
+participation and never carries identity. The legacy `AgentIdentity` name is
+retired (ADR 0069): no type, projection, schema, reader or RoleView field
+carries it, and `AgentMember -> AgentSession` above is the only identity edge.
+Rows already written with the `agent_identity` spelling stay readable through
+retained serde aliases that no writer re-emits.
 
 `Mission` is retired (DOC-108): pre-cutover rows remain read-only legacy
 provenance through `harness mission list|show|log show`,

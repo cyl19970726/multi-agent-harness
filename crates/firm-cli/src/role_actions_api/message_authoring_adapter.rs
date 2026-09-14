@@ -215,14 +215,14 @@ fn map_message_authoring_error(
         MessageAuthoringError::RecipientRouteUnavailable { recipient_id } => encoded_error(
             "MESSAGE_ROUTE_UNAVAILABLE",
             "recipient requires one active canonical TeamMembership and MessageSubscription",
-            "agent_identity",
+            "agent_member",
             &recipient_id,
             None,
         ),
         MessageAuthoringError::RecipientRuntimeAmbiguous { recipient_id } => encoded_error(
             "AGENT_SESSION_AMBIGUOUS",
             "message recipient requires exactly one active Team MemberRun, including the Host",
-            "agent_identity",
+            "agent_member",
             &recipient_id,
             None,
         ),

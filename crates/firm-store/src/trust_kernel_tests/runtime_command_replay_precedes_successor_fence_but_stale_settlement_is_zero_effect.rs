@@ -3,12 +3,11 @@ use super::*;
 #[test]
 fn expired_predecessor_replays_and_settles_but_cannot_admit_a_new_effect() {
     let (store, root) = fabric_store();
-    store
-        .migrate_legacy_agent_identity_same_id(
-            &context("host", "identity.create", "identity-runtime-fence", 0),
-            identity("runtime-fence"),
-        )
-        .unwrap();
+    seed_agent_member(
+        &store,
+        &context("host", "identity.create", "identity-runtime-fence", 0),
+        "runtime-fence",
+    );
     store
         .create_agent_session(
             &service_context("session.create", "runtime-session-fence", 0),
@@ -129,12 +128,11 @@ fn expired_predecessor_replays_and_settles_but_cannot_admit_a_new_effect() {
 #[test]
 fn draining_predecessor_settles_prepared_command_but_cannot_prepare_another() {
     let (store, root) = fabric_store();
-    store
-        .migrate_legacy_agent_identity_same_id(
-            &context("host", "identity.create", "identity-draining-fence", 0),
-            identity("draining-fence"),
-        )
-        .unwrap();
+    seed_agent_member(
+        &store,
+        &context("host", "identity.create", "identity-draining-fence", 0),
+        "draining-fence",
+    );
     store
         .create_agent_session(
             &service_context("session.create", "runtime-session-draining", 0),

@@ -3,12 +3,11 @@ use super::*;
 #[test]
 fn bind_agent_session_native_session_is_cas_generation_fenced_and_idempotent() {
     let (store, root) = fabric_store();
-    store
-        .migrate_legacy_agent_identity_same_id(
-            &context("host", "identity.create", "identity-bind-native", 0),
-            identity("bind-native"),
-        )
-        .unwrap();
+    seed_agent_member(
+        &store,
+        &context("host", "identity.create", "identity-bind-native", 0),
+        "bind-native",
+    );
     store
         .create_agent_session(
             &service_context("session.create", "session-bind-native", 0),

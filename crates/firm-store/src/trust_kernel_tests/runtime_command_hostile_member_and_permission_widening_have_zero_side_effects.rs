@@ -4,17 +4,16 @@ use super::*;
 fn runtime_command_hostile_member_and_permission_widening_have_zero_side_effects() {
     let (store, root) = fabric_store();
     for identity_id in ["runtime-owner", "runtime-sibling"] {
-        store
-            .migrate_legacy_agent_identity_same_id(
-                &context(
-                    "host",
-                    "identity.create",
-                    &format!("identity-{identity_id}"),
-                    0,
-                ),
-                identity(identity_id),
-            )
-            .unwrap();
+        seed_agent_member(
+            &store,
+            &context(
+                "host",
+                "identity.create",
+                &format!("identity-{identity_id}"),
+                0,
+            ),
+            identity_id,
+        );
     }
     let owner_session = session("session-runtime-owner", "runtime-owner");
     store
@@ -106,8 +105,10 @@ fn runtime_command_hostile_member_and_permission_widening_have_zero_side_effects
             current_unix_ms(),
             "t-widening",
         )
-        .expect_err("StartSession cannot widen the AgentIdentity ceiling");
-    assert!(error.to_string().contains("cannot widen"));
+        .expect_err("StartSession cannot widen the AgentMember ceiling");
+    assert!(error
+        .to_string()
+        .contains("StartSession cannot widen the frozen AgentMember permission ceiling"));
     assert_eq!(
         store.canonical_operations().unwrap(),
         operations_before_widening

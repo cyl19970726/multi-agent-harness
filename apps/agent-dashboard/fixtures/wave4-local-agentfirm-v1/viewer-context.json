@@ -21,7 +21,7 @@
       }
     ],
     "runtime_fabric": {
-      "agent_identities": [],
+      
       "agent_sessions": [],
       "team_memberships": [],
       "work_execution_bindings": [],

@@ -40,12 +40,11 @@ fn closed_process_admission_settles_claimed_delivery_but_cannot_claim_another() 
         request_fingerprint: None,
     };
     append_runtime_team(&store, "team-admission", "run-admission");
-    store
-        .migrate_legacy_agent_identity_same_id(
-            &context("operator", "identity.create", "identity-drain-worker", 0),
-            identity("drain-worker"),
-        )
-        .unwrap();
+    seed_agent_member(
+        &store,
+        &context("operator", "identity.create", "identity-drain-worker", 0),
+        "drain-worker",
+    );
     let membership = join_runtime_membership(
         &store,
         "membership-drain-worker",
@@ -171,12 +170,11 @@ fn closed_process_admission_settles_claimed_delivery_but_cannot_claim_another() 
 fn member_close_releases_old_binding_but_preserves_provider_received_and_fences_replay() {
     let (store, _root) = fabric_store();
     append_runtime_team(&store, "team-admission", "run-admission");
-    store
-        .migrate_legacy_agent_identity_same_id(
-            &context("operator", "identity.create", "identity-close-worker", 0),
-            identity("close-worker"),
-        )
-        .unwrap();
+    seed_agent_member(
+        &store,
+        &context("operator", "identity.create", "identity-close-worker", 0),
+        "close-worker",
+    );
     let membership = join_runtime_membership(
         &store,
         "membership-close-worker",

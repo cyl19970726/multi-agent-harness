@@ -3,17 +3,16 @@ use super::*;
 #[test]
 fn interrupt_is_the_only_successor_admitted_while_start_cycle_is_in_flight() {
     let (store, root) = fabric_store();
-    store
-        .migrate_legacy_agent_identity_same_id(
-            &context(
-                "host",
-                "identity.create",
-                "identity-compensating-control",
-                0,
-            ),
-            identity("compensating-control"),
-        )
-        .unwrap();
+    seed_agent_member(
+        &store,
+        &context(
+            "host",
+            "identity.create",
+            "identity-compensating-control",
+            0,
+        ),
+        "compensating-control",
+    );
     let session = session("session-compensating-control", "compensating-control");
     store
         .create_agent_session(

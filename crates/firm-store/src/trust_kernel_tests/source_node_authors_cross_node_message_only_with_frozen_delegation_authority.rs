@@ -3,12 +3,11 @@ use super::*;
 #[test]
 fn source_node_authors_cross_node_message_only_with_frozen_delegation_authority() {
     let (store, root) = fabric_store();
-    store
-        .migrate_legacy_agent_identity_same_id(
-            &context("host", "identity.create", "identity-remote-sender", 0),
-            identity("remote-sender"),
-        )
-        .unwrap();
+    seed_agent_member(
+        &store,
+        &context("host", "identity.create", "identity-remote-sender", 0),
+        "remote-sender",
+    );
     let remote_session = session("session-remote-sender", "remote-sender");
     store
         .create_agent_session(
@@ -178,12 +177,11 @@ fn source_node_authors_cross_node_message_only_with_frozen_delegation_authority(
         store.fabric_message_deliveries("space-test").unwrap(),
         deliveries_before
     );
-    store
-        .migrate_legacy_agent_identity_same_id(
-            &context("host", "identity.create", "identity-wrong-source", 0),
-            identity("wrong-source"),
-        )
-        .unwrap();
+    seed_agent_member(
+        &store,
+        &context("host", "identity.create", "identity-wrong-source", 0),
+        "wrong-source",
+    );
     store
         .create_agent_session(
             &service_context("session.create", "wrong-source-session", 0),

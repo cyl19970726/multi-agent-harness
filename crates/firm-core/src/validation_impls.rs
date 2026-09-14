@@ -164,7 +164,7 @@ impl Validate for agentfirm_api::AgentTeamMigrationBundle {
         {
             return Err(ValidationError::Invalid {
                 field: "AgentTeamMigrationBundle.identity_id_map",
-                reason: "every AgentIdentity must map to the same AgentMember id with no omission or alias",
+                reason: "every legacy identity id must map to the same AgentMember id with no omission or alias",
             });
         }
         let membership_ids = self

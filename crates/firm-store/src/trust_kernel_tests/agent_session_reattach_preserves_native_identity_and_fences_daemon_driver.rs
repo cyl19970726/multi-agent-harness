@@ -3,12 +3,11 @@ use super::*;
 #[test]
 fn agent_session_reattach_preserves_native_identity_and_fences_daemon_driver() {
     let (store, root) = fabric_store();
-    store
-        .migrate_legacy_agent_identity_same_id(
-            &context("host", "identity.create", "reattach-agent", 0),
-            identity("reattach-agent"),
-        )
-        .unwrap();
+    seed_agent_member(
+        &store,
+        &context("host", "identity.create", "reattach-agent", 0),
+        "reattach-agent",
+    );
     let mut target = session("session-reattach", "reattach-agent");
     target.control_state.runtime_residency = RuntimeResidency::Detached;
     target.control_state.activity = RuntimeActivity::Idle;

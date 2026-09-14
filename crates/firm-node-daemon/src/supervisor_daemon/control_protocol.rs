@@ -636,13 +636,13 @@ impl MultiTeamDaemon {
                             })
                             .and_then(|mut session| {
                                 let display_name = store
-                                    .fabric_agent_identities(&envelope.execution_space_id)
+                                    .trust_agent_members(&envelope.execution_space_id)
                                     .map_err(|error| CliError::Usage(error.to_string()))?
                                     .into_iter()
-                                    .find(|identity| identity.id == session.agent_member_id)
-                                    .map(|identity| identity.display_name)
+                                    .find(|member| member.id == session.agent_member_id)
+                                    .map(|member| member.name)
                                     .ok_or_else(|| {
-                                        CliError::Usage("AGENT_IDENTITY_NOT_FOUND".into())
+                                        CliError::Usage("AGENT_MEMBER_NOT_FOUND".into())
                                     })?;
                                 let opened = self.application.open_node_session(
                                     &session,
@@ -764,13 +764,13 @@ impl MultiTeamDaemon {
                             let mut resumed_runtime = None;
                             if !stopping && !has_runtime {
                                 let display_name = store
-                                    .fabric_agent_identities(&envelope.execution_space_id)
+                                    .trust_agent_members(&envelope.execution_space_id)
                                     .map_err(|error| CliError::Usage(error.to_string()))?
                                     .into_iter()
-                                    .find(|identity| identity.id == session.agent_member_id)
-                                    .map(|identity| identity.display_name)
+                                    .find(|member| member.id == session.agent_member_id)
+                                    .map(|member| member.name)
                                     .ok_or_else(|| {
-                                        CliError::Usage("AGENT_IDENTITY_NOT_FOUND".into())
+                                        CliError::Usage("AGENT_MEMBER_NOT_FOUND".into())
                                     })?;
                                 let opened = self.application.open_node_session(
                                     &session,

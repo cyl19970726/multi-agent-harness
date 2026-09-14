@@ -3,12 +3,11 @@ use super::*;
 #[test]
 fn operator_cannot_race_an_active_prepared_command() {
     let (store, root) = fabric_store();
-    store
-        .migrate_legacy_agent_identity_same_id(
-            &context("host", "identity.create", "identity-abandoned-prepared", 0),
-            identity("abandoned-prepared"),
-        )
-        .unwrap();
+    seed_agent_member(
+        &store,
+        &context("host", "identity.create", "identity-abandoned-prepared", 0),
+        "abandoned-prepared",
+    );
     let target_session = session("session-abandoned-prepared", "abandoned-prepared");
     store
         .create_agent_session(
@@ -56,12 +55,11 @@ fn operator_cannot_race_an_active_prepared_command() {
 #[test]
 fn runtime_recovery_resolution_is_operator_fenced_replay_safe_and_never_blind_replays() {
     let (store, root) = fabric_store();
-    store
-        .migrate_legacy_agent_identity_same_id(
-            &context("host", "identity.create", "identity-recovery-agent", 0),
-            identity("recovery-agent"),
-        )
-        .unwrap();
+    seed_agent_member(
+        &store,
+        &context("host", "identity.create", "identity-recovery-agent", 0),
+        "recovery-agent",
+    );
     let target_session = session("session-recovery-agent", "recovery-agent");
     store
         .create_agent_session(
@@ -198,12 +196,11 @@ fn runtime_recovery_resolution_is_operator_fenced_replay_safe_and_never_blind_re
 #[test]
 fn every_runtime_recovery_resolution_projects_exact_success_and_replays_without_delta() {
     let (store, root) = fabric_store();
-    store
-        .migrate_legacy_agent_identity_same_id(
-            &context("host", "identity.create", "identity-recovery-outcomes", 0),
-            identity("recovery-outcomes"),
-        )
-        .unwrap();
+    seed_agent_member(
+        &store,
+        &context("host", "identity.create", "identity-recovery-outcomes", 0),
+        "recovery-outcomes",
+    );
     let target_session = session("session-recovery-outcomes", "recovery-outcomes");
     store
         .create_agent_session(

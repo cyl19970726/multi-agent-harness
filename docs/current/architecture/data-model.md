@@ -20,8 +20,8 @@ NodeDaemon ── * RuntimeCommand ──> provider effect
 ```
 
 `AgentMember` is the sole durable agent identity root; `TeamMembership` records
-only participation. The `AgentIdentity` name is a deprecated same-ID read-only
-compatibility projection of `AgentMember` and is never a second identity root.
+only participation. The `AgentIdentity` name is retired (ADR 0069): only the
+serde aliases that decode pre-cutover rows remain, and no writer emits them.
 
 `AgentTeam` is the atomic agency unit: one Host membership, one immutable
 Node placement, and a flat Member set. Teams never nest. Pre-cutover Teams

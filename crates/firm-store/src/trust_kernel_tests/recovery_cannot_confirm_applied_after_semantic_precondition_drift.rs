@@ -3,12 +3,11 @@ use super::*;
 #[test]
 fn recovery_cannot_confirm_applied_after_semantic_precondition_drift() {
     let (store, root) = fabric_store();
-    store
-        .migrate_legacy_agent_identity_same_id(
-            &context("host", "identity.create", "recovery-precondition", 0),
-            identity("recovery-precondition"),
-        )
-        .unwrap();
+    seed_agent_member(
+        &store,
+        &context("host", "identity.create", "recovery-precondition", 0),
+        "recovery-precondition",
+    );
     let target = session("session-recovery-precondition", "recovery-precondition");
     store
         .create_agent_session(

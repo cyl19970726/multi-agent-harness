@@ -84,9 +84,6 @@ fn scope_dashboard_snapshot(snapshot: &mut serde_json::Value, team_run_id: &str)
     retain_json_rows(snapshot, "members", |row| {
         json_field_in(row, "id", &agent_member_ids)
     });
-    retain_json_rows(snapshot, "agent_identities", |row| {
-        json_field_in(row, "id", &agent_member_ids)
-    });
     retain_json_rows(snapshot, "agent_sessions", |row| {
         json_field_in(row, "agent_member_id", &agent_member_ids)
     });

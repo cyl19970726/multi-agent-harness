@@ -4,7 +4,7 @@ use crate::{
     StoreResult,
 };
 use firm_core::agentfirm_api::{
-    integration_plan_module_v1, ActorKind, ActorRef, AgentIdentity, AgentMember,
+    integration_plan_module_v1, ActorKind, ActorRef, AgentMember,
     AgentMemberOrganizationStatus, AgentSession, AgentSessionControlState, AgentSessionStatus,
     AgentTeamMigrationBundle, AgentTeamPurgeRequest, AgentTeamPurgeTombstone,
     CanonicalMessageDelivery, CanonicalMessageDeliveryStatus, CanonicalMutationEvent,

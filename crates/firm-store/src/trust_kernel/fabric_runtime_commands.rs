@@ -395,23 +395,23 @@ impl HarnessStore {
                 ));
             }
             if let Some(requested) = requested_start_session.as_ref() {
-                let identity = self
-                    .fabric_agent_identities(&context.execution_space_id)?
+                let member = self
+                    .trust_agent_members(&context.execution_space_id)?
                     .into_iter()
-                    .find(|identity| identity.id == requested.agent_member_id)
+                    .find(|member| member.id == requested.agent_member_id)
                     .ok_or_else(|| {
                         trust_error(
                             TrustErrorCode::InvalidStateTransition,
-                            "StartSession target AgentIdentity does not exist",
+                            "StartSession target AgentMember does not exist",
                             "runtime_command",
                             &command.id,
                             None,
                         )
                     })?;
-                if requested.effective_permission_ceiling > identity.permission_ceiling {
+                if requested.effective_permission_ceiling > member.permission_ceiling {
                     return Err(trust_error(
                         TrustErrorCode::UnauthorizedActor,
-                        "StartSession cannot widen the frozen AgentIdentity permission ceiling",
+                        "StartSession cannot widen the frozen AgentMember permission ceiling",
                         "runtime_command",
                         &command.id,
                         None,

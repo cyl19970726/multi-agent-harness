@@ -3,12 +3,11 @@ use super::*;
 #[test]
 fn runtime_control_rejects_missing_turn_and_requires_explicit_binding_release_before_stop() {
     let (store, root) = fabric_store();
-    store
-        .migrate_legacy_agent_identity_same_id(
-            &context("host", "identity.create", "identity-runtime-control", 0),
-            identity("runtime-control"),
-        )
-        .unwrap();
+    seed_agent_member(
+        &store,
+        &context("host", "identity.create", "identity-runtime-control", 0),
+        "runtime-control",
+    );
     store
         .create_agent_session(
             &service_context("session.create", "runtime-control-session", 0),

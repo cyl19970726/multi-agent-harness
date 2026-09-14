@@ -121,9 +121,13 @@ fingerprint, and last reconciliation time. These fields are control fences and
 projections only; they do not mirror native turns, tool calls, commands,
 files, transcript, or provider reasoning.
 
-The `AgentIdentity` name is a deprecated same-ID read-only compatibility
-projection of `AgentMember`: legacy readers resolve the same row, and nothing
-may be bound to it as a second identity root.
+The `AgentIdentity` name is retired (ADR 0069). No retired `AgentIdentity`
+type, store projection, schema or RoleView field is left anywhere in the tree:
+`AgentMember` is the only identity root, and the StartSession
+permission-ceiling fence reads the `AgentMember` ceiling directly. Rows
+persisted before the cutover may still spell the legacy field
+`agent_identity_id`; retained serde aliases decode them and no writer re-emits
+that spelling.
 
 ## Team Host runtime
 

@@ -34,17 +34,16 @@ fn claimed_work_fixture(
     let binding_id = format!("binding-{suffix}");
     let delivery_id = format!("work-delivery:{work_id}:1");
 
-    store
-        .migrate_legacy_agent_identity_same_id(
-            &context(
-                "operator",
-                "identity.create",
-                &format!("identity-{suffix}"),
-                0,
-            ),
-            identity(&member_id),
-        )
-        .unwrap();
+    seed_agent_member(
+        store,
+        &context(
+            "operator",
+            "identity.create",
+            &format!("identity-{suffix}"),
+            0,
+        ),
+        &member_id,
+    );
     let session = session(&session_id, &member_id);
     store
         .create_agent_session(

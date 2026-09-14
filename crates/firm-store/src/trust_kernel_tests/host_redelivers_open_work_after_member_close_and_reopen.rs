@@ -58,17 +58,16 @@ pub(super) fn reopened_member_fixture(suffix: &str) -> (ReopenedMemberFixture, P
     let member_id = format!("worker-{suffix}");
     let member_run_id = format!("member-run-{suffix}");
     append_runtime_team(&store, "team-admission", "run-admission");
-    store
-        .migrate_legacy_agent_identity_same_id(
-            &context(
-                "operator",
-                "identity.create",
-                &format!("identity-{suffix}"),
-                0,
-            ),
-            identity(&member_id),
-        )
-        .unwrap();
+    seed_agent_member(
+        &store,
+        &context(
+            "operator",
+            "identity.create",
+            &format!("identity-{suffix}"),
+            0,
+        ),
+        &member_id,
+    );
     let membership = join_runtime_membership(
         &store,
         &format!("membership-{suffix}"),

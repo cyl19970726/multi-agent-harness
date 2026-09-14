@@ -38,10 +38,7 @@ fn standalone_codex_session_runs_through_node_daemon_and_replays_without_team_me
         "codex",
         &[],
     );
-    assert!(
-        created.status.success(),
-        "AgentIdentity fixture: {created:?}"
-    );
+    assert!(created.status.success(), "AgentMember fixture: {created:?}");
     let store = HarnessStore::new(home.spaces_dir().join(&space_id));
     assert!(
         store

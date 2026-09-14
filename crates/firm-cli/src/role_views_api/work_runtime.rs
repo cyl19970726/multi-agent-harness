@@ -229,7 +229,6 @@ mod tests {
             provider_runtime_projections: Vec::new(),
             messages: Vec::new(),
             message_deliveries: Vec::new(),
-            agent_identities: Vec::new(),
             agent_sessions: vec![json!({
                 "id":"session-worker",
                 "agent_member_id":"worker",

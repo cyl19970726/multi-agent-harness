@@ -98,8 +98,8 @@ being; a managed Host and a Member share one MemberRun → AgentSession →
 NodeDaemon path. Identity outlives every run; participation outlives every
 session; sessions outlive every provider turn. Never infer identity from a
 display name; the server resolves your identity — identity/runtime authority
-is server-built, never caller-selected. (`AgentIdentity` is a deprecated
-same-ID read-only compatibility projection of `AgentMember`.)
+is server-built, never caller-selected. (The `AgentIdentity` name is retired,
+ADR 0069: `AgentMember` is the only identity you will ever be handed.)
 
 ### 2. The Team: durable, flat, pinned to one machine
 

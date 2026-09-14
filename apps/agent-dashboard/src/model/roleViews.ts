@@ -270,7 +270,7 @@ export interface TeamActivitySummary {
   message_id?: string|null;
 }
 export interface RuntimeFabricSummary {
-  agent_identities:RoleRecordSummary[]; agent_sessions:RoleRecordSummary[]; team_memberships:RoleRecordSummary[];
+  agent_sessions:RoleRecordSummary[]; team_memberships:RoleRecordSummary[];
   work_execution_bindings:RoleRecordSummary[]; messages:RoleRecordSummary[]; message_deliveries:RoleRecordSummary[];
 }
 export interface CollaborationActorRef { kind:"human"|"agent_member"|"external"|"service"; id:string }

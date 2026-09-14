@@ -3,12 +3,11 @@ use super::*;
 #[test]
 fn runtime_cycle_correlation_is_exact_and_idempotent() {
     let (store, root) = fabric_store();
-    store
-        .migrate_legacy_agent_identity_same_id(
-            &context("host", "identity.create", "cycle-correlation", 0),
-            identity("cycle-correlation"),
-        )
-        .unwrap();
+    seed_agent_member(
+        &store,
+        &context("host", "identity.create", "cycle-correlation", 0),
+        "cycle-correlation",
+    );
     let mut target = session("session-cycle-correlation", "cycle-correlation");
     target.lifecycle = AgentSessionStatus::Active;
     target.native_session_ref = None;

@@ -3,12 +3,11 @@ use super::*;
 #[test]
 fn remote_message_persists_before_delivery_and_replays_without_route_duplication() {
     let (store, root) = fabric_store();
-    store
-        .migrate_legacy_agent_identity_same_id(
-            &context("host", "identity.create", "remote-recipient", 0),
-            identity("remote-recipient"),
-        )
-        .unwrap();
+    seed_agent_member(
+        &store,
+        &context("host", "identity.create", "remote-recipient", 0),
+        "remote-recipient",
+    );
     store
         .create_agent_session(
             &service_context("session.create", "remote-recipient-session", 0),

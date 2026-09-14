@@ -30,7 +30,7 @@ Teams and Members answer "who exists and how are they organized."
 
 **Agent Members**: `AgentMember` is the sole durable agent identity. It persists across Team Runs and is not tied to any single execution. Examples: governance Agent auditing works periodically, scheduled-task Agent running on a timer.
 
-**Team Memberships**: `TeamMembership` records only a member's participation in one Team, in generations. It never carries identity, and it is never a second identity root; the `AgentIdentity` name is a deprecated same-ID read-only compatibility projection of `AgentMember`.
+**Team Memberships**: `TeamMembership` records only a member's participation in one Team, in generations. It never carries identity, and it is never a second identity root. The `AgentIdentity` name is retired (ADR 0069); pre-cutover rows spelling it `agent_identity_id` still decode through retained serde aliases that no writer re-emits.
 
 **Actors**: Four types — Human, Agent, External, Service. `ActorRef` (type + id) references a participant wherever needed.
 

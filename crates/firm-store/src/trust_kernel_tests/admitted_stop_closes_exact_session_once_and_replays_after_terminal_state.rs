@@ -3,12 +3,11 @@ use super::*;
 #[test]
 fn admitted_stop_closes_exact_session_once_and_replays_after_terminal_state() {
     let (store, root) = fabric_store();
-    store
-        .migrate_legacy_agent_identity_same_id(
-            &context("host", "identity.create", "identity-runtime-stop", 0),
-            identity("runtime-stop"),
-        )
-        .unwrap();
+    seed_agent_member(
+        &store,
+        &context("host", "identity.create", "identity-runtime-stop", 0),
+        "runtime-stop",
+    );
     store
         .create_agent_session(
             &service_context("session.create", "runtime-stop-session", 0),

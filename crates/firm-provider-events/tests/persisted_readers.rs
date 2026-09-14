@@ -821,3 +821,33 @@ fn snapshot_watermark_then_forward_pages_have_no_gap_or_duplicate() {
     assert_eq!(all.len(), 3);
     assert!(all.iter().all(|position| *position > watermark.value));
 }
+
+/// ADR 0069 read tolerance: the retired `AgentIdentity` spelling still decodes
+/// on already-persisted provider event rows, and no writer re-emits it.
+#[test]
+fn legacy_agent_identity_id_decodes_and_reserializes_as_agent_member_id() {
+    let legacy = serde_json::json!({
+        "schema_version": "provider-native-event.v3",
+        "record_id": "record-legacy",
+        "provider": "claude",
+        "adapter_version": "v3",
+        "native_source_ref": "native:legacy",
+        "source_generation": "generation-legacy",
+        "row_locator": "row-1",
+        "ordering_key": {"kind": "provider_ordinal", "value": 1},
+        "source_content_fingerprint": "fingerprint-legacy",
+        "agent_identity_id": "member-legacy",
+        "agent_session_id": "session-legacy",
+        "agent_session_generation": 1,
+        "observed_at": "2026-08-29T00:00:00Z",
+        "native_event": {},
+        "fragments": []
+    });
+    let record: firm_provider_events::ProviderNativeEventRecord =
+        serde_json::from_value(legacy).expect("legacy agent_identity_id row decodes");
+    assert_eq!(record.agent_member_id, "member-legacy");
+    let reserialized = serde_json::to_value(&record).expect("record reserializes");
+    let object = reserialized.as_object().expect("record is an object");
+    assert!(object.contains_key("agent_member_id"));
+    assert!(!object.contains_key("agent_identity_id"));
+}

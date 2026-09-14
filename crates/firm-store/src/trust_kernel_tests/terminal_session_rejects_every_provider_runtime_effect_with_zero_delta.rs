@@ -3,12 +3,11 @@ use super::*;
 #[test]
 fn terminal_session_rejects_every_provider_runtime_effect_with_zero_delta() {
     let (store, root) = fabric_store();
-    store
-        .migrate_legacy_agent_identity_same_id(
-            &context("host", "identity.create", "identity-terminal", 0),
-            identity("terminal"),
-        )
-        .unwrap();
+    seed_agent_member(
+        &store,
+        &context("host", "identity.create", "identity-terminal", 0),
+        "terminal",
+    );
     store
         .create_agent_session(
             &service_context("session.create", "session-terminal", 0),
