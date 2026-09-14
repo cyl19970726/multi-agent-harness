@@ -490,3 +490,65 @@ fn a_revision_event_id_is_stable_and_is_what_a_remote_ref_binds_to() {
     );
     std::fs::remove_dir_all(root).expect("remove temp store");
 }
+
+#[test]
+fn a_caller_of_the_wrong_kind_cannot_replay_a_host_key() {
+    let (root, store, run, member, _) = work_test_fixture("work-journal-replay-authority");
+    let created = store
+        .insert_work(
+            unassigned_test_work(&run.id, "work-journal-replay-authority"),
+            host_work_context("create-authority", "create-authority", "unix-ms:2"),
+        )
+        .expect("create");
+    let assigned = assign_test_work_to_member(
+        &store,
+        &run,
+        &created,
+        &member,
+        "assign-authority",
+        "assign-authority",
+        "unix-ms:3",
+    );
+    let started = start_claimed_work_for_test(
+        &store,
+        &assigned,
+        &member,
+        "start-authority",
+        "start-authority",
+        "unix-ms:4",
+    );
+    let blocked = store
+        .block_work_as_host(
+            &started.id,
+            started.version,
+            "Host paused it",
+            host_work_context("block-authority", "block-authority", "unix-ms:5"),
+        )
+        .expect("the Host blocks its own Work");
+
+    // The exact disclosure shape: a caller whose kind is NOT Host, presenting
+    // the Host's key and request, whose canonical authenticated actor is
+    // nonetheless identical to the Host's — `Host/agent-host` and
+    // `AgentMember/agent-host` both canonicalise to `AgentMember/agent-host`,
+    // so the replay lookup alone would match and hand back the committed Work.
+    let mut impersonating = host_work_context("block-authority", "block-authority", "unix-ms:5");
+    impersonating.performed_by_actor.kind = TeamActorKind::AgentMember;
+    let refused = store
+        .block_work_as_host(
+            &started.id,
+            started.version,
+            "Host paused it",
+            impersonating,
+        )
+        .expect_err("a non-Host caller kind is refused before the replay is looked up");
+    assert!(
+        refused.to_string().contains("Host authority is required"),
+        "the caller-shape gate must answer first, not the replay: {refused}"
+    );
+    assert_eq!(
+        store.current_work(&started.id).expect("current"),
+        Some(blocked),
+        "and the Work is untouched either way"
+    );
+    std::fs::remove_dir_all(root).expect("remove temp store");
+}

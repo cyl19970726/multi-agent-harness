@@ -16,7 +16,7 @@
 //! and produces the new WorkDelivery, exactly as it does after `work assign`.
 
 use super::*;
-use crate::store_work_journal_writer::{command_space, WorkCommandEntrance};
+use crate::store_work_journal_writer::{command_space, WorkCommandAuthority, WorkCommandEntrance};
 use firm_core::agentfirm_api::{
     AgentSessionStatus, WorkExecutionBinding, WorkExecutionBindingStatus,
 };
@@ -77,6 +77,7 @@ impl HarnessStore {
             work_id,
             expected_version,
             WorkEventKind::Rebound,
+            WorkCommandAuthority::Host,
             &context,
             &serde_json::json!({
                 "work_id": work_id,

@@ -158,6 +158,7 @@ fn non_evidence_review_revision_drift_cannot_reuse_an_older_result() {
                 &submitted.id,
                 submitted.version,
                 WorkEventKind::Updated,
+                crate::store_work_journal_writer::WorkCommandAuthority::Host,
                 &context,
                 &serde_json::json!({"reason": "semantic_review_edit"}),
             )

@@ -61,7 +61,7 @@
 
 use super::store_work_redelivery::{delivery_staleness, SupersededWorkDelivery};
 use super::*;
-use crate::store_work_journal_writer::{command_space, WorkCommandEntrance};
+use crate::store_work_journal_writer::{command_space, WorkCommandAuthority, WorkCommandEntrance};
 use firm_core::agentfirm_api::{
     ActorKind, ActorRef, AgentSession, AgentSessionStatus, CanonicalMutationEvent, MemberRun,
     MutationContext, RuntimeCommandBinding, WorkExecutionBinding, WorkExecutionBindingStatus,
@@ -197,7 +197,9 @@ impl HarnessStore {
     ) -> StoreResult<LostExecutionFacts> {
         let mut bound_admissions: BTreeMap<String, (usize, serde_json::Value)> = BTreeMap::new();
         let mut end_events = BTreeMap::new();
-        for operation in self.canonical_operations_for_space(execution_space_id)? {
+        for operation in
+            self.canonical_operations_for_space(&ExecutionSpaceId::new(execution_space_id))?
+        {
             let event = operation.event;
             if event.aggregate_kind != "work_execution_binding" {
                 continue;
@@ -315,6 +317,7 @@ impl HarnessStore {
             work_id,
             expected_version,
             WorkEventKind::ExecutionRecovered,
+            WorkCommandAuthority::Host,
             &context,
             &serde_json::json!({
                 "work_id": work_id,

@@ -1,5 +1,5 @@
 use super::*;
-use crate::store_work_journal_writer::{command_space, WorkCommandEntrance};
+use crate::store_work_journal_writer::{command_space, WorkCommandAuthority, WorkCommandEntrance};
 
 /// Who is returning a submitted Work for changes. The Store keeps the two
 /// authorities separate so the Host gate is never relaxed to admit a peer:
@@ -198,6 +198,7 @@ impl HarnessStore {
             work_id,
             expected_version,
             WorkEventKind::Updated,
+            WorkCommandAuthority::CheckedByCommand,
             &context,
             &request,
         )? {
@@ -322,6 +323,12 @@ impl HarnessStore {
             work_id,
             expected_version,
             WorkEventKind::ChangesRequested,
+            match &reviewer {
+                WorkChangesReviewer::Host => WorkCommandAuthority::Host,
+                WorkChangesReviewer::ExactTeamPeer { member_run_id } => {
+                    WorkCommandAuthority::MemberRun(member_run_id)
+                }
+            },
             &context,
             &serde_json::json!({
                 "work_id": work_id,
@@ -499,6 +506,7 @@ impl HarnessStore {
             work_id,
             expected_version,
             kind,
+            WorkCommandAuthority::MemberRun(member_run_id),
             &context,
             &serde_json::json!({
                 "work_id": work_id,
@@ -583,6 +591,7 @@ impl HarnessStore {
             work_id,
             expected_version,
             kind,
+            WorkCommandAuthority::Host,
             &context,
             &serde_json::json!({
                 "work_id": work_id,
@@ -643,6 +652,10 @@ impl HarnessStore {
             work_id,
             expected_version,
             WorkEventKind::Released,
+            match member_run_id {
+                Some(member_run_id) => WorkCommandAuthority::MemberRun(member_run_id),
+                None => WorkCommandAuthority::Host,
+            },
             &context,
             &serde_json::json!({
                 "work_id": work_id,

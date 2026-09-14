@@ -1,5 +1,5 @@
 use super::*;
-use crate::store_work_journal_writer::{command_space, WorkCommandEntrance};
+use crate::store_work_journal_writer::{command_space, WorkCommandAuthority, WorkCommandEntrance};
 
 impl HarnessStore {
     fn work_is_assigned_to_member_without_active_binding_unlocked(
@@ -75,6 +75,7 @@ impl HarnessStore {
             &work.team_run_id,
             0,
             WorkEventKind::Created,
+            WorkCommandAuthority::HostOrMemberRuntime,
             &context,
             &serde_json::json!({
                 "work_id": work.id,
@@ -513,6 +514,7 @@ impl HarnessStore {
             work_id,
             expected_version,
             WorkEventKind::Assigned,
+            WorkCommandAuthority::Host,
             &context,
             &serde_json::json!({
                 "work_id": work_id,
@@ -629,6 +631,7 @@ impl HarnessStore {
             work_id,
             expected_version,
             WorkEventKind::Updated,
+            WorkCommandAuthority::Host,
             &context,
             &serde_json::json!({
                 "work_id": work_id,
@@ -711,13 +714,14 @@ impl HarnessStore {
         self.init()?;
         let _lock = self.acquire_write_lock()?;
         // The replay fence that used to be hand-written here — same Host, same
-        // Work version, same successor — is now the trust kernel's request
-        // fingerprint over exactly those three facts plus the authenticated
-        // actor the envelope records.
+        // Work version, same successor — is now the entrance's caller-shape
+        // gate plus the trust kernel's request fingerprint over exactly those
+        // three facts and the authenticated actor the envelope records.
         let mutation_context = match self.enter_work_command_unlocked(
             work_id,
             expected_version,
             WorkEventKind::ExecutionRetargeted,
+            WorkCommandAuthority::Host,
             &context,
             &serde_json::json!({
                 "work_id": work_id,
@@ -725,13 +729,9 @@ impl HarnessStore {
                 "successor_team_run_id": successor_team_run_id,
             }),
         )? {
-            WorkCommandEntrance::Replayed(work) => {
-                require_host_actor(&context.performed_by_actor)?;
-                return Ok(*work);
-            }
+            WorkCommandEntrance::Replayed(work) => return Ok(*work),
             WorkCommandEntrance::Admitted(mutation_context) => mutation_context,
         };
-        require_host_actor(&context.performed_by_actor)?;
         let current = self.current_work_unlocked(
             &command_space(&mutation_context),
             work_id,
@@ -822,6 +822,7 @@ impl HarnessStore {
             work_id,
             expected_version,
             WorkEventKind::Claimed,
+            WorkCommandAuthority::MemberRun(member_run_id),
             &context,
             &serde_json::json!({
                 "work_id": work_id,
@@ -915,6 +916,7 @@ impl HarnessStore {
             work_id,
             expected_version,
             WorkEventKind::Started,
+            WorkCommandAuthority::MemberRun(member_run_id),
             &context,
             &serde_json::json!({
                 "work_id": work_id,

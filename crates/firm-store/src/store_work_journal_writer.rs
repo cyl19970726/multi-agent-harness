@@ -50,10 +50,59 @@ pub(super) fn command_space(context: &MutationContext) -> ExecutionSpaceId {
     ExecutionSpaceId::new(&context.execution_space_id)
 }
 
+/// The caller-context authority a Work command requires, checked before the
+/// entrance looks anything up.
+///
+/// The replay lookup keys on the canonical authenticated actor, and
+/// `Host/<id>` and `AgentMember/<id>` canonicalise to the same `ActorRef`. So
+/// a replay answered before the caller-shape gate could hand one caller kind
+/// the Work another kind committed. Nothing is written either way, but a
+/// refusal a command applies to its write must apply to its replay too, and
+/// "eleven writers do not, one does" is not a rule anybody can hold.
+pub(super) enum WorkCommandAuthority<'a> {
+    /// `require_host_actor` — a Host-shaped caller context.
+    Host,
+    /// `require_member_actor` — the exact MemberRun this command names.
+    MemberRun(&'a str),
+    /// Work creation admits the exact TeamRun Host or a live
+    /// ProviderRuntimeProjection, and decides which after the entrance. No
+    /// other caller shape reaches a commit.
+    HostOrMemberRuntime,
+    /// The command proved its own caller shape before the entrance (the
+    /// NodeDaemon Service gate on the external evidence refresh).
+    CheckedByCommand,
+}
+
+impl WorkCommandAuthority<'_> {
+    fn require(&self, actor: &TeamActorRef) -> StoreResult<()> {
+        match self {
+            Self::Host => require_host_actor(actor),
+            Self::MemberRun(member_run_id) => require_member_actor(actor, member_run_id),
+            Self::HostOrMemberRuntime => {
+                if actor.kind == TeamActorKind::ProviderRuntimeProjection {
+                    Ok(())
+                } else {
+                    require_host_actor(actor)
+                }
+            }
+            Self::CheckedByCommand => Ok(()),
+        }
+    }
+}
+
 /// What the Work command entrance decided.
 pub(super) enum WorkCommandEntrance {
     /// This exact request already committed. Its committed Work is the answer;
     /// no guard runs again and nothing is appended.
+    ///
+    /// The retired ledger idempotency lookup did one more thing here: it
+    /// re-derived this operation's HostAttention rows, so a crash between the
+    /// Work write and its derived wake was repaired by the ordinary retry.
+    /// That repair moved rather than disappeared — the HostAttention
+    /// reconciler now derives from the whole Work journal, so it covers the
+    /// same gap for every entrance whether or not anything ever retries. A
+    /// replay is therefore a pure read again, which is what it should have
+    /// been: re-deriving a wake is not what "this already committed" means.
     Replayed(Box<Work>),
     /// The command may proceed. Guards run next, then exactly one commit
     /// through [`HarnessStore::append_work_transition_with_records_unlocked`].
@@ -133,13 +182,16 @@ impl HarnessStore {
         )
     }
 
-    /// Resolve the canonical mutation context for a Work command and answer an
-    /// exact replay, both before the command's own guards and version fence.
+    /// Check the caller-context authority, resolve the canonical mutation
+    /// context, and answer an exact replay — in that order, all before the
+    /// command's own guards and version fence.
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn enter_work_command_unlocked(
         &self,
         work_id: &str,
         expected_version: u64,
         kind: WorkEventKind,
+        authority: WorkCommandAuthority<'_>,
         context: &WorkCommandContext,
         request_payload: &serde_json::Value,
     ) -> StoreResult<WorkCommandEntrance> {
@@ -152,6 +204,7 @@ impl HarnessStore {
             &loose.team_run_id,
             expected_version,
             kind,
+            authority,
             context,
             request_payload,
         )
@@ -159,15 +212,18 @@ impl HarnessStore {
 
     /// The creation entrance: there is no Work yet, so the Execution Space
     /// comes from the TeamRun the Work is being created in.
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn enter_work_command_for_run_unlocked(
         &self,
         work_id: &str,
         team_run_id: &str,
         expected_version: u64,
         kind: WorkEventKind,
+        authority: WorkCommandAuthority<'_>,
         context: &WorkCommandContext,
         request_payload: &serde_json::Value,
     ) -> StoreResult<WorkCommandEntrance> {
+        authority.require(&context.performed_by_actor)?;
         let run = self.require_team_run_unlocked(team_run_id)?;
         let execution_space_id = self.current_team_run_execution_space_unlocked(&run)?;
         let request_fingerprint = canonical_json_fingerprint(request_payload);
@@ -215,9 +271,23 @@ impl HarnessStore {
     /// list reads it as a *set* of immutable per-row records (condition
     /// records, reports, evidence, decisions, event ids); nothing here may
     /// depend on cross-source ordering.
-    pub(super) fn work_record_operations_unlocked(&self) -> StoreResult<Vec<WorkOperation>> {
-        let mut operations = self.work_operations_unlocked()?;
-        operations.extend(self.trust_read_model()?.work_operations());
-        Ok(operations)
+    ///
+    /// Memoized on the same two source snapshots every other Work fold uses,
+    /// because the HostAttention entrances ask for it several times per call
+    /// and the answer cannot change while those snapshots are unchanged.
+    pub(super) fn work_record_operations_unlocked(
+        &self,
+    ) -> StoreResult<std::sync::Arc<Vec<WorkOperation>>> {
+        let sources = self.current_work_sources()?;
+        let trust = self.trust_read_model()?;
+        self.cached_combined_projection(
+            "work-record-operations",
+            vec![sources.clone(), trust.clone()],
+            || {
+                let mut operations = sources.operations.clone();
+                operations.extend(trust.work_operations());
+                Ok(operations)
+            },
+        )
     }
 }
