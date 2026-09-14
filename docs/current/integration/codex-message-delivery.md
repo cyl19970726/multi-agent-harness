@@ -20,7 +20,7 @@ Message
   -> one CanonicalMessageDelivery per recipient AgentMember
   -> exact current AgentSession resolved at claim time
   -> NodeDaemon-fenced provider dispatch
-  -> app-server turn/start or turn/steer
+  -> app-server turn/start
   -> provider receipt / recipient acknowledgement
   -> updated CanonicalMessageDelivery
 
@@ -50,7 +50,7 @@ Provider-native questions that pause the current turn are
 `provider_interaction_request` Messages. Answers are causation-linked
 `provider_interaction_response` Messages with the same correlation id.
 Permission is frozen at AgentSession start and never becomes a mail workflow.
-Steer, Interrupt, Close, Reopen and other provider effects use RuntimeCommand;
+Interrupt, Close, Reopen and other provider effects use RuntimeCommand;
 no Message kind carries runtime authority.
 
 ## Identity, Addressing And Initial State
@@ -141,10 +141,10 @@ this input boundary; it is not an atomic claim of the whole mailbox. Later
 arrivals remain queued; failed or uncertain claims follow reconciliation. Receipt records cover only the
 Messages included in the accepted input.
 
-Ordinary Messages never interrupt a busy turn. Steer is a separate
-RuntimeCommand and uses `turn/steer` only when the snapshotted mode supports it.
-Interrupt and Close are likewise provider controls. They are not implied by a
-turn or a TeamRun completion.
+Ordinary Messages never interrupt a busy turn, and ADR 0068 removed the one
+path that could: there is no Steer RuntimeCommand and no `turn/steer` call.
+Mail waits in the durable queue for the next cycle. Interrupt and Close remain
+provider controls, and neither is implied by a turn or a TeamRun completion.
 
 ## Delivered Envelope And Native Continuity
 
@@ -195,7 +195,10 @@ prompt or resume. See [ADR 0040](../../decisions/0040-native-host-inbox-delivery
 
 `TeamMessage`, `TeamMessageProjection`, `team_messages.jsonl`, delivery-policy
 `manual_ack`, and legacy ACK commands are ADR 0056 compatibility history. They
-may be read or exported only to reconstruct old runs. Current authoring, inbox,
+may be read or exported only to reconstruct old runs. ADR 0068 additionally
+retired the `inject` and `interrupt` delivery policies outright: `queue` and
+`manual_ack` are the only values, and no path marks a provider member's mail
+delivered at creation time. Current authoring, inbox,
 provider dispatch, Dashboard projections and acceptance must not consult,
 mutate, dual-write or fall back to them.
 

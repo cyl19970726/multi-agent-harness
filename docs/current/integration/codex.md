@@ -46,7 +46,6 @@ MemberRun + active Work/version
   -> thread/start or explicit thread/resume
   -> thread/name/set "Agent Team · <member name>"
   -> turn/start for queued ordinary mail
-  -> turn/steer only for a real same-turn Steer
   -> turn/interrupt only for current-turn interruption
   -> explicit Host Close ends the app-server runtime but retains the thread id
   -> explicit Reopen starts a new adapter generation with thread/resume
@@ -82,8 +81,7 @@ Close are different:
 Physical app-server handles remain process-local, but a durable Team Supervisor
 lease is the cross-process authority and publishes the owning service's
 loopback locator. Dashboard/HTTP/CLI clients route controls to that service,
-which fences the generation again before `turn/steer`, `turn/interrupt`, or
-Close. Another process cannot attach or claim mail while that lease is live.
+which fences the generation again before `turn/interrupt` or Close. Another process cannot attach or claim mail while that lease is live.
 Re-running start after expiry or release acquires a new generation and
 reattaches every unclosed Member to its recorded thread.
 
@@ -320,10 +318,10 @@ completed, and Host acceptance closed the Work. The historical Mission row
 `mission-dev26-codex-01480-v1` is preserved only as pre-DOC-108 audit evidence;
 it is not current coordination or closeout authority.
 
-That canary did not exercise `turn/steer` or activate a provider-native Goal.
-Those semantic bindings remain `review_required`; strong quiesce/release also
-remains degraded because the app-server cannot prove detached writable-child
-drain and durable rollout flush. This point-in-time evidence must not be
+That canary did not activate a provider-native Goal, and `turn/steer` has since
+been retired by ADR 0068 along with the whole injection path. Strong
+quiesce/release remains degraded because the app-server cannot prove detached
+writable-child drain and durable rollout flush. This point-in-time evidence must not be
 generalized to a later Codex build; always rerun the provider audit and live
 upgrade gate.
 

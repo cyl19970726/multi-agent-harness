@@ -424,8 +424,8 @@ changes before editing. Do not deploy, merge protected branches, spend money,
 submit legal actions, change permissions, expose credentials, or perform
 destructive external actions without the applicable authority.
 
-- Steer changes a current turn only when the Provider acknowledges it.
-- Queued Message affects the next safe boundary, not the current turn.
+- Nothing changes a current turn from outside it: ADR 0068 retired mid-cycle
+  Steer, so a queued Message affects the next safe boundary only.
 - Interrupt stops one current turn; it does not close the Member.
 - Close freezes this Team's MemberRun and cancels its current provider turn;
   it does not close the machine-owned AgentSession or release Work bindings.

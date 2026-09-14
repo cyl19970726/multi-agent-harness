@@ -195,9 +195,10 @@ Queued → Routed → Claimed → ProviderReceived → Acknowledged
   not interrupt the current turn. On builds with managed boundary-context
   delivery, already queued mail accompanies an otherwise-selected cycle,
   including Work continuation. Older builds may hold informational mail until
-  a response-required round: verify the installed version. Steer is a separate
-  capability-checked control. Offline/Detached recipients keep delivery
-  honestly Queued — no invented sessions.
+  a response-required round: verify the installed version. There is no
+  mid-cycle Steer (ADR 0068) — Interrupt, then send ordinary mail.
+  Offline/Detached recipients keep delivery honestly Queued — no invented
+  sessions.
 - `informational` intent does not start a provider round by itself; select
   `response-required` only when an answer or action is genuinely needed. This
   is what prevents two agents from bouncing acknowledgement mail forever.

@@ -581,25 +581,27 @@ ProviderAcknowledged remain readable vocabulary without new producers.
 Historical settlement request spelling is recognized only after the normal
 exact authority checks and returns the original event/fingerprint on replay.
 
-`ControlIntent` owns the four control mappings shared by all five adapters
-(ADR 0067 retired the two continuation intents):
+`ControlIntent` owns the two control mappings shared by all five adapters.
+ADR 0067 retired the two continuation intents and ADR 0068 retired the two
+injection intents, so what remains is start one cycle and stop the current one:
 
 | Intent | Durable command kind | Semantic capability |
 | --- | --- | --- |
 | StartCycle | StartCycle | start_cycle |
-| InjectCurrentCycle | InjectCurrentCycle | inject_current_cycle |
-| QueueNativeBoundary | QueueAtNativeBoundary | queue_at_native_boundary |
 | Interrupt | InterruptCurrentCycle | interrupt_current_cycle |
 
 The other RuntimeCommandKind values remain separate lifecycle, inspection,
 reconciliation or existing legacy-named handlers. There is no catch-all
-conversion of all 32 kinds into these four intents. Unsupported/Experimental
-capabilities keep their existing fail-closed admission; queue does not fall
-back to inject, and interrupt does not imply session close. The real cycle,
-steering, interrupt and close paths retain their native adapter operations.
+conversion of all 32 kinds into these two intents. Unsupported capabilities
+keep their existing fail-closed admission, and interrupt does not imply
+session close. Ordinary mail reaches a member only through the durable queue
+at its next cycle: there is no mid-cycle injection path and no provider-native
+boundary queue. The real cycle, interrupt and close paths retain their native
+adapter operations.
 
 New Store admission rejects `ReopenMember`, `RetireMember`,
-`DeleteNativeSession`, `CancelPendingInput`, `InspectContinuation`,
+`DeleteNativeSession`, `InjectCurrentCycle`, `QueueAtNativeBoundary`,
+`CancelPendingInput`, `InspectContinuation`,
 `ActivateContinuation`, `InhibitContinuation`, `ResumeContinuation`,
 `ReplaceContinuationCondition`, `ClearContinuation`, `StopBackgroundTask`,
 `TransferExecutionDriver`, `InspectCommandEffect`, `ReconcileUnknownEffect`
@@ -607,11 +609,12 @@ and `AbortIfNotApplied` with `RUNTIME_COMMAND_KIND_FROZEN`. These command names
 have no production effect handler; dynamic envelope decoding alone is not
 support. Their persisted values and exact historical replay remain readable,
 but changing the envelope or using a new key cannot create a fresh admission.
-The three continuation-control kinds joined that list under ADR 0067, which
-retired their intents and capabilities outright. Existing member lifecycle and
-Store recovery operations are unchanged. This restriction does not freeze the
-four control intents, adapter release, Drain/Quiesce/Reattach, or the
-read-only continuation observation that feeds the activation projection.
+The three continuation-control kinds joined that list under ADR 0067 and the
+two injection kinds under ADR 0068, each of which retired the matching intents
+and capabilities outright. Existing member lifecycle and Store recovery
+operations are unchanged. This restriction does not freeze the two remaining
+control intents, adapter release, Drain/Quiesce/Reattach, or the read-only
+continuation observation that feeds the activation projection.
 
 DEV-31 and DEV-68 tighten this into an exact binding fence for every
 provider/process effect: the prepared command records the target MemberRun id
@@ -778,9 +781,8 @@ Codex, Claude, Kimi, Pi, and DeepSeek Harness expose separate, closed capability
   while `firm-runtime-contract` owns the provider-facing lifecycle language.
   Wake → claim → ExecutionCycle → settle is shared, and each provider package
   compiles the semantic intents
-  (open/resume, start cycle, inject current cycle, queue at native boundary,
-  interrupt, narrow Team Close, strong quiesce, and release) into provider
-  primitives with an executable per-intent
+  (open/resume, start cycle, interrupt, narrow Team Close, strong quiesce, and
+  release) into provider primitives with an executable per-intent
   capability report. Pi, Codex app-server, Claude Agent SDK, Kimi ACP, and
   DeepSeek Harness all enter through this shared loop;
   `firm-provider-{codex,claude,kimi,pi,deepseek}` own

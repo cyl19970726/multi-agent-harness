@@ -65,6 +65,7 @@ consequences, affected modules, and validation path.
 | [0065](0065-two-runtime-epochs.md) | accepted; Owner 2026-09-05 (SPEC-ADAPTATION-REFACTOR-01 D-B) | `MemberRun.runtime_generation` is the adapter-process epoch and fence authority; `AgentSession.runtime_generation` is the immutable provider-session epoch; deliberately independent, related only for the minting MemberRun; no schema change |
 | [0066](0066-retire-the-work-ledger-delegation-stack.md) | accepted; W5a Work ledger slice | The Work-ledger WorkDelegation relation, its ledgers, gate and readers are retired; the Work model carries no cross-Team edge and the Remote Fabric's `WorkDelegationV1` is untouched |
 | [0067](0067-retire-the-native-continuation-control-plane.md) | accepted; 2026-09-14 C1 cutover | The NativeContinuation control plane and the `provider_driven` driver are retired with zero persisted usage; the continuation activation projection and the quiesce step are retained as the drained-lane proof, and the three RuntimeCommand kinds are frozen rather than deleted |
+| [0068](0068-retire-the-inject-and-interrupt-delivery-policies.md) | accepted; 2026-09-14 C2 cutover | `TeamDeliveryPolicy` keeps only `queue` and `manual_ack`; the mid-cycle Steer/inject path is retired end to end (intents, capabilities, adapter impls, HTTP route, delivery mode) and the two RuntimeCommand kinds are frozen; interrupt plus next-cycle mail are the two ways to change a member's course |
 
 ## Split Rule
 
