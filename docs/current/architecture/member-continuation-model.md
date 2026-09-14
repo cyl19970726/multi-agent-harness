@@ -213,8 +213,11 @@ writer now sets `Disarmed`, and six fail-closed guards refuse while it is
 user-driven runtime must be disarmed, and the Team `safe_cold` / lane-termination
 proofs. A member may still activate a native Goal inside its own session, so
 Close pauses an observed active Goal before its terminal observation, and
-strong quiesce still records that step — satisfied from `activation == Disarmed`,
-not from a control operation.
+strong quiesce still records that step. How the step is satisfied differs by
+adapter: Claude, Pi, Kimi and DeepSeek have no native continuation to control
+and satisfy it from `activation == Disarmed`; Codex reads `thread/goal/get` and
+writes `thread/goal/set(paused)` when the observed Goal is active. That write is
+terminal-control safety, not scheduling.
 
 `definition.{phase, continuation_ref, revision}` are what the
 `expected_continuation_ref` and `expected_continuation_phase` RuntimeCommand

@@ -53,7 +53,6 @@ Provider docs answer how a concrete provider implements:
 
 - each concrete execution mode (`exec`, ACP, app-server, SDK), never only the
   provider brand;
-- runtime creation and close;
 - runtime creation and close, and which native continuation state (if any) the
   adapter can observe;
 - cycle boundaries and permission continuity;

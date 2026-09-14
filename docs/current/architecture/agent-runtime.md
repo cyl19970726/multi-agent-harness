@@ -791,9 +791,11 @@ Codex, Claude, Kimi, Pi, and DeepSeek Harness expose separate, closed capability
   intents. `CloseRuntime` terminates and reaps the Harness-owned provider
   handle, freezes the Member mailbox, and retains the native session id for an
   explicit higher-generation Reopen. Strong `quiesce`/`release` additionally
-  require every adapter to prove the continuation is disarmed, current-cycle
-  terminal state, native queue settlement, writable-child drain, idle
-  observation, and durable native flush. A provider that cannot observe one of
+  require every adapter to prove the continuation cannot start another cycle
+  (four adapters from the disarmed activation projection; Codex by pausing an
+  observed active native Goal first), current-cycle terminal state, native
+  queue settlement, writable-child drain, idle observation, and durable native
+  flush. A provider that cannot observe one of
   those postconditions remains degraded and fails closed; a process exit or
   session-close ACK never fills in missing evidence;
 - DeepSeek Harness `deepseek_sdk` is a managed host-driven Team mode at exact

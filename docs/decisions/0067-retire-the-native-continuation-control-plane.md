@@ -90,7 +90,9 @@ top-level turns writing one worktree.
    Nothing arms it any more; every writer sets `Disarmed`. Keeping the readers
    means that if anything ever did, host drive, reattach, Close and user-driven
    admission would all still refuse. Deleting them would convert six refusals
-   into six silent allows.
+   into six silent allows. `schemas/fixtures/agent-session/valid/host-driven-armed-continuation.json`
+   keeps the armed wire shape under both the JSON Schema gate and Rust serde,
+   so the shape those six guards read cannot stop decoding by accident.
 
    `continuation.definition.{phase, continuation_ref, revision}` stay for the
    same reason: they are what the retained `expected_continuation_ref` /
@@ -99,11 +101,18 @@ top-level turns writing one worktree.
    `deny_unknown_fields` struct and they fence *any* command, not only the
    retired kinds.
 
-5. **The quiesce step is retained and reported from the projection.**
+5. **The quiesce step is retained, and it is not uniform across adapters.**
    `QuiesceStep::InhibitContinuation` and `QuiesceReceipt.continuation_inhibited`
    are unchanged — removing them would change the shape of every serialized
-   `QuiesceReceipt`. All five adapters keep reporting that step, satisfied from
-   `activation == Disarmed`.
+   `QuiesceReceipt`. Claude, Pi, Kimi and DeepSeek satisfy that step from
+   `activation == Disarmed`: they have no native continuation to control, so
+   the retained projection is the whole proof. Codex is different and stays
+   different: on both the Close and the quiesce path it reads
+   `thread/goal/get` and, when the observed Goal is `active`, writes
+   `thread/goal/set(paused)` before proving the thread idle. That write is
+   terminal-control safety — it stops a Goal from starting a successor turn
+   and racing the terminal observation — not a scheduling operation, and it is
+   the one continuation write this ADR deliberately keeps.
 
 6. **Read-only observation stays.** Codex `observe_continuation`
    (`thread/goal/get`) keeps feeding the activation projection, and

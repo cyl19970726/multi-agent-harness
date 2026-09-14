@@ -593,7 +593,7 @@ pub fn capability_bindings() -> Vec<CapabilityBinding> {
         CapabilityBinding {
             capability: "quiesce",
             status: Degraded,
-            evidence: "thread/goal/get and thread/read prove the observed continuation is not armed and the cycle is idle, but FullAccess detached writable children and durable rollout flush are not fully observable".into(),
+            evidence: "thread/goal pauses an observed active Goal and proves the cycle idle via thread/read, but FullAccess detached writable children and durable rollout flush are not fully observable".into(),
             security_enforcement_locus: None,
         },
         CapabilityBinding {
