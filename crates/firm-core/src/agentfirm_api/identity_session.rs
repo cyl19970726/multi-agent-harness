@@ -73,13 +73,20 @@ pub enum NativeSessionAvailability {
     Unknown,
 }
 
+/// Durable lifecycle of one NodeDaemon-owned provider session.
+///
+/// ADR 0070 retired `waiting`: no writer ever produced it and no persisted row
+/// ever carried it, so the wire value is not reserved and an unknown value
+/// fails decoding rather than silently becoming a live lane. A provider lane
+/// that is blocked on input is `Active` with `RuntimeActivity::WaitingInput` —
+/// that is the one place the "waiting" fact lives, and it is a bounded control
+/// observation, never a lifecycle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentSessionStatus {
     Cold,
     Idle,
     Active,
-    Waiting,
     Interrupted,
     RecoveryRequired,
     Closed,

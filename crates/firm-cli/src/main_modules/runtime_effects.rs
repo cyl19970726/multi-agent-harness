@@ -280,19 +280,14 @@ pub(super) fn transition_provider_session_for_member_as(
         (AgentSessionStatus::Interrupted, AgentSessionStatus::Active) => {
             vec![AgentSessionStatus::Idle, AgentSessionStatus::Active]
         }
-        (AgentSessionStatus::Waiting, AgentSessionStatus::Active) => {
-            vec![AgentSessionStatus::Active]
-        }
         (AgentSessionStatus::Active, AgentSessionStatus::Closed) => {
             vec![AgentSessionStatus::Interrupted, AgentSessionStatus::Closed]
         }
         (AgentSessionStatus::Cold, AgentSessionStatus::Closed)
         | (AgentSessionStatus::Idle, AgentSessionStatus::Closed)
-        | (AgentSessionStatus::Waiting, AgentSessionStatus::Closed)
         | (AgentSessionStatus::Interrupted, AgentSessionStatus::Closed) => vec![desired],
         (AgentSessionStatus::Active, AgentSessionStatus::Idle)
         | (AgentSessionStatus::Cold, AgentSessionStatus::Idle)
-        | (AgentSessionStatus::Waiting, AgentSessionStatus::Idle)
         | (AgentSessionStatus::Interrupted, AgentSessionStatus::Idle)
         | (AgentSessionStatus::Idle, AgentSessionStatus::Active) => vec![desired],
         // The runner records an unrecoverable provider error on an open cycle

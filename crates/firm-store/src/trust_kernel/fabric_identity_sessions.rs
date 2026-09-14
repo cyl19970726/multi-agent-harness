@@ -708,16 +708,12 @@ impl HarnessStore {
                 )
                 | (AgentSessionStatus::Idle, AgentSessionStatus::Active)
                 | (AgentSessionStatus::Idle, AgentSessionStatus::Closed)
-                | (AgentSessionStatus::Active, AgentSessionStatus::Waiting)
                 | (AgentSessionStatus::Active, AgentSessionStatus::Idle)
                 | (AgentSessionStatus::Active, AgentSessionStatus::Interrupted)
                 | (
                     AgentSessionStatus::Active,
                     AgentSessionStatus::RecoveryRequired
                 )
-                | (AgentSessionStatus::Waiting, AgentSessionStatus::Active)
-                | (AgentSessionStatus::Waiting, AgentSessionStatus::Idle)
-                | (AgentSessionStatus::Waiting, AgentSessionStatus::Closed)
                 | (AgentSessionStatus::Interrupted, AgentSessionStatus::Cold)
                 | (AgentSessionStatus::Interrupted, AgentSessionStatus::Closed)
         ) || (matches!(
@@ -796,7 +792,6 @@ impl HarnessStore {
                 session.queued_input_count = session.queued_input_count.saturating_sub(1);
             }
             AgentSessionStatus::Idle
-            | AgentSessionStatus::Waiting
             | AgentSessionStatus::Interrupted
             | AgentSessionStatus::RecoveryRequired
             | AgentSessionStatus::Closed => session.current_turn_id = None,

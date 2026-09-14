@@ -88,7 +88,7 @@ AgentMember      durable identity   (Active | Paused | Retired)
   └─ TeamMembership   participation in ONE Team, with a role
        role:  Host | Member | Observer
        state: Invited | Active | Leaving | Inactive
-  └─ AgentSession     runtime       (Cold | Idle | Active | Waiting |
+  └─ AgentSession     runtime       (Cold | Idle | Active |
                                      Interrupted | RecoveryRequired | Closed)
 ```
 

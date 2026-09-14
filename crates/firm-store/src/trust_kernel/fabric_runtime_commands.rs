@@ -460,7 +460,6 @@ impl HarnessStore {
                         AgentSessionStatus::Cold
                             | AgentSessionStatus::Active
                             | AgentSessionStatus::Idle
-                            | AgentSessionStatus::Waiting
                             | AgentSessionStatus::Interrupted
                     ) {
                         return Err(trust_error(
@@ -497,7 +496,6 @@ impl HarnessStore {
                         AgentSessionStatus::Cold
                             | AgentSessionStatus::Active
                             | AgentSessionStatus::Idle
-                            | AgentSessionStatus::Waiting
                             | AgentSessionStatus::Interrupted
                     ) {
                         return Err(trust_error(

@@ -738,7 +738,12 @@ export interface TeamMessageProjection {
   created_at?: string;
 }
 
-export type AgentSessionStatus = "starting" | "idle" | "running" | "waiting" | "disconnected" | "stopped" | "failed";
+/**
+ * Durable AgentSession lifecycle exactly as the Store serializes it. ADR 0070
+ * retired `waiting`: nothing ever wrote it, so it is not a legacy value the
+ * dashboard must tolerate.
+ */
+export type AgentSessionStatus = "cold" | "idle" | "active" | "interrupted" | "recovery_required" | "closed";
 
 export interface AgentSession {
   id: string;
@@ -750,7 +755,7 @@ export interface AgentSession {
   provider: string;
   provider_profile_ref: string;
   effective_permission_ceiling: "read_only" | "workspace_write" | "full_access";
-  status: AgentSessionStatus;
+  lifecycle: AgentSessionStatus;
   generation: number;
   version: number;
   created_at: string;

@@ -18,7 +18,7 @@
     "permission_envelope_ref": {"type": "string", "minLength": 1},
     "effective_permission_ceiling": {"enum": ["read_only", "workspace_write", "full_access"]},
     "workspace_cwd": {"type": ["string", "null"], "minLength": 1},
-    "lifecycle": {"enum": ["cold", "idle", "active", "waiting", "interrupted", "recovery_required", "closed"]},
+    "lifecycle": {"enum": ["cold", "idle", "active", "interrupted", "recovery_required", "closed"]},
     "runtime_generation": {"type": "integer", "minimum": 1},
     "control_state": {"$ref": "#/$defs/control_state"},
     "native_session_ref": {"anyOf": [{"$ref": "native-session-ref.schema.json"}, {"type": "null"}]},

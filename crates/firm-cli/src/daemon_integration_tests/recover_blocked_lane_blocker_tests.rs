@@ -66,7 +66,6 @@ fn recover_and_close_share_one_terminal_turn_boundary_predicate() {
         AgentSessionStatus::Cold,
         AgentSessionStatus::Idle,
         AgentSessionStatus::Active,
-        AgentSessionStatus::Waiting,
         AgentSessionStatus::Interrupted,
         AgentSessionStatus::RecoveryRequired,
         AgentSessionStatus::Closed,
@@ -103,11 +102,7 @@ fn recover_and_close_share_one_terminal_turn_boundary_predicate() {
             "{lifecycle:?}"
         );
     }
-    for lifecycle in [
-        AgentSessionStatus::Active,
-        AgentSessionStatus::Waiting,
-        AgentSessionStatus::Closed,
-    ] {
+    for lifecycle in [AgentSessionStatus::Active, AgentSessionStatus::Closed] {
         quiet.lifecycle = lifecycle;
         assert!(
             !crate::lane_is_at_terminal_turn_boundary(&quiet),
