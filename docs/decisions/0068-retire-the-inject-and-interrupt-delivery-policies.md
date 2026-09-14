@@ -42,9 +42,21 @@ one path that could put content into a cycle the Host had not started.
 ## Decision
 
 1. **Two delivery policies: `Queue` and `ManualAck`.** `Inject` and `Interrupt`
-   are deleted, not reserved. Nothing ever persisted them, so a document
+   are deleted, not reserved: no store on this machine and no store in the tree
+   persisted them, after correcting one dashboard fixture row. A document
    carrying one now fails decoding rather than implying a delivery mode no
-   writer can produce. `ManualAck` keeps its exact meaning: the Host control
+   writer can produce.
+
+   That fixture row is the reason the claim has to be stated that carefully.
+   `apps/agent-dashboard/fixtures/workbench-layout-v2-native-v1/team_messages.jsonl`
+   shipped a delivery with `"policy":"inject"`, and
+   `materialize-workbench-layout-fixture.mjs` copies that file verbatim into
+   the store the full-acceptance browser checks read. `TeamDeliveryPolicy`
+   derives `Deserialize` with no `serde(other)` and `read_jsonl` propagates the
+   first decode error, so deleting the variant would have made
+   `legacy_team_messages()` — a reader this ADR keeps — unable to read that
+   store at all. The row now says `"queue"`, which is inert for the dashboard
+   and carries no checksum. `ManualAck` keeps its exact meaning: the Host control
    plane receives member-originated mail at creation time.
 
 2. **No mid-cycle injection path exists.** `ControlIntent` is down to
@@ -79,20 +91,28 @@ one path that could put content into a cycle the Host had not started.
 
 5. **Retire the dead reader clause with it.** `queued_messages_for` filtered
    `delivery.policy != Inject && delivery.status == Queued`, and dropping the
-   first clause leaves the one production caller's count unchanged. The proof
-   is not "Inject rows were always Delivered" — two sites created them
-   otherwise — it is the caller:
+   first clause leaves the one production caller's count unchanged. There were
+   three `policy: Inject` constructors at the cutover, and no single argument
+   covers all three:
 
-   `member_lifecycle.rs` is the only caller, and it post-filters
-   `.filter(|message| message.requires_response())` before counting.
-   `requires_response()` is true only for `ResponseRequired`. Every message
-   whose delivery carried `policy: Inject` was declared
-   `response_intent: Informational` — the provider-interaction response in
-   `http_member_control.rs`, and the transient in-memory projection in
-   `runtime_effects.rs`, which is `Claimed` rather than `Queued` and is never
-   persisted. So the `requires_response()` filter already excluded every row
-   the `policy != Inject` clause could have excluded, and the wake count is
-   identical before and after.
+   1. `TeamMessageDeliveryMode::InjectDelivered`, reached from
+      `steer_team_member_value` — the primary producer. These rows were created
+      `status: Delivered`, so the **retained** `status == Queued` clause
+      excludes them. Note they were *not* excluded by response intent:
+      `steer_team_member_value` passed `ProviderDispatchIntent::Control` with
+      `response_intent: None`, and `effective_response_intent()` maps that pair
+      to `ResponseRequired`, so `requires_response()` was true for every
+      steer-created message.
+   2. The provider-interaction response in `http_member_control.rs` — created
+      `status: Queued`, so the status clause does not exclude it, but it
+      declares `response_intent: Informational`, and the only production
+      caller (`member_lifecycle.rs`) post-filters
+      `.filter(|message| message.requires_response())` before counting.
+   3. The claim projection in `runtime_effects.rs` — created `status: Claimed`,
+      excluded by the status clause, and never persisted.
+
+   Each of the three is excluded by a check that survives this change, so the
+   member wake count is identical before and after.
 
 ## What is kept
 

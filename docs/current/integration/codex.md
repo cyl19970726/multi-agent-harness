@@ -81,9 +81,10 @@ Close are different:
 Physical app-server handles remain process-local, but a durable Team Supervisor
 lease is the cross-process authority and publishes the owning service's
 loopback locator. Dashboard/HTTP/CLI clients route controls to that service,
-which fences the generation again before `turn/interrupt` or Close. Another process cannot attach or claim mail while that lease is live.
-Re-running start after expiry or release acquires a new generation and
-reattaches every unclosed Member to its recorded thread.
+which fences the generation again before `turn/interrupt` or Close. Another
+process cannot attach or claim mail while that lease is live. Re-running start
+after expiry or release acquires a new generation and reattaches every
+unclosed Member to its recorded thread.
 
 The owner verifies that the app-server transport is live before claiming
 queued mail. If that probe fails, the message remains queued and the owner
