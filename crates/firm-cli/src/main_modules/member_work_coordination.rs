@@ -700,13 +700,22 @@ impl TeamRunLedger {
         Ok(())
     }
 
-    /// Post-settle write-back of the provider-native Session binding onto the
-    /// trust fabric. A fresh-start MemberRun/AgentSession is materialized
-    /// before the provider thread exists, so the settled binding must reach
-    /// the trust MemberRun and the current AgentSession here — every provider
-    /// driver persists its settle through `save_member_run`. Only the binding
-    /// fields cross; `provider-source:` stays provenance and no provider
-    /// stream enters a Harness ledger. Best-effort: stores without
+    /// Post-settle write-back of the provider-native Session pointer.
+    ///
+    /// `AgentSession.native_session_ref` is the authority (ADR 0071), so this
+    /// makes exactly ONE Store call: the Store entrance binds the authority and
+    /// projects the same value onto the trust MemberRun and the legacy
+    /// `member_runs.jsonl` row. This function no longer chooses what a
+    /// projection contains, and can no longer write one without its authority.
+    ///
+    /// Before any AgentSession exists the MemberRun pointer is `requested`
+    /// rather than authoritative — the `--resume-member` / `resume_native_session_id`
+    /// seed of #845 pre-Open attachment, and every `external_interactive` Host,
+    /// which never has an AgentSession at all. That case keeps the MemberRun-only
+    /// bind below and is explicitly NOT promoted to authority.
+    ///
+    /// Only the binding fields cross; `provider-source:` stays provenance and no
+    /// provider stream enters a Harness ledger. Best-effort: stores without
     /// materialized trust fabric skip, and a stale-generation settle never
     /// rebinds a newer trust row.
     pub(super) fn sync_trust_native_session_binding(
@@ -723,62 +732,6 @@ impl TeamRunLedger {
         let binding_fingerprint = harness_store::canonical_json_fingerprint(
             &serde_json::to_value(&native_ref).map_err(CliError::Json)?,
         );
-        // Trust MemberRun binding. One re-read retry absorbs a concurrent trust
-        // mutation (close/reopen) racing this settle.
-        for attempt in 0..2 {
-            let Some(trust_run) = self
-                .store
-                .trust_member_runs(&space_id)?
-                .into_iter()
-                .find(|run| run.id == next.id)
-            else {
-                return Err(CliError::RuntimeRecoveryRequired(format!(
-                    "NATIVE_SESSION_BINDING_INCOMPLETE: canonical MemberRun {} is missing",
-                    next.id
-                )));
-            };
-            if trust_run.runtime_generation != next.runtime_generation {
-                return Err(CliError::RuntimeRecoveryRequired(format!(
-                    "NATIVE_SESSION_BINDING_GENERATION_FENCED: canonical MemberRun {} is generation {}, settlement is generation {}",
-                    next.id, trust_run.runtime_generation, next.runtime_generation
-                )));
-            }
-            if trust_run.native_session.as_ref() == Some(&native_ref) {
-                break;
-            }
-            let context = harness_core::agentfirm_api::MutationContext {
-                execution_space_id: space_id.clone(),
-                authenticated_actor: harness_core::agentfirm_api::ActorRef {
-                    kind: harness_core::agentfirm_api::ActorKind::Service,
-                    id: "node-daemon:member-run-native-bind".into(),
-                },
-                authority_actor: None,
-                command_name: "team_run.member_run_native_session.bind".into(),
-                idempotency_key: format!(
-                    "member-run-native-bind:{}:{}:{}",
-                    next.id, native.native_session_id, binding_fingerprint
-                ),
-                expected_version: trust_run.version,
-                request_fingerprint: None,
-            };
-            match self.store.bind_member_run_native_session(
-                &context,
-                &next.id,
-                next.runtime_generation,
-                native_ref.clone(),
-                &now_string(),
-            ) {
-                Ok(_) => break,
-                Err(error) if attempt == 0 => {
-                    let _ = error;
-                    continue;
-                }
-                Err(error) => return Err(CliError::Store(error)),
-            }
-        }
-        // Current AgentSession binding for the same identity + generation. The
-        // daemon actor is read from the session row: the bind mutation proves
-        // the exact owning NodeDaemon generation.
         for attempt in 0..2 {
             let sessions = self
                 .store
@@ -792,7 +745,16 @@ impl TeamRunLedger {
                 })
                 .collect::<Vec<_>>();
             let session = match sessions.as_slice() {
-                [] => return Ok(()),
+                // No AgentSession yet: the pointer is still `requested`, so it
+                // lands on the MemberRun alone and is not authority.
+                [] => {
+                    return self.seed_requested_member_run_native_session(
+                        &space_id,
+                        next,
+                        &native_ref,
+                        &binding_fingerprint,
+                    )
+                }
                 [session] => session,
                 _ => {
                     return Err(CliError::RuntimeRecoveryRequired(format!(
@@ -802,7 +764,14 @@ impl TeamRunLedger {
                 )))
                 }
             };
-            if session.native_session_ref.as_ref() == Some(&native_ref) {
+            if session.native_session_ref.as_ref() == Some(&native_ref)
+                && self
+                    .store
+                    .trust_member_runs(&space_id)?
+                    .into_iter()
+                    .find(|run| run.id == next.id)
+                    .is_some_and(|run| run.native_session.as_ref() == Some(&native_ref))
+            {
                 break;
             }
             let context = harness_core::agentfirm_api::MutationContext {
@@ -827,6 +796,86 @@ impl TeamRunLedger {
                 native_ref.clone(),
             ) {
                 Ok(_) => break,
+                // A half-written dual ledger is never retried away: the
+                // authority and the canonical MemberRun are already durable and
+                // only the legacy row is stale, so a retry would find both trust
+                // records agreeing, short-circuit, and return Ok while the row
+                // stayed stale — the caller would see success and the next
+                // admission read would fail closed with no error at the point of
+                // failure. Surface it instead; the message names the repair verb.
+                Err(error)
+                    if error
+                        .to_string()
+                        .contains("NATIVE_SESSION_PROJECTION_INCOMPLETE") =>
+                {
+                    return Err(CliError::Store(error))
+                }
+                Err(error) if attempt == 0 => {
+                    let _ = error;
+                    continue;
+                }
+                Err(error) => return Err(CliError::Store(error)),
+            }
+        }
+        Ok(())
+    }
+
+    /// Seed the pointer a resume asked for onto the MemberRun before any
+    /// AgentSession exists (#845 pre-Open attachment). This value is
+    /// `requested`, not authority: the AgentSession has not observed the
+    /// provider-native session yet, and the authority write above is what
+    /// promotes it.
+    fn seed_requested_member_run_native_session(
+        &self,
+        space_id: &str,
+        next: &ProviderRuntimeProjection,
+        native_ref: &harness_core::agentfirm_api::NativeSessionRef,
+        binding_fingerprint: &str,
+    ) -> CliResult<()> {
+        for attempt in 0..2 {
+            let Some(trust_run) = self
+                .store
+                .trust_member_runs(space_id)?
+                .into_iter()
+                .find(|run| run.id == next.id)
+            else {
+                return Err(CliError::RuntimeRecoveryRequired(format!(
+                    "NATIVE_SESSION_BINDING_INCOMPLETE: canonical MemberRun {} is missing",
+                    next.id
+                )));
+            };
+            if trust_run.runtime_generation != next.runtime_generation {
+                return Err(CliError::RuntimeRecoveryRequired(format!(
+                    "NATIVE_SESSION_BINDING_GENERATION_FENCED: canonical MemberRun {} is generation {}, settlement is generation {}",
+                    next.id, trust_run.runtime_generation, next.runtime_generation
+                )));
+            }
+            if trust_run.native_session.as_ref() == Some(native_ref) {
+                return Ok(());
+            }
+            let context = harness_core::agentfirm_api::MutationContext {
+                execution_space_id: space_id.to_string(),
+                authenticated_actor: harness_core::agentfirm_api::ActorRef {
+                    kind: harness_core::agentfirm_api::ActorKind::Service,
+                    id: "node-daemon:member-run-native-bind".into(),
+                },
+                authority_actor: None,
+                command_name: "team_run.member_run_native_session.bind".into(),
+                idempotency_key: format!(
+                    "member-run-native-bind:{}:{}:{}",
+                    next.id, native_ref.native_session_id, binding_fingerprint
+                ),
+                expected_version: trust_run.version,
+                request_fingerprint: None,
+            };
+            match self.store.bind_member_run_native_session(
+                &context,
+                &next.id,
+                next.runtime_generation,
+                native_ref.clone(),
+                &now_string(),
+            ) {
+                Ok(_) => return Ok(()),
                 Err(error) if attempt == 0 => {
                     let _ = error;
                     continue;

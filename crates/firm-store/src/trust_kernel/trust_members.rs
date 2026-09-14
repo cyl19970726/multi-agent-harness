@@ -1265,6 +1265,30 @@ impl HarnessStore {
                 ));
             }
         }
+        // Only the authority promotes a pointer. This entrance exists solely
+        // for the pre-session `requested` seed (#845 pre-Open attachment): once
+        // an AgentSession for this member and generation owns a ref, that
+        // AgentSession is the authority (ADR 0072) and the only legal way to
+        // change this projection is `bind_agent_session_native_session`, which
+        // writes both records in one transaction. Without this fence the claim
+        // that a projection cannot be written on its own would be false.
+        if let Some(authority) = self.deciding_native_session_unlocked(
+            &context.execution_space_id,
+            &run.agent_member_id,
+            run.runtime_generation,
+            None,
+        )? {
+            return Err(trust_error(
+                TrustErrorCode::InvalidStateTransition,
+                format!(
+                    "NATIVE_SESSION_SEED_AFTER_AUTHORITY: an AgentSession already binds provider-native session {} for {} at runtime generation {}; a projection is written only by binding the authority",
+                    authority.native_session_id, run.agent_member_id, run.runtime_generation
+                ),
+                "member_run",
+                member_run_id,
+                Some(run.version),
+            ));
+        }
         run.native_session = Some(native_session.clone());
         run.version += 1;
         run.last_event_at = Some(updated_at.to_string());

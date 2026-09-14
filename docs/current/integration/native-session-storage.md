@@ -82,47 +82,69 @@ raw provider event.
 ## Binding contract
 
 There is ONE `NativeSessionRef` type: the trust journal and both ledger
-projections name the same struct.
+projections name the same struct. It lives in three places, and **one of them is
+the authority** (ADR 0072):
 
-`NativeSessionRef` is stored in three places today:
-
-- canonical `MemberRun.native_session`
-  (`crates/firm-core/src/agentfirm_api/identity_session.rs:591`);
-- `AgentSession.native_session_ref` (same file, `:310`);
-- the legacy `member_runs.jsonl` `ProviderRuntimeProjection.native_session`
+- **authority** — `AgentSession.native_session_ref`
+  (`crates/firm-core/src/agentfirm_api/identity_session.rs:310`);
+- **projection** — canonical `MemberRun.native_session` (same file, `:604`);
+- **projection** — the legacy `member_runs.jsonl`
+  `ProviderRuntimeProjection.native_session`
   (`crates/firm-core/src/team_runtime.rs:878`).
 
-The canonical `MemberRun.native_session` is the expectation both fences compare
-against, and they live in different layers:
+One Store entrance writes all three.
+`bind_agent_session_native_session`
+(`crates/firm-store/src/trust_kernel/fabric_native_session_pointer.rs:120`) binds
+the authority and, in the **same atomic ledger rewrite**, projects that exact
+value onto the canonical MemberRun through the paired-aggregate commit. It
+resolves that MemberRun from the session's own `agent_member_id` +
+`runtime_generation`, so a caller cannot pair the wrong one, and it refuses a
+MemberRun that already names a different conversation
+(`NATIVE_SESSION_PROJECTION_DISAGREES`, `:316`) before anything is written — so a
+refusal leaves neither record changed.
+
+The legacy row is **not** transactional with that rewrite. It is appended under
+the same write lock, exactly as every other MemberRun writer does, under the
+pre-existing `MEMBER_RUN_DUAL_LEDGER_COMMIT_INCOMPLETE` caveat
+(`crates/firm-store/src/trust_kernel/trust_members.rs:570`): a cross-file pair
+cannot be made atomic without a journal this Store deliberately does not keep.
+The two MemberRun rows are one record in two files and a read-side validator
+fails closed when they disagree, so that row is not a derivable display
+projection; `derive_member_runs_jsonl_native_session` (`:383`) is the explicit
+repair verb for one left stale, and is a no-op when the row already agrees.
+
+Before any AgentSession owns a ref, `MemberRun.native_session` is the
+**requested** pointer — what a `--resume-member` seed asked for, an intent and
+never an execution claim. That is decidable, not a matter of reading:
+`member_run_native_session_is_requested` is true exactly while no AgentSession
+for that member and generation owns a ref. An `external_interactive` Host never
+has an AgentSession, so its pointer stays requested for the lane's whole life.
+`bind_member_run_native_session` is the seed's entrance and refuses with
+`NATIVE_SESSION_SEED_AFTER_AUTHORITY` once an authority exists.
+
+Readers that DECIDE from the pointer resolve it through one shared
+`deciding_native_session_unlocked` (`:74`) — authority first, the projection only
+when no session owns a ref. Lifecycle is deliberately not filtered there (which
+conversation a lane owned survives Close), and a live lane outranks a closed one.
+
+Two compare-both fences remain, as guards that the projections agree with the
+authority rather than as a second opinion:
 
 - **Member admission**, in the Store under one writer lock, validates the
   canonical MemberRun against the legacy runtime projection and fails closed
   with `MEMBER_ADMISSION_NATIVE_IDENTITY_MISMATCH` when the identity fields
   disagree, or `MEMBER_ADMISSION_NATIVE_PROJECTION_MISMATCH` when the full
-  observation differs. Its own code calls one side `canonical` and the other
-  the `runtime projection` (`crates/firm-store/src/store_team_admission.rs:14-41`).
+  observation differs
+  (`crates/firm-store/src/store_team_admission.rs:7-41`). It runs before any
+  session has bound, which is why its refusal still names "new MemberRun
+  native-session truth".
 - **NodeDaemon adoption**, in `firm-cli` rather than the Store, validates
-  `AgentSession.native_session_ref` against a ref derived from the MemberRun and
+  `AgentSession.native_session_ref` against the ref the MemberRun asserts and
   refuses with `AGENT_SESSION_RECOVERY_REQUIRED: <session> does not match
   MemberRun <member> native-session truth`
   (`crates/firm-cli/src/main_modules/member_orchestration.rs:158-167`).
 
-Neither fence silently picks a winner; both fail closed. Neither is a single
-Store-level check over all three copies.
-
-Those three copies are also written by three separate Store calls in three
-separate write-lock acquisitions — `compare_and_append_member_run`, then
-`bind_member_run_native_session`, then `bind_agent_session_native_session`
-(all three inside `save_member_run` / `sync_trust_native_session_binding`,
-`crates/firm-cli/src/main_modules/member_work_coordination.rs:689`, `:764`,
-`:823`) — ledger row first, best-effort, under the documented
-`MEMBER_RUN_DUAL_LEDGER_COMMIT_INCOMPLETE` caveat
-(`crates/firm-store/src/trust_kernel/trust_members.rs:570`).
-
-ADR 0072 decides that `AgentSession.native_session_ref` becomes the single
-authority and the other two become projections of it, written in one
-transaction. That change is not in this revision; see the ADR for the decided
-model and its status.
+Neither fence silently picks a winner; both fail closed.
 
 Fields:
 

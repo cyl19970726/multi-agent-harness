@@ -49,14 +49,23 @@ impl HarnessStore {
                 expected_member.id
             )));
         }
-        if !member_is_active_reviewer_runtime(&current) || current.native_session.is_none() {
+        let run = self.require_team_run_unlocked(&current.team_run_id)?;
+        let execution_space_id = self.current_team_run_execution_space_unlocked(&run)?;
+        // Whether this member is IN a provider-native session is the
+        // AgentSession's answer when one exists; the MemberRun row is a
+        // projection of it (ADR 0071).
+        let deciding_native = self.deciding_native_session_unlocked(
+            &execution_space_id,
+            &current.agent_member_id,
+            current.runtime_generation,
+            current.native_session.as_ref(),
+        )?;
+        if !member_is_active_reviewer_runtime(&current) || deciding_native.is_none() {
             return Err(StoreError::Conflict(format!(
                 "ProviderRuntimeProjection {} is not active in a native session; provider receipt was not appended",
                 current.id
             )));
         }
-        let run = self.require_team_run_unlocked(&current.team_run_id)?;
-        self.current_team_run_execution_space_unlocked(&run)?;
         if !run
             .member_run_ids
             .iter()

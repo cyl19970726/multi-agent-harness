@@ -766,6 +766,7 @@ mod fabric_foundation;
 mod fabric_identity_sessions;
 mod fabric_message_authoring;
 mod fabric_message_delivery;
+mod fabric_native_session_pointer;
 mod fabric_runtime_command_settlement;
 mod fabric_runtime_commands;
 mod fabric_scoped_work_projection;
@@ -783,7 +784,9 @@ pub use fabric_work_execution_recovery::{
 mod trust_deliveries;
 mod trust_foundation;
 pub(crate) use trust_foundation::CurrentWorkMutation;
-use trust_foundation::PairedWorkTransition;
+use trust_foundation::{
+    PairedAggregateTransition, PairedMemberRunProjection, PairedWorkTransition,
+};
 mod trust_members;
 mod trust_work_acceptance;
 mod trust_work_evidence;

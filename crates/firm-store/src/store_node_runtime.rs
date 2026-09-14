@@ -66,6 +66,9 @@ impl HarnessStore {
             // definition `team-run recover` and `close-member` evaluate too.
             && session.is_at_terminal_cycle_boundary()
             && session.control_state.runtime_residency == RuntimeResidency::Detached
+            // The AgentSession is the authority for this pointer; requiring the
+            // MemberRun row to agree is a projection guard, not a second
+            // opinion (ADR 0071).
             && session.native_session_ref.as_ref().is_some_and(|native| {
                 native.native_session_id == fence.native_session_id
                     && member.native_session.as_ref().is_some_and(|member_native| {
@@ -963,12 +966,21 @@ impl HarnessStore {
                     "DETACHED_RECOVERY_CLOSE_POSTCONDITION_MISMATCH: MemberRun {member_run_id} is missing"
                 ))
             })?;
+            // Which native session this lane owned is decided by its
+            // AgentSession when one exists; the MemberRun row is a projection
+            // of that (ADR 0071).
+            let execution_space_id = self.current_team_run_execution_space_unlocked(&run)?;
+            let deciding_native = self.deciding_native_session_unlocked(
+                &execution_space_id,
+                &member.agent_member_id,
+                member.runtime_generation,
+                member.native_session.as_ref(),
+            )?;
             let exact_terminal = member.team_run_id == team_run_id
                 && member.runtime_generation == fence.member_run_generation
                 && member.coordination_is_closed()
                 && member.status == firm_core::MemberRunStatus::Stopped
-                && member
-                    .native_session
+                && deciding_native
                     .as_ref()
                     .is_some_and(|native| native.native_session_id == fence.native_session_id);
             if !exact_terminal {
@@ -1038,10 +1050,19 @@ impl HarnessStore {
             let body = ProviderInteractionResponseBody::parse_canonical_json(&message.body)
                 .map_err(StoreError::Conflict)?;
             let member = self.require_member_run_unlocked(&body.member, team_run_id)?;
+            // Liveness is the MemberRun's own question; WHICH native session
+            // this is, is the AgentSession's when one exists (ADR 0071).
+            let team_run = self.require_team_run_unlocked(team_run_id)?;
+            let execution_space_id = self.current_team_run_execution_space_unlocked(&team_run)?;
+            let deciding_native = self.deciding_native_session_unlocked(
+                &execution_space_id,
+                &member.agent_member_id,
+                member.runtime_generation,
+                member.native_session.as_ref(),
+            )?;
             let same_live_generation = member.coordination_is_active()
                 && member.runtime_generation == body.generation
-                && member
-                    .native_session
+                && deciding_native
                     .as_ref()
                     .is_some_and(|native| native.native_session_id == body.session);
             if !same_live_generation {

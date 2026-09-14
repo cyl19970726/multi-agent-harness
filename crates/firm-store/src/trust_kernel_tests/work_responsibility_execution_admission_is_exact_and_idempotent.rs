@@ -703,7 +703,18 @@ fn terminal_member_runtime_cannot_bind_or_claim_provider_work() {
         before_missing_delivery
     );
 
-    let mut failed_run = live_run;
+    // Re-read rather than reusing the snapshot: binding the AgentSession's
+    // native session also projects it onto this MemberRun in the same
+    // transaction (ADR 0072), so the run's current revision is whatever that
+    // projection left it at.
+    let current_run = store
+        .trust_member_runs("space-test")
+        .unwrap()
+        .into_iter()
+        .find(|run| run.id == live_run.id)
+        .expect("live MemberRun");
+    let expected_run_version = current_run.version;
+    let mut failed_run = current_run;
     failed_run.runtime_status = MemberRuntimeStatus::Failed;
     failed_run.version += 1;
     failed_run.finished_at = Some("t-failed".into());
@@ -711,7 +722,12 @@ fn terminal_member_runtime_cannot_bind_or_claim_provider_work() {
         let _lock = store.acquire_write_lock().unwrap();
         store
             .commit_trust_projection_unlocked(
-                &context("host", "member_run.fail", "member-run-admission-failed", 1),
+                &context(
+                    "host",
+                    "member_run.fail",
+                    "member-run-admission-failed",
+                    expected_run_version,
+                ),
                 "member_run",
                 &failed_run.id,
                 "runtime_failed",

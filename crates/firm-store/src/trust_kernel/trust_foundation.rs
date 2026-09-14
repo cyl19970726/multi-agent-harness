@@ -56,6 +56,33 @@ pub(in crate::trust_kernel) struct PairedWorkTransition {
     pub work: Work,
 }
 
+/// One `member_run` projection committed atomically with the `agent_session`
+/// that authorizes it.
+///
+/// This exists for exactly one reason: `AgentSession.native_session_ref` is the
+/// authority for the provider-native session pointer (ADR 0071) and
+/// `MemberRun.native_session` is a projection of it. A projection written in a
+/// second transaction can be observed without its authority, or survive when
+/// the authority write fails — which is how three copies of one pointer came to
+/// need a validator whose only job was to reject their disagreement.
+pub(in crate::trust_kernel) struct PairedMemberRunProjection {
+    pub transition: &'static str,
+    pub expected_version: u64,
+    pub run: firm_core::agentfirm_api::MemberRun,
+}
+
+/// A second canonical aggregate written into the SAME atomic ledger rewrite as
+/// the primary one.
+///
+/// Both arms share one event builder, so a paired envelope is constructed
+/// identically whichever aggregate it carries; only the side records differ,
+/// because a `work` revision must also carry the derived `WorkEvent` its
+/// readers already bind to.
+pub(in crate::trust_kernel) enum PairedAggregateTransition {
+    Work(PairedWorkTransition),
+    MemberRun(PairedMemberRunProjection),
+}
+
 impl HarnessStore {
     pub(crate) fn replay_current_work_mutation_unlocked(
         &self,
@@ -959,7 +986,7 @@ impl HarnessStore {
         immutable_side_records: Vec<Value>,
         initial_outbox_records: Vec<Value>,
     ) -> StoreResult<CanonicalMutationResult<T>> {
-        self.commit_trust_projection_with_work_transition_unlocked(
+        self.commit_trust_projection_with_paired_aggregate_unlocked(
             context,
             aggregate_kind,
             aggregate_id,
@@ -972,8 +999,8 @@ impl HarnessStore {
         )
     }
 
-    /// Commit one canonical projection and, atomically with it, the `work`
-    /// aggregate transition it produced.
+    /// Commit one canonical projection and, atomically with it, a second
+    /// canonical aggregate that belongs to the same decision.
     ///
     /// A Result submission advances its Work to Review as a side effect of
     /// publishing an immutable report. Before W3 that Work revision existed
@@ -986,10 +1013,18 @@ impl HarnessStore {
     ///
     /// The paired envelope derives its idempotency key from the caller's, so
     /// every existing scan that resolves a command by its exact key still
-    /// finds exactly the report envelope; an exact replay returns at the
-    /// report's replay check above and re-appends neither.
+    /// finds exactly the primary envelope; an exact replay returns at the
+    /// primary's replay check above and re-appends neither.
+    ///
+    /// The second use is the provider-native session pointer: the
+    /// `agent_session` that owns it and the `member_run` that projects it are
+    /// written in one rewrite, so a projection can never be observed without
+    /// its authority (ADR 0071).
+    ///
+    /// Passing `None` takes the single-aggregate path, which is unchanged: it
+    /// appends exactly one envelope, byte-for-byte as before.
     #[allow(clippy::too_many_arguments)]
-    pub(in crate::trust_kernel) fn commit_trust_projection_with_work_transition_unlocked<
+    pub(in crate::trust_kernel) fn commit_trust_projection_with_paired_aggregate_unlocked<
         T: Serialize + for<'de> Deserialize<'de> + Clone,
     >(
         &self,
@@ -1001,7 +1036,7 @@ impl HarnessStore {
         resulting_projection: &T,
         immutable_side_records: Vec<Value>,
         initial_outbox_records: Vec<Value>,
-        paired_work: Option<PairedWorkTransition>,
+        paired: Option<PairedAggregateTransition>,
     ) -> StoreResult<CanonicalMutationResult<T>> {
         required(&context.execution_space_id, "execution_space_id")?;
         required(&context.authenticated_actor.id, "authenticated_actor.id")?;
@@ -1091,34 +1126,61 @@ impl HarnessStore {
             command_name: context.command_name.clone(),
             operation,
         };
-        if let Some(paired) = paired_work {
+        if let Some(paired) = paired {
+            // One builder for both arms: a paired envelope is constructed
+            // identically whichever aggregate it carries.
+            let (
+                paired_kind,
+                paired_id,
+                paired_transition,
+                paired_expected,
+                paired_resulting,
+                paired_projection,
+            ) = match &paired {
+                PairedAggregateTransition::Work(work) => (
+                    "work",
+                    work.work.id.clone(),
+                    work.transition,
+                    work.expected_version,
+                    work.work.version,
+                    serde_json::to_value(&work.work)?,
+                ),
+                PairedAggregateTransition::MemberRun(run) => (
+                    "member_run",
+                    run.run.id.clone(),
+                    run.transition,
+                    run.expected_version,
+                    run.run.version,
+                    serde_json::to_value(&run.run)?,
+                ),
+            };
             let previous = committed
                 .iter()
                 .filter(|envelope| {
                     envelope.execution_space_id == context.execution_space_id
-                        && envelope.operation.event.aggregate_kind == "work"
-                        && envelope.operation.event.aggregate_id == paired.work.id
+                        && envelope.operation.event.aggregate_kind == paired_kind
+                        && envelope.operation.event.aggregate_id == paired_id
                 })
                 .max_by_key(|envelope| envelope.operation.event.sequence);
             let paired_store_sequence = store_sequence + 1;
             let paired_event = CanonicalMutationEvent {
                 id: format!("trust-event-{paired_store_sequence}"),
-                aggregate_kind: "work".into(),
-                aggregate_id: paired.work.id.clone(),
+                aggregate_kind: paired_kind.into(),
+                aggregate_id: paired_id,
                 sequence: previous
                     .map(|envelope| envelope.operation.event.sequence)
                     .unwrap_or(0)
                     + 1,
                 store_sequence: paired_store_sequence,
-                transition: paired.transition.to_string(),
-                expected_version: paired.expected_version,
-                resulting_version: paired.work.version,
+                transition: paired_transition.to_string(),
+                expected_version: paired_expected,
+                resulting_version: paired_resulting,
                 performed_by_actor: event.performed_by_actor.clone(),
                 authority_actor: event.authority_actor.clone(),
                 causation_ref: None,
                 idempotency_key: format!(
                     "{}{PAIRED_KEY_SEPARATOR}{}",
-                    context.idempotency_key, paired.transition
+                    context.idempotency_key, paired_transition
                 ),
                 canonical_request_fingerprint: event.canonical_request_fingerprint.clone(),
                 payload: event.payload.clone(),
@@ -1126,20 +1188,25 @@ impl HarnessStore {
             };
             let mut paired_operation = CanonicalOperation {
                 event: paired_event,
-                resulting_projection: serde_json::to_value(&paired.work)?,
+                resulting_projection: paired_projection,
                 immutable_side_records: Vec::new(),
                 initial_outbox_records: Vec::new(),
             };
-            // The committed WorkEvent is built by the same function the reader
-            // uses for pre-W3 rows, so a store written before and after this
-            // slice reports one identical Work event for this revision.
-            paired_operation.immutable_side_records =
-                vec![serde_json::to_value(read_model::derived_work_event(
-                    &paired_operation,
-                    &paired.work,
-                    paired.kind,
-                    paired.expected_version,
-                ))?];
+            if let PairedAggregateTransition::Work(work) = &paired {
+                // The committed WorkEvent is built by the same function the
+                // reader uses for pre-W3 rows, so a store written before and
+                // after this slice reports one identical Work event for this
+                // revision. A paired `member_run` projection carries no side
+                // record: it is a projection of the primary aggregate, not a
+                // journalled transition of its own.
+                paired_operation.immutable_side_records =
+                    vec![serde_json::to_value(read_model::derived_work_event(
+                        &paired_operation,
+                        &work.work,
+                        work.kind,
+                        work.expected_version,
+                    ))?];
+            }
             committed.push(envelope(operation));
             committed.push(envelope(paired_operation));
         } else {

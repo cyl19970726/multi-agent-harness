@@ -374,7 +374,7 @@ pub(crate) fn reopen_team_member_value(
         ));
     }
     let run = latest_team_run(store, team_run_id)?;
-    team_run_execution_space_id(store, &run)?;
+    let execution_space_id = team_run_execution_space_id(store, &run)?;
     let reopen_actor = store.exact_team_run_host_actor(team_run_id)?;
     if !run.member_run_ids.iter().any(|id| id == member_run_id) {
         return Err(CliError::Usage(format!(
@@ -476,11 +476,22 @@ pub(crate) fn reopen_team_member_value(
         };
     }
     if !external_interactive && !mode_transition {
+        // Whether this member has a provider-native session to resume, and
+        // which one, is the AgentSession's answer when one exists; the
+        // MemberRun row is a projection of it (ADR 0071). Before any session
+        // exists the projection is the `requested` pointer, which is exactly
+        // what a Reopen-after-resume-seed should read.
+        let deciding_native = store.deciding_native_session(
+            &execution_space_id,
+            &member.agent_member_id,
+            member.runtime_generation,
+            member.native_session.as_ref(),
+        )?;
         // Reopen is a coordination transition, but for an already-bound native
         // session it is also the Host's explicit intent to resume that exact
         // history. Freshly probe before the runtime generation changes so an
         // installed upgrade cannot hide behind a formerly Current snapshot.
-        let probe_error = if member.native_session.is_some() {
+        let probe_error = if deciding_native.is_some() {
             let expected = member.clone();
             let (profile, probe_error) = refreshed_team_member_provider_profile(&member)?;
             if apply_refreshed_provider_profile(&mut member, profile) {
@@ -495,7 +506,7 @@ pub(crate) fn reopen_team_member_value(
                 "member run {member_run_id} has no provider profile and cannot prove resume support"
             ))
         })?;
-        if member.native_session.is_some()
+        if deciding_native.is_some()
             || matches!(
                 profile.compatibility_status,
                 ProviderCompatibilityStatus::ReviewRequired
@@ -520,7 +531,7 @@ pub(crate) fn reopen_team_member_value(
                 profile.execution_mode
             )));
         }
-        if let Some(native_session) = member.native_session.as_ref() {
+        if let Some(native_session) = deciding_native.as_ref() {
             if !native_session.supports_resume
                 || matches!(
                     native_session.availability,

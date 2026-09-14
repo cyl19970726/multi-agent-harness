@@ -587,6 +587,19 @@ pub struct MemberRun {
     pub runtime_generation: u64,
     #[serde(default)]
     pub workspace_binding_id: Option<String>,
+    /// The provider-native session pointer, with TWO meanings decided by
+    /// whether an AgentSession exists for this run's generation (ADR 0071):
+    ///
+    /// - **projection** — once an AgentSession binds
+    ///   `native_session_ref`, that is the authority and this field is written
+    ///   from it in the same Store transaction. A disagreeing projection is
+    ///   refused, never reconciled.
+    /// - **requested** — before any AgentSession exists, this is the pointer a
+    ///   `--resume-member` / `resume_native_session_id` seed ASKED for (#845
+    ///   pre-Open attachment). An `external_interactive` Host never has an
+    ///   AgentSession, so its pointer stays requested for the lane's whole life.
+    ///
+    /// A requested pointer is an intent, never an execution claim.
     #[serde(default)]
     pub native_session: Option<NativeSessionRef>,
     pub version: u64,
