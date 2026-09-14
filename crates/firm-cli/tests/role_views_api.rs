@@ -18,6 +18,8 @@ mod provider_received_work_attempt;
 mod remote_fabric_health;
 #[path = "role_views_api/standalone_codex_session.rs"]
 mod standalone_codex_session;
+#[path = "role_views_api/store_reads.rs"]
+mod store_reads;
 #[path = "role_views_api/submission_evidence_refusal.rs"]
 mod submission_evidence_refusal;
 
@@ -43,6 +45,7 @@ use provider_received_work_attempt::{
     admit_provider_received_work_attempt, assert_released_provider_received_attempt,
     ProviderReceivedWorkAttempt, ProviderReceivedWorkAttemptInput,
 };
+use store_reads::{legacy_ledger_rows, work_journal};
 
 const TOKEN: &str = "role-view-local-capability";
 const MEMBER_TOKEN: &str = "role-view-member-capability";
@@ -50,20 +53,6 @@ const SIBLING_MEMBER_TOKEN: &str = "role-view-sibling-member-capability";
 const OPERATOR_TOKEN: &str = "role-view-operator-capability";
 const WRONG_OPERATOR_TOKEN: &str = "role-view-wrong-operator-capability";
 const DELEGATED_OPERATOR_TOKEN: &str = "role-view-delegated-operator-capability";
-
-/// The raw legacy `work_operations.jsonl` rows. These assertions are about
-/// that one file — a refused writer appends nothing to it, and since the W4
-/// writer cutover nothing appends to it at all.
-fn legacy_ledger_rows(store: &HarnessStore) -> Vec<harness_core::WorkOperation> {
-    store
-        .legacy_work_operation_rows()
-        .expect("legacy Work ledger rows")
-}
-
-/// Every Work revision the store holds, through the one reader.
-fn work_journal(store: &HarnessStore) -> Vec<harness_store::WorkJournalRecord> {
-    store.work_journal_records().expect("Work journal records")
-}
 
 fn ledger_digest(root: &std::path::Path) -> Vec<(String, Vec<u8>)> {
     let mut rows = std::fs::read_dir(root)
