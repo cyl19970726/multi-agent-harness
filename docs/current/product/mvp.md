@@ -6,7 +6,6 @@ The active MVP proves a simple Firm workflow:
 
 ```text
 AgentTeam (durable, flat) → TeamRuns → MemberRuns → Work DAG → Result
-              └──────────── WorkDelegation ──────────→ peer Team
 ```
 
 "workflow" here means the product journey shown above, not the retired Dynamic
@@ -25,8 +24,9 @@ implementation details and do not create another durable ledger.
    stay internal unless promoted to a Finding, Result, Failure, or new Work.
    New Works are peer nodes; hard dependency edges form a cycle-safe DAG and
    readiness requires every prerequisite to be accepted.
-5. WorkDelegation is the only cross-Team responsibility transfer. It is
-   explicit, versioned, cycle-safe, and observable from source and target.
+5. A Team's Work is accountable to that Team and the Work model carries no
+   cross-Team edge. Cross-machine collaboration is the separate Remote Fabric
+   surface, which creates an ordinary Work on the target Team.
 6. One machine NodeDaemon drives every admitted local TeamRun. Public surfaces
    fail explicitly when it is unavailable; there is no per-run fallback.
 7. Provider-native sessions own transcript and tool truth. Firm owns identity,

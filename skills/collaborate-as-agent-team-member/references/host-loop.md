@@ -354,9 +354,10 @@ resume a blocked Work; `team-run recover` lists candidates as
 Work and the member claims/starts it again — never `cancel` plus a re-issued
 Work.
 
-Cross-Team needs are an explicit `WorkDelegation` from a source Work you own
-to a target Work in the other flat Team; target completion never
-auto-completes your source Work.
+Cross-Team needs are not a Work-ledger relation: the Work model carries no
+cross-Team edge, and the other flat Team's Host owns its own Work. Where the
+Remote Fabric lands responsibility on another node it creates an ordinary Work
+accountable to that node's Team; its completion never completes your Work.
 
 ## 6. Recover instead of restarting
 

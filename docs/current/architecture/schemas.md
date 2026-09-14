@@ -15,7 +15,6 @@ outputs, adapters, and the Agent Dashboard.
 | `RuntimeCommand` | Durable, generation-fenced provider effect preparation and settlement |
 | `Work` / `WorkOperation` / `WorkEvent` / `WorkDelivery` | Team-accountable flat DAG node, crash-atomic replay row, append-only semantic/dependency transition, and versioned runtime delivery |
 | `WorkModuleDefinition` / `WorkModuleBinding` / Gate records | Closed built-in Module definition, exact version/config binding, and candidate verification contract; not an open registry |
-| `WorkDelegation` / `WorkDelegationEvent` | Cross-Team responsibility handoff with CAS, idempotency, cycle prevention, and source rollup |
 | `Message` | Immutable identity-first conversation envelope with typed author, correlation/causation, optional Work relation, and closed semantic kind. Provider requests and responses are Message kinds. |
 | `MessageSubscription` / `SubscriptionCursor` | Authorized recipient policy and recipient progress without copying or mutating Message content. |
 | `CanonicalMessageDelivery` | One recipient's queue, claim, exact AgentSession generation, provider receipt, and acknowledgement/cursor state. |
@@ -120,10 +119,9 @@ operation registry. The bundle uses explicit protocol, schema, and canonical
 JSON versions because it crosses machine and release boundaries.
 
 `WorkOperation` is the Store's crash-atomic replay envelope around one
-WorkEvent, its complete resulting Work, delivery creates/updates, and any
-`WorkDelegation` revisions caused by that exact target-Work transition. The
-embedded delegation revisions ensure HTTP and CLI mutations cannot expose
-a newer target Work with a stale cross-Team roll-up after a crash. It is not a
+WorkEvent, its complete resulting Work, and delivery creates/updates. It
+carried cross-Team delegation revisions until that stack retired; a legacy row
+that still holds them folds without them. It is not a
 separately authored public lifecycle object and therefore has no standalone
 public JSON Schema in V1; the public schemas above define the projections and
 semantic event/delivery records exposed by CLI/API/Dashboard.

@@ -10,10 +10,12 @@
 //!   carries Submitted, Accepted, Cancelled or DependenciesChanged with a bare
 //!   `WorkEvent`, and a `work_report/created` envelope carries a pre-cutover
 //!   Review snapshot.
-//! * `work_operations.jsonl` (plus the crash-atomic
-//!   `work_delegation_operations.jsonl` composite) is legacy read-only input:
-//!   the [`WorkOperation`] rows a pre-cutover binary appended. Nothing writes
-//!   it, and a store created after the cutover never has it.
+//! * `work_operations.jsonl` is legacy read-only input: the [`WorkOperation`]
+//!   rows a pre-cutover binary appended. Nothing writes it, and a store created
+//!   after the cutover never has it. The crash-atomic delegation composite this
+//!   fold used to merge retired with the Work-ledger delegation stack; a store
+//!   that still holds `work_delegation_operations.jsonl` keeps the file and no
+//!   reader folds it.
 //!
 //! Every current-phase, event, record, count and cursor reader goes through
 //! this module so no consumer can see half the chain. The module offers

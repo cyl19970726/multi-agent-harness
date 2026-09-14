@@ -17,8 +17,6 @@ AgentMember ── * AgentSession
       └── authors Message ── * CanonicalMessageDelivery ──> AgentSession
 
 NodeDaemon ── * RuntimeCommand ──> provider effect
-
-WorkDelegation: source Team/Work ──> target Team/Work
 ```
 
 `AgentMember` is the sole durable agent identity root; `TeamMembership` records
@@ -48,13 +46,15 @@ duplicates, stale revisions, and cycles, then derives readiness and its
 reasons. There is no Work-containment relation. Failed or cancelled
 prerequisites preserve downstream Work for explicit Host replan.
 
-Cross-Team cooperation is explicit `WorkDelegation`, not parent/child topology.
-The collaboration fabric owns the relationship and decisions; source
-and target Execution Spaces independently own their native Work. Cross-node
-mutations route through the accepted Remote Node Fabric and fold relationship
-truth only after an exact terminal application receipt. Target Work completion
-never completes source Work. Local WorkDelegation writers and transport-time
-fallbacks are retired. See
+Cross-Team cooperation is not a Work-ledger relation and never parent/child
+topology: the Work model has no cross-Team edge at all, and the Work-ledger
+delegation stack is retired. The collaboration fabric owns the cross-machine
+relationship and its decisions; source and target Execution Spaces
+independently own their native Work. Cross-node mutations route through the
+accepted Remote Node Fabric and fold relationship truth only after an exact
+terminal application receipt. Where the fabric lands responsibility on another
+node it creates an ordinary Work accountable to that node's Team; target Work
+completion never completes source Work. See
 [Cross-machine Team collaboration](cross-machine-team-collaboration.md).
 
 ## Runtime trust
@@ -79,7 +79,7 @@ Space; a registration from one Store cannot name another Space.
 | Who executes a lane? | `MemberRun` plus current `Work` ownership |
 | What orders peer Works? | versioned hard dependency edges validated by the Work kernel |
 | Why is a Work ready? | kernel-derived readiness over lifecycle, assignment policy and accepted prerequisites |
-| How does work cross Teams? | `WorkDelegation` and events |
+| How does work cross Teams? | it does not: the collaboration fabric creates an ordinary Work on the target Team |
 | Who may drive a Run? | current parent-fenced `TeamSupervisorLease` |
 | Who authored conversation? | identity-first `Message`, attested by the source NodeDaemon generation |
 | What proves one recipient's delivery state? | `CanonicalMessageDelivery` bound to that recipient identity and exact AgentSession generation |

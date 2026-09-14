@@ -840,29 +840,6 @@ impl HarnessStore {
         self.cached_host_attention_outbox()
     }
 
-    pub(crate) fn trust_work_delegation_revisions_for_team_run_unlocked(
-        &self,
-        team_run_id: Option<&str>,
-    ) -> StoreResult<Vec<WorkDelegationRevision>> {
-        let mut revisions = Vec::new();
-        for envelope in self.trust_operation_envelopes_unlocked()? {
-            for record in envelope.operation.immutable_side_records {
-                let belongs_to_run = team_run_id.is_none_or(|id| {
-                    record["delegation"]["source_work_ref"]["team_run_id"].as_str() == Some(id)
-                        || record["delegation"]["target_work_ref"]["team_run_id"].as_str()
-                            == Some(id)
-                });
-                if !belongs_to_run {
-                    continue;
-                }
-                if let Ok(revision) = serde_json::from_value::<WorkDelegationRevision>(record) {
-                    revisions.push(revision);
-                }
-            }
-        }
-        Ok(revisions)
-    }
-
     /// Select by kind before cloning: settled RuntimeCommand history must not
     /// inflate every current Session/MemberRun observation.
     pub(super) fn cached_latest_trust_envelopes_for_kind(

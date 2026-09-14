@@ -722,17 +722,6 @@ pub(super) fn migration_host_work_context(
     ))
 }
 
-pub(super) fn roll_up_target_work_delegations(
-    store: &HarnessStore,
-    work: &Work,
-    args: &[String],
-) -> CliResult<Vec<WorkDelegation>> {
-    let mut context = host_work_context(store, &work.team_run_id, args)?;
-    context.event_id = generated_id("delegation-rollup");
-    context.idempotency_key = format!("delegation-rollup:{}:{}", work.id, work.version);
-    Ok(store.transition_work_and_roll_up_delegation(&work.id, context)?)
-}
-
 // ---------------------------------------------------------------------------
 // Decision-shaped board reads (issue #305).
 //

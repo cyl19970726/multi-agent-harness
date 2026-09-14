@@ -11,32 +11,6 @@ pub(super) struct CurrentWorkSources {
     pub recovered: Result<Vec<WorkOperation>, String>,
 }
 
-pub(super) fn merge_work_operation_sources(
-    mut operations: Vec<WorkOperation>,
-    mut delegated: Vec<WorkOperation>,
-) -> Vec<WorkOperation> {
-    // WorkDelegation creation is crash-atomic in a separate composite
-    // ledger, while later target transitions use the ordinary Work ledger.
-    // Concatenating files would place every delegated Work's version 1
-    // after its later versions and make the projection regress. Preserve
-    // the ordinary ledger's exact append order (the durable `--since`
-    // cursor), then insert each composite creation at its temporal slot
-    // and always before any later revision of that same Work.
-    delegated.sort_by(|left, right| work_event_order(&left.event, &right.event));
-    for operation in delegated {
-        let same_work = operations
-            .iter()
-            .position(|existing| existing.work.id == operation.work.id)
-            .unwrap_or(operations.len());
-        let temporal = operations
-            .iter()
-            .position(|existing| work_event_order(&operation.event, &existing.event).is_lt())
-            .unwrap_or(operations.len());
-        operations.insert(same_work.min(temporal), operation);
-    }
-    operations
-}
-
 impl HarnessStore {
     pub(super) fn current_work_sources(&self) -> StoreResult<Arc<CurrentWorkSources>> {
         let ordinary = self.cached_jsonl_source_fold(
@@ -44,31 +18,19 @@ impl HarnessStore {
             false,
             |rows: &mut Vec<WorkOperation>, row: &WorkOperation| rows.push(row.clone()),
         )?;
-        let delegated = self.cached_jsonl_source_fold(
-            "work_delegation_operations.jsonl",
-            false,
-            |rows: &mut Vec<WorkOperation>, row: &WorkDelegationOperation| {
-                rows.push(row.target_work_operation.clone())
-            },
-        )?;
-        self.cached_combined_projection(
-            "work-current-sources",
-            vec![ordinary.clone(), delegated.clone()],
-            || {
-                let operations =
-                    merge_work_operation_sources((*ordinary).clone(), (*delegated).clone());
-                let recovered = self
-                    .recover_work_operation_provenance(operations.clone())
-                    .map_err(|error| match error {
-                        StoreError::Conflict(message) => message,
-                        other => other.to_string(),
-                    });
-                Ok(CurrentWorkSources {
-                    operations,
-                    recovered,
-                })
-            },
-        )
+        self.cached_combined_projection("work-current-sources", vec![ordinary.clone()], || {
+            let operations = (*ordinary).clone();
+            let recovered = self
+                .recover_work_operation_provenance(operations.clone())
+                .map_err(|error| match error {
+                    StoreError::Conflict(message) => message,
+                    other => other.to_string(),
+                });
+            Ok(CurrentWorkSources {
+                operations,
+                recovered,
+            })
+        })
     }
 
     pub(super) fn current_host_attention_projection(

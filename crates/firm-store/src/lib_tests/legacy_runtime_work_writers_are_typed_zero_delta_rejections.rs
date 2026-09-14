@@ -60,7 +60,6 @@ fn legacy_runtime_work_writers_are_typed_zero_delta_rejections() {
         condition_records: Vec::new(),
         reports: Vec::new(),
         evidence_records: Vec::new(),
-        delegation_revisions: Vec::new(),
     };
     {
         let _lock = store.acquire_write_lock().unwrap();

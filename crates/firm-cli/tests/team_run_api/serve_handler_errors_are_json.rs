@@ -38,6 +38,10 @@ fn get_and_post_handler_errors_are_json_with_classified_retryability() {
     assert_eq!(create_status, 200, "create body: {created}");
     let member = &created["result"]["member_runs"][0];
     let member_id = member["id"].as_str().expect("created MemberRun id");
+    let run_id = created["result"]["team_run"]["id"]
+        .as_str()
+        .expect("created TeamRun id")
+        .to_string();
     let lock_path = home.spaces_dir().join(&project_id).join(".store.lock");
     let lock = OpenOptions::new()
         .create(true)
@@ -70,12 +74,15 @@ fn get_and_post_handler_errors_are_json_with_classified_retryability() {
     std::fs::write(
         home.spaces_dir()
             .join(&project_id)
-            .join("work_delegation_operations.jsonl"),
+            .join("work_operations.jsonl"),
         "not-json\n",
     )
-    .expect("poison WorkDelegation operation ledger");
+    .expect("poison the legacy Work operation ledger");
 
-    let (get_status, get_body) = serve.get_json("/v1/work-delegations");
+    // The Work-ledger delegation reader this used to poison is retired; the
+    // property is the same on any ledger a GET still folds.
+    let (get_status, get_body) =
+        serve.get_json(&format!("/v1/host-attentions?team_run_id={run_id}"));
     assert_eq!(get_status, 400, "GET body: {get_body}");
     assert_eq!(get_body["ok"], false, "GET body: {get_body}");
     assert!(

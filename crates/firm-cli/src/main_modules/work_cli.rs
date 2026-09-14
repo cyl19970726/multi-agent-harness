@@ -591,7 +591,6 @@ pub(super) fn team_run_work_command(
                 "blocked",
                 &format!("Work blocked by host: {reason}"),
             )?;
-            roll_up_target_work_delegations(store, &work, args)?;
             print_json(&work)
         }
         "resume" => {
@@ -616,7 +615,6 @@ pub(super) fn team_run_work_command(
                 "resumed",
                 &format!("Work resumed by host: {resolution}"),
             )?;
-            roll_up_target_work_delegations(store, &work, args)?;
             print_json(&work)
         }
         "release" => {
@@ -737,7 +735,6 @@ pub(super) fn team_run_work_command(
                     "accepted",
                     &format!("Work accepted: {}", work.title),
                 )?;
-                roll_up_target_work_delegations(store, &work, args)?;
             }
             print_json(&work)
         }
@@ -761,7 +758,6 @@ pub(super) fn team_run_work_command(
                 "cancelled",
                 &format!("Work cancelled: {reason}"),
             )?;
-            roll_up_target_work_delegations(store, &work, args)?;
             print_json(&work)
         }
         "retarget" => {

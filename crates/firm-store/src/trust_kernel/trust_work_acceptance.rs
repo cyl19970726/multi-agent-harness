@@ -224,7 +224,7 @@ impl HarnessStore {
             ActorKind::External => TeamActorKind::Operator,
             ActorKind::Service => TeamActorKind::Service,
         };
-        let rollup_context = WorkCommandContext {
+        let acceptance_event_context = WorkCommandContext {
             event_id: format!("trust-accept:{}", context.idempotency_key),
             performed_by_actor: TeamActorRef {
                 kind: actor_kind,
@@ -251,22 +251,20 @@ impl HarnessStore {
             created_at: updated_at.to_string(),
             duplicate_ok: false,
         };
-        let delegation_revisions =
-            self.work_delegation_rollup_revisions_unlocked(&next, &rollup_context)?;
         // Preserve the historical WorkEvent read contract as an immutable
         // record inside the one canonical operation, exactly as the cancel
         // path does. It is not a second Work writer: the resulting Work
         // projection is committed by commit_current_work_mutation_unlocked.
         let acceptance_event = firm_core::WorkEvent {
-            id: rollup_context.event_id.clone(),
+            id: acceptance_event_context.event_id.clone(),
             team_run_id: next.team_run_id.clone(),
             work_id: next.id.clone(),
             sequence: next.version,
             kind: firm_core::WorkEventKind::Accepted,
             expected_version: current.version,
             resulting_version: next.version,
-            performed_by_actor: rollup_context.performed_by_actor.clone(),
-            authority_actor: rollup_context.authority_actor.clone(),
+            performed_by_actor: acceptance_event_context.performed_by_actor.clone(),
+            authority_actor: acceptance_event_context.authority_actor.clone(),
             causation_ref: None,
             idempotency_key: context.idempotency_key.clone(),
             payload: request_payload.clone(),
@@ -291,12 +289,6 @@ impl HarnessStore {
             )
             .chain(
                 waivers
-                    .iter()
-                    .map(serde_json::to_value)
-                    .collect::<Result<Vec<_>, _>>()?,
-            )
-            .chain(
-                delegation_revisions
                     .iter()
                     .map(serde_json::to_value)
                     .collect::<Result<Vec<_>, _>>()?,

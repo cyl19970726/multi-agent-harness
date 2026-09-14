@@ -820,8 +820,6 @@ impl HarnessStore {
                 })
             })
             .collect::<StoreResult<Vec<_>>>()?;
-        let delegation_revisions =
-            self.work_delegation_rollup_revisions_unlocked(&next, &context)?;
         let (performed_by_actor, executed_by_member_run_id) =
             self.persisted_work_performer_unlocked(&context.performed_by_actor, &next.team_run_id);
         let operation = WorkOperation {
@@ -845,18 +843,10 @@ impl HarnessStore {
             condition_records,
             reports,
             evidence_records,
-            delegation_revisions,
         };
         self.validate_work_operation_records_unlocked(&operation)?;
-        // The complete WorkOperation is the Work journal row. Its Delegation
-        // revisions are ALSO committed as their own side records, in the same
-        // atomic write, because the Delegation reader resolves revisions by
-        // shape across every trust envelope and must not have to know that one
-        // of them is nested inside a Work row.
-        let mut side_records = vec![serde_json::to_value(&operation)?];
-        for revision in &operation.delegation_revisions {
-            side_records.push(serde_json::to_value(revision)?);
-        }
+        // The complete WorkOperation is the Work journal row.
+        let side_records = vec![serde_json::to_value(&operation)?];
         self.commit_current_work_mutation_unlocked(
             mutation_context,
             kind.canonical_transition(),

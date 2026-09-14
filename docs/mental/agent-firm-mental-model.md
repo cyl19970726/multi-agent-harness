@@ -99,7 +99,7 @@ Work policy.
 
 ## Cross-Machine Communication
 
-One logical Firm may place different AgentTeams on different ExecutionNodes. Each machine runs one machine-scoped NodeDaemon that supervises all local Teams across registered Execution Spaces. `NodeDaemonLease` is machine-scoped authority for all local Teams across registered Execution Spaces; it is never scoped to one Execution Space. A single Team never spans machines. Cross-Team responsibility uses explicit `WorkDelegation`; cross-machine transport must preserve the source and target Team identities instead of introducing nested Teams or optional placement.
+One logical Firm may place different AgentTeams on different ExecutionNodes. Each machine runs one machine-scoped NodeDaemon that supervises all local Teams across registered Execution Spaces. `NodeDaemonLease` is machine-scoped authority for all local Teams across registered Execution Spaces; it is never scoped to one Execution Space. A single Team never spans machines. The Work model carries no cross-Team edge; cross-machine transport must preserve the source and target Team identities instead of introducing nested Teams or optional placement.
 
 ---
 

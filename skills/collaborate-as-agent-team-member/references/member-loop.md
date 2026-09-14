@@ -300,10 +300,11 @@ until the server returns it as ready; failed or cancelled prerequisites
 require Host replan.
 
 If another Team should own a substantial result, report that finding to your
-Host with the proposed boundary and evidence. The Host may create an explicit
-`WorkDelegation` to another flat Team. You remain accountable for integrating
-the delegated result and submitting your source Work; target completion never
-auto-completes the source Work — see shared hard invariants §7.
+Host with the proposed boundary and evidence. The Hosts coordinate it between
+themselves; there is no Work-ledger edge to another Team. You remain
+accountable for integrating any result you depend on and submitting your own
+Work; another Team's completion never completes yours — see shared hard
+invariants §7.
 
 When the runtime presents `SHARED WORK AVAILABLE`, treat it as a board-derived
 discovery hint, not ownership. Refresh the Work and claim it with the bound
