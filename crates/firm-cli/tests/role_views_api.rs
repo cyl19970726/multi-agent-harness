@@ -18,6 +18,8 @@ mod provider_received_work_attempt;
 mod remote_fabric_health;
 #[path = "role_views_api/standalone_codex_session.rs"]
 mod standalone_codex_session;
+#[path = "role_views_api/store_reads.rs"]
+mod store_reads;
 #[path = "role_views_api/submission_evidence_refusal.rs"]
 mod submission_evidence_refusal;
 
@@ -34,6 +36,7 @@ use harness_core::agentfirm_api::{
     RuntimeActivity, RuntimeCommandBinding, RuntimeDispatchMode, RuntimeDriverRef,
     RuntimeResidency, WorkDeliveryStatus, WorkExecutionBinding, WorkExecutionBindingStatus,
 };
+use harness_core::ExecutionSpaceId;
 use harness_core::{
     ExecutionNode, ExecutionNodeStatus, MemberCoordinationStatus, MemberRunStatus,
     NodeProjectRegistration, NodeProjectRegistrationStatus, ProviderCompatibilityStatus,
@@ -43,6 +46,7 @@ use provider_received_work_attempt::{
     admit_provider_received_work_attempt, assert_released_provider_received_attempt,
     ProviderReceivedWorkAttempt, ProviderReceivedWorkAttemptInput,
 };
+use store_reads::{legacy_ledger_rows, work_journal};
 
 const TOKEN: &str = "role-view-local-capability";
 const MEMBER_TOKEN: &str = "role-view-member-capability";
@@ -50,16 +54,6 @@ const SIBLING_MEMBER_TOKEN: &str = "role-view-sibling-member-capability";
 const OPERATOR_TOKEN: &str = "role-view-operator-capability";
 const WRONG_OPERATOR_TOKEN: &str = "role-view-wrong-operator-capability";
 const DELEGATED_OPERATOR_TOKEN: &str = "role-view-delegated-operator-capability";
-
-/// The raw legacy `work_operations.jsonl` rows. These assertions are about
-/// that one file — a refused writer appends nothing to it, and a canonical
-/// accept fabricates no legacy transition in it — so they deliberately read
-/// the legacy ledger rather than the merged Work journal.
-fn legacy_ledger_rows(store: &HarnessStore) -> Vec<harness_core::WorkOperation> {
-    store
-        .legacy_work_operation_rows()
-        .expect("legacy Work ledger rows")
-}
 
 fn ledger_digest(root: &std::path::Path) -> Vec<(String, Vec<u8>)> {
     let mut rows = std::fs::read_dir(root)
@@ -438,6 +432,7 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
         .expect("provider projection AgentSession");
 
     let before = legacy_ledger_rows(&store).len();
+    let journal_before = work_journal(&store).len();
     let legacy_route = format!("/v1/team-runs/{run_id}/works?project={project_id}");
     let (status, retired) = serve.post_json(
         &legacy_route,
@@ -1112,11 +1107,12 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
     assert_eq!(status, 200, "member start replay: {start_replay}");
     assert_eq!(start_replay["event_id"], started["event_id"]);
     assert_eq!(start_replay["replayed"], true);
-    let operations_before_cli_replay = legacy_ledger_rows(&store);
+    let operations_before_cli_replay = work_journal(&store);
     let start_operation = operations_before_cli_replay
         .iter()
-        .find(|operation| operation.event.idempotency_key == "start-store-live-1")
-        .expect("HTTP start Work operation");
+        .find(|record| record.event.idempotency_key == "start-store-live-1")
+        .expect("HTTP start Work revision")
+        .clone();
     assert_eq!(start_operation.event.id, started["event_id"]);
     assert_eq!(start_operation.event.expected_version, 2);
     assert_eq!(start_operation.event.resulting_version, 3);
@@ -1169,16 +1165,20 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
                 && refusal.contains("firm member work start"),
             "refusal must name the authenticated entrance: {refusal}"
         );
-        let operations_after_cli = legacy_ledger_rows(&store);
+        let operations_after_cli = work_journal(&store);
         assert_eq!(
             operations_after_cli.len(),
             operations_before_cli_replay.len(),
             "a refused CLI member write must not append a Work event"
         );
+        assert!(
+            legacy_ledger_rows(&store).is_empty(),
+            "and nothing reaches the legacy ledger file either"
+        );
         let unchanged_operation = operations_after_cli
             .iter()
-            .find(|operation| operation.event.idempotency_key == "start-store-live-1")
-            .expect("stable authenticated start operation");
+            .find(|record| record.event.idempotency_key == "start-store-live-1")
+            .expect("stable authenticated start revision");
         assert_eq!(unchanged_operation.event.id, start_operation.event.id);
         assert_eq!(
             unchanged_operation.event.resulting_version,
@@ -1247,7 +1247,7 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
         &space_id,
         run_id,
         &project_id,
-        before,
+        journal_before,
         &first_attempt,
     );
     let (status, review_view) =
@@ -1337,7 +1337,7 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
         team.id
     );
     let canonical_before_accept = store
-        .canonical_operations_for_space(&space_id)
+        .canonical_operations_for_space(&ExecutionSpaceId::new(&space_id))
         .expect("before accept")
         .len();
     let no_confirm_headers = action_headers(TOKEN, "accept-no-confirm", "7");
@@ -1373,7 +1373,7 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
     assert_eq!(status, 409, "stale accept: {stale_accept}");
     assert_eq!(
         store
-            .canonical_operations_for_space(&space_id)
+            .canonical_operations_for_space(&ExecutionSpaceId::new(&space_id))
             .expect("rejected accepts")
             .len(),
         canonical_before_accept,
@@ -1401,13 +1401,17 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
     assert_eq!(status, 200, "accept replay: {accept_replay}");
     assert_eq!(accept_replay["event_id"], accepted["event_id"]);
     assert_eq!(accept_replay["replayed"], true);
-    assert_eq!(
-        legacy_ledger_rows(&store).len(),
-        before + 5,
-        "canonical accept must not fabricate a legacy Work transition beyond membership assignment, the two exact starts, and request-changes"
+    // Exactly the create, the membership assignment, the two exact starts, the
+    // submission's Review revision, the request-changes, the second submission
+    // and this accept — every one of them a `work` transition, none of them a
+    // fabricated legacy row.
+    assert_eq!(work_journal(&store).len(), journal_before + 8);
+    assert!(
+        legacy_ledger_rows(&store).is_empty(),
+        "and no Work write reaches the legacy ledger file"
     );
     assert!(store
-        .canonical_operations_for_space(&space_id)
+        .canonical_operations_for_space(&ExecutionSpaceId::new(&space_id))
         .expect("canonical operations")
         .iter()
         .any(|operation| operation.event.aggregate_kind == "work"

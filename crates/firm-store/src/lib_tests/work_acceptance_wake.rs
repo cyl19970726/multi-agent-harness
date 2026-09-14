@@ -68,7 +68,11 @@ fn real_trust_acceptance_selects_blocked_responsibility_without_changing_it() {
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
                 .as_millis() as u64,
-            60_000,
+            // Long enough that the lease cannot expire mid-test under a loaded
+            // parallel suite. What this test fences is the acceptance wake,
+            // not lease expiry; a wall-clock-sensitive TTL here only turns a
+            // slow machine into a false Supervisor-fenced failure.
+            600_000,
         )
         .unwrap();
     let session = store

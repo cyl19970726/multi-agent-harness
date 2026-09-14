@@ -50,7 +50,7 @@ fn update_work_github_links_refreshes_only_evidence_without_churn() {
         created_at: at.into(),
         duplicate_ok: false,
     };
-    let before = store.work_operations_unlocked().unwrap();
+    let before = store.work_record_operations_unlocked().unwrap();
     let unchanged = store
         .update_work_github_links(
             &created.id,
@@ -62,7 +62,7 @@ fn update_work_github_links_refreshes_only_evidence_without_churn() {
         )
         .expect("unchanged refresh");
     assert_eq!(unchanged, created);
-    assert_eq!(store.work_operations_unlocked().unwrap(), before);
+    assert_eq!(store.work_record_operations_unlocked().unwrap(), before);
 
     let refreshed = store
         .update_work_github_links(
@@ -77,7 +77,7 @@ fn update_work_github_links_refreshes_only_evidence_without_churn() {
     assert_eq!(refreshed.phase, created.phase);
     assert_eq!(refreshed.version, created.version + 1);
     assert_eq!(refreshed.github_links[0].status.as_deref(), Some("MERGED"));
-    let operations = store.work_operations_unlocked().unwrap();
+    let operations = store.work_record_operations_unlocked().unwrap();
     assert_eq!(operations.len(), before.len() + 1);
     assert_eq!(
         operations.last().unwrap().event.kind,
@@ -114,7 +114,7 @@ fn update_work_github_links_refreshes_only_evidence_without_churn() {
         )
         .expect("same authenticated request replays before the old-version CAS");
     assert_eq!(replayed, refreshed);
-    assert_eq!(store.work_operations_unlocked().unwrap(), operations);
+    assert_eq!(store.work_record_operations_unlocked().unwrap(), operations);
 
     let changed_payload = store
         .update_work_github_links(
@@ -127,10 +127,12 @@ fn update_work_github_links_refreshes_only_evidence_without_churn() {
         )
         .expect_err("one idempotency key cannot replace its GitHub evidence payload");
     assert!(
-        changed_payload.to_string().contains("IDEMPOTENCY_CONFLICT"),
+        changed_payload
+            .to_string()
+            .contains("IDEMPOTENCY_KEY_REUSED"),
         "error: {changed_payload}"
     );
-    assert_eq!(store.work_operations_unlocked().unwrap(), operations);
+    assert_eq!(store.work_record_operations_unlocked().unwrap(), operations);
     std::fs::remove_dir_all(root).expect("remove temp store");
 }
 

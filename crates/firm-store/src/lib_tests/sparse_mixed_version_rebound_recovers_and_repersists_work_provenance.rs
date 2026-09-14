@@ -51,6 +51,7 @@ fn sparse_mixed_version_update_recovers_and_repersists_work_provenance() {
             idempotency_key: rebound_context.idempotency_key,
             payload: serde_json::json!({"source":"stale_mixed_version_writer"}),
             created_at: rebound_context.created_at,
+            executed_by_member_run_id: None,
         },
         work: sparse_work,
         condition_records: Vec::new(),
@@ -60,7 +61,7 @@ fn sparse_mixed_version_update_recovers_and_repersists_work_provenance() {
         delegation_revisions: Vec::new(),
     };
     let refused = store
-        .append_work_operation_unlocked(&sparse_operation)
+        .validate_work_operation_records_unlocked(&sparse_operation)
         .expect_err("current writer must refuse provenance regression");
     assert!(refused
         .to_string()
@@ -118,11 +119,17 @@ fn sparse_mixed_version_update_recovers_and_repersists_work_provenance() {
             .expect("repair retry is idempotent"),
         repaired
     );
-    let raw = store
-        .work_operations_unlocked()
-        .expect("repaired WorkOperations");
-    assert_eq!(raw.last().expect("repair operation").work, repaired);
-    assert_eq!(raw.last().unwrap().event.kind, WorkEventKind::Updated);
+    let repair = store
+        .work_record_operations_unlocked()
+        .expect("repaired WorkOperations")
+        .iter()
+        .find(|operation| {
+            operation.work.id == repaired.id && operation.work.version == repaired.version
+        })
+        .cloned()
+        .expect("repair operation");
+    assert_eq!(repair.work, repaired);
+    assert_eq!(repair.event.kind, WorkEventKind::Updated);
 
     std::fs::remove_dir_all(root).expect("remove temp store");
 }

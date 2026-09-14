@@ -287,14 +287,11 @@ fn team_work_cli_recovers_lost_execution_after_a_superseded_generation() {
         harness_core::agentfirm_api::WorkExecutionBindingStatus::Released
     );
     let recovered_event = store
-        .legacy_work_operation_rows()
+        .work_history(&assigned.id)
         .unwrap()
         .into_iter()
-        .find(|operation| {
-            operation.work.id == assigned.id
-                && operation.event.kind == harness_core::WorkEventKind::ExecutionRecovered
-        })
-        .expect("one ExecutionRecovered operation");
+        .find(|record| record.event.kind == harness_core::WorkEventKind::ExecutionRecovered)
+        .expect("one ExecutionRecovered revision");
     assert_eq!(
         recovered_event.event.payload["released_binding"]["id"],
         serde_json::json!(bindings[0].id)

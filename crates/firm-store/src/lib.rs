@@ -9,18 +9,18 @@ use std::time::{Duration, Instant};
 use firm_core::agentfirm_api::{CanonicalWorkDelivery, WorkDeliveryStatus};
 use firm_core::{
     content_hash_hex16, AgentTeam, AgentTeamRun, Decision, DelegationRun, Evidence, ExecutionNode,
-    ExecutionNodeStatus, Gap, GitHubLink, HostAttention, HostAttentionInbox, HostAttentionKind,
-    HostAttentionStatus, HostBindingLease, HostBindingLeaseOwnerKind, HostBindingLeaseStatus,
-    LegacyWave, MemberAction, MessageTerminalSource, Mission, MissionLogEntry, NodeDaemonLease,
-    NodeDaemonLeaseStatus, NodeProjectRegistration, NodeProjectRegistrationStatus, Proposal,
-    ProviderChildThread, ProviderCompatibilityAdmission, ProviderCompatibilityAdmissionLifecycle,
-    ProviderCompatibilityBlockBoundary, ProviderCompatibilityBlockCause,
-    ProviderCompatibilityStatus, ProviderExecutionStatus, ProviderIntegrationProfile,
-    ProviderLaunchProfile, ProviderProcess, ProviderRuntimeProjection, RegistryDeliveryAttempt,
-    RegistryDeliveryStatus, RegistryMessage, Review, TeamActorKind, TeamActorRef,
-    TeamMemberCloseRequest, TeamMemberCloseStatus, TeamMessageProjection, TeamRunEvent,
-    TeamRunStatus, TeamSupervisorLease, TeamSupervisorLeaseStatus, Validate, Vision, Work,
-    WorkClaimMode, WorkCommandContext, WorkCondition, WorkConditionRecord, WorkDelegation,
+    ExecutionNodeStatus, ExecutionSpaceId, Gap, GitHubLink, HostAttention, HostAttentionInbox,
+    HostAttentionKind, HostAttentionStatus, HostBindingLease, HostBindingLeaseOwnerKind,
+    HostBindingLeaseStatus, LegacyWave, MemberAction, MessageTerminalSource, Mission,
+    MissionLogEntry, NodeDaemonLease, NodeDaemonLeaseStatus, NodeProjectRegistration,
+    NodeProjectRegistrationStatus, Proposal, ProviderChildThread, ProviderCompatibilityAdmission,
+    ProviderCompatibilityAdmissionLifecycle, ProviderCompatibilityBlockBoundary,
+    ProviderCompatibilityBlockCause, ProviderCompatibilityStatus, ProviderExecutionStatus,
+    ProviderIntegrationProfile, ProviderLaunchProfile, ProviderProcess, ProviderRuntimeProjection,
+    RegistryDeliveryAttempt, RegistryDeliveryStatus, RegistryMessage, Review, TeamActorKind,
+    TeamActorRef, TeamMemberCloseRequest, TeamMemberCloseStatus, TeamMessageProjection,
+    TeamRunEvent, TeamRunStatus, TeamSupervisorLease, TeamSupervisorLeaseStatus, Validate, Vision,
+    Work, WorkClaimMode, WorkCommandContext, WorkCondition, WorkConditionRecord, WorkDelegation,
     WorkDelegationEvent, WorkDelegationRevision, WorkDelegationState, WorkDelegationTransition,
     WorkEvent, WorkEventKind, WorkEvidence, WorkOperation, WorkOperationalDecision, WorkPhase,
     WorkRef, WorkReport, WorkResolution, WorkflowArtifactManifest, WorkflowPatch, WorkflowRun,
@@ -391,6 +391,7 @@ pub use store_work_execution_recovery::{
 };
 mod store_current_read_model;
 mod store_work_graph;
+mod store_work_journal_writer;
 mod store_work_mutations;
 mod store_work_projection;
 mod store_work_redelivery;

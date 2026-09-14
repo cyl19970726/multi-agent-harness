@@ -30,7 +30,7 @@ impl HarnessStore {
         let mut submitted_work = work.clone();
         submitted_work.version = work.version.saturating_sub(1);
         let mut sources = Vec::new();
-        for operation in self.work_operations_unlocked()? {
+        for operation in self.work_record_operations_unlocked()?.iter() {
             if operation.work.id != work.id
                 || operation.event.kind != WorkEventKind::Submitted
                 || !self.work_submission_revision_is_current_unlocked(
@@ -40,8 +40,14 @@ impl HarnessStore {
             {
                 continue;
             }
-            if operation.event.performed_by_actor.kind != TeamActorKind::ProviderRuntimeProjection
-                || operation.event.performed_by_actor.id.is_empty()
+            // Either persisted shape proves the runtime: the explicit MemberRun
+            // evidence field, or the legacy performer whose kind was the
+            // runtime projection itself.
+            let member_run_id = operation
+                .event
+                .executing_member_run_id()
+                .unwrap_or_default();
+            if member_run_id.is_empty()
                 || operation.event.work_id != work.id
                 || operation.event.team_run_id != work.team_run_id
                 || operation.work.team_run_id != work.team_run_id
@@ -54,7 +60,7 @@ impl HarnessStore {
                     "MEMBER_RUN_GENERATION_FENCED: submitted Work operation lacks exact runtime provenance".into(),
                 ));
             }
-            sources.push(operation.event.performed_by_actor.id);
+            sources.push(member_run_id.to_string());
         }
         if let Some(member_run_id) = self.result_submission_member_run_unlocked(&submitted_work)? {
             sources.push(member_run_id);
@@ -498,6 +504,7 @@ impl HarnessStore {
             idempotency_key: context.idempotency_key.clone(),
             payload: payload.clone(),
             created_at: context.created_at.clone(),
+            executed_by_member_run_id: None,
         };
         let result = self.commit_current_work_mutation_unlocked(
             &mutation_context,

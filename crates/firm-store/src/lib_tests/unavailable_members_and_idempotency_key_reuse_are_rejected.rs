@@ -15,7 +15,13 @@ fn unavailable_members_and_idempotency_key_reuse_are_rejected() {
             host_work_context("ignored", "shared-key", "unix-ms:3"),
         )
         .expect_err("same key cannot identify a different Work");
-    assert!(other_work.to_string().contains("IDEMPOTENCY_CONFLICT"));
+    // The trust kernel's replay check is the one idempotency authority since
+    // W4: the same key with different request content is a reuse refusal, not
+    // a silent substitution of the first Work's result.
+    assert!(
+        other_work.to_string().contains("IDEMPOTENCY_KEY_REUSED"),
+        "unexpected error: {other_work}"
+    );
     let mut failed_member = member.clone();
     failed_member.status = MemberRunStatus::Failed;
     failed_member.finished_at = Some("unix-ms:5".into());

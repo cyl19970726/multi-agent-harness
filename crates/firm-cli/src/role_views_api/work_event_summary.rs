@@ -96,6 +96,7 @@ mod tests {
                 idempotency_key: format!("key-{version}"),
                 payload: json!({}),
                 created_at: "unix-ms:1788786625885".into(),
+                executed_by_member_run_id: None,
             },
             work: work(version),
         }

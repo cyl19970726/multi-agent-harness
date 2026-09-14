@@ -4,7 +4,7 @@ use super::*;
 fn legacy_runtime_work_writers_are_typed_zero_delta_rejections() {
     let (root, store, run, member, _) = work_test_fixture("legacy-runtime-work-writers");
     let before = store
-        .work_operations_unlocked()
+        .work_record_operations_unlocked()
         .expect("operations before")
         .len();
 
@@ -20,32 +20,56 @@ fn legacy_runtime_work_writers_are_typed_zero_delta_rejections() {
     assert!(create_error
         .to_string()
         .contains("LEGACY_RUNTIME_WORK_AUTHORITY_RETIRED"));
-    assert_eq!(store.work_operations_unlocked().unwrap().len(), before);
+    assert_eq!(
+        store.work_record_operations_unlocked().unwrap().len(),
+        before
+    );
 
-    let canonical = store
-        .insert_work(
-            unassigned_test_work(&run.id, "legacy-runtime-row"),
-            host_work_context("canonical-create-event", "canonical-create", "unix-ms:3"),
-        )
-        .expect("create canonical Work before simulating historical storage");
-    let ledger = root.join("work_operations.jsonl");
-    let rewritten = std::fs::read_to_string(&ledger)
-        .expect("read Work ledger")
-        .lines()
-        .map(|line| {
-            let mut row: serde_json::Value = serde_json::from_str(line).expect("Work row");
-            if row["work"]["id"] == canonical.id {
-                row["work"]["owner_member_id"] =
-                    serde_json::Value::String(member.agent_member_id.clone());
-                row["work"]["active_member_run_id"] = serde_json::Value::String(member.id.clone());
-                row["work"]["assignee_membership_id"] = serde_json::Value::Null;
-            }
-            serde_json::to_string(&row).expect("serialize historical Work row")
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-    std::fs::write(&ledger, format!("{rewritten}\n")).expect("write historical Work row");
-    let legacy_before = store.work_operations_unlocked().unwrap().len();
+    // Stage the historical shape the way a pre-cutover binary stored it: a
+    // `work_operations.jsonl` row whose Work carries runtime ownership. Since
+    // W4 no current writer can produce that row, so the fixture writes it.
+    let mut historical = unassigned_test_work(&run.id, "legacy-runtime-row");
+    historical.version = 1;
+    historical.created_at = "unix-ms:3".into();
+    historical.updated_at = "unix-ms:3".into();
+    historical.accountable_team_id = Some(run.agent_team_id.clone());
+    historical.owner_member_id = Some(member.agent_member_id.clone());
+    historical.active_member_run_id = Some(member.id.clone());
+    historical.assignee_membership_id = None;
+    let canonical = historical.clone();
+    let historical_context =
+        host_work_context("canonical-create-event", "canonical-create", "unix-ms:3");
+    let operation = WorkOperation {
+        event: WorkEvent {
+            id: historical_context.event_id.clone(),
+            team_run_id: run.id.clone(),
+            work_id: canonical.id.clone(),
+            sequence: 1,
+            kind: WorkEventKind::Created,
+            expected_version: 0,
+            resulting_version: 1,
+            performed_by_actor: historical_context.performed_by_actor.clone(),
+            authority_actor: historical_context.authority_actor.clone(),
+            causation_ref: None,
+            idempotency_key: historical_context.idempotency_key.clone(),
+            payload: serde_json::Value::Null,
+            created_at: historical_context.created_at.clone(),
+            executed_by_member_run_id: None,
+        },
+        work: historical,
+        condition_records: Vec::new(),
+        reports: Vec::new(),
+        evidence_records: Vec::new(),
+        decisions: Vec::new(),
+        delegation_revisions: Vec::new(),
+    };
+    {
+        let _lock = store.acquire_write_lock().unwrap();
+        store
+            .append_legacy_work_operation_unlocked(&operation)
+            .expect("stage historical runtime-owned Work row");
+    }
+    let legacy_before = store.work_record_operations_unlocked().unwrap().len();
     for error in [
         store
             .start_work(
@@ -83,7 +107,7 @@ fn legacy_runtime_work_writers_are_typed_zero_delta_rejections() {
             "unexpected legacy rejection: {error}"
         );
         assert_eq!(
-            store.work_operations_unlocked().unwrap().len(),
+            store.work_record_operations_unlocked().unwrap().len(),
             legacy_before
         );
     }

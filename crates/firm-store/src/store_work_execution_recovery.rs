@@ -61,6 +61,7 @@
 
 use super::store_work_redelivery::{delivery_staleness, SupersededWorkDelivery};
 use super::*;
+use crate::store_work_journal_writer::{command_space, WorkCommandAuthority, WorkCommandEntrance};
 use firm_core::agentfirm_api::{
     ActorKind, ActorRef, AgentSession, AgentSessionStatus, CanonicalMutationEvent, MemberRun,
     MutationContext, RuntimeCommandBinding, WorkExecutionBinding, WorkExecutionBindingStatus,
@@ -196,7 +197,9 @@ impl HarnessStore {
     ) -> StoreResult<LostExecutionFacts> {
         let mut bound_admissions: BTreeMap<String, (usize, serde_json::Value)> = BTreeMap::new();
         let mut end_events = BTreeMap::new();
-        for operation in self.canonical_operations_for_space(execution_space_id)? {
+        for operation in
+            self.canonical_operations_for_space(&ExecutionSpaceId::new(execution_space_id))?
+        {
             let event = operation.event;
             if event.aggregate_kind != "work_execution_binding" {
                 continue;
@@ -310,16 +313,31 @@ impl HarnessStore {
             }
             Ok(work_execution_space_id)
         };
-        if let Some(existing) = self.idempotent_work_operation_unlocked(
-            &context.idempotency_key,
+        let mutation_context = match self.enter_work_command_unlocked(
             work_id,
+            expected_version,
             WorkEventKind::ExecutionRecovered,
+            WorkCommandAuthority::Host,
+            &context,
+            &serde_json::json!({
+                "work_id": work_id,
+                "expected_version": expected_version,
+                "execution_space_id": execution_space_id,
+                "reason": reason,
+            }),
         )? {
-            require_work_execution_space(&existing.work)?;
-            return Ok(existing.work);
-        }
+            WorkCommandEntrance::Replayed(work) => {
+                require_work_execution_space(&work)?;
+                return Ok(*work);
+            }
+            WorkCommandEntrance::Admitted(mutation_context) => mutation_context,
+        };
         require_host_actor(&context.performed_by_actor)?;
-        let current = self.current_work_unlocked(work_id, expected_version)?;
+        let current = self.current_work_unlocked(
+            &command_space(&mutation_context),
+            work_id,
+            expected_version,
+        )?;
         self.require_exact_team_run_host_actor(&context.performed_by_actor, &current.team_run_id)?;
         let work_execution_space_id = require_work_execution_space(&current)?;
         require_mutable_work(
@@ -466,6 +484,7 @@ impl HarnessStore {
             next,
             WorkEventKind::ExecutionRecovered,
             context,
+            &mutation_context,
             serde_json::json!({
                 "recovery": "lost_execution",
                 "reason": reason,

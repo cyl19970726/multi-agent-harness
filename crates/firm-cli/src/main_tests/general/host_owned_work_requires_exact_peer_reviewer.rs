@@ -922,12 +922,20 @@ fn a_peer_credential_carrying_host_authority_is_still_recorded_as_the_peer() {
                 && event.kind == harness_core::WorkEventKind::ChangesRequested
         })
         .expect("committed ChangesRequested event");
+    // The performer is the reviewing AgentMember and the MemberRun that
+    // carried the review is evidence beside it. A Host authority actor still
+    // must not rewrite either.
     assert_eq!(
         event.performed_by_actor.kind,
-        harness_core::TeamActorKind::ProviderRuntimeProjection,
+        harness_core::TeamActorKind::AgentMember,
         "an authority actor must not rewrite who performed the review"
     );
-    assert_eq!(event.performed_by_actor.id, reviewer.id);
+    assert_eq!(event.performed_by_actor.id, reviewer.agent_member_id);
+    assert_eq!(
+        event.executing_member_run_id(),
+        Some(reviewer.id.as_str()),
+        "the reviewing runtime generation stays recorded as evidence"
+    );
     assert!(
         store
             .host_attentions()

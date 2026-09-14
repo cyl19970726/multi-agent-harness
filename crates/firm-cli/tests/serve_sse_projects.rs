@@ -379,13 +379,16 @@ fn external_work_write_invalidates_and_current_snapshot_converges() {
     );
     let work_id = created_work["id"].as_str().expect("Work id");
     let invalidations = collect_sse_data(&mut sse, Duration::from_secs(6), 1);
+    // A Work create is a `work` transition in the canonical trust journal since
+    // the W4 writer cutover, and that journal is rewritten atomically rather
+    // than appended to — so the invalidation names that ledger and a replace.
     let work_invalidation = invalidations
         .iter()
-        .find(|frame| frame["ledger"] == "work_operations.jsonl")
-        .unwrap_or_else(|| panic!("healthy SSE missed external Work append: {invalidations:?}"));
+        .find(|frame| frame["ledger"] == "agentfirm_trust_operations.jsonl")
+        .unwrap_or_else(|| panic!("healthy SSE missed external Work write: {invalidations:?}"));
     assert_eq!(work_invalidation["scope"], "execution_space");
     assert_eq!(work_invalidation["scope_id"], "space-alpha");
-    assert_eq!(work_invalidation["reason"], "append");
+    assert_eq!(work_invalidation["reason"], "replace");
     assert!(work_invalidation["stream_epoch"].as_str().is_some());
 
     let (status, snapshot) = serve.get_json(&format!("/v1/snapshot{query}"));

@@ -1,4 +1,5 @@
 use super::*;
+use harness_core::ExecutionSpaceId;
 
 #[derive(Debug, Deserialize)]
 #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
@@ -388,7 +389,7 @@ pub(super) fn canonical_report_count(
     work_id: &str,
 ) -> Result<u64, StoreError> {
     Ok(store
-        .canonical_operations_for_space(space_id)?
+        .canonical_operations_for_space(&ExecutionSpaceId::new(space_id))?
         .into_iter()
         .filter(|operation| {
             operation.event.aggregate_kind == "work_report"
@@ -865,15 +866,21 @@ pub(super) fn resolve_member_run(
     Ok(runs.remove(0).id)
 }
 
+/// The Work an addressed TeamRun owns, read through the one store reader.
+///
+/// Two narrowings, and they are not the same question: the Execution Space is
+/// the scope the reader folds in, and the TeamRun is the route the caller
+/// addressed. Both are checked — a Work read in the caller's own scope, then
+/// proven to belong to the run the request named. The scope is typed so a
+/// TeamRun id can never arrive in its place.
 pub(super) fn current_work(
     store: &HarnessStore,
+    execution_space_id: &harness_core::ExecutionSpaceId,
     team_run_id: &str,
     work_id: &str,
 ) -> Result<Work, StoreError> {
     let work = store
-        .latest_works()?
-        .into_iter()
-        .find(|work| work.id == work_id)
+        .current_work_in_space(execution_space_id, work_id)?
         .ok_or_else(|| {
             encoded_error(
                 "INVALID_STATE_TRANSITION",
@@ -893,38 +900,6 @@ pub(super) fn current_work(
         ));
     }
     Ok(work)
-}
-
-pub(super) fn current_canonical_work(
-    store: &HarnessStore,
-    execution_space_id: &str,
-    work_id: &str,
-) -> Result<Work, StoreError> {
-    let mut current = store
-        .latest_works()?
-        .into_iter()
-        .find(|work| work.id == work_id)
-        .ok_or_else(|| {
-            encoded_error(
-                "INVALID_STATE_TRANSITION",
-                "Work does not exist",
-                "work",
-                work_id,
-                None,
-            )
-        })?;
-    for operation in store.canonical_operations_for_space(execution_space_id)? {
-        let candidates = std::iter::once(&operation.resulting_projection)
-            .chain(operation.immutable_side_records.iter());
-        for candidate in candidates {
-            if let Ok(work) = serde_json::from_value::<Work>(candidate.clone()) {
-                if work.id == work_id && work.version >= current.version {
-                    current = work;
-                }
-            }
-        }
-    }
-    Ok(current)
 }
 
 pub(super) fn require_confirmed(
@@ -986,7 +961,7 @@ pub(super) fn canonical_replay(
     aggregate_id: &str,
 ) -> Result<Option<RoleActionResult>, StoreError> {
     let Some(operation) = store
-        .canonical_operations_for_space(&auth.execution_space_id)?
+        .canonical_operations_for_space(&ExecutionSpaceId::new(&auth.execution_space_id))?
         .into_iter()
         .find(|operation| operation.event.idempotency_key == auth.idempotency_key)
     else {

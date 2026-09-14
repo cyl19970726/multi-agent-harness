@@ -9,9 +9,6 @@ pub(super) struct CurrentWorkSources {
     /// Both the latest-Work fold and the Work journal read this, so a store
     /// pays for the recovery once.
     pub recovered: Result<Vec<WorkOperation>, String>,
-    pub latest: Result<std::collections::BTreeMap<String, Work>, String>,
-    pub attention_sources: Result<Vec<(bool, HostAttention)>, String>,
-    pub responsibility_versions: std::collections::BTreeMap<String, u64>,
 }
 
 pub(super) fn merge_work_operation_sources(
@@ -66,53 +63,9 @@ impl HarnessStore {
                         StoreError::Conflict(message) => message,
                         other => other.to_string(),
                     });
-                let latest = recovered.clone().map(|recovered| {
-                    latest_by_id(recovered, |op| op.work.id.clone())
-                        .into_iter()
-                        .map(|(id, op)| (id, op.work))
-                        .collect()
-                });
-                let attention_sources = (|| -> StoreResult<Vec<(bool, HostAttention)>> {
-                    let mut sources = Vec::new();
-                    for operation in &operations {
-                        sources.extend(
-                            Self::downstream_host_attentions_for_work_operation(operation)?
-                                .into_iter()
-                                .map(|row| (true, row)),
-                        );
-                        if let Some(row) = Self::host_attention_for_work_operation(operation) {
-                            sources.push((false, row));
-                        }
-                    }
-                    Ok(sources)
-                })()
-                .map_err(|error| match error {
-                    StoreError::Conflict(message) => message,
-                    other => other.to_string(),
-                });
-                let mut responsibility_versions = std::collections::BTreeMap::<String, u64>::new();
-                for operation in &operations {
-                    if matches!(
-                        operation.event.kind,
-                        WorkEventKind::Assigned
-                            | WorkEventKind::Claimed
-                            | WorkEventKind::Released
-                            | WorkEventKind::Rebound
-                            | WorkEventKind::ExecutionRetargeted
-                            | WorkEventKind::ExecutionRecovered
-                    ) {
-                        let version = responsibility_versions
-                            .entry(operation.work.id.clone())
-                            .or_default();
-                        *version = (*version).max(operation.event.resulting_version);
-                    }
-                }
                 Ok(CurrentWorkSources {
                     operations,
                     recovered,
-                    latest,
-                    responsibility_versions,
-                    attention_sources,
                 })
             },
         )

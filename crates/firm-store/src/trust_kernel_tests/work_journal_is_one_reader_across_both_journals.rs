@@ -23,10 +23,11 @@ fn kinds(records: &[crate::WorkJournalRecord]) -> Vec<WorkEventKind> {
     records.iter().map(|record| record.event.kind).collect()
 }
 
-/// W3: the Store exposes one Work reader over both journals.
+/// W3/W4: the Store exposes one Work reader over both journals.
 ///
-/// `work_operations.jsonl` carries Created/Assigned/... while Cancelled and
-/// DependenciesChanged are canonical trust transitions. Before this slice no
+/// `work_operations.jsonl` is the pre-cutover half — since W4 no writer
+/// produces a row there, but every row already written must keep reading — and
+/// every current transition is a canonical `work` trust envelope. Before W3 no
 /// writer ever constructed `WorkEventKind::DependenciesChanged`, and every
 /// ledger-only reader — `work_events`, the `--since` cursor, the canonical
 /// state fingerprint, the dashboard cursor — was blind to both.
@@ -34,6 +35,15 @@ fn kinds(records: &[crate::WorkJournalRecord]) -> Vec<WorkEventKind> {
 fn work_journal_is_one_reader_across_both_journals() {
     let (store, root) = fabric_store();
     append_runtime_team(&store, "team-journal", "team-run-journal");
+    // One Work staged the way a pre-cutover binary wrote it, so the ledger
+    // half of the fold is exercised by a row that really is in that shape.
+    let legacy = insert_legacy_ledger_work(
+        &store,
+        "work-journal-legacy",
+        "team-journal",
+        "team-run-journal",
+        |_| {},
+    );
     let prerequisite = insert_runtime_work(
         &store,
         "work-journal-prerequisite",
@@ -42,16 +52,19 @@ fn work_journal_is_one_reader_across_both_journals() {
     );
     let work = insert_runtime_work(&store, "work-journal-a", "team-journal", "team-run-journal");
 
-    // Both Works exist only in the ledger so far.
     let ledger_only = store.work_journal_position().unwrap();
     assert_eq!(
-        ledger_only.trust, 0,
-        "no trust Work transition yet: {ledger_only:?}"
+        ledger_only.ledger, 1,
+        "exactly the one staged legacy row: {ledger_only:?}"
     );
     assert_eq!(
-        ledger_only.packed().unwrap(),
-        ledger_only.ledger,
-        "a ledger-only position packs to the bare row count a pre-W3 cursor carried"
+        ledger_only.trust, 2,
+        "both current creations are trust transitions: {ledger_only:?}"
+    );
+    assert_eq!(
+        kinds(&store.work_history(&legacy.id).unwrap()),
+        [WorkEventKind::Created],
+        "the legacy row is still a readable Work revision"
     );
     assert_eq!(
         kinds(&store.work_history(&work.id).unwrap()),
@@ -72,7 +85,7 @@ fn work_journal_is_one_reader_across_both_journals() {
     let after_dependencies = store.work_journal_position().unwrap();
     assert_eq!(
         after_dependencies.ledger, ledger_only.ledger,
-        "a dependency change appends no ledger row: {after_dependencies:?}"
+        "no current transition appends a ledger row: {after_dependencies:?}"
     );
     assert_eq!(
         after_dependencies.trust,
@@ -125,7 +138,10 @@ fn work_journal_is_one_reader_across_both_journals() {
     let cursors = store
         .work_journal_cursors_for_team_run("team-run-journal")
         .unwrap();
-    assert_eq!(cursors.watermark.trust, 2, "two trust transitions");
+    assert_eq!(
+        cursors.watermark.trust, 4,
+        "two creations plus the dependency change and the cancellation"
+    );
     assert_eq!(
         cursors.watermark.ledger, after_dependencies.ledger,
         "and the ledger component is unchanged"
@@ -143,16 +159,48 @@ fn work_journal_is_one_reader_across_both_journals() {
         "nothing changed after the current watermark"
     );
     assert!(
-        cursors.by_work.get(&work.id).unwrap().ledger > 0,
-        "a Work keeps its ledger position alongside its trust position"
+        cursors.by_work.get(&legacy.id).unwrap().ledger > 0,
+        "a pre-cutover Work keeps the ledger position it was written at"
+    );
+
+    // Run cursors are filtered by the Work event's own `team_run_id` — the run
+    // that performed the transition. Another run's Work never moves this run's
+    // watermark, which is what the per-run canonical-state hold depends on.
+    append_runtime_team(&store, "team-journal", "team-run-journal-sibling");
+    insert_runtime_work(
+        &store,
+        "work-journal-sibling",
+        "team-journal",
+        "team-run-journal-sibling",
+    );
+    let after_sibling = store
+        .work_journal_cursors_for_team_run("team-run-journal")
+        .unwrap();
+    assert_eq!(
+        after_sibling.watermark, cursors.watermark,
+        "a sibling run's Work transition does not move this run's watermark"
+    );
+    assert!(
+        !after_sibling.by_work.contains_key("work-journal-sibling"),
+        "nor does it enter this run's per-Work cursors"
+    );
+    assert_eq!(
+        store
+            .work_journal_cursors_for_team_run("team-run-journal-sibling")
+            .unwrap()
+            .watermark
+            .trust,
+        1,
+        "the sibling run counts exactly its own transition"
     );
 
     // A pre-W3 integer cursor decodes to exactly the ledger position it named.
-    let legacy = crate::WorkJournalPosition::from_packed(ledger_only.ledger);
-    assert_eq!(legacy, ledger_only);
+    let legacy_cursor = crate::WorkJournalPosition::from_packed(ledger_only.ledger);
+    assert_eq!(legacy_cursor.ledger, ledger_only.ledger);
+    assert_eq!(legacy_cursor.trust, 0);
     assert!(
-        cursors.changed_after(&work.id, &legacy),
-        "a legacy cursor still surfaces the trust transition it could never see"
+        cursors.changed_after(&work.id, &legacy_cursor),
+        "a legacy cursor still surfaces the trust transitions it could never see"
     );
 
     // The store-wide event read is deterministic and complete.
@@ -174,7 +222,9 @@ fn work_journal_is_one_reader_across_both_journals() {
     // ignores it. These are the exact three functions the acceptance wake, the
     // RoleView `Facts` fold and `work_action_service::current_work` call.
     append_foreign_space_work_envelope(&root, &prerequisite.id, "space-other");
-    let scoped = store.work_journal_records_for_space("space-test").unwrap();
+    let scoped = store
+        .work_journal_records_for_space(&firm_core::ExecutionSpaceId::new("space-test"))
+        .unwrap();
     assert!(
         scoped
             .iter()
@@ -203,7 +253,10 @@ fn work_journal_is_one_reader_across_both_journals() {
         .version;
     assert_eq!(
         store
-            .current_work_in_space("space-test", &prerequisite.id)
+            .current_work_in_space(
+                &firm_core::ExecutionSpaceId::new("space-test"),
+                &prerequisite.id,
+            )
             .unwrap()
             .expect("the Work still exists in its own space")
             .version,
@@ -212,7 +265,10 @@ fn work_journal_is_one_reader_across_both_journals() {
     );
     assert!(
         store
-            .work_journal_events_for_ids_in_space_unlocked("space-test", &work_ids)
+            .work_journal_events_for_ids_in_space_unlocked(
+                &firm_core::ExecutionSpaceId::new("space-test"),
+                &work_ids,
+            )
             .unwrap()
             .iter()
             .all(|event| event.resulting_version < foreign_version),

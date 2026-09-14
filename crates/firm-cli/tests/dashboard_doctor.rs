@@ -253,11 +253,13 @@ fn doctor_is_read_only_and_never_mutates_the_store() {
     let (team_run_id, _member_id) = seed_team_run(&serve, &team_id);
     let api = format!("http://127.0.0.1:{}", serve.port());
 
+    // The Work journal is the canonical trust ledger since the W4 writer
+    // cutover; `work_operations.jsonl` may not exist in a fresh store at all.
     let store_path = home
         .spaces_dir()
         .join(&project_id)
-        .join("work_operations.jsonl");
-    let before = std::fs::read_to_string(&store_path).expect("work_operations before");
+        .join("agentfirm_trust_operations.jsonl");
+    let before = std::fs::read_to_string(&store_path).expect("trust operations before");
 
     let out = run_firm(
         &home,
@@ -273,7 +275,7 @@ fn doctor_is_read_only_and_never_mutates_the_store() {
     );
     assert!(out.status.success(), "{out:?}");
 
-    let after = std::fs::read_to_string(&store_path).expect("work_operations after");
+    let after = std::fs::read_to_string(&store_path).expect("trust operations after");
     assert_eq!(
         before, after,
         "dashboard doctor must not write to the store"

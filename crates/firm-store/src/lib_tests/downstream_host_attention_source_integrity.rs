@@ -53,6 +53,7 @@ fn fixture(label: &str) -> (PathBuf, HarnessStore, HostAttention) {
             idempotency_key: context.idempotency_key,
             payload,
             created_at: context.created_at,
+            executed_by_member_run_id: None,
         },
         work: cancelled,
         condition_records: vec![],
@@ -63,7 +64,9 @@ fn fixture(label: &str) -> (PathBuf, HarnessStore, HostAttention) {
     };
     {
         let _lock = store.acquire_write_lock().unwrap();
-        store.append_work_operation_unlocked(&operation).unwrap();
+        store
+            .append_legacy_work_operation_unlocked(&operation)
+            .unwrap();
     }
     let attention = store
         .host_attentions()

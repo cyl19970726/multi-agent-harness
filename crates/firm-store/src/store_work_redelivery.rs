@@ -16,6 +16,7 @@
 //! and produces the new WorkDelivery, exactly as it does after `work assign`.
 
 use super::*;
+use crate::store_work_journal_writer::{command_space, WorkCommandAuthority, WorkCommandEntrance};
 use firm_core::agentfirm_api::{
     AgentSessionStatus, WorkExecutionBinding, WorkExecutionBindingStatus,
 };
@@ -72,16 +73,31 @@ impl HarnessStore {
             }
             Ok(work_execution_space_id)
         };
-        if let Some(existing) = self.idempotent_work_operation_unlocked(
-            &context.idempotency_key,
+        let mutation_context = match self.enter_work_command_unlocked(
             work_id,
+            expected_version,
             WorkEventKind::Rebound,
+            WorkCommandAuthority::Host,
+            &context,
+            &serde_json::json!({
+                "work_id": work_id,
+                "expected_version": expected_version,
+                "execution_space_id": execution_space_id,
+                "reason": reason,
+            }),
         )? {
-            require_work_execution_space(&existing.work)?;
-            return Ok(existing.work);
-        }
+            WorkCommandEntrance::Replayed(work) => {
+                require_work_execution_space(&work)?;
+                return Ok(*work);
+            }
+            WorkCommandEntrance::Admitted(mutation_context) => mutation_context,
+        };
         require_host_actor(&context.performed_by_actor)?;
-        let current = self.current_work_unlocked(work_id, expected_version)?;
+        let current = self.current_work_unlocked(
+            &command_space(&mutation_context),
+            work_id,
+            expected_version,
+        )?;
         self.require_exact_team_run_host_actor(&context.performed_by_actor, &current.team_run_id)?;
         let work_execution_space_id = require_work_execution_space(&current)?;
         require_mutable_work(
@@ -166,6 +182,7 @@ impl HarnessStore {
             next,
             WorkEventKind::Rebound,
             context,
+            &mutation_context,
             serde_json::json!({
                 "redelivery": true,
                 "reason": reason,

@@ -9,16 +9,31 @@ impl HarnessStore {
         self.work_responsibility_changed_after_revision_unlocked(work_id, revision)
     }
 
+    /// Did this Work's responsibility move after `revision`?
+    ///
+    /// Reads the one Work journal: an execution binding is fenced by a
+    /// responsibility change, and every responsibility transition has lived in
+    /// the trust journal since the W4 writer cutover. A ledger-only answer
+    /// would report "unchanged" for every current reassignment and let a stale
+    /// binding keep executing.
     pub(super) fn work_responsibility_changed_after_revision_unlocked(
         &self,
         work_id: &str,
         revision: u64,
     ) -> StoreResult<bool> {
-        Ok(self
-            .current_work_sources()?
-            .responsibility_versions
-            .get(work_id)
-            .is_some_and(|latest| *latest > revision))
+        Ok(self.work_journal_unlocked()?.records.iter().any(|record| {
+            record.work.id == work_id
+                && record.event.resulting_version > revision
+                && matches!(
+                    record.event.kind,
+                    WorkEventKind::Assigned
+                        | WorkEventKind::Claimed
+                        | WorkEventKind::Released
+                        | WorkEventKind::Rebound
+                        | WorkEventKind::ExecutionRetargeted
+                        | WorkEventKind::ExecutionRecovered
+                )
+        }))
     }
 
     /// Versioned, append-only responsibility migration (DOC-106). Each legacy
@@ -210,15 +225,21 @@ impl HarnessStore {
                 next.version += 1;
                 next.updated_at = context.created_at.clone();
                 require_valid_work_transition(work, &next, WorkEventKind::Updated)?;
+                let payload = serde_json::json!({
+                    "responsibility_migration": true,
+                    "accountable_team": accountable_team,
+                    "assignee": assignee,
+                });
                 let operation = WorkOperation {
                     event: WorkEvent {
                         id: format!("{}:{}", context.event_id, work.id),
                         team_run_id: work.team_run_id.clone(),
                         work_id: work.id.clone(),
                         sequence: self
-                            .work_operations_unlocked()?
+                            .work_journal_unlocked()?
+                            .records
                             .iter()
-                            .filter(|operation| operation.work.id == work.id)
+                            .filter(|record| record.work.id == work.id)
                             .count() as u64
                             + 1,
                         kind: WorkEventKind::Updated,
@@ -228,21 +249,42 @@ impl HarnessStore {
                         authority_actor: context.authority_actor.clone(),
                         causation_ref: context.causation_ref.clone(),
                         idempotency_key: format!("{}:{}", context.idempotency_key, work.id),
-                        payload: serde_json::json!({
-                            "responsibility_migration": true,
-                            "accountable_team": accountable_team,
-                            "assignee": assignee,
-                        }),
+                        payload: payload.clone(),
                         created_at: context.created_at.clone(),
+                        executed_by_member_run_id: None,
                     },
-                    work: next,
+                    work: next.clone(),
                     condition_records: Vec::new(),
                     reports: Vec::new(),
                     evidence_records: Vec::new(),
                     decisions: Vec::new(),
                     delegation_revisions: Vec::new(),
                 };
-                planned.push(operation);
+                self.validate_work_operation_records_unlocked(&operation)?;
+                let run = self.require_team_run_unlocked(&work.team_run_id)?;
+                let mutation_context = firm_core::agentfirm_api::MutationContext {
+                    execution_space_id: self.current_team_run_execution_space_unlocked(&run)?,
+                    authenticated_actor: self.canonical_work_actor_unlocked(
+                        &context.performed_by_actor,
+                        &work.team_run_id,
+                    ),
+                    authority_actor: context
+                        .authority_actor
+                        .as_ref()
+                        .map(|actor| self.canonical_work_actor_unlocked(actor, &work.team_run_id)),
+                    command_name: "work.responsibility.migrate".to_string(),
+                    idempotency_key: operation.event.idempotency_key.clone(),
+                    expected_version: work.version,
+                    request_fingerprint: None,
+                };
+                planned.push(crate::trust_kernel::CurrentWorkMutation {
+                    context: mutation_context,
+                    transition: WorkEventKind::Updated.canonical_transition().to_string(),
+                    request_payload: payload,
+                    work: next,
+                    immutable_side_records: vec![serde_json::to_value(&operation)?],
+                    initial_outbox_records: Vec::new(),
+                });
                 to_version = Some(work.version + 1);
                 migrated_work_ids.push(work.id.clone());
             }
@@ -254,9 +296,9 @@ impl HarnessStore {
                 assignee,
             });
         }
-        for operation in &planned {
-            self.append_work_operation_unlocked(operation)?;
-        }
+        // One atomic write for the whole sweep: a partially applied migration
+        // has no single revision to reconcile from.
+        self.commit_current_work_mutations_atomic_unlocked(&planned)?;
         Ok(WorkResponsibilityMigrationReport {
             execution_space_id: execution_space_id.to_string(),
             migrated_work_ids,
@@ -265,13 +307,23 @@ impl HarnessStore {
         })
     }
 
+    /// Read the Work a command is fencing against, in the command's own
+    /// Execution Space.
+    ///
+    /// The writer must resolve the same revision its caller read. Every scoped
+    /// reader narrows to one space, so a writer that resolved through the
+    /// unscoped fold could see a revision written in another space — during a
+    /// recovery or import a physical store may hold more than one — and refuse
+    /// a Host's write with a VERSION_CONFLICT against a revision that Host can
+    /// never read. Reader and writer therefore use the same scope.
     pub(super) fn current_work_unlocked(
         &self,
+        execution_space_id: &ExecutionSpaceId,
         work_id: &str,
         expected_version: u64,
     ) -> StoreResult<Work> {
         let current = self
-            .latest_works_unlocked()?
+            .latest_works_in_space_unlocked(execution_space_id)?
             .remove(work_id)
             .ok_or_else(|| StoreError::Conflict(format!("work not found: {work_id}")))?;
         if current.version != expected_version {
@@ -335,37 +387,10 @@ impl HarnessStore {
         Ok(())
     }
 
-    /// Return an exact idempotent retry, while rejecting accidental reuse of
-    /// the same key for a different Work or command. A bare key is not enough
-    /// to identify an operation safely: without this fingerprint a retry of
-    /// `start(work-a)` could silently return the result of `cancel(work-b)`.
-    pub(super) fn idempotent_work_operation_unlocked(
-        &self,
-        idempotency_key: &str,
-        work_id: &str,
-        kind: WorkEventKind,
-    ) -> StoreResult<Option<WorkOperation>> {
-        let existing = self
-            .work_operations_with_recovered_provenance_unlocked()?
-            .into_iter()
-            .find(|operation| operation.event.idempotency_key == idempotency_key);
-        let Some(existing) = existing else {
-            return Ok(None);
-        };
-        if existing.event.work_id != work_id || existing.event.kind != kind {
-            return Err(StoreError::Conflict(format!(
-                "IDEMPOTENCY_CONFLICT: key {idempotency_key} already belongs to {:?} on Work {}",
-                existing.event.kind, existing.event.work_id
-            )));
-        }
-        // If the original process crashed after fsyncing the WorkOperation but
-        // before its derived HostAttention row, the ordinary idempotent retry
-        // repairs that gap before returning the already-applied Work result.
-        self.ensure_downstream_host_attentions_for_work_operation_unlocked(&existing)?;
-        self.ensure_host_attention_for_work_operation_unlocked(&existing)?;
-        Ok(Some(existing))
-    }
-
+    /// The legacy `work_operations.jsonl` fold, plus its crash-atomic
+    /// delegation composite. Nothing writes these rows since W4; the Work
+    /// journal reader and `work_record_operations_unlocked` are what current
+    /// callers want.
     pub(super) fn work_operations_unlocked(&self) -> StoreResult<Vec<WorkOperation>> {
         self.all_work_operations_unlocked()
     }
@@ -699,12 +724,6 @@ impl HarnessStore {
     /// command is allowed to remove or change it. Reads therefore recover a
     /// missing later value from ordered WorkOperation ledger history, while a
     /// conflicting non-null value remains corruption and is refused.
-    pub(super) fn work_operations_with_recovered_provenance_unlocked(
-        &self,
-    ) -> StoreResult<Vec<WorkOperation>> {
-        self.recover_work_operation_provenance(self.work_operations_unlocked()?)
-    }
-
     pub(super) fn recover_work_operation_provenance(
         &self,
         operations: Vec<WorkOperation>,
@@ -759,7 +778,12 @@ impl HarnessStore {
     /// the refusal half of mixed-schema compatibility; the recovery fold above
     /// is the lossless-preservation half for sparse rows already appended by a
     /// stale binary.
-    pub(super) fn append_work_operation_unlocked(
+    ///
+    /// Since W4 this validates the operation a writer is about to commit into
+    /// a `work` trust envelope; the ledger file it once appended to is legacy
+    /// read-only input. Uniqueness of the per-row record ids is therefore
+    /// checked across every journal, not just one file.
+    pub(super) fn validate_work_operation_records_unlocked(
         &self,
         operation: &WorkOperation,
     ) -> StoreResult<()> {
@@ -767,7 +791,7 @@ impl HarnessStore {
             .work
             .validate()
             .map_err(|error| StoreError::Conflict(format!("INVALID_WORK_PROJECTION: {error}")))?;
-        let existing_operations = self.work_operations_unlocked()?;
+        let existing_operations = self.work_record_operations_unlocked()?;
         let existing_record_ids = existing_operations
             .iter()
             .flat_map(|row| {
@@ -868,18 +892,31 @@ impl HarnessStore {
                 )));
             }
         }
+        Ok(())
+    }
+
+    /// Append a raw legacy `work_operations.jsonl` row.
+    ///
+    /// Test-only since W4: no production writer appends to this file any more.
+    /// It stays so the reader's legacy half can be exercised with rows that
+    /// really are in the shape a pre-cutover binary wrote.
+    #[cfg(test)]
+    pub(crate) fn append_legacy_work_operation_unlocked(
+        &self,
+        operation: &WorkOperation,
+    ) -> StoreResult<()> {
+        self.validate_work_operation_records_unlocked(operation)?;
         self.append_jsonl_unlocked("work_operations.jsonl", operation)
     }
 
+    /// Event ids are unique across the whole Work journal, not one file: a
+    /// HostAttention, a delivery and a Delegation revision all name a Work
+    /// revision by its event id, so two journals may not mint the same one.
     pub(super) fn ensure_work_event_id_available_unlocked(
         &self,
         event_id: &str,
     ) -> StoreResult<()> {
-        if self
-            .work_operations_unlocked()?
-            .iter()
-            .any(|operation| operation.event.id == event_id)
-        {
+        if self.work_journal_event_ids_unlocked()?.contains(event_id) {
             return Err(StoreError::Conflict(format!(
                 "WORK_EVENT_ID_CONFLICT: event id {event_id} is already in use"
             )));

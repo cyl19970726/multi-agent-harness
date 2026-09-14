@@ -452,6 +452,82 @@ fn insert_runtime_work(
         .unwrap()
 }
 
+/// Stage one Work as a pre-cutover `work_operations.jsonl` row.
+///
+/// Since W4 no writer produces ledger rows, so a fixture that needs the
+/// reader's legacy half must write one deliberately. This is the shape a
+/// pre-cutover binary appended: a complete WorkOperation, in the file, with
+/// no canonical envelope beside it.
+fn insert_legacy_ledger_work(
+    store: &HarnessStore,
+    id: &str,
+    team_id: &str,
+    team_run_id: &str,
+    mutate: impl FnOnce(&mut firm_core::WorkOperation),
+) -> firm_core::Work {
+    let exact_host = store.exact_team_run_host_actor(team_run_id).unwrap();
+    let work = firm_core::Work {
+        id: id.into(),
+        team_run_id: team_run_id.into(),
+        accountable_team_id: Some(team_id.into()),
+        assignee_membership_id: None,
+        legacy_containment_ref: None,
+        title: format!("legacy ledger {id}"),
+        context_markdown: "legacy ledger row".into(),
+        completion_criteria_markdown: "legacy row reads".into(),
+        phase: firm_core::WorkPhase::Open,
+        condition: firm_core::WorkCondition::Normal,
+        resolution: None,
+        owner_member_id: None,
+        active_member_run_id: None,
+        claim_mode: firm_core::WorkClaimMode::TeamClaim,
+        eligible_member_ids: Vec::new(),
+        prerequisite_work_ids: Vec::new(),
+        priority: firm_core::WorkPriority::Normal,
+        created_by_actor: exact_host.clone(),
+        created_by_member_id: None,
+        result_summary: None,
+        blocker_reason: None,
+        artifact_refs: Vec::new(),
+        check_refs: Vec::new(),
+        github_links: Vec::new(),
+        version: 1,
+        created_at: "t-legacy".into(),
+        updated_at: "t-legacy".into(),
+    };
+    work.validate().unwrap();
+    let mut operation = firm_core::WorkOperation {
+        event: firm_core::WorkEvent {
+            id: format!("legacy-event-{id}"),
+            team_run_id: team_run_id.into(),
+            work_id: id.into(),
+            sequence: 1,
+            kind: firm_core::WorkEventKind::Created,
+            expected_version: 0,
+            resulting_version: 1,
+            performed_by_actor: exact_host.clone(),
+            authority_actor: Some(exact_host),
+            causation_ref: None,
+            idempotency_key: format!("legacy-work-{id}"),
+            payload: serde_json::Value::Null,
+            created_at: "t-legacy".into(),
+            executed_by_member_run_id: None,
+        },
+        work,
+        condition_records: Vec::new(),
+        reports: Vec::new(),
+        evidence_records: Vec::new(),
+        decisions: Vec::new(),
+        delegation_revisions: Vec::new(),
+    };
+    mutate(&mut operation);
+    let _lock = store.acquire_write_lock().unwrap();
+    store
+        .append_legacy_work_operation_unlocked(&operation)
+        .unwrap();
+    operation.work
+}
+
 fn assign_runtime_work(
     store: &HarnessStore,
     work: &firm_core::Work,

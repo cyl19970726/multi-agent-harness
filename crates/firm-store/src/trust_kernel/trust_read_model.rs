@@ -21,6 +21,10 @@ pub(crate) struct TrustReadModel {
     invalid_work: Option<serde_json::Value>,
     work_journal: Vec<crate::work_history::WorkJournalRecord>,
     work_journal_seen: BTreeMap<(String, u64), usize>,
+    /// Complete WorkOperations carried by `work` envelopes, in store order.
+    /// The per-row condition records, reports, evidence and decisions a Work
+    /// transition commits live here once the ledger file stops being written.
+    work_operations: Vec<firm_core::WorkOperation>,
     work_journal_error: Option<String>,
     attentions: BTreeMap<String, BTreeMap<String, HostAttention>>,
     attention_errors: BTreeMap<String, String>,
@@ -212,7 +216,7 @@ impl TrustReadModel {
             let Ok(work) = serde_json::from_value::<Work>(op.resulting_projection.clone()) else {
                 return;
             };
-            let kind = match work_transition_event_kind(&op.event.transition) {
+            let kind = match WorkEventKind::from_canonical_transition(&op.event.transition) {
                 Some(kind) => kind,
                 None => {
                     self.work_journal_error.get_or_insert_with(|| {
@@ -224,6 +228,9 @@ impl TrustReadModel {
                     return;
                 }
             };
+            if let Some(operation) = committed_work_operation(op, &work) {
+                self.work_operations.push(operation);
+            }
             let event = committed_work_event(op, &work)
                 .unwrap_or_else(|| derived_work_event(op, &work, kind, op.event.expected_version));
             self.record_work_journal(space, work, event, true);
@@ -295,6 +302,10 @@ impl TrustReadModel {
         Ok(self.work_journal.clone())
     }
 
+    pub(crate) fn work_operations(&self) -> Vec<firm_core::WorkOperation> {
+        self.work_operations.clone()
+    }
+
     fn observe_latest_work(&mut self, work: Work) {
         if self
             .latest_work
@@ -305,35 +316,38 @@ impl TrustReadModel {
         }
     }
 }
-/// Every `work`-aggregate transition that may appear in a store, and the
-/// WorkEvent kind it means.
+/// The complete WorkOperation a W4 writer committed alongside its canonical
+/// Work transition, when it bound this exact revision.
 ///
-/// What binds this map is not what this binary writes — it is what any binary
-/// ever wrote into a store this one may read. `submitted`, `accepted`,
-/// `cancelled` and `dependencies_changed` are the current writers;
-/// `updated` is carried for the canonical Work-update shape. An unrecognized
-/// transition is a Work revision this binary cannot name honestly, so the Work
-/// journal fails closed rather than labelling it, and the latest-Work fold is
-/// deliberately independent of this map so such a store still reads its
-/// current Work.
-///
-/// The one retired transition needs no arm here: a pre-W1 `failed` envelope
-/// carries `resolution: "failed"`, which `WorkResolution` no longer decodes, so
-/// the Work decode above refuses it before this map is consulted.
-fn work_transition_event_kind(transition: &str) -> Option<WorkEventKind> {
-    Some(match transition {
-        "submitted" => WorkEventKind::Submitted,
-        "accepted" => WorkEventKind::Accepted,
-        "cancelled" => WorkEventKind::Cancelled,
-        "dependencies_changed" => WorkEventKind::DependenciesChanged,
-        "updated" => WorkEventKind::Updated,
-        _ => return None,
+/// Since W4 every Work transition commits its WorkOperation — event,
+/// projection and the per-row condition records, reports, evidence and
+/// decisions the ledger row used to carry — as an immutable side record of the
+/// `work` envelope. That record, not the envelope, is the Work journal row.
+pub(crate) fn committed_work_operation(
+    op: &CanonicalOperation,
+    work: &Work,
+) -> Option<firm_core::WorkOperation> {
+    op.immutable_side_records.iter().find_map(|record| {
+        serde_json::from_value::<firm_core::WorkOperation>(record.clone())
+            .ok()
+            .filter(|operation| {
+                operation.work.id == work.id && operation.event.resulting_version == work.version
+            })
     })
 }
 
 /// The WorkEvent a current writer committed alongside its canonical Work
 /// transition, when it bound this exact revision.
+///
+/// Two shapes are admitted, in the order a reader must prefer them: the
+/// complete WorkOperation a W4 writer commits, then the bare WorkEvent the
+/// W2/W3 trust entrances pair with a report or an acceptance. A
+/// `WorkOperation` value can never be mistaken for a `WorkEvent`: none of the
+/// WorkEvent's required fields exists at its top level.
 fn committed_work_event(op: &CanonicalOperation, work: &Work) -> Option<WorkEvent> {
+    if let Some(operation) = committed_work_operation(op, work) {
+        return Some(operation.event);
+    }
     op.immutable_side_records.iter().find_map(|record| {
         serde_json::from_value::<WorkEvent>(record.clone())
             .ok()
@@ -374,6 +388,10 @@ pub(super) fn derived_work_event(
         idempotency_key: op.event.idempotency_key.clone(),
         payload: op.event.payload.clone(),
         created_at: op.event.created_at.clone(),
+        // A canonical envelope names an identity, never a runtime generation;
+        // a derived event therefore carries no MemberRun evidence rather than
+        // inventing one.
+        executed_by_member_run_id: None,
     }
 }
 

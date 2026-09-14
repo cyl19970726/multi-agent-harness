@@ -15,15 +15,32 @@ impl HarnessStore {
     /// `ChangesRequested` must re-authorize exactly like the Host's; otherwise
     /// a peer review leaves the Work re-openable but never re-bindable, and the
     /// next WorkExecutionBinding fails closed with DeliveryRecoveryUncertain
-    /// until some unrelated Host event happens to land. Only `ChangesRequested`
-    /// is admitted from a ProviderRuntimeProjection: the peer path in
-    /// `request_work_changes_as_peer_reviewer` is the sole writer of that
-    /// (event kind, actor kind) pair and it already proved the exact active
-    /// non-owner Team peer of Host-owned Work before appending. No other member
-    /// event re-authorizes anything.
-    fn work_event_reauthorizes_execution(event: &firm_core::WorkEvent) -> bool {
-        match event.performed_by_actor.kind {
-            firm_core::TeamActorKind::Host => matches!(
+    /// until some unrelated Host event happens to land.
+    ///
+    /// The peer set is named by what only the peer gate writes, in either
+    /// persisted shape:
+    ///
+    /// * current rows carry the `peer_reviewed` payload marker, set solely by
+    ///   the peer arm of `request_work_changes_by_reviewer` after it has proven
+    ///   the exact active non-owner Team peer of Host-owned Work;
+    /// * legacy rows carry no marker but signed the reviewing runtime
+    ///   generation as the performer, which only that same gate could produce.
+    ///
+    /// What is deliberately NOT admitted is "some AgentMember requested
+    /// changes": since W4 a member write persists its durable AgentMember
+    /// identity, so performer kind alone no longer distinguishes a proven peer
+    /// reviewer from any member.
+    pub(crate) fn work_event_reauthorizes_execution(event: &firm_core::WorkEvent) -> bool {
+        if event.kind == firm_core::WorkEventKind::ChangesRequested
+            && (event.performed_by_actor.kind
+                == firm_core::TeamActorKind::ProviderRuntimeProjection
+                || event.payload[crate::store_work_journal_writer::PEER_REVIEW_MARKER]
+                    == serde_json::Value::Bool(true))
+        {
+            return true;
+        }
+        event.performed_by_actor.kind == firm_core::TeamActorKind::Host
+            && matches!(
                 event.kind,
                 firm_core::WorkEventKind::Assigned
                     | firm_core::WorkEventKind::ChangesRequested
@@ -31,12 +48,7 @@ impl HarnessStore {
                     | firm_core::WorkEventKind::Rebound
                     | firm_core::WorkEventKind::ExecutionRetargeted
                     | firm_core::WorkEventKind::ExecutionRecovered
-            ),
-            firm_core::TeamActorKind::ProviderRuntimeProjection => {
-                event.kind == firm_core::WorkEventKind::ChangesRequested
-            }
-            _ => false,
-        }
+            )
     }
 
     fn work_revision_reauthorized_after_provider_receipt_unlocked(
@@ -45,11 +57,8 @@ impl HarnessStore {
         provider_received_revision: u64,
         candidate_revision: u64,
     ) -> StoreResult<bool> {
-        // Reads both journals through the one Work reader, so a re-authorizing
-        // event does not become invisible once its writer moves to the trust
-        // journal. The admitted set is unchanged: a trust-materialized event's
-        // actor is never `Host`, and no trust transition this binary writes
-        // (Submitted, Accepted, Cancelled, DependenciesChanged) is in the set.
+        // Reads the one Work journal, which since W4 is where every
+        // re-authorizing event lives.
         Ok(self.work_history(work_id)?.into_iter().any(|record| {
             record.event.resulting_version > provider_received_revision
                 && record.event.resulting_version <= candidate_revision

@@ -79,10 +79,11 @@ fn blocked_work_can_be_resumed_by_owner_or_host_with_a_recorded_resolution() {
     );
     assert_eq!(resolved_record.work_version, resumed.version);
     let resumed_operation = store
-        .work_operations_unlocked()
+        .work_record_operations_unlocked()
         .expect("Work operations")
-        .into_iter()
+        .iter()
         .find(|operation| operation.event.id == resumed_event.id)
+        .cloned()
         .expect("resumed operation");
     let wire = serde_json::to_value(resumed_operation).expect("operation wire");
     assert!(wire.get("deliveries").is_none());

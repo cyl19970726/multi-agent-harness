@@ -1,4 +1,5 @@
 use super::*;
+use harness_core::ExecutionSpaceId;
 
 pub(super) fn execute_work_record_action(
     store: &HarnessStore,
@@ -27,7 +28,25 @@ pub(super) fn execute_work_record_action(
             None,
         )
     })?;
-    let current = current_canonical_work(store, &auth.execution_space_id, work_id)?;
+    // The one reader, scoped to the caller's Execution Space, with the
+    // addressed TeamRun's ownership proven below by the accountable Team check.
+    // The private canonical re-fold this used to run is gone: it rebuilt Work
+    // from side records in append order with a `>=` tie-break, so a stale
+    // revision could overwrite the reader's newer one.
+    let current = store
+        .current_work_in_space(
+            &harness_core::ExecutionSpaceId::new(&auth.execution_space_id),
+            work_id,
+        )?
+        .ok_or_else(|| {
+            encoded_error(
+                "INVALID_STATE_TRANSITION",
+                "Work does not exist",
+                "work",
+                work_id,
+                None,
+            )
+        })?;
     if current.accountable_team_id.as_deref() != Some(team_id) {
         return Err(encoded_error(
             "UNAUTHORIZED_ACTOR",
@@ -311,7 +330,7 @@ pub(super) fn execute_work_record_action(
         ) => {
             require_host(&auth, &team.host_agent_id, "work", work_id)?;
             let report = store
-                .canonical_operations_for_space(&auth.execution_space_id)?
+                .canonical_operations_for_space(&ExecutionSpaceId::new(&auth.execution_space_id))?
                 .into_iter()
                 .filter(|op| op.event.aggregate_kind == "work_report")
                 .filter_map(|op| serde_json::from_value::<WorkReport>(op.resulting_projection).ok())
@@ -485,7 +504,7 @@ pub(super) fn execute_gate_action(
         )
     })?;
     let requirement = store
-        .canonical_operations_for_space(&auth.execution_space_id)?
+        .canonical_operations_for_space(&ExecutionSpaceId::new(&auth.execution_space_id))?
         .into_iter()
         .filter(|operation| operation.event.aggregate_kind == "gate_requirement")
         .flat_map(|operation| {

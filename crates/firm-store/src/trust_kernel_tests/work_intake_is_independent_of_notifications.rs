@@ -115,22 +115,27 @@ fn historical_attention_kinds_are_readable_but_have_no_current_creation_path() {
 fn historical_submission_provenance_uses_work_operations_and_rejects_ambiguity() {
     let (store, root) = fabric_store();
     append_runtime_team(&store, "team-intake", "run-source");
-    let work = insert_runtime_work(&store, "work-intake", "team-intake", "run-source");
-    let mut submission = store
+    // The shape a pre-cutover binary wrote: a ledger row whose performer IS
+    // the runtime generation. Provenance must still read it after the W4
+    // writer cutover changed what current rows sign as.
+    let submitted_work = insert_legacy_ledger_work(
+        &store,
+        "work-intake",
+        "team-intake",
+        "run-source",
+        |operation| {
+            operation.event.kind = firm_core::WorkEventKind::Submitted;
+            operation.event.performed_by_actor.kind = TeamActorKind::ProviderRuntimeProjection;
+            operation.event.performed_by_actor.id = "exact-historical-member-run".into();
+            operation.work.phase = firm_core::WorkPhase::Review;
+        },
+    );
+    let submission = store
         .work_operations_unlocked()
         .unwrap()
         .into_iter()
-        .find(|op| op.work.id == work.id)
+        .find(|op| op.work.id == submitted_work.id)
         .unwrap();
-    submission.event.kind = firm_core::WorkEventKind::Submitted;
-    submission.event.performed_by_actor.kind = TeamActorKind::ProviderRuntimeProjection;
-    submission.event.performed_by_actor.id = "exact-historical-member-run".into();
-    submission.work.phase = firm_core::WorkPhase::Review;
-    std::fs::write(
-        root.join("work_operations.jsonl"),
-        format!("{}\n", serde_json::to_string(&submission).unwrap()),
-    )
-    .unwrap();
     // An unreadable notification file must not participate in Work provenance.
     std::fs::write(root.join("host_attentions.jsonl"), "not-json\n").unwrap();
     let mut terminal = submission.work.clone();
@@ -193,28 +198,25 @@ fn historical_submission_provenance_uses_work_operations_and_rejects_ambiguity()
 
 #[test]
 fn retarget_allows_blocked_recovery_but_rejects_terminal_work() {
-    let (store, root) = fabric_store();
+    let (store, _root) = fabric_store();
     append_runtime_team(&store, "team-intake", "run-source");
     append_runtime_team(&store, "team-intake", "run-successor");
-    let work = insert_runtime_work(&store, "work-intake", "team-intake", "run-source");
-    let mut op = store
-        .work_operations_unlocked()
-        .unwrap()
-        .into_iter()
-        .find(|op| op.work.id == work.id)
-        .unwrap();
-    op.work.condition = firm_core::WorkCondition::Blocked;
+    let work = insert_legacy_ledger_work(
+        &store,
+        "work-intake",
+        "team-intake",
+        "run-source",
+        |operation| {
+            operation.work.condition = firm_core::WorkCondition::Blocked;
+            operation.work.blocker_reason = Some("historical blocker".into());
+        },
+    );
     let mut delivered = attention(&work, HostAttentionKind::WorkBlocked);
     delivered.status = HostAttentionStatus::Delivered;
     store
         .append_jsonl_unlocked("host_attentions.jsonl", &delivered)
         .unwrap();
 
-    std::fs::write(
-        root.join("work_operations.jsonl"),
-        format!("{}\n", serde_json::to_string(&op).unwrap()),
-    )
-    .unwrap();
     let next = store
         .retarget_work_execution(
             &work.id,

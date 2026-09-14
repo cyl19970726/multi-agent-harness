@@ -1,33 +1,35 @@
 //! The one reader for Work.
 //!
-//! A Work's version chain is one chain, but until the W4 writer cutover its
-//! rows live in two journals:
+//! A Work's version chain is one chain, written to one journal and read from
+//! two files — because a store that predates the writer cutover still holds
+//! half its history in the other one:
 //!
+//! * `agentfirm_trust_operations.jsonl` is the Work journal. Every Work
+//!   transition is a `work` aggregate envelope carrying its complete
+//!   [`WorkOperation`] as an immutable side record. A pre-cutover envelope
+//!   carries Submitted, Accepted, Cancelled or DependenciesChanged with a bare
+//!   `WorkEvent`, and a `work_report/created` envelope carries a pre-cutover
+//!   Review snapshot.
 //! * `work_operations.jsonl` (plus the crash-atomic
-//!   `work_delegation_operations.jsonl` composite) holds [`WorkOperation`]
-//!   rows — Created, Assigned, Claimed, Started, Released, Blocked, Resumed,
-//!   ChangesRequested, Updated, Rebound, ExecutionRetargeted,
-//!   ExecutionRecovered.
-//! * `agentfirm_trust_operations.jsonl` holds the canonical trust envelopes
-//!   whose `work` aggregate carries Submitted, Accepted, Cancelled and
-//!   DependenciesChanged, and whose `work_report/created` envelope carries a
-//!   pre-cutover Review snapshot as an immutable side record.
+//!   `work_delegation_operations.jsonl` composite) is legacy read-only input:
+//!   the [`WorkOperation`] rows a pre-cutover binary appended. Nothing writes
+//!   it, and a store created after the cutover never has it.
 //!
-//! Every current-phase, event, count and cursor reader goes through this
-//! module so no consumer can see half the chain. The module offers exactly
-//! four shapes:
+//! Every current-phase, event, record, count and cursor reader goes through
+//! this module so no consumer can see half the chain. The module offers
+//! exactly four shapes:
 //!
 //! 1. [`HarnessStore::latest_works`] / [`HarnessStore::current_work`] — the
-//!    merged latest Work per id (ledger + delegation fold, overlaid by the
-//!    trust fold on greater version; the ledger wins an exact tie).
-//! 2. [`HarnessStore::work_history`] — one Work's versions from both
-//!    journals, strictly in version order, as event + snapshot records.
+//!    latest Work per id, plus any higher revision persisted only as an atomic
+//!    side projection of another aggregate's envelope.
+//! 2. [`HarnessStore::work_history`] — one Work's versions from both files,
+//!    strictly in version order, as event + snapshot records.
 //! 3. [`HarnessStore::work_journal_records`] / [`HarnessStore::work_events`] —
 //!    every Work record in the store in one deterministic total order.
 //! 4. [`HarnessStore::work_journal_position`] and
 //!    [`HarnessStore::work_journal_cursors_for_team_run`] — a monotonic
-//!    journal position that advances on BOTH a ledger row and a trust Work
-//!    transition.
+//!    journal position whose trust component advances on every new write and
+//!    whose ledger component is frozen at the pre-cutover row count.
 //!
 //! **Total order.** The two files share no comparable clock: ledger rows are
 //! stamped with an ISO `created_at` and trust events with `unix-ms:`, and both
@@ -37,11 +39,12 @@
 //! *within one Work* is a real order available, and that one is the version
 //! chain, which [`HarnessStore::work_history`] uses.
 //!
-//! **What is still ledger-only.** Ledger writers keep private ledger reads for
-//! their own append-time concerns (idempotency lookup, record/event id
-//! availability, next ledger sequence, provenance recovery, and the
-//! ledger-shaped submission provenance proof). Those are writer internals of
-//! one file, not readers of Work state; W4 retires them with the file.
+//! **What is still ledger-only.** Two reads deliberately answer about the
+//! legacy file alone: [`HarnessStore::legacy_work_operation_rows`], which is
+//! what "read the pre-cutover rows" means, and the raw fold
+//! `reconcile_work_projection_provenance` repairs from — that verb exists to
+//! repair a sparse row *in that file*, so the sparse row is the thing it is
+//! asked about. Everything else reads the journal.
 use super::*;
 use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
@@ -193,13 +196,13 @@ impl HarnessStore {
     }
 
     /// The merged current Work for one id inside one Execution Space: this
-    /// store's ledger fold, overlaid only by trust transitions written in
+    /// store's legacy ledger rows, plus only the trust transitions written in
     /// `execution_space_id`. Use this wherever the caller holds a space; the
     /// unscoped form above exists for store-wide reads that genuinely have no
     /// space to narrow with.
     pub fn current_work_in_space(
         &self,
-        execution_space_id: &str,
+        execution_space_id: &ExecutionSpaceId,
         work_id: &str,
     ) -> StoreResult<Option<Work>> {
         Ok(self
@@ -209,38 +212,32 @@ impl HarnessStore {
 
     pub(super) fn latest_works_in_space_unlocked(
         &self,
-        execution_space_id: &str,
+        execution_space_id: &ExecutionSpaceId,
     ) -> StoreResult<BTreeMap<String, Work>> {
-        let mut latest = self
-            .current_work_sources()?
-            .latest
-            .clone()
-            .map_err(StoreError::Conflict)?;
-        for record in self
-            .work_journal_unlocked()?
-            .records
-            .iter()
-            .filter(|record| record.execution_space_id.as_deref() == Some(execution_space_id))
-        {
-            match latest.get(&record.work.id) {
-                Some(current) if current.version >= record.work.version => {}
-                _ => {
-                    latest.insert(record.work.id.clone(), record.work.clone());
-                }
-            }
-        }
-        Ok(latest)
+        Ok(fold_latest_works(
+            self.work_journal_unlocked()?
+                .records
+                .iter()
+                .filter(|record| {
+                    record
+                        .execution_space_id
+                        .as_deref()
+                        .is_none_or(|space| space == execution_space_id.as_str())
+                }),
+        ))
     }
 
-    /// Latest Work per id across both journals. The ledger + delegation fold
-    /// is overlaid by the trust fold wherever trust holds a greater version;
-    /// an exact version tie keeps the ledger projection.
+    /// Latest Work per id across both journals: the highest revision of each
+    /// Work the store holds, from the one provenance-recovered journal, then
+    /// any higher revision persisted only as an atomic side projection of
+    /// another aggregate's envelope.
+    ///
+    /// That second source is not a second journal. It is a persisted shape
+    /// this store already contains — a Work revision committed atomically
+    /// beside the record that produced it, with no `work` transition of its
+    /// own — and dropping it would make a real revision invisible.
     pub(super) fn latest_works_unlocked(&self) -> StoreResult<BTreeMap<String, Work>> {
-        let mut latest = self
-            .current_work_sources()?
-            .latest
-            .clone()
-            .map_err(StoreError::Conflict)?;
+        let mut latest = fold_latest_works(self.work_journal_unlocked()?.records.iter());
         for work in self.cached_trust_work_latest_unlocked()? {
             match latest.get(&work.id) {
                 Some(current) if current.version >= work.version => {}
@@ -285,7 +282,7 @@ impl HarnessStore {
     /// transitions written in `execution_space_id`.
     pub fn work_journal_records_for_space(
         &self,
-        execution_space_id: &str,
+        execution_space_id: &ExecutionSpaceId,
     ) -> StoreResult<Vec<WorkJournalRecord>> {
         Ok(self
             .work_journal_unlocked()?
@@ -295,7 +292,7 @@ impl HarnessStore {
                 record
                     .execution_space_id
                     .as_deref()
-                    .is_none_or(|space| space == execution_space_id)
+                    .is_none_or(|space| space == execution_space_id.as_str())
             })
             .cloned()
             .collect())
@@ -328,7 +325,7 @@ impl HarnessStore {
     /// Work events for these ids, narrowed to one Execution Space.
     pub(crate) fn work_journal_events_for_ids_in_space_unlocked(
         &self,
-        execution_space_id: &str,
+        execution_space_id: &ExecutionSpaceId,
         work_ids: &HashSet<String>,
     ) -> StoreResult<Vec<WorkEvent>> {
         Ok(self
@@ -399,6 +396,8 @@ impl HarnessStore {
                 let trust_records = trust.work_journal_records()?;
                 let trust = trust_records.len() as u64;
                 records.extend(trust_records);
+                refuse_divergent_duplicate_revisions(&records)?;
+                recover_journal_provenance(&mut records)?;
                 Ok(WorkJournal {
                     records,
                     position: WorkJournalPosition { ledger, trust },
@@ -406,6 +405,122 @@ impl HarnessStore {
             },
         )
     }
+}
+
+/// A Work revision may be persisted twice — the pre-cutover Review snapshot and
+/// its paired `work`/`submitted` envelope are the same revision in two shapes —
+/// but the two copies must say the same thing.
+///
+/// Before W4 both journals had live writers and the reader broke a tie by
+/// preferring the ledger. Since the cutover only one writer produces new
+/// revisions, so a version that appears twice with DIFFERENT content is not a
+/// tie: it is two disagreeing accounts of one revision, and picking either
+/// would make the store's answer depend on which file a reader looked at
+/// first. The reader refuses instead.
+fn refuse_divergent_duplicate_revisions(records: &[WorkJournalRecord]) -> StoreResult<()> {
+    let mut seen = BTreeMap::<(&str, u64), &Work>::new();
+    for record in records {
+        let key = (record.work.id.as_str(), record.event.resulting_version);
+        match seen.get(&key) {
+            Some(existing) if **existing != record.work => {
+                return Err(StoreError::Conflict(format!(
+                    "WORK_JOURNAL_REVISION_CONFLICT: Work {} version {} is persisted twice \
+                     with different content; one revision cannot have two projections",
+                    record.work.id, record.event.resulting_version
+                )));
+            }
+            Some(_) => {}
+            None => {
+                seen.insert(key, &record.work);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Highest revision per Work id. A version tie keeps the record already held,
+/// and ledger records are folded before trust ones, so a revision present in
+/// both journals still resolves to the ledger projection it always did.
+fn fold_latest_works<'a>(
+    records: impl Iterator<Item = &'a WorkJournalRecord>,
+) -> BTreeMap<String, Work> {
+    let mut latest = BTreeMap::<String, Work>::new();
+    for record in records {
+        match latest.get(&record.work.id) {
+            Some(current) if current.version >= record.work.version => {}
+            _ => {
+                latest.insert(record.work.id.clone(), record.work.clone());
+            }
+        }
+    }
+    latest
+}
+
+/// Fold immutable additive provenance forward through each Work's version
+/// chain, across both journals.
+///
+/// A stale mixed-version writer may still append a `work_operations.jsonl` row
+/// that dropped `accountable_team_id` or `created_by_member_id`. Once either
+/// fact is established it is immutable, so a later sparse revision inherits
+/// it and a later *conflicting* value stays corruption and is refused. Doing
+/// this per journal was enough only while one journal held a whole chain;
+/// after the W4 writer cutover a Work's creation lives in the trust journal
+/// and the sparse row does not, so the fold must span both or the recovered
+/// fact is lost exactly when it is needed.
+fn recover_journal_provenance(records: &mut [WorkJournalRecord]) -> StoreResult<()> {
+    let mut order = (0..records.len()).collect::<Vec<_>>();
+    order.sort_by(|&left, &right| {
+        records[left]
+            .work
+            .id
+            .cmp(&records[right].work.id)
+            .then(
+                records[left]
+                    .event
+                    .resulting_version
+                    .cmp(&records[right].event.resulting_version),
+            )
+            .then(records[left].source.cmp(&records[right].source))
+    });
+    let mut team_id: Option<(String, String)> = None;
+    let mut creator_id: Option<(String, String)> = None;
+    for index in order {
+        let work_id = records[index].work.id.clone();
+        let event_id = records[index].event.id.clone();
+        for (established, actual, field) in [
+            (
+                &mut team_id,
+                records[index].work.accountable_team_id.clone(),
+                "accountable_team_id",
+            ),
+            (
+                &mut creator_id,
+                records[index].work.created_by_member_id.clone(),
+                "created_by_member_id",
+            ),
+        ] {
+            let known = established
+                .as_ref()
+                .filter(|(id, _)| *id == work_id)
+                .map(|(_, value)| value.clone());
+            match (known, actual) {
+                (Some(expected), Some(actual)) if expected != actual => {
+                    return Err(StoreError::Conflict(format!(
+                        "WORK_PROJECTION_PROVENANCE_CONFLICT: Work {work_id} changed {field} from {expected} to {actual} in event {event_id}"
+                    )));
+                }
+                (Some(expected), None) => match field {
+                    "accountable_team_id" => {
+                        records[index].work.accountable_team_id = Some(expected)
+                    }
+                    _ => records[index].work.created_by_member_id = Some(expected),
+                },
+                (_, Some(actual)) => *established = Some((work_id.clone(), actual)),
+                (None, None) => {}
+            }
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]

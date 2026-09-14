@@ -1,4 +1,5 @@
 use super::*;
+use crate::store_work_journal_writer::{command_space, WorkCommandAuthority, WorkCommandEntrance};
 
 /// Who is returning a submitted Work for changes. The Store keeps the two
 /// authorities separate so the Host gate is never relaxed to admit a peer:
@@ -183,7 +184,7 @@ impl HarnessStore {
             )
         })?;
         self.require_exact_team_run_host_actor(authority, &latest.team_run_id)?;
-        let request_fingerprint = canonical_json_fingerprint(&serde_json::json!({
+        let request = serde_json::json!({
             "work_id": work_id,
             "expected_version": expected_version,
             "github_links": github_links,
@@ -191,27 +192,24 @@ impl HarnessStore {
             "node_id": daemon.node_id,
             "daemon_id": daemon.daemon_id,
             "daemon_generation": daemon.generation,
-        }));
-        if let Some(existing) = self.idempotent_work_operation_unlocked(
-            &context.idempotency_key,
+        });
+        let request_fingerprint = canonical_json_fingerprint(&request);
+        let mutation_context = match self.enter_work_command_unlocked(
             work_id,
+            expected_version,
             WorkEventKind::Updated,
+            WorkCommandAuthority::CheckedByCommand,
+            &context,
+            &request,
         )? {
-            if existing
-                .event
-                .payload
-                .get("request_fingerprint")
-                .and_then(serde_json::Value::as_str)
-                != Some(request_fingerprint.as_str())
-            {
-                return Err(StoreError::Conflict(format!(
-                    "IDEMPOTENCY_CONFLICT: key {} was reused for different GitHub evidence",
-                    context.idempotency_key
-                )));
-            }
-            return Ok(existing.work);
-        }
-        let current = self.current_work_unlocked(work_id, expected_version)?;
+            WorkCommandEntrance::Replayed(work) => return Ok(*work),
+            WorkCommandEntrance::Admitted(mutation_context) => mutation_context,
+        };
+        let current = self.current_work_unlocked(
+            &command_space(&mutation_context),
+            work_id,
+            expected_version,
+        )?;
         // External CI evidence never reopens a settled responsibility. The
         // daemon poll skips terminal Work, so reaching here is a caller bug.
         require_mutable_work(
@@ -230,6 +228,7 @@ impl HarnessStore {
             next,
             WorkEventKind::Updated,
             context,
+            &mutation_context,
             serde_json::json!({
                 "reason": "github_evidence_refresh",
                 "request_fingerprint": request_fingerprint,
@@ -320,17 +319,34 @@ impl HarnessStore {
         }
         self.init()?;
         let _lock = self.acquire_write_lock()?;
-        if let Some(existing) = self.idempotent_work_operation_unlocked(
-            &context.idempotency_key,
+        let mutation_context = match self.enter_work_command_unlocked(
             work_id,
+            expected_version,
             WorkEventKind::ChangesRequested,
+            match &reviewer {
+                WorkChangesReviewer::Host => WorkCommandAuthority::Host,
+                WorkChangesReviewer::ExactTeamPeer { member_run_id } => {
+                    WorkCommandAuthority::MemberRun(member_run_id)
+                }
+            },
+            &context,
+            &serde_json::json!({
+                "work_id": work_id,
+                "expected_version": expected_version,
+                "reason": reason,
+            }),
         )? {
-            return Ok(existing.work);
-        }
+            WorkCommandEntrance::Replayed(work) => return Ok(*work),
+            WorkCommandEntrance::Admitted(mutation_context) => mutation_context,
+        };
         let current = match &reviewer {
             WorkChangesReviewer::Host => {
                 require_host_actor(&context.performed_by_actor)?;
-                let current = self.current_work_unlocked(work_id, expected_version)?;
+                let current = self.current_work_unlocked(
+                    &command_space(&mutation_context),
+                    work_id,
+                    expected_version,
+                )?;
                 self.require_exact_team_run_host_actor(
                     &context.performed_by_actor,
                     &current.team_run_id,
@@ -339,7 +355,11 @@ impl HarnessStore {
             }
             WorkChangesReviewer::ExactTeamPeer { member_run_id } => {
                 require_member_actor(&context.performed_by_actor, member_run_id)?;
-                let current = self.current_work_unlocked(work_id, expected_version)?;
+                let current = self.current_work_unlocked(
+                    &command_space(&mutation_context),
+                    work_id,
+                    expected_version,
+                )?;
                 self.require_exact_host_owned_work_peer_reviewer_unlocked(&current, member_run_id)?;
                 current
             }
@@ -360,11 +380,24 @@ impl HarnessStore {
         next.blocker_reason = Some(reason.to_string());
         next.version += 1;
         next.updated_at = context.created_at.clone();
-        self.append_work_transition_unlocked(
+        // Only the peer arm marks its payload. Re-authorization of the next
+        // execution admission reads this marker, never "a non-Host member
+        // requested changes": the two are the same set only while the runtime
+        // generation is the performer, which it no longer is.
+        let payload = match &reviewer {
+            WorkChangesReviewer::Host => serde_json::Value::Null,
+            WorkChangesReviewer::ExactTeamPeer { member_run_id } => serde_json::json!({
+                crate::store_work_journal_writer::PEER_REVIEW_MARKER: true,
+                "reviewer_member_run_id": member_run_id,
+            }),
+        };
+        self.append_work_transition_with_payload_unlocked(
             current,
             next,
             WorkEventKind::ChangesRequested,
             context,
+            &mutation_context,
+            payload,
         )
     }
 
@@ -439,6 +472,7 @@ impl HarnessStore {
             idempotency_key: context.idempotency_key.clone(),
             payload: request_payload.clone(),
             created_at: context.created_at.clone(),
+            executed_by_member_run_id: None,
         };
         let result = self.commit_current_work_mutation_unlocked(
             &mutation_context,
@@ -468,13 +502,28 @@ impl HarnessStore {
     ) -> StoreResult<Work> {
         self.init()?;
         let _lock = self.acquire_write_lock()?;
-        if let Some(existing) =
-            self.idempotent_work_operation_unlocked(&context.idempotency_key, work_id, kind)?
-        {
-            return Ok(existing.work);
-        }
+        let mutation_context = match self.enter_work_command_unlocked(
+            work_id,
+            expected_version,
+            kind,
+            WorkCommandAuthority::MemberRun(member_run_id),
+            &context,
+            &serde_json::json!({
+                "work_id": work_id,
+                "expected_version": expected_version,
+                "member_run_id": member_run_id,
+                "payload": payload,
+            }),
+        )? {
+            WorkCommandEntrance::Replayed(work) => return Ok(*work),
+            WorkCommandEntrance::Admitted(mutation_context) => mutation_context,
+        };
         require_member_actor(&context.performed_by_actor, member_run_id)?;
-        let current = self.current_work_unlocked(work_id, expected_version)?;
+        let current = self.current_work_unlocked(
+            &command_space(&mutation_context),
+            work_id,
+            expected_version,
+        )?;
         if current.active_member_run_id.is_some()
             || (current.owner_member_id.is_some() && current.assignee_membership_id.is_none())
         {
@@ -514,6 +563,7 @@ impl HarnessStore {
             next,
             kind,
             context,
+            &mutation_context,
             payload,
             condition_records,
             reports,
@@ -537,13 +587,27 @@ impl HarnessStore {
     ) -> StoreResult<Work> {
         self.init()?;
         let _lock = self.acquire_write_lock()?;
-        if let Some(existing) =
-            self.idempotent_work_operation_unlocked(&context.idempotency_key, work_id, kind)?
-        {
-            return Ok(existing.work);
-        }
+        let mutation_context = match self.enter_work_command_unlocked(
+            work_id,
+            expected_version,
+            kind,
+            WorkCommandAuthority::Host,
+            &context,
+            &serde_json::json!({
+                "work_id": work_id,
+                "expected_version": expected_version,
+                "payload": payload,
+            }),
+        )? {
+            WorkCommandEntrance::Replayed(work) => return Ok(*work),
+            WorkCommandEntrance::Admitted(mutation_context) => mutation_context,
+        };
         require_host_actor(&context.performed_by_actor)?;
-        let current = self.current_work_unlocked(work_id, expected_version)?;
+        let current = self.current_work_unlocked(
+            &command_space(&mutation_context),
+            work_id,
+            expected_version,
+        )?;
         self.require_exact_team_run_host_actor(&context.performed_by_actor, &current.team_run_id)?;
         if (current.phase, current.condition) != required_lifecycle {
             return Err(StoreError::Conflict(format!(
@@ -567,6 +631,7 @@ impl HarnessStore {
             next,
             kind,
             context,
+            &mutation_context,
             payload,
             condition_records,
             reports,
@@ -583,14 +648,29 @@ impl HarnessStore {
     ) -> StoreResult<Work> {
         self.init()?;
         let _lock = self.acquire_write_lock()?;
-        if let Some(existing) = self.idempotent_work_operation_unlocked(
-            &context.idempotency_key,
+        let mutation_context = match self.enter_work_command_unlocked(
             work_id,
+            expected_version,
             WorkEventKind::Released,
+            match member_run_id {
+                Some(member_run_id) => WorkCommandAuthority::MemberRun(member_run_id),
+                None => WorkCommandAuthority::Host,
+            },
+            &context,
+            &serde_json::json!({
+                "work_id": work_id,
+                "expected_version": expected_version,
+                "member_run_id": member_run_id,
+            }),
         )? {
-            return Ok(existing.work);
-        }
-        let current = self.current_work_unlocked(work_id, expected_version)?;
+            WorkCommandEntrance::Replayed(work) => return Ok(*work),
+            WorkCommandEntrance::Admitted(mutation_context) => mutation_context,
+        };
+        let current = self.current_work_unlocked(
+            &command_space(&mutation_context),
+            work_id,
+            expected_version,
+        )?;
         if current.active_member_run_id.is_some()
             || (current.owner_member_id.is_some() && current.assignee_membership_id.is_none())
         {
@@ -638,7 +718,13 @@ impl HarnessStore {
         next.assignee_membership_id = None;
         next.version += 1;
         next.updated_at = context.created_at.clone();
-        self.append_work_transition_unlocked(current, next, WorkEventKind::Released, context)
+        self.append_work_transition_unlocked(
+            current,
+            next,
+            WorkEventKind::Released,
+            context,
+            &mutation_context,
+        )
     }
 
     pub(super) fn append_work_transition_unlocked(
@@ -647,12 +733,14 @@ impl HarnessStore {
         next: Work,
         kind: WorkEventKind,
         context: WorkCommandContext,
+        mutation_context: &firm_core::agentfirm_api::MutationContext,
     ) -> StoreResult<Work> {
         self.append_work_transition_with_payload_unlocked(
             current,
             next,
             kind,
             context,
+            mutation_context,
             serde_json::Value::Null,
         )
     }
@@ -663,6 +751,7 @@ impl HarnessStore {
         next: Work,
         kind: WorkEventKind,
         context: WorkCommandContext,
+        mutation_context: &firm_core::agentfirm_api::MutationContext,
         payload: serde_json::Value,
     ) -> StoreResult<Work> {
         self.append_work_transition_with_records_unlocked(
@@ -670,6 +759,7 @@ impl HarnessStore {
             next,
             kind,
             context,
+            mutation_context,
             payload,
             Vec::new(),
             Vec::new(),
@@ -677,6 +767,16 @@ impl HarnessStore {
         )
     }
 
+    /// Commit one Work transition: build its complete [`WorkOperation`] and
+    /// write it as the immutable side record of one `work` trust envelope.
+    ///
+    /// Everything that made the old ledger row crash-atomic is preserved — the
+    /// transition guard, the graph outbox payload, the per-row condition
+    /// records, reports, evidence and decisions, and the Delegation revisions
+    /// this Work state caused — and now lands in a single atomic trust write
+    /// instead of a single JSONL append. The derived HostAttention rows stay
+    /// outside that write for the same reason they always were: they are
+    /// deterministic from the operation and replay-repairable.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn append_work_transition_with_records_unlocked(
         &self,
@@ -684,6 +784,7 @@ impl HarnessStore {
         next: Work,
         kind: WorkEventKind,
         context: WorkCommandContext,
+        mutation_context: &firm_core::agentfirm_api::MutationContext,
         payload: serde_json::Value,
         condition_records: Vec<WorkConditionRecord>,
         reports: Vec<WorkReport>,
@@ -692,9 +793,10 @@ impl HarnessStore {
         require_valid_work_transition(&current, &next, kind)?;
         self.ensure_work_event_id_available_unlocked(&context.event_id)?;
         let sequence = self
-            .work_operations_unlocked()?
+            .work_journal_unlocked()?
+            .records
             .iter()
-            .filter(|operation| operation.work.id == current.id)
+            .filter(|record| record.work.id == current.id)
             .count() as u64
             + 1;
         let payload = self.work_graph_outbox_payload_unlocked(&next, kind, payload)?;
@@ -725,6 +827,8 @@ impl HarnessStore {
             .collect::<StoreResult<Vec<_>>>()?;
         let delegation_revisions =
             self.work_delegation_rollup_revisions_unlocked(&next, &context)?;
+        let (performed_by_actor, executed_by_member_run_id) =
+            self.persisted_work_performer_unlocked(&context.performed_by_actor, &next.team_run_id);
         let operation = WorkOperation {
             event: WorkEvent {
                 id: context.event_id,
@@ -734,12 +838,13 @@ impl HarnessStore {
                 kind,
                 expected_version: current.version,
                 resulting_version: next.version,
-                performed_by_actor: context.performed_by_actor,
+                performed_by_actor,
                 authority_actor: context.authority_actor,
                 causation_ref: context.causation_ref,
                 idempotency_key: context.idempotency_key,
-                payload,
+                payload: payload.clone(),
                 created_at: context.created_at,
+                executed_by_member_run_id,
             },
             work: next.clone(),
             condition_records,
@@ -748,7 +853,24 @@ impl HarnessStore {
             decisions,
             delegation_revisions,
         };
-        self.append_work_operation_unlocked(&operation)?;
+        self.validate_work_operation_records_unlocked(&operation)?;
+        // The complete WorkOperation is the Work journal row. Its Delegation
+        // revisions are ALSO committed as their own side records, in the same
+        // atomic write, because the Delegation reader resolves revisions by
+        // shape across every trust envelope and must not have to know that one
+        // of them is nested inside a Work row.
+        let mut side_records = vec![serde_json::to_value(&operation)?];
+        for revision in &operation.delegation_revisions {
+            side_records.push(serde_json::to_value(revision)?);
+        }
+        self.commit_current_work_mutation_unlocked(
+            mutation_context,
+            kind.canonical_transition(),
+            payload,
+            &next,
+            side_records,
+            Vec::new(),
+        )?;
         // The outbox itself is in the crash-atomic WorkOperation. Materialized
         // HostAttention rows are deterministic and replay-repairable.
         self.ensure_downstream_host_attentions_for_work_operation_unlocked(&operation)?;

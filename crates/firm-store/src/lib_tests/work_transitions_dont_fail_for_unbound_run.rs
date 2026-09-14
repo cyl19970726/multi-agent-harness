@@ -61,10 +61,15 @@ fn legacy_unbound_run_cannot_authorize_current_host_work_write() {
             host_work_context("we-ub-1", "create-ub-ha", "unix-ms:2"),
         )
         .expect_err("legacy unbound run must not authorize a current Work write");
+    // Every Work command now resolves its Execution Space before its own
+    // guards, because the trust kernel's replay check is scoped to one. A
+    // legacy unbound run fails that resolution first; the refusal is still
+    // exactly "this run cannot authorize a current Work write", and the
+    // invariant under test — nothing was written — is asserted below.
     assert!(
         error
             .to_string()
-            .contains("TEAM_RUN_HOST_AUTHORITY_REQUIRED"),
+            .contains("MEMBER_RUN_MATERIALIZATION_INCOMPLETE"),
         "unexpected error: {error}"
     );
     assert!(store.latest_works().expect("works").is_empty());

@@ -520,11 +520,23 @@ fn retained_projected_rows_remain_bounded_with_200_unrelated_team_runs_and_works
             .expect("filtered-global reference before the scale append");
     filtered_global_reference["generated_at"] = serde_json::Value::Null;
     let seed_run = selected.team_run.clone();
+    // The seed Work's rows live in the trust journal since the W4 writer
+    // cutover; this scale fixture still appends raw LEGACY rows, which is
+    // exactly the mixed-store shape the bound must hold for.
     let seed_operation = store
-        .legacy_work_operation_rows()
-        .expect("read seed Work operation")
+        .work_journal_records()
+        .expect("read seed Work journal")
         .into_iter()
-        .find(|operation| operation.work.id == "bounded-selected-work")
+        .find(|record| record.work.id == "bounded-selected-work")
+        .map(|record| harness_core::WorkOperation {
+            event: record.event,
+            work: record.work,
+            condition_records: Vec::new(),
+            reports: Vec::new(),
+            evidence_records: Vec::new(),
+            decisions: Vec::new(),
+            delegation_revisions: Vec::new(),
+        })
         .expect("seed Work operation exists");
     for index in 3..6 {
         let unrelated = create_unrelated_run_with_work(&store, index);

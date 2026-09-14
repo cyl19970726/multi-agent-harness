@@ -769,16 +769,18 @@ pub(super) fn format_work_brief_line(work: &Work) -> String {
 /// mapped to the position of its most recent Work journal row within this team
 /// run, numbered in each journal's own append (causal) order.
 ///
-/// A Work's version chain is one chain but, until the W4 writer cutover, its
-/// rows live in two journals: `work_operations.jsonl` and the `work` aggregate
-/// of `agentfirm_trust_operations.jsonl`. Every append in either is serialized
-/// under the store's write lock, so each journal's order is a genuine per-run
-/// total order; the two files share no comparable clock, so the cursor keeps
-/// one component per journal and advances a Work when EITHER component grows
-/// (see `harness_store::WorkJournalPosition`). Counting only the ledger — as
-/// this cursor did before W3 — left a Work whose latest change was an accept,
-/// a cancellation or a dependency change permanently below the watermark, so a
-/// Host `--since` loop never saw it change.
+/// A Work's version chain is one chain, written to the `work` aggregate of
+/// `agentfirm_trust_operations.jsonl` and read from two files, because a store
+/// that predates the writer cutover still holds half its history in
+/// `work_operations.jsonl`. Every write is serialized under the store's write
+/// lock, so each file's order is a genuine per-run total order; the two share
+/// no comparable clock, so the cursor keeps one component per file and
+/// advances a Work when EITHER component grows (see
+/// `harness_store::WorkJournalPosition`). Counting only the ledger — as this
+/// cursor did before W3 — left a Work whose latest change was an accept, a
+/// cancellation or a dependency change permanently below the watermark; since
+/// the cutover that file holds no current transition at all, so a ledger-only
+/// count would leave every Work below it.
 ///
 /// Two single-number alternatives were considered and rejected: `Work::version`
 /// restarts at 1 for every Work, so it is not comparable across Works in one

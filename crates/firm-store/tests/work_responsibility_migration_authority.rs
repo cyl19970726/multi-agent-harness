@@ -134,7 +134,10 @@ fn responsibility_migration_requires_the_exact_team_run_host() {
         )
         .expect("the exact TeamRun Host migrates");
     assert_eq!(report.migrated_work_ids, ["work-legacy-authority"]);
-    assert_eq!(work_operations_raw(store).len(), before.len() + 1);
+    // The migration revision is a `work` trust envelope since W4; the legacy
+    // ledger file keeps exactly the rows it already held.
+    assert_eq!(work_operations_raw(store), before);
+    assert_eq!(migration_revisions(store), 1);
 
     // A scope narrows the sweep without widening the authority rule.
     let scoped = store
@@ -215,5 +218,22 @@ fn responsibility_migration_appends_nothing_when_a_later_work_refuses() {
         )
         .expect("the scoped sweep sees only its own TeamRun");
     assert_eq!(scoped.migrated_work_ids, ["work-atomic-a"]);
-    assert_eq!(work_operations_raw(store).len(), before.len() + 1);
+    assert_eq!(work_operations_raw(store), before);
+    assert_eq!(migration_revisions(store), 1);
+}
+
+/// Committed responsibility-migration Work revisions, wherever they live.
+fn migration_revisions(store: &firm_store::HarnessStore) -> usize {
+    std::fs::read_to_string(store.root().join("agentfirm_trust_operations.jsonl"))
+        .map(|contents| {
+            contents
+                .lines()
+                .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+                .filter(|row| {
+                    row["operation"]["event"]["aggregate_kind"] == "work"
+                        && row["operation"]["event"]["payload"]["responsibility_migration"] == true
+                })
+                .count()
+        })
+        .unwrap_or_default()
 }

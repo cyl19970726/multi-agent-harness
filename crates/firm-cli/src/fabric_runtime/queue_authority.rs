@@ -1,4 +1,5 @@
 use super::*;
+use harness_core::ExecutionSpaceId;
 
 pub(crate) fn fabric_command(
     store: &HarnessStore,
@@ -276,19 +277,43 @@ pub(crate) struct QueueRemoteFactPublicationRequest {
     pub retain_until: String,
 }
 
+/// The exact Work projection at one revision, and the event id a
+/// `RemoteWorkRef` binds to for it.
+///
+/// **The rule, since W4: one revision, one `work` transition, one event id.**
+/// Every Work revision is produced by exactly one `work`-aggregate transition,
+/// so the id a remote ref carries is that transition's — the same id
+/// `work_history` reports for the revision, and the same id a HostAttention and
+/// a delivery already name it by. Before the writer cutover this scanned every
+/// canonical envelope newest-first and took whichever one happened to carry a
+/// matching Work anywhere in its side records, so the same revision could bind
+/// to different ids depending on what was written after it.
+///
+/// The Work journal is therefore asked first and is authoritative. The
+/// canonical scan below it remains only for a revision that exists solely as an
+/// atomic side projection of another aggregate's envelope — a shape with no
+/// `work` transition of its own, and thus no journal record to name.
 pub(super) fn exact_work_projection_at_revision(
     store: &HarnessStore,
     execution_space_id: &str,
     work_id: &str,
     work_revision: u64,
 ) -> Result<(harness_core::Work, String), FabricError> {
+    for record in store
+        .work_journal_records_for_space(&harness_core::ExecutionSpaceId::new(execution_space_id))
+        .map_err(|error| FabricError::none(FabricErrorCode::StoreUnavailable, error.to_string()))?
+    {
+        if record.work.id == work_id && record.work.version == work_revision {
+            return Ok((record.work, record.event.id));
+        }
+    }
     let projection_matches = |value: &serde_json::Value| {
         serde_json::from_value::<harness_core::Work>(value.clone())
             .ok()
             .filter(|work| work.id == work_id && work.version == work_revision)
     };
     for operation in store
-        .canonical_operations_for_space(execution_space_id)
+        .canonical_operations_for_space(&ExecutionSpaceId::new(execution_space_id))
         .map_err(|error| FabricError::none(FabricErrorCode::StoreUnavailable, error.to_string()))?
         .into_iter()
         .rev()
@@ -300,18 +325,6 @@ pub(super) fn exact_work_projection_at_revision(
             if let Some(work) = projection_matches(&record) {
                 return Ok((work, operation.event.id));
             }
-        }
-    }
-    // The one Work reader covers both journals, so a revision the trust
-    // journal owns is resolvable here instead of falling off the end.
-    for record in store
-        .work_history(work_id)
-        .map_err(|error| FabricError::none(FabricErrorCode::StoreUnavailable, error.to_string()))?
-        .into_iter()
-        .rev()
-    {
-        if record.work.version == work_revision {
-            return Ok((record.work, record.event.id));
         }
     }
     Err(FabricError::none(
@@ -329,7 +342,7 @@ pub(super) fn accepted_work_decision_ref(
     target_host_id: &str,
 ) -> Result<Option<harness_core::collaboration::WorkOperationalDecisionRef>, FabricError> {
     let operation = store
-        .canonical_operations_for_space(execution_space_id)
+        .canonical_operations_for_space(&ExecutionSpaceId::new(execution_space_id))
         .map_err(|error| FabricError::none(FabricErrorCode::StoreUnavailable, error.to_string()))?
         .into_iter()
         .rev()

@@ -71,10 +71,14 @@ fn work_list_since_returns_only_works_changed_after_cursor() {
     assert_eq!(delta_works[0]["condition"].as_str(), Some("normal"));
     assert_eq!(delta_works[0]["version"].as_u64(), Some(5));
     let next_since = delta["next_since"].as_u64().expect("next_since");
+    // Since the W4 writer cutover the new revision is a trust transition, so
+    // the packed cursor advances by one in its trust component — the radix —
+    // not by one ledger row. The cursor is still a single integer and still
+    // strictly increasing, which is the whole contract a Host loop depends on.
     assert_eq!(
         next_since,
-        baseline_next_since + 1,
-        "exactly one new WorkOperation landed since the baseline cursor"
+        baseline_next_since + (1u64 << 32),
+        "exactly one new Work revision landed since the baseline cursor"
     );
 
     // Chaining --since with the fresh cursor sees nothing new: the delta read

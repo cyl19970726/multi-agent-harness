@@ -449,12 +449,12 @@ impl HarnessStore {
             work_id: operation.event.work_id.clone(),
             work_version: operation.event.resulting_version,
             source_event_ref: operation.event.id.clone(),
-            // The WorkEvent actor is immutable execution evidence written
-            // after the exact binding fence succeeds. Attention keeps that
-            // submitting runtime for evidence only; it never authorizes Work.
-            member_run_id: (operation.event.performed_by_actor.kind
-                == TeamActorKind::ProviderRuntimeProjection)
-                .then(|| operation.event.performed_by_actor.id.clone()),
+            // The MemberRun on the WorkEvent is immutable execution evidence
+            // written after the exact binding fence succeeds. Attention keeps
+            // that submitting runtime for evidence only; it never authorizes
+            // Work. Both persisted shapes answer here — the explicit evidence
+            // field, and the legacy row whose performer *was* the runtime.
+            member_run_id: operation.event.executing_member_run_id().map(str::to_owned),
             status: HostAttentionStatus::Actionable,
             attempt: 0,
             claim_id: None,
@@ -484,17 +484,51 @@ impl HarnessStore {
             .transpose()
     }
 
+    /// Every HostAttention a Work transition implies, from every journal that
+    /// holds one.
+    ///
+    /// The materialized row is written by the transition itself; this is the
+    /// repair path for a crash between the Work write and that row. It must
+    /// therefore see the same transitions the Work journal does, or a Work
+    /// blocked after the W4 writer cutover would never have its wake repaired.
+    ///
+    /// It is also where the retired ledger idempotency lookup's repair went:
+    /// that lookup re-derived a retried operation's attention rows, so the gap
+    /// was closed only if something retried. Reconciling from the whole
+    /// journal closes it for every entrance instead. Memoized on the same
+    /// operation snapshot, because several HostAttention entrances ask per
+    /// call and the answer cannot change while that snapshot is unchanged.
+    fn work_host_attention_sources_unlocked(
+        &self,
+    ) -> StoreResult<std::sync::Arc<Vec<(bool, HostAttention)>>> {
+        let operations = self.work_record_operations_unlocked()?;
+        self.cached_combined_projection(
+            "work-host-attention-sources",
+            vec![operations.clone()],
+            || {
+                let mut sources = Vec::new();
+                for operation in operations.iter() {
+                    sources.extend(
+                        Self::downstream_host_attentions_for_work_operation(operation)?
+                            .into_iter()
+                            .map(|row| (true, row)),
+                    );
+                    if let Some(row) = Self::host_attention_for_work_operation(operation) {
+                        sources.push((false, row));
+                    }
+                }
+                Ok(sources)
+            },
+        )
+    }
+
     pub(super) fn reconcile_work_host_attentions_unlocked(
         &self,
     ) -> StoreResult<Vec<HostAttention>> {
-        let sources = self.current_work_sources()?;
         let mut projected = self.latest_host_attentions_unlocked()?;
         let mut reconciled = Vec::new();
-        let attentions = sources
-            .attention_sources
-            .as_ref()
-            .map_err(|error| StoreError::Conflict(error.clone()))?;
-        for (downstream, attention) in attentions {
+        let attentions = self.work_host_attention_sources_unlocked()?;
+        for (downstream, attention) in attentions.iter() {
             if let Some(existing) = projected.get(&attention.id) {
                 if !Self::same_host_attention_fact(existing, attention) {
                     return Err(StoreError::Conflict(format!(

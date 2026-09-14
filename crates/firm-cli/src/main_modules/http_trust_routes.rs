@@ -1,4 +1,5 @@
 use super::*;
+use harness_core::ExecutionSpaceId;
 
 impl HttpExchange<'_> {
     #[allow(unused_variables)]
@@ -724,7 +725,7 @@ impl HttpExchange<'_> {
             if request.command != RuntimeCommandKind::AuthorMessage {
                 let command_id = format!("runtime-command:{idempotency_key}");
                 let original = store_owned
-                    .canonical_operations_for_space(project_id)?
+                    .canonical_operations_for_space(&ExecutionSpaceId::new(project_id))?
                     .into_iter()
                     .find(|operation| {
                         operation.event.aggregate_kind == "runtime_command"

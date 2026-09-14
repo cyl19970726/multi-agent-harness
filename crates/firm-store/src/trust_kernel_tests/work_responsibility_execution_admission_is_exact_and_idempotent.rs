@@ -1,26 +1,62 @@
 use super::*;
 
+/// Rewrite every persisted revision of one Work so it carries the retired
+/// runtime-ownership field, in whichever journal holds it. Since W4 the Work
+/// journal is the trust ledger, so the fixture must rewrite the canonical
+/// envelopes too, not just the legacy file.
 fn rewrite_work_active_member_run(
     root: &std::path::Path,
     work_id: &str,
     member_run_id: Option<&str>,
 ) {
-    let path = root.join("work_operations.jsonl");
-    let rewritten = std::fs::read_to_string(&path)
-        .unwrap()
-        .lines()
-        .map(|line| {
-            let mut row: serde_json::Value = serde_json::from_str(line).unwrap();
-            if row["work"]["id"] == work_id {
-                row["work"]["active_member_run_id"] = member_run_id
-                    .map(|id| serde_json::Value::String(id.into()))
-                    .unwrap_or(serde_json::Value::Null);
-            }
-            serde_json::to_string(&row).unwrap()
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-    std::fs::write(path, format!("{rewritten}\n")).unwrap();
+    let value = member_run_id
+        .map(|id| serde_json::Value::String(id.into()))
+        .unwrap_or(serde_json::Value::Null);
+    let rewrite_work = |work: &mut serde_json::Value| {
+        if work["id"] == work_id {
+            work["active_member_run_id"] = value.clone();
+        }
+    };
+    for (name, rewrite_row) in [
+        (
+            "work_operations.jsonl",
+            Box::new(|row: &mut serde_json::Value| rewrite_work(&mut row["work"]))
+                as Box<dyn Fn(&mut serde_json::Value)>,
+        ),
+        (
+            "agentfirm_trust_operations.jsonl",
+            Box::new(|row: &mut serde_json::Value| {
+                rewrite_work(&mut row["operation"]["resulting_projection"]);
+                if let Some(records) = row["operation"]["immutable_side_records"].as_array_mut() {
+                    for record in records {
+                        // Only touch keys that already exist: inventing one
+                        // would corrupt every other side record in the row.
+                        if record.get("id").is_some() {
+                            rewrite_work(record);
+                        }
+                        if record.get("work").is_some() {
+                            rewrite_work(&mut record["work"]);
+                        }
+                    }
+                }
+            }) as Box<dyn Fn(&mut serde_json::Value)>,
+        ),
+    ] {
+        let path = root.join(name);
+        let Ok(contents) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let rewritten = contents
+            .lines()
+            .map(|line| {
+                let mut row: serde_json::Value = serde_json::from_str(line).unwrap();
+                rewrite_row(&mut row);
+                serde_json::to_string(&row).unwrap()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        std::fs::write(path, format!("{rewritten}\n")).unwrap();
+    }
 }
 
 fn next_write_ticket(store: &HarnessStore) -> u64 {
