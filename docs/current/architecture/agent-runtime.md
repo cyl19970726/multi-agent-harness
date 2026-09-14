@@ -581,7 +581,8 @@ ProviderAcknowledged remain readable vocabulary without new producers.
 Historical settlement request spelling is recognized only after the normal
 exact authority checks and returns the original event/fingerprint on replay.
 
-`ControlIntent` owns the six control mappings shared by all five adapters:
+`ControlIntent` owns the four control mappings shared by all five adapters
+(ADR 0067 retired the two continuation intents):
 
 | Intent | Durable command kind | Semantic capability |
 | --- | --- | --- |
@@ -589,27 +590,28 @@ exact authority checks and returns the original event/fingerprint on replay.
 | InjectCurrentCycle | InjectCurrentCycle | inject_current_cycle |
 | QueueNativeBoundary | QueueAtNativeBoundary | queue_at_native_boundary |
 | Interrupt | InterruptCurrentCycle | interrupt_current_cycle |
-| InhibitContinuation | InhibitContinuation | inhibit_continuation |
-| ResumeContinuation | ResumeContinuation | resume_continuation |
 
 The other RuntimeCommandKind values remain separate lifecycle, inspection,
 reconciliation or existing legacy-named handlers. There is no catch-all
-conversion of all 32 kinds into these six intents. Unsupported/Experimental
+conversion of all 32 kinds into these four intents. Unsupported/Experimental
 capabilities keep their existing fail-closed admission; queue does not fall
 back to inject, and interrupt does not imply session close. The real cycle,
 steering, interrupt and close paths retain their native adapter operations.
 
 New Store admission rejects `ReopenMember`, `RetireMember`,
-`DeleteNativeSession`, `CancelPendingInput`, `ActivateContinuation`,
+`DeleteNativeSession`, `CancelPendingInput`, `InspectContinuation`,
+`ActivateContinuation`, `InhibitContinuation`, `ResumeContinuation`,
 `ReplaceContinuationCondition`, `ClearContinuation`, `StopBackgroundTask`,
 `TransferExecutionDriver`, `InspectCommandEffect`, `ReconcileUnknownEffect`
 and `AbortIfNotApplied` with `RUNTIME_COMMAND_KIND_FROZEN`. These command names
 have no production effect handler; dynamic envelope decoding alone is not
 support. Their persisted values and exact historical replay remain readable,
 but changing the envelope or using a new key cannot create a fresh admission.
-Existing member lifecycle and Store recovery operations are unchanged. This
-restriction does not freeze the six control intents, adapter release,
-Drain/Quiesce/Reattach, or continuation observation.
+The three continuation-control kinds joined that list under ADR 0067, which
+retired their intents and capabilities outright. Existing member lifecycle and
+Store recovery operations are unchanged. This restriction does not freeze the
+four control intents, adapter release, Drain/Quiesce/Reattach, or the
+read-only continuation observation that feeds the activation projection.
 
 DEV-31 and DEV-68 tighten this into an exact binding fence for every
 provider/process effect: the prepared command records the target MemberRun id
@@ -777,8 +779,8 @@ Codex, Claude, Kimi, Pi, and DeepSeek Harness expose separate, closed capability
   Wake → claim → ExecutionCycle → settle is shared, and each provider package
   compiles the semantic intents
   (open/resume, start cycle, inject current cycle, queue at native boundary,
-  interrupt, continuation inspection/control, narrow Team Close, strong
-  quiesce, and release) into provider primitives with an executable per-intent
+  interrupt, narrow Team Close, strong quiesce, and release) into provider
+  primitives with an executable per-intent
   capability report. Pi, Codex app-server, Claude Agent SDK, Kimi ACP, and
   DeepSeek Harness all enter through this shared loop;
   `firm-provider-{codex,claude,kimi,pi,deepseek}` own
@@ -789,7 +791,7 @@ Codex, Claude, Kimi, Pi, and DeepSeek Harness expose separate, closed capability
   intents. `CloseRuntime` terminates and reaps the Harness-owned provider
   handle, freezes the Member mailbox, and retains the native session id for an
   explicit higher-generation Reopen. Strong `quiesce`/`release` additionally
-  require every adapter to prove continuation inhibition, current-cycle
+  require every adapter to prove the continuation is disarmed, current-cycle
   terminal state, native queue settlement, writable-child drain, idle
   observation, and durable native flush. A provider that cannot observe one of
   those postconditions remains degraded and fails closed; a process exit or

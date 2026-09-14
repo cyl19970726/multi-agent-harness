@@ -165,17 +165,17 @@ through an ordinary correlated Markdown message; the Member replies, the Host
 argues or approves in the same chain, and provider-native plan/goal features
 remain internal execution aids.
 
-Work is durable responsibility; a provider-native Goal is only one
-possible continuation mechanism for executing it. Each active MemberRun/native
-session must have exactly one top-level execution driver:
-either Harness starts the next provider cycle (`host_driven`) or an observed
-provider-native continuation loop does (`provider_driven`). Never activate a
-native goal and also issue an ordinary Harness start for the same work. A
-separate Session may share the same cwd; worktree isolation is optional.
-provider-driven member may complete many native cycles without creating a new
-MemberRun, but provider satisfaction never implies Host acceptance. Providers
-without a reviewed native continuation capability remain first-class
-host-driven members. See `docs/current/architecture/member-continuation-model.md` and ADR 0041.
+Work is durable responsibility; a provider-native Goal is only a member-internal
+execution aid for working on it. Each active MemberRun/native session must have
+exactly one top-level execution driver, and for a managed runtime that is always
+Harness (`host_driven`); the declared `external_interactive` Host exception is
+`user_driven`. ADR 0067 retired `provider_driven` and the continuation control
+plane with it, so a native goal is never a second scheduler and is never
+activated to drive work. A separate Session may share the same cwd; worktree
+isolation is optional. A member may complete many native cycles inside one
+Harness cycle without creating a new MemberRun, but provider satisfaction never
+implies Host acceptance. See
+`docs/current/architecture/member-continuation-model.md`, ADR 0041 and ADR 0067.
 
 Provider-native or chat-side subagents are implementation details of the Host
 or member that invoked them. Optional hooks may record honest attribution, but

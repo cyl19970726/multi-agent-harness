@@ -34,10 +34,13 @@ responsibility, ownership, status, or a dependency mutation.
 Each active MemberRun/native session has exactly one top-level execution
 driver:
 
-- `host_driven`: Harness starts the next eligible Provider cycle.
-- `provider_driven`: a reviewed native continuation loop starts cycles.
+- `host_driven`: Harness starts the next eligible Provider cycle. Every
+  managed runtime.
 - `user_driven`: only for declared `external_interactive` members; a human
   drives their own session.
+
+There is no third driver: ADR 0067 retired `provider_driven`. A provider-native
+goal is a member-internal execution aid, never a second scheduler.
 
 Explicitly separate Sessions may share a cwd. Coordinate concurrent writes
 through separate worktrees or an explicit integration boundary; a shared cwd

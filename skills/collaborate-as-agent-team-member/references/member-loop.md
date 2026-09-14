@@ -159,7 +159,7 @@ service needs an owner and verified cleanup or handoff, including across turns.
 
 Translate the current Work into your own design, implementation, and verification plan. Provider-native plan/goal features are optional internal aids; they are not Harness state or Host acceptance — see shared hard invariants §8 (no Plan Mode/Gate). When the Host asks for a plan first, reply with concise Markdown in a Work-linked conversation, address revisions, and execute only after the Host says to proceed.
 
-Use the execution driver selected by the Host/adapter — see shared hard invariants §2 (one execution driver per MemberRun). The three drivers are `host_driven` (Harness starts each cycle, return control at safe boundaries), `provider_driven` (use the reviewed native continuation controller and report its terminal reason), and `user_driven` (only for `external_interactive` members).
+Use the execution driver selected by the Host/adapter — see shared hard invariants §2 (one execution driver per MemberRun). There are two: `host_driven` (Harness starts each cycle, so return control at safe boundaries) and `user_driven` (only for `external_interactive` members). ADR 0067 retired `provider_driven`; a provider-native goal stays an internal aid and never schedules your next cycle.
 
 Use Provider-native subagents for authorized bounded internal lanes. They
 return evidence to you without automatically becoming Harness Members or

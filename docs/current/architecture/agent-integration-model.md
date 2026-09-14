@@ -20,7 +20,7 @@ implements honestly:
 ```text
 Pillar 1  Base configuration   prompt, skills, capabilities, model/profile
 Pillar 2  Environment          workspace (worktree, owned paths), MCP, resources
-Pillar 3  Platform adaptation  AgentProvider + EventReducer + continuation caps
+Pillar 3  Platform adaptation  AgentProvider + EventReducer + capability report
 ---------------------------------------------------------------------------
 Launch/control contract         start, deliver, inspect, interrupt, close and
                                 resume through one selected execution mode
@@ -44,14 +44,15 @@ history and resume source; Harness retains a mode-aware native session
 binding, not a second event store. See
 [ADR 0031](../../decisions/0031-interactive-provider-modes-and-version-drift.md).
 
-For every persistent Team mode, the integration also selects exactly one
-top-level `execution_driver`: `host_driven`, `provider_driven`, or — for
-declared `external_interactive` members only — `user_driven`. A native Goal
-or continuation loop is optional. When it exists, the adapter must separately
-declare whether it can start, inspect, replace, clear, resume, inject mail,
-interrupt a cycle, expose cycle boundaries, and preserve the intended
-permission scope. “Provider has Goal mode” is not an executable compatibility
-claim by itself.
+For every persistent Team mode the integration selects one top-level
+`execution_driver`: `host_driven` for every managed runtime, or — for declared
+`external_interactive` members only — `user_driven`. ADR 0067 retired the third
+value and the control plane behind it. A native Goal or continuation loop
+remains optional and member-internal; when one exists the adapter may observe
+and report it, and must still declare whether it can inject mail, interrupt a
+cycle, expose cycle boundaries, and preserve the intended permission scope.
+“Provider has Goal mode” is not an executable compatibility claim by itself,
+and it is never a driver.
 
 Every persistent Team mode also participates in the provider-neutral durable
 Supervisor protocol. Only the latest `TeamSupervisorLease` generation may own
@@ -121,7 +122,7 @@ hands a single turn to whatever platform sits behind the member:
 | --- | --- | --- |
 | 1 Base configuration | What does this agent *know and is allowed to be*? | `prompt_ref`, `skill_refs`, `capabilities`, `model`, `profile` on `AgentMember` |
 | 2 Environment | What can it *touch*? | canonical workspace binding and permission ceiling; MCP via the provider launch profile |
-| 3 Platform adaptation | How does the harness *drive* the platform, select one continuation owner, resolve its native session, read it, and resume it? | `AgentProvider` / provider adapter, continuation controller, native-session resolver, ephemeral reducer, `ProviderCapabilities` |
+| 3 Platform adaptation | How does the harness *drive* the platform, resolve its native session, read it, and resume it? | `AgentProvider` / provider adapter, native-session resolver, ephemeral reducer, `ProviderCapabilities` |
 
 The pillars are deliberately separable: changing the platform (Pillar 3) must
 not require rewriting the prompt stack (Pillar 1) or the workspace contract
@@ -351,9 +352,12 @@ runtime model has six layers:
 2. The live runtime handle is process-local and disposable.
 3. An `ExecutionCycle` is one accepted input driven to the provider's settled
    boundary.
-4. `NativeContinuation` is a bounded provider projection, not a durable Work
-   and never the retired CompanyOS Goal.
-5. `ExecutionDriver` selects exactly one top-level cycle owner.
+4. `NativeContinuation` is a bounded read-only provider projection, not a
+   durable Work and never the retired CompanyOS Goal. ADR 0067 retired the
+   commands that could change it.
+5. `ExecutionDriver` names the one top-level cycle owner: Harness
+   (`host_driven`) or the human at an external interactive runtime
+   (`user_driven`).
 6. `RuntimeSupervisor`/NodeDaemon owns durable command authority and recovery.
 
 These layers sit on four separate planes: Message, Work, RuntimeCommand, and
@@ -477,10 +481,10 @@ app-server, ACP, streaming SDK, or equivalent reviewed mode. This preserves
 mailbox delivery, interaction routing, interrupt, resume, and explicit Host
 lifecycle control.
 
-Provider-native continuation is optional even in a persistent mode. The
-adapter starts `host_driven` and may promote a specific mode/version to
-`provider_driven` only after the capability and lease checks in
-[Member Continuation Model](member-continuation-model.md).
+Provider-native continuation is optional even in a persistent mode, and it is
+never promoted to a driver: every managed adapter is `host_driven`, and a
+native continuation it can see is observed and reported, not scheduled through.
+See [Member Continuation Model](member-continuation-model.md).
 
 ---
 
@@ -568,9 +572,9 @@ is the concrete "define X, Y, Z" deliverable.
 5. **Declare provider and continuation capabilities.** Implement the `ProviderCapabilities`
    declaration (streaming, resume, mid-turn approval, subagents, mcp, hooks,
    schema, cost, enforces_read_only) so the harness/UI can adapt and the
-   Dashboard shows honest state. Select the default execution driver and state
-   which native continuation operations are verified for the exact mode and
-   version. Test that later provider-created cycles preserve the intended
+   Dashboard shows honest state. The execution driver is `host_driven`; state
+   which native continuation state, if any, the adapter can observe for the
+   exact mode and version. Test that later provider-created cycles preserve the intended
    permission posture.
 6. **Write `docs/current/integration/<provider>.md`** from the provider template in
    [integration/README.md](../integration/README.md). Answer every section:
@@ -597,7 +601,7 @@ is the concrete "define X, Y, Z" deliverable.
 | Skill contract (resolve / discover / inject) | WP-6: Implemented | Pillar 1, `skill_resolver` module |
 | MCP neutral config shape | WP-6: Implemented | Pillar 2, `LaunchMcp` / `LaunchMcpServer` on the provider launch profile |
 | Provider capability declaration | WP-6: Implemented | Pillar 3, `ProviderCapabilities` struct |
-| Operation-level continuation capability | design contract in ADR 0041; provider-driven promotion remains version-gated | Member Continuation Model |
+| Operation-level continuation capability | retired by ADR 0067; continuation is observed, never controlled, and there is no provider-driven promotion | Member Continuation Model |
 | Durable Team Supervisor and typed mail | implemented under ADR 0044 | Agent Runtime, provider integrations |
 | Provider launch configuration leaks Codex vocabulary | documented; abstraction is additive future work | Launch Spec |
 

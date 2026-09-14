@@ -54,9 +54,9 @@ Provider docs answer how a concrete provider implements:
 - each concrete execution mode (`exec`, ACP, app-server, SDK), never only the
   provider brand;
 - runtime creation and close;
-- default execution driver and native continuation capabilities;
-- continuation inspection, replace/clear, cycle boundaries, and permission
-  continuity;
+- runtime creation and close, and which native continuation state (if any) the
+  adapter can observe;
+- cycle boundaries and permission continuity;
 - identity-first Message authoring, subscription and per-recipient delivery;
 - target NodeDaemon claim/AgentSession fencing and duplicate-prevention semantics;
 - event ingestion and reduction;
@@ -101,8 +101,7 @@ Provider
   native_vs_adapter_capabilities:
   runtime_model:
   default_execution_driver:
-  native_continuation_capabilities:
-  continuation_inspection_and_controls:
+  observed_native_continuation:
   continuation_permission_scope:
   message_delivery:
   claim_and_retry_model:
@@ -177,11 +176,14 @@ README until they need their own file.
 10. A provider adapter must document native-store discovery, availability,
     privacy/retention, resume, missing-session behavior, and version drift in
     addition to its tool list and reverse-RPC methods.
-11. One MemberRun/native session has one top-level execution driver. An adapter
-    must never start a Harness cycle while a provider-native
-    continuation loop owns that same work.
-12. Provider-native continuation is optional. Absence of Goal mode degrades to
-    `host_driven`; it does not make the provider an invalid Agent Team member.
+11. One MemberRun/native session has one top-level execution driver, and for a
+    managed runtime that driver is always Harness (`host_driven`). An adapter
+    must never start a Harness cycle while a member-activated provider-native
+    continuation loop is running in that same session.
+12. Provider-native continuation is optional and member-internal. ADR 0067
+    retired the controls that could drive it: an adapter may observe and report
+    it, never schedule through it, and its absence does not make the provider
+    an invalid Agent Team member.
 13. One machine-scoped NodeDaemon generation owns all local TeamRuns. Each live
     Team Supervisor generation is fenced by that parent daemon generation and
     owns its run's provider transports, delivery claims, reconnect, and real
