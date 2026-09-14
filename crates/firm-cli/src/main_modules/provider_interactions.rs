@@ -53,6 +53,54 @@ pub(super) struct ProviderInteractionReply {
     pub(super) claimed_response: Option<TeamMessageProjection>,
 }
 
+/// Harness-owned token for the interaction kind that crossed the coordination
+/// boundary. It is derived from the classified [`ProviderInteractionType`], not
+/// from any provider-authored string.
+pub(super) fn provider_interaction_kind_token(
+    interaction_type: ProviderInteractionType,
+) -> &'static str {
+    match interaction_type {
+        ProviderInteractionType::Question => "question",
+        ProviderInteractionType::ToolApproval => "tool_approval",
+        ProviderInteractionType::PlanReview => "plan_review",
+        ProviderInteractionType::RejectOnly => "reject_only",
+        ProviderInteractionType::Unknown => "unknown",
+    }
+}
+
+/// Harness-owned MemberAction title for one provider interaction.
+///
+/// A MemberAction is a Harness coordination record, so it must never copy the
+/// provider's question header, prompt, plan, or answer text. The provider's
+/// verbatim prompt is already stored exactly once, as the canonical
+/// `ProviderInteractionRequest` Message body, and that Message is the only
+/// authorized copy (`docs/current/integration/native-session-storage.md`,
+/// "Write boundary").
+pub(super) fn provider_interaction_action_title(
+    interaction_type: ProviderInteractionType,
+) -> String {
+    format!(
+        "provider interaction ({})",
+        provider_interaction_kind_token(interaction_type)
+    )
+}
+
+/// Harness-owned MemberAction summary for one provider interaction.
+///
+/// `fact` is a Harness coordination fact written by this crate. The summary
+/// references the canonical Message by id instead of restating its body, so the
+/// ledger stays reconstructable without mirroring provider-authored text.
+pub(super) fn provider_interaction_action_summary(
+    fact: &str,
+    interaction_type: ProviderInteractionType,
+    message_id: &str,
+) -> String {
+    format!(
+        "{fact} ({}); see Message {message_id}; provider text remains provider-native",
+        provider_interaction_kind_token(interaction_type)
+    )
+}
+
 pub(super) fn provider_interaction_request_message(
     ledger: &TeamRunLedger,
     member: &ProviderRuntimeProjection,
@@ -339,7 +387,10 @@ pub(super) fn handle_codex_provider_request(
         });
     }
 
-    let (interaction_type, title, prompt, options) = if method == "item/tool/requestUserInput" {
+    // The provider's own question header is deliberately not decoded: it is
+    // provider-authored display text with no Harness consumer, and the
+    // question body already reaches the Host as the canonical Message prompt.
+    let (interaction_type, prompt, options) = if method == "item/tool/requestUserInput" {
         let questions = params
             .get("questions")
             .and_then(|value| value.as_array())
@@ -379,11 +430,6 @@ pub(super) fn handle_codex_provider_request(
         (
             ProviderInteractionType::Question,
             question
-                .and_then(|question| question.get("header"))
-                .and_then(|value| value.as_str())
-                .unwrap_or("Codex question")
-                .to_string(),
-            question
                 .and_then(|question| question.get("question"))
                 .and_then(|value| value.as_str())
                 .unwrap_or("Codex requested input")
@@ -405,13 +451,18 @@ pub(super) fn handle_codex_provider_request(
         prompt.clone(),
         options.clone(),
     )?;
+    let action_title = provider_interaction_action_title(interaction_type);
     if created {
         ledger.append_action(
             &member.id,
             "waiting_for_input",
             MemberActionStatus::Started,
-            &title,
-            &prompt,
+            &action_title,
+            &provider_interaction_action_summary(
+                "provider requested input",
+                interaction_type,
+                &request.id,
+            ),
         )?;
     }
     let waiting =
@@ -438,12 +489,16 @@ pub(super) fn handle_codex_provider_request(
         } else {
             MemberActionStatus::Cancelled
         },
-        &title,
-        if resolved.is_some() {
-            "correlated provider answer received"
-        } else {
-            "provider question cancelled by lifecycle"
-        },
+        &action_title,
+        &provider_interaction_action_summary(
+            if resolved.is_some() {
+                "correlated provider answer received"
+            } else {
+                "provider question cancelled by lifecycle"
+            },
+            interaction_type,
+            &request.id,
+        ),
     )?;
 
     let (response, claimed_response) = match resolved {
@@ -725,13 +780,21 @@ pub(super) fn handle_kimi_provider_request(
         prompt.clone(),
         options,
     )?;
+    // `title` stays a classifier input only. It is provider-authored, so it
+    // must not reach a MemberAction; the Harness template below carries the
+    // classified kind and the canonical Message id instead.
+    let action_title = provider_interaction_action_title(interaction_type);
     if created {
         ledger.append_action(
             &member.id,
             "waiting_for_input",
             MemberActionStatus::Started,
-            &title,
-            &prompt,
+            &action_title,
+            &provider_interaction_action_summary(
+                "provider requested input",
+                interaction_type,
+                &request.id,
+            ),
         )?;
     }
 
@@ -765,12 +828,16 @@ pub(super) fn handle_kimi_provider_request(
         } else {
             MemberActionStatus::Cancelled
         },
-        &title,
-        if response.is_some() {
-            "correlated provider answer received"
-        } else {
-            "provider question cancelled by lifecycle"
-        },
+        &action_title,
+        &provider_interaction_action_summary(
+            if response.is_some() {
+                "correlated provider answer received"
+            } else {
+                "provider question cancelled by lifecycle"
+            },
+            interaction_type,
+            &request.id,
+        ),
     )?;
     Ok(ProviderInteractionReply {
         result: match response.and_then(|response| response.choice) {

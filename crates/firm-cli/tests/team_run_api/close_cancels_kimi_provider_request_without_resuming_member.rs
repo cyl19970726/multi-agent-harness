@@ -1,5 +1,15 @@
 use super::*;
 
+/// The provider-authored strings the Kimi ACP shim emits for this question.
+/// None of them may reach a MemberAction; the canonical Message keeps the only
+/// copy.
+const KIMI_QUESTION_PROVIDER_TEXT: [&str; 4] = [
+    "AskUserQuestion",
+    "Which implementation should be used?",
+    "Use native contract",
+    "Skip",
+];
+
 #[test]
 fn close_cancels_kimi_provider_request_without_resuming_member() {
     let home = TempHome::new("team-run-kimi-waiting-close");
@@ -68,6 +78,29 @@ fn close_cancels_kimi_provider_request_without_resuming_member() {
             serve.get_json("/v1/snapshot").1
         )
     });
+
+    // The waiting MemberAction names the classified interaction kind and the
+    // canonical Message; the Kimi toolCall title, prompt, and option labels stay
+    // provider-native.
+    let (_, waiting_snapshot) = serve.get_json("/v1/snapshot");
+    let waiting_action = waiting_snapshot["member_actions"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|action| {
+            action["member_run_id"].as_str() == Some(member_id.as_str())
+                && action["action_type"].as_str() == Some("waiting_for_input")
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "Kimi question must journal one waiting_for_input MemberAction; snapshot={waiting_snapshot}"
+            )
+        });
+    assert_provider_question_action_is_harness_owned(
+        waiting_action,
+        &request_id,
+        &KIMI_QUESTION_PROVIDER_TEXT,
+    );
 
     let (status, closed) = serve.post_json(
         &format!("/v1/team-runs/{run_id}/members/{member_id}/close"),

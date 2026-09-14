@@ -1,5 +1,14 @@
 use super::*;
 
+/// The provider-authored strings the Codex shim emits for this question. None of
+/// them may reach a MemberAction; the canonical Message keeps the only copy.
+const CODEX_QUESTION_PROVIDER_TEXT: [&str; 4] = [
+    "Contract",
+    "Which implementation should be used?",
+    "Use native contract",
+    "Stop",
+];
+
 #[test]
 fn codex_app_server_question_routes_to_lead_and_resumes_same_turn() {
     let home = TempHome::new("team-run-codex-question");
@@ -90,6 +99,39 @@ fn codex_app_server_question_routes_to_lead_and_resumes_same_turn() {
             serve.get_json("/v1/snapshot").1
         )
     });
+    // The MemberAction ledger is a Harness coordination record. The provider's
+    // own question header, prompt, and option labels have exactly one authorized
+    // Harness copy — the canonical interaction request Message — so the action
+    // may only name the classified kind and reference that Message by id.
+    let mut waiting_action = None;
+    for _ in 0..100 {
+        let (_, snapshot) = serve.get_json("/v1/snapshot");
+        waiting_action = snapshot["member_actions"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|action| {
+                action["member_run_id"].as_str() == Some(member_id.as_str())
+                    && action["action_type"].as_str() == Some("waiting_for_input")
+            })
+            .cloned();
+        if waiting_action.is_some() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let waiting_action = waiting_action.unwrap_or_else(|| {
+        panic!(
+            "Codex question must journal one waiting_for_input MemberAction; snapshot={}",
+            serve.get_json("/v1/snapshot").1
+        )
+    });
+    assert_provider_question_action_is_harness_owned(
+        &waiting_action,
+        &interaction_id,
+        &CODEX_QUESTION_PROVIDER_TEXT,
+    );
+
     let opened = std::fs::read_to_string(&thread_marker).expect("Codex thread/start marker");
     assert!(
         opened.contains("\"sandbox\":\"danger-full-access\"")
@@ -213,5 +255,21 @@ fn codex_app_server_question_routes_to_lead_and_resumes_same_turn() {
     assert!(
         idle_with_delivered_response,
         "Codex did not consume the canonical interaction response and return idle; snapshot: {diagnostic_snapshot}"
+    );
+    let resolved_action = diagnostic_snapshot["member_actions"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|action| {
+            action["member_run_id"].as_str() == Some(member_id.as_str())
+                && action["action_type"].as_str() == Some("provider_question_resolved")
+        })
+        .unwrap_or_else(|| {
+            panic!("resolved Codex question must journal one MemberAction; snapshot: {diagnostic_snapshot}")
+        });
+    assert_provider_question_action_is_harness_owned(
+        resolved_action,
+        &interaction_id,
+        &CODEX_QUESTION_PROVIDER_TEXT,
     );
 }
