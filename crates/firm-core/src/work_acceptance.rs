@@ -168,6 +168,7 @@ mod tests {
             idempotency_key: format!("{}-key", work.id),
             payload: Default::default(),
             created_at: time.into(),
+            executed_by_member_run_id: None,
         }
     }
 

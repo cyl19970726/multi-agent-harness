@@ -1,4 +1,5 @@
 use super::*;
+use crate::store_work_journal_writer::{command_space, WorkCommandEntrance};
 
 impl HarnessStore {
     fn work_is_assigned_to_member_without_active_binding_unlocked(
@@ -69,13 +70,22 @@ impl HarnessStore {
         self.init()?;
         let _lock = self.acquire_write_lock()?;
         Self::require_unassigned_work_creation(&work)?;
-        if let Some(existing) = self.idempotent_work_operation_unlocked(
-            &context.idempotency_key,
+        let mutation_context = match self.enter_work_command_for_run_unlocked(
             &work.id,
+            &work.team_run_id,
+            0,
             WorkEventKind::Created,
+            &context,
+            &serde_json::json!({
+                "work_id": work.id,
+                "team_run_id": work.team_run_id,
+                "title": work.title,
+                "completion_criteria_markdown": work.completion_criteria_markdown,
+            }),
         )? {
-            return Ok(existing.work);
-        }
+            WorkCommandEntrance::Replayed(work) => return Ok(*work),
+            WorkCommandEntrance::Admitted(mutation_context) => mutation_context,
+        };
         self.ensure_work_event_id_available_unlocked(&context.event_id)?;
         let team_run = self.require_team_run_unlocked(&work.team_run_id)?;
         if matches!(
@@ -175,6 +185,8 @@ impl HarnessStore {
             }
         }
         self.validate_work_relations_unlocked(&work)?;
+        let (performed_by_actor, executed_by_member_run_id) =
+            self.persisted_work_performer_unlocked(&context.performed_by_actor, &work.team_run_id);
         let operation = WorkOperation {
             event: WorkEvent {
                 id: context.event_id,
@@ -184,12 +196,13 @@ impl HarnessStore {
                 kind: WorkEventKind::Created,
                 expected_version: 0,
                 resulting_version: 1,
-                performed_by_actor: context.performed_by_actor,
+                performed_by_actor,
                 authority_actor: context.authority_actor,
                 causation_ref: context.causation_ref,
                 idempotency_key: context.idempotency_key,
                 payload: serde_json::Value::Null,
                 created_at: context.created_at,
+                executed_by_member_run_id,
             },
             work: work.clone(),
             condition_records: Vec::new(),
@@ -198,7 +211,15 @@ impl HarnessStore {
             decisions: Vec::new(),
             delegation_revisions: Vec::new(),
         };
-        self.append_work_operation_unlocked(&operation)?;
+        self.validate_work_operation_records_unlocked(&operation)?;
+        self.commit_current_work_mutation_unlocked(
+            &mutation_context,
+            WorkEventKind::Created.canonical_transition(),
+            serde_json::Value::Null,
+            &work,
+            vec![serde_json::to_value(&operation)?],
+            Vec::new(),
+        )?;
         Ok(work)
     }
 
@@ -246,7 +267,12 @@ impl HarnessStore {
             )));
         }
 
+        // The source Work's own TeamRun names the scope this CAS reads in; the
+        // delegation composite has no canonical mutation context to take it
+        // from.
+        let source_run = self.require_team_run_unlocked(&delegation.source_work_ref.team_run_id)?;
         let source = self.current_work_unlocked(
+            &ExecutionSpaceId::new(self.current_team_run_execution_space_unlocked(&source_run)?),
             &delegation.source_work_ref.work_id,
             delegation.source_work_version,
         )?;
@@ -430,6 +456,7 @@ impl HarnessStore {
                     "source_work_ref": delegation.source_work_ref,
                 }),
                 created_at: context.created_at.clone(),
+                executed_by_member_run_id: delegation.created_by_member_run_id.clone(),
             },
             work: target_work.clone(),
             condition_records: Vec::new(),
@@ -482,15 +509,27 @@ impl HarnessStore {
     ) -> StoreResult<Work> {
         self.init()?;
         let _lock = self.acquire_write_lock()?;
-        if let Some(existing) = self.idempotent_work_operation_unlocked(
-            &context.idempotency_key,
+        let mutation_context = match self.enter_work_command_unlocked(
             work_id,
+            expected_version,
             WorkEventKind::Assigned,
+            &context,
+            &serde_json::json!({
+                "work_id": work_id,
+                "expected_version": expected_version,
+                "membership_id": membership_id,
+                "execution_space_id": execution_space_id,
+            }),
         )? {
-            return Ok(existing.work);
-        }
+            WorkCommandEntrance::Replayed(work) => return Ok(*work),
+            WorkCommandEntrance::Admitted(mutation_context) => mutation_context,
+        };
         require_host_actor(&context.performed_by_actor)?;
-        let current = self.current_work_unlocked(work_id, expected_version)?;
+        let current = self.current_work_unlocked(
+            &command_space(&mutation_context),
+            work_id,
+            expected_version,
+        )?;
         self.require_exact_team_run_host_actor(&context.performed_by_actor, &current.team_run_id)?;
         if current.active_member_run_id.is_some()
             || (current.owner_member_id.is_some() && current.assignee_membership_id.is_none())
@@ -562,6 +601,7 @@ impl HarnessStore {
             next,
             WorkEventKind::Assigned,
             context,
+            &mutation_context,
             serde_json::json!({
                 "assignee_membership_id": membership.id,
                 "assignee_agent_member_id": membership.agent_member_id,
@@ -585,14 +625,24 @@ impl HarnessStore {
     ) -> StoreResult<Work> {
         self.init()?;
         let _lock = self.acquire_write_lock()?;
-        if let Some(existing) = self.idempotent_work_operation_unlocked(
-            &context.idempotency_key,
+        let mutation_context = match self.enter_work_command_unlocked(
             work_id,
+            expected_version,
             WorkEventKind::Updated,
+            &context,
+            &serde_json::json!({
+                "work_id": work_id,
+                "expected_version": expected_version,
+                "reason": "mixed_version_projection_recovery",
+            }),
         )? {
-            return Ok(existing.work);
-        }
+            WorkCommandEntrance::Replayed(work) => return Ok(*work),
+            WorkCommandEntrance::Admitted(mutation_context) => mutation_context,
+        };
         require_host_actor(&context.performed_by_actor)?;
+        // Deliberately the legacy ledger fold: this verb repairs a sparse row
+        // a stale binary appended to `work_operations.jsonl`, and the sparse
+        // row is the thing it is asked about.
         let raw_current = latest_by_id(self.work_operations_unlocked()?, |operation| {
             operation.work.id.clone()
         })
@@ -608,7 +658,11 @@ impl HarnessStore {
                 raw_current.work.version
             )));
         }
-        let current = self.current_work_unlocked(work_id, expected_version)?;
+        let current = self.current_work_unlocked(
+            &command_space(&mutation_context),
+            work_id,
+            expected_version,
+        )?;
         require_mutable_work(
             &current,
             "a closed Work keeps the provenance it settled with",
@@ -635,6 +689,7 @@ impl HarnessStore {
             next,
             WorkEventKind::Updated,
             context,
+            &mutation_context,
             serde_json::json!({
                 "reason": "mixed_version_projection_recovery",
                 "recovered_fields": recovered_fields,
@@ -655,29 +710,33 @@ impl HarnessStore {
     ) -> StoreResult<Work> {
         self.init()?;
         let _lock = self.acquire_write_lock()?;
-        if let Some(existing) = self.idempotent_work_operation_unlocked(
-            &context.idempotency_key,
+        // The replay fence that used to be hand-written here — same Host, same
+        // Work version, same successor — is now the trust kernel's request
+        // fingerprint over exactly those three facts plus the authenticated
+        // actor the envelope records.
+        let mutation_context = match self.enter_work_command_unlocked(
             work_id,
+            expected_version,
             WorkEventKind::ExecutionRetargeted,
+            &context,
+            &serde_json::json!({
+                "work_id": work_id,
+                "expected_version": expected_version,
+                "successor_team_run_id": successor_team_run_id,
+            }),
         )? {
-            require_host_actor(&context.performed_by_actor)?;
-            if existing.event.performed_by_actor.id != context.performed_by_actor.id
-                || existing.event.expected_version != expected_version
-                || existing
-                    .event
-                    .payload
-                    .get("successor_team_run_id")
-                    .and_then(serde_json::Value::as_str)
-                    != Some(successor_team_run_id)
-            {
-                return Err(StoreError::Conflict(
-                    "IDEMPOTENCY_KEY_REUSED: retarget replay must match Host, Work version and successor".into(),
-                ));
+            WorkCommandEntrance::Replayed(work) => {
+                require_host_actor(&context.performed_by_actor)?;
+                return Ok(*work);
             }
-            return Ok(existing.work);
-        }
+            WorkCommandEntrance::Admitted(mutation_context) => mutation_context,
+        };
         require_host_actor(&context.performed_by_actor)?;
-        let current = self.current_work_unlocked(work_id, expected_version)?;
+        let current = self.current_work_unlocked(
+            &command_space(&mutation_context),
+            work_id,
+            expected_version,
+        )?;
         self.require_exact_team_run_host_actor(&context.performed_by_actor, &current.team_run_id)?;
         if current.active_member_run_id.is_some()
             || (current.owner_member_id.is_some() && current.assignee_membership_id.is_none())
@@ -740,6 +799,7 @@ impl HarnessStore {
             next,
             WorkEventKind::ExecutionRetargeted,
             context,
+            &mutation_context,
             serde_json::json!({
                 "team_id": team_id,
                 "previous_team_run_id": previous_team_run_id,
@@ -758,15 +818,26 @@ impl HarnessStore {
     ) -> StoreResult<Work> {
         self.init()?;
         let _lock = self.acquire_write_lock()?;
-        if let Some(existing) = self.idempotent_work_operation_unlocked(
-            &context.idempotency_key,
+        let mutation_context = match self.enter_work_command_unlocked(
             work_id,
+            expected_version,
             WorkEventKind::Claimed,
+            &context,
+            &serde_json::json!({
+                "work_id": work_id,
+                "expected_version": expected_version,
+                "member_run_id": member_run_id,
+            }),
         )? {
-            return Ok(existing.work);
-        }
+            WorkCommandEntrance::Replayed(work) => return Ok(*work),
+            WorkCommandEntrance::Admitted(mutation_context) => mutation_context,
+        };
         require_member_actor(&context.performed_by_actor, member_run_id)?;
-        let current = self.current_work_unlocked(work_id, expected_version)?;
+        let current = self.current_work_unlocked(
+            &command_space(&mutation_context),
+            work_id,
+            expected_version,
+        )?;
         if current.phase != WorkPhase::Open
             || current.condition != WorkCondition::Normal
             || current.owner_member_id.is_some()
@@ -822,7 +893,13 @@ impl HarnessStore {
         next.resolution = None;
         next.version += 1;
         next.updated_at = context.created_at.clone();
-        self.append_work_transition_unlocked(current, next, WorkEventKind::Claimed, context)
+        self.append_work_transition_unlocked(
+            current,
+            next,
+            WorkEventKind::Claimed,
+            context,
+            &mutation_context,
+        )
     }
 
     pub fn start_work(
@@ -834,15 +911,26 @@ impl HarnessStore {
     ) -> StoreResult<Work> {
         self.init()?;
         let _lock = self.acquire_write_lock()?;
-        if let Some(existing) = self.idempotent_work_operation_unlocked(
-            &context.idempotency_key,
+        let mutation_context = match self.enter_work_command_unlocked(
             work_id,
+            expected_version,
             WorkEventKind::Started,
+            &context,
+            &serde_json::json!({
+                "work_id": work_id,
+                "expected_version": expected_version,
+                "member_run_id": member_run_id,
+            }),
         )? {
-            return Ok(existing.work);
-        }
+            WorkCommandEntrance::Replayed(work) => return Ok(*work),
+            WorkCommandEntrance::Admitted(mutation_context) => mutation_context,
+        };
         require_member_actor(&context.performed_by_actor, member_run_id)?;
-        let current = self.current_work_unlocked(work_id, expected_version)?;
+        let current = self.current_work_unlocked(
+            &command_space(&mutation_context),
+            work_id,
+            expected_version,
+        )?;
         if current.active_member_run_id.is_some()
             || (current.owner_member_id.is_some() && current.assignee_membership_id.is_none())
         {
@@ -909,7 +997,13 @@ impl HarnessStore {
         next.resolution = None;
         next.version += 1;
         next.updated_at = context.created_at.clone();
-        self.append_work_transition_unlocked(current, next, WorkEventKind::Started, context)
+        self.append_work_transition_unlocked(
+            current,
+            next,
+            WorkEventKind::Started,
+            context,
+            &mutation_context,
+        )
     }
 
     pub fn block_work(

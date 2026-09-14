@@ -1,9 +1,11 @@
 use super::*;
 
 mod dependency;
+mod journal;
 mod lifecycle;
 
 pub use dependency::*;
+pub use journal::*;
 pub use lifecycle::*;
 
 /// Agent Team Work is durable responsibility inside one AgentTeam. A
@@ -863,6 +865,16 @@ pub struct WorkEvent {
     #[serde(default)]
     pub payload: serde_json::Value,
     pub created_at: String,
+    /// The MemberRun generation that carried a member-performed transition.
+    ///
+    /// The performer of a member write is the durable AgentMember; a MemberRun
+    /// is evidence of how that write reached the store, not a second identity.
+    /// Legacy rows signed the runtime generation as the performer itself
+    /// (`ProviderRuntimeProjection/<member-run-id>`) and keep that shape
+    /// forever, so every reader of member provenance goes through
+    /// [`WorkEvent::executing_member_run_id`] instead of the performer field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub executed_by_member_run_id: Option<String>,
 }
 
 /// One crash-atomic store row: event, resulting projection, and immutable

@@ -379,10 +379,10 @@ impl HarnessStore {
     /// Read the append-only legacy `work_operations.jsonl` rows for explicit
     /// migration, export, and historical inspection of that one file only.
     ///
-    /// This is HALF a Work's version chain until the W4 writer cutover:
-    /// Submitted, Accepted, Cancelled and DependenciesChanged are written to
-    /// the trust journal and never appear here. Current phase, event, count
-    /// and cursor readers must use `crate::work_history` instead.
+    /// Since W4 nothing writes this file: it holds only the pre-cutover half
+    /// of a Work's version chain, and a store created after the cutover may
+    /// not have it at all. Current phase, event, record, count and cursor
+    /// readers must use `crate::work_history` instead.
     pub fn legacy_work_operation_rows(&self) -> StoreResult<Vec<WorkOperation>> {
         self.work_operations_unlocked()
     }
@@ -566,9 +566,14 @@ impl HarnessStore {
         self.append_work_delegation_transition_unlocked(&current, next, event)
     }
 
+    /// The immutable per-row records a Work transition committed, from every
+    /// journal that holds one. A Work blocked after the W4 writer cutover
+    /// carries its condition record in a `work` trust envelope, and a Work
+    /// blocked before it carries one in `work_operations.jsonl`; a reader that
+    /// saw only one file would answer "no blocker" for half the store.
     pub fn work_condition_records(&self) -> StoreResult<Vec<WorkConditionRecord>> {
         Ok(self
-            .work_operations_unlocked()?
+            .work_record_operations_unlocked()?
             .into_iter()
             .flat_map(|operation| operation.condition_records)
             .collect())
@@ -576,7 +581,7 @@ impl HarnessStore {
 
     pub fn work_reports(&self) -> StoreResult<Vec<WorkReport>> {
         Ok(self
-            .work_operations_unlocked()?
+            .work_record_operations_unlocked()?
             .into_iter()
             .flat_map(|operation| operation.reports)
             .collect())
@@ -584,7 +589,7 @@ impl HarnessStore {
 
     pub fn work_evidence(&self) -> StoreResult<Vec<WorkEvidence>> {
         Ok(self
-            .work_operations_unlocked()?
+            .work_record_operations_unlocked()?
             .into_iter()
             .flat_map(|operation| operation.evidence_records)
             .collect())
@@ -592,7 +597,7 @@ impl HarnessStore {
 
     pub fn work_operational_decisions(&self) -> StoreResult<Vec<WorkOperationalDecision>> {
         Ok(self
-            .work_operations_unlocked()?
+            .work_record_operations_unlocked()?
             .into_iter()
             .flat_map(|operation| operation.decisions)
             .collect())

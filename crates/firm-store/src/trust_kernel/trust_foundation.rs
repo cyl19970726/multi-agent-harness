@@ -38,6 +38,16 @@ fn require_unreserved_idempotency_key(idempotency_key: &str) -> StoreResult<()> 
     Ok(())
 }
 
+/// One canonical Work transition, ready to be staged into a trust write.
+pub(crate) struct CurrentWorkMutation {
+    pub context: MutationContext,
+    pub transition: String,
+    pub request_payload: Value,
+    pub work: Work,
+    pub immutable_side_records: Vec<Value>,
+    pub initial_outbox_records: Vec<Value>,
+}
+
 /// One `work` aggregate transition committed atomically with another
 /// canonical projection that produced it.
 pub(in crate::trust_kernel) struct PairedWorkTransition {
@@ -59,8 +69,9 @@ impl HarnessStore {
 
     /// Commit a mutation to the current canonical Work aggregate while
     /// preserving the single Work revision sequence recovered across legacy
-    /// history and current trust operations. New current mutations must use
-    /// this seam rather than appending another legacy WorkOperation writer.
+    /// history and current trust operations. Since W4 this is the ONLY seam a
+    /// Work transition may be written through: there is no second Work writer
+    /// and no ledger append left to fall back to.
     pub(crate) fn commit_current_work_mutation_unlocked(
         &self,
         context: &MutationContext,
@@ -68,8 +79,69 @@ impl HarnessStore {
         request_payload: Value,
         work: &Work,
         immutable_side_records: Vec<Value>,
-        mut initial_outbox_records: Vec<Value>,
+        initial_outbox_records: Vec<Value>,
     ) -> StoreResult<CanonicalMutationResult<Work>> {
+        let mut committed = self.trust_operation_envelopes_unlocked()?;
+        let result = self.stage_current_work_mutation_unlocked(
+            &mut committed,
+            &CurrentWorkMutation {
+                context: context.clone(),
+                transition: transition.to_string(),
+                request_payload,
+                work: work.clone(),
+                immutable_side_records,
+                initial_outbox_records,
+            },
+        )?;
+        if !result.replayed {
+            self.write_trust_operation_envelopes_atomic_unlocked(&committed)?;
+        }
+        Ok(result)
+    }
+
+    /// Commit several canonical Work transitions in ONE atomic ledger write.
+    ///
+    /// A sweep that plans every write and then applies them is only honest if
+    /// applying them is indivisible: a partial sweep leaves some Work migrated
+    /// and some not, with no single revision to reconcile from. Each entry is
+    /// still fenced and replay-checked on its own aggregate; an entry whose
+    /// exact request already committed contributes its committed projection and
+    /// appends nothing.
+    pub(crate) fn commit_current_work_mutations_atomic_unlocked(
+        &self,
+        mutations: &[CurrentWorkMutation],
+    ) -> StoreResult<Vec<Work>> {
+        let mut committed = self.trust_operation_envelopes_unlocked()?;
+        let mut wrote = false;
+        let mut projections = Vec::new();
+        for mutation in mutations {
+            let result = self.stage_current_work_mutation_unlocked(&mut committed, mutation)?;
+            wrote |= !result.replayed;
+            projections.push(result.projection);
+        }
+        if wrote {
+            self.write_trust_operation_envelopes_atomic_unlocked(&committed)?;
+        }
+        Ok(projections)
+    }
+
+    /// Validate, fence and stage one canonical Work transition onto `committed`
+    /// without writing. Staging against the in-progress vector — not the
+    /// on-disk read — is what lets a batch derive correct `sequence` and
+    /// `store_sequence` values for several transitions at once.
+    fn stage_current_work_mutation_unlocked(
+        &self,
+        committed: &mut Vec<TrustOperationEnvelope>,
+        mutation: &CurrentWorkMutation,
+    ) -> StoreResult<CanonicalMutationResult<Work>> {
+        let CurrentWorkMutation {
+            context,
+            transition,
+            request_payload,
+            work,
+            immutable_side_records,
+            initial_outbox_records,
+        } = mutation;
         work.validate()
             .map_err(|error| StoreError::Conflict(format!("INVALID_WORK_PROJECTION: {error}")))?;
         require_unreserved_idempotency_key(&context.idempotency_key)?;
@@ -82,17 +154,16 @@ impl HarnessStore {
                 Some(work.version),
             ));
         }
-        let existing = self.trust_operation_envelopes_unlocked()?;
         let fingerprint = context
             .request_fingerprint
             .clone()
-            .unwrap_or_else(|| canonical_json_fingerprint(&request_payload));
+            .unwrap_or_else(|| canonical_json_fingerprint(request_payload));
         if let Some(replay) =
             self.replay_current_work_mutation_unlocked(context, &work.id, &fingerprint)?
         {
             return Ok(replay);
         }
-        let previous = existing
+        let previous = committed
             .iter()
             .filter(|envelope| {
                 envelope.execution_space_id == context.execution_space_id
@@ -100,7 +171,7 @@ impl HarnessStore {
                     && envelope.operation.event.aggregate_id == work.id
             })
             .max_by_key(|envelope| envelope.operation.event.sequence);
-        let store_sequence = existing
+        let store_sequence = committed
             .iter()
             .map(|envelope| envelope.operation.event.store_sequence)
             .max()
@@ -115,7 +186,7 @@ impl HarnessStore {
                 .unwrap_or(0)
                 + 1,
             store_sequence,
-            transition: transition.into(),
+            transition: transition.clone(),
             expected_version: context.expected_version,
             resulting_version: work.version,
             performed_by_actor: context.authenticated_actor.clone(),
@@ -123,9 +194,10 @@ impl HarnessStore {
             causation_ref: None,
             idempotency_key: context.idempotency_key.clone(),
             canonical_request_fingerprint: fingerprint,
-            payload: request_payload,
+            payload: request_payload.clone(),
             created_at: now_string(),
         };
+        let mut initial_outbox_records = initial_outbox_records.clone();
         initial_outbox_records.extend(
             self.canonical_terminal_work_outbox_unlocked(work, &event)?
                 .into_iter()
@@ -135,10 +207,9 @@ impl HarnessStore {
         let operation = CanonicalOperation {
             event: event.clone(),
             resulting_projection: serde_json::to_value(work)?,
-            immutable_side_records,
+            immutable_side_records: immutable_side_records.clone(),
             initial_outbox_records,
         };
-        let mut committed = existing;
         committed.push(TrustOperationEnvelope {
             execution_space_id: context.execution_space_id.clone(),
             authenticated_actor_kind: context.authenticated_actor.kind,
@@ -146,7 +217,6 @@ impl HarnessStore {
             command_name: context.command_name.clone(),
             operation,
         });
-        self.write_trust_operation_envelopes_atomic_unlocked(&committed)?;
         Ok(CanonicalMutationResult {
             projection: work.clone(),
             event,

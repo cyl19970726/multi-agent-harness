@@ -84,7 +84,10 @@ impl HarnessStore {
         // synthesis was: a physical store may hold more than one space during
         // recovery or import, and no other scope's acceptance may wake a
         // member here.
-        let events = self.work_journal_events_for_ids_in_space_unlocked(space_id, &work_ids)?;
+        let events = self.work_journal_events_for_ids_in_space_unlocked(
+            &firm_core::ExecutionSpaceId::new(space_id),
+            &work_ids,
+        )?;
         let Some(candidate) = select_acceptance_wake(
             &works,
             &events,

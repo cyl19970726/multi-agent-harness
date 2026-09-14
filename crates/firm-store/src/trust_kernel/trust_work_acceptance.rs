@@ -271,6 +271,10 @@ impl HarnessStore {
             idempotency_key: context.idempotency_key.clone(),
             payload: request_payload.clone(),
             created_at: updated_at.to_string(),
+            // Acceptance is a review decision by a durable identity. Any
+            // MemberRun that carried it is already bound by the acceptance
+            // evidence, not by impersonating the performer.
+            executed_by_member_run_id: None,
         };
         let side_records = std::iter::once(serde_json::to_value(&report)?)
             .chain(
