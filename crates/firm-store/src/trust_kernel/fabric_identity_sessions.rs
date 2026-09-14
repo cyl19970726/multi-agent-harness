@@ -1214,15 +1214,36 @@ impl HarnessStore {
             }),
         )?;
 
-        // The legacy `member_runs.jsonl` row is deliberately NOT written here.
-        // A file append is not transactional with the trust journal in any
-        // useful sense, so co-committing it would reintroduce the partial state
-        // this entrance exists to remove — and would mean growing a second
-        // escape hatch on the shared commit primitive for no gain. That row is
-        // a derived display/export projection: every reader that DECIDES from
-        // the pointer resolves it through `deciding_native_session_unlocked`,
-        // which reads this AgentSession, so a lagging row decides nothing. It
-        // is rebuilt from the authority by `derive_member_runs_jsonl_native_session`.
+        // The two MemberRun ledgers are ONE record in two files, and the Store
+        // already enforces that they move together:
+        // `current_member_lifecycle_validation_mismatch_fields` fails closed
+        // with `MEMBER_RUN_MATERIALIZATION_MISMATCH … differs … for fields
+        // native_session` on the next read if they disagree. Writing only the
+        // canonical half would therefore leave every later admission refusing
+        // this TeamRun — proven by three trust-kernel tests.
+        //
+        // So the legacy row is appended here, under this same lock, exactly as
+        // every other MemberRun writer in this Store does
+        // (`transition_current_team_member_lifecycle`,
+        // `compare_and_advance_member_run_generation`), accepting the
+        // pre-existing `MEMBER_RUN_DUAL_LEDGER_COMMIT_INCOMPLETE` caveat that
+        // a cross-file pair cannot be made atomic without a journal this Store
+        // deliberately does not have.
+        //
+        // What this entrance DOES avoid is a second escape hatch on the shared
+        // trust-commit primitive: the two trust aggregates land in one atomic
+        // rewrite above, and only the established dual-ledger append follows.
+        //
+        // Deliberately unconditional, including on an idempotent replay: the
+        // append is a no-op when the row already agrees, so a replay repairs a
+        // row left stale by an earlier failure here.
+        if paired.is_some() {
+            self.project_native_session_onto_member_runs_jsonl_unlocked(
+                &session.agent_member_id,
+                session.runtime_generation,
+                &native_session_ref,
+            )?;
+        }
         Ok(committed)
     }
 
@@ -1294,6 +1315,38 @@ impl HarnessStore {
             }
         }
         Ok(Some(run))
+    }
+
+    /// Append the authority value onto the legacy runtime row, under the
+    /// caller's lock. Absent rows are skipped: a store with no
+    /// `member_runs.jsonl` row for this member has no pair to keep whole.
+    fn project_native_session_onto_member_runs_jsonl_unlocked(
+        &self,
+        agent_member_id: &str,
+        runtime_generation: u64,
+        native_session_ref: &NativeSessionRef,
+    ) -> StoreResult<()> {
+        let Some(mut row) = latest_by_id(
+            self.read_jsonl::<ProviderRuntimeProjection>("member_runs.jsonl")?,
+            |row| row.id.clone(),
+        )
+        .into_values()
+        .find(|row| {
+            row.agent_member_id == agent_member_id && row.runtime_generation == runtime_generation
+        }) else {
+            return Ok(());
+        };
+        if row.native_session.as_ref() == Some(native_session_ref) {
+            return Ok(());
+        }
+        row.native_session = Some(native_session_ref.clone());
+        self.append_jsonl_unlocked("member_runs.jsonl", &row)
+            .map_err(|error| {
+                StoreError::Conflict(format!(
+                    "NATIVE_SESSION_PROJECTION_INCOMPLETE: agent_member_id={agent_member_id} runtime_generation={runtime_generation}; the authoritative AgentSession binding and the canonical MemberRun are durable, the {} half is not; re-derive it with derive_member_runs_jsonl_native_session (no automatic replay): {error}",
+                    self.root.join("member_runs.jsonl").display(),
+                ))
+            })
     }
 
     /// Rebuild the legacy `member_runs.jsonl` pointer from the authority.
