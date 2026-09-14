@@ -344,7 +344,6 @@ fn one_revision_persisted_twice_with_different_content_is_a_conflict_not_a_tie()
         condition_records: Vec::new(),
         reports: Vec::new(),
         evidence_records: Vec::new(),
-        decisions: Vec::new(),
         delegation_revisions: Vec::new(),
     };
     store

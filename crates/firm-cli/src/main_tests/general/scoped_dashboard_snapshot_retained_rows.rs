@@ -534,7 +534,6 @@ fn retained_projected_rows_remain_bounded_with_200_unrelated_team_runs_and_works
             condition_records: Vec::new(),
             reports: Vec::new(),
             evidence_records: Vec::new(),
-            decisions: Vec::new(),
             delegation_revisions: Vec::new(),
         })
         .expect("seed Work operation exists");

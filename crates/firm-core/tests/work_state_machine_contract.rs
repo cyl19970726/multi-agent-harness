@@ -1,6 +1,6 @@
 use firm_core::{
-    TeamActorKind, TeamActorRef, Validate, Work, WorkCondition, WorkDecisionKind, WorkEvent,
-    WorkOperationalDecision, WorkPhase, WorkReport, WorkResolution,
+    TeamActorKind, TeamActorRef, Validate, Work, WorkCondition, WorkEvent, WorkPhase, WorkReport,
+    WorkResolution,
 };
 use serde_json::json;
 
@@ -117,27 +117,74 @@ fn report_revision_binding_is_exact() {
     assert!(report.validate().is_err(), "unbound report must fail");
 }
 
+/// Every WorkOperation row written before the operational-decision record was
+/// retired (#944) carries `"decisions": []`, and the Wave 5/6 acceptance
+/// evidence checked into `docs/current/operations/evidence/` carries it too.
+/// `WorkOperation` is not `deny_unknown_fields`, so those rows must still fold
+/// -- the retirement removes a writerless record, never the ability to read
+/// history.
 #[test]
-fn accept_decisions_require_an_exact_report() {
-    let mut decision = WorkOperationalDecision {
-        id: "decision-1".into(),
-        work_id: "work-1".into(),
-        expected_work_version: 3,
-        kind: WorkDecisionKind::Accept,
-        decided_by_actor: host_actor(),
-        rationale: "all declared gates passed".into(),
-        work_report_id: Some("report-1".into()),
-        gate_requirement_ref: None,
-        failure_analysis_ref: None,
-        evidence_refs: vec!["gate-evaluation:1".into()],
-        created_at: "unix-ms:3".into(),
-    };
-    decision.validate().expect("report-bound acceptance");
-    decision.work_report_id = None;
+fn legacy_rows_carrying_a_retired_decisions_array_still_decode() {
+    let row = serde_json::json!({
+        "event": {
+            "id": "work-event-1",
+            "team_run_id": "run-1",
+            "work_id": "work-1",
+            "sequence": 1,
+            "kind": "created",
+            "expected_version": 0,
+            "resulting_version": 1,
+            "performed_by_actor": {"kind": "host", "id": "host"},
+            "idempotency_key": "create-1",
+            "payload": null,
+            "created_at": "unix-ms:1",
+        },
+        "work": {
+            "id": "work-1",
+            "team_run_id": "run-1",
+            "accountable_team_id": "team-1",
+            "title": "legacy row",
+            "context_markdown": "",
+            "completion_criteria_markdown": "folds",
+            "phase": "open",
+            "condition": "normal",
+            "claim_mode": "host_assign",
+            "priority": "normal",
+            "created_by_actor": {"kind": "host", "id": "host"},
+            "version": 1,
+            "created_at": "unix-ms:1",
+            "updated_at": "unix-ms:1",
+        },
+        "condition_records": [],
+        "reports": [],
+        "evidence_records": [],
+        // The retired field, in both shapes history holds.
+        "decisions": [{
+            "id": "decision-1",
+            "work_id": "work-1",
+            "expected_work_version": 1,
+            "kind": "accept",
+            "decided_by_actor": {"kind": "host", "id": "host"},
+            "rationale": "all declared gates passed",
+            "work_report_id": "report-1",
+            "evidence_refs": [],
+            "created_at": "unix-ms:2",
+        }],
+        "delegation_revisions": [],
+    });
+    let operation: firm_core::WorkOperation =
+        serde_json::from_value(row).expect("a legacy row with decisions still folds");
+    assert_eq!(operation.work.id, "work-1");
+    operation.work.validate().expect("and its Work is current");
+
+    let mut empty = serde_json::to_value(&operation).expect("re-serialize");
     assert!(
-        decision.validate().is_err(),
-        "accept cannot float free of a report"
+        empty.get("decisions").is_none(),
+        "but nothing writes the field back"
     );
+    empty["decisions"] = serde_json::json!([]);
+    serde_json::from_value::<firm_core::WorkOperation>(empty)
+        .expect("the empty array every current row carries folds too");
 }
 
 fn host_actor() -> TeamActorRef {

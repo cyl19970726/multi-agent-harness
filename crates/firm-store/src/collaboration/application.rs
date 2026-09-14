@@ -546,7 +546,7 @@ impl HarnessStore {
         {
             return Err(collaboration_error(
                 FabricErrorCode::PublicationScopeMismatch,
-                "publication and WorkOperationalDecision do not bind the same target Submitted Work revision",
+                "publication and WorkOperationalDecisionRef do not bind the same target Submitted Work revision",
                 "work_delegation_v1",
                 delegation_id,
                 Some(delegation.revision),

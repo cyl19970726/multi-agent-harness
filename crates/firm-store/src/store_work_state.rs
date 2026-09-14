@@ -235,7 +235,6 @@ impl HarnessStore {
             }),
             Vec::new(),
             Vec::new(),
-            Vec::new(),
         )
     }
 
@@ -567,7 +566,6 @@ impl HarnessStore {
             payload,
             condition_records,
             reports,
-            Vec::new(),
         )
     }
 
@@ -635,7 +633,6 @@ impl HarnessStore {
             payload,
             condition_records,
             reports,
-            Vec::new(),
         )
     }
 
@@ -763,7 +760,6 @@ impl HarnessStore {
             payload,
             Vec::new(),
             Vec::new(),
-            Vec::new(),
         )
     }
 
@@ -788,7 +784,6 @@ impl HarnessStore {
         payload: serde_json::Value,
         condition_records: Vec<WorkConditionRecord>,
         reports: Vec<WorkReport>,
-        decisions: Vec<WorkOperationalDecision>,
     ) -> StoreResult<Work> {
         require_valid_work_transition(&current, &next, kind)?;
         self.ensure_work_event_id_available_unlocked(&context.event_id)?;
@@ -850,7 +845,6 @@ impl HarnessStore {
             condition_records,
             reports,
             evidence_records,
-            decisions,
             delegation_revisions,
         };
         self.validate_work_operation_records_unlocked(&operation)?;

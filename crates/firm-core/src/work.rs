@@ -130,35 +130,6 @@ pub struct WorkEvidence {
     pub created_at: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum WorkDecisionKind {
-    Accept,
-    Cancel,
-}
-
-/// Immutable Host/Operator decision. Store operations validate authority and
-/// apply the resulting Work transition atomically with this record.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct WorkOperationalDecision {
-    pub id: String,
-    pub work_id: String,
-    pub expected_work_version: u64,
-    pub kind: WorkDecisionKind,
-    pub decided_by_actor: TeamActorRef,
-    pub rationale: String,
-    #[serde(default)]
-    pub work_report_id: Option<String>,
-    #[serde(default)]
-    pub gate_requirement_ref: Option<String>,
-    #[serde(default)]
-    pub failure_analysis_ref: Option<String>,
-    #[serde(default)]
-    pub evidence_refs: Vec<String>,
-    pub created_at: String,
-}
-
 impl Validate for WorkConditionRecord {
     fn validate(&self) -> Result<(), ValidationError> {
         require_non_empty(&self.id, "WorkConditionRecord.id")?;
@@ -257,56 +228,6 @@ impl Validate for WorkEvidence {
             });
         }
         Ok(())
-    }
-}
-
-impl Validate for WorkOperationalDecision {
-    fn validate(&self) -> Result<(), ValidationError> {
-        require_non_empty(&self.id, "WorkOperationalDecision.id")?;
-        require_non_empty(&self.work_id, "WorkOperationalDecision.work_id")?;
-        require_non_empty(
-            &self.decided_by_actor.id,
-            "WorkOperationalDecision.decided_by_actor.id",
-        )?;
-        require_non_empty(&self.rationale, "WorkOperationalDecision.rationale")?;
-        require_non_empty(&self.created_at, "WorkOperationalDecision.created_at")?;
-        if self.expected_work_version == 0 {
-            return Err(ValidationError::Invalid {
-                field: "WorkOperationalDecision.expected_work_version",
-                reason: "must be greater than zero",
-            });
-        }
-        match self.kind {
-            WorkDecisionKind::Accept if self.work_report_id.is_none() => {
-                return Err(ValidationError::Required {
-                    field: "WorkOperationalDecision.work_report_id",
-                });
-            }
-            _ => {}
-        }
-        for (value, field) in [
-            (
-                self.work_report_id.as_deref(),
-                "WorkOperationalDecision.work_report_id",
-            ),
-            (
-                self.gate_requirement_ref.as_deref(),
-                "WorkOperationalDecision.gate_requirement_ref",
-            ),
-            (
-                self.failure_analysis_ref.as_deref(),
-                "WorkOperationalDecision.failure_analysis_ref",
-            ),
-        ] {
-            if let Some(value) = value {
-                require_non_empty(value, field)?;
-            }
-        }
-        validate_non_empty_unique_strings(
-            &self.evidence_refs,
-            "WorkOperationalDecision.evidence_refs",
-            true,
-        )
     }
 }
 
@@ -953,8 +874,6 @@ pub struct WorkOperation {
     pub reports: Vec<WorkReport>,
     #[serde(default)]
     pub evidence_records: Vec<WorkEvidence>,
-    #[serde(default)]
-    pub decisions: Vec<WorkOperationalDecision>,
     /// Delegation projection transitions caused by this exact Work mutation.
     /// Keeping them in the same row closes the crash gap between target Work
     /// state and its cross-Team responsibility projection.

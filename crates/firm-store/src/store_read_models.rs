@@ -595,14 +595,6 @@ impl HarnessStore {
             .collect())
     }
 
-    pub fn work_operational_decisions(&self) -> StoreResult<Vec<WorkOperationalDecision>> {
-        Ok(self
-            .work_record_operations_unlocked()?
-            .iter()
-            .flat_map(|operation| operation.decisions.iter().cloned())
-            .collect())
-    }
-
     /// Every Work event in the store, from both journals, in the one
     /// deterministic total order `crate::work_history` defines.
     pub fn work_events(&self) -> StoreResult<Vec<WorkEvent>> {

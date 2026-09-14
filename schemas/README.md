@@ -41,7 +41,6 @@ exportable; no writer path exists on any surface.
 | Gate evaluation | [gate-evaluation.schema.json](gate-evaluation.schema.json) |
 | Gate waiver | [gate-waiver.schema.json](gate-waiver.schema.json) |
 | Agent Team Work evidence | [work-evidence.schema.json](work-evidence.schema.json) |
-| Agent Team Work operational decision | [work-operational-decision.schema.json](work-operational-decision.schema.json) |
 | Team Supervisor lease | [team-supervisor-lease.schema.json](team-supervisor-lease.schema.json) |
 | Member action | [member-action.schema.json](member-action.schema.json) |
 | Delegation run | [delegation-run.schema.json](delegation-run.schema.json) |

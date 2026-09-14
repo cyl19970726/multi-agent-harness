@@ -209,7 +209,6 @@ impl HarnessStore {
             condition_records: Vec::new(),
             reports: Vec::new(),
             evidence_records: Vec::new(),
-            decisions: Vec::new(),
             delegation_revisions: Vec::new(),
         };
         self.validate_work_operation_records_unlocked(&operation)?;
@@ -463,7 +462,6 @@ impl HarnessStore {
             condition_records: Vec::new(),
             reports: Vec::new(),
             evidence_records: Vec::new(),
-            decisions: Vec::new(),
             delegation_revisions: Vec::new(),
         };
         let event = WorkDelegationEvent {
