@@ -84,10 +84,10 @@ raw provider event.
 `NativeSessionRef` is stored in three places today:
 
 - canonical `MemberRun.native_session`
-  (`crates/firm-core/src/agentfirm_api/identity_session.rs:543`);
-- `AgentSession.native_session_ref` (same file, `:309`);
+  (`crates/firm-core/src/agentfirm_api/identity_session.rs:575`);
+- `AgentSession.native_session_ref` (same file, `:310`);
 - the legacy `member_runs.jsonl` `ProviderRuntimeProjection.native_session`
-  (`crates/firm-core/src/team_runtime.rs:901-902`).
+  (`crates/firm-core/src/team_runtime.rs:878`).
 
 The canonical `MemberRun.native_session` is the expectation both fences compare
 against, and they live in different layers:
@@ -97,12 +97,12 @@ against, and they live in different layers:
   with `MEMBER_ADMISSION_NATIVE_IDENTITY_MISMATCH` when the identity fields
   disagree, or `MEMBER_ADMISSION_NATIVE_PROJECTION_MISMATCH` when the full
   observation differs. Its own code calls one side `canonical` and the other
-  the `runtime projection` (`crates/firm-store/src/store_team_admission.rs:14-47`).
+  the `runtime projection` (`crates/firm-store/src/store_team_admission.rs:14-41`).
 - **NodeDaemon adoption**, in `firm-cli` rather than the Store, validates
   `AgentSession.native_session_ref` against a ref derived from the MemberRun and
   refuses with `AGENT_SESSION_RECOVERY_REQUIRED: <session> does not match
   MemberRun <member> native-session truth`
-  (`crates/firm-cli/src/main_modules/member_orchestration.rs:158-172`).
+  (`crates/firm-cli/src/main_modules/member_orchestration.rs:158-167`).
 
 Neither fence silently picks a winner; both fail closed. Neither is a single
 Store-level check over all three copies.
@@ -111,16 +111,39 @@ Fields:
 
 | Field | Meaning |
 | --- | --- |
-| `provider` | Codex, Kimi, Claude, or adapter id |
-| `execution_mode` | `codex_exec`, `codex_app_server`, `kimi_acp`, etc. |
+| `provider` | Codex, Kimi, Claude, DeepSeek Harness, Pi, or adapter id |
+| `execution_mode` | `codex_app_server`, `kimi_acp`, `claude_agent_sdk`, `deepseek_sdk`, `pi_rpc` |
 | `native_session_id` | Provider-owned thread/session id |
 | `native_locator_kind` | Adapter resolver strategy; not necessarily a public absolute path |
 | `provider_version` | Version that created/last opened the session |
 | `adapter_contract_version` | Reader/resume contract reviewed for that version |
-| `availability` | `available | stale | missing | incompatible | unknown` — `unknown` is a real wire value, and the legacy `team_runtime` enum uses it as its serde default when the field is absent (`crates/firm-core/src/agentfirm_api/identity_session.rs:66-74`, `crates/firm-core/src/team_runtime.rs:452-470`) |
+| `availability` | `available \| stale \| missing \| incompatible \| unknown` — `unknown` is a real wire value. There is ONE enum (`crates/firm-core/src/agentfirm_api/identity_session.rs:67-75`); `#[serde(default)]` on the single type makes an absent field decode as `unknown` on every reader, including a legacy `member_runs.jsonl` row |
 | `supports_resume` | Verified for this mode and version, not inferred from brand |
 | `last_verified_at` | Latest successful probe |
 | `parent_native_session_id` | Optional resume/fork lineage |
+
+`native_locator_kind` is part of identity comparison and of the persisted-session
+read fingerprint, so it is identity rather than a label. One table in
+`harness_core::native_locator` names the kind for every reviewed
+(provider, execution_mode) pair, each adapter returns its own entry, and every
+seeding path reads the same table — a seeded pointer therefore carries the kind
+its adapter will produce. An unregistered pair fails closed instead of taking a
+placeholder kind:
+
+| Provider / mode | `native_locator_kind` |
+| --- | --- |
+| `codex` / `codex_app_server` | `codex_rollout` |
+| `codex` / `node_daemon_app_server` | `codex_thread` |
+| `kimi` / `kimi_acp` | `kimi_code_session` |
+| `claude` / `claude_agent_sdk` | `claude_project_session` |
+| `deepseek_harness` / `deepseek_sdk` | `deepseek_harness_session` |
+| `pi` / `pi_rpc` | `pi_session` |
+
+Two comparisons exist and no more: `same_identity_as` for exact provider-native
+identity, and `native_session_admits_resume_seed` for the one named asymmetry
+where a version-less resume seed is admitted against a version-carrying
+observation. Availability, resumability and verification timestamps are
+observations and never split one conversation into two identities.
 
 Harness does not add resolver credentials, bootstrap tokens, raw process
 environment, or hidden filesystem locators to the response. It also does not
