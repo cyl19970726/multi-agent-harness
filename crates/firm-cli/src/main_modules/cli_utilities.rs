@@ -225,7 +225,7 @@ pub(super) const CHEATSHEET_WORK: &str = r#"work create --team-run-id <id> --tit
   [--claim-mode team_claim --eligible-member-id <id>]
   [--priority low|normal|high|urgent] [--context <md>]
   [--prerequisite-work-id <id>] [--idempotency-key <key>]
-  [--github-issue owner/repo#N]
+  [--github-issue owner/repo#N] [--github-pr owner/repo#N]
 work replace-dependencies --team-id <id> --work-id <id> --expected-version <n>
   [--prerequisite-work-id <id>] [--idempotency-key <key>]
 work list --team-run-id <id> [--brief] [--since <cursor>]
@@ -265,12 +265,13 @@ work list --team-run-id <id> [--brief] [--since <cursor>]
 work show --work-id <id>
 work assign --work-id <id> --expected-version <n> --membership-id <id>
   (canonical TeamMembership responsibility; runtime ids are not Work authority)
+work accept --work-id <id> --expected-version <n>
+work request-changes --work-id <id> --expected-version <n> --reason <text>
+  (Host surface; Members use the `member work` verbs below.)
 member work submit --work-id <id> --expected-version <n> --result-summary <text>
   --candidate-revision <full 40-hex sha> (commit produced; the summary quotes it)
   or --report-only (no commit); mutually exclusive, never fabricated.
-  (Supervisor-bound; the local `work submit` member verb is retired.)
-work accept --work-id <id> --expected-version <n>
-work request-changes --work-id <id> --expected-version <n> --reason <text>
+  (Supervisor-bound; local `work submit` is retired.)
 
 team create --name <text> --description <text> --host-agent-id <id>
   --node-id <uuid> [--member <id>] [--legacy-mission-id <id>]
