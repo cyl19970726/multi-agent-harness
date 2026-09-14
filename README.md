@@ -33,7 +33,8 @@ active development surface:
 - one durable AgentTeam per flat team, placed immutably on one machine-scoped
   NodeDaemon, with TeamMembership as roster authority;
 - TeamRun/MemberRun projections over provider-native sessions; one execution
-  driver per member (`host_driven` or `provider_driven`); explicit Host
+  driver per member (`host_driven`, or `user_driven` for a declared external
+  interactive Host); explicit Host
   create/message/interrupt/close/reopen/retire member control;
 - durable Work with WorkOperation history, versioned delivery, submission,
   review, and Host acceptance;

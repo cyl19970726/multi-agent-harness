@@ -127,12 +127,15 @@ pub enum RuntimeActivity {
 
 /// The one party allowed to schedule the next top-level execution cycle.
 /// NodeDaemon remains the Runtime Supervisor in every variant.
+///
+/// ADR 0067 retired `provider_driven`: no row ever carried it, so the wire
+/// value is not reserved and an unknown value fails decoding rather than
+/// silently becoming a managed driver.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MemberExecutionDriver {
     #[default]
     HostDriven,
-    ProviderDriven,
     /// The user drives an already-open external interactive runtime which
     /// Harness neither spawned nor owns.
     UserDriven,
@@ -152,13 +155,6 @@ pub enum RuntimeDriverRef {
         team_run_id: String,
         team_supervisor_id: String,
         team_supervisor_generation: u64,
-    },
-    ProviderContinuation {
-        provider: String,
-        continuation_id: String,
-        #[serde(default)]
-        continuation_revision: Option<u64>,
-        runtime_generation: u64,
     },
     #[default]
     Unknown,
@@ -193,7 +189,12 @@ pub enum NativeContinuationPhase {
 /// Process-local continuation authorization. `Armed` is valid only for the
 /// exact runtime and execution-driver generations carried by the variant.
 /// Old records deserialize to `Disarmed`, so resume never silently inherits
-/// provider-driven execution authority.
+/// provider-native execution authority.
+///
+/// ADR 0067 retired the control plane that could arm this; no writer produces
+/// `Armed` any more. The variant and every reader stay because they are the
+/// fail-closed proof that a lane is drained: an armed continuation still
+/// refuses host drive, reattach, Close and user-driven admission.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
 pub enum NativeContinuationActivation {

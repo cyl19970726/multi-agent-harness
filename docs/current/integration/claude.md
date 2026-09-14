@@ -192,13 +192,12 @@ the condition after each cycle, one goal may be active per session, and the
 goal is restored when that session resumes. `/goal` can inspect status and
 `/goal clear` ends the loop. Goal activation does not widen tool permissions.
 
-This is a provider-native capability, not yet an adapter-wired Team contract.
-The current `claude_agent_sdk` integration therefore remains `host_driven`.
-Harness must not activate `/goal` and also feed the AsyncIterable mailbox as a
-competing top-level driver for the same Work. Before promotion to
-`provider_driven`, a mode/version canary must prove exclusive cycle ownership,
-mail injection or queuing, interruption, resume, terminal reason, and
-permission continuity.
+This is a member-internal provider capability, not an adapter-wired Team
+contract, and ADR 0067 retired the promotion path that once existed: the
+`claude_agent_sdk` integration is `host_driven` and there is no
+`provider_driven` to promote it to. Harness must not activate `/goal` and also
+feed the AsyncIterable mailbox as a competing top-level driver for the same
+Work.
 
 The durable Work, WorkEvent/WorkDelivery, Workspace, submission, and Host
 acceptance remain Harness-owned regardless of the selected driver. See

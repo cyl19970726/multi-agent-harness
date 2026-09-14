@@ -612,7 +612,7 @@
         "AgentProvider interface",
         "Work and Message delivery policy",
         "event reducer contract",
-        "continuation controller interface"
+        "control-intent to durable-command mapping"
       ],
       "dependsOn": [
         "docs/current/product/prd.md",
@@ -637,7 +637,7 @@
         "npx pnpm@9.15.4 check:dashboard",
         "harness governance check"
       ],
-      "reorgTrigger": "Provider-neutral runtime, execution-driver selection, native continuation, message delivery, queue policy, or provider interface changes.",
+      "reorgTrigger": "Provider-neutral runtime, execution-driver selection, the control-intent set or the frozen RuntimeCommand kinds, message delivery, queue policy, or provider interface changes.",
       "authorityClass": "implementation_reference",
       "implementationState": "partial",
       "truthRefs": [
@@ -1376,7 +1376,7 @@
         "agent integration model",
         "three pillars (base configuration, environment, platform adaptation)",
         "provider-neutral launch spec",
-        "new-provider continuation capability declaration",
+        "new-provider capability declaration",
         "skill contract / MCP / provider capability declaration",
         "new-provider integration checklist"
       ],
@@ -1401,7 +1401,7 @@
         "npx pnpm@9.15.4 check",
         "harness governance check"
       ],
-      "reorgTrigger": "The three pillars, execution-driver/continuation declarations, the neutral launch-spec field set, the skill/MCP/capability-declaration contracts, or the new-provider integration checklist change.",
+      "reorgTrigger": "The three pillars, the execution-driver set, the neutral launch-spec field set, the skill/MCP/capability-declaration contracts, or the new-provider integration checklist change.",
       "authorityClass": "implementation_reference",
       "implementationState": "partial",
       "truthRefs": [
@@ -2680,14 +2680,15 @@
         "provider-neutral Agent Team Member continuation model",
         "Member execution-driver and completion-policy separation",
         "single top-level execution lease per MemberRun native session and writable Workspace",
-        "native continuation capability and projection vocabulary"
+        "read-only native continuation projection vocabulary and the retained activation proof"
       ],
       "dependsOn": [
         "docs/current/architecture/agent-runtime.md",
         "docs/current/architecture/agent-integration-model.md",
         "docs/decisions/0032-provider-native-session-is-execution-truth.md",
         "docs/decisions/0039-ordinary-member-planning-and-durable-mailbox-delivery.md",
-        "docs/decisions/0041-provider-neutral-member-continuation.md"
+        "docs/decisions/0041-provider-neutral-member-continuation.md",
+        "docs/decisions/0067-retire-the-native-continuation-control-plane.md"
       ],
       "machineConsumers": [
         "check-doc-links",
@@ -2697,13 +2698,17 @@
       "lastVerifiedWith": [
         "harness governance check"
       ],
-      "reorgTrigger": "Execution-driver ownership, completion policy, native continuation capabilities, permission continuity, or Member acceptance semantics change.",
+      "reorgTrigger": "Execution-driver ownership, completion policy, the retained continuation projection, permission continuity, or Member acceptance semantics change.",
       "authorityClass": "canonical_contract",
       "implementationState": "design_only",
       "truthRefs": [
         {
           "kind": "decision",
           "ref": "docs/decisions/0041-provider-neutral-member-continuation.md"
+        },
+        {
+          "kind": "decision",
+          "ref": "docs/decisions/0067-retire-the-native-continuation-control-plane.md"
         }
       ]
     },
@@ -2757,7 +2762,7 @@
       "canonicalFor": [
         "decision to separate Assignment from provider-native continuation",
         "decision to prohibit dual top-level execution drivers",
-        "decision that native continuation is optional and provider-specific"
+        "decision that native continuation is optional and provider-specific (control plane retired by ADR 0067)"
       ],
       "dependsOn": [
         "docs/current/architecture/member-continuation-model.md",

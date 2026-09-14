@@ -10,7 +10,10 @@ const FROZEN_RUNTIME_COMMAND_KINDS: &[RuntimeCommandKind] = &[
     RuntimeCommandKind::RetireMember,
     RuntimeCommandKind::DeleteNativeSession,
     RuntimeCommandKind::CancelPendingInput,
+    RuntimeCommandKind::InspectContinuation,
     RuntimeCommandKind::ActivateContinuation,
+    RuntimeCommandKind::InhibitContinuation,
+    RuntimeCommandKind::ResumeContinuation,
     RuntimeCommandKind::ReplaceContinuationCondition,
     RuntimeCommandKind::ClearContinuation,
     RuntimeCommandKind::StopBackgroundTask,
@@ -489,8 +492,7 @@ impl HarnessStore {
                 RuntimeCommandKind::ReleaseRuntime
                 | RuntimeCommandKind::CloseMember
                 | RuntimeCommandKind::QuiesceExecutionLane
-                | RuntimeCommandKind::DrainRuntime
-                | RuntimeCommandKind::InhibitContinuation => {
+                | RuntimeCommandKind::DrainRuntime => {
                     if !matches!(
                         session.lifecycle,
                         AgentSessionStatus::Cold
@@ -531,6 +533,7 @@ impl HarnessStore {
                 | RuntimeCommandKind::DeleteNativeSession
                 | RuntimeCommandKind::InspectContinuation
                 | RuntimeCommandKind::ActivateContinuation
+                | RuntimeCommandKind::InhibitContinuation
                 | RuntimeCommandKind::ResumeContinuation
                 | RuntimeCommandKind::ReplaceContinuationCondition
                 | RuntimeCommandKind::ClearContinuation

@@ -114,22 +114,13 @@ fn pi_capability_bindings_are_honest() {
             );
         }
     }
-    // Continuation intents are honestly Unsupported: Pi has no native Goal.
-    for capability in [
-        "inspect_continuation",
-        "inhibit_continuation",
-        "resume_continuation",
-    ] {
-        let binding = bindings
+    // The retired continuation control plane must not reappear as a binding.
+    assert!(
+        !bindings
             .iter()
-            .find(|binding| binding.capability == capability)
-            .unwrap();
-        assert_eq!(
-            binding.status,
-            CapabilityStatus::Unsupported,
-            "{capability}"
-        );
-    }
+            .any(|binding| binding.capability.contains("continuation")),
+        "the NativeContinuation control plane is retired (ADR 0067)"
+    );
     // reconcile_effect was the static-matrix overclaim; the executable
     // report must not claim it.
     let reconcile = bindings
@@ -166,7 +157,6 @@ fn kimi_capability_bindings_match_the_reviewed_acp_surface() {
     for capability in [
         "inject_current_cycle",
         "queue_at_native_boundary",
-        "inspect_continuation",
         "reconcile_effect",
     ] {
         let binding = bindings

@@ -5,7 +5,10 @@ const FROZEN_WIRE_NAMES: &[&str] = &[
     "retire_member",
     "delete_native_session",
     "cancel_pending_input",
+    "inspect_continuation",
     "activate_continuation",
+    "inhibit_continuation",
+    "resume_continuation",
     "replace_continuation_condition",
     "clear_continuation",
     "stop_background_task",
@@ -76,12 +79,9 @@ fn control_lifecycle_and_observation_kinds_keep_existing_admission_rules() {
         "inject_current_cycle",
         "queue_at_native_boundary",
         "interrupt_current_cycle",
-        "inhibit_continuation",
-        "resume_continuation",
         "quiesce_execution_lane",
         "drain_runtime",
         "reattach_live_runtime",
-        "inspect_continuation",
     ] {
         let (store, root) = fabric_store();
         let kind = serde_json::from_value(serde_json::json!(name)).unwrap();

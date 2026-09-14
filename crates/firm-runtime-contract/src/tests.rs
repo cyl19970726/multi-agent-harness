@@ -54,15 +54,7 @@ fn full_bindings() -> Vec<ProviderCapabilityBinding> {
             "inject_current_cycle" | "queue_at_native_boundary" | "interrupt_current_cycle" => {
                 vec!["observe".to_string()]
             }
-            "inhibit_continuation" | "resume_continuation" => {
-                vec!["inspect_continuation".to_string()]
-            }
-            "quiesce" => vec![
-                "interrupt_current_cycle".to_string(),
-                "observe".to_string(),
-                "inspect_continuation".to_string(),
-                "inhibit_continuation".to_string(),
-            ],
+            "quiesce" => vec!["interrupt_current_cycle".to_string(), "observe".to_string()],
             "release" => vec!["quiesce".to_string()],
             _ => Vec::new(),
         };
@@ -284,11 +276,6 @@ struct CycleBridge {
 struct ObservationBridge {
     calls: usize,
 }
-#[derive(Default)]
-struct ContinuationBridge {
-    calls: usize,
-}
-
 /// A composable native-bridge shape used only for contract conformance.
 /// It is not a production provider registration.
 struct DeepSeekShapedAdapter {
@@ -297,7 +284,6 @@ struct DeepSeekShapedAdapter {
     session_bridge: SessionBridge,
     cycle_bridge: CycleBridge,
     observation_bridge: ObservationBridge,
-    continuation_bridge: ContinuationBridge,
     lifecycle: CompositionLifecycle,
     quiesce_conditions: [RuntimePostconditionStatus; 7],
     quiesce_log: Vec<QuiesceStep>,
@@ -313,7 +299,6 @@ impl DeepSeekShapedAdapter {
             session_bridge: SessionBridge::default(),
             cycle_bridge: CycleBridge::default(),
             observation_bridge: ObservationBridge::default(),
-            continuation_bridge: ContinuationBridge::default(),
             lifecycle: CompositionLifecycle::new("composition-a", "capabilities-a"),
             quiesce_conditions: [RuntimePostconditionStatus::Satisfied; 7],
             quiesce_log: Vec::new(),
@@ -365,12 +350,7 @@ impl RuntimeAdapter for DeepSeekShapedAdapter {
         request: ControlRequest,
     ) -> Result<EffectReceipt, RuntimeContractError> {
         let admission = self.preflight(fence, request.intent.capability(), &[])?;
-        request.intent.validate(&self.session)?;
-        match request.intent {
-            ControlIntent::InhibitContinuation { .. }
-            | ControlIntent::ResumeContinuation { .. } => self.continuation_bridge.calls += 1,
-            _ => self.cycle_bridge.calls += 1,
-        }
+        self.cycle_bridge.calls += 1;
         self.lifecycle.mark_effect_started();
         Ok(EffectReceipt {
             effect_id: request.effect_id,
@@ -546,9 +526,9 @@ fn durable_continuation_definition_does_not_follow_activation() {
 }
 
 #[test]
-fn stale_revision_driver_composition_and_capability_have_zero_effect() {
+fn stale_generation_driver_composition_and_capability_have_zero_effect() {
     enum Case {
-        Revision,
+        RuntimeGeneration,
         MemberRun,
         MemberGeneration,
         Driver,
@@ -556,7 +536,7 @@ fn stale_revision_driver_composition_and_capability_have_zero_effect() {
         Capability,
     }
     for case in [
-        Case::Revision,
+        Case::RuntimeGeneration,
         Case::MemberRun,
         Case::MemberGeneration,
         Case::Driver,
@@ -566,9 +546,8 @@ fn stale_revision_driver_composition_and_capability_have_zero_effect() {
         let dispose_count = Rc::new(Cell::new(0));
         let mut adapter = DeepSeekShapedAdapter::new(full_bindings(), dispose_count);
         let mut durable_binding = binding(&adapter.session);
-        let mut expected = adapter.session.control_state.continuation.clone();
         match case {
-            Case::Revision => expected.definition.revision = Some(6),
+            Case::RuntimeGeneration => durable_binding.target_runtime_generation = Some(7),
             Case::MemberRun => {
                 durable_binding.target_member_run_id = Some("member-run-stale".to_string())
             }
@@ -583,23 +562,17 @@ fn stale_revision_driver_composition_and_capability_have_zero_effect() {
         }
         let request = ControlRequest {
             timeouts: CycleTimeouts::default(),
-            effect_id: "continuation-effect".to_string(),
-            intent: ControlIntent::ResumeContinuation { expected },
+            effect_id: "interrupt-effect".to_string(),
+            intent: ControlIntent::Interrupt,
         };
-        match case {
-            Case::Revision => assert!(adapter
-                .execute_control(fence_view(&durable_binding), request)
-                .is_err()),
-            Case::MemberRun
-            | Case::MemberGeneration
-            | Case::Driver
-            | Case::Composition
-            | Case::Capability => {
-                assert!(try_fence_view(&durable_binding).is_err())
-            }
-        }
-        assert_eq!(adapter.cycle_bridge.calls, 0);
-        assert_eq!(adapter.continuation_bridge.calls, 0);
+        assert!(
+            try_fence_view(&durable_binding).is_err(),
+            "a stale durable binding must never mint drive authority"
+        );
+        assert!(adapter
+            .execute_control(fence_view(&binding(&adapter.session)), request)
+            .is_ok());
+        assert_eq!(adapter.cycle_bridge.calls, 1);
     }
 }
 
@@ -700,12 +673,6 @@ fn composable_shim_exercises_the_complete_operational_contract() {
             input: "follow up".to_string(),
         },
         ControlIntent::Interrupt,
-        ControlIntent::InhibitContinuation {
-            expected: adapter.session.control_state.continuation.clone(),
-        },
-        ControlIntent::ResumeContinuation {
-            expected: adapter.session.control_state.continuation.clone(),
-        },
     ];
     for (index, intent) in controls.into_iter().enumerate() {
         adapter
@@ -732,7 +699,6 @@ fn composable_shim_exercises_the_complete_operational_contract() {
 
     assert_eq!(adapter.session_bridge.calls, 2);
     assert_eq!(adapter.cycle_bridge.calls, 3);
-    assert_eq!(adapter.continuation_bridge.calls, 2);
     assert_eq!(adapter.observation_bridge.calls, 3);
     assert_eq!(dispose_count.get(), 1);
 }
@@ -740,7 +706,6 @@ fn composable_shim_exercises_the_complete_operational_contract() {
 #[test]
 fn control_intents_bind_exact_durable_kinds_without_queue_or_lifecycle_fallback() {
     use harness_core::agentfirm_api::RuntimeCommandKind as Kind;
-    let expected = NativeContinuationProjection::default();
     let cases = [
         (
             ControlIntent::StartCycle {
@@ -767,18 +732,6 @@ fn control_intents_bind_exact_durable_kinds_without_queue_or_lifecycle_fallback(
             ControlIntent::Interrupt,
             Kind::InterruptCurrentCycle,
             SemanticCapability::Interrupt,
-        ),
-        (
-            ControlIntent::InhibitContinuation {
-                expected: expected.clone(),
-            },
-            Kind::InhibitContinuation,
-            SemanticCapability::InhibitContinuation,
-        ),
-        (
-            ControlIntent::ResumeContinuation { expected },
-            Kind::ResumeContinuation,
-            SemanticCapability::ResumeContinuation,
         ),
     ];
     for (intent, kind, capability) in cases {

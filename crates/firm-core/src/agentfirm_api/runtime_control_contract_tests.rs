@@ -74,9 +74,15 @@ fn legacy_runtime_command_keeps_phase_and_postcondition_unknown() {
 #[test]
 fn checked_in_runtime_control_fixtures_match_rust_serde() {
     let _: AgentSession = serde_json::from_str(include_str!(
-        "../../../../schemas/fixtures/agent-session/valid/provider-driven-armed.json"
+        "../../../../schemas/fixtures/agent-session/valid/host-driven-disarmed-continuation.json"
     ))
     .expect("AgentSession fixture");
+    // ADR 0067: the retired provider-driven shape must fail closed, not decode
+    // into a managed driver.
+    serde_json::from_str::<AgentSession>(include_str!(
+        "../../../../schemas/fixtures/agent-session/invalid/retired-provider-driven.json"
+    ))
+    .expect_err("the retired provider_driven execution driver must not decode");
     let _: RuntimeCommandRecord = serde_json::from_str(include_str!(
         "../../../../schemas/fixtures/runtime-command-record/valid/exact-start-cycle.json"
     ))

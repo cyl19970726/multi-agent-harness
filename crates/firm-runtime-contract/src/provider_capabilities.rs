@@ -1,9 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use harness_core::agentfirm_api::{
-    AgentSession, MemberCoordinationStatus, MemberRun, NativeContinuationActivation,
-    NativeContinuationProjection, RuntimeCommandBinding, RuntimeCommandPhase, RuntimeCommandRecord,
-    RuntimeDriverRef, RuntimeEffectCertainty,
+    AgentSession, MemberCoordinationStatus, MemberRun, RuntimeCommandBinding, RuntimeCommandPhase,
+    RuntimeCommandRecord, RuntimeDriverRef, RuntimeEffectCertainty,
 };
 use harness_core::{
     NodeDaemonLease, NodeDaemonLeaseStatus, ProviderBindingAdmission, ProviderCapabilityBinding,
@@ -52,15 +51,12 @@ pub enum SemanticCapability {
     Observe,
     InspectEffect,
     Reconcile,
-    InspectContinuation,
-    InhibitContinuation,
-    ResumeContinuation,
     Quiesce,
     Release,
 }
 
 impl SemanticCapability {
-    pub const ALL: [Self; 14] = [
+    pub const ALL: [Self; 11] = [
         Self::OpenOrResume,
         Self::StartCycle,
         Self::InjectCurrentCycle,
@@ -70,9 +66,6 @@ impl SemanticCapability {
         Self::Observe,
         Self::InspectEffect,
         Self::Reconcile,
-        Self::InspectContinuation,
-        Self::InhibitContinuation,
-        Self::ResumeContinuation,
         Self::Quiesce,
         Self::Release,
     ];
@@ -88,9 +81,6 @@ impl SemanticCapability {
             Self::Observe => "observe",
             Self::InspectEffect => "inspect_effect",
             Self::Reconcile => "reconcile_effect",
-            Self::InspectContinuation => "inspect_continuation",
-            Self::InhibitContinuation => "inhibit_continuation",
-            Self::ResumeContinuation => "resume_continuation",
             Self::Quiesce => "quiesce",
             Self::Release => "release",
         }
@@ -588,48 +578,6 @@ impl RuntimeBindingFence {
         } else {
             Err(RuntimeContractError::FenceMismatch { fields })
         }
-    }
-}
-
-/// Reject a stale continuation definition or process-local activation before
-/// compiling continuation control into a native operation.
-pub(crate) fn validate_continuation_exact(
-    expected: &NativeContinuationProjection,
-    session: &AgentSession,
-) -> Result<(), RuntimeContractError> {
-    let current = &session.control_state.continuation;
-    let mut fields = Vec::new();
-    if expected.definition.continuation_ref != current.definition.continuation_ref {
-        fields.push("continuation.definition.continuation_ref".to_string());
-    }
-    if expected.definition.revision != current.definition.revision {
-        fields.push("continuation.definition.revision".to_string());
-    }
-    if expected.definition.phase != current.definition.phase {
-        fields.push("continuation.definition.phase".to_string());
-    }
-    if expected.definition.budget != current.definition.budget {
-        fields.push("continuation.definition.budget".to_string());
-    }
-    if expected.activation != current.activation {
-        fields.push("continuation.activation".to_string());
-    }
-    if let NativeContinuationActivation::Armed {
-        runtime_generation,
-        driver_generation,
-    } = &expected.activation
-    {
-        if *runtime_generation != session.runtime_generation {
-            fields.push("continuation.activation.runtime_generation".to_string());
-        }
-        if *driver_generation != session.control_state.driver_generation {
-            fields.push("continuation.activation.driver_generation".to_string());
-        }
-    }
-    if fields.is_empty() {
-        Ok(())
-    } else {
-        Err(RuntimeContractError::StaleContinuation { fields })
     }
 }
 

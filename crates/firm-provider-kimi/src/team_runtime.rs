@@ -206,25 +206,6 @@ impl harness_runtime_contract::TeamRuntimeAdapter for KimiTeamRuntime<'_> {
                 security_enforcement_locus: None,
             },
             CapabilityBinding {
-                capability: "inspect_continuation",
-                status: CapabilityStatus::Unsupported,
-                evidence: "Kimi Goals are not exposed by the reviewed ACP control surface"
-                    .into(),
-                security_enforcement_locus: None,
-            },
-            CapabilityBinding {
-                capability: "inhibit_continuation",
-                status: CapabilityStatus::Unsupported,
-                evidence: "ACP exposes no reviewed Goal pause/replace/cancel primitive".into(),
-                security_enforcement_locus: None,
-            },
-            CapabilityBinding {
-                capability: "resume_continuation",
-                status: CapabilityStatus::Unsupported,
-                evidence: "ACP exposes no reviewed Goal resume primitive".into(),
-                security_enforcement_locus: None,
-            },
-            CapabilityBinding {
                 capability: "quiesce",
                 status: CapabilityStatus::Degraded,
                 evidence: "active prompt can settle, but ACP exposes no complete native queue, writable-child, or durable-flush proof; strict quiesce fails closed"
@@ -632,9 +613,7 @@ impl harness_runtime_contract::RuntimeAdapter for KimiTeamRuntime<'_> {
                 ))
             }
             ControlIntent::InjectCurrentCycle { .. }
-            | ControlIntent::QueueNativeBoundary { .. }
-            | ControlIntent::InhibitContinuation { .. }
-            | ControlIntent::ResumeContinuation { .. } => {
+            | ControlIntent::QueueNativeBoundary { .. } => {
                 Err(Self::unsupported(capability.as_str()))
             }
         }

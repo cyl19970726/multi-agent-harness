@@ -605,7 +605,7 @@ export interface ProviderIntegrationProfile {
   compatibility_note?: string | null;
   /** Who drives the member's rounds. `user_driven` means Harness never starts a
    * provider cycle for a declared external interactive member. */
-  execution_driver?: "host_driven" | "provider_driven" | "user_driven" | string;
+  execution_driver?: "host_driven" | "user_driven" | string;
   interaction_mode: "pause_and_resume" | "end_round_and_follow_up" | "unsupported" | string;
   ordinary_message_boundary?: "in_turn" | "next_round" | "next_round_batched" | "unknown" | string;
   plan_mode?: "native" | "emulated" | "unsupported" | "unknown" | string;

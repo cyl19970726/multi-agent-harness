@@ -62,7 +62,7 @@ adapter to prove, and what the provider-native side supplies.
 
 | Seam | Harness owns | Neutral contract | Provider-native counterpart |
 | --- | --- | --- | --- |
-| S1 Capability declaration and admission | `ProviderIntegrationProfile` snapshot per MemberRun; `review_required` is a refusal, not a warning | fourteen `SemanticCapability` values, each bound to provider + execution mode + provider version + adapter revision with a status and evidence string; `CapabilityResolver`, `AdmissionDecision`, `RuntimeBindingFence` | exact provider version, protocol, primitive availability ("provider supports" ≠ "adapter supports") |
+| S1 Capability declaration and admission | `ProviderIntegrationProfile` snapshot per MemberRun; `review_required` is a refusal, not a warning | eleven `SemanticCapability` values, each bound to provider + execution mode + provider version + adapter revision with a status and evidence string; `CapabilityResolver`, `AdmissionDecision`, `RuntimeBindingFence` | exact provider version, protocol, primitive availability ("provider supports" ≠ "adapter supports") |
 | S2 Launch spec and permission compilation | provider-neutral `LaunchSpec`; `PermissionCeiling` frozen at AgentSession creation; explicit cwd | `prompt_ref`, `skill_refs`, `permission`, `writable_roots`, workspace, MCP, resume, `execution_driver` | sandbox/approval policy, permission mode, ACP allow, Pi argv, DSH sandbox policy; `security_enforcement_locus` says who really enforces the ceiling |
 | S3 Lifecycle intents and receipts | durable `RuntimeCommand`: prepare → effect → settle; the fence is constructible only from an admitted command | `RuntimeAdapter`: `open_or_resume`, `execute_control`, `observe`, `inspect_effect`, `reconcile`, `close_runtime`, `quiesce`, `release`; closed `ControlIntent`; layered receipts (`EffectReceipt`, `QuiesceReceipt`, `MemberRuntimeCloseReceipt`) | thread/turn, session, SDK handle control primitives; process groups, stdio, runner command frames |
 | S4 `ExecutionCycle` | Supervisor wake/claim → drive → settle; durable `ProviderCycleCorrelation` | `TeamRuntimeAdapter::run_cycle`: input-acceptance receipt, control injection, terminal boundary, `ExecutionCycleOutcome`; `CycleTimeouts` separates input acceptance, transport liveness and control settlement; typed `CycleSettlement` preserves receipt and interruption evidence (DEV-156; `firm-runtime-contract/src/{cycle,timeouts}.rs`) | one native turn / prompt / query / followup and its terminal frame |
@@ -84,17 +84,17 @@ Capability statuses as each package declares them in `capability_bindings()`
 | queue_at_native_boundary | Unsupported | Unsupported | Unsupported | Supported (follow_up) | Unsupported |
 | inspect_effect | Unsupported | Unsupported | Unsupported | Degraded | Unsupported |
 | reconcile_effect | Unsupported | Unsupported | Unsupported | Unsupported | Unsupported |
-| inspect / inhibit / resume_continuation | Experimental (thread/goal) | Unsupported | Unsupported | Unsupported | Unsupported |
 | quiesce | Degraded | Degraded | Degraded | Supported (read-only provable; full access returns Unknown) | Degraded |
 | release | Degraded | Degraded | Degraded | Supported (owned process-group disposer) | Degraded |
 | permission_enforcement | Supported (provider-native policy) | Degraded (bypass is not a sandbox) | Degraded (adapter auto-approval) | Degraded (full access unverified) | Degraded (DSH sandbox policy) |
 
 Every managed provider profile is `host_driven`; the `external_interactive`
-Host profile is `user_driven`; no profile is `provider_driven` and no provider
-has passed that admission gate, so the continuation controls remain
-experimental at best (S1) and the one-driver invariant is enforced by the
-outer layer, not by a provider. Pi additionally declares one binding outside
-the shared fourteen (`observe_native_queue`, Supported).
+Host profile is `user_driven`. ADR 0067 retired the third driver and the
+continuation control capabilities with it — no provider had ever passed that
+admission gate — so the one-driver invariant is enforced by the outer layer,
+not by a provider, and a native continuation is observed, never driven. Pi
+additionally declares one binding outside the shared eleven
+(`observe_native_queue`, Supported).
 
 Native session locators (S5): Codex `codex_rollout` (thread id; rollout
 JSONL; `thread/resume`), Claude `claude_project_session` (session id from the

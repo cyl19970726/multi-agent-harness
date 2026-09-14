@@ -1356,7 +1356,7 @@ impl HarnessStore {
                     ));
                 }
             }
-            MemberExecutionDriver::HostDriven | MemberExecutionDriver::ProviderDriven => {
+            MemberExecutionDriver::HostDriven => {
                 let candidate_binding = runtime_binding_for_session(&candidate);
                 self.require_live_runtime_binding_unlocked(
                     &candidate,

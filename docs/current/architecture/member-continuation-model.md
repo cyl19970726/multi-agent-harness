@@ -5,6 +5,9 @@ status: canonical architecture contract
 owner_role: provider-integration
 canonical_for: provider-neutral Member execution ownership, continuation, completion, and Workspace lease semantics
 work_contract: ADR 0050; Work/WorkEvent/WorkDelivery are the responsibility path
+continuation_contract: ADR 0067 retired the NativeContinuation control plane and
+  the provider_driven driver; the activation projection is retained as the
+  drained-lane proof
 ```
 
 This document is the smallest required context for adding a new Agent Team
@@ -60,21 +63,25 @@ exception and receives no timely-wake or provider-receipt promise.
 
 | Driver | Meaning | Agent Team use |
 | --- | --- | --- |
-| `host_driven` | Harness claims eligible mail and starts the next provider cycle. | Default when native continuation is absent, unsafe or not observable. |
-| `provider_driven` | One provider-native continuation mechanism starts later cycles until its condition stops it. | Allowed only when the Adapter can inspect and control it honestly. |
+| `host_driven` | Harness claims eligible mail and starts the next provider cycle. | Every managed runtime. |
 | `user_driven` | The human drives their own already-open interactive provider session out-of-band; Harness never starts a cycle and no native session record exists. | Declared `external_interactive` members only. |
 | `bounded` | One invocation owns a finite result and then exits. | Historical/unsupported Team mode; Dynamic Workflow is retired and this is not a new-member fallback. |
 
-One MemberRun must have exactly one active execution driver. Setting a native
-Goal and also issuing an independent Harness `turn/start` violates this
-contract.
+ADR 0067 retired the third value. There is no `provider_driven` driver and no
+control plane that could promote one: nothing ever executed it, and a document
+carrying the retired value now fails decoding rather than becoming a managed
+driver. A provider-native Goal a member activates inside its own session stays
+an internal execution aid — Harness observes it, never schedules through it.
+
+One MemberRun must have exactly one active execution driver. Because only one
+managed driver exists, there is no longer a legitimate way to express two;
+setting a native Goal and also issuing an independent Harness `turn/start`
+remains the failure this rule exists to prevent.
 
 Implementation note: DEV-31 stores this as `AgentSession.control_state`, not as
 a new Goal object. The exact fence includes `execution_driver`,
 `driver_generation`, `driver_ref`, runtime generation, NativeSessionRef,
-composition fingerprint, and capability fingerprint. A provider-driven native
-continuation may be defined without being armed; activation requires the exact
-runtime and driver generations.
+composition fingerprint, and capability fingerprint.
 
 ### Completion Policy
 
@@ -104,11 +111,11 @@ The invariant is:
 Valid:
 
 ```text
-provider_driven:
-  native Goal -> cycle 1 -> cycle 2 -> cycle 3 -> satisfied
-
 host_driven:
   mail 1 -> provider cycle 1 -> idle -> mail 2 -> provider cycle 2
+
+user_driven (external_interactive Host only):
+  the human types -> provider cycle; Harness starts nothing
 ```
 
 Invalid:
@@ -116,7 +123,7 @@ Invalid:
 ```text
 Harness turn/start ----\
                         +--> concurrent writes in the same Workspace
-native Goal loop ------/
+member-activated native Goal loop ------/
 ```
 
 Provider-internal read-only parallelism and native subagents remain internal to
@@ -181,10 +188,11 @@ so the Host re-drives it explicitly. A binding left `Active` with a
 `ProviderReceived` delivery after a *non-clean* generation advance is the open
 case in GitHub #734 and is not settled by this mechanism.
 
-## Continuation State Is A Projection
+## Continuation State Is A Read-Only Projection
 
 Harness must not create a generic persisted Goal object. The Adapter exposes a
-bounded current projection:
+bounded current projection, and after ADR 0067 that projection is read-only —
+no command can change it:
 
 ```text
 NativeContinuationProjection
@@ -197,6 +205,24 @@ NativeContinuationProjection
     armed(runtime_generation, driver_generation) | disarmed | unknown
   observed_at
 ```
+
+`activation` is retained for one reason: it is the drained-lane proof. Every
+writer now sets `Disarmed`, and six fail-closed guards refuse while it is
+`Armed` — both `RuntimeBindingFence` driver arms, `interrupted_runtime_is_terminated`
+(the `Interrupted -> Idle` hop), `lane_is_quiescent` (reattach), the rule that a
+user-driven runtime must be disarmed, and the Team `safe_cold` / lane-termination
+proofs. A member may still activate a native Goal inside its own session, so
+Close pauses an observed active Goal before its terminal observation, and
+strong quiesce still records that step. How the step is satisfied differs by
+adapter: Claude, Pi, Kimi and DeepSeek have no native continuation to control
+and satisfy it from `activation == Disarmed`; Codex reads `thread/goal/get` and
+writes `thread/goal/set(paused)` when the observed Goal is active. That write is
+terminal-control safety, not scheduling.
+
+`definition.{phase, continuation_ref, revision}` are what the
+`expected_continuation_ref` and `expected_continuation_phase` RuntimeCommand
+preconditions are proven against; those preconditions fence any command and are
+retained.
 
 The provider-native store remains authoritative. Harness may keep the selected
 driver, capability snapshot, control acknowledgements and coordination facts;
@@ -284,15 +310,16 @@ the sole turn/execution record and are never copied into current Message or
 `CanonicalMessageDelivery` storage. Legacy TeamMessage storage is read/export
 only and is not a fallback mailbox.
 
-Self-activation is allowed only when observable. If a Member activates native
-continuation through natural language or a provider command, the Adapter must
-observe the provider-native state transition before treating the execution
-driver as `provider_driven`. Prompt text alone is not proof.
+If a Member activates native continuation through natural language or a
+provider command, that never changes the execution driver — there is no driver
+to change it to. The Adapter observes the provider-native state, reports it in
+the projection, and Harness keeps scheduling. Close pauses an observed active
+Goal first so it cannot start a successor turn and race the terminal
+observation.
 
-Providers without reviewed native continuation capability remain first-class
-`host_driven` members. DeepSeek Harness is admitted in that form: its reviewed
-composition deliberately omits DSH Goal plugins, so it cannot silently become
-`provider_driven` even though the upstream framework supports plugin-defined
+DeepSeek Harness is the same story from the other side: its reviewed
+composition deliberately omits DSH Goal plugins, so there is nothing to
+observe even though the upstream framework supports plugin-defined
 continuation.
 
 ## Provider Adapter Contract
@@ -301,21 +328,21 @@ A future provider does not need a Goal feature to become an Agent Team Member.
 It must implement persistent identity, mailbox delivery, native-session
 binding and explicit lifecycle controls. Native continuation is additive.
 
-Each concrete execution mode declares:
+Each concrete execution mode declares its executable capability bindings.
+After ADR 0067 the continuation entries (`inspect_continuation`,
+`inhibit_continuation`, `resume_continuation`) are gone from that set — a
+provider declares only what it can be asked to do, and nothing can ask it to
+control a continuation. What remains relevant to continuation is observational
+and terminal:
 
 ```text
-ContinuationCapabilities
-  can_start_native_continuation
-  can_inspect_condition
-  can_inspect_state
-  can_replace_condition
-  can_clear_condition
-  can_resume_active_condition
-  can_inject_while_running
-  can_interrupt_current_activity
-  emits_cycle_boundaries
-  emits_completion_reason
-  continuation_permission_scope
+observe                     is the native continuation visible at all?
+can_inject_while_running    can ordinary mail reach an active cycle?
+can_interrupt_current_activity
+emits_cycle_boundaries      can the Host see one cycle end?
+emits_completion_reason
+quiesce                     can the adapter prove the continuation is disarmed,
+                            the cycle terminal, and the lane drained?
 ```
 
 Capability is proven in four layers:
@@ -336,17 +363,18 @@ version and selected execution mode.
 This table is architectural routing, not a compatibility claim. Provider docs
 own version-specific evidence.
 
-| Provider mode | Native mechanism | Initial driver posture | Important boundary |
+| Provider mode | Native mechanism | Driver | Important boundary |
 | --- | --- | --- | --- |
-| Codex `codex_app_server` | thread-native Goal | `host_driven` until native Goal ownership, permission inheritance and inspection are verified together | Never call an independent `turn/start` while the Goal owns continuation. |
-| Claude `claude_agent_sdk` | Claude Code `/goal`, implemented as a session-scoped Stop hook in supported versions | `host_driven` until the SDK Adapter has a reviewed native-goal canary | `/goal` starts work immediately and does not itself change permissions. |
-| Kimi `kimi_acp` | native Goals persist across turns, but ACP has no reviewed Goal inspect/replace/cancel/terminal contract | `host_driven` | Goals and built-in/custom subagents remain Member-internal; native plan updates do not imply Harness-owned continuation. |
-| Future provider | optional | `host_driven` | Add native continuation only after capability and lifecycle review. |
+| Codex `codex_app_server` | thread-native Goal, observable through `thread/goal/get` | `host_driven` | An observed active Goal is paused on the Close path, and a host `start_cycle` is refused while one is active. Harness never calls `thread/goal/set` to schedule. |
+| Claude `claude_agent_sdk` | Claude Code `/goal`, a session-scoped Stop hook in supported versions | `host_driven` | Member-internal; not wired through Agent SDK Team control. `/goal` starts work immediately and does not itself change permissions. |
+| Kimi `kimi_acp` | native Goals persist across turns; ACP exposes no Goal surface | `host_driven` | Goals and built-in/custom subagents remain Member-internal; native plan updates do not imply Harness-owned continuation. |
+| Pi, DeepSeek Harness | none admitted | `host_driven` | Pi has no native continuation object; the DSH composition deliberately omits Goal plugins. |
+| Future provider | optional | `host_driven` | A native continuation mechanism may be observed and reported. It is never promoted to a driver. |
 
-“Initial driver posture” is the required product routing. Current Agent Team
-profiles snapshot `host_driven`, and the Codex adapter no longer activates a
-native Goal beside Harness turns. A detected dual-driver adapter remains
-nonconforming and `review_required` until repaired and canaried.
+Every managed Agent Team profile is `host_driven`; the declared
+`external_interactive` Host profile is `user_driven`. A detected dual-driver
+adapter remains nonconforming and `review_required` until repaired and
+canaried.
 
 `review_required`, `incompatible`, and `unavailable` persistent Adapter
 snapshots are execution refusals, not warnings. The gate runs before initial
@@ -408,7 +436,7 @@ The primary Member view shows the durable contract before provider details:
 ```text
 Current Work id, version, owner and status
 Execution driver
-Continuation state and condition
+Observed native continuation state (read-only) and whether the lane is disarmed
 Workspace execution lease
 Permission posture
 Correlated provider questions
@@ -426,11 +454,13 @@ They are diagnostic handles, not the product hierarchy.
 A continuation integration is not accepted until tests prove:
 
 1. exactly one execution driver can own a Member/session/Workspace;
-2. native continuation never overlaps an independent Harness start;
+2. an observed native continuation never overlaps an independent Harness start,
+   and Close pauses it before the terminal observation;
 3. ordinary busy mail remains queued or is injected through a verified safe
    operation;
 4. permissions remain correct for every provider-created cycle;
-5. inspect, interrupt, clear/stop and resume report real provider state;
+5. observation and interrupt report real provider state, and the retired
+   control kinds stay frozen rather than silently readmitted;
 6. provider satisfaction remains distinct from Work submission and Host
    acceptance;
 7. Dashboard and CLI show unknown/review-required states honestly; and

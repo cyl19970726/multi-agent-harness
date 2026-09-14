@@ -972,18 +972,6 @@ impl TeamRuntimeAdapter for DeepSeekTeamRuntime {
                 "reconcile_effect",
                 "no stable provider operation id exists for exact effect reconciliation",
             ),
-            unsupported(
-                "inspect_continuation",
-                "DSH Goal plugins are deliberately absent from the host-driven composition",
-            ),
-            unsupported(
-                "inhibit_continuation",
-                "host-driven mode never activates DeepSeek /goal; the adapter cannot control it",
-            ),
-            unsupported(
-                "resume_continuation",
-                "host-driven mode never activates DeepSeek /goal; the adapter cannot control it",
-            ),
             CapabilityBinding {
                 capability: "quiesce",
                 status: CapabilityStatus::Degraded,

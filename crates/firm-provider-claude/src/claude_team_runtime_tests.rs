@@ -78,11 +78,6 @@ fn capability_surface_does_not_overclaim_goal_steer_or_strict_quiesce() {
         status("inject_current_cycle"),
         CapabilityStatus::Unsupported
     );
-    assert_eq!(
-        status("inspect_continuation"),
-        CapabilityStatus::Unsupported
-    );
-    assert_eq!(status("resume_continuation"), CapabilityStatus::Unsupported);
     assert_eq!(status("quiesce"), CapabilityStatus::Degraded);
     assert_eq!(status("release"), CapabilityStatus::Degraded);
 }

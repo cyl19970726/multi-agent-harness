@@ -43,7 +43,7 @@ fn runtime_command_semantic_preconditions_are_lock_checked_with_zero_side_effect
             "activity" => command.precondition.expected_activity = Some(RuntimeActivity::Running),
             "execution_driver" => {
                 command.precondition.expected_execution_driver =
-                    Some(MemberExecutionDriver::ProviderDriven)
+                    Some(MemberExecutionDriver::UserDriven)
             }
             "cycle_ref" => {
                 command.precondition.expected_cycle_ref =
@@ -63,7 +63,7 @@ fn runtime_command_semantic_preconditions_are_lock_checked_with_zero_side_effect
             }
             "continuation_phase" => {
                 command.precondition.expected_continuation_phase =
-                    Some(NativeContinuationPhase::Active)
+                    Some(firm_core::agentfirm_api::NativeContinuationPhase::Active)
             }
             "runtime_idle" => {
                 command.precondition.safe_point = RuntimeSafePointRequirement::RuntimeIdle

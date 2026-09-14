@@ -82,7 +82,6 @@
       "oneOf": [
         {"type": "object", "additionalProperties": false, "required": ["kind", "node_daemon_id", "node_daemon_generation"], "properties": {"kind": {"const": "node_daemon"}, "node_daemon_id": {"type": "string", "minLength": 1}, "node_daemon_generation": {"type": "integer", "minimum": 1}}},
         {"type": "object", "additionalProperties": false, "required": ["kind", "team_run_id", "team_supervisor_id", "team_supervisor_generation"], "properties": {"kind": {"const": "team_supervisor"}, "team_run_id": {"type": "string", "minLength": 1}, "team_supervisor_id": {"type": "string", "minLength": 1}, "team_supervisor_generation": {"type": "integer", "minimum": 1}}},
-        {"type": "object", "additionalProperties": false, "required": ["kind", "provider", "continuation_id", "runtime_generation"], "properties": {"kind": {"const": "provider_continuation"}, "provider": {"type": "string", "minLength": 1}, "continuation_id": {"type": "string", "minLength": 1}, "continuation_revision": {"type": ["integer", "null"], "minimum": 0}, "runtime_generation": {"type": "integer", "minimum": 1}}},
         {"type": "object", "additionalProperties": false, "required": ["kind"], "properties": {"kind": {"const": "unknown"}}}
       ]
     },
@@ -93,7 +92,7 @@
         "expected_session_version": {"type": ["integer", "null"], "minimum": 1},
         "expected_residency": {"type": ["string", "null"], "enum": ["detached", "attaching", "attached", "releasing", "unknown", null]},
         "expected_activity": {"type": ["string", "null"], "enum": ["idle", "running", "waiting_input", "interrupting", "unknown", null]},
-        "expected_execution_driver": {"type": ["string", "null"], "enum": ["host_driven", "provider_driven", "user_driven", null]},
+        "expected_execution_driver": {"type": ["string", "null"], "enum": ["host_driven", "user_driven", null]},
         "expected_cycle_ref": {"anyOf": [{"$ref": "#/$defs/native_object_ref"}, {"type": "null"}]},
         "expected_continuation_ref": {"anyOf": [{"$ref": "#/$defs/native_object_ref"}, {"type": "null"}]},
         "expected_continuation_phase": {"type": ["string", "null"], "enum": ["inactive", "active", "paused", "blocked", "satisfied", "unknown", null]},

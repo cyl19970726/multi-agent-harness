@@ -1,5 +1,15 @@
 # ADR 0041: Provider-Neutral Member Continuation And Execution Ownership
 
+> Superseded in part by
+> [ADR 0067](0067-retire-the-native-continuation-control-plane.md): the
+> `provider_driven` execution driver and the NativeContinuation control plane
+> (inspect / inhibit / resume) named below are retired, never having executed.
+> `host_driven` and the declared external `user_driven` exception are the only
+> drivers. Everything else below stays active — the one-top-level-driver
+> invariant, the Workspace lease, the completion-policy axis, and the rule that
+> provider satisfaction is not Host acceptance — and the first of those is now
+> stronger, because there is no longer a second managed driver to express.
+
 ```text
 status: active; Assignment references amended by ADR 0050
 date: 2026-07-28

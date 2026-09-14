@@ -585,24 +585,6 @@ pub fn capability_bindings() -> Vec<CapabilityBinding> {
             security_enforcement_locus: None,
         },
         CapabilityBinding {
-            capability: "inspect_continuation",
-            status: Experimental,
-            evidence: "Codex 0.148.0-alpha.9 schema review and deterministic tests cover thread/goal/get; live ProviderDriven supervision remains unproven".into(),
-            security_enforcement_locus: None,
-        },
-        CapabilityBinding {
-            capability: "inhibit_continuation",
-            status: Experimental,
-            evidence: "thread/goal/set status=paused has an exact deterministic receipt, but the DEV-26 live canary did not activate a native Goal".into(),
-            security_enforcement_locus: None,
-        },
-        CapabilityBinding {
-            capability: "resume_continuation",
-            status: Experimental,
-            evidence: "thread/goal/set status=active is fenced by ProviderDriven authority in deterministic tests; live autonomous continuation supervision remains unproven".into(),
-            security_enforcement_locus: None,
-        },
-        CapabilityBinding {
             capability: "close_runtime",
             status: Supported,
             evidence: "terminal active-turn observation followed by one-shot owned process-group release/reap; thread id is retained for Reopen".into(),
@@ -611,7 +593,7 @@ pub fn capability_bindings() -> Vec<CapabilityBinding> {
         CapabilityBinding {
             capability: "quiesce",
             status: Degraded,
-            evidence: "thread/goal and thread/read prove continuation/cycle idle, but FullAccess detached writable children and durable rollout flush are not fully observable".into(),
+            evidence: "thread/goal pauses an observed active Goal and proves the cycle idle via thread/read, but FullAccess detached writable children and durable rollout flush are not fully observable".into(),
             security_enforcement_locus: None,
         },
         CapabilityBinding {
@@ -1189,64 +1171,6 @@ impl<'a, B: CodexAppServerBridge> harness_runtime_contract::RuntimeAdapter
                     // The RPC response proves transport acceptance only.
                     RuntimePostconditionStatus::Unknown,
                     vec![format!("codex.turn/interrupt:{turn_id}")],
-                )
-            }
-            ControlIntent::InhibitContinuation { expected } => {
-                if self.authority()?.control_state.continuation != expected {
-                    return Err(RuntimeContractError::StaleContinuation {
-                        fields: vec!["continuation".to_string()],
-                    });
-                }
-                let goal = self
-                    .bridge
-                    .set_thread_goal_status("paused")
-                    .map_err(bridge_error)?;
-                (
-                    RuntimeEffectCertainty::Applied,
-                    RuntimePostconditionStatus::Satisfied,
-                    vec![format!(
-                        "codex.thread/goal/set:{}:paused:revision={}",
-                        self.bridge.thread_id(),
-                        goal.get("updatedAt")
-                            .and_then(Value::as_u64)
-                            .map(|value| value.to_string())
-                            .unwrap_or_else(|| "unknown".to_string())
-                    )],
-                )
-            }
-            ControlIntent::ResumeContinuation { expected } => {
-                let session = self.authority()?;
-                if session.control_state.continuation != expected
-                    || session.control_state.execution_driver
-                        != MemberExecutionDriver::ProviderDriven
-                    || !matches!(
-                        session.control_state.continuation.activation,
-                        NativeContinuationActivation::Armed {
-                            runtime_generation,
-                            driver_generation,
-                        } if runtime_generation == session.runtime_generation
-                            && driver_generation == session.control_state.driver_generation
-                    )
-                {
-                    return Err(RuntimeContractError::StaleContinuation {
-                        fields: vec!["provider_driven_continuation_authority".to_string()],
-                    });
-                }
-                let goal = self
-                    .bridge
-                    .set_thread_goal_status("active")
-                    .map_err(bridge_error)?;
-                (
-                    RuntimeEffectCertainty::Applied,
-                    RuntimePostconditionStatus::Satisfied,
-                    vec![format!(
-                        "codex.thread/goal/set:{}:active:revision={}",
-                        self.bridge.thread_id(),
-                        goal.get("updatedAt")
-                            .and_then(Value::as_u64)
-                            .map(|value| value.to_string())
-                            .unwrap_or_else(|| "unknown".to_string())
-                    )],
                 )
             }
             ControlIntent::QueueNativeBoundary { .. } => {

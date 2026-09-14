@@ -280,18 +280,6 @@ impl TeamRuntimeAdapter for ClaudeTeamRuntime {
                 "reconcile_effect",
                 "no stable provider operation id exists for exact effect reconciliation",
             ),
-            unsupported(
-                "inspect_continuation",
-                "Claude /goal exists in Claude Code but is not wired through Agent SDK Team control",
-            ),
-            unsupported(
-                "inhibit_continuation",
-                "host-driven mode never activates Claude /goal; the adapter cannot control it",
-            ),
-            unsupported(
-                "resume_continuation",
-                "host-driven mode never activates Claude /goal; the adapter cannot control it",
-            ),
             CapabilityBinding {
                 capability: "quiesce",
                 status: CapabilityStatus::Degraded,
