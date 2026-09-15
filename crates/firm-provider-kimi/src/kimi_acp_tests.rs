@@ -1,5 +1,12 @@
 use super::*;
 
+// The ADR 0076 cycle-ending tests live in their own file: this one reached the
+// 1,500-line source ceiling, and "how a cycle ends and what it records" is a
+// cohesive boundary rather than an arbitrary cut. Declared here, not in lib.rs,
+// so the crate root keeps its remaining headroom.
+#[path = "kimi_cycle_ending_tests.rs"]
+mod cycle_ending;
+
 #[cfg(unix)]
 fn scripted_client() -> (KimiAcpClient, Sender<serde_json::Value>) {
     // The child is only a sink for the prompt/reverse-request response
@@ -36,7 +43,7 @@ fn scripted_client() -> (KimiAcpClient, Sender<serde_json::Value>) {
             prompt_active: false,
             settled_boundary_observed: true,
             shutdown_receipt: None,
-            last_prompt_failure: crate::KimiCycleFailure::ProviderError,
+            last_prompt_failure: crate::KimiCycleFailure::TransportLost,
         },
         update_tx,
     )
@@ -1067,6 +1074,15 @@ fn kimi_conformance_timeouts() -> harness_runtime_contract::CycleTimeouts {
     }
 }
 
+/// A real control-settle window, so a delivered `session/cancel` is given time
+/// to reach its terminal instead of expiring into the kill path.
+fn kimi_control_timeouts() -> harness_runtime_contract::CycleTimeouts {
+    harness_runtime_contract::CycleTimeouts {
+        control_settle: Duration::from_secs(5),
+        ..kimi_conformance_timeouts()
+    }
+}
+
 fn kimi_no_receipt_timeouts() -> harness_runtime_contract::CycleTimeouts {
     harness_runtime_contract::CycleTimeouts {
         input_acceptance: Duration::from_millis(1),
@@ -1365,79 +1381,5 @@ fn kimi_failure_without_acceptance_or_exact_terminal_remains_unknown() {
             harness_runtime_contract::CycleControl::default
         )
         .is_err());
-    }
-}
-
-/// ADR 0076 exhaustiveness: every ending this adapter can produce is placed in
-/// the closed table. The `expected` match below is wildcard-free, so adding a
-/// variant to `KimiCycleFailure` breaks this test's compilation until the new
-/// ending is decided on deliberately.
-#[test]
-fn every_kimi_cycle_ending_is_placed_in_the_closed_table() {
-    use crate::KimiCycleFailure;
-    use harness_runtime_contract::{
-        CycleEnding, CycleRefusalCode, ProviderFailureCode, TerminalUnobservedCode,
-    };
-    fn expected(failure: KimiCycleFailure) -> CycleEnding {
-        match failure {
-            KimiCycleFailure::SessionNotEstablished => CycleEnding::NotStarted {
-                code: CycleRefusalCode::ProviderRejectedStart,
-            },
-            KimiCycleFailure::PromptAlreadyActive => CycleEnding::NotStarted {
-                code: CycleRefusalCode::OneDriverViolation,
-            },
-            KimiCycleFailure::TransportLost => CycleEnding::TransportLost {
-                detail: "detail".to_string(),
-            },
-            KimiCycleFailure::CancelGraceExpired => CycleEnding::ControlSettleTimeout,
-            KimiCycleFailure::TerminalMismatch => CycleEnding::TerminalUnobserved {
-                code: TerminalUnobservedCode::TerminalMismatch,
-                detail: "detail".to_string(),
-            },
-            KimiCycleFailure::ProtocolViolation => CycleEnding::TerminalUnobserved {
-                code: TerminalUnobservedCode::ProtocolViolation,
-                detail: "detail".to_string(),
-            },
-            KimiCycleFailure::HostAborted => CycleEnding::HostAborted {
-                detail: "detail".to_string(),
-            },
-            KimiCycleFailure::ProviderError => CycleEnding::ProviderFailed {
-                code: ProviderFailureCode::TurnFailed,
-                detail: "detail".to_string(),
-                http_status: None,
-            },
-        }
-    }
-    assert_eq!(
-        KimiCycleFailure::ALL.len(),
-        8,
-        "ALL must list every variant the wildcard-free match above covers"
-    );
-    for failure in KimiCycleFailure::ALL {
-        let ending = failure.ending("detail");
-        assert_eq!(ending, expected(*failure), "{failure:?}");
-        assert!(!ending.action_type().is_empty(), "{failure:?}");
-        assert!(!ending.provider_status().is_empty(), "{failure:?}");
-    }
-}
-
-/// The reviewed Kimi stop-reason vocabulary reaches the closed failure codes
-/// rather than staying raw provider text.
-#[test]
-fn kimi_stop_reasons_classify_into_the_closed_failure_codes() {
-    use harness_runtime_contract::{ProviderFailureCode, ProviderTerminalFailure};
-    for (stop_reason, code) in [
-        ("max_tokens", ProviderFailureCode::OutputLimit),
-        ("refusal", ProviderFailureCode::Refusal),
-        ("max_turn_requests", ProviderFailureCode::TurnRequestLimit),
-    ] {
-        assert_eq!(
-            ProviderFailureCode::classify(&ProviderTerminalFailure {
-                reason: stop_reason.to_string(),
-                http_status: None,
-            }),
-            code,
-            "{stop_reason}"
-        );
     }
 }

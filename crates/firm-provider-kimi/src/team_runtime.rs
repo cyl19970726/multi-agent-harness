@@ -429,6 +429,18 @@ impl harness_runtime_contract::TeamRuntimeAdapter for KimiTeamRuntime<'_> {
         self.last_cycle_terminal = true;
         self.last_cycle_cancelled =
             matches!(outcome.stop_reason.as_str(), "cancelled" | "canceled");
+        // ADR 0076 misalignment 1, applied to the fifth provider (review r1
+        // IP-1). `cancel_requested` is only ever true after the client wrote
+        // `session/cancel` — a failed write returns `Err` out of
+        // `drive_prompt`, so reaching here means the control CROSSED the
+        // provider boundary. Its receipt therefore succeeds on delivery,
+        // independently of the eventual stop reason: a Host Close or Interrupt
+        // that races a normally completed turn is still settled by that
+        // terminal, exactly as on Codex and Pi. Gating `success` on
+        // `last_cycle_cancelled` instead failed the whole member with
+        // "kimi control lacked verified terminal acknowledgement" whenever the
+        // turn finished on its own first. The stop reason stays on the
+        // receipt's `response_id` as native evidence.
         let control_receipts = if cancel_requested {
             vec![harness_runtime_contract::ControlTransportReceipt {
                 command: "abort".to_string(),
@@ -440,7 +452,7 @@ impl harness_runtime_contract::TeamRuntimeAdapter for KimiTeamRuntime<'_> {
                         .unwrap_or("kimi-acp-prompt"),
                     outcome.stop_reason
                 )),
-                success: self.last_cycle_cancelled,
+                success: true,
             }]
         } else {
             Vec::new()
