@@ -799,12 +799,14 @@ fn a_stop_whose_drain_never_converges_journals_its_phases_and_flags_its_lanes() 
 
 fn a_stop_whose_drain_never_converges_journals_its_phases_and_flags_its_lanes_body() {
     let mut fixture = RecoveryFixture::new("drain-journal");
-    // 500 ms cooperative / 50 ms forced: the spinning Supervisor below times
-    // out deterministically while the trivial single-Space scanner converges.
+    // 2 s cooperative / 50 ms forced, the same bounds `stop_drain_tests` had
+    // to settle on: the cooperative bound is shared with the recovery-scanner
+    // wait, and a tighter one lets a loaded runner name the scanner as the
+    // failed phase instead of the Supervisor that is actually spinning (#774).
     fixture
         .inner
         .daemon
-        .set_drain_timeout_override(Some((500, 50)));
+        .set_drain_timeout_override(Some((2_000, 50)));
     let space = fixture
         .daemon()
         .registered_spaces()
