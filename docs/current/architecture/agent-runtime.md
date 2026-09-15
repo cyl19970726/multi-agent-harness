@@ -626,6 +626,55 @@ or stops the cycle at `RuntimeRecoveryRequired` before any receipt exists
 exit, stdout disconnect, runner error, and unsettled durable effects remain
 explicit fail-closed recovery conditions.
 
+#### How a cycle ends
+
+One ExecutionCycle is the Harness-side turn, aligned with the provider's native
+turn at exactly two points: **acceptance** (the exact input-acceptance receipt)
+and **terminal** (the exact terminal reference). ADR 0076 adds the closed answer
+to *how* it ended: `CycleEnding`
+(`crates/firm-runtime-contract/src/cycle_ending.rs`) has twelve variants, and
+every ending of `run_cycle` — the `Ok` outcome and every `Err` path an adapter
+takes — maps to exactly one. `CycleEnding::from_outcome` derives the `Ok` half
+from the outcome under one stated precedence order
+(`ProviderFailed > Closed > InterruptedByHost > InterruptedByProvider >
+EmptyOutput > Completed`); each adapter names its own `Err` endings in a local
+wildcard-free enum and drains the result through
+`TeamRuntimeAdapter::take_cycle_ending`.
+
+The ending is the single source for `member_actions.action_type` (frozen string
+values) and for `provider_status`, which is therefore populated on all five
+providers rather than on Codex alone; it is also recorded on the cycle
+correlation as the additive `ending` field. It is a summary, never a
+replacement: `close_requested_by_harness`, `interrupt` and
+`provider_terminal_failure` stay on the outcome because
+`verified_terminal_control_ack` reads each of them separately.
+
+Per-provider alignment:
+
+| | codex | claude | kimi | deepseek | pi |
+| --- | --- | --- | --- | --- | --- |
+| one cycle = | one app-server turn (`turn/start` → `turn/completed`) | one NDJSON `deliver` → runner `turn_complete` | one ACP `session/prompt` → its correlated response | one NDJSON `deliver` → runner `turn_complete` | one `prompt` RPC → `agent_settled` |
+| accepted when | the `turn/start` response arrives | the runner's `consumed` event matches the input id | the first prompt-scoped `session/update` (ACP has no prompt-start ack) | the runner's `consumed` event matches the input id | the synchronous `prompt` response echoes its id |
+| acceptance id | provider-minted (`turn_id`) | Harness-synthesized (`claude-cycle-N`) | Harness-assigned request id, acceptance inferred | Harness-synthesized (`deepseek-cycle-N`) | Harness-assigned (`pi-rpc-N`), echoed back |
+| ends when | `turn/completed` **and** `thread/read` reports idle | `turn_complete` for this input, or the interrupt-resume pair | the `session/prompt` response, classified by `stopReason` | `turn_complete` for this input, or the interrupt-resume pair | `agent_settled` **and** `get_state` reports `isStreaming=false` |
+| interrupt = | native `turn/interrupt` RPC | NDJSON `{"command":"interrupt"}` on runner stdin, withheld until acceptance | `session/cancel` notification; process group killed on grace expiry | NDJSON `{"command":"interrupt"}`, withheld until acceptance | blocking `abort` RPC |
+| `NotStarted` | runtime closed, one-driver violation, armed Goal, app-server rejected the start | — | prompt already active, no ACP session | — | Pi rejected the prompt or omitted its id |
+| `AcceptanceTimeout` | the `turn/start` RPC deadline expires | `…_INPUT_ACCEPTANCE_TIMEOUT` | first sends `session/cancel`, then the grace path below | `…_INPUT_ACCEPTANCE_TIMEOUT` | the `prompt` RPC deadline expires |
+| `ControlSettleTimeout` | `CODEX_RUNTIME_CONTROL_UNKNOWN` | `…_CONTROL_SETTLE_TIMEOUT` | cancel grace expires; process group killed | `…_CONTROL_SETTLE_TIMEOUT` | `PI_CONTROL_SETTLE_TIMEOUT` |
+| `TerminalUnobserved` | `CODEX_RUNTIME_POSTCONDITION_UNKNOWN`, foreign thread/turn frames | protocol error, resume mismatch, unexpected close | terminal mismatch, missing acceptance receipt, unserved reverse request | protocol error, resume mismatch, unexpected close | `PI_CYCLE_SETTLEMENT_UNKNOWN` |
+| `ProviderFailed` | `codexErrorInfo`, else `turn_failed` | `terminalReason`, else `unknown_provider_error`; `runner_error` | `max_tokens` / `refusal` / `max_turn_requests` | `terminalReason`, else `unknown_provider_error`; `runner_error` | `stopReason` ∈ {`error`, `length`} |
+| `EmptyOutput` | empty terminal | empty terminal | empty terminal | empty terminal | empty terminal |
+
+Two alignments ADR 0076 corrects. A requested Interrupt or Close that races a
+normal completion is **settled by that terminal** rather than dropped: the
+control asked the turn to end and it ended at its exact native boundary, so the
+outcome carries the control and its `abort` receipt (claimed only when the
+interrupt frame actually crossed the boundary). And an **empty terminal is
+`EmptyOutput` on all five providers**, counting toward the unproductive-round
+circuit breaker everywhere; it is no longer reported as a provider terminal
+failure on Claude and DeepSeek, where doing so reset the streak instead of
+feeding it.
+
 The pure wake priority, zero-output degradation/backoff, and bounded
 pre-effect admission contention retry are owned by
 `firm-runtime-supervisor`. The application supplies store observations and
