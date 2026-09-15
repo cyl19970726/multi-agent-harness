@@ -9,8 +9,8 @@ amends: ADR 0042 (the machine lease stops being Execution Space data); ADR 0044 
         docs/current/architecture/agent-runtime.md:16-29
 canonical_for: where machine authority is stored, which lock protects it, how it is renewed and
         read, and how its generation is minted
-baseline: master 35bcda73 for the evidence; line citations re-verified at master 43185050
-        (E1c merged), which is where E2a executes this checklist from
+baseline: master 35bcda73 for the evidence; line citations re-verified at master fccbf4cc,
+        which is where E2a executes this checklist from
 ```
 
 ## Context
@@ -74,7 +74,7 @@ readers that matter most already read it lock-free**: the admission fence
 `current_node_daemon_lease_after_admission_at` (`runtime_command_admission.rs:9-31`) resolve
 through `latest_node_daemon_lease`, an unsynchronized `read_jsonl`
 (`store_read_models.rs:325-331`; the torn-tail retry that makes it survivable is documented at
-`store_jsonl.rs:324-346`). The write lock is not buying reader consistency for them; it is
+`store_jsonl.rs:328-350`). The write lock is not buying reader consistency for them; it is
 buying a queue — while every lease row in evidence is **351–365 bytes** (median 353).
 
 The other machine-authority readers are **not** in that shape, and the difference decides how
@@ -137,7 +137,13 @@ by a debug-time lock registry that panics on a Space lock requested under the le
 Acquire the lease lock (timeout `min(TTL/4, 1 s)` — an honest ceiling once the only
 contenders are this daemon's own renewal and a rare operator verb) → read → verify exact
 `(daemon_id, instance_id, generation)` ownership and `expires > now` → sample `now` → write
-`tmp` → `fsync(tmp)` → `rename` → `fsync(dir)` → release. ~350 bytes, two fsyncs, no unrelated
+`tmp` → `fsync(tmp)` → `rename` → `fsync(dir)` → release. The directory fsync is what makes the
+replacement survive a crash, and it is deliberately **best-effort**: by the time it runs the
+rename has already succeeded, so the new document is already current for every reader on the
+machine. Reporting a failed directory fsync as a write failure would tell the caller its write
+did not land when it did, and the caller's only honest response — retry — would republish a
+document that is already in place. A failure there narrows the durability claim without
+invalidating the write. ~350 bytes, two fsyncs, no unrelated
 data in the critical section, and no compaction step because a replace has nothing to compact.
 The renewal is **one write per machine**, not one per Space:
 `run_held_node_authorities` and its per-Space workers (`machine_authority.rs:621-674`, `:676-711`)
@@ -227,7 +233,16 @@ that does. Callers of `require_current_node_daemon_unlocked` /
 `require_node_daemon_settlement_authority_unlocked` are **not** on the list — they delegate to a
 fence that is, and move with it for free.
 
-At `cf828dff` the rule selects **46 sites in 22 files** (excluding tests). Table A above carries
+**Production only.** The rule reads production code: `#[cfg(test)]`, `#[cfg(feature =
+"test-support")]` and `tests/` sites are excluded from both buckets, because a fence that a test
+helper bypasses is not a fence anyone ships. One helper sits exactly on that line —
+`supersede_node_authority_for_test` (`machine_authority.rs:902-903`) reads the lease under
+`#[cfg(any(test, feature = "test-support"))]` — so it is counted in neither bucket and named
+here instead.
+
+At `fccbf4cc` the rule selects **46 sites in 22 files**, against **31** production reads that
+never refuse: 46 + 31 = **77 production reads**, plus that one test helper = the 78 direct reads
+a bare grep finds. Table A above carries
 the kernel ones, where the lock context decides how the edit is written. The rest are listed
 here so the count closes:
 
@@ -250,7 +265,7 @@ here so the count closes:
 | `machine_authority.rs:125`, `:222`, `:287`, `:379`, `:746`, `:981` | the bundle, E1a's automatic predecessor recovery, the heartbeat, acquire, release and shutdown settlement |
 | `store_node_runtime.rs:295`, `:383`, `:395`, `:443`, `:483` | the acquire/renew/drain/release quartet — these do not "switch", they **become** the document writer |
 
-**Excluded, and why** — the other 32 of the 78 direct reads never refuse: the Dashboard and HTTP lease
+**Excluded, and why** — the other 31 production reads never refuse: the Dashboard and HTTP lease
 projections (`dashboard_projection.rs:197`/`:200`/`:459`, `http_get_routes.rs:214`),
 `daemon status` display (`daemon_cli.rs:144`/`:404`, `control_protocol.rs:1211`), RoleView
 surfaces (`member_surface.rs:326`, `team_surface.rs:669`, `workspace_surface.rs:714`,
@@ -273,6 +288,12 @@ lease's own `renewal_now()` re-sampled at `:400` and again after compaction at `
 sample `now` **after** the lease lock is held and **immediately before** the rename, and write
 `expires = that sample + TTL`. Additionally refuse any write that would move `expires` or
 `generation` backwards relative to the document on disk — monotonic in both fields, per node.
+
+**Scoped within a status.** `generation` is monotonic unconditionally. `expires` is monotonic
+only while the *status* is unchanged: a renewal must never shrink the lease, which is the
+backwards-clock case the rule exists for, but `Draining` deliberately sets a shorter settlement
+window and `Released` deliberately expires the lease now. Clamping those would leave a released
+generation looking live on disk, which is the opposite of what the rule protects.
 
 ### Generation minting
 
@@ -310,7 +331,7 @@ rows / 28 MB that heartbeat appends produced before #811.
 
 `predecessor_was_released(generation)` reads the history file **lock-free**, exactly like every
 other reader here; a single-line atomic append means a concurrent reader can see at most a torn
-final line, which the existing torn-tail retry (`store_jsonl.rs:324-346`) already handles. A
+final line, which the existing torn-tail retry (`store_jsonl.rs:328-350`) already handles. A
 generation that appears in **neither** the history file nor the legacy Space rows fails closed
 with today's reattach refusal — expiry still never becomes a drain receipt.
 
@@ -366,8 +387,12 @@ not before — and its test is retargeted at the legacy path. `daemon status` ga
   daemon fails closed at start if it cannot take the lease lock on that path.
 - **Clock skew.** Single machine, one clock — unchanged in kind; the monotonic
   `expires`/`generation` rule bounds a backwards system-clock step.
-- **A reader that still trusts a legacy row.** The typed `MachineLeaseSource` makes this a
-  compile-time obligation, not a review habit.
+- **A reader that still trusts a legacy row.** `MachineLeaseSource` alone would not have made
+  this a compile-time obligation — a caller can destructure a `(lease, source)` pair and drop the
+  source with no diagnostic. `AuthorizedMachineLease` does: its field is private and its only
+  constructor is the `NodeFile` arm of `authoritative_machine_lease`, so a fence that wants a
+  lease it may act on must name that type, and a `LegacySpaceRow` can never become one. E2a-2's
+  deciders take it rather than a bare `NodeDaemonLease`.
 - **The TeamSupervisorLease parent fence needs the file.** Three fences inside `firm-store`
   read a Space ledger while holding the Space lock today; they now need a node-home path
   injected into `HarnessStore`, and a store without one must fail the fence closed rather than
@@ -387,6 +412,14 @@ not before — and its test is retargeted at the legacy path. `daemon status` ga
   failure at each step; `generation`/`expires` monotonicity; foreign `node_id` refused; the lock
   registry panics on a Space lock requested under the lease lock;
   `MACHINE_LEASE_FILE_UNRESOLVED` on a node-home-less store.
+- **Two clocks, deliberately.** The lease writer's time sample is injected
+  (`node_lease_document.rs`, `LeaseClock`) because *when* `now` is taken under the lock is the
+  property this ADR turns on, and `ttl_ms.max(1)` (`store_node_runtime.rs:338`) means no TTL
+  value can express it — the arithmetic that made a `Some(0)` TTL a no-op for #990. That
+  injection covers **lease-document writes in `firm-store` only**. The daemon's bundle
+  revalidation samples its own clock and writes no document, so #992's
+  `bundle_revalidation_delay_ms` seam remains the right instrument there and is **not** made
+  redundant by the injected clock. Neither replaces the other; do not remove one as a cleanup.
 - **Integration (the gen-4 regression)** — hold a Space `.store.lock` for 3× TTL while a writer
   thread keeps rewriting the trust journal; assert **zero** renewal failures and a still-Active
   lease. The same test on today's code fails at TTL; that is the point of the slice.
@@ -408,6 +441,16 @@ not before — and its test is retargeted at the legacy path. `daemon status` ga
   self-stop.
 
 ## Rollout
+
+**Three slices, one cutover.** E2a-0 bound the node home into `HarnessStore` with nothing
+reading it. **E2a-1 ships this mechanism inert**: the document, its history, the leaf lock and the
+typed resolver exist and are tested, but no fence reads them, so the slice cannot change who owns
+a machine. **E2a-2 flips the readers** — all 46 deciders, the daemon's heartbeat and bundle,
+recover-predecessor, `daemon status` — which is the one revision where authority actually moves.
+**E2b retires the writers**: the per-Space `node_daemon_leases.jsonl` writers, the compactor, and
+the store-root shape derivation. Splitting the mechanism from the cutover is a review property,
+not a rollout one: a reviewer can hold an inert 1.3k-line mechanism in one head, and then judge
+the cutover against a diff that is only call sites.
 
 **No feature flag.** A flag would mean two authority sources alive at once — the exact hazard
 being removed — and would double the fence surface at every call site above. Cut over on a fresh

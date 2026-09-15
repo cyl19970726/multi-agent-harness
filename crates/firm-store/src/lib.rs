@@ -289,11 +289,18 @@ pub struct HarnessStore {
     read_cache: Arc<Mutex<store_read_cache::StoreReadCache>>,
 }
 
+mod node_lease_document;
+mod node_lease_history;
+mod node_lease_lock;
 mod store_current_work_delivery;
 mod store_host_attention;
 mod store_host_attention_internals;
 mod store_host_runtime_binding;
 mod store_jsonl;
+mod store_machine_lease;
+pub use store_machine_lease::{
+    AuthorizedMachineLease, MachineLeaseSource, MACHINE_LEASE_NOT_AUTHORITATIVE,
+};
 mod store_node_home;
 pub use store_node_home::{firm_home_of_execution_space_root, MACHINE_LEASE_FILE_UNRESOLVED};
 mod store_node_runtime;
@@ -930,6 +937,7 @@ struct StoreWriteLock {
 impl Drop for StoreWriteLock {
     fn drop(&mut self) {
         unlock_file(&self.file);
+        node_lease_lock::registry_exit_space_lock();
     }
 }
 
