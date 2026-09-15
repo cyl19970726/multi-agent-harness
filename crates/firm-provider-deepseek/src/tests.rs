@@ -745,4 +745,53 @@ mod cycle_conformance {
             assert!(!ending.provider_status().is_empty(), "{failure:?}");
         }
     }
+
+    /// ADR 0076 / review r1 B1. The exhaustiveness test above proves the local
+    /// enum maps totally onto the table; it cannot prove that every `Err` SITE
+    /// records a variant. This drives the adapter to a real mid-cycle runner
+    /// death — the single most likely DeepSeek failure, and the site that was
+    /// missed in the first submission — and asserts an ending was recorded.
+    #[test]
+    fn a_runner_death_mid_cycle_records_a_typed_ending() {
+        let (mut transport, line_tx) = scripted_deepseek_transport();
+        line_tx
+            .send(ds_consumed("deepseek-cycle-2"))
+            .expect("scripted acceptance");
+        // Dropping the sender is the runner dying: `receive_event` sees a
+        // disconnected stdout.
+        drop(line_tx);
+        let error = transport
+            .run_cycle(
+                "conformance cycle",
+                ds_control_timeouts(),
+                &mut |_receipt| Ok(()),
+                &mut |_event| {},
+                &mut harness_runtime_contract::CycleControl::default,
+            )
+            .expect_err("a dead runner ends the cycle");
+        assert!(
+            error
+                .to_string()
+                .contains("DEEPSEEK_HARNESS_TRANSPORT_CLOSED"),
+            "{error}"
+        );
+        let ending = transport
+            .last_cycle_ending
+            .take()
+            .expect("a runner death must record a typed ending");
+        assert!(
+            matches!(
+                ending,
+                harness_runtime_contract::CycleEnding::TransportLost { .. }
+            ),
+            "{ending:?}"
+        );
+        // The input WAS accepted, so this is "accepted, outcome unproven" —
+        // never "not applied", which would invite a replay of an accepted input.
+        assert_eq!(
+            ending.settlement(true),
+            harness_runtime_contract::CycleEndingSettlement::RecoveryRequiredUnknown
+        );
+        assert_eq!(ending.action_type(), "transport_lost");
+    }
 }

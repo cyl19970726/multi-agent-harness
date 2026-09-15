@@ -531,12 +531,10 @@ impl<'a, B: CodexAppServerBridge> CodexTeamRuntime<'a, B> {
             match self.bridge.recv(Duration::from_millis(50)) {
                 Ok(frame) => {
                     if frame.get("id").is_some() && frame.get("method").is_some() {
-                        let handled = self.handle_provider_request(&frame);
-                        self.classify(handled, CodexCycleFailure::TransportClosed)?;
+                        self.handle_provider_request(&frame)?;
                         continue;
                     }
-                    let scope = self.observe_frame_thread(&frame);
-                    match self.classify(scope, CodexCycleFailure::TerminalMismatch)? {
+                    match self.observe_frame_thread(&frame)? {
                         FrameThreadScope::Descendant | FrameThreadScope::Pending => continue,
                         FrameThreadScope::Owned | FrameThreadScope::Unscoped => {}
                     }
@@ -909,10 +907,22 @@ impl<'a, B: CodexAppServerBridge> TeamRuntimeAdapter for CodexTeamRuntime<'a, B>
             match self.bridge.recv(Duration::from_millis(50)) {
                 Ok(frame) => {
                     if frame.get("id").is_some() && frame.get("method").is_some() {
-                        self.handle_provider_request(&frame)?;
+                        // A reverse provider request this adapter refuses to
+                        // serve mid-turn: every exit is a fail-closed denial of
+                        // something outside the reviewed protocol
+                        // (`CODEX_PROVIDER_REQUEST_UNSAFE`, `_UNSUPPORTED`,
+                        // `_UNHANDLED`). The turn keeps running on the provider
+                        // side while we refuse, so its terminal is no longer
+                        // observable — it is not a transport death and not a
+                        // provider-reported failure (ADR 0076).
+                        let handled = self.handle_provider_request(&frame);
+                        self.classify(handled, CodexCycleFailure::ProtocolViolation)?;
                         continue;
                     }
-                    match self.observe_frame_thread(&frame)? {
+                    // A frame that belongs to another thread, turn or
+                    // descendant than the one this cycle admitted.
+                    let scope = self.observe_frame_thread(&frame);
+                    match self.classify(scope, CodexCycleFailure::TerminalMismatch)? {
                         FrameThreadScope::Descendant | FrameThreadScope::Pending => continue,
                         FrameThreadScope::Owned | FrameThreadScope::Unscoped => {}
                     }

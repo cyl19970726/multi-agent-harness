@@ -322,9 +322,7 @@ impl DeepSeekRunnerTransport {
     fn wait_for_session_bound(&mut self, timeout: Duration) -> CliResult<()> {
         let started = Instant::now();
         while started.elapsed() < timeout {
-            let received = self.receive_event(CONTROL_POLL);
-            let Some(event) = self.classify(received, DeepSeekCycleFailure::TransportClosed)?
-            else {
+            let Some(event) = self.receive_event(CONTROL_POLL)? else {
                 continue;
             };
             match event.name.as_str() {
@@ -494,10 +492,7 @@ impl DeepSeekRunnerTransport {
                 continue;
             };
             match event.name.as_str() {
-                "session_bound" => {
-                    let bound = self.accept_session_binding(&event);
-                    self.classify(bound, DeepSeekCycleFailure::TerminalMismatch)?;
-                }
+                "session_bound" => self.accept_session_binding(&event)?,
                 "member_closed" => {
                     let session_id = event.data.get("sessionId").and_then(Value::as_str);
                     let session_matches = if self.native_session_id.is_empty() {
@@ -597,7 +592,14 @@ impl DeepSeekRunnerTransport {
                 interrupt_sent_at = Some(Instant::now());
             }
 
-            let Some(event) = self.receive_event(CONTROL_POLL)? else {
+            // The runner-death path: `receive_event` fails on a disconnected
+            // stdout (the child died mid-cycle) or on a frame the shared runner
+            // protocol cannot parse. Both leave the turn unobservable, and both
+            // settle the same way once acceptance is known, so they share one
+            // ending here (ADR 0076).
+            let received = self.receive_event(CONTROL_POLL);
+            let Some(event) = self.classify(received, DeepSeekCycleFailure::TransportClosed)?
+            else {
                 // D2/liveness: prove the transport is alive on every silent
                 // poll; the probe failing (or the reader-thread Disconnected
                 // branch) is the transport-death proof, never a wall-clock
@@ -637,7 +639,15 @@ impl DeepSeekRunnerTransport {
             };
             on_event(&event.raw);
             match event.name.as_str() {
-                "session_bound" => self.accept_session_binding(&event)?,
+                // Every failure here is about the PROVIDER's reported session
+                // identity — a missing sessionId, an unverifiable provider
+                // version, `DEEPSEEK_HARNESS_RESUME_MISMATCH` or
+                // `DEEPSEEK_HARNESS_SESSION_CHANGED`. None is Harness-side, so
+                // this is a terminal we cannot trust, not a Harness abort.
+                "session_bound" => {
+                    let bound = self.accept_session_binding(&event);
+                    self.classify(bound, DeepSeekCycleFailure::TerminalMismatch)?;
+                }
                 "assistant_message" => {
                     let (text, tools) = assistant_projection(&event.data);
                     final_text.push_str(&text);

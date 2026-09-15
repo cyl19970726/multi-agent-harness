@@ -48,6 +48,10 @@ pub(crate) enum CodexCycleFailure {
     /// A frame belonged to another thread, turn or descendant than the one
     /// this cycle admitted.
     TerminalMismatch,
+    /// The provider asked for something outside the reviewed protocol and the
+    /// adapter refused it fail-closed mid-turn
+    /// (`CODEX_PROVIDER_REQUEST_UNSAFE` / `_UNSUPPORTED` / `_UNHANDLED`).
+    ProtocolViolation,
 }
 
 impl CodexCycleFailure {
@@ -92,6 +96,10 @@ impl CodexCycleFailure {
                 code: TerminalUnobservedCode::TerminalMismatch,
                 detail: detail.to_string(),
             },
+            Self::ProtocolViolation => CycleEnding::TerminalUnobserved {
+                code: TerminalUnobservedCode::ProtocolViolation,
+                detail: detail.to_string(),
+            },
         }
     }
 
@@ -110,5 +118,6 @@ impl CodexCycleFailure {
         Self::UnknownTerminalStatus,
         Self::PostconditionUnknown,
         Self::TerminalMismatch,
+        Self::ProtocolViolation,
     ];
 }
