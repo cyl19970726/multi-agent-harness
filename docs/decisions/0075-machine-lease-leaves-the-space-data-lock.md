@@ -32,8 +32,8 @@ serializes every ordinary data mutation there. That coupling has a measured pric
   `budget = remaining TTL` (`store_node_runtime.rs:382-391`), then queues on `.store.lock`.
   A renewal therefore cannot fail *before* expiry — and cannot succeed after a queue
   longer than the TTL either. TTL is `max(scan_interval*4, 15_000)` ms
-  (`machine_authority.rs:543-555`); renewal runs every `remaining/4`, capped at 5 s
-  (`:40-44`, `:578-608`, `:668-703`).
+  (`machine_authority.rs:551-563`); renewal runs every `remaining/4`, capped at 5 s
+  (`:40-44`, `:586-616`, `:676-711`).
 - **Every renewal also rewrites the lease ledger.** `compact_node_daemon_leases_unlocked` runs
   on each renewal (`store_node_runtime.rs:415`, `store_jsonl.rs:195-251`): full read + temp +
   rename + directory fsync, added by #811 because append-only heartbeats grew the ledger without
@@ -65,7 +65,7 @@ Two further facts make today's shape hard to defend on its own terms. First, **t
 scope is reconstructed, not stored**: generations are Space-local counters
 (`store_node_runtime.rs:323`, one per Space store), and "machine-wide" exists only because
 `ensure_node_authority_bundle` takes the whole set at once and treats any member's failure
-as total loss (`machine_authority.rs:190-307`) — a rule written down only in
+as total loss (`machine_authority.rs:190-315`) — a rule written down only in
 `agent-runtime.md:24-27`. In evidence one node (`2437c3dd…`) is registered in 25 Spaces
 carrying **23 distinct** "current" generations for the same authority, from 1 to 148;
 `AGENTS.md`'s "never scoped to one Execution Space" is not true of the rows. Second, **the
@@ -140,8 +140,8 @@ contenders are this daemon's own renewal and a rare operator verb) → read → 
 `tmp` → `fsync(tmp)` → `rename` → `fsync(dir)` → release. ~350 bytes, two fsyncs, no unrelated
 data in the critical section, and no compaction step because a replace has nothing to compact.
 The renewal is **one write per machine**, not one per Space:
-`run_held_node_authorities` and its per-Space workers (`machine_authority.rs:613-666`, `:668-703`)
-collapse into a single heartbeat, and `ensure_node_authority_bundle` (`:190-307`) becomes one
+`run_held_node_authorities` and its per-Space workers (`machine_authority.rs:621-674`, `:676-711`)
+collapse into a single heartbeat, and `ensure_node_authority_bundle` (`:190-315`) becomes one
 acquire plus the unchanged per-Space *registration* check — `node_project_registrations.jsonl`
 stays Space-local because it says which Spaces this node serves, not who owns the machine.
 
@@ -158,7 +158,7 @@ replaces `latest_node_daemon_lease` at every fence site listed above. `MachineLe
 
 **Production binds the home at exactly two entry points**, and neither infers it from a path:
 
-- the CLI, once per process (`firm-cli/src/main.rs:513`);
+- the CLI, once per process (`firm-cli/src/main.rs:516`);
 - the NodeDaemon, at both places it builds a Store — `registered_spaces`
   (`machine_authority.rs:148-183`), which hands out the Store every machine-lease writer uses,
   and `ensure_stale_socket_reclaimable` (`:104-146`).
@@ -247,7 +247,7 @@ here so the count closes:
 | `firm-cli/src/remote_fabric.rs:214` | `validate_wave4c_node_authority` — refuses `FabricErrorCode::NodeStaleGeneration` |
 | `firm-cli/src/role_actions_api/operator_actions.rs:418`, `:451`, `:489`, `:507` | `execute_operator_action` |
 | `firm-cli/src/role_actions_api/canonical_actions.rs:565` | `execute_canonical_role_action` |
-| `machine_authority.rs:125`, `:222`, `:279`, `:371`, `:738`, `:973` | the bundle, E1a's automatic predecessor recovery, the heartbeat, acquire, release and shutdown settlement |
+| `machine_authority.rs:125`, `:222`, `:287`, `:379`, `:746`, `:981` | the bundle, E1a's automatic predecessor recovery, the heartbeat, acquire, release and shutdown settlement |
 | `store_node_runtime.rs:295`, `:383`, `:395`, `:443`, `:483` | the acquire/renew/drain/release quartet — these do not "switch", they **become** the document writer |
 
 **Excluded, and why** — the other 32 of the 78 direct reads never refuse: the Dashboard and HTTP lease
@@ -322,7 +322,7 @@ with today's reattach refusal — expiry still never becomes a drain receipt.
 generation is unreleased or any Session of it is non-`Detached` or has an open cycle. With one
 document that proof is gathered from **every registered Space first**, and only then is
 `released` published — so today's continue-past-failure partial release
-(`machine_authority.rs:923-967`, `:1120-1154`) becomes one all-or-nothing publish over an explicit
+(`machine_authority.rs:931-975`, `:1128-1162`) becomes one all-or-nothing publish over an explicit
 proof set, and `authority_released: false` stops meaning "partly". `recover-predecessor`
 (`daemon_cli.rs:200-252`, `daemon_predecessor_recovery.rs:43-163`) keeps its exact-literal
 confirm, dead-socket and dead-pid checks and its per-Space session settlement, but the lease half
@@ -396,7 +396,7 @@ not before — and its test is retargeted at the legacy path. `daemon status` ga
 - **Upgrade** — pre-cutover store + new daemon: legacy rows decode, projections render, admission
   refuses with the named error, `daemon status` reports `lease_source: legacy_space_row`.
 - **Stale-socket reclaim** — `ensure_stale_socket_reclaimable` is bound to the Firm home at
-  `machine_authority.rs:119` but reads only Space rows today, so nothing observable proves the
+  `machine_authority.rs:124` but reads only Space rows today, so nothing observable proves the
   binding until cutover. The cutover test must assert that this path's **first read of the node
   file** goes through that binding: a daemon whose Space roots name no home must still reclaim
   (or refuse to reclaim) from `<FIRM_HOME>/nodes/<node_id>/`, not from a derived directory.
