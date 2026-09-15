@@ -6,6 +6,11 @@ impl HarnessStore {
         Self {
             process_write_lock: process_write_lock_for(&root),
             read_cache: Arc::new(Mutex::new(Default::default())),
+            // A store root registered under a Firm home names that home by
+            // its shape (ADR 0075). A root of any other shape stays unbound, so
+            // a machine-authority read fails closed instead of guessing; those
+            // callers bind one explicitly with `with_firm_home`.
+            firm_home: firm_home_of_registered_store_root(&root),
             root,
             provider_compatibility_scope: None,
         }
