@@ -222,7 +222,15 @@ impl MultiTeamDaemon {
             // operator CLI runs before making a human do it: the two real
             // losses in the dogfood store waited 1h53m and 2.5 days for that
             // human, with every proof already satisfiable (ADR 0073).
-            self.recover_proven_dead_predecessor();
+            let recovered = self.recover_proven_dead_predecessor();
+            // A Space this recovery released is one this scan is about to
+            // acquire for the first time. Without this, its `newly_acquired`
+            // flag would still say "an existing lease" and a later Space's
+            // failure would leave the freshly acquired lease behind instead of
+            // rolling it back.
+            for (space, _, newly_acquired) in &mut required {
+                *newly_acquired |= recovered.contains(&space.id);
+            }
         }
 
         let mut acquired = Vec::new();
@@ -292,10 +300,10 @@ impl MultiTeamDaemon {
     /// predecessor. If any proof fails, this refuses exactly as before and
     /// names the failing proof in `daemon status`; an alive-but-starved
     /// predecessor and ambiguous RuntimeCommands stay human-gated.
-    fn recover_proven_dead_predecessor(&self) {
+    fn recover_proven_dead_predecessor(&self) -> HashSet<String> {
         let started = Instant::now();
         let (expires, outcome) = match self.attempt_automatic_predecessor_recovery() {
-            Ok(None) => return,
+            Ok(None) => return HashSet::new(),
             Ok(Some((expires, receipt))) => (expires, Ok(receipt)),
             Err((expires, code, detail)) => (expires, Err(format!("{code}: {detail}"))),
         };
@@ -307,10 +315,22 @@ impl MultiTeamDaemon {
             outcome.as_ref().err().map(String::as_str),
         );
         match outcome {
-            Ok(receipt) => self.journal_automatic_predecessor_recovery(&receipt),
-            Err(reason) => eprintln!(
-                "[node-daemon] NODE_DAEMON_PREDECESSOR_RECOVERY_REFUSED: {reason}; recovery action: firm daemon recover-predecessor --confirm daemon-recover-predecessor"
-            ),
+            Ok(receipt) => {
+                self.journal_automatic_predecessor_recovery(&receipt);
+                receipt["recovered_spaces"]
+                    .as_array()
+                    .map(Vec::as_slice)
+                    .unwrap_or_default()
+                    .iter()
+                    .filter_map(|value| value.as_str().map(str::to_owned))
+                    .collect()
+            }
+            Err(reason) => {
+                eprintln!(
+                    "[node-daemon] NODE_DAEMON_PREDECESSOR_RECOVERY_REFUSED: {reason}; recovery action: firm daemon recover-predecessor --confirm daemon-recover-predecessor"
+                );
+                HashSet::new()
+            }
         }
     }
 
