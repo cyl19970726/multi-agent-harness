@@ -43,11 +43,16 @@ struct TestStore {
 
 impl TestStore {
     fn new(label: &str) -> Self {
-        let root = std::env::temp_dir().join(format!(
-            "firm-store-member-trust-{label}-{}-{}",
-            std::process::id(),
-            NEXT_TEMP.fetch_add(1, Ordering::Relaxed)
-        ));
+        // Production's layout: `<FIRM_HOME>/execution-spaces/<id>`, so the
+        // Store names its own Firm home the way a registered store does.
+        let root = std::env::temp_dir()
+            .join(format!(
+                "firm-store-member-trust-{label}-{}-{}",
+                std::process::id(),
+                NEXT_TEMP.fetch_add(1, Ordering::Relaxed)
+            ))
+            .join("execution-spaces")
+            .join("space");
         let store = HarnessStore::new(&root);
         store.init().expect("initialize test store");
         Self { root, store }

@@ -24,14 +24,17 @@ use work_execution_fixture::{
 };
 
 fn lock_policy_test_store(label: &str) -> HarnessStore {
-    let root = std::env::temp_dir().join(format!(
-        "firm-store-lock-policy-{label}-{}-{}",
-        std::process::id(),
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("clock")
-            .as_nanos()
-    ));
+    let root = std::env::temp_dir()
+        .join(format!(
+            "firm-store-lock-policy-{label}-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ))
+        .join("execution-spaces")
+        .join("space");
     let store = HarnessStore::new(root);
     store.init().expect("init lock-policy store");
     store
@@ -1094,13 +1097,16 @@ fn test_delivery(delivery_id: &str) -> RegistryDeliveryAttempt {
 }
 
 fn temp_store(label: &str) -> (PathBuf, HarnessStore) {
-    let root = std::env::temp_dir().join(format!(
-        "firm-store-{label}-{}",
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("system clock")
-            .as_nanos()
-    ));
+    let root = std::env::temp_dir()
+        .join(format!(
+            "firm-store-{label}-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system clock")
+                .as_nanos()
+        ))
+        .join("execution-spaces")
+        .join("space");
     let store = HarnessStore::new(&root);
     (root, store)
 }

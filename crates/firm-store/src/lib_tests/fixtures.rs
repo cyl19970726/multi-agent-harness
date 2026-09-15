@@ -1,6 +1,10 @@
 use super::*;
 
-pub(super) fn team_test_root(name: &str) -> PathBuf {
+/// A per-test Firm home. Fixtures keep production's layout so a Store built
+/// on one of these roots names its own Firm home exactly as a registered store
+/// does, and the machine lease document (ADR 0075) lands beside the home
+/// rather than inside the Space.
+pub(super) fn team_test_firm_home(name: &str) -> PathBuf {
     std::env::temp_dir().join(format!(
         "firm-store-team-test-{name}-{}",
         SystemTime::now()
@@ -8,6 +12,14 @@ pub(super) fn team_test_root(name: &str) -> PathBuf {
             .expect("system clock")
             .as_millis()
     ))
+}
+
+/// One Execution Space store root inside that home:
+/// `<FIRM_HOME>/execution-spaces/<id>`.
+pub(super) fn team_test_root(name: &str) -> PathBuf {
+    team_test_firm_home(name)
+        .join("execution-spaces")
+        .join("space")
 }
 
 pub(super) fn run_host_work_context(

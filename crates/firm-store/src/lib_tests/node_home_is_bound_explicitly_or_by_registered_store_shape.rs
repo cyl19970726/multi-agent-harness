@@ -10,7 +10,7 @@ use super::*;
 /// lives in. Both registered layouts sit under the same home and both name it.
 #[test]
 fn a_registered_store_root_names_its_own_firm_home() {
-    let firm_home = team_test_root("node-home-registered");
+    let firm_home = team_test_firm_home("node-home-registered");
 
     for registered_dir in ["execution-spaces", "projects"] {
         let store = HarnessStore::new(firm_home.join(registered_dir).join("store-1"));
@@ -31,7 +31,7 @@ fn a_registered_store_root_names_its_own_firm_home() {
 /// fence or a fall back to Execution Space data.
 #[test]
 fn an_unshaped_root_binds_nothing_and_fails_closed() {
-    let store_root = team_test_root("node-home-unshaped");
+    let store_root = team_test_firm_home("node-home-unshaped");
     let store = HarnessStore::new(&store_root);
 
     assert_eq!(store.firm_home(), None);
@@ -48,9 +48,9 @@ fn an_unshaped_root_binds_nothing_and_fails_closed() {
 /// root's layout, and an explicit binding always wins over the derived one.
 #[test]
 fn an_explicit_binding_wins_over_the_derived_one() {
-    let derived_home = team_test_root("node-home-derived");
+    let derived_home = team_test_firm_home("node-home-derived");
     let store_root = derived_home.join("execution-spaces").join("space-1");
-    let explicit_home = team_test_root("node-home-explicit");
+    let explicit_home = team_test_firm_home("node-home-explicit");
 
     let store = HarnessStore::new(&store_root).with_firm_home(&explicit_home);
     assert_eq!(store.firm_home(), Some(explicit_home.as_path()));
@@ -62,7 +62,7 @@ fn an_explicit_binding_wins_over_the_derived_one() {
     );
 
     let rescued =
-        HarnessStore::new(team_test_root("node-home-rescued")).with_firm_home(&explicit_home);
+        HarnessStore::new(team_test_firm_home("node-home-rescued")).with_firm_home(&explicit_home);
     assert_eq!(
         rescued
             .node_home("node-1")
@@ -77,7 +77,7 @@ fn an_explicit_binding_wins_over_the_derived_one() {
 #[test]
 fn a_near_miss_layout_does_not_derive_a_firm_home() {
     for parent in ["execution_spaces", "executionspaces", "spaces", "nodes"] {
-        let root = team_test_root("node-home-near-miss")
+        let root = team_test_firm_home("node-home-near-miss")
             .join(parent)
             .join("space-1");
         assert_eq!(
@@ -95,7 +95,7 @@ fn a_near_miss_layout_does_not_derive_a_firm_home() {
 /// malformed id is refused by name instead of escaping the node tree.
 #[test]
 fn a_node_id_that_is_not_one_path_segment_is_refused() {
-    let firm_home = team_test_root("node-home-segment");
+    let firm_home = team_test_firm_home("node-home-segment");
     let store = HarnessStore::new(firm_home.join("execution-spaces").join("space-1"));
 
     for node_id in ["", ".", "..", "../other", "a/b", "a\\b"] {
@@ -113,7 +113,7 @@ fn a_node_id_that_is_not_one_path_segment_is_refused() {
 /// machine-authority read looks, and nothing about this Store's own data.
 #[test]
 fn binding_a_firm_home_changes_no_store_data() {
-    let root = team_test_root("node-home-inert");
+    let root = team_test_firm_home("node-home-inert");
     let unbound = HarnessStore::new(&root);
     unbound.init().expect("initialize store");
     unbound
@@ -126,10 +126,43 @@ fn binding_a_firm_home_changes_no_store_data() {
         })
         .expect("insert Node");
 
-    let bound = HarnessStore::new(&root).with_firm_home(team_test_root("node-home-inert-home"));
+    let bound =
+        HarnessStore::new(&root).with_firm_home(team_test_firm_home("node-home-inert-home"));
     assert_eq!(bound.root(), unbound.root());
     assert_eq!(
         bound.latest_execution_nodes().expect("bound read"),
         unbound.latest_execution_nodes().expect("unbound read")
+    );
+}
+
+/// The binding has to be true wherever machine authority is actually written.
+/// Pinning it at the acquire path means a fixture that drifts back to a bare
+/// root is caught here, by name, rather than as an unexplained fence refusal
+/// once the cutover makes `node_home` load-bearing.
+#[test]
+fn a_store_that_can_acquire_a_node_daemon_lease_can_name_its_node_home() {
+    let (root, store) = temp_store("node-home-acquire");
+    store.init().expect("initialize store");
+    let node_id = "11111111-1111-4111-8111-111111111111";
+    store
+        .insert_execution_node(&ExecutionNode {
+            id: node_id.into(),
+            display_name: "test-node".into(),
+            status: ExecutionNodeStatus::Active,
+            created_at: "unix-ms:1".into(),
+            updated_at: "unix-ms:1".into(),
+        })
+        .expect("insert Node");
+    store
+        .acquire_node_daemon_lease(node_id, "node-daemon:test", "instance-1", 1, 60_000)
+        .expect("acquire machine authority");
+
+    let node_home = store
+        .node_home(node_id)
+        .expect("a Store that owns machine authority can name where it belongs");
+    assert!(
+        !node_home.starts_with(&root),
+        "the machine lease document belongs beside the Firm home, not inside the Space: {}",
+        node_home.display()
     );
 }

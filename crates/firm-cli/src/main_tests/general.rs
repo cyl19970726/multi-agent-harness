@@ -510,7 +510,12 @@ fn append_test_delivery_attempt(
 }
 
 pub(crate) fn temp_store(label: &str) -> (HarnessStore, PathBuf) {
-    let root = std::env::temp_dir().join(format!("harness-cli-test-{}", generated_id(label)));
+    // Production's layout: `<FIRM_HOME>/execution-spaces/<id>`, so the Store
+    // names its own Firm home the way a registered store does (ADR 0075).
+    let root = std::env::temp_dir()
+        .join(format!("harness-cli-test-{}", generated_id(label)))
+        .join("execution-spaces")
+        .join("space");
     (HarnessStore::new(&root), root)
 }
 
