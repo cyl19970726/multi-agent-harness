@@ -4,6 +4,15 @@
 //! stderr draining. Provider command construction and event interpretation stay
 //! in their provider packages.
 
+mod predecessor_process;
+
+pub use predecessor_process::{
+    classify_predecessor_process, parse_elapsed_seconds, parse_predecessor_instance_id,
+    probe_predecessor_process, process_exists, process_start_lower_bound_unix_ms,
+    PredecessorInstanceId, PredecessorProcessProof, PredecessorProcessState,
+    REUSED_PID_START_TOLERANCE_MS,
+};
+
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read};
 use std::process::{Command, Stdio};

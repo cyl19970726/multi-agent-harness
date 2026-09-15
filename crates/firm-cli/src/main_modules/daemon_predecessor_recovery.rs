@@ -11,36 +11,28 @@ use super::*;
 pub(crate) struct PredecessorRecoveryIntent {
     pub daemon_id: String,
     pub instance_id: String,
+    /// The latest moment the predecessor was known to be alive: the exact
+    /// lease renewal the death proof is anchored to.
+    pub anchor_unix_ms: u64,
     pub spaces: Vec<(harness_core::ExecutionSpace, harness_core::NodeDaemonLease)>,
 }
 
-/// Standard process-existence probe for a predecessor instance id of the form
-/// `<pid>:<boot token>:<daemon label>`. EPERM still proves that a process
-/// exists; only ESRCH is accepted as absence.
-pub(crate) fn predecessor_process_is_absent(instance_id: &str) -> Result<bool, String> {
-    let pid = instance_id
-        .split(':')
-        .next()
-        .ok_or_else(|| "predecessor instance id has no process id".to_string())?
-        .parse::<i32>()
-        .map_err(|_| "predecessor instance id does not begin with a process id".to_string())?;
-    if pid <= 0 {
-        return Err("predecessor process id must be positive".into());
-    }
-    // SAFETY: kill(pid, 0) sends no signal and is the standard process
-    // existence probe.
-    let result = unsafe { libc::kill(pid, 0) };
-    if result == 0 {
-        return Ok(false);
-    }
-    match std::io::Error::last_os_error().raw_os_error() {
-        Some(libc::ESRCH) => Ok(true),
-        Some(libc::EPERM) => Ok(false),
-        Some(code) => Err(format!(
-            "cannot verify predecessor process {pid}: errno {code}"
-        )),
-        None => Err(format!("cannot verify predecessor process {pid}")),
-    }
+/// Standard process-death probe for a predecessor instance id of the form
+/// `<pid>:<minted unix-ms>:<daemon label>`, anchored at the last moment the
+/// predecessor was known to be alive.
+///
+/// The proof itself belongs to `harness_runtime_host::predecessor_process`, so
+/// this CLI path and the successor daemon's automatic recovery answer the
+/// death question with one implementation instead of two (ADR 0073).
+pub(crate) fn predecessor_process_proof(
+    instance_id: &str,
+    anchor_unix_ms: u64,
+) -> Result<harness_runtime_host::PredecessorProcessProof, String> {
+    harness_runtime_host::probe_predecessor_process(
+        instance_id,
+        anchor_unix_ms,
+        current_unix_ms_u64(),
+    )
 }
 
 /// Capture exact latest Space-local leases of one predecessor instance
@@ -115,20 +107,28 @@ pub(crate) fn validate_daemon_predecessor_recovery(
             "recovery intent does not match the exact latest predecessor".into(),
         ));
     }
-    if !predecessor_process_is_absent(&latest.instance_id).map_err(|error| {
-        (
-            "NODE_DAEMON_PREDECESSOR_RECOVERY_UNVERIFIED".to_string(),
-            error,
-        )
-    })? {
+    let anchor_unix_ms = latest.renewed_unix_ms;
+    let proof =
+        predecessor_process_proof(&latest.instance_id, anchor_unix_ms).map_err(|error| {
+            (
+                "NODE_DAEMON_PREDECESSOR_RECOVERY_UNVERIFIED".to_string(),
+                error,
+            )
+        })?;
+    if !proof.counts_as_absent() {
         return Err((
             "NODE_DAEMON_PREDECESSOR_RECOVERY_LIVE".into(),
-            "the exact predecessor process still exists".into(),
+            format!(
+                "the exact predecessor process still exists ({}; {})",
+                proof.reason(),
+                proof.evidence
+            ),
         ));
     }
     Ok(PredecessorRecoveryIntent {
         daemon_id: latest.daemon_id,
         instance_id: latest.instance_id,
+        anchor_unix_ms,
         spaces,
     })
 }
@@ -156,13 +156,22 @@ pub(crate) fn recover_daemon_predecessor_spaces(
     // Re-probe process absence immediately before any settlement, then use
     // only the captured Space/lease tuples. The Store fences each tuple under
     // its write lock, including successors arriving after validation.
+    let proof =
+        predecessor_process_proof(&intent.instance_id, intent.anchor_unix_ms).map_err(|error| {
+            (
+                "NODE_DAEMON_PREDECESSOR_RECOVERY_UNVERIFIED".to_string(),
+                error,
+            )
+        })?;
     if daemon_client::daemon_status_via_socket(firm_home, node_id).is_some()
-        || !predecessor_process_is_absent(&intent.instance_id)
-            .map_err(|error| ("NODE_DAEMON_PREDECESSOR_RECOVERY_UNVERIFIED".into(), error))?
+        || !proof.counts_as_absent()
     {
         return Err((
             "NODE_DAEMON_PREDECESSOR_RECOVERY_LIVE".into(),
-            "the exact predecessor process or NodeDaemon socket is still live".into(),
+            format!(
+                "the exact predecessor process or NodeDaemon socket is still live ({})",
+                proof.reason()
+            ),
         ));
     }
     let mut recovered_spaces = Vec::new();
@@ -225,6 +234,7 @@ pub(crate) fn recover_daemon_predecessor_spaces(
         "recovered_spaces": recovered_spaces,
         "space_settlements": space_settlements,
         "evidence_ref": evidence_ref,
+        "process_death_proof": predecessor_process_death_proof_json(&proof),
     });
     if !failures.is_empty() {
         receipt["status"] = serde_json::json!("partial");
@@ -235,6 +245,22 @@ pub(crate) fn recover_daemon_predecessor_spaces(
         ));
     }
     Ok(receipt)
+}
+
+/// The reportable shape of one process-death proof. Automatic recovery
+/// (`machine_authority.rs`) journals the identical object, so an operator
+/// reads the same evidence whichever path settled the predecessor.
+pub(crate) fn predecessor_process_death_proof_json(
+    proof: &harness_runtime_host::PredecessorProcessProof,
+) -> serde_json::Value {
+    serde_json::json!({
+        "pid": proof.pid,
+        "reason": proof.reason(),
+        "anchor_unix_ms": proof.anchor_unix_ms,
+        "instance_minted_unix_ms": proof.instance_minted_unix_ms,
+        "started_unix_ms_lower_bound": proof.started_unix_ms_lower_bound,
+        "evidence": proof.evidence,
+    })
 }
 
 fn execution_space_error_pair(
