@@ -132,8 +132,21 @@ explicit integration boundary.
 
 ### A Drained Lane Is Interrupted, Not Terminal
 
-A NodeDaemon drain (graceful shutdown or hard-crash recovery) kills this
-daemon's owned provider process groups and then settles every Session it owned:
+A NodeDaemon drain (graceful shutdown or hard-crash recovery) stops this
+daemon's owned provider work in three ordered steps, and only the last is a
+kill: one cooperative interrupt per live turn, then the bounded cooperative
+wait for each Supervisor thread once its heartbeat is revoked, then SIGKILL of
+the registered provider process groups plus a bounded forced join. Losing
+machine authority or a TeamRun Supervisor lease is what fires that interrupt —
+one per live turn in scope, through the adapter's own `interrupt_current_cycle`
+path, as a process-local action and never a `RuntimeCommand`, because admission
+is already closed and that refusal is correct
+([ADR 0074](../../decisions/0074-authority-loss-issues-one-cooperative-interrupt.md)
+carries the per-provider primitive and the bound). An interrupted turn still
+settles nothing: its terminal hits the ordinary authority refusal, so the
+admitted `StartCycle` keeps `Unknown` certainty and becomes recovery work.
+
+The drain then settles every Session it owned:
 residency `Detached`, activity `Idle`, continuation disarmed, no turn and no
 queued native input. A Session that was mid-turn keeps the honest record that
 its cycle never reached its own end and becomes `Interrupted`; a Session that
