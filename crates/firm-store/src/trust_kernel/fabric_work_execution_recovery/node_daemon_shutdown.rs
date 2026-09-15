@@ -119,8 +119,12 @@ impl HarnessStore {
                         && session.node_daemon_generation == generation
                 })
             {
+                // A lane an earlier loss flagged `settlement_incomplete` is not
+                // settled, however idle it looks: nothing has yet proven its
+                // process group terminal. Settle it now and clear the flag.
                 if session.control_state.runtime_residency == RuntimeResidency::Detached
                     && session.current_cycle_marker.is_none()
+                    && session.control_state.settlement_incomplete.is_none()
                 {
                     continue;
                 }
@@ -131,6 +135,7 @@ impl HarnessStore {
                 session.control_state.continuation.activation =
                     NativeContinuationActivation::Disarmed;
                 session.control_state.last_reconciled_at = Some(updated_at.to_string());
+                session.control_state.settlement_incomplete = None;
                 session.current_cycle_marker = None;
                 session.queued_input_count = 0;
                 if !matches!(
@@ -192,5 +197,115 @@ impl HarnessStore {
             )?;
         }
         Ok(())
+    }
+    /// Record — never claim — that this exact generation could not settle the
+    /// lanes it owned.
+    ///
+    /// The dying daemon reaches this when its machine authority is already
+    /// gone (the Space's latest lease moved to another daemon or instance) or
+    /// when its own drain did not converge. In both cases it has no proof that
+    /// the owning provider process groups are terminal, so it must not write
+    /// `Interrupted`, detach residency, or anything else that reads as
+    /// settlement. It writes the honest fact instead: *this generation went
+    /// dark here, for this reason*. Predecessor recovery — automatic or
+    /// operator-driven — reads the flag, settles the lane under a real
+    /// termination proof, and clears it (ADR 0073).
+    ///
+    /// This writer deliberately takes no lease argument. Its whole purpose is
+    /// the case where the lease is no longer this generation's to read; the
+    /// fence is instead the exact daemon Service actor plus the exact
+    /// node/daemon/generation/instance the marked Sessions must already carry.
+    #[allow(clippy::too_many_arguments)]
+    pub fn record_node_daemon_settlement_incomplete(
+        &self,
+        context: &firm_core::agentfirm_api::MutationContext,
+        node_id: &str,
+        daemon_id: &str,
+        generation: u64,
+        instance_id: &str,
+        reason: &str,
+        updated_at: &str,
+    ) -> StoreResult<Vec<String>> {
+        use firm_core::agentfirm_api::{ActorKind, RuntimeResidency, SessionSettlementIncomplete};
+
+        self.init()?;
+        let _lock = self.acquire_write_lock()?;
+        if context.authenticated_actor.kind != ActorKind::Service
+            || context.authenticated_actor.id != daemon_id
+        {
+            return Err(StoreError::Conflict(
+                "NODE_DAEMON_SETTLEMENT_INCOMPLETE_UNAUTHORIZED: only the exact daemon Service may record its own unsettled lanes"
+                    .into(),
+            ));
+        }
+        if reason.trim().is_empty() {
+            return Err(StoreError::Conflict(
+                "NODE_DAEMON_SETTLEMENT_INCOMPLETE_REASON_REQUIRED: an unsettled lane names why it could not be settled"
+                    .into(),
+            ));
+        }
+        let marker = SessionSettlementIncomplete {
+            node_id: node_id.to_string(),
+            node_daemon_id: daemon_id.to_string(),
+            node_daemon_generation: generation,
+            instance_id: instance_id.to_string(),
+            reason: reason.to_string(),
+            observed_at: updated_at.to_string(),
+        };
+        let mut recorded = Vec::new();
+        for execution_space_id in self.canonical_execution_space_ids()? {
+            for mut session in self
+                .fabric_agent_sessions(&execution_space_id)?
+                .into_iter()
+                .filter(|session| {
+                    session.node_id == node_id
+                        && session.node_daemon_id == daemon_id
+                        && session.node_daemon_generation == generation
+                })
+            {
+                // A lane already at rest needs no marker, and a lane already
+                // marked by this exact generation must not be rewritten.
+                if (session.control_state.runtime_residency == RuntimeResidency::Detached
+                    && session.current_cycle_marker.is_none())
+                    || session.control_state.settlement_incomplete.as_ref() == Some(&marker)
+                {
+                    continue;
+                }
+                let previous_version = session.version;
+                session.control_state.settlement_incomplete = Some(marker.clone());
+                session.version = session.version.saturating_add(1);
+                session.last_active_at = updated_at.to_string();
+                let mut session_context = context.clone();
+                session_context.execution_space_id = execution_space_id.clone();
+                session_context.command_name = "node_daemon.settlement_incomplete".into();
+                // Keyed by the exact dying generation, like the drain and the
+                // recovery detach (#837), so repeating the observation replays
+                // instead of colliding.
+                session_context.idempotency_key = format!(
+                    "node-daemon-settlement-incomplete:{node_id}:{daemon_id}:{generation}:{instance_id}:session:{}",
+                    session.id
+                );
+                session_context.expected_version = previous_version;
+                session_context.request_fingerprint = None;
+                self.commit_trust_projection_unlocked(
+                    &session_context,
+                    "agent_session",
+                    &session.id,
+                    "settlement_incomplete_recorded",
+                    serde_json::json!({
+                        "node_id": node_id,
+                        "daemon_id": daemon_id,
+                        "generation": generation,
+                        "instance_id": instance_id,
+                        "reason": reason,
+                    }),
+                    &session,
+                    Vec::new(),
+                    Vec::new(),
+                )?;
+                recorded.push(session.id.clone());
+            }
+        }
+        Ok(recorded)
     }
 }

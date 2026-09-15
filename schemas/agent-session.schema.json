@@ -49,7 +49,21 @@
         "continuation": {"$ref": "#/$defs/continuation"},
         "composition_fingerprint": {"type": ["string", "null"], "pattern": "^sha256:[0-9a-f]{64}$"},
         "capability_fingerprint": {"type": ["string", "null"], "pattern": "^sha256:[0-9a-f]{64}$"},
-        "last_reconciled_at": {"type": ["string", "null"]}
+        "last_reconciled_at": {"type": ["string", "null"]},
+        "settlement_incomplete": {"anyOf": [{"$ref": "#/$defs/settlement_incomplete"}, {"type": "null"}]}
+      }
+    },
+    "settlement_incomplete": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["node_id", "node_daemon_id", "node_daemon_generation", "instance_id", "reason", "observed_at"],
+      "properties": {
+        "node_id": {"type": "string", "format": "uuid"},
+        "node_daemon_id": {"type": "string", "minLength": 1},
+        "node_daemon_generation": {"type": "integer", "minimum": 1},
+        "instance_id": {"type": "string", "minLength": 1},
+        "reason": {"type": "string", "minLength": 1},
+        "observed_at": {"type": "string", "minLength": 1}
       }
     },
     "continuation": {

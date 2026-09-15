@@ -82,6 +82,35 @@ impl Validate for agentfirm_api::AgentSession {
                 reason: "FullAccess requires an exact canonical workspace cwd",
             });
         }
+        if let Some(incomplete) = &self.control_state.settlement_incomplete {
+            require_non_empty(
+                &incomplete.node_id,
+                "AgentSession.control_state.settlement_incomplete.node_id",
+            )?;
+            require_non_empty(
+                &incomplete.node_daemon_id,
+                "AgentSession.control_state.settlement_incomplete.node_daemon_id",
+            )?;
+            require_non_empty(
+                &incomplete.instance_id,
+                "AgentSession.control_state.settlement_incomplete.instance_id",
+            )?;
+            require_non_empty(
+                &incomplete.reason,
+                "AgentSession.control_state.settlement_incomplete.reason",
+            )?;
+            require_non_empty(
+                &incomplete.observed_at,
+                "AgentSession.control_state.settlement_incomplete.observed_at",
+            )?;
+            if incomplete.node_daemon_generation == 0 {
+                return Err(ValidationError::Invalid {
+                    field:
+                        "AgentSession.control_state.settlement_incomplete.node_daemon_generation",
+                    reason: "an unsettled lane names the exact generation that went dark",
+                });
+            }
+        }
         require_non_empty(&self.opened_at, "AgentSession.opened_at")?;
         require_non_empty(&self.last_active_at, "AgentSession.last_active_at")
     }

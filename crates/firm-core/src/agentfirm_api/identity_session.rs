@@ -246,6 +246,31 @@ pub struct NativeContinuationProjection {
     pub observed_at: Option<String>,
 }
 
+/// An honest record that one exact NodeDaemon generation lost authority over
+/// this lane before it could settle it.
+///
+/// It is deliberately NOT a settlement. Settlement requires proof that the
+/// owning provider process groups are terminal, and a generation whose lease
+/// moved away or whose drain did not converge never has that proof; claiming
+/// `Interrupted` there would be an operator-asserted flag rather than
+/// evidence. The marker instead names the generation that went dark and why,
+/// so the lane is never silently abandoned: predecessor recovery — automatic
+/// or `firm daemon recover-predecessor` — reads it, settles the lane under a
+/// real termination proof and clears it (ADR 0073).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SessionSettlementIncomplete {
+    pub node_id: String,
+    pub node_daemon_id: String,
+    pub node_daemon_generation: u64,
+    /// The exact dying daemon instance, so a later generation of the same
+    /// daemon id never reads this as its own unfinished business.
+    pub instance_id: String,
+    /// Why that generation could not settle the lane, in its own words.
+    pub reason: String,
+    pub observed_at: String,
+}
+
 /// Non-ledger runtime-control state attached to an AgentSession.
 ///
 /// Its default intentionally preserves readable legacy records while failing
@@ -274,6 +299,10 @@ pub struct AgentSessionControlState {
     pub capability_fingerprint: Option<String>,
     #[serde(default)]
     pub last_reconciled_at: Option<String>,
+    /// Set only when the generation that owned this lane went dark without
+    /// settling it. Recovery clears it; nothing else may.
+    #[serde(default)]
+    pub settlement_incomplete: Option<SessionSettlementIncomplete>,
 }
 
 /// One machine-local provider session owned by an exact NodeDaemon generation.

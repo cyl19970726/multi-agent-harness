@@ -27,6 +27,12 @@ pub struct NodeDaemonPredecessorRecovery {
     pub sessions_detached: Vec<String>,
     /// AgentSession ids that were already detached and idle when recovery ran.
     pub sessions_already_settled: Vec<String>,
+    /// AgentSession ids this recovery found carrying a `settlement_incomplete`
+    /// marker — lanes a dying generation honestly reported it could not settle
+    /// (ADR 0073). They are a subset of `sessions_detached`: recovery is the
+    /// first party with a termination proof, so it settles them and clears the
+    /// marker rather than trusting the dead generation's last look at them.
+    pub sessions_settlement_incomplete: Vec<String>,
 }
 
 impl HarnessStore {
@@ -96,6 +102,7 @@ impl HarnessStore {
                 supervisors_released: Vec::new(),
                 sessions_detached: Vec::new(),
                 sessions_already_settled: Vec::new(),
+                sessions_settlement_incomplete: Vec::new(),
             });
         }
         if lease.expires_unix_ms > now_unix_ms {
@@ -140,6 +147,7 @@ impl HarnessStore {
         let mut supervisors_released = Vec::new();
         let mut sessions_detached = Vec::new();
         let mut sessions_already_settled = Vec::new();
+        let mut sessions_settlement_incomplete = Vec::new();
 
         let mut supervisors = latest_by_id(self.team_supervisor_leases()?, |supervisor| {
             supervisor.team_run_id.clone()
@@ -184,8 +192,16 @@ impl HarnessStore {
                         && session.node_daemon_generation == generation
                 })
             {
+                // A lane the dying generation flagged `settlement_incomplete`
+                // is not settled, however idle it looks: that generation had
+                // no process-group termination proof when it wrote the flag,
+                // which is exactly why it wrote one instead of a settlement.
+                // Recovery does have the proof, so it settles the lane and
+                // clears the flag (ADR 0073).
+                let unsettled_marker = session.control_state.settlement_incomplete.is_some();
                 if session.control_state.runtime_residency == RuntimeResidency::Detached
                     && session.current_cycle_marker.is_none()
+                    && !unsettled_marker
                 {
                     // Already settled by this generation's own partial drain or
                     // by an earlier recovery attempt: recovery records the skip
@@ -193,6 +209,10 @@ impl HarnessStore {
                     sessions_already_settled.push(session.id.clone());
                     continue;
                 }
+                if unsettled_marker {
+                    sessions_settlement_incomplete.push(session.id.clone());
+                }
+                session.control_state.settlement_incomplete = None;
                 session.control_state.runtime_residency = RuntimeResidency::Detached;
                 session.control_state.activity = RuntimeActivity::Idle;
                 session.control_state.handoff_state = DriverHandoffState::None;
@@ -283,6 +303,7 @@ impl HarnessStore {
             supervisors_released,
             sessions_detached,
             sessions_already_settled,
+            sessions_settlement_incomplete,
         })
     }
 
@@ -320,11 +341,12 @@ impl HarnessStore {
                         && session.node_daemon_id == lease.daemon_id
                         && session.node_daemon_generation == lease.generation
                         && (session.control_state.runtime_residency != RuntimeResidency::Detached
-                            || session.current_cycle_marker.is_some())
+                            || session.current_cycle_marker.is_some()
+                            || session.control_state.settlement_incomplete.is_some())
                 })
             {
                 return Err(StoreError::Conflict(format!(
-                    "NODE_DAEMON_PREDECESSOR_UNSETTLED: AgentSession {} still has {:?} residency or an open cycle",
+                    "NODE_DAEMON_PREDECESSOR_UNSETTLED: AgentSession {} still has {:?} residency, an open cycle, or an unsettled-lane marker",
                     session.id, session.control_state.runtime_residency
                 )));
             }
