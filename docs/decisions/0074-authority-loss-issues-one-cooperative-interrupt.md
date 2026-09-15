@@ -24,11 +24,11 @@ runs, publishes Stop and drains the durable Node authorities.
 `AtomicBool` and prints a diagnostic. Both make every *future* Harness write
 fail closed. Neither touches the provider process that is executing right now.
 
-What followed was `graceful_shutdown_with_deadlines`
-(`crates/firm-node-daemon/src/supervisor_daemon/shutdown.rs`): revoke each
-run's heartbeat, wait up to `SUPERVISOR_DRAIN_TIMEOUT` (30 s) for a
-*cooperative* exit, then SIGKILL every registered provider process group
-(`crates/firm-runtime-host/src/lib.rs`), then a 5 s forced join.
+On the **machine** path a drain followed: `graceful_shutdown_with_deadlines`
+(`crates/firm-node-daemon/src/supervisor_daemon/shutdown.rs`) revoked each
+run's heartbeat, waited up to `SUPERVISOR_DRAIN_TIMEOUT` (30 s) for a
+*cooperative* exit, then SIGKILLed every registered provider process group
+(`crates/firm-runtime-host/src/lib.rs`), then joined for 5 s.
 
 The gap is between those two sentences. A member in the middle of a turn
 cannot exit cooperatively: the supervisor thread is inside
@@ -38,6 +38,16 @@ nothing between cycle start and the terminal consults authority. So the
 a 30-second window in which a provider keeps spending tokens and running tools
 on behalf of an authority that is already gone — and is then killed mid-tool
 with no chance to stop cleanly.
+
+On the **Supervisor-lease** path there was no backstop at all, and there still
+is none. `graceful_shutdown()` has exactly one call site — the daemon's own
+stop path in `supervisor_daemon.rs` — and `terminate_registered_process_groups`
+is called only from `shutdown.rs`. A TeamRun that loses its Supervisor lease
+while the daemon keeps serving other runs reaches neither: its supervisor
+thread returns `SupervisorLeaseLost`, the provider handle stays in
+`session_runtimes` until a Close path removes it, and
+`OwnedProcessGroupRegistration::drop` deliberately does not signal. Nothing
+stopped that turn; it ran to completion under a lease it no longer held.
 
 All five adapters already declare `interrupt_current_cycle` as `Supported`,
 and the supervisor's control poll already turns `CycleControl { interrupt:
@@ -53,10 +63,10 @@ first". That was aspirational for the drain path: nothing interrupted.
 
 A process-local registry
 (`crates/firm-runtime-host/src/authority_loss_interrupt.rs`) tracks the turns
-this process is driving. The supervisor registers one entry for the exact
-duration of a driven cycle, next to the turn lease
-(`crates/firm-cli/src/runtime_adapter.rs`); dropping that guard when the cycle
-returns is what keeps a finished turn out of any fan-out.
+this process is driving or is about to drive. The supervisor takes one guard
+just before it queues for a turn slot
+(`crates/firm-cli/src/runtime_adapter.rs`) and holds it until the cycle
+returns; dropping it is what keeps a finished turn out of any fan-out.
 
 On authority loss the latch calls `request_authority_loss_interrupt` with its
 scope:
@@ -81,6 +91,27 @@ existing `interrupt_current_cycle` path. Per adapter that is:
 Exactly one interrupt reaches a turn for the life of that turn. A second latch
 (the machine latch following a Supervisor latch, say) never republishes a
 request the turn already carries, so a provider never sees a storm.
+
+**The registration point is part of the contract.** A turn registers *before*
+`acquire_prepared_cycle_turn`, not after it. Closing admission only stops turns
+that have not yet reached the admission check, and between that check and the
+drive sits a blocking wait for a turn slot plus Store write-lock IO. Registering
+after that wait would leave a window — milliseconds to hundreds of milliseconds
+under lock contention — in which a turn is invisible to the fan-out and starts
+anyway. Registering before it closes the window with no new state, because the
+registry and the fan-out serialize on one mutex and every latch invalidates its
+scope before it fans out:
+
+- a latch that lands after registration finds the turn in the registry;
+- a latch that lands before it is caught by the `require_supervisor_lease()`
+  that `acquire_prepared_cycle_turn` performs *after* the wait, and the turn
+  never drives.
+
+The registry deliberately does **not** remember a latched scope, so a turn
+registered later is not born interrupted. Remembering it would permanently break
+a TeamRun that a successor Supervisor generation legitimately re-adopts in the
+same process. Covering the window is the caller's job, and the ordering above is
+how the caller does it.
 
 Codex's Close path additionally pauses an observed native Goal before
 interrupting. That belongs to Close semantics and is not part of this path:
@@ -108,6 +139,13 @@ The consequence is accepted: this interrupt has no durable ledger entry of its
 own. Its evidence is the self-stop journal (below), the provider's own native
 session record, and the daemon's stderr log.
 
+One further consequence of routing it through the control poll: the
+authority-loss check runs *before* the poll drains the Supervisor control lane,
+so a Close or Interrupt RuntimeCommand already sitting in that channel is not
+consumed on the poll that returns the authority interrupt. That is intended —
+neither could be settled under lost authority, and the command stays `Prepared`
+for ordinary recovery — and the pending request is answered on the next poll.
+
 ### 3. The interrupted terminal still hits the authority refusal
 
 Interrupting the turn does not admit its terminal. When the cycle returns, the
@@ -116,12 +154,30 @@ terminal stage still calls `ledger.require_supervisor_lease()` and
 member action, or session transition, and under lost authority it refuses.
 
 An interrupted turn therefore settles nothing: its admitted `StartCycle` keeps
-`Unknown` certainty and `Unknown` postcondition and becomes explicit recovery
-work, exactly as an abandoned turn did before. The observable difference is
-that the turn now *reaches* its prepared-effect scope guard instead of being
-killed inside the provider wait, so the unproven command is recorded as
-explicit recovery work rather than left as an abandoned `Prepared` row. That is
-more auditable, and it is the existing guard's behavior, not a new settlement.
+`Unknown` certainty and `Unknown` postcondition. There is one observable
+difference, and it is worth stating exactly rather than calling it identical to
+the old behaviour.
+
+The turn now *reaches* its prepared-effect scope guard
+(`Drop for ProviderEffectAdmission`) instead of being killed inside the
+provider wait, so the guard moves the row `Prepared -> RecoveryRequired` with
+failure code `PREPARED_PROVIDER_EFFECT_SCOPE_EXITED_WITHOUT_RECEIPT`. That is a
+recovery marker, not a settlement — `mark_prepared_runtime_command_recovery`
+still requires the exact daemon identity, the expected version, and a current
+`Prepared`/`Unknown` row — and it is the pre-existing guard's behaviour on every
+drain in which the supervisor thread finishes rather than being killed.
+
+It does change which rows the finished-Supervisor reaper sees.
+`team_run_has_unresolved_runtime_command`
+(`crates/firm-node-daemon/src/supervisor_daemon/recovery.rs`) matches only
+`Prepared` + `Unknown` + `Unknown`, so a row already moved to
+`RecoveryRequired` no longer causes
+`block_finished_supervisor_if_unresolved` to write a
+`TEAM_SUPERVISOR_EXITED_WITH_UNRESOLVED_RUNTIME_COMMAND` block. This slice makes
+that transition happen more often, because turns now exit cooperatively. Whether
+an explicit `RecoveryRequired` row should also hold adoption is a real question,
+but it is a question about the reaper's predicate, not about this interrupt, and
+it is left to the Issue Pool rather than changed here.
 
 ### 4. The fan-out is bounded; the drain is never blocked
 
@@ -132,10 +188,13 @@ actually happened, not to gate anything:
 
 - a turn owned by the calling thread is never waited on, because an authority
   latch is reachable from inside a turn's own supervisor thread;
-- the request stays latched after the window closes, so a turn that polls later
-  still receives its interrupt;
-- a provider that never polls is reported `not_observed` and left to the
-  SIGKILL backstop.
+- the request stays on that turn's registry entry after the window closes, so a
+  turn that polls later still receives its interrupt;
+- a turn that already took its interrupt is neither waited on again nor
+  re-reported: a later latch reads the first result off the entry;
+- a provider that never polls is reported `not_observed`. On the machine path
+  the SIGKILL backstop still ends it; on the Supervisor-lease path nothing
+  else does, which is why the registration ordering in §1 matters.
 
 `graceful_shutdown_with_deadlines` is unchanged: the same cooperative wait, the
 same process-group termination, the same forced join. The interrupt is strictly
@@ -155,9 +214,11 @@ durable log.
 
 ## Consequences
 
-- Hard Invariant 7 becomes true and specific: on authority loss a live turn
-  gets one cooperative interrupt, then the bounded cooperative wait, then
-  SIGKILL.
+- Hard Invariant 7 becomes true and specific, and scoped to the latch that owns
+  each step: on the machine path a live turn gets one cooperative interrupt,
+  then the drain's bounded cooperative wait, then SIGKILL; on the
+  Supervisor-lease path there is no drain and no SIGKILL, so that interrupt is
+  the only thing that ends the turn.
 - There is one process-local provider action that no durable command
   authorizes. It is permitted only because the alternative — admitting a
   command under lost authority — is worse, and it is confined to the interrupt
@@ -165,14 +226,26 @@ durable log.
 - A turn interrupted this way is still unproven work. Nothing about the
   interrupt implies the provider finished, answered, or succeeded, and nothing
   about it settles the admitted effect.
-- The registry is process-global, so tests that use the `Process` scope must be
-  serialized against other live turns in the same test binary.
+- The registry is process-global, so every test that registers a live turn or
+  fans an interrupt out holds one shared guard
+  (`crates/firm-cli/src/main_tests/live_turn_serialization.rs`). CI already runs
+  `--test-threads=1`; a plain local `cargo test` does not.
+- Whether an explicit `RecoveryRequired` row should also hold adoption is now a
+  more frequent question (§3). It is a question about the reaper's predicate,
+  and it is left open rather than answered here.
 
 ## Evidence
 
 - `crates/firm-runtime-host/src/authority_loss_interrupt/tests.rs` — one
-  interrupt per turn, no republication, scope isolation, the bounded wait, and
-  the self-wait guard.
+  interrupt per turn, no republication, scope isolation, the bounded wait, the
+  self-wait guard, the idempotent second-latch report, that a turn registered
+  before the fan-out is always reached, and that a latched scope is *not*
+  remembered for turns registered afterwards.
+- `crates/firm-cli/src/main_tests/general/active_turn_lease_limits_execution_without_limiting_idle_members.rs`
+  — `queued_prepared_cycle_rechecks_quiesce_after_occupied_slot_is_released`
+  pins both halves of the §1 ordering: a turn parked on the occupied-slot wait
+  is already reachable by the fan-out, and a quiesce that lands before the wait
+  ends refuses the drive.
 - `crates/firm-cli/src/daemon_integration_tests/self_stop_events_tests.rs` — a
   live turn is interrupted on machine authority loss and named in the
   journalled evidence with outcome `dispatched`.
