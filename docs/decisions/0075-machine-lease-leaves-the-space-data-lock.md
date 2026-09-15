@@ -9,8 +9,8 @@ amends: ADR 0042 (the machine lease stops being Execution Space data); ADR 0044 
         docs/current/architecture/agent-runtime.md:16-29
 canonical_for: where machine authority is stored, which lock protects it, how it is renewed and
         read, and how its generation is minted
-baseline: master 35bcda73 for the evidence; line citations re-verified at master 43185050
-        (E1c merged), which is where E2a executes this checklist from
+baseline: master 35bcda73 for the evidence; line citations re-verified at master fccbf4cc,
+        which is where E2a executes this checklist from
 ```
 
 ## Context
@@ -227,7 +227,16 @@ that does. Callers of `require_current_node_daemon_unlocked` /
 `require_node_daemon_settlement_authority_unlocked` are **not** on the list — they delegate to a
 fence that is, and move with it for free.
 
-At `cf828dff` the rule selects **46 sites in 22 files** (excluding tests). Table A above carries
+**Production only.** The rule reads production code: `#[cfg(test)]`, `#[cfg(feature =
+"test-support")]` and `tests/` sites are excluded from both buckets, because a fence that a test
+helper bypasses is not a fence anyone ships. One helper sits exactly on that line —
+`supersede_node_authority_for_test` (`machine_authority.rs:902-903`) reads the lease under
+`#[cfg(any(test, feature = "test-support"))]` — so it is counted in neither bucket and named
+here instead.
+
+At `fccbf4cc` the rule selects **46 sites in 22 files**, against **31** production reads that
+never refuse: 46 + 31 = **77 production reads**, plus that one test helper = the 78 direct reads
+a bare grep finds. Table A above carries
 the kernel ones, where the lock context decides how the edit is written. The rest are listed
 here so the count closes:
 
@@ -250,7 +259,7 @@ here so the count closes:
 | `machine_authority.rs:125`, `:222`, `:287`, `:379`, `:746`, `:981` | the bundle, E1a's automatic predecessor recovery, the heartbeat, acquire, release and shutdown settlement |
 | `store_node_runtime.rs:295`, `:383`, `:395`, `:443`, `:483` | the acquire/renew/drain/release quartet — these do not "switch", they **become** the document writer |
 
-**Excluded, and why** — the other 32 of the 78 direct reads never refuse: the Dashboard and HTTP lease
+**Excluded, and why** — the other 31 production reads never refuse: the Dashboard and HTTP lease
 projections (`dashboard_projection.rs:197`/`:200`/`:459`, `http_get_routes.rs:214`),
 `daemon status` display (`daemon_cli.rs:144`/`:404`, `control_protocol.rs:1211`), RoleView
 surfaces (`member_surface.rs:326`, `team_surface.rs:669`, `workspace_surface.rs:714`,
