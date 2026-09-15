@@ -702,6 +702,10 @@ fn handle_http_connection(
     Ok(())
 }
 #[cfg(test)]
+#[path = "main_tests/live_turn_serialization.rs"]
+mod live_turn_serialization;
+
+#[cfg(test)]
 #[path = "main_tests/general.rs"]
 mod tests;
 

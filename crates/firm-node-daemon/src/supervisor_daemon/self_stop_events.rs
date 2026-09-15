@@ -118,6 +118,22 @@ impl MultiTeamDaemon {
         phase: &str,
         terminated_provider_process_groups: &[u32],
     ) {
+        self.journal_machine_authority_loss_phase_with_detail(
+            phase,
+            terminated_provider_process_groups,
+            None,
+        );
+    }
+
+    /// The same self-stop event plus one phase-specific `detail` object.
+    /// Phases that carry no extra evidence keep exactly the summary shape they
+    /// already had; `detail` is additive and absent by default.
+    pub(super) fn journal_machine_authority_loss_phase_with_detail(
+        &self,
+        phase: &str,
+        terminated_provider_process_groups: &[u32],
+        detail: Option<serde_json::Value>,
+    ) {
         let loss = self
             .machine_authority_loss
             .lock()
@@ -138,8 +154,8 @@ impl MultiTeamDaemon {
                 "daemon_instance_id": self.instance_id,
                 "daemon_generation": target.daemon_generation,
                 "terminated_provider_process_groups": terminated_provider_process_groups,
-            })
-            .to_string();
+            });
+            let summary = with_phase_detail(summary, detail.as_ref()).to_string();
             let stable_key = format!(
                 "node-daemon-self-stop:{}:{}:{}",
                 self.instance_id, target.team_run_id, phase
@@ -211,4 +227,18 @@ impl MultiTeamDaemon {
             );
         }
     }
+}
+
+/// Attach one phase-specific `detail` object to a self-stop summary.
+///
+/// Kept out of the `json!` literal on purpose: the literal itself is untouched
+/// by this change, so a sibling slice editing its fields rebases cleanly.
+fn with_phase_detail(
+    mut summary: serde_json::Value,
+    detail: Option<&serde_json::Value>,
+) -> serde_json::Value {
+    if let (Some(object), Some(detail)) = (summary.as_object_mut(), detail) {
+        object.insert("detail".to_string(), detail.clone());
+    }
+    summary
 }

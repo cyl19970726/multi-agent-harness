@@ -1,8 +1,9 @@
 //! Provider-neutral process transport used by runtime implementations.
 //!
-//! This crate owns process-group isolation, bounded NDJSON collection, and
-//! stderr draining. Provider command construction and event interpretation stay
-//! in their provider packages.
+//! This crate owns process-group isolation, the process-local cooperative
+//! interrupt fan-out used when authority is lost, bounded NDJSON collection,
+//! and stderr draining. Provider command construction and event interpretation
+//! stay in their provider packages.
 
 mod predecessor_process;
 
@@ -21,6 +22,12 @@ use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
+
+mod authority_loss_interrupt;
+pub use authority_loss_interrupt::{
+    register_live_provider_turn, request_authority_loss_interrupt, AuthorityLossInterruptOutcome,
+    AuthorityLossInterruptReport, AuthorityLossInterruptTurn, AuthorityLossScope, LiveProviderTurn,
+};
 
 #[derive(Debug)]
 pub struct NdjsonRun {

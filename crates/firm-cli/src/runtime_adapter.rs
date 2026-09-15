@@ -487,6 +487,25 @@ pub(crate) fn run_team_member_with_adapter<A: TeamRuntimeAdapter<Error = CliErro
 
             let mut round_start = member_row.clone();
             let turn_result = {
+                // Register BEFORE `acquire_prepared_cycle_turn`, and keep it
+                // that way (ADR 0074). The registry and the authority-loss
+                // fan-out serialize on one mutex, and both latches now mark
+                // their scope invalid before fanning out, so this order leaves
+                // no window: a latch landing after this line finds the turn in
+                // the registry and interrupts it, and a latch landing before it
+                // is caught by the `require_supervisor_lease()` that
+                // `acquire_prepared_cycle_turn` performs after its blocking
+                // turn-slot wait — exactly the Store-IO gap a registration
+                // placed after that call would leave open.
+                // `acceptance_wake::a_parked_turn_is_registered_before_the_occupied_slot_wait`
+                // is the regression guard and goes red if these two swap.
+                // Dropping the guard when the cycle returns is what keeps a
+                // finished turn out of any later fan-out.
+                let authority_loss_turn = harness_runtime_host::register_live_provider_turn(
+                    provider,
+                    &ledger.run_id,
+                    &member_row.id,
+                );
                 let _turn_lease = acquire_prepared_cycle_turn(
                     ledger,
                     &effect,
@@ -593,6 +612,22 @@ pub(crate) fn run_team_member_with_adapter<A: TeamRuntimeAdapter<Error = CliErro
                     let mut control = CycleControl::default();
                     if let Some(error) = early_native_binding_error.borrow().clone() {
                         control.fatal_error = Some(error);
+                        return control;
+                    }
+                    // Authority loss is the one interrupt that cannot be a
+                    // RuntimeCommand: admission is already permanently closed,
+                    // so no provider effect may be prepared or settled, and
+                    // that refusal is correct. ADR 0074 makes this a
+                    // process-local action through the adapter's own
+                    // `interrupt_current_cycle` path instead. It writes no
+                    // durable row and prepares no effect; the terminal that
+                    // follows still hits the ordinary authority refusal.
+                    if let Some(reason) = authority_loss_turn.take_authority_loss_interrupt() {
+                        eprintln!(
+                            "[runtime] {provider} member {} cooperative interrupt before drain: {reason}",
+                            member_row.id
+                        );
+                        control.interrupt = true;
                         return control;
                     }
                     // Both remaining control commands settle the cycle and

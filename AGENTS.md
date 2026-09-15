@@ -242,8 +242,17 @@ doc carries the contract behind each rule.
    TeamRun completion never implies Close. Cross-process
    control routes through the durable Team Supervisor lease, revalidated
    immediately before every drive; uncertain claimed deliveries require
-   explicit reconciliation, never blind replay. Replacing a runtime drains or
-   interrupts active turns first and never lets two runtime generations drive
+   explicit reconciliation, never blind replay. Losing machine authority or a
+   Supervisor lease hands every live turn in scope one cooperative interrupt
+   through the adapter's own `interrupt_current_cycle` path, before anything
+   else stops it. On the machine path that interrupt precedes the drain's
+   bounded cooperative wait and the SIGKILL of the registered provider process
+   groups; a Supervisor lease loss runs no drain, so that interrupt is what
+   ends the turn. It is a process-local action and never a RuntimeCommand —
+   nothing may be admitted under lost authority — and the interrupted turn's
+   terminal still hits the authority refusal, so it settles nothing (ADR 0074).
+   Replacing a runtime drains or interrupts active turns the same way and
+   never lets two runtime generations drive
    the same MemberRun/native session; resume that native session under a higher
    Supervisor generation only when the reviewed contract allows, otherwise
    record the reason and start a new session, retaining the old one as

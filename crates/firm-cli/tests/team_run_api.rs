@@ -1117,6 +1117,9 @@ fn persistent_codex_supervisor_survives_handoffs_transport_loss_and_team_complet
     );
 }
 
+#[path = "team_run_api/authority_loss_cooperatively_interrupts_a_live_provider_turn.rs"]
+mod authority_loss_cooperatively_interrupts_a_live_provider_turn;
+
 #[path = "team_run_api/board_read_fixture.rs"]
 mod board_read_fixture;
 pub use board_read_fixture::*;
