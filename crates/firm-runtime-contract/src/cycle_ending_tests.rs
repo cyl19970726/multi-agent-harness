@@ -202,16 +202,17 @@ fn each_ending_settles_as_the_table_says() {
     assert_eq!(
         accepted,
         vec![
-            AppliedSatisfied,        // Completed
-            AppliedSatisfied,        // EmptyOutput
-            AppliedSatisfied,        // InterruptedByHost
-            AppliedSatisfied,        // InterruptedByProvider
-            AppliedSatisfied,        // Closed
-            AppliedSatisfied, // ProviderFailed (observed terminal, Unsatisfied postcondition)
+            AppliedSatisfied, // Completed
+            AppliedSatisfied, // EmptyOutput
+            AppliedSatisfied, // InterruptedByHost
+            AppliedSatisfied, // InterruptedByProvider
+            AppliedSatisfied, // Closed
+            // The command applied; its postcondition did not hold (invariant I5).
+            AppliedUnsatisfied,
             RecoveryRequiredUnknown, // TransportLost
-            RejectedNotApplied, // AcceptanceTimeout
+            RejectedNotApplied,      // AcceptanceTimeout
             RecoveryRequiredUnknown, // ControlSettleTimeout
-            RejectedNotApplied, // NotStarted
+            RejectedNotApplied,      // NotStarted
             RecoveryRequiredUnknown, // HostAborted
             RecoveryRequiredUnknown, // TerminalUnobserved
         ]
@@ -322,6 +323,70 @@ fn provider_failure_codes_classify_only_the_closed_vocabularies() {
             ending.provider_terminal_failure(),
             Some(failure),
             "the provider's own text must survive classification"
+        );
+    }
+}
+
+/// Review r1 B3. The action row's TITLE and SUMMARY are keyed by the ending
+/// too, so the pre-ADR-0076 catch-all ("{provider} provider round N failed;
+/// inspect the provider-native session for details") can no longer say the
+/// provider failed on a Harness abort or on a cycle that never started.
+#[test]
+fn every_ending_has_its_own_title_and_summary() {
+    let mut titles: Vec<String> = Vec::new();
+    for ending in all_endings() {
+        let title = ending.action_title("Kimi", 7);
+        let summary = ending.action_summary("Kimi", 7);
+        assert!(title.starts_with("Kimi provider round 7 "), "{title}");
+        assert!(summary.starts_with(&title), "{summary}");
+        titles.push(title);
+    }
+    let unique = titles.len();
+    titles.sort();
+    titles.dedup();
+    assert_eq!(
+        titles.len(),
+        unique,
+        "every ending needs its own title: {titles:?}"
+    );
+
+    // The three endings that are NOT the provider's fault must never say the
+    // provider failed, and must never send an operator to a provider session.
+    for ending in [
+        CycleEnding::HostAborted {
+            detail: "store settle failed".to_string(),
+        },
+        CycleEnding::NotStarted {
+            code: CycleRefusalCode::RuntimeClosed,
+        },
+        CycleEnding::AcceptanceTimeout,
+    ] {
+        let summary = ending.action_summary("Kimi", 7);
+        assert!(!summary.contains("round 7 failed"), "{ending:?}: {summary}");
+        assert!(
+            !summary.contains("inspect the provider-native session"),
+            "{ending:?}: {summary}"
+        );
+    }
+    // Only a provider-reported failure points at the provider session.
+    assert!(CycleEnding::ProviderFailed {
+        code: ProviderFailureCode::QuotaExhausted,
+        detail: "usageLimitExceeded".to_string(),
+        http_status: None,
+    }
+    .action_summary("Kimi", 7)
+    .contains("inspect the provider-native session"));
+}
+
+/// Review r1 P3-2. `is_failure` and `is_zero_output` are wildcard-free, so a
+/// 13th variant cannot silently inherit either verdict.
+#[test]
+fn only_an_empty_terminal_is_zero_output() {
+    for ending in all_endings() {
+        assert_eq!(
+            ending.is_zero_output(),
+            ending == CycleEnding::EmptyOutput,
+            "{ending:?}"
         );
     }
 }

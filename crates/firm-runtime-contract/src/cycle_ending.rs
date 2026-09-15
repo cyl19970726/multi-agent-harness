@@ -31,6 +31,14 @@ pub enum CycleEndingSettlement {
     /// The cycle reached a trusted terminal boundary: `Settled / Applied /
     /// Satisfied`.
     AppliedSatisfied,
+    /// The cycle reached a trusted terminal boundary, and the provider itself
+    /// reported the turn failed: `Settled / Applied / Unsatisfied`. The command
+    /// applied; its postcondition did not hold (invariant I5). This is the
+    /// only class that separates the effect axis from the postcondition axis,
+    /// and it exists so the type can express the ADR 0076 table row for
+    /// `ProviderFailed` instead of collapsing it into `AppliedSatisfied`
+    /// (review r1 P3-1).
+    AppliedUnsatisfied,
     /// Nothing crossed the provider boundary, so the effect was never
     /// applied and a replay is safe: `Rejected / NotApplied / Unsatisfied`.
     RejectedNotApplied,
@@ -330,6 +338,77 @@ impl CycleEnding {
         }
     }
 
+    /// The fixed human-readable TITLE for the action row recording this ending.
+    ///
+    /// Keyed by the ending for the same reason `action_type` is (review r1 B3):
+    /// the pre-ADR-0076 row said "{provider} provider round N failed" for every
+    /// ending, so a `host_aborted` row — the HARNESS's own abort — and a
+    /// `cycle_not_started` row both claimed the provider failed. The typed
+    /// fields stopped making that false attribution; the prose had to stop too.
+    pub fn action_title(&self, display_name: &str, round: u32) -> String {
+        let what = match self {
+            Self::Completed => "completed",
+            Self::EmptyOutput => "completed without output",
+            Self::InterruptedByHost => "was interrupted by the Host",
+            Self::InterruptedByProvider { .. } => "was interrupted by the provider",
+            Self::Closed => "ended under a Host Close",
+            Self::ProviderFailed { .. } => "failed",
+            Self::TransportLost { .. } => "lost its provider transport",
+            Self::AcceptanceTimeout => "was never accepted by the provider",
+            Self::ControlSettleTimeout => "left a control unsettled",
+            Self::NotStarted { .. } => "never started",
+            Self::HostAborted { .. } => "was ended by the Harness",
+            Self::TerminalUnobserved { .. } => "ended without an observable terminal",
+        };
+        format!("{display_name} provider round {round} {what}")
+    }
+
+    /// The fixed human-readable SUMMARY for the action row recording this
+    /// ending. It never copies provider output — the transcript stays
+    /// provider-native (invariant 1) — and it never tells an operator to
+    /// inspect a provider session for a cycle that never reached one.
+    pub fn action_summary(&self, display_name: &str, round: u32) -> String {
+        let title = self.action_title(display_name, round);
+        let advice = match self {
+            Self::Completed | Self::EmptyOutput => "transcript remains provider-native".to_string(),
+            Self::InterruptedByHost => {
+                "the Host's control settled at the provider's exact terminal boundary".to_string()
+            }
+            Self::InterruptedByProvider { reason } => {
+                format!("the provider attributed it to {reason}")
+            }
+            Self::Closed => "the member runtime is being disposed".to_string(),
+            Self::ProviderFailed { code, detail, .. } => format!(
+                "the provider reported {} ({detail}); inspect the provider-native session",
+                code.wire()
+            ),
+            Self::TransportLost { .. } => {
+                "the provider process or its transport died; no terminal was observed".to_string()
+            }
+            Self::AcceptanceTimeout => {
+                "the input never crossed the provider boundary, so re-issuing it is safe"
+                    .to_string()
+            }
+            Self::ControlSettleTimeout => {
+                "the control was delivered but never acknowledged; the outcome is unproven"
+                    .to_string()
+            }
+            Self::NotStarted { code } => format!(
+                "the cycle was refused before the input crossed the provider boundary ({}), \
+                 so no provider session was touched and re-issuing it is safe",
+                code.wire()
+            ),
+            Self::HostAborted { .. } => {
+                "the Harness ended this cycle itself; this is not a provider failure".to_string()
+            }
+            Self::TerminalUnobserved { code, .. } => format!(
+                "a terminal was reported but could not be trusted ({}); the outcome is unproven",
+                code.wire()
+            ),
+        };
+        format!("{title}; {advice}")
+    }
+
     /// How the durable RuntimeCommand for this cycle settles.
     ///
     /// `input_accepted` is whether the exact provider input-acceptance
@@ -346,8 +425,8 @@ impl CycleEnding {
             | Self::EmptyOutput
             | Self::InterruptedByHost
             | Self::InterruptedByProvider { .. }
-            | Self::Closed
-            | Self::ProviderFailed { .. } => CycleEndingSettlement::AppliedSatisfied,
+            | Self::Closed => CycleEndingSettlement::AppliedSatisfied,
+            Self::ProviderFailed { .. } => CycleEndingSettlement::AppliedUnsatisfied,
             Self::NotStarted { .. } | Self::AcceptanceTimeout => {
                 CycleEndingSettlement::RejectedNotApplied
             }
@@ -370,7 +449,42 @@ impl CycleEnding {
     /// even then only when the application's own semantic check agrees —
     /// provider satisfaction never implies Host acceptance (invariant I6).
     pub fn is_failure(&self) -> bool {
-        !matches!(self, Self::Completed)
+        // Wildcard-free on purpose (review r1 P3-2): a new ending must state
+        // whether it is a failure rather than silently inheriting "no".
+        match self {
+            Self::Completed => false,
+            Self::EmptyOutput
+            | Self::InterruptedByHost
+            | Self::InterruptedByProvider { .. }
+            | Self::Closed
+            | Self::ProviderFailed { .. }
+            | Self::TransportLost { .. }
+            | Self::AcceptanceTimeout
+            | Self::ControlSettleTimeout
+            | Self::NotStarted { .. }
+            | Self::HostAborted { .. }
+            | Self::TerminalUnobserved { .. } => true,
+        }
+    }
+
+    /// Whether this ending is the zero-output fact that feeds the
+    /// unproductive-round circuit breaker. Wildcard-free for the same reason
+    /// as [`Self::is_failure`].
+    pub fn is_zero_output(&self) -> bool {
+        match self {
+            Self::EmptyOutput => true,
+            Self::Completed
+            | Self::InterruptedByHost
+            | Self::InterruptedByProvider { .. }
+            | Self::Closed
+            | Self::ProviderFailed { .. }
+            | Self::TransportLost { .. }
+            | Self::AcceptanceTimeout
+            | Self::ControlSettleTimeout
+            | Self::NotStarted { .. }
+            | Self::HostAborted { .. }
+            | Self::TerminalUnobserved { .. } => false,
+        }
     }
 
     /// The machine-readable `provider_status` column for this ending, so an

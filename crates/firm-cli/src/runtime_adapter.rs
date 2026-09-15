@@ -857,19 +857,43 @@ pub(crate) fn run_team_member_with_adapter<A: TeamRuntimeAdapter<Error = CliErro
                     // and the machine-readable provider_status both come from
                     // the closed table, on all five providers.
                     let ending = adapter.take_cycle_ending();
-                    let (action_type, provider_status) = match ending.as_ref() {
-                        Some(ending) => (ending.action_type(), Some(ending.provider_status())),
-                        // An adapter that records no ending is a contract
-                        // defect, not a new ending class. Keep the historical
-                        // row shape and say so, rather than inventing a code.
-                        None => ("provider_error", None),
+                    // The row's TYPE, TITLE, SUMMARY and provider_status all
+                    // come from the closed table, so a Harness abort or a cycle
+                    // that never started no longer claims the provider failed
+                    // and no longer points an operator at a provider session
+                    // that was never touched.
+                    let (action_type, title, summary, provider_status) = match ending.as_ref() {
+                        Some(ending) => (
+                            ending.action_type(),
+                            ending.action_title(display, round),
+                            ending.action_summary(display, round),
+                            Some(ending.provider_status()),
+                        ),
+                        // Unreachable: every adapter records an ending on every
+                        // `Err` path, proven per adapter. If one ever does not,
+                        // that is a contract defect and the row must say so
+                        // rather than blame the provider.
+                        None => (
+                            "cycle_ending_missing",
+                            format!(
+                                "{display} provider round {round} ended without a recorded cycle ending"
+                            ),
+                            format!(
+                                "{display} provider round {round} returned an error with no ADR 0076 cycle ending;                                  this is a runtime-contract defect in the {provider} adapter, not a provider verdict"
+                            ),
+                            Some("cycle_ending:unrecorded".to_string()),
+                        ),
                     };
+                    debug_assert!(
+                        ending.is_some(),
+                        "{provider} returned Err from run_cycle without recording a CycleEnding"
+                    );
                     let action = ledger.append_action_with_provider_status(
                         &member_row.id,
                         action_type,
                         MemberActionStatus::Failed,
-                        &format!("{display} provider round {round} failed"),
-                        &crate::provider_turn_failure_summary(display, round),
+                        &title,
+                        &summary,
                         provider_status,
                         &[],
                     )?;

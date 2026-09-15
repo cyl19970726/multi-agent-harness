@@ -44,7 +44,7 @@ pub fn decide_team_round(
     // the unproductive-round streak is fed identically everywhere. Before the
     // table, Claude and DeepSeek reported the same fact as a provider failure
     // and RESET the streak instead.
-    let zero_output = matches!(ending, CycleEnding::EmptyOutput);
+    let zero_output = ending.is_zero_output();
     let zero_output_streak = if zero_output {
         previous_zero_output_streak.saturating_add(1)
     } else {

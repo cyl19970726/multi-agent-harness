@@ -400,6 +400,11 @@ pub trait TeamRuntimeAdapter: RuntimeAdapter {
     /// adapter implemented this, so `provider_status` was blank on four of
     /// five providers. Do not override it — record the ending instead, and
     /// every provider gets a structured status for free.
+    ///
+    /// Calling this CONSUMES the ending, because it drains
+    /// [`TeamRuntimeAdapter::take_cycle_ending`]: a caller that wants both must
+    /// take the ending once and derive the failure from it (review r1 P3-8).
+    /// The shared loop does exactly that; this method has no production caller.
     fn take_cycle_terminal_failure(&mut self) -> Option<ProviderTerminalFailure> {
         self.take_cycle_ending()
             .as_ref()

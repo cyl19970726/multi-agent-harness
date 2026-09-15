@@ -9,12 +9,6 @@ pub(super) struct MemberOutcome {
     pub(super) summary: String,
 }
 
-pub(super) fn provider_turn_failure_summary(provider: &str, round: u32) -> String {
-    format!(
-        "{provider} provider round {round} failed; inspect the provider-native session for details"
-    )
-}
-
 pub(super) struct MemberRuntimeContext {
     pub(super) execution_space_id: Option<String>,
     pub(super) project_id: Option<String>,
