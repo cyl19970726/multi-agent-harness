@@ -106,6 +106,10 @@ impl TestDaemon {
             inner: Arc::new(daemon),
         }
     }
+    pub fn set_instance_id(&mut self, instance_id: String) {
+        let daemon = Arc::get_mut(&mut self.inner).expect("unique fixture owner");
+        daemon.instance_id = instance_id;
+    }
     pub fn set_node_identity(&mut self, node_id: String) {
         let daemon = Arc::get_mut(&mut self.inner).expect("unique fixture owner");
         daemon.node_id = node_id;
@@ -132,6 +136,11 @@ impl TestDaemon {
         Arc::get_mut(&mut self.inner)
             .expect("unique fixture owner")
             .lease_ttl_override_ms = value;
+    }
+    pub fn set_drain_timeout_override(&mut self, value: Option<(u64, u64)>) {
+        Arc::get_mut(&mut self.inner)
+            .expect("unique fixture owner")
+            .drain_timeout_override_ms = value;
     }
     pub fn authority_lost(&self) -> bool {
         self.inner.authority_lost.load(Ordering::SeqCst)
@@ -288,6 +297,9 @@ impl TestDaemon {
     }
     pub fn settle_node_authorities_for_shutdown(&self) -> CliResult<()> {
         self.inner.settle_node_authorities_for_shutdown()
+    }
+    pub fn record_settlement_incomplete_markers(&self, reason: &str) -> Vec<String> {
+        self.inner.record_settlement_incomplete_markers(reason)
     }
     pub fn install_native_session_wake_endpoint(
         &self,

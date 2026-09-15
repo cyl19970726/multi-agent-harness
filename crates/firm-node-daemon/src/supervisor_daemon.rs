@@ -520,10 +520,42 @@ impl MultiTeamDaemon {
             // postcondition may Draining fence the generation and the
             // heartbeat stop. This prevents a successor generation from
             // overlapping an accepted mutation that already crossed prepare.
+            // `graceful_shutdown` empties `contexts` before it waits, and a
+            // drain-incomplete stop cannot know it is one until that call
+            // returns. Snapshot the served runs first or there is nobody left
+            // to journal the failure to — the same pre-capture discipline the
+            // authority-loss latch uses.
+            let served_before_drain = self.snapshot_served_runs();
             let supervisor_result = self.graceful_shutdown();
             let settlement_result = if supervisor_result.is_ok() {
                 self.settle_node_authorities_for_shutdown()
             } else {
+                // A drain that did not converge cannot prove its process
+                // groups terminal, so settlement stays refused — but the lanes
+                // it owned must not vanish from the record. Capture the stop,
+                // journal the phases this stop actually reached, and flag every
+                // lane this generation is leaving behind (ADR 0073).
+                let failure = supervisor_result
+                    .as_ref()
+                    .err()
+                    .map(ToString::to_string)
+                    .unwrap_or_default();
+                // The phase writes inside `graceful_shutdown` found no capture
+                // and wrote nothing, so replay the one phase that did happen.
+                // An authority loss that already captured keeps its own reason
+                // and its own `shutdown_initiated`; only the drain verdict is
+                // new to it.
+                if self
+                    .capture_incomplete_drain(served_before_drain, std::slice::from_ref(&failure))
+                {
+                    self.journal_machine_authority_loss_phase("shutdown_initiated", &[]);
+                }
+                // Deliberately not `process_groups_terminated` or
+                // `shutdown_complete`: neither happened.
+                self.journal_machine_authority_loss_phase("drain_incomplete", &[]);
+                self.record_settlement_incomplete_markers(&format!(
+                    "NODE_DAEMON_DRAIN_INCOMPLETE: {failure}"
+                ));
                 Ok(())
             };
             let drain_result = if supervisor_result.is_ok() && settlement_result.is_ok() {

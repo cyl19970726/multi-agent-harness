@@ -11,36 +11,28 @@ use super::*;
 pub(crate) struct PredecessorRecoveryIntent {
     pub daemon_id: String,
     pub instance_id: String,
+    /// The latest moment the predecessor was known to be alive: the exact
+    /// lease renewal the death proof is anchored to.
+    pub anchor_unix_ms: u64,
     pub spaces: Vec<(harness_core::ExecutionSpace, harness_core::NodeDaemonLease)>,
 }
 
-/// Standard process-existence probe for a predecessor instance id of the form
-/// `<pid>:<boot token>:<daemon label>`. EPERM still proves that a process
-/// exists; only ESRCH is accepted as absence.
-pub(crate) fn predecessor_process_is_absent(instance_id: &str) -> Result<bool, String> {
-    let pid = instance_id
-        .split(':')
-        .next()
-        .ok_or_else(|| "predecessor instance id has no process id".to_string())?
-        .parse::<i32>()
-        .map_err(|_| "predecessor instance id does not begin with a process id".to_string())?;
-    if pid <= 0 {
-        return Err("predecessor process id must be positive".into());
-    }
-    // SAFETY: kill(pid, 0) sends no signal and is the standard process
-    // existence probe.
-    let result = unsafe { libc::kill(pid, 0) };
-    if result == 0 {
-        return Ok(false);
-    }
-    match std::io::Error::last_os_error().raw_os_error() {
-        Some(libc::ESRCH) => Ok(true),
-        Some(libc::EPERM) => Ok(false),
-        Some(code) => Err(format!(
-            "cannot verify predecessor process {pid}: errno {code}"
-        )),
-        None => Err(format!("cannot verify predecessor process {pid}")),
-    }
+/// Standard process-death probe for a predecessor instance id of the form
+/// `<pid>:<minted unix-ms>:<daemon label>`, anchored at the last moment the
+/// predecessor was known to be alive.
+///
+/// The proof itself belongs to `harness_runtime_host::predecessor_process`, so
+/// this CLI path and the successor daemon's automatic recovery answer the
+/// death question with one implementation instead of two (ADR 0073).
+pub(crate) fn predecessor_process_proof(
+    instance_id: &str,
+    anchor_unix_ms: u64,
+) -> Result<harness_runtime_host::PredecessorProcessProof, String> {
+    harness_runtime_host::probe_predecessor_process(
+        instance_id,
+        anchor_unix_ms,
+        current_unix_ms_u64(),
+    )
 }
 
 /// Capture exact latest Space-local leases of one predecessor instance
@@ -73,62 +65,33 @@ pub(crate) fn validate_daemon_predecessor_recovery(
             leases.push((space, lease));
         }
     }
-    // Generations are Space-local counters, never a machine-wide ordering.
-    let latest = leases
-        .iter()
-        .find(|(_, lease)| lease.status != NodeDaemonLeaseStatus::Released)
-        .or_else(|| leases.first())
-        .map(|(_, lease)| lease.clone())
-        .ok_or_else(|| {
+    // The existing HTTP request authorizes exactly one tuple. Selection of the
+    // exact predecessor instance — including the refusal to sweep a second
+    // unreleased instance — belongs to the shared Store seam, so this path and
+    // the successor daemon's automatic recovery choose identically (ADR 0073).
+    let (latest, spaces) = harness_store::select_exact_predecessor_spaces(leases, expected)?;
+    let anchor_unix_ms = latest.renewed_unix_ms;
+    let proof =
+        predecessor_process_proof(&latest.instance_id, anchor_unix_ms).map_err(|error| {
             (
-                "SUPERVISOR_GENERATION_FENCED".into(),
-                "Node has no predecessor lease to recover".into(),
+                "NODE_DAEMON_PREDECESSOR_RECOVERY_UNVERIFIED".to_string(),
+                error,
             )
         })?;
-    if leases.iter().any(|(_, lease)| {
-        lease.status != NodeDaemonLeaseStatus::Released
-            && (lease.daemon_id != latest.daemon_id || lease.instance_id != latest.instance_id)
-    }) {
-        return Err(("SUPERVISOR_GENERATION_FENCED".into(), "Node has different unreleased predecessor instances; recovery must not sweep unrelated instances".into()));
-    }
-    // The existing HTTP request authorizes exactly one tuple. A same-instance
-    // lease with another local generation is outside that request's scope.
-    let spaces: Vec<_> = leases
-        .into_iter()
-        .filter(|(_, lease)| {
-            if let Some((daemon, instance, generation)) = expected {
-                lease.daemon_id == daemon
-                    && lease.instance_id == instance
-                    && lease.generation == generation
-            } else {
-                lease.daemon_id == latest.daemon_id && lease.instance_id == latest.instance_id
-            }
-        })
-        .collect();
-    if spaces.is_empty()
-        || expected.is_some_and(|(daemon, instance, _)| {
-            daemon != latest.daemon_id || instance != latest.instance_id
-        })
-    {
-        return Err((
-            "SUPERVISOR_GENERATION_FENCED".into(),
-            "recovery intent does not match the exact latest predecessor".into(),
-        ));
-    }
-    if !predecessor_process_is_absent(&latest.instance_id).map_err(|error| {
-        (
-            "NODE_DAEMON_PREDECESSOR_RECOVERY_UNVERIFIED".to_string(),
-            error,
-        )
-    })? {
+    if !proof.counts_as_absent() {
         return Err((
             "NODE_DAEMON_PREDECESSOR_RECOVERY_LIVE".into(),
-            "the exact predecessor process still exists".into(),
+            format!(
+                "the exact predecessor process still exists ({}; {})",
+                proof.reason(),
+                proof.evidence
+            ),
         ));
     }
     Ok(PredecessorRecoveryIntent {
         daemon_id: latest.daemon_id,
         instance_id: latest.instance_id,
+        anchor_unix_ms,
         spaces,
     })
 }
@@ -156,84 +119,45 @@ pub(crate) fn recover_daemon_predecessor_spaces(
     // Re-probe process absence immediately before any settlement, then use
     // only the captured Space/lease tuples. The Store fences each tuple under
     // its write lock, including successors arriving after validation.
+    let proof =
+        predecessor_process_proof(&intent.instance_id, intent.anchor_unix_ms).map_err(|error| {
+            (
+                "NODE_DAEMON_PREDECESSOR_RECOVERY_UNVERIFIED".to_string(),
+                error,
+            )
+        })?;
     if daemon_client::daemon_status_via_socket(firm_home, node_id).is_some()
-        || !predecessor_process_is_absent(&intent.instance_id)
-            .map_err(|error| ("NODE_DAEMON_PREDECESSOR_RECOVERY_UNVERIFIED".into(), error))?
+        || !proof.counts_as_absent()
     {
         return Err((
             "NODE_DAEMON_PREDECESSOR_RECOVERY_LIVE".into(),
-            "the exact predecessor process or NodeDaemon socket is still live".into(),
+            format!(
+                "the exact predecessor process or NodeDaemon socket is still live ({})",
+                proof.reason()
+            ),
         ));
     }
-    let mut recovered_spaces = Vec::new();
-    let mut space_settlements = Vec::new();
-    let mut failures = Vec::new();
-    for (space, lease) in &intent.spaces {
-        let scoped = HarnessStore::new(space.store_root.clone());
-        let context = harness_core::agentfirm_api::MutationContext {
-            execution_space_id: space.id.clone(),
-            authenticated_actor: actor.clone(),
-            authority_actor: None,
-            command_name: "node_daemon.predecessor_recover".into(),
-            idempotency_key: format!("{idempotency_key_prefix}:space:{}", space.id),
-            expected_version: lease.generation,
-            request_fingerprint: request_fingerprint.clone(),
-        };
-        match scoped.recover_node_daemon_predecessor(
-            &context,
-            node_id,
-            &intent.daemon_id,
-            lease.generation,
-            &intent.instance_id,
-            true,
-            provider_process_groups_terminated_confirmed,
-            evidence_ref,
-            current_unix_ms_u64(),
-            &format!("unix-ms:{}", current_unix_ms_u64()),
-        ) {
-            // The settlement summary is part of the receipt: an operator must
-            // be able to see which Sessions this recovery detached and which
-            // it skipped because the dying generation had already settled them
-            // (#837), not infer the difference from silence.
-            Ok(recovery) => {
-                space_settlements.push(serde_json::json!({
-                    "execution_space_id": space.id,
-                    "generation": lease.generation,
-                    "daemon_id": lease.daemon_id,
-                    "instance_id": lease.instance_id,
-                    "already_released": recovery.already_released,
-                    "supervisors_released": recovery.supervisors_released,
-                    "sessions_detached": recovery.sessions_detached,
-                    "sessions_already_settled": recovery.sessions_already_settled,
-                }));
-                recovered_spaces.push(space.id.clone());
-            }
-            Err(error) => failures.push(format!("{}: {error}", space.id)),
-        }
-    }
-    let mut receipt = serde_json::json!({
-        "node_id": node_id,
-        "daemon_id": intent.daemon_id,
-        "instance_id": intent.instance_id,
-        "generation": intent.spaces.first().map(|(_, lease)| lease.generation).filter(|generation| intent.spaces.iter().all(|(_, lease)| lease.generation == *generation)),
-        "already_released": failures.is_empty() && space_settlements.iter().all(|row| row["already_released"] == true),
-        "space_leases": intent.spaces.iter().map(|(space, lease)| serde_json::json!({
-            "execution_space_id": space.id, "daemon_id": lease.daemon_id,
-            "instance_id": lease.instance_id, "generation": lease.generation,
-        })).collect::<Vec<_>>(),
-        "status": "released",
-        "recovered_spaces": recovered_spaces,
-        "space_settlements": space_settlements,
-        "evidence_ref": evidence_ref,
-    });
-    if !failures.is_empty() {
-        receipt["status"] = serde_json::json!("partial");
-        receipt["failures"] = serde_json::json!(failures);
-        return Err((
-            "NODE_DAEMON_PREDECESSOR_RECOVERY_INCOMPLETE".into(),
-            receipt.to_string(),
-        ));
-    }
+    let mut receipt = harness_store::recover_predecessor_generation_across_spaces(
+        node_id,
+        &intent.daemon_id,
+        &intent.instance_id,
+        &intent
+            .spaces
+            .iter()
+            .map(|(space, lease)| harness_store::PredecessorSpaceLease {
+                execution_space_id: space.id.clone(),
+                store: HarnessStore::new(space.store_root.clone()),
+                lease: lease.clone(),
+            })
+            .collect::<Vec<_>>(),
+        actor,
+        provider_process_groups_terminated_confirmed,
+        evidence_ref,
+        idempotency_key_prefix,
+        request_fingerprint,
+        current_unix_ms_u64(),
+    )?;
+    receipt["process_death_proof"] = proof.to_receipt_json();
     Ok(receipt)
 }
 

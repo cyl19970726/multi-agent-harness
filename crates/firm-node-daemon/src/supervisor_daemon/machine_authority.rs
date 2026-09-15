@@ -32,6 +32,11 @@ pub(super) fn daemon_control_generation_authorized(
     })
 }
 
+/// Diagnostics key for the automatic predecessor-recovery attempt. It shows up
+/// in `daemon status` under `lease_renewals`, so an operator reads exactly
+/// which proof refused without opening the log.
+pub(super) const PREDECESSOR_RECOVERY_DIAGNOSTIC_KIND: &str = "node_daemon_predecessor_recovery";
+
 pub(super) fn node_authority_refresh_interval(scan_interval: Duration) -> Duration {
     scan_interval
         .min(Duration::from_secs(5))
@@ -69,6 +74,16 @@ impl MultiTeamDaemon {
             self.journal_machine_authority_loss_phase("renewal_failed", &[]);
             self.journal_machine_authority_loss_phase("lease_lost", &[]);
         }
+        // The drain above can only touch leases this instance still owns. In
+        // the loss that matters most — the Space's latest lease has already
+        // moved to another daemon or instance — it owns none, so every lane
+        // this generation was running is about to be abandoned in silence.
+        // Leave the honest record instead (ADR 0073).
+        self.record_settlement_incomplete_markers(&format!(
+            "{}: {}",
+            self_stop_events::MACHINE_AUTHORITY_LOST_REASON,
+            failures.join("; ")
+        ));
         CliError::Usage(format!(
             "NODE_DAEMON_MACHINE_AUTHORITY_LOST: {}",
             failures.join("; ")
@@ -158,6 +173,7 @@ impl MultiTeamDaemon {
         self.require_machine_authority_open()?;
         let spaces = self.registered_spaces()?;
         let mut required = Vec::new();
+        let mut blocked_by_predecessor = false;
         for (space, store) in spaces {
             let node = store
                 .latest_execution_nodes()
@@ -190,7 +206,30 @@ impl MultiTeamDaemon {
                 let newly_acquired = previous.as_ref().is_none_or(|lease| {
                     lease.status == harness_core::NodeDaemonLeaseStatus::Released
                 });
+                // A lease this instance does not own and that is not Released
+                // will refuse acquisition below with
+                // NODE_DAEMON_PREDECESSOR_RECOVERY_REQUIRED.
+                blocked_by_predecessor |= previous.as_ref().is_some_and(|lease| {
+                    lease.status != harness_core::NodeDaemonLeaseStatus::Released
+                        && (lease.daemon_id != self.daemon_id
+                            || lease.instance_id != self.instance_id)
+                });
                 required.push((space, store, newly_acquired));
+            }
+        }
+        if blocked_by_predecessor {
+            // The predecessor may be provably dead. Run the same proofs the
+            // operator CLI runs before making a human do it: the two real
+            // losses in the dogfood store waited 1h53m and 2.5 days for that
+            // human, with every proof already satisfiable (ADR 0073).
+            let recovered = self.recover_proven_dead_predecessor();
+            // A Space this recovery released is one this scan is about to
+            // acquire for the first time. Without this, its `newly_acquired`
+            // flag would still say "an existing lease" and a later Space's
+            // failure would leave the freshly acquired lease behind instead of
+            // rolling it back.
+            for (space, _, newly_acquired) in &mut required {
+                *newly_acquired |= recovered.contains(&space.id);
             }
         }
 
@@ -247,6 +286,219 @@ impl MultiTeamDaemon {
             .into_iter()
             .map(|(space_id, _, _, _)| space_id)
             .collect())
+    }
+
+    /// Recover an unreleased predecessor generation automatically, but only
+    /// when its death is proven by exactly the evidence
+    /// `firm daemon recover-predecessor` demands.
+    ///
+    /// Every proof is shared with that CLI path — instance selection and the
+    /// per-Space transition through the Store seam, process death through
+    /// `harness_runtime_host` — plus one this successor can make and a human
+    /// at a terminal usually cannot: a pid that exists but provably started
+    /// after the predecessor's last lease renewal is a recycled pid, not the
+    /// predecessor. If any proof fails, this refuses exactly as before and
+    /// names the failing proof in `daemon status`; an alive-but-starved
+    /// predecessor and ambiguous RuntimeCommands stay human-gated.
+    fn recover_proven_dead_predecessor(&self) -> HashSet<String> {
+        let started = Instant::now();
+        let (expires, outcome) = match self.attempt_automatic_predecessor_recovery() {
+            Ok(None) => return HashSet::new(),
+            Ok(Some((expires, receipt))) => (expires, Ok(receipt)),
+            Err((expires, code, detail)) => (expires, Err(format!("{code}: {detail}"))),
+        };
+        crate::lease_renewal_diagnostics::record(
+            &format!("{}:{}:predecessor-recovery", self.node_id, self.instance_id),
+            PREDECESSOR_RECOVERY_DIAGNOSTIC_KIND,
+            expires,
+            started.elapsed(),
+            outcome.as_ref().err().map(String::as_str),
+        );
+        match outcome {
+            Ok(receipt) => {
+                self.journal_automatic_predecessor_recovery(&receipt);
+                receipt["recovered_spaces"]
+                    .as_array()
+                    .map(Vec::as_slice)
+                    .unwrap_or_default()
+                    .iter()
+                    .filter_map(|value| value.as_str().map(str::to_owned))
+                    .collect()
+            }
+            Err(reason) => {
+                eprintln!(
+                    "[node-daemon] NODE_DAEMON_PREDECESSOR_RECOVERY_REFUSED: {reason}; recovery action: firm daemon recover-predecessor --confirm daemon-recover-predecessor"
+                );
+                HashSet::new()
+            }
+        }
+    }
+
+    /// `Ok(None)` when there is nothing to recover. Otherwise the predecessor
+    /// lease expiry travels with the outcome so the diagnostics row says when
+    /// recovery became (or becomes) possible.
+    #[allow(clippy::type_complexity)]
+    fn attempt_automatic_predecessor_recovery(
+        &self,
+    ) -> Result<Option<(u64, serde_json::Value)>, (u64, String, String)> {
+        let spaces = self.registered_spaces().map_err(|error| {
+            (
+                0,
+                "NODE_DAEMON_PREDECESSOR_RECOVERY_INCOMPLETE".to_string(),
+                error.to_string(),
+            )
+        })?;
+        let mut candidates = Vec::new();
+        for (space, store) in spaces {
+            match store.latest_node_daemon_lease(&self.node_id) {
+                Ok(Some(lease)) => candidates.push(((space.id.clone(), store), lease)),
+                Ok(None) => {}
+                // An unreadable Store may hold the live lease this recovery
+                // would be stealing. Fail closed.
+                Err(error) => {
+                    return Err((
+                        0,
+                        "NODE_DAEMON_PREDECESSOR_RECOVERY_INCOMPLETE".to_string(),
+                        format!("{}: {error}", space.id),
+                    ))
+                }
+            }
+        }
+        if !candidates.iter().any(|(_, lease)| {
+            lease.status != harness_core::NodeDaemonLeaseStatus::Released
+                && (lease.daemon_id != self.daemon_id || lease.instance_id != self.instance_id)
+        }) {
+            return Ok(None);
+        }
+        let (latest, selected) = harness_store::select_exact_predecessor_spaces(candidates, None)
+            .map_err(|(code, detail)| (0, code, detail))?;
+        // This process never auto-recovers its own instance: a lease still
+        // held by this exact instance is a settlement problem for this
+        // generation, not a dead predecessor.
+        if latest.daemon_id == self.daemon_id && latest.instance_id == self.instance_id {
+            return Err((
+                latest.expires_unix_ms,
+                "NODE_DAEMON_PREDECESSOR_SETTLEMENT_REQUIRED".to_string(),
+                "the unreleased lease belongs to this exact daemon instance".to_string(),
+            ));
+        }
+        let now_ms = current_unix_ms_u64();
+        if let Some(unexpired) = selected.iter().find(|(_, lease)| {
+            lease.status != harness_core::NodeDaemonLeaseStatus::Released
+                && lease.expires_unix_ms > now_ms
+        }) {
+            return Err((
+                unexpired.1.expires_unix_ms,
+                "NODE_DAEMON_PREDECESSOR_RECOVERY_LIVE".to_string(),
+                format!(
+                    "lease_not_expired: generation {} expires unix-ms:{} (in {}s)",
+                    unexpired.1.generation,
+                    unexpired.1.expires_unix_ms,
+                    unexpired.1.expires_unix_ms.saturating_sub(now_ms) / 1000
+                ),
+            ));
+        }
+        let proof = harness_runtime_host::probe_predecessor_process(
+            &latest.instance_id,
+            latest.renewed_unix_ms,
+            now_ms,
+        )
+        .map_err(|error| {
+            (
+                latest.expires_unix_ms,
+                "NODE_DAEMON_PREDECESSOR_RECOVERY_UNVERIFIED".to_string(),
+                error,
+            )
+        })?;
+        if !proof.counts_as_absent() {
+            return Err((
+                latest.expires_unix_ms,
+                "NODE_DAEMON_PREDECESSOR_RECOVERY_LIVE".to_string(),
+                format!("{}: {}", proof.reason(), proof.evidence),
+            ));
+        }
+        let evidence_ref = format!("node-daemon:auto-recover:{}", self.instance_id);
+        let mut receipt = harness_store::recover_predecessor_generation_across_spaces(
+            &self.node_id,
+            &latest.daemon_id,
+            &latest.instance_id,
+            &selected
+                .into_iter()
+                .map(
+                    |((execution_space_id, store), lease)| harness_store::PredecessorSpaceLease {
+                        execution_space_id,
+                        store,
+                        lease,
+                    },
+                )
+                .collect::<Vec<_>>(),
+            &harness_core::agentfirm_api::ActorRef {
+                kind: harness_core::agentfirm_api::ActorKind::Service,
+                id: self.node_id.clone(),
+            },
+            true,
+            &evidence_ref,
+            &format!(
+                "node-daemon-auto-recover-predecessor:{}:{}",
+                self.node_id, latest.instance_id
+            ),
+            None,
+            now_ms,
+        )
+        .map_err(|(code, detail)| (latest.expires_unix_ms, code, detail))?;
+        receipt["recovered_by"] = serde_json::json!({
+            "daemon_id": self.daemon_id,
+            "instance_id": self.instance_id,
+            "automatic": true,
+        });
+        // The same builder the CLI receipt uses, so the two receipts cannot
+        // drift apart.
+        receipt["process_death_proof"] = proof.to_receipt_json();
+        receipt["predecessor_expires_unix_ms"] = serde_json::json!(latest.expires_unix_ms);
+        Ok(Some((latest.expires_unix_ms, receipt)))
+    }
+
+    /// Journal the recovery where the Host can see it: on every TeamRun whose
+    /// Supervisor lease this recovery released. The receipt itself carries the
+    /// proofs, so the event is the evidence, not a summary of it.
+    fn journal_automatic_predecessor_recovery(&self, receipt: &serde_json::Value) {
+        let instance_id = receipt["instance_id"].as_str().unwrap_or_default();
+        let summary = receipt.to_string();
+        let mut journaled = false;
+        for settlement in receipt["space_settlements"]
+            .as_array()
+            .map(Vec::as_slice)
+            .unwrap_or_default()
+        {
+            let Some(execution_space_id) = settlement["execution_space_id"].as_str() else {
+                continue;
+            };
+            for team_run in settlement["supervisors_released"]
+                .as_array()
+                .map(Vec::as_slice)
+                .unwrap_or_default()
+                .iter()
+                .filter_map(|value| value.as_str())
+            {
+                journaled = true;
+                self.journal_node_daemon_team_run_event(
+                    execution_space_id,
+                    team_run,
+                    &format!(
+                        "node-daemon-predecessor-recovered-automatically:{}:{team_run}",
+                        instance_id
+                    ),
+                    "predecessor_recovered_automatically",
+                    &summary,
+                    "NODE_DAEMON_PREDECESSOR_RECOVERED_AUTOMATICALLY",
+                );
+            }
+        }
+        if !journaled {
+            // The dead generation was supervising no TeamRun, so there is no
+            // per-run journal to write. The daemon log stays the record.
+            eprintln!("[node-daemon] NODE_DAEMON_PREDECESSOR_RECOVERED_AUTOMATICALLY: {summary}");
+        }
     }
 
     fn rollback_unused_bundle_leases(
@@ -709,6 +961,17 @@ impl MultiTeamDaemon {
                 }
             };
             if lease.daemon_id != self.daemon_id || lease.instance_id != self.instance_id {
+                // Settlement needs the lease this generation no longer holds.
+                // Record what it therefore could not settle here rather than
+                // returning Ok and losing the lane (ADR 0073).
+                self.record_settlement_incomplete_markers_in(
+                    &space.id,
+                    &store,
+                    &format!(
+                        "NODE_DAEMON_SHUTDOWN_SETTLEMENT_SKIPPED: Execution Space {} authority moved to daemon {} instance {} generation {} before this generation could settle its lanes",
+                        space.id, lease.daemon_id, lease.instance_id, lease.generation
+                    ),
+                );
                 continue;
             }
             let context = harness_core::agentfirm_api::MutationContext {
@@ -745,6 +1008,94 @@ impl MultiTeamDaemon {
                 "NODE_DAEMON_SHUTDOWN_SETTLEMENT_INCOMPLETE: {}",
                 failures.join("; ")
             )))
+        }
+    }
+
+    /// The exact generation this process last confirmed in one Execution
+    /// Space. Absent means this instance never owned lanes there, so there is
+    /// nothing honest to record.
+    fn confirmed_generation(&self, space_id: &str) -> Option<u64> {
+        self.confirmed_node_leases
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .get(space_id)
+            .map(|(_, lease)| lease.generation)
+    }
+
+    /// Record, in every registered Execution Space, the lanes this generation
+    /// is leaving unsettled.
+    ///
+    /// This is not a settlement and cannot become one: the Store writer it
+    /// calls touches no lifecycle, residency or cycle field. It is the record
+    /// that makes a silent death readable — by `daemon status`, by the
+    /// operator, and by the recovery that eventually settles the lane.
+    pub(super) fn record_settlement_incomplete_markers(&self, reason: &str) -> Vec<String> {
+        match self.registered_spaces() {
+            Ok(spaces) => spaces
+                .into_iter()
+                .flat_map(|(space, store)| {
+                    self.record_settlement_incomplete_markers_in(&space.id, &store, reason)
+                })
+                .collect(),
+            Err(error) => {
+                eprintln!(
+                    "[node-daemon] NODE_DAEMON_SETTLEMENT_INCOMPLETE_UNRECORDED: cannot list Execution Spaces: {error}"
+                );
+                Vec::new()
+            }
+        }
+    }
+
+    fn record_settlement_incomplete_markers_in(
+        &self,
+        space_id: &str,
+        store: &HarnessStore,
+        reason: &str,
+    ) -> Vec<String> {
+        let Some(generation) = self.confirmed_generation(space_id) else {
+            return Vec::new();
+        };
+        let context = harness_core::agentfirm_api::MutationContext {
+            execution_space_id: space_id.to_string(),
+            authenticated_actor: harness_core::agentfirm_api::ActorRef {
+                kind: harness_core::agentfirm_api::ActorKind::Service,
+                id: self.daemon_id.clone(),
+            },
+            authority_actor: None,
+            command_name: "node_daemon.settlement_incomplete".into(),
+            idempotency_key: format!(
+                "node-daemon-settlement-incomplete:{}:{}:{generation}",
+                self.node_id, self.daemon_id
+            ),
+            expected_version: generation,
+            request_fingerprint: None,
+        };
+        match store.record_node_daemon_settlement_incomplete(
+            &context,
+            &self.node_id,
+            &self.daemon_id,
+            generation,
+            &self.instance_id,
+            reason,
+            &format!("unix-ms:{}", current_unix_ms_u64()),
+        ) {
+            Ok(recorded) => {
+                if !recorded.is_empty() {
+                    eprintln!(
+                        "[node-daemon] NODE_DAEMON_SETTLEMENT_INCOMPLETE: {space_id}: generation {generation} left {} lane(s) unsettled: {reason}",
+                        recorded.len()
+                    );
+                }
+                recorded
+            }
+            Err(error) => {
+                // A daemon that is already dying cannot fail harder. The
+                // detached daemon log is the durable record of last resort.
+                eprintln!(
+                    "[node-daemon] NODE_DAEMON_SETTLEMENT_INCOMPLETE_UNRECORDED: {space_id}: {error}"
+                );
+                Vec::new()
+            }
         }
     }
 

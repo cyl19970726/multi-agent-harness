@@ -43,12 +43,12 @@ Machine scope is a property of the daemon's *bundle*, not of any single stored
 row. Each registered Execution Space keeps its own `node_daemon_leases.jsonl`
 row for this Node, and the `generation` counter inside it is a Space-local
 counter — never a machine-wide ordering
-(`crates/firm-cli/src/main_modules/daemon_predecessor_recovery.rs:76`). Before
+(`crates/firm-store/src/trust_kernel/fabric_work_execution_recovery/node_daemon_predecessor.rs:53`). Before
 any Team may admit a provider effect, the daemon acquires and revalidates the
 complete set of per-Space leases for every registered Space owned by this Node
 and treats them as one all-or-nothing authority; a partial first acquisition
 rolls back only the leases this instance acquired
-(`crates/firm-node-daemon/src/supervisor_daemon/machine_authority.rs:157-250`).
+(`crates/firm-node-daemon/src/supervisor_daemon/machine_authority.rs:172-289`).
 Read the two together: the rows are per Space, the authority they reconstruct
 is per machine.
 
@@ -57,13 +57,13 @@ never isolated to that Space. A fenced generation, a confirmed expiry, a
 revalidation mismatch, or a retired Node closes the shared process admission
 gate, latches `NODE_DAEMON_MACHINE_AUTHORITY_LOST` for this daemon instance,
 and starts a machine-wide drain
-(`crates/firm-node-daemon/src/supervisor_daemon/machine_authority.rs:52-72`,
-`:214`).
+(`crates/firm-node-daemon/src/supervisor_daemon/machine_authority.rs:57-91`,
+`:270-283`).
 
 A **transient** store failure during that acquisition is deliberately not
 treated as an authority failure. A `StoreError::Io`, `LockTimeout`, or `Json`
 error rolls back only the leases this attempt acquired and returns without
-latching (`…/machine_authority.rs:201-213`); the caller then logs
+latching (`…/machine_authority.rs:240-253`); the caller then logs
 `discovery deferred` and ends the pass with provider admission still open
 (`…/team_supervision.rs:15-22`). That carve-out is what makes a busy or slow
 Store cost one scan interval instead of the machine's authority, so read
@@ -79,6 +79,30 @@ isolated" is a statement about discovery reads, not about losing authority.
 On restart the new daemon generation recovers eligible non-terminal
 TeamRuns without duplicating provider delivery.
 
+A successor may acquire only over an explicitly `Released` predecessor lease,
+and it releases one itself only when the predecessor's death is *proven*. On
+the first scan it runs exactly the proofs `firm daemon recover-predecessor`
+runs — one unreleased predecessor instance across every registered Execution
+Space, every selected lease past expiry, the predecessor process absent, no
+ambiguous RuntimeCommand of that generation — plus recycled-pid detection: a
+live pid whose process provably started after the predecessor's last lease
+renewal is not the predecessor. All proofs holding, it settles, releases, and
+takes `generation + 1`, journaling the receipt as `node_daemon` /
+`predecessor_recovered_automatically`. Any proof failing, it refuses and names
+the failing proof in `daemon status`; an alive-but-starved predecessor and
+ambiguous commands remain operator-gated. The proofs have one owner each,
+shared with the CLI and the Operator HTTP action: the process proof in
+`firm-runtime-host`, instance selection and the per-Space transition in
+`firm-store` (ADR 0073).
+
+A generation that loses authority — its lease moved, or its drain did not
+converge — cannot settle the lanes it was running, because settlement requires
+process-group termination proof it does not have. It records that instead: each
+such lane carries a `settlement_incomplete` fact naming the daemon id,
+generation, instance and reason, written without touching lifecycle, residency
+or cycle state. Recovery reads it, settles the lane under a real proof, and
+clears it; the release fence refuses while one of that generation still stands.
+
 ## Timing constants
 
 Every value below is the shipped default in this checkout. They are stated
@@ -88,13 +112,13 @@ together.
 | Bound | Value | Source |
 | --- | --- | --- |
 | Execution Space scan interval | 5 s (`--scan-interval-secs`) | `crates/firm-cli/src/main_modules/daemon_cli.rs:285-292` |
-| NodeDaemon lease TTL | `max(scan × 4, 15 s)` = 20 s at the default scan | `crates/firm-node-daemon/src/supervisor_daemon/machine_authority.rs:273-285` |
-| NodeDaemon lease renewal cadence | `min(remaining / 4, clamp(scan, 1 s, 5 s))` = 5 s at the default scan | `crates/firm-node-daemon/src/supervisor_daemon/machine_authority.rs:35-38`, `:410-420` |
+| NodeDaemon lease TTL | `max(scan × 4, 15 s)` = 20 s at the default scan | `crates/firm-node-daemon/src/supervisor_daemon/machine_authority.rs:525-537` |
+| NodeDaemon lease renewal cadence | `min(remaining / 4, clamp(scan, 1 s, 5 s))` = 5 s at the default scan | `crates/firm-node-daemon/src/supervisor_daemon/machine_authority.rs:40-43`, `:663-672` |
 | Renewal lock-wait budget | the full remaining TTL, taken as one cancellable FIFO ticket | `crates/firm-store/src/store_node_runtime.rs:386-393` |
 | Team Supervisor lease TTL | 15 s (`FIRM_TEAM_SUPERVISOR_LEASE_MS`, then `HARNESS_TEAM_SUPERVISOR_LEASE_MS`) | `crates/firm-cli/src/main_modules/supervisor_control.rs:133-140` |
 | Supervisor heartbeat interval | `(ttl / 3).clamp(50 ms, 1 s)` = 1 s at the default TTL, and each sleep is further capped at `remaining / 4`, so the cadence tightens as the lease nears expiry | `crates/firm-cli/src/main_modules/runtime_effects.rs:1021`, `crates/firm-cli/src/main_modules/supervisor_control.rs:46-52` |
 | Supervisor heartbeat retry after a failure | `min(interval, 100 ms)` | `crates/firm-cli/src/main_modules/supervisor_control.rs:45-52` |
-| NodeDaemon drain TTL extension | 60 s | `crates/firm-node-daemon/src/supervisor_daemon/machine_authority.rs:752` |
+| NodeDaemon drain TTL extension | 60 s | `crates/firm-node-daemon/src/supervisor_daemon/machine_authority.rs:1103` |
 | `daemon stop` upper drain bound | 20 s control + 20 s scanner + 30 s supervisors + 5 s forced = 75 s | `crates/firm-node-daemon/src/supervisor_daemon.rs:105-121` |
 | `daemon start` readiness wait | 60 s | `crates/firm-cli/src/main_modules/daemon_cli.rs:357` |
 | Member drive tick | 50 ms | `crates/firm-cli/src/main_modules/member_admission_drive.rs:408` |

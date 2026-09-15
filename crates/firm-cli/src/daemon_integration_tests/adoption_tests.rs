@@ -7,7 +7,7 @@ use super::*;
 use harness_node_daemon::test_support::adoption_start_attempts;
 
 pub(super) struct AdoptionFixture {
-    _tree: TestTree,
+    pub(super) _tree: TestTree,
     pub(super) execution_space_id: String,
     pub(super) store: HarnessStore,
     pub(super) run_id: String,
@@ -96,6 +96,12 @@ pub(super) fn adoption_fixture(label: &str) -> AdoptionFixture {
 }
 
 impl AdoptionFixture {
+    /// The FIRM_HOME this fixture registered its Execution Space under, for
+    /// tests that need to register a second Space on the same machine.
+    pub(super) fn firm_home(&self) -> PathBuf {
+        self._tree.0.join("home")
+    }
+
     pub(super) fn adoption_is_held(&self) -> bool {
         self.daemon
             .team_run_adoption_is_held(&self.execution_space_id, &self.store, &self.run_id)

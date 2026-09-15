@@ -459,6 +459,47 @@ provider process groups. Read them with `firm team-run events --id
 prevents the bounded event-write retries, the same structured loss record is
 written to `node-daemon.log` as `NODE_DAEMON_SELF_STOP_EVENT_WRITE_FAILED`.
 
+A successor daemon recovers a proven-dead predecessor by itself, so the
+operator command below is for the cases it deliberately refuses. On its first
+scan, when the latest `NodeDaemonLease` is unreleased and belongs to another
+daemon or instance, the successor runs the same proofs as
+`recover-predecessor`: exactly one unreleased predecessor instance across every
+registered Execution Space, every selected lease past its expiry, the
+predecessor process absent, and no ambiguous RuntimeCommand of that generation.
+It adds one proof of its own — a pid that exists but provably started after the
+predecessor's last lease renewal is a recycled pid and counts as absent. If all
+of them hold it settles, releases, and acquires at `generation + 1`, and
+journals the whole receipt as a `node_daemon` /
+`predecessor_recovered_automatically` TeamRun event on every TeamRun the dead
+generation was supervising. If any proof fails it refuses exactly as before —
+an alive-but-starved daemon and ambiguous RuntimeCommands stay operator-gated —
+and names the failing proof in `daemon status` under `lease_renewals` as a
+`node_daemon_predecessor_recovery` row with a retained `last_error`. Read that
+row first: it says whether recovery refused because the lease has not expired
+(with the exact expiry), because the process is still alive, or because the
+Node holds two unreleased predecessor instances (ADR 0073).
+
+A generation that cannot settle its own lanes says so rather than leaving them
+unreadable. When the Space's latest lease has already moved, or when
+`graceful_shutdown` fails with `NODE_DAEMON_DRAIN_INCOMPLETE` and the settle
+step is skipped, the daemon writes the self-stop phases and flags each lane it
+owned and could not settle with a `settlement_incomplete` record naming its
+daemon id, generation, instance and the reason. A drain-incomplete stop
+journals `shutdown_initiated` and `drain_incomplete` under reason
+`NODE_DAEMON_DRAIN_INCOMPLETE`, and deliberately not
+`process_groups_terminated` or `shutdown_complete`: it proved neither. Read
+them with `firm team-run events --id <team-run-id>` alongside the ordinary
+self-stop events above. That record is never a
+settlement — it changes no lifecycle, residency or cycle field, because a
+generation with no process-group termination proof must not claim
+`Interrupted`. Recovery (automatic or operator-run) settles those lanes under a
+real proof, clears the flag, and reports them as
+`sessions_settlement_incomplete` in its receipt. The flag lives on the
+AgentSession row as `control_state.settlement_incomplete`; read it from the
+TeamRun dashboard, or from the `/v1/snapshot` and `/v1/views/...` reads a
+running `firm serve` exposes, which serialize the whole AgentSession. There is
+no `agent-session` CLI verb.
+
 The named recovery action is an ordinary CLI command, not a hand-crafted HTTP
 call. After the daemon is stopped and the dead predecessor instance's pid is
 proven absent, `firm daemon recover-predecessor --confirm
@@ -468,7 +509,12 @@ this Node and prints the recovery projection (`daemon_id`, `instance_id`,
 `generation`, `recovered_spaces`, `space_settlements`, `status=released`).
 `space_settlements` names, per Execution Space, the AgentSessions this recovery
 detached, the ones it skipped because the dying generation's own incomplete
-drain had already settled them, and the Supervisor leases it released. It
+drain had already settled them, the ones that carried a `settlement_incomplete`
+flag, and the Supervisor leases it released. The receipt also carries
+`process_death_proof` — the pid, the reason (`process_absent` or
+`process_absent_reused_pid`), the anchor it was compared against, and the raw
+evidence row — so the proof that authorized the recovery is readable after the
+fact. It
 marks an already released exact predecessor with `already_released=true` in
 its per-Space settlement. A multi-Space failure remains an error, with a JSON
 receipt in its detail (`status=partial`, `failures`, `recovered_spaces`, and
