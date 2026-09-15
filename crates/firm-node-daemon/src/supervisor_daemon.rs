@@ -534,7 +534,7 @@ impl MultiTeamDaemon {
                     .err()
                     .map(ToString::to_string)
                     .unwrap_or_default();
-                self.capture_incomplete_drain(&[failure.clone()]);
+                self.capture_incomplete_drain(std::slice::from_ref(&failure));
                 self.record_settlement_incomplete_markers(&format!(
                     "NODE_DAEMON_DRAIN_INCOMPLETE: {failure}"
                 ));

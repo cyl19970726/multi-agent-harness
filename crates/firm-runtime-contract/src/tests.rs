@@ -112,6 +112,7 @@ fn session() -> AgentSession {
             composition_fingerprint: Some("composition-a".to_string()),
             capability_fingerprint: Some("capabilities-a".to_string()),
             last_reconciled_at: None,
+            settlement_incomplete: None,
         },
         native_session_ref: None,
         current_cycle_marker: None,

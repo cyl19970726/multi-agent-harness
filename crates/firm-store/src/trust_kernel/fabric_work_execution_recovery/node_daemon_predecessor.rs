@@ -42,6 +42,11 @@ pub struct PredecessorSpaceLease {
     pub lease: NodeDaemonLease,
 }
 
+/// The predecessor instance a recovery selected: its latest lease, plus every
+/// Space-local lease belonging to that exact instance, still paired with
+/// whatever the caller keyed its Spaces by.
+pub type SelectedPredecessorSpaces<T> = (NodeDaemonLease, Vec<(T, NodeDaemonLease)>);
+
 /// Choose the one predecessor instance a recovery may touch, from the latest
 /// NodeDaemonLease of every registered Execution Space.
 ///
@@ -62,7 +67,7 @@ pub struct PredecessorSpaceLease {
 pub fn select_exact_predecessor_spaces<T>(
     candidates: Vec<(T, NodeDaemonLease)>,
     expected: Option<(&str, &str, u64)>,
-) -> Result<(NodeDaemonLease, Vec<(T, NodeDaemonLease)>), (String, String)> {
+) -> Result<SelectedPredecessorSpaces<T>, (String, String)> {
     let latest = candidates
         .iter()
         .find(|(_, lease)| lease.status != NodeDaemonLeaseStatus::Released)

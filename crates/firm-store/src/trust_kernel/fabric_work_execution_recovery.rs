@@ -46,7 +46,7 @@ mod node_daemon_predecessor;
 mod node_daemon_shutdown;
 pub use node_daemon_predecessor::{
     recover_predecessor_generation_across_spaces, select_exact_predecessor_spaces,
-    NodeDaemonPredecessorRecovery, PredecessorSpaceLease,
+    NodeDaemonPredecessorRecovery, PredecessorSpaceLease, SelectedPredecessorSpaces,
 };
 
 /// The transition every lost-runtime-generation invalidation writes on the

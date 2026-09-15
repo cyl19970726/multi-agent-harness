@@ -780,7 +780,7 @@ pub(crate) use fabric_work_execution_recovery::INVALIDATED_BY_LOST_RUNTIME_GENER
 pub use fabric_work_execution_recovery::{
     recover_predecessor_generation_across_spaces, select_exact_predecessor_spaces,
     InvalidatedWorkExecution, LostRuntimeGenerationCause, LostRuntimeLane,
-    NodeDaemonPredecessorRecovery, PredecessorSpaceLease,
+    NodeDaemonPredecessorRecovery, PredecessorSpaceLease, SelectedPredecessorSpaces,
 };
 mod trust_deliveries;
 mod trust_foundation;
