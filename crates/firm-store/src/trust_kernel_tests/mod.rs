@@ -748,6 +748,7 @@ fn settled_native_session(id: &str) -> NativeSessionRef {
 }
 
 mod admitted_stop_closes_exact_session_once_and_replays_after_terminal_state;
+mod agent_session_driver_generation_fails_closed_at_the_ceiling;
 mod agent_session_reattach_preserves_native_identity_and_fences_daemon_driver;
 mod agent_session_reattach_rejects_expiry_without_provider_drain_receipt;
 mod bind_agent_session_native_session_is_cas_generation_fenced_and_idempotent;

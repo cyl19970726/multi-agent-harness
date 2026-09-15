@@ -316,10 +316,17 @@ impl HarnessStore {
                 )));
             }
         }
-        let generation = current
-            .as_ref()
-            .map(|lease| lease.generation.saturating_add(1))
-            .unwrap_or(1);
+        // A saturating increment would silently re-issue the predecessor's own
+        // generation at u64::MAX, which is exactly the fence this lease relies
+        // on. Refuse instead of minting an indistinguishable successor.
+        let generation = match current.as_ref() {
+            Some(lease) => lease.generation.checked_add(1).ok_or_else(|| {
+                StoreError::Conflict(format!(
+                    "NODE_DAEMON_LEASE_GENERATION_EXHAUSTED: Node {node_id}"
+                ))
+            })?,
+            None => 1,
+        };
         let lease = NodeDaemonLease {
             node_id: node_id.to_string(),
             daemon_id: daemon_id.to_string(),
@@ -589,10 +596,17 @@ impl HarnessStore {
                 return Ok(current.clone());
             }
         }
-        let generation = current
-            .as_ref()
-            .map(|lease| lease.generation.saturating_add(1))
-            .unwrap_or(1);
+        // Same reason as the NodeDaemon lease above: a saturated generation is
+        // indistinguishable from the predecessor's, so every generation fence
+        // downstream would accept a stale Supervisor.
+        let generation = match current.as_ref() {
+            Some(lease) => lease.generation.checked_add(1).ok_or_else(|| {
+                StoreError::Conflict(format!(
+                    "TEAM_SUPERVISOR_LEASE_GENERATION_EXHAUSTED: team run {team_run_id}"
+                ))
+            })?,
+            None => 1,
+        };
         let lease = TeamSupervisorLease {
             team_run_id: team_run_id.to_string(),
             node_id: node_id.to_string(),
