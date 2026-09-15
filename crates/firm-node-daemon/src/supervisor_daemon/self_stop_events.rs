@@ -11,7 +11,12 @@ use super::*;
 
 const SELF_STOP_EVENT_WRITE_ATTEMPTS: usize = 3;
 const SELF_STOP_EVENT_WRITE_BACKOFF: Duration = Duration::from_millis(25);
-const MACHINE_AUTHORITY_LOST_REASON: &str = "NODE_DAEMON_MACHINE_AUTHORITY_LOST";
+pub(super) const MACHINE_AUTHORITY_LOST_REASON: &str = "NODE_DAEMON_MACHINE_AUTHORITY_LOST";
+/// A stop whose own drain did not converge is not an authority loss, but it
+/// leaves the same kind of hole: this generation stops without proving its
+/// process groups terminal. It journals the identical phase sequence under its
+/// own honest reason (ADR 0073).
+pub(super) const DRAIN_INCOMPLETE_REASON: &str = "NODE_DAEMON_DRAIN_INCOMPLETE";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct ServedTeamRun {
@@ -22,6 +27,9 @@ pub(super) struct ServedTeamRun {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct MachineAuthorityLoss {
+    /// Why this generation is stopping without settling. Never invented: an
+    /// ordinary drain failure must not be journaled as a lost lease.
+    reason: &'static str,
     trigger_error: String,
     served_runs: Vec<ServedTeamRun>,
 }
@@ -30,6 +38,18 @@ impl MultiTeamDaemon {
     /// Preserve only the first renewal failure: later drain errors are useful
     /// diagnostics, but must not overwrite the trigger that caused self-stop.
     pub(super) fn capture_machine_authority_loss(&self, failures: &[String]) -> bool {
+        self.capture_self_stop(MACHINE_AUTHORITY_LOST_REASON, failures)
+    }
+
+    /// Same snapshot, different honest reason: a stop that could not prove its
+    /// own drain. Capturing it is what makes the shutdown phases land at all —
+    /// `journal_machine_authority_loss_phase` writes nothing without a
+    /// captured self-stop, so an unconverged drain used to leave no journal.
+    pub(super) fn capture_incomplete_drain(&self, failures: &[String]) -> bool {
+        self.capture_self_stop(DRAIN_INCOMPLETE_REASON, failures)
+    }
+
+    fn capture_self_stop(&self, reason: &'static str, failures: &[String]) -> bool {
         let mut loss = self
             .machine_authority_loss
             .lock()
@@ -59,6 +79,7 @@ impl MultiTeamDaemon {
         });
 
         *loss = Some(MachineAuthorityLoss {
+            reason,
             trigger_error: failures
                 .first()
                 .cloned()
@@ -82,10 +103,11 @@ impl MultiTeamDaemon {
             return;
         };
 
+        let reason = loss.reason;
         for target in loss.served_runs {
             let summary = serde_json::json!({
                 "kind": "node_daemon_self_stop",
-                "reason": MACHINE_AUTHORITY_LOST_REASON,
+                "reason": reason,
                 "error": loss.trigger_error,
                 "phase": phase,
                 "daemon_id": self.daemon_id,
@@ -124,7 +146,7 @@ impl MultiTeamDaemon {
                     });
                 match result {
                     Ok(()) => {
-                        eprintln!("[node-daemon] {MACHINE_AUTHORITY_LOST_REASON}: {summary}");
+                        eprintln!("[node-daemon] {reason}: {summary}");
                         last_error = None;
                         break;
                     }

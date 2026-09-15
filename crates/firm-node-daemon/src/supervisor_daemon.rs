@@ -524,6 +524,20 @@ impl MultiTeamDaemon {
             let settlement_result = if supervisor_result.is_ok() {
                 self.settle_node_authorities_for_shutdown()
             } else {
+                // A drain that did not converge cannot prove its process
+                // groups terminal, so settlement stays refused — but the lanes
+                // it owned must not vanish from the record. Capture the stop so
+                // the shutdown phases journal, and flag every lane this
+                // generation is leaving behind (ADR 0073).
+                let failure = supervisor_result
+                    .as_ref()
+                    .err()
+                    .map(ToString::to_string)
+                    .unwrap_or_default();
+                self.capture_incomplete_drain(&[failure.clone()]);
+                self.record_settlement_incomplete_markers(&format!(
+                    "NODE_DAEMON_DRAIN_INCOMPLETE: {failure}"
+                ));
                 Ok(())
             };
             let drain_result = if supervisor_result.is_ok() && settlement_result.is_ok() {

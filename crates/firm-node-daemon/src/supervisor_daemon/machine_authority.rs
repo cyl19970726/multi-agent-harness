@@ -69,6 +69,16 @@ impl MultiTeamDaemon {
             self.journal_machine_authority_loss_phase("renewal_failed", &[]);
             self.journal_machine_authority_loss_phase("lease_lost", &[]);
         }
+        // The drain above can only touch leases this instance still owns. In
+        // the loss that matters most — the Space's latest lease has already
+        // moved to another daemon or instance — it owns none, so every lane
+        // this generation was running is about to be abandoned in silence.
+        // Leave the honest record instead (ADR 0073).
+        self.record_settlement_incomplete_markers(&format!(
+            "{}: {}",
+            self_stop_events::MACHINE_AUTHORITY_LOST_REASON,
+            failures.join("; ")
+        ));
         CliError::Usage(format!(
             "NODE_DAEMON_MACHINE_AUTHORITY_LOST: {}",
             failures.join("; ")
@@ -709,6 +719,17 @@ impl MultiTeamDaemon {
                 }
             };
             if lease.daemon_id != self.daemon_id || lease.instance_id != self.instance_id {
+                // Settlement needs the lease this generation no longer holds.
+                // Record what it therefore could not settle here rather than
+                // returning Ok and losing the lane (ADR 0073).
+                self.record_settlement_incomplete_markers_in(
+                    &space.id,
+                    &store,
+                    &format!(
+                        "NODE_DAEMON_SHUTDOWN_SETTLEMENT_SKIPPED: Execution Space {} authority moved to daemon {} instance {} generation {} before this generation could settle its lanes",
+                        space.id, lease.daemon_id, lease.instance_id, lease.generation
+                    ),
+                );
                 continue;
             }
             let context = harness_core::agentfirm_api::MutationContext {
@@ -745,6 +766,94 @@ impl MultiTeamDaemon {
                 "NODE_DAEMON_SHUTDOWN_SETTLEMENT_INCOMPLETE: {}",
                 failures.join("; ")
             )))
+        }
+    }
+
+    /// The exact generation this process last confirmed in one Execution
+    /// Space. Absent means this instance never owned lanes there, so there is
+    /// nothing honest to record.
+    fn confirmed_generation(&self, space_id: &str) -> Option<u64> {
+        self.confirmed_node_leases
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .get(space_id)
+            .map(|(_, lease)| lease.generation)
+    }
+
+    /// Record, in every registered Execution Space, the lanes this generation
+    /// is leaving unsettled.
+    ///
+    /// This is not a settlement and cannot become one: the Store writer it
+    /// calls touches no lifecycle, residency or cycle field. It is the record
+    /// that makes a silent death readable — by `daemon status`, by the
+    /// operator, and by the recovery that eventually settles the lane.
+    pub(super) fn record_settlement_incomplete_markers(&self, reason: &str) -> Vec<String> {
+        match self.registered_spaces() {
+            Ok(spaces) => spaces
+                .into_iter()
+                .flat_map(|(space, store)| {
+                    self.record_settlement_incomplete_markers_in(&space.id, &store, reason)
+                })
+                .collect(),
+            Err(error) => {
+                eprintln!(
+                    "[node-daemon] NODE_DAEMON_SETTLEMENT_INCOMPLETE_UNRECORDED: cannot list Execution Spaces: {error}"
+                );
+                Vec::new()
+            }
+        }
+    }
+
+    fn record_settlement_incomplete_markers_in(
+        &self,
+        space_id: &str,
+        store: &HarnessStore,
+        reason: &str,
+    ) -> Vec<String> {
+        let Some(generation) = self.confirmed_generation(space_id) else {
+            return Vec::new();
+        };
+        let context = harness_core::agentfirm_api::MutationContext {
+            execution_space_id: space_id.to_string(),
+            authenticated_actor: harness_core::agentfirm_api::ActorRef {
+                kind: harness_core::agentfirm_api::ActorKind::Service,
+                id: self.daemon_id.clone(),
+            },
+            authority_actor: None,
+            command_name: "node_daemon.settlement_incomplete".into(),
+            idempotency_key: format!(
+                "node-daemon-settlement-incomplete:{}:{}:{generation}",
+                self.node_id, self.daemon_id
+            ),
+            expected_version: generation,
+            request_fingerprint: None,
+        };
+        match store.record_node_daemon_settlement_incomplete(
+            &context,
+            &self.node_id,
+            &self.daemon_id,
+            generation,
+            &self.instance_id,
+            reason,
+            &format!("unix-ms:{}", current_unix_ms_u64()),
+        ) {
+            Ok(recorded) => {
+                if !recorded.is_empty() {
+                    eprintln!(
+                        "[node-daemon] NODE_DAEMON_SETTLEMENT_INCOMPLETE: {space_id}: generation {generation} left {} lane(s) unsettled: {reason}",
+                        recorded.len()
+                    );
+                }
+                recorded
+            }
+            Err(error) => {
+                // A daemon that is already dying cannot fail harder. The
+                // detached daemon log is the durable record of last resort.
+                eprintln!(
+                    "[node-daemon] NODE_DAEMON_SETTLEMENT_INCOMPLETE_UNRECORDED: {space_id}: {error}"
+                );
+                Vec::new()
+            }
         }
     }
 
