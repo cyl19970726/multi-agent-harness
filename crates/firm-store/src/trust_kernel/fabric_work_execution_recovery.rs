@@ -44,7 +44,10 @@ use super::*;
 // primitive. Keep their admission checks at the public Store entry points.
 mod node_daemon_predecessor;
 mod node_daemon_shutdown;
-pub use node_daemon_predecessor::NodeDaemonPredecessorRecovery;
+pub use node_daemon_predecessor::{
+    recover_predecessor_generation_across_spaces, select_exact_predecessor_spaces,
+    NodeDaemonPredecessorRecovery, PredecessorSpaceLease,
+};
 
 /// The transition every lost-runtime-generation invalidation writes on the
 /// binding, whichever seam proved the loss. Readers that must tell such an

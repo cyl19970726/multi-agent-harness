@@ -778,8 +778,9 @@ mod fabric_work_execution_provider_claim;
 mod fabric_work_execution_recovery;
 pub(crate) use fabric_work_execution_recovery::INVALIDATED_BY_LOST_RUNTIME_GENERATION;
 pub use fabric_work_execution_recovery::{
+    recover_predecessor_generation_across_spaces, select_exact_predecessor_spaces,
     InvalidatedWorkExecution, LostRuntimeGenerationCause, LostRuntimeLane,
-    NodeDaemonPredecessorRecovery,
+    NodeDaemonPredecessorRecovery, PredecessorSpaceLease,
 };
 mod trust_deliveries;
 mod trust_foundation;

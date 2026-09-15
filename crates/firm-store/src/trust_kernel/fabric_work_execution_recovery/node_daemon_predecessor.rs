@@ -35,6 +35,178 @@ pub struct NodeDaemonPredecessorRecovery {
     pub sessions_settlement_incomplete: Vec<String>,
 }
 
+/// One Execution Space's latest lease for the predecessor being recovered.
+pub struct PredecessorSpaceLease {
+    pub execution_space_id: String,
+    pub store: HarnessStore,
+    pub lease: NodeDaemonLease,
+}
+
+/// Choose the one predecessor instance a recovery may touch, from the latest
+/// NodeDaemonLease of every registered Execution Space.
+///
+/// Generations are Space-local counters, never a machine-wide ordering, so the
+/// selection is by instance identity: the latest unreleased lease names the
+/// instance, and every other unreleased lease must name the same one. A Node
+/// holding unreleased leases of two different instances is not a recovery
+/// case — it is a machine an operator must look at — and recovery refuses
+/// rather than sweeping an instance nobody asked about.
+///
+/// `expected` narrows the selection to one exact tuple for callers whose
+/// authorization names it (the Operator HTTP action). `None` selects every
+/// Space-local lease of the latest instance.
+///
+/// Both the `daemon recover-predecessor` CLI and the successor daemon's
+/// automatic recovery select through this one function, so they can never
+/// disagree about which instance is the predecessor (ADR 0073).
+pub fn select_exact_predecessor_spaces<T>(
+    candidates: Vec<(T, NodeDaemonLease)>,
+    expected: Option<(&str, &str, u64)>,
+) -> Result<(NodeDaemonLease, Vec<(T, NodeDaemonLease)>), (String, String)> {
+    let latest = candidates
+        .iter()
+        .find(|(_, lease)| lease.status != NodeDaemonLeaseStatus::Released)
+        .or_else(|| candidates.first())
+        .map(|(_, lease)| lease.clone())
+        .ok_or_else(|| {
+            (
+                "SUPERVISOR_GENERATION_FENCED".to_string(),
+                "Node has no predecessor lease to recover".to_string(),
+            )
+        })?;
+    if candidates.iter().any(|(_, lease)| {
+        lease.status != NodeDaemonLeaseStatus::Released
+            && (lease.daemon_id != latest.daemon_id || lease.instance_id != latest.instance_id)
+    }) {
+        return Err((
+            "SUPERVISOR_GENERATION_FENCED".to_string(),
+            "Node has different unreleased predecessor instances; recovery must not sweep unrelated instances".to_string(),
+        ));
+    }
+    let spaces: Vec<_> = candidates
+        .into_iter()
+        .filter(|(_, lease)| {
+            if let Some((daemon, instance, generation)) = expected {
+                lease.daemon_id == daemon
+                    && lease.instance_id == instance
+                    && lease.generation == generation
+            } else {
+                lease.daemon_id == latest.daemon_id && lease.instance_id == latest.instance_id
+            }
+        })
+        .collect();
+    if spaces.is_empty()
+        || expected.is_some_and(|(daemon, instance, _)| {
+            daemon != latest.daemon_id || instance != latest.instance_id
+        })
+    {
+        return Err((
+            "SUPERVISOR_GENERATION_FENCED".to_string(),
+            "recovery intent does not match the exact latest predecessor".to_string(),
+        ));
+    }
+    Ok((latest, spaces))
+}
+
+/// Run `recover_node_daemon_predecessor` for each captured Execution Space and
+/// return the operator-readable receipt.
+///
+/// Errors are `(code, detail)` pairs the caller wraps in its own envelope (HTTP
+/// role-action error, CLI usage error, or the daemon's own diagnostics). On
+/// partial failure the detail is a JSON receipt retaining successful
+/// settlements, so no caller loses what a half-finished recovery did achieve.
+/// `evidence_ref` identifies this request; repeating recovery does not replace
+/// the evidence ref on rows an earlier successful attempt already settled.
+#[allow(clippy::too_many_arguments)]
+pub fn recover_predecessor_generation_across_spaces(
+    node_id: &str,
+    daemon_id: &str,
+    instance_id: &str,
+    spaces: &[PredecessorSpaceLease],
+    actor: &firm_core::agentfirm_api::ActorRef,
+    provider_process_groups_terminated_confirmed: bool,
+    evidence_ref: &str,
+    idempotency_key_prefix: &str,
+    request_fingerprint: Option<String>,
+    now_unix_ms: u64,
+) -> Result<serde_json::Value, (String, String)> {
+    let mut recovered_spaces = Vec::new();
+    let mut space_settlements = Vec::new();
+    let mut failures = Vec::new();
+    for space in spaces {
+        let lease = &space.lease;
+        let context = firm_core::agentfirm_api::MutationContext {
+            execution_space_id: space.execution_space_id.clone(),
+            authenticated_actor: actor.clone(),
+            authority_actor: None,
+            command_name: "node_daemon.predecessor_recover".into(),
+            idempotency_key: format!(
+                "{idempotency_key_prefix}:space:{}",
+                space.execution_space_id
+            ),
+            expected_version: lease.generation,
+            request_fingerprint: request_fingerprint.clone(),
+        };
+        match space.store.recover_node_daemon_predecessor(
+            &context,
+            node_id,
+            daemon_id,
+            lease.generation,
+            instance_id,
+            true,
+            provider_process_groups_terminated_confirmed,
+            evidence_ref,
+            now_unix_ms,
+            &format!("unix-ms:{now_unix_ms}"),
+        ) {
+            // The settlement summary is part of the receipt: an operator must
+            // be able to see which Sessions this recovery detached, which it
+            // skipped because the dying generation had already settled them
+            // (#837), and which carried an unsettled-lane marker (ADR 0073) —
+            // not infer the difference from silence.
+            Ok(recovery) => {
+                space_settlements.push(serde_json::json!({
+                    "execution_space_id": space.execution_space_id,
+                    "generation": lease.generation,
+                    "daemon_id": lease.daemon_id,
+                    "instance_id": lease.instance_id,
+                    "already_released": recovery.already_released,
+                    "supervisors_released": recovery.supervisors_released,
+                    "sessions_detached": recovery.sessions_detached,
+                    "sessions_already_settled": recovery.sessions_already_settled,
+                    "sessions_settlement_incomplete": recovery.sessions_settlement_incomplete,
+                }));
+                recovered_spaces.push(space.execution_space_id.clone());
+            }
+            Err(error) => failures.push(format!("{}: {error}", space.execution_space_id)),
+        }
+    }
+    let mut receipt = serde_json::json!({
+        "node_id": node_id,
+        "daemon_id": daemon_id,
+        "instance_id": instance_id,
+        "generation": spaces.first().map(|space| space.lease.generation).filter(|generation| spaces.iter().all(|space| space.lease.generation == *generation)),
+        "already_released": failures.is_empty() && space_settlements.iter().all(|row| row["already_released"] == true),
+        "space_leases": spaces.iter().map(|space| serde_json::json!({
+            "execution_space_id": space.execution_space_id, "daemon_id": space.lease.daemon_id,
+            "instance_id": space.lease.instance_id, "generation": space.lease.generation,
+        })).collect::<Vec<_>>(),
+        "status": "released",
+        "recovered_spaces": recovered_spaces,
+        "space_settlements": space_settlements,
+        "evidence_ref": evidence_ref,
+    });
+    if !failures.is_empty() {
+        receipt["status"] = serde_json::json!("partial");
+        receipt["failures"] = serde_json::json!(failures);
+        return Err((
+            "NODE_DAEMON_PREDECESSOR_RECOVERY_INCOMPLETE".to_string(),
+            receipt.to_string(),
+        ));
+    }
+    Ok(receipt)
+}
+
 impl HarnessStore {
     /// Explicit hard-crash recovery for one exact predecessor generation.
     ///

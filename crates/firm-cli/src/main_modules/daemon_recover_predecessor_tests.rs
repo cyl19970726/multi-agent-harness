@@ -114,7 +114,8 @@ fn recover_predecessor_releases_dead_instance_and_is_idempotent() {
         serde_json::json!(["space-recover"])
     );
     // The receipt names what each Space settled, including the Sessions
-    // recovery skipped because they were already settled (#837).
+    // recovery skipped because they were already settled (#837) and the lanes
+    // a dying generation had flagged as unsettled (ADR 0073).
     assert_eq!(
         projection["space_settlements"],
         serde_json::json!([{
@@ -126,7 +127,15 @@ fn recover_predecessor_releases_dead_instance_and_is_idempotent() {
             "supervisors_released": [],
             "sessions_detached": [],
             "sessions_already_settled": [],
+            "sessions_settlement_incomplete": [],
         }])
+    );
+    // Whichever path settles a predecessor, the receipt carries the exact
+    // death proof that authorized it.
+    assert_eq!(projection["process_death_proof"]["pid"], 2147483647_i64);
+    assert_eq!(
+        projection["process_death_proof"]["reason"],
+        "process_absent"
     );
     assert_eq!(
         store
