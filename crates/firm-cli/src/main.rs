@@ -509,6 +509,9 @@ fn run() -> CliResult<()> {
             .with_provider_compatibility_scope(project_id, store_id),
         None => HarnessStore::new(resolved.root.clone()),
     };
+    // A home that cannot be determined at all (`home_dir()` failure) leaves the
+    // Store unbound rather than guessing, which is the fail-closed answer once
+    // the cutover makes this load-bearing.
     if let Ok(firm_home) = crate::project::firm_home() {
         store = store.with_firm_home(firm_home);
     }
