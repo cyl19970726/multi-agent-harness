@@ -140,7 +140,10 @@ machines, and no new legacy Mission, Mission Log, or Wave row may be written
 on any surface.
 `NodeDaemonLease` is machine-scoped authority for all local Teams across
 registered Execution Spaces; each machine has one machine-scoped NodeDaemon and
-the lease is never scoped to one Execution Space.
+the lease is never scoped to one Execution Space. The stored row is still per
+Execution Space and its `generation` is a Space-local counter; machine scope is
+reconstructed by the daemon's all-or-nothing bundle over every registered
+Space, and any failure in that bundle closes provider admission machine-wide.
 `TeamRun` and `MemberRun` remain coordination/history projections; they never
 own a provider process or authorize a provider effect. Every provider effect is
 prepared and settled through a durable `RuntimeCommand` bound to the exact

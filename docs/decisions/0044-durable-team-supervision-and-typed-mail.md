@@ -7,6 +7,20 @@
 
 > Successor note (DOC-16 Keep row, DEV-40 flip 2026-08-18): this ADR is kept; the governing successor context is [DOC-106](https://app.notion.com/p/3be49a4fa3798126a598e634ed5d0807).
 
+> Lease-scope amendment (core-5 review, 2026-09-15): "An expired lease may be
+> replaced with a higher generation" below is true for the **TeamSupervisorLease
+> only**. It is false for the `NodeDaemonLease`, whose successor is admitted
+> only over an explicitly `Released` row — expiry alone yields
+> `NODE_DAEMON_PREDECESSOR_SETTLEMENT_REQUIRED` or
+> `NODE_DAEMON_PREDECESSOR_RECOVERY_REQUIRED`
+> (`crates/firm-store/src/store_node_runtime.rs:299-317`). The Supervisor rule
+> still holds: the Store refuses a successor only while the current lease is
+> `Active` and unexpired, and daemon discovery adopts an expired one
+> (`crates/firm-store/src/store_node_runtime.rs:579-592`,
+> `crates/firm-node-daemon/src/supervisor_daemon/team_supervision.rs:106-110`).
+> Why that stays safe is recorded in
+> [Node Runtime and Message Fabric](../current/architecture/agent-runtime.md).
+
 ```text
 status: accepted
 owner_role: architecture
