@@ -44,9 +44,13 @@ cannot keep acting on a lease it no longer holds:
   operations
   (`crates/firm-cli/src/main_modules/member_work_coordination.rs:444-462`,
   `crates/firm-cli/src/main_modules/supervisor_control.rs:148-162`);
-- every Store settlement is generation-fenced, so a stale Supervisor generation
-  is refused at the write, not merely discouraged
-  (`crates/firm-store/src/trust_kernel/fabric_runtime_commands.rs:131`); and
+- a provider-facing effect re-checks the exact driver ref, so a stale Supervisor
+  generation is refused at the write rather than merely discouraged: the live
+  driver check requires the current lease to match supervisor id *and*
+  generation and still be Active and unexpired
+  (`crates/firm-store/src/trust_kernel/fabric_foundation.rs:340-382`), and the
+  stale-driver detector on RuntimeCommands demands the same tuple
+  (`crates/firm-store/src/trust_kernel/fabric_runtime_commands.rs:47-65`); and
 - the successor runs under the same machine NodeDaemon, whose drain terminates
   and reaps only the provider process groups registered by that exact daemon
   process, so an orphaned provider child does not survive the handover
