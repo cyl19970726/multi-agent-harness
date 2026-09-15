@@ -366,7 +366,7 @@ fn the_written_lease_carries_the_clock_sampled_under_the_lock() {
         samples.set(samples.get() + 1);
         after_a_long_wait
     };
-    let clock = LeaseClock::injected(&source);
+    let clock = LeaseClock::new(&source);
 
     let lock = NodeLeaseLock::acquire(&node_home, Duration::from_millis(500)).expect("lease lock");
     let published = publish_lease_document(&lock, &node_home, NODE, &clock, |now| {

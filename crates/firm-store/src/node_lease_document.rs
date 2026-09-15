@@ -138,10 +138,12 @@ fn require_document_belongs_here(
 /// for #990.
 pub(crate) struct LeaseClock<'a>(&'a dyn Fn() -> u64);
 
-impl LeaseClock<'_> {
-    /// The real wall clock. Production always uses this.
-    pub(crate) fn system() -> LeaseClock<'static> {
-        LeaseClock(&current_store_unix_ms)
+impl<'a> LeaseClock<'a> {
+    /// Any clock. Injection is the ordinary constructor rather than a
+    /// test-only escape hatch, so production and a test differ only in which
+    /// source they hand over — there is no second code path to keep honest.
+    pub(crate) fn new(source: &'a dyn Fn() -> u64) -> Self {
+        LeaseClock(source)
     }
 
     fn now(&self) -> u64 {
@@ -149,12 +151,10 @@ impl LeaseClock<'_> {
     }
 }
 
-#[cfg(any(test, feature = "test-support"))]
-impl<'a> LeaseClock<'a> {
-    /// A clock a test drives, so "sampled after the lock, before the rename"
-    /// becomes an assertion instead of a race.
-    pub(crate) fn injected(source: &'a dyn Fn() -> u64) -> Self {
-        LeaseClock(source)
+impl LeaseClock<'static> {
+    /// The real wall clock. Production always uses this.
+    pub(crate) fn system() -> Self {
+        Self::new(&current_store_unix_ms)
     }
 }
 
