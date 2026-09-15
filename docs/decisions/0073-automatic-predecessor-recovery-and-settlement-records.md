@@ -184,5 +184,12 @@ drain clears the flag the same way when it does converge.
   it recovers exactly the latest predecessor instance, exactly as the CLI does.
   A marker naming an older generation is evidence for a human, not an
   authorization to sweep it.
-- `ps` is now on the recovery path. Its absence is an unverified probe, which
-  fails closed to "alive"; no recovery decision depends on `ps` succeeding.
+- `ps` is now on the recovery path, but only after the expiry proof passes, so
+  it never runs for a predecessor that is still renewing its lease. Its absence
+  is an unverified probe, which fails closed to "alive"; no recovery decision
+  depends on `ps` succeeding.
+- Writing the markers is Store IO on a path that is already failing, and lock
+  starvation is one of the ways authority is lost in the first place. It is
+  bounded by the ordinary 10 s write-lock budget per Execution Space, and a
+  timeout falls back to the detached daemon log rather than delaying the stop
+  further.
