@@ -1,0 +1,7 @@
+{
+  "code": "MACHINE_LEASE_UNRESOLVED",
+  "message": "MACHINE_LEASE_FILE_UNRESOLVED: Store /tmp/space is bound to no Firm home, so the machine lease document for Node node-1 cannot be named",
+  "retryable": false,
+  "resource_kind": "node_daemon_lease",
+  "resource_id": "node-1"
+}

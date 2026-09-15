@@ -541,3 +541,76 @@ fn a_generation_moving_backwards_is_refused() {
         "the superseded generation did not come back"
     );
 }
+
+/// Item 6: the refusal is typed, so a fence matches on a variant rather than a
+/// string 46 call sites would each have to spell correctly.
+///
+/// Both machine-lease refusals — "cannot name the document" and "resolved a
+/// legacy row" — carry the same code, because from a fence's point of view they
+/// are one answer: the lease did not resolve to something that authorizes.
+#[test]
+fn every_machine_lease_refusal_is_typed_not_a_message_prefix() {
+    use firm_core::agentfirm_api::TrustErrorCode;
+
+    let unbound = HarnessStore::new(team_test_firm_home("typed-refusal-unbound"));
+    let (_home, legacy) = machine_lease_store("typed-refusal-legacy");
+    legacy
+        .insert_execution_node(&ExecutionNode {
+            id: NODE.into(),
+            display_name: "legacy".into(),
+            status: ExecutionNodeStatus::Active,
+            created_at: "unix-ms:1".into(),
+            updated_at: "unix-ms:1".into(),
+        })
+        .expect("insert Node");
+    legacy
+        .acquire_node_daemon_lease(NODE, "node-daemon:legacy", "instance-1", 1, 60_000)
+        .expect("a pre-cutover Space row");
+
+    for (what, error) in [
+        (
+            "no Firm home",
+            unbound.node_home(NODE).expect_err("unbound"),
+        ),
+        (
+            "no Firm home, via the fence",
+            unbound
+                .authoritative_machine_lease(NODE)
+                .expect_err("unbound fence"),
+        ),
+        (
+            "a legacy Space row",
+            legacy
+                .authoritative_machine_lease(NODE)
+                .expect_err("legacy fence"),
+        ),
+        ("no lease at all", {
+            let (_h, empty) = machine_lease_store("typed-refusal-empty");
+            empty
+                .authoritative_machine_lease(NODE)
+                .expect_err("no lease")
+        }),
+        (
+            "an unsafe node id",
+            legacy.node_home("../escape").expect_err("bad node id"),
+        ),
+    ] {
+        let typed = error
+            .trust_error()
+            .unwrap_or_else(|| panic!("{what}: refusal is not typed: {error}"));
+        assert_eq!(
+            typed.code,
+            TrustErrorCode::MachineLeaseUnresolved,
+            "{what}: wrong code"
+        );
+        assert_eq!(typed.resource_kind, "node_daemon_lease", "{what}");
+        assert!(
+            !typed.retryable,
+            "{what}: a machine-lease refusal is never retryable"
+        );
+        assert!(
+            error.is_machine_lease_unresolved(),
+            "{what}: the predicate still recognises the typed form"
+        );
+    }
+}

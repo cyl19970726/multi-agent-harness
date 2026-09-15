@@ -20,6 +20,7 @@ use crate::node_lease_document::{
 };
 use crate::node_lease_history::{append_lease_history, generation_was_released};
 use crate::node_lease_lock::{lease_lock_timeout, NodeLeaseLock};
+use crate::store_node_home::machine_lease_unresolved;
 
 /// Which record answered "who owns this machine".
 ///
@@ -122,13 +123,21 @@ impl HarnessStore {
             Some((lease, source)) if source.authorizes_provider_effect() => {
                 Ok(AuthorizedMachineLease(lease))
             }
-            Some((_, source)) => Err(StoreError::Conflict(format!(
-                "{MACHINE_LEASE_NOT_AUTHORITATIVE}: Node {node_id} resolved from {} and cannot authorize a provider effect; this Store predates the machine lease cutover",
-                source.as_str()
-            ))),
-            None => Err(StoreError::Conflict(format!(
-                "{MACHINE_LEASE_NOT_AUTHORITATIVE}: Node {node_id} has no machine lease"
-            ))),
+            // Both refusals carry the same typed code: from a fence's point of
+            // view "the machine lease did not resolve to something that
+            // authorizes" is one answer, and splitting it would make 46 call
+            // sites decide which half they meant.
+            Some((_, source)) => Err(machine_lease_unresolved(
+                node_id,
+                format!(
+                    "{MACHINE_LEASE_NOT_AUTHORITATIVE}: Node {node_id} resolved from {} and cannot authorize a provider effect; this Store predates the machine lease cutover",
+                    source.as_str()
+                ),
+            )),
+            None => Err(machine_lease_unresolved(
+                node_id,
+                format!("{MACHINE_LEASE_NOT_AUTHORITATIVE}: Node {node_id} has no machine lease"),
+            )),
         }
     }
 
