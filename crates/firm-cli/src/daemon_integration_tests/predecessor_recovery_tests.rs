@@ -580,6 +580,26 @@ fn an_unconverged_drain_records_the_lanes_it_could_not_settle_exactly_once() {
             .is_empty(),
         "an identical observation must not rewrite the lane"
     );
+    // A different reason is a different observation of the same lane, and the
+    // latest one stands: a generation that first lost its drain and then its
+    // lease must be able to say so.
+    let second_reason =
+        "NODE_DAEMON_MACHINE_AUTHORITY_LOST: the lease expired before the drain converged";
+    assert_eq!(
+        fixture
+            .daemon()
+            .record_settlement_incomplete_markers(second_reason),
+        vec!["session-drain-incomplete".to_string()]
+    );
+    assert_eq!(
+        fixture
+            .session("session-drain-incomplete")
+            .control_state
+            .settlement_incomplete
+            .expect("flag")
+            .reason,
+        second_reason
+    );
 }
 
 #[test]

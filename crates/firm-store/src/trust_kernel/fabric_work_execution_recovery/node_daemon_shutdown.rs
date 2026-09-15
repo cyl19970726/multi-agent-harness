@@ -293,9 +293,17 @@ impl HarnessStore {
                 session_context.command_name = "node_daemon.settlement_incomplete".into();
                 // Keyed by the exact dying generation, like the drain and the
                 // recovery detach (#837), so repeating the observation replays
-                // instead of colliding.
+                // instead of colliding — and by the reason's digest, because a
+                // generation that first loses its drain and then its lease is
+                // making a second, different observation of the same lane. The
+                // reason is in the payload, so without the digest that second
+                // observation reuses the first one's key under a different
+                // payload and is refused as IDEMPOTENCY_KEY_REUSED.
                 session_context.idempotency_key = format!(
-                    "node-daemon-settlement-incomplete:{node_id}:{daemon_id}:{generation}:{instance_id}:session:{}",
+                    "node-daemon-settlement-incomplete:{node_id}:{daemon_id}:{generation}:{instance_id}:{}:session:{}",
+                    crate::canonical_json_fingerprint(&serde_json::Value::String(
+                        reason.to_string()
+                    )),
                     session.id
                 );
                 session_context.expected_version = previous_version;
