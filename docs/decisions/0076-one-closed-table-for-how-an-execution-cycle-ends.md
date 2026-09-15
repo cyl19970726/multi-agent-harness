@@ -93,6 +93,16 @@ acceptance never applied anything and is replay-safe, while the same death *afte
 acceptance is "accepted, outcome unproven" (invariant I2) and never "not applied". The
 first six cannot occur without a receipt; the two Rejected rows cannot occur with one.
 
+**The rule that keeps that honest:** once the input has crossed the provider boundary, no
+ending may claim replay-safety. An adapter that cannot tell which of its endings applies
+must record the MOST conservative one — `TransportLost` or `TerminalUnobserved`, both of
+which settle `RecoveryRequired / Unknown` — never `NotStarted` or `AcceptanceTimeout`.
+Concretely: no adapter failure enum derives `Default` with a replay-safe variant, a typed
+failure is set to a conservative value before the frame reaches the wire and refined only
+once the write succeeds, and `NotStarted` is recorded only while the acceptance receipt does
+not yet exist. Review round 1 found the inverse on Pi — every RPC, including the mid-cycle
+abort, reset to the one replay-safe value — and that is what this rule closes.
+
 Three variants beyond the shape the core-6 audit proposed, each for a stated reason:
 
 - **`NotStarted`** — Codex's five `CODEX_ONE_DRIVER_VIOLATION` pre-send refusals, its
@@ -167,10 +177,39 @@ unchanged. Every other ending uses the distinct `cycle_ending:{wire}` prefix, wh
 deliberately does not match: a transport loss is not a provider terminal and must never be
 classified as one.
 
+`CycleEnding::action_title` and `CycleEnding::action_summary` key the row's HUMAN-readable
+half the same way. Before this, every failed row carried one string —
+`"{provider} provider round {round} failed; inspect the provider-native session for
+details"` — so a `host_aborted` row (the Harness's own abort) and a `cycle_not_started` row
+both claimed the provider failed and both pointed an operator at a provider session that,
+for `NotStarted`, never began. That function is deleted. Only `ProviderFailed` now names the
+provider and sends the reader to its native session; `NotStarted` and `AcceptanceTimeout`
+say the input never crossed and re-issuing is safe; `HostAborted` says the Harness ended the
+cycle itself. No summary ever copies provider output.
+
 `TeamRuntimeAdapter::take_cycle_terminal_failure` (`cycle.rs:403`) stops being an
 adapter-implemented hook and becomes a shared default derived from
 `take_cycle_ending` (`cycle.rs:393`). Adapters record an ending; the structured failure —
 and therefore a populated `provider_status` — follows on all five.
+
+### 4b. Where an adapter records its ending, and where it must not
+
+Every `Err` leaving `run_cycle` records exactly one ending, and the claim is checked by
+walking each cycle body's `?` operators rather than by grepping for the classification
+helper. Review round 1 found four sites that a grep-built inventory had missed, each
+because the same call is also made on a sibling open/close path:
+
+| site | ending | why |
+| --- | --- | --- |
+| deepseek `run_cycle` `receive_event` | `TransportLost` | the runner-death path: a disconnected stdout, or a frame the shared runner protocol cannot parse. Both leave the turn unobservable and settle identically once acceptance is known. |
+| deepseek `run_cycle` `accept_session_binding` | `TerminalUnobserved{TerminalMismatch}` | every failure is about the PROVIDER's reported session identity — missing `sessionId`, an unverifiable provider version, `DEEPSEEK_HARNESS_RESUME_MISMATCH`, `DEEPSEEK_HARNESS_SESSION_CHANGED`. None is Harness-side, so it is a terminal we cannot trust, not a Harness abort. |
+| codex `run_cycle` `handle_provider_request` | `TerminalUnobserved{ProtocolViolation}` | the provider asked for something outside the reviewed protocol and the adapter refused it fail-closed (`CODEX_PROVIDER_REQUEST_UNSAFE` / `_UNSUPPORTED` / `_UNHANDLED`). The turn keeps running provider-side while we refuse, so its terminal is no longer observable — not a transport death, and not a provider-reported failure. |
+| codex `run_cycle` `observe_frame_thread` | `TerminalUnobserved{TerminalMismatch}` | the frame belongs to another thread, turn or descendant than the one this cycle admitted. |
+
+The mirror rule: a cycle ending is recorded ONLY from a cycle. The open and close paths
+(`wait_for_session_bound`, `wait_for_member_closed`, `settle_active_turn_for_close`) make
+the same calls and must not write the field, or a close-path failure would be attributed to
+a cycle.
 
 ### 5. Exhaustiveness is a compile-time property, per adapter
 
@@ -199,7 +238,13 @@ they ended. Pre-ADR-0076 rows carry no key and read back as `None`.
   control asked the turn to end; it ended at its exact native boundary. Claude and DeepSeek
   now carry the requested Interrupt/Close on the outcome together with its `abort` receipt —
   claimed only when the interrupt frame actually crossed the provider boundary, so a control
-  that was never delivered still fails closed.
+  that was never delivered still fails closed. Review round 1 found the same defect live on
+  Kimi in a different shape: its abort receipt carried `success = last_cycle_cancelled`, so
+  a Close racing a normally completed turn produced an unsuccessful receipt and the loop
+  failed the member with "kimi control lacked verified terminal acknowledgement". A receipt
+  records DELIVERY, not the eventual stop reason — Codex and Pi already did this — so Kimi's
+  now succeeds on delivery and keeps the stop reason as native evidence on its
+  `response_id`. All five providers are aligned.
 - **An empty terminal is `EmptyOutput` on all five providers and counts toward the circuit
   breaker everywhere.** `empty_final_report` is no longer a provider terminal failure.
   `decide_team_round` derives zero output from the ending rather than re-deriving it from
@@ -209,7 +254,10 @@ they ended. Pre-ADR-0076 rows carry no key and read back as `None`.
 
 - An operator reading one action row learns how the cycle ended and whether the input
   crossed the provider boundary, on every provider, without opening the provider-native
-  session. The shared loop's catch-all row is gone.
+  session. The shared loop's catch-all row is gone in both halves: its `action_type` and
+  `provider_status` come from the table, and so do its title and summary —
+  `provider_turn_failure_summary`, the single string every failed row used to carry, is
+  deleted with its last caller.
 - Six new `action_type` values appear in `member_actions` (`transport_lost`,
   `input_never_accepted`, `control_settle_timeout`, `cycle_not_started`, `host_aborted`,
   `terminal_unobserved`) and `closed` now also appears for a cycle that ended under a Close.

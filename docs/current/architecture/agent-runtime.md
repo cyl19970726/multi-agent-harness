@@ -658,6 +658,7 @@ Per-provider alignment:
 | acceptance id | provider-minted (`turn_id`) | Harness-synthesized (`claude-cycle-N`) | Harness-assigned request id, acceptance inferred | Harness-synthesized (`deepseek-cycle-N`) | Harness-assigned (`pi-rpc-N`), echoed back |
 | ends when | `turn/completed` **and** `thread/read` reports idle | `turn_complete` for this input, or the interrupt-resume pair | the `session/prompt` response, classified by `stopReason` | `turn_complete` for this input, or the interrupt-resume pair | `agent_settled` **and** `get_state` reports `isStreaming=false` |
 | interrupt = | native `turn/interrupt` RPC | NDJSON `{"command":"interrupt"}` on runner stdin, withheld until acceptance | `session/cancel` notification; process group killed on grace expiry | NDJSON `{"command":"interrupt"}`, withheld until acceptance | blocking `abort` RPC |
+| abort receipt succeeds when | the RPC was sent | the frame crossed the boundary | the notification crossed the boundary | the frame crossed the boundary | the RPC was sent |
 | `NotStarted` | runtime closed, one-driver violation, armed Goal, app-server rejected the start | — | prompt already active, no ACP session | — | Pi rejected the prompt or omitted its id |
 | `AcceptanceTimeout` | the `turn/start` RPC deadline expires | `…_INPUT_ACCEPTANCE_TIMEOUT` | first sends `session/cancel`, then the grace path below | `…_INPUT_ACCEPTANCE_TIMEOUT` | the `prompt` RPC deadline expires |
 | `ControlSettleTimeout` | `CODEX_RUNTIME_CONTROL_UNKNOWN` | `…_CONTROL_SETTLE_TIMEOUT` | cancel grace expires; process group killed | `…_CONTROL_SETTLE_TIMEOUT` | `PI_CONTROL_SETTLE_TIMEOUT` |
@@ -665,15 +666,25 @@ Per-provider alignment:
 | `ProviderFailed` | `codexErrorInfo`, else `turn_failed` | `terminalReason`, else `unknown_provider_error`; `runner_error` | `max_tokens` / `refusal` / `max_turn_requests` | `terminalReason`, else `unknown_provider_error`; `runner_error` | `stopReason` ∈ {`error`, `length`} |
 | `EmptyOutput` | empty terminal | empty terminal | empty terminal | empty terminal | empty terminal |
 
-Two alignments ADR 0076 corrects. A requested Interrupt or Close that races a
-normal completion is **settled by that terminal** rather than dropped: the
-control asked the turn to end and it ended at its exact native boundary, so the
-outcome carries the control and its `abort` receipt (claimed only when the
-interrupt frame actually crossed the boundary). And an **empty terminal is
-`EmptyOutput` on all five providers**, counting toward the unproductive-round
-circuit breaker everywhere; it is no longer reported as a provider terminal
-failure on Claude and DeepSeek, where doing so reset the streak instead of
-feeding it.
+Two alignments ADR 0076 corrects, both now true on all five providers. A
+requested Interrupt or Close that races a normal completion is **settled by that
+terminal** rather than dropped: the control asked the turn to end and it ended
+at its exact native boundary, so the outcome carries the control and its `abort`
+receipt. The receipt records DELIVERY — it is claimed only when the control
+frame actually crossed the provider boundary, and its success does not depend on
+the eventual stop reason, so an undelivered control still fails closed. And an
+**empty terminal is `EmptyOutput` on all five providers**, counting toward the
+unproductive-round circuit breaker everywhere; it is no longer reported as a
+provider terminal failure on Claude and DeepSeek, where doing so reset the
+streak instead of feeding it.
+
+One rule holds the table honest: **once the input has crossed the provider
+boundary, no ending may claim replay-safety.** An adapter that cannot tell which
+ending applies records the most conservative one (`TransportLost` or
+`TerminalUnobserved`, both `RecoveryRequired / Unknown`), never `NotStarted` or
+`AcceptanceTimeout`. The row's human-readable title and summary are keyed by the
+ending too, so a Harness abort or a cycle that never started no longer claims
+the provider failed or sends an operator to a session that was never touched.
 
 The pure wake priority, zero-output degradation/backoff, and bounded
 pre-effect admission contention retry are owned by
