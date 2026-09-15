@@ -24,10 +24,12 @@
 //!   interrupted. Remembering it would permanently break a TeamRun that a
 //!   *successor* Supervisor generation legitimately re-adopts in this same
 //!   process. Covering the pre-registration window is therefore the caller's
-//!   job, and it is cheap: register the turn before the last authority check
-//!   that precedes the provider drive, so a latch either finds the turn here
-//!   (registration and the fan-out share one mutex) or is caught by that check.
-//!   `runtime_adapter::run_team_member_with_adapter` does exactly that.
+//!   job, and it is cheap: invalidate the scope before fanning out, and
+//!   register the turn before the last authority check that precedes the
+//!   provider drive — so a latch either finds the turn here (registration and
+//!   the fan-out share one mutex) or is caught by that check.
+//!   `runtime_adapter::run_team_member_with_adapter` and both authority
+//!   latches do exactly that.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Condvar, Mutex, OnceLock};

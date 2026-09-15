@@ -253,9 +253,9 @@ fn the_report_renders_the_journalled_interrupt_evidence() {
 /// Supervisor generation may legitimately re-adopt the same TeamRun in this
 /// same process and must not be permanently interrupted by its predecessor's
 /// loss. Closing the pre-registration window is the caller's job — it registers
-/// before its last authority check (see
-/// `runtime_adapter::run_team_member_with_adapter` and
-/// `queued_prepared_cycle_rechecks_quiesce_after_occupied_slot_is_released`).
+/// before its last authority check, and each latch invalidates its own scope
+/// before fanning out (see `runtime_adapter::run_team_member_with_adapter`,
+/// guarded by `acceptance_wake::a_parked_turn_is_registered_before_the_occupied_slot_wait`).
 #[test]
 fn a_latched_scope_is_not_remembered_for_turns_registered_afterwards() {
     let _serialized = serialized();

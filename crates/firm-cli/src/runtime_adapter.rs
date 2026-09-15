@@ -489,14 +489,16 @@ pub(crate) fn run_team_member_with_adapter<A: TeamRuntimeAdapter<Error = CliErro
             let turn_result = {
                 // Register BEFORE `acquire_prepared_cycle_turn`, and keep it
                 // that way (ADR 0074). The registry and the authority-loss
-                // fan-out serialize on one mutex, and an authority latch marks
-                // its scope invalid before it fans out, so this order leaves no
-                // window: a latch that lands after this line finds this turn in
-                // the registry and interrupts it, and a latch that lands before
-                // it is caught by the `require_supervisor_lease()` that
+                // fan-out serialize on one mutex, and both latches now mark
+                // their scope invalid before fanning out, so this order leaves
+                // no window: a latch landing after this line finds the turn in
+                // the registry and interrupts it, and a latch landing before it
+                // is caught by the `require_supervisor_lease()` that
                 // `acquire_prepared_cycle_turn` performs after its blocking
-                // turn-slot wait — which is exactly the Store-IO gap a
-                // registration placed after that call would leave open.
+                // turn-slot wait — exactly the Store-IO gap a registration
+                // placed after that call would leave open.
+                // `acceptance_wake::a_parked_turn_is_registered_before_the_occupied_slot_wait`
+                // is the regression guard and goes red if these two swap.
                 // Dropping the guard when the cycle returns is what keeps a
                 // finished turn out of any later fan-out.
                 let authority_loss_turn = harness_runtime_host::register_live_provider_turn(

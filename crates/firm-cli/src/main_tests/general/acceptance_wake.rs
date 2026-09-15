@@ -16,10 +16,19 @@ fn acceptance_preparation_rechecks_close_after_idle_selection() {
     acceptance_fixture(AcceptanceScenario::Close);
 }
 
+/// ADR 0074: the turn must be registered before `acquire_prepared_cycle_turn`
+/// blocks on the turn slot. Driven through the real supervisor loop, so moving
+/// the registration back below the wait turns this red.
+#[test]
+fn a_parked_turn_is_registered_before_the_occupied_slot_wait() {
+    acceptance_fixture(AcceptanceScenario::ParkedTurn);
+}
+
 enum AcceptanceScenario {
     Cycle,
     Contention,
     Close,
+    ParkedTurn,
 }
 
 fn acceptance_fixture(scenario: AcceptanceScenario) {
@@ -559,10 +568,83 @@ fn acceptance_fixture(scenario: AcceptanceScenario) {
         .save_member_run(&before_profile, &idle_member)
         .unwrap();
     let inputs = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let interrupted = std::rc::Rc::new(std::cell::Cell::new(false));
     let mut adapter = crate::codex_team_runtime::CodexTeamRuntime::new(AcceptanceBridge {
         inputs: inputs.clone(),
         terminal_sent: std::cell::Cell::new(false),
+        interrupted: interrupted.clone(),
     });
+    // ADR 0074 ordering contract, exercised through the real supervisor loop.
+    // The turn must be registered in the authority-loss registry BEFORE
+    // `acquire_prepared_cycle_turn`'s blocking slot wait, or a latch landing
+    // while the member is parked sees nothing to interrupt. The signal comes
+    // from `run_team_member_with_adapter` itself: move the registration back
+    // below the wait and `turns_live` here is 0.
+    if matches!(scenario, AcceptanceScenario::ParkedTurn) {
+        let pool = Arc::new(ActiveTurnLeasePool::new(1));
+        // Held by the observer thread, which releases it only after it has
+        // fanned out; the adapter holds an `Rc`, so the drive cannot move.
+        let occupied = pool.acquire();
+        let context = MemberRuntimeContext {
+            execution_space_id: Some(lease.execution_space_id.clone()),
+            project_id: None,
+            project_selector: None,
+            cwd: root.clone(),
+            timeouts: harness_runtime_contract::CycleTimeouts::default(),
+            live_sink: None,
+            turn_leases: Arc::clone(&pool),
+            role_action_token: "fixture-token".into(),
+        };
+        let parked_member_id = idle_member.id.clone();
+        let parked_run_id = ledger.run_id.clone();
+        let observer_pool = Arc::clone(&pool);
+        let observed = Arc::new(Mutex::new(None::<serde_json::Value>));
+        let observer_observed = Arc::clone(&observed);
+        let observer = std::thread::spawn(move || {
+            let occupied = occupied;
+            let deadline = Instant::now() + Duration::from_secs(20);
+            while observer_pool.waiting.load(Ordering::Acquire) != 1 && Instant::now() < deadline {
+                std::thread::yield_now();
+            }
+            let report = harness_runtime_host::request_authority_loss_interrupt(
+                &harness_runtime_host::AuthorityLossScope::TeamRun(parked_run_id),
+                "TEAM_SUPERVISOR_LEASE_LOST: parked-turn ordering guard",
+                Duration::ZERO,
+            );
+            *observer_observed
+                .lock()
+                .unwrap_or_else(|error| error.into_inner()) = Some(report.to_json());
+            drop(occupied);
+        });
+        let _ = crate::runtime_adapter::run_team_member_with_adapter(
+            &ledger,
+            "Reconsider blocked responsibility",
+            &mut idle_member,
+            &context,
+            &mut adapter,
+            &controls,
+            None,
+            1,
+        );
+        observer.join().expect("parked-turn observer");
+        let report = observed
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone()
+            .expect("the observer fanned out while the member was parked");
+        assert_eq!(
+            report["turns_live"], 1,
+            "a turn parked on the occupied-slot wait must already be registered: {report}"
+        );
+        assert_eq!(report["turns"][0]["member_run_id"], parked_member_id);
+        assert!(
+            interrupted.get(),
+            "the request the parked turn picked up must reach the provider bridge"
+        );
+        std::fs::remove_dir_all(&root).ok();
+        return;
+    }
+
     let context = MemberRuntimeContext {
         execution_space_id: Some(lease.execution_space_id.clone()),
         project_id: None,
@@ -592,6 +674,10 @@ fn acceptance_fixture(scenario: AcceptanceScenario) {
         inputs.borrow().len(),
         1,
         "one provider-native bridge entry; outcome: {outcome_error}"
+    );
+    assert!(
+        !interrupted.get(),
+        "an ordinary acceptance cycle issues no provider interrupt"
     );
     assert!(inputs.borrow()[0].contains("WORK ACCEPTANCE"));
     assert!(inputs.borrow()[0].contains(&standing.id));
@@ -696,6 +782,10 @@ fn acceptance_fixture(scenario: AcceptanceScenario) {
 struct AcceptanceBridge {
     inputs: std::rc::Rc<std::cell::RefCell<Vec<String>>>,
     terminal_sent: std::cell::Cell<bool>,
+    /// Observed rather than forbidden: the ordinary scenarios assert this stays
+    /// false, and the ParkedTurn scenario asserts the authority-loss interrupt
+    /// really crossed the provider bridge.
+    interrupted: std::rc::Rc<std::cell::Cell<bool>>,
 }
 
 impl crate::codex_team_runtime::CodexAppServerBridge for AcceptanceBridge {
@@ -720,7 +810,8 @@ impl crate::codex_team_runtime::CodexAppServerBridge for AcceptanceBridge {
         Ok("turn-acceptance-fixture".into())
     }
     fn interrupt(&mut self, _: &str) -> harness_provider_codex::CodexResult<()> {
-        unreachable!()
+        self.interrupted.set(true);
+        Ok(())
     }
     fn recv(&self, _: Duration) -> Result<serde_json::Value, std::sync::mpsc::RecvTimeoutError> {
         self.terminal_sent.set(true);
