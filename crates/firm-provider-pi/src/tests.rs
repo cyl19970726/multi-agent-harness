@@ -804,3 +804,64 @@ mod cycle_conformance {
         harness_runtime_contract::assert_c1_terminal_failure_unsatisfied(&receipt).expect("C1");
     }
 }
+
+/// ADR 0076 exhaustiveness: every ending this adapter can produce is placed in
+/// the closed table. The `expected` match below is wildcard-free, so adding a
+/// variant to `PiCycleFailure` breaks this test's compilation until the new
+/// ending is decided on deliberately.
+#[test]
+fn every_pi_cycle_ending_is_placed_in_the_closed_table() {
+    use crate::PiCycleFailure;
+    use harness_runtime_contract::{CycleEnding, CycleRefusalCode, TerminalUnobservedCode};
+    fn expected(failure: PiCycleFailure) -> CycleEnding {
+        match failure {
+            PiCycleFailure::InputAcceptanceTimeout => CycleEnding::AcceptanceTimeout,
+            PiCycleFailure::TransportLost => CycleEnding::TransportLost {
+                detail: "detail".to_string(),
+            },
+            PiCycleFailure::StartRejected => CycleEnding::NotStarted {
+                code: CycleRefusalCode::ProviderRejectedStart,
+            },
+            PiCycleFailure::ControlSettleTimeout => CycleEnding::ControlSettleTimeout,
+            PiCycleFailure::PostconditionUnknown => CycleEnding::TerminalUnobserved {
+                code: TerminalUnobservedCode::PostconditionUnknown,
+                detail: "detail".to_string(),
+            },
+            PiCycleFailure::HostAborted => CycleEnding::HostAborted {
+                detail: "detail".to_string(),
+            },
+        }
+    }
+    assert_eq!(
+        PiCycleFailure::ALL.len(),
+        6,
+        "ALL must list every variant the wildcard-free match above covers"
+    );
+    for failure in PiCycleFailure::ALL {
+        let ending = failure.ending("detail");
+        assert_eq!(ending, expected(*failure), "{failure:?}");
+        assert!(!ending.action_type().is_empty(), "{failure:?}");
+        assert!(!ending.provider_status().is_empty(), "{failure:?}");
+    }
+}
+
+/// Pi's `stopReason` failures reach the closed codes: `length` is an output
+/// budget, `error` is a runner error. Neither stays raw provider prose.
+#[test]
+fn pi_stop_reasons_classify_into_the_closed_failure_codes() {
+    use harness_runtime_contract::{ProviderFailureCode, ProviderTerminalFailure};
+    assert_eq!(
+        ProviderFailureCode::classify(&ProviderTerminalFailure {
+            reason: "length".to_string(),
+            http_status: None,
+        }),
+        ProviderFailureCode::OutputLimit
+    );
+    assert_eq!(
+        ProviderFailureCode::classify(&ProviderTerminalFailure {
+            reason: "error".to_string(),
+            http_status: None,
+        }),
+        ProviderFailureCode::RunnerError
+    );
+}

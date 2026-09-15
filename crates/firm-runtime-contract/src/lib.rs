@@ -28,6 +28,8 @@ pub use receipt_and_terminal::*;
 pub use timeouts::*;
 
 #[cfg(test)]
+mod cycle_ending_tests;
+#[cfg(test)]
 mod cycle_s1_tests;
 #[cfg(test)]
 mod tests;

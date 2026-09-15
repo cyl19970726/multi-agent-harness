@@ -429,6 +429,54 @@ mod tests {
             }))
             .expect("pre-S3 row without interrupt_cause reads");
         assert_eq!(correlation.interrupt_cause, None);
+        // ADR 0076 is additive the same way: a durable row written before the
+        // closed ending table carries no `ending` key and reads back as None.
+        assert_eq!(correlation.ending, None);
+    }
+
+    /// The ending recorded on the correlation is the closed table's frozen
+    /// wire value, and a non-interrupted cycle still records one — before the
+    /// table, a clean completion left no machine-readable trace of HOW it
+    /// ended at all.
+    #[test]
+    fn the_cycle_correlation_records_the_closed_ending_for_every_cycle() {
+        let (completed, _) = correlate_provider_cycle(
+            cycle_authority(),
+            native_cycle(Some("provider-input:1")),
+            true,
+            None,
+            &CycleEnding::Completed,
+        )
+        .unwrap();
+        assert_eq!(completed.ending.as_deref(), Some("completed"));
+        assert_eq!(completed.interrupt_cause, None);
+
+        let (empty, _) = correlate_provider_cycle(
+            cycle_authority(),
+            native_cycle(Some("provider-input:1")),
+            true,
+            None,
+            &CycleEnding::EmptyOutput,
+        )
+        .unwrap();
+        assert_eq!(empty.ending.as_deref(), Some("empty_output"));
+
+        let (failed, _) = correlate_provider_cycle(
+            cycle_authority(),
+            native_cycle(Some("provider-input:1")),
+            true,
+            None,
+            &CycleEnding::ProviderFailed {
+                code: firm_runtime_contract::ProviderFailureCode::QuotaExhausted,
+                detail: "usageLimitExceeded".to_string(),
+                http_status: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            failed.ending.as_deref(),
+            Some("provider_failed:quota_exhausted")
+        );
     }
 
     #[test]

@@ -1244,3 +1244,101 @@ fn terminal_failure_metadata_never_uses_prose_or_ambiguous_variants() {
         );
     }
 }
+
+/// ADR 0076 exhaustiveness: every ending this adapter can produce is placed in
+/// the closed table. The `expected` match below is wildcard-free, so adding a
+/// variant to `CodexCycleFailure` breaks this test's compilation until the new
+/// ending is decided on deliberately.
+#[test]
+fn every_codex_cycle_ending_is_placed_in_the_closed_table() {
+    use crate::cycle_ending::CodexCycleFailure;
+    use harness_runtime_contract::{
+        CycleEnding, CycleRefusalCode, ProviderFailureCode, TerminalUnobservedCode,
+    };
+    fn expected(failure: CodexCycleFailure) -> CycleEnding {
+        match failure {
+            CodexCycleFailure::RuntimeClosed => CycleEnding::NotStarted {
+                code: CycleRefusalCode::RuntimeClosed,
+            },
+            CodexCycleFailure::OneDriverViolation => CycleEnding::NotStarted {
+                code: CycleRefusalCode::OneDriverViolation,
+            },
+            CodexCycleFailure::ContinuationArmed => CycleEnding::NotStarted {
+                code: CycleRefusalCode::ContinuationArmed,
+            },
+            CodexCycleFailure::StartRejected => CycleEnding::NotStarted {
+                code: CycleRefusalCode::ProviderRejectedStart,
+            },
+            CodexCycleFailure::HostFatalControl | CodexCycleFailure::AcceptanceCallbackFailed => {
+                CycleEnding::HostAborted {
+                    detail: "detail".to_string(),
+                }
+            }
+            CodexCycleFailure::InputAcceptanceTimeout => CycleEnding::AcceptanceTimeout,
+            CodexCycleFailure::TransportClosed => CycleEnding::TransportLost {
+                detail: "detail".to_string(),
+            },
+            CodexCycleFailure::ControlSettleTimeout => CycleEnding::ControlSettleTimeout,
+            CodexCycleFailure::UnknownTerminalStatus => CycleEnding::ProviderFailed {
+                code: ProviderFailureCode::TurnFailed,
+                detail: "detail".to_string(),
+                http_status: None,
+            },
+            CodexCycleFailure::PostconditionUnknown => CycleEnding::TerminalUnobserved {
+                code: TerminalUnobservedCode::PostconditionUnknown,
+                detail: "detail".to_string(),
+            },
+            CodexCycleFailure::TerminalMismatch => CycleEnding::TerminalUnobserved {
+                code: TerminalUnobservedCode::TerminalMismatch,
+                detail: "detail".to_string(),
+            },
+        }
+    }
+    assert_eq!(
+        CodexCycleFailure::ALL.len(),
+        12,
+        "ALL must list every variant the wildcard-free match above covers"
+    );
+    for failure in CodexCycleFailure::ALL {
+        let ending = failure.ending("detail");
+        assert_eq!(ending, expected(*failure), "{failure:?}");
+        assert!(!ending.action_type().is_empty(), "{failure:?}");
+        assert!(!ending.provider_status().is_empty(), "{failure:?}");
+    }
+}
+
+/// A refused start never crossed the provider boundary, so its ending is
+/// replay-safe and carries no provider terminal failure — the diagnostic from
+/// an earlier cycle must not leak onto it.
+#[test]
+fn a_refused_start_records_a_replay_safe_not_started_ending() {
+    use harness_runtime_contract::{CycleEnding, CycleEndingSettlement, CycleRefusalCode};
+    let mut adapter = CodexTeamRuntime::new(FakeBridge::completed("completed"));
+    adapter.runtime_closed = true;
+    let error = TeamRuntimeAdapter::run_cycle(
+        &mut adapter,
+        "input",
+        CycleTimeouts::with_input_acceptance(Duration::from_secs(1)),
+        &mut |_| Ok(()),
+        &mut |_| {},
+        &mut CycleControl::default,
+    )
+    .expect_err("a closed runtime refuses the cycle");
+    assert!(error.to_string().contains("explicitly closed"));
+    let ending = TeamRuntimeAdapter::take_cycle_ending(&mut adapter).expect("a typed ending");
+    assert_eq!(
+        ending,
+        CycleEnding::NotStarted {
+            code: CycleRefusalCode::RuntimeClosed
+        }
+    );
+    assert_eq!(
+        ending.settlement(false),
+        CycleEndingSettlement::RejectedNotApplied
+    );
+    assert!(ending.provider_terminal_failure().is_none());
+    assert!(
+        TeamRuntimeAdapter::take_cycle_ending(&mut adapter).is_none(),
+        "the ending is consumed once"
+    );
+}
