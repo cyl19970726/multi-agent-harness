@@ -1,6 +1,42 @@
 use super::*;
 
+/// Reason recorded on every turn interrupted because this daemon instance lost
+/// machine authority.
+const MACHINE_AUTHORITY_LOSS_INTERRUPT_REASON: &str =
+    "NODE_DAEMON_MACHINE_AUTHORITY_LOST: cooperative interrupt before drain";
+
+/// How long the machine latch waits for live turns to pick up their
+/// cooperative interrupt. The request stays latched afterwards, so this bounds
+/// only the evidence the latch can report — never delivery — and it keeps a
+/// hung provider from delaying the drain it precedes.
+const MACHINE_AUTHORITY_LOSS_INTERRUPT_OBSERVE_TIMEOUT: Duration = Duration::from_secs(2);
+
 impl MultiTeamDaemon {
+    /// Hand one cooperative interrupt to every live provider turn this process
+    /// still owns, before the bounded cooperative drain wait and its SIGKILL
+    /// backstop (ADR 0074).
+    ///
+    /// Deliberately not a `RuntimeCommand`: machine authority is already
+    /// permanently closed when this runs, so no provider effect can be
+    /// admitted or settled, and that refusal is correct. The interrupt is a
+    /// process-local action through each adapter's existing
+    /// `interrupt_current_cycle` path, and `graceful_shutdown_with_deadlines`
+    /// then runs unchanged.
+    pub(super) fn interrupt_live_provider_turns_for_authority_loss(&self) {
+        let report = harness_runtime_host::request_authority_loss_interrupt(
+            &harness_runtime_host::AuthorityLossScope::Process,
+            MACHINE_AUTHORITY_LOSS_INTERRUPT_REASON,
+            MACHINE_AUTHORITY_LOSS_INTERRUPT_OBSERVE_TIMEOUT,
+        );
+        let detail = report.to_json();
+        eprintln!("[node-daemon] cooperative interrupt before drain: {detail}");
+        self.journal_machine_authority_loss_phase_with_detail(
+            "cooperative_interrupt_dispatched",
+            &[],
+            Some(detail),
+        );
+    }
+
     /// Stop every machine-owned runtime before releasing this daemon generation.
     pub(super) fn graceful_shutdown(&self) -> CliResult<()> {
         #[cfg(any(test, feature = "test-support"))]

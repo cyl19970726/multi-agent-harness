@@ -73,6 +73,11 @@ impl MultiTeamDaemon {
         if first_loss {
             self.journal_machine_authority_loss_phase("renewal_failed", &[]);
             self.journal_machine_authority_loss_phase("lease_lost", &[]);
+            // One cooperative interrupt per live provider turn, issued here
+            // rather than in the drain so it starts as soon as authority is
+            // known lost. The drain's cooperative wait and SIGKILL backstop
+            // are unchanged (ADR 0074, `shutdown.rs`).
+            self.interrupt_live_provider_turns_for_authority_loss();
         }
         // The drain above can only touch leases this instance still owns. In
         // the loss that matters most — the Space's latest lease has already

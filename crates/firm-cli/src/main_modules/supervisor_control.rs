@@ -145,6 +145,13 @@ pub(super) fn supervisor_lease_lost_error(team_run_id: &str) -> CliError {
     ))
 }
 
+/// How long a Supervisor-lease latch waits for this run's live turns to pick
+/// up their cooperative interrupt. The request stays latched after the wait,
+/// so the bound only limits how long the latch reports for — never whether the
+/// interrupt is delivered. It is deliberately short because this latch can run
+/// on a member's own supervisor thread.
+const SUPERVISOR_LEASE_LOSS_INTERRUPT_OBSERVE_TIMEOUT: Duration = Duration::from_millis(250);
+
 pub(super) fn latch_supervisor_lease_lost(
     supervisor_valid: &AtomicBool,
     team_run_id: &str,
@@ -157,6 +164,21 @@ pub(super) fn latch_supervisor_lease_lost(
             "team run {team_run_id} supervisor {supervisor_id} generation {generation} \
              lease_lost; quiescing stale generation: {reason}"
         );
+        // ADR 0074: hand this run's live turns one cooperative interrupt
+        // before the drain's SIGKILL backstop. It is a process-local action
+        // through each adapter's own interrupt path, never a RuntimeCommand:
+        // a lost lease admits no provider effect, and that refusal stands.
+        let report = harness_runtime_host::request_authority_loss_interrupt(
+            &harness_runtime_host::AuthorityLossScope::TeamRun(team_run_id.to_string()),
+            &format!("TEAM_SUPERVISOR_LEASE_LOST: {reason}"),
+            SUPERVISOR_LEASE_LOSS_INTERRUPT_OBSERVE_TIMEOUT,
+        );
+        if report.turns_live > 0 {
+            eprintln!(
+                "team run {team_run_id} cooperative interrupt on lease loss: {}",
+                report.to_json()
+            );
+        }
     }
     supervisor_lease_lost_error(team_run_id)
 }

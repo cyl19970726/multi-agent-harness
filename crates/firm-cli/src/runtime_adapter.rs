@@ -500,6 +500,15 @@ pub(crate) fn run_team_member_with_adapter<A: TeamRuntimeAdapter<Error = CliErro
                     member_row.id.clone(),
                     member_row.runtime_generation,
                 );
+                // Make this exact turn reachable by the process-local
+                // authority-loss interrupt (ADR 0074) for as long as it is
+                // being driven. Dropping the guard when the cycle returns is
+                // what keeps a finished turn out of the fan-out.
+                let authority_loss_turn = harness_runtime_host::register_live_provider_turn(
+                    provider,
+                    &ledger.run_id,
+                    &member_row.id,
+                );
                 let live_sink = context.live_sink.clone();
                 adapter.run_cycle(
                 &prompt,
@@ -593,6 +602,22 @@ pub(crate) fn run_team_member_with_adapter<A: TeamRuntimeAdapter<Error = CliErro
                     let mut control = CycleControl::default();
                     if let Some(error) = early_native_binding_error.borrow().clone() {
                         control.fatal_error = Some(error);
+                        return control;
+                    }
+                    // Authority loss is the one interrupt that cannot be a
+                    // RuntimeCommand: admission is already permanently closed,
+                    // so no provider effect may be prepared or settled, and
+                    // that refusal is correct. ADR 0074 makes this a
+                    // process-local action through the adapter's own
+                    // `interrupt_current_cycle` path instead. It writes no
+                    // durable row and prepares no effect; the terminal that
+                    // follows still hits the ordinary authority refusal.
+                    if let Some(reason) = authority_loss_turn.take_authority_loss_interrupt() {
+                        eprintln!(
+                            "[runtime] {provider} member {} cooperative interrupt before drain: {reason}",
+                            member_row.id
+                        );
+                        control.interrupt = true;
                         return control;
                     }
                     // Both remaining control commands settle the cycle and

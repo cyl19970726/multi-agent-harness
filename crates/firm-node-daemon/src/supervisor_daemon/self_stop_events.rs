@@ -118,6 +118,22 @@ impl MultiTeamDaemon {
         phase: &str,
         terminated_provider_process_groups: &[u32],
     ) {
+        self.journal_machine_authority_loss_phase_with_detail(
+            phase,
+            terminated_provider_process_groups,
+            None,
+        );
+    }
+
+    /// The same self-stop event plus one phase-specific `detail` object.
+    /// Phases that carry no extra evidence keep exactly the summary shape they
+    /// already had; `detail` is additive and absent by default.
+    pub(super) fn journal_machine_authority_loss_phase_with_detail(
+        &self,
+        phase: &str,
+        terminated_provider_process_groups: &[u32],
+        detail: Option<serde_json::Value>,
+    ) {
         let loss = self
             .machine_authority_loss
             .lock()
@@ -129,7 +145,7 @@ impl MultiTeamDaemon {
 
         let reason = loss.reason;
         for target in loss.served_runs {
-            let summary = serde_json::json!({
+            let mut summary_value = serde_json::json!({
                 "kind": "node_daemon_self_stop",
                 "reason": reason,
                 "error": loss.trigger_error,
@@ -138,8 +154,11 @@ impl MultiTeamDaemon {
                 "daemon_instance_id": self.instance_id,
                 "daemon_generation": target.daemon_generation,
                 "terminated_provider_process_groups": terminated_provider_process_groups,
-            })
-            .to_string();
+            });
+            if let (Some(object), Some(detail)) = (summary_value.as_object_mut(), detail.as_ref()) {
+                object.insert("detail".to_string(), detail.clone());
+            }
+            let summary = summary_value.to_string();
             let stable_key = format!(
                 "node-daemon-self-stop:{}:{}:{}",
                 self.instance_id, target.team_run_id, phase
