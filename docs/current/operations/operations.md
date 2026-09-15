@@ -484,13 +484,21 @@ unreadable. When the Space's latest lease has already moved, or when
 `graceful_shutdown` fails with `NODE_DAEMON_DRAIN_INCOMPLETE` and the settle
 step is skipped, the daemon writes the self-stop phases and flags each lane it
 owned and could not settle with a `settlement_incomplete` record naming its
-daemon id, generation, instance and the reason. That record is never a
+daemon id, generation, instance and the reason. A drain-incomplete stop
+journals `shutdown_initiated` and `drain_incomplete` under reason
+`NODE_DAEMON_DRAIN_INCOMPLETE`, and deliberately not
+`process_groups_terminated` or `shutdown_complete`: it proved neither. Read
+them with `firm team-run events --id <team-run-id>` alongside the ordinary
+self-stop events above. That record is never a
 settlement — it changes no lifecycle, residency or cycle field, because a
 generation with no process-group termination proof must not claim
 `Interrupted`. Recovery (automatic or operator-run) settles those lanes under a
 real proof, clears the flag, and reports them as
-`sessions_settlement_incomplete` in its receipt. Inspect a flagged lane with
-`firm agent-session show` or the TeamRun dashboard.
+`sessions_settlement_incomplete` in its receipt. The flag lives on the
+AgentSession row as `control_state.settlement_incomplete`; read it from the
+TeamRun dashboard, or from the `/v1/snapshot` and `/v1/views/...` reads a
+running `firm serve` exposes, which serialize the whole AgentSession. There is
+no `agent-session` CLI verb.
 
 The named recovery action is an ordinary CLI command, not a hand-crafted HTTP
 call. After the daemon is stopped and the dead predecessor instance's pid is

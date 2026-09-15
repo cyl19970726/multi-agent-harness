@@ -79,10 +79,16 @@ locale-independent, portable across BSD and procps) and compares a *lower
 bound* of it — `now - (etime + 1s)`, with `now` read before the probe — against
 the last moment the predecessor was known alive: the maximum of its lease's
 `renewed_unix_ms` and the unix-ms stamp inside its own instance id. A process
-that started more than `REUSED_PID_START_TOLERANCE_MS` (2 s, covering `ps`
-granularity and clock jitter) after that anchor cannot be the predecessor, and
-counts as absent. Every unmeasurable case — no `ps`, an unparsable row, a start
-time inside the tolerance — fails closed as alive.
+that started more than `REUSED_PID_START_TOLERANCE_MS` (2 s, covering `ps`'s
+one-second truncation with margin) after that anchor cannot be the predecessor,
+and counts as absent. An unparsable row or a start time inside the tolerance
+fails closed as alive; a `ps` that cannot be run at all is an unverified probe,
+which refuses with `NODE_DAEMON_PREDECESSOR_RECOVERY_UNVERIFIED`.
+
+The tolerance covers measurement granularity, **not** a wall-clock step. See
+the Consequences below: this is the one proof that can override the otherwise
+absolute "`kill(pid, 0)` succeeded ⇒ refuse" rule, and its soundness rests on a
+monotone wall clock.
 
 Refusals are not silent. Each attempt records a `node_daemon_predecessor_
 recovery` row in the heartbeat diagnostics, so `daemon status` shows under
@@ -125,6 +131,20 @@ A drain-incomplete stop now captures one — under its own reason,
 `NODE_DAEMON_DRAIN_INCOMPLETE`, never borrowing
 `NODE_DAEMON_MACHINE_AUTHORITY_LOST`, because an unconverged drain is not a
 lost lease.
+
+The ordering matters and is easy to get wrong. A stop cannot know it is a
+drain-incomplete stop until `graceful_shutdown` returns, and by then that call
+has already emptied `contexts` — so a capture taken at that moment would name
+zero served runs and journal nothing, which is exactly the shape of the bug
+this decision exists to remove. The stop path therefore snapshots the served
+runs *before* the drain starts, the same pre-capture discipline the
+authority-loss latch uses, and journals the phases once the verdict is known.
+Only the phases that actually happened are written: `shutdown_initiated` and
+`drain_incomplete`. `process_groups_terminated` and `shutdown_complete` are
+deliberately absent, because an unconverged drain proved neither. When a real
+authority loss already captured the stop, its reason and its own
+`shutdown_initiated` stand and only `drain_incomplete` is added — the drain
+failure is new information about that stop, not a second stop.
 
 **A per-session `settlement_incomplete` marker.** A new optional field on
 `AgentSessionControlState` names the exact generation that went dark
@@ -193,3 +213,16 @@ drain clears the flag the same way when it does converge.
   bounded by the ordinary 10 s write-lock budget per Execution Space, and a
   timeout falls back to the detached daemon log rather than delaying the stop
   further.
+- **The reused-pid verdict assumes a monotone wall clock.** `now` and the
+  anchor are wall-clock unix-ms; `etime` is boot-relative elapsed time. A
+  forward wall-clock step larger than the tolerance plus the predecessor's own
+  age inflates the computed start-time lower bound past the anchor and can
+  classify a *running* predecessor as a recycled pid — the one way this proof
+  can override the otherwise absolute "the pid exists, so refuse" rule. The
+  expiry proof reads the same clock, so a large enough step satisfies both
+  within one renewal interval. This is accepted rather than fixed: the two
+  facts being compared come from different clocks and only a monotonic
+  per-process start-time source (`proc_pidinfo`, `/proc/<pid>/stat` btime)
+  would close it. Widening the tolerance does not help — it trades this window
+  for a wider band in which a genuinely recycled pid is not detected. Single
+  machine, monotone wall clock is the assumed environment.

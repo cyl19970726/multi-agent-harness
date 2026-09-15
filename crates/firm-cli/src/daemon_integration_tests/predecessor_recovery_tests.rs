@@ -748,3 +748,220 @@ fn only_the_exact_daemon_service_may_record_its_own_unsettled_lanes() {
         .settlement_incomplete
         .is_none());
 }
+
+#[test]
+fn a_failed_bundle_rolls_back_the_lease_its_own_recovery_just_made_acquirable() {
+    let mut fixture = RecoveryFixture::new("recovery-rollback");
+    // A lease that has already expired by the time the bundle revalidates it
+    // fails that revalidation deterministically — the same partial state a
+    // later Space's failure produces, without racing a second Store.
+    fixture.inner.daemon.set_lease_ttl_override(Some(1));
+    let dead = fixture.expire(&fixture.seed_predecessor(ABSENT_PID));
+
+    let error = fixture
+        .daemon()
+        .ensure_node_authority_bundle()
+        .expect_err("a bundle whose revalidation fails must not report authority");
+    assert!(
+        error
+            .to_string()
+            .contains("NODE_DAEMON_MACHINE_AUTHORITY_LOST"),
+        "{error}"
+    );
+
+    // The recovery released the predecessor and acquired the next generation,
+    // so that lease is this scan's own newly acquired one and must come back
+    // Released — not be left behind because the flag was decided before the
+    // recovery ran.
+    let lease = fixture.latest_lease();
+    assert_eq!(lease.daemon_id, fixture.daemon().daemon_id());
+    assert_eq!(lease.generation, dead.generation + 1);
+    assert_eq!(
+        lease.status,
+        harness_core::NodeDaemonLeaseStatus::Released,
+        "a lease this scan acquired over its own recovery must be rolled back"
+    );
+}
+
+const DRAIN_JOURNAL_EXACT: &str = "daemon_integration_tests::predecessor_recovery_tests::a_stop_whose_drain_never_converges_journals_its_phases_and_flags_its_lanes";
+
+/// The real stop path, not the marker helper: a Supervisor that ignores the
+/// drain makes `graceful_shutdown` fail, and the generation must still leave
+/// both records behind. Isolated in a child process because the stop path
+/// sweeps the process-global provider process-group registry (#928).
+#[test]
+fn a_stop_whose_drain_never_converges_journals_its_phases_and_flags_its_lanes() {
+    super::process_isolation::run_in_isolated_child(
+        DRAIN_JOURNAL_EXACT,
+        a_stop_whose_drain_never_converges_journals_its_phases_and_flags_its_lanes_body,
+    );
+}
+
+fn a_stop_whose_drain_never_converges_journals_its_phases_and_flags_its_lanes_body() {
+    let mut fixture = RecoveryFixture::new("drain-journal");
+    // 500 ms cooperative / 50 ms forced: the spinning Supervisor below times
+    // out deterministically while the trivial single-Space scanner converges.
+    fixture
+        .inner
+        .daemon
+        .set_drain_timeout_override(Some((500, 50)));
+    let space = fixture
+        .daemon()
+        .registered_spaces()
+        .expect("list Spaces")
+        .into_iter()
+        .find_map(|(space, _)| (space.id == fixture.inner.execution_space_id).then_some(space))
+        .expect("the fixture Execution Space");
+    let owned = fixture
+        .daemon()
+        .ensure_node_authority(&space, fixture.store())
+        .expect("acquire the fixture lease");
+    fixture.seed_running_session(
+        "session-drain-journal",
+        fixture.daemon().daemon_id(),
+        owned.generation,
+    );
+
+    let release = Arc::new(AtomicBool::new(false));
+    let thread_release = Arc::clone(&release);
+    let (finished_tx, finished_rx) = std::sync::mpsc::channel();
+    // A Supervisor that ignores the drain entirely.
+    let thread = std::thread::spawn(move || -> CliResult<TeamRunDriveOutcome> {
+        while !thread_release.load(Ordering::Acquire) {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        finished_tx.send(()).expect("publish provider thread exit");
+        Ok(TeamRunDriveOutcome::Progressed {
+            team_run_status: harness_core::TeamRunStatus::Completed,
+        })
+    });
+    fixture
+        .daemon()
+        .push_context(OwnedTestContext::new(TestContextConfig {
+            execution_space_id: fixture.inner.execution_space_id.clone(),
+            project_binding_id: "unit-test-project".to_string(),
+            run_id: fixture.inner.run_id.clone(),
+            daemon_generation: owned.generation,
+            supervisor_id: "drain-journal-supervisor".to_string(),
+            supervisor_generation: 1,
+            heartbeat_valid: Arc::new(AtomicBool::new(true)),
+            serving_status: Arc::new(Mutex::new("running".to_string())),
+            thread: Some(thread),
+            started_at: Instant::now(),
+        }));
+
+    let execution_space_id = fixture.inner.execution_space_id.clone();
+    let run_id = fixture.inner.run_id.clone();
+    // Unix socket paths are bounded by SUN_LEN, well below a fixture tree
+    // path, so the control socket lives directly under the temp root.
+    let socket_path =
+        std::env::temp_dir().join(format!("e1a-drain-journal-{}.sock", std::process::id()));
+    let _ = std::fs::remove_file(&socket_path);
+    let listener = UnixListener::bind(&socket_path).expect("bind drain-journal control socket");
+    listener
+        .set_nonblocking(true)
+        .expect("configure nonblocking listener");
+
+    let super::adoption_tests::AdoptionFixture {
+        _tree,
+        store,
+        daemon,
+        ..
+    } = fixture.inner;
+    let daemon = Arc::new(daemon);
+
+    std::thread::scope(|scope| {
+        let serving = Arc::clone(&daemon);
+        let server = scope.spawn(move || serving.serve_loop(&listener));
+        let mut client = UnixStream::connect(&socket_path).expect("connect stop client");
+        client
+            .set_read_timeout(Some(Duration::from_secs(30)))
+            .expect("bound stop response wait");
+        let request = serde_json::json!({
+            "cmd": "stop",
+            "execution_space_id": execution_space_id,
+            "daemon_generation": owned.generation,
+        });
+        writeln!(client, "{request}").expect("send stop request");
+        client.flush().expect("flush stop request");
+        let mut raw = String::new();
+        std::io::BufReader::new(&mut client)
+            .read_line(&mut raw)
+            .expect("stop answers within the bounded drain window");
+        let response: serde_json::Value =
+            serde_json::from_str(raw.trim()).expect("stop response is complete JSON");
+        assert_eq!(response["ok"], false, "{response}");
+        assert_eq!(response["failed_phase"], "supervisor_drain", "{response}");
+        assert!(server.join().expect("serve thread").is_err());
+    });
+
+    // The phases land, under the drain's own reason — never borrowing the
+    // authority-loss reason, and never claiming a phase that did not happen.
+    let phases = store
+        .current_team_run_events(&run_id)
+        .expect("read TeamRun events")
+        .into_iter()
+        .filter(|event| event.entity_type == "node_daemon" && event.operation == "self_stopped")
+        .map(|event| {
+            serde_json::from_str::<serde_json::Value>(&event.summary)
+                .expect("structured self-stop summary")
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        !phases.is_empty(),
+        "an unconverged drain must journal its self-stop phases"
+    );
+    for phase in &phases {
+        assert_eq!(phase["reason"], "NODE_DAEMON_DRAIN_INCOMPLETE", "{phase}");
+        assert_eq!(phase["daemon_generation"], owned.generation);
+    }
+    let observed = phases
+        .iter()
+        .map(|phase| phase["phase"].as_str().unwrap_or_default().to_string())
+        .collect::<Vec<_>>();
+    assert!(
+        observed.contains(&"shutdown_initiated".to_string()),
+        "{observed:?}"
+    );
+    assert!(
+        observed.contains(&"drain_incomplete".to_string()),
+        "{observed:?}"
+    );
+    assert!(
+        !observed.contains(&"shutdown_complete".to_string())
+            && !observed.contains(&"process_groups_terminated".to_string()),
+        "a drain that did not converge must not claim it finished: {observed:?}"
+    );
+
+    // And the lane it could not settle is flagged, with nothing claiming it is
+    // settled.
+    let session = store
+        .fabric_agent_sessions(&execution_space_id)
+        .expect("read AgentSessions")
+        .into_iter()
+        .find(|session| session.id == "session-drain-journal")
+        .expect("seeded AgentSession");
+    let incomplete = session
+        .control_state
+        .settlement_incomplete
+        .as_ref()
+        .expect("the unsettled lane must be on the record");
+    assert!(
+        incomplete.reason.contains("NODE_DAEMON_DRAIN_INCOMPLETE"),
+        "{}",
+        incomplete.reason
+    );
+    assert_eq!(incomplete.node_daemon_generation, owned.generation);
+    assert_eq!(
+        session.control_state.runtime_residency,
+        harness_core::agentfirm_api::RuntimeResidency::Attached,
+        "a drain that proved nothing must not read as a settlement"
+    );
+
+    release.store(true, Ordering::Release);
+    finished_rx
+        .recv_timeout(Duration::from_secs(10))
+        .expect("the spinning Supervisor thread exits after the test releases it");
+    let _ = std::fs::remove_file(&socket_path);
+    drop(_tree);
+}
