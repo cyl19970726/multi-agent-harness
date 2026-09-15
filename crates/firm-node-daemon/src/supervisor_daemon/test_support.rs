@@ -137,6 +137,11 @@ impl TestDaemon {
             .expect("unique fixture owner")
             .lease_ttl_override_ms = value;
     }
+    pub fn set_drain_timeout_override(&mut self, value: Option<(u64, u64)>) {
+        Arc::get_mut(&mut self.inner)
+            .expect("unique fixture owner")
+            .drain_timeout_override_ms = value;
+    }
     pub fn authority_lost(&self) -> bool {
         self.inner.authority_lost.load(Ordering::SeqCst)
     }

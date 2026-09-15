@@ -45,19 +45,23 @@ impl MultiTeamDaemon {
     /// own drain. Capturing it is what makes the shutdown phases land at all —
     /// `journal_machine_authority_loss_phase` writes nothing without a
     /// captured self-stop, so an unconverged drain used to leave no journal.
-    pub(super) fn capture_incomplete_drain(&self, failures: &[String]) -> bool {
-        self.capture_self_stop(DRAIN_INCOMPLETE_REASON, failures)
+    ///
+    /// Unlike the loss latch, this capture can only be made *after* the drain
+    /// verdict is known, and by then `graceful_shutdown` has already emptied
+    /// `contexts`. The caller therefore takes the snapshot with
+    /// `snapshot_served_runs` before the drain starts and hands it in here.
+    pub(super) fn capture_incomplete_drain(
+        &self,
+        served_runs: Vec<ServedTeamRun>,
+        failures: &[String],
+    ) -> bool {
+        self.capture_self_stop_with(DRAIN_INCOMPLETE_REASON, served_runs, failures)
     }
 
-    fn capture_self_stop(&self, reason: &'static str, failures: &[String]) -> bool {
-        let mut loss = self
-            .machine_authority_loss
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        if loss.is_some() {
-            return false;
-        }
-
+    /// The runs this generation is serving right now, deduplicated and ordered.
+    /// Reading it costs nothing and holds no lock across the drain, so a stop
+    /// path can take it before `graceful_shutdown` drains `contexts`.
+    pub(super) fn snapshot_served_runs(&self) -> Vec<ServedTeamRun> {
         let mut served_runs = self
             .contexts
             .lock()
@@ -77,6 +81,26 @@ impl MultiTeamDaemon {
             left.execution_space_id == right.execution_space_id
                 && left.team_run_id == right.team_run_id
         });
+        served_runs
+    }
+
+    fn capture_self_stop(&self, reason: &'static str, failures: &[String]) -> bool {
+        self.capture_self_stop_with(reason, self.snapshot_served_runs(), failures)
+    }
+
+    fn capture_self_stop_with(
+        &self,
+        reason: &'static str,
+        served_runs: Vec<ServedTeamRun>,
+        failures: &[String],
+    ) -> bool {
+        let mut loss = self
+            .machine_authority_loss
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if loss.is_some() {
+            return false;
+        }
 
         *loss = Some(MachineAuthorityLoss {
             reason,
