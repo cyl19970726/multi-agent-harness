@@ -499,11 +499,19 @@ fn run() -> CliResult<()> {
         return Ok(());
     }
 
-    let store = match resolved.provider_compatibility_scope() {
+    // Machine authority lives at `<FIRM_HOME>/nodes/<node_id>/` (ADR 0075),
+    // and production says which Firm home that is rather than inferring it
+    // from a store root's shape. The shape derivation in `HarnessStore::new`
+    // is the fixture and open-by-path affordance; this is the CLI's one
+    // process-wide answer. Nothing reads the binding until the cutover.
+    let mut store = match resolved.provider_compatibility_scope() {
         Some((project_id, store_id)) => HarnessStore::new(resolved.root.clone())
             .with_provider_compatibility_scope(project_id, store_id),
         None => HarnessStore::new(resolved.root.clone()),
     };
+    if let Ok(firm_home) = crate::project::firm_home() {
+        store = store.with_firm_home(firm_home);
+    }
     match args[0].as_str() {
         "init" => {
             init_routed(&store, &resolved)?;

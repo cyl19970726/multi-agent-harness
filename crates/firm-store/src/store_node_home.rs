@@ -7,6 +7,21 @@
 //! must fail such a question closed rather than quietly fall back to Space
 //! data.
 //!
+//! Two properties make the name trustworthy, and both are refusals rather than
+//! repairs:
+//!
+//! - **Absolute.** A relative home names a different directory from every
+//!   process with a different working directory — a lease per cwd, not a lease
+//!   per machine.
+//! - **Canonical.** One directory reached through two spellings (macOS exposes
+//!   `/var` through `/private/var`) would otherwise be two documents under two
+//!   flocks: two simultaneous machine authorities, which is the exact failure
+//!   ADR 0075 removes, reintroduced through the path layer instead of the lock
+//!   layer. `node_daemon_socket_path` already derives the *sibling*
+//!   machine-authority path in this same directory from one canonical
+//!   filesystem identity "instead of the caller's raw spelling"; the lease has
+//!   the same scope, so it needs the same rule.
+//!
 //! This module carries only the binding and the naming rule. Nothing here
 //! reads, writes, or locks the lease document — that mechanism lands with the
 //! cutover, and until then `node_home` has no caller outside its own tests.
@@ -18,59 +33,103 @@ use super::*;
 ///
 /// Fail-closed is the whole point: an unresolved node home means "I do not
 /// know who owns this machine", which is never the same as "nobody owns it"
-/// and never grounds for skipping a fence.
+/// and never grounds for skipping a fence. A *meaningless* home is worse than
+/// no home at all, because it passes the fence silently — so a home that is
+/// relative, or that cannot be resolved to one canonical directory, is refused
+/// here rather than used.
 pub const MACHINE_LEASE_FILE_UNRESOLVED: &str = "MACHINE_LEASE_FILE_UNRESOLVED";
 
-/// The two directories a Firm home registers stores under: Execution Spaces
-/// (`execution_space::spaces_dir`) own coordination, and the centralized
-/// per-project stores (`project::projects_dir`) are the other registered
-/// layout. Both live directly under the same Firm home, so both name it.
-const REGISTERED_STORE_DIRECTORIES: [&str; 2] = ["execution-spaces", "projects"];
+/// The directory a Firm home registers Execution Space coordination stores
+/// under (`execution_space::spaces_dir`).
+const EXECUTION_SPACES_DIRECTORY: &str = "execution-spaces";
 
-/// The one rule that recovers a Firm home from a registered store root.
+/// Recover a Firm home from an Execution Space store root — the fixture and
+/// open-by-path affordance, not production's path.
 ///
-/// A registered store is `<FIRM_HOME>/<execution-spaces|projects>/<id>` — the
-/// shapes `execution_space::space_store_root` and the project registry write,
-/// and the shape the CLI already refuses to deviate from when it derives a
-/// Firm home for credentials. Recovering the home from the root is a *path*
-/// fact, not an authority decision: the authority still lives in exactly one
-/// file, and this only says which directory to look in.
+/// A Space store is `<FIRM_HOME>/execution-spaces/<space_id>`: the shape
+/// `execution_space::space_store_root` writes, and the shape the CLI already
+/// refuses to deviate from when it derives a Firm home for credentials.
 ///
-/// A root of any other shape returns `None`, which leaves the Store unbound so
-/// that every machine-authority read fails closed with
-/// [`MACHINE_LEASE_FILE_UNRESOLVED`]. Callers that know their Firm home out of
-/// band — a Fabric collaboration root, an import, a fixture — bind it
-/// explicitly with [`HarnessStore::with_firm_home`] instead.
-pub fn firm_home_of_registered_store_root(store_root: &Path) -> Option<PathBuf> {
-    let registered_dir = store_root.parent()?;
-    let name = registered_dir.file_name()?;
-    if !REGISTERED_STORE_DIRECTORIES
-        .iter()
-        .any(|directory| name == *directory)
-    {
+/// Production binds its home explicitly with [`HarnessStore::with_firm_home`],
+/// for the reason stated a few lines above `with_provider_compatibility_scope`
+/// in `store_store_base.rs`: operational authority "is deliberately explicit
+/// and is never inferred from a path". This derivation exists so a fixture
+/// rooted in production's layout works without a declaration, and so a store
+/// opened by path alone still fails closed rather than silently.
+///
+/// Only `execution-spaces` is accepted. The centralized project store
+/// directory is deliberately **not**: `projects` is one of the most common
+/// directory names on a developer machine, so a lexical rule accepting it would
+/// read `/Users/x/dev/projects/myrepo` as the Firm home `/Users/x/dev` and put
+/// a machine lease document somewhere nobody else looks. A project store that
+/// needs a home binds one.
+///
+/// Returns `None` for any other shape, and for any home that is not absolute,
+/// which leaves the Store unbound so every machine-authority read fails closed
+/// with [`MACHINE_LEASE_FILE_UNRESOLVED`]. This function performs no I/O, so
+/// `HarnessStore::new` stays I/O-free; canonicalization happens in
+/// [`HarnessStore::node_home`], where touching the filesystem is allowed.
+pub fn firm_home_of_execution_space_root(store_root: &Path) -> Option<PathBuf> {
+    let spaces_dir = store_root.parent()?;
+    if spaces_dir.file_name()? != EXECUTION_SPACES_DIRECTORY {
         return None;
     }
-    registered_dir.parent().map(Path::to_path_buf)
+    let firm_home = spaces_dir.parent()?;
+    // `Path::parent` of a relative `execution-spaces/<id>` is the *empty* path,
+    // which is `Some(_)` and would otherwise bind the Store to a home of "",
+    // naming the cwd-relative `nodes/<id>`. Requiring absoluteness is what
+    // turns that fail-open into the refusal above.
+    if !firm_home.is_absolute() {
+        return None;
+    }
+    Some(firm_home.to_path_buf())
+}
+
+/// Resolve a Firm home to the one canonical directory it names.
+///
+/// Best-effort in the same sense as the daemon socket's rule — a home that does
+/// not exist yet still resolves the aliases on the part that does — but
+/// deliberately **without** that helper's cwd-join fallback, which would paper
+/// over a relative home instead of refusing it.
+fn canonical_firm_home(firm_home: &Path) -> Option<PathBuf> {
+    if !firm_home.is_absolute() {
+        return None;
+    }
+    if let Ok(canonical) = fs::canonicalize(firm_home) {
+        return Some(canonical);
+    }
+    // Canonicalize the deepest ancestor that does exist and re-attach the rest,
+    // so a home about to be created still gets one identity rather than two.
+    let mut suffix = Vec::new();
+    let mut cursor = firm_home;
+    while let Some(parent) = cursor.parent() {
+        suffix.push(cursor.file_name()?.to_os_string());
+        if let Ok(canonical) = fs::canonicalize(parent) {
+            let mut resolved = canonical;
+            for component in suffix.iter().rev() {
+                resolved.push(component);
+            }
+            return Some(resolved);
+        }
+        cursor = parent;
+    }
+    Some(firm_home.to_path_buf())
 }
 
 /// A node id names one directory under `<FIRM_HOME>/nodes/`, so it must be one
-/// ordinary path segment. Refusing separators and the relative entries here
-/// keeps a foreign or malformed id from naming a directory outside the node
-/// tree; it can never become a traversal.
+/// safe canonical path component.
+///
+/// This reuses the crate's existing allowlist for that very same
+/// `<FIRM_HOME>/nodes/<node_id>` segment rather than standing a second, laxer
+/// rule beside it: a denylist of separators and relative entries stops
+/// traversal but still admits ids the Remote Fabric store already refuses, and
+/// the module claiming the stricter threat model should not be the weaker of
+/// the two.
 fn require_node_directory_segment(node_id: &str) -> StoreResult<()> {
-    let refuse = |reason: &str| {
-        Err(StoreError::Conflict(format!(
-            "{MACHINE_LEASE_FILE_UNRESOLVED}: Node id {node_id:?} {reason}, so it cannot name a directory under a Firm home"
-        )))
-    };
-    if node_id.is_empty() {
-        return refuse("is empty");
-    }
-    if node_id == "." || node_id == ".." {
-        return refuse("is a relative directory entry");
-    }
-    if node_id.contains('/') || node_id.contains('\\') || node_id.contains('\0') {
-        return refuse("contains a path separator");
+    if !crate::remote_fabric_store::is_safe_path_component(node_id) {
+        return Err(StoreError::Conflict(format!(
+            "{MACHINE_LEASE_FILE_UNRESOLVED}: Node id {node_id:?} is not a safe canonical path component, so it cannot name a directory under a Firm home"
+        )));
     }
     Ok(())
 }
@@ -79,25 +138,37 @@ impl HarnessStore {
     /// Bind the Firm home whose `nodes/<node_id>/` directory holds this
     /// machine's NodeDaemon lease document.
     ///
-    /// An explicit binding always wins over the shape-derived one, so a caller
-    /// that knows its Firm home never depends on its store root's layout.
+    /// This is production's path: a caller that knows its Firm home never
+    /// depends on its store root's layout, and an explicit binding always wins
+    /// over the shape-derived one. The value is validated where it is *used*
+    /// (see [`HarnessStore::node_home`]) rather than dropped here, so a
+    /// relative or unresolvable home surfaces as the named refusal instead of
+    /// disappearing into a silently unbound Store.
     pub fn with_firm_home(mut self, firm_home: impl Into<PathBuf>) -> Self {
         self.firm_home = Some(firm_home.into());
         self
     }
 
-    /// The Firm home this Store is bound to, if any.
+    /// The Firm home this Store is bound to, exactly as bound — before the
+    /// absoluteness and canonicalization rules that
+    /// [`HarnessStore::node_home`] applies.
     pub fn firm_home(&self) -> Option<&Path> {
         self.firm_home.as_deref()
     }
 
-    /// `<FIRM_HOME>/nodes/<node_id>` — the machine rendezvous that already
-    /// holds `daemon.sock` and `node-daemon.log`, and which from ADR 0075 also
-    /// holds the machine lease document, its history and its own lock.
+    /// `<FIRM_HOME>/nodes/<node_id>` — the machine rendezvous that also holds
+    /// `node-daemon.log`, and which from ADR 0075 holds the machine lease
+    /// document, its generation history and its own lock.
     ///
-    /// Returns the [`MACHINE_LEASE_FILE_UNRESOLVED`] refusal when this Store
-    /// is unbound, so a machine-authority caller fails closed by construction
-    /// instead of having to remember to check.
+    /// `daemon.sock` normally lives here too, but not always: it falls back to
+    /// a hashed path under `/tmp` when this path would exceed the macOS AF_UNIX
+    /// 104-byte limit. The lease document has no such fallback, so under a long
+    /// Firm home the socket and the lease sit in different directories.
+    ///
+    /// Returns the [`MACHINE_LEASE_FILE_UNRESOLVED`] refusal when this Store is
+    /// unbound, when its home is relative, or when that home cannot be resolved
+    /// to one canonical directory — so a machine-authority caller fails closed
+    /// by construction instead of having to remember to check.
     pub fn node_home(&self, node_id: &str) -> StoreResult<PathBuf> {
         require_node_directory_segment(node_id)?;
         let firm_home = self.firm_home.as_ref().ok_or_else(|| {
@@ -106,6 +177,30 @@ impl HarnessStore {
                 self.root.display()
             ))
         })?;
-        Ok(firm_home.join("nodes").join(node_id))
+        let canonical = canonical_firm_home(firm_home).ok_or_else(|| {
+            StoreError::Conflict(format!(
+                "{MACHINE_LEASE_FILE_UNRESOLVED}: Firm home {} is not an absolute, resolvable directory, so the machine lease document for Node {node_id} would name a different file from every other process",
+                firm_home.display()
+            ))
+        })?;
+        Ok(canonical.join("nodes").join(node_id))
+    }
+}
+
+impl StoreError {
+    /// Did this error refuse because the machine lease document could not be
+    /// named?
+    ///
+    /// Machine-authority callers must be able to recognise this refusal without
+    /// matching the display text, in the same spirit as `trust_error()`, which
+    /// exists so policy callers never classify a message by its words. A
+    /// `TrustErrorCode` variant would be the fuller answer, but that is schema
+    /// surface this slice deliberately does not move; the fences that consume
+    /// the refusal arrive with the cutover, and the decision belongs with them.
+    pub fn is_machine_lease_unresolved(&self) -> bool {
+        match self {
+            Self::Conflict(message) => message.starts_with(MACHINE_LEASE_FILE_UNRESOLVED),
+            _ => false,
+        }
     }
 }
