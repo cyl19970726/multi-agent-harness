@@ -92,15 +92,31 @@ Exactly one interrupt reaches a turn for the life of that turn. A second latch
 (the machine latch following a Supervisor latch, say) never republishes a
 request the turn already carries, so a provider never sees a storm.
 
-**The registration point is part of the contract.** A turn registers *before*
-`acquire_prepared_cycle_turn`, not after it. Closing admission only stops turns
-that have not yet reached the admission check, and between that check and the
-drive sits a blocking wait for a turn slot plus Store write-lock IO. Registering
-after that wait would leave a window — milliseconds to hundreds of milliseconds
-under lock contention — in which a turn is invisible to the fan-out and starts
-anyway. Registering before it closes the window with no new state, because the
-registry and the fan-out serialize on one mutex and every latch invalidates its
-scope before it fans out:
+**Two things close the registration window, and both are required.**
+
+*First, each latch invalidates its own scope before it fans out.* The
+Supervisor latch already did: `latch_supervisor_lease_lost` swaps
+`supervisor_valid` false before calling the fan-out. The machine latch did
+**not** — it writes only NodeDaemon lease rows and process-wide flags
+(`authority_lost`, the Store's process admission gate), and
+`TeamRunLedger::require_supervisor_lease` reads neither of those, so nothing it
+did was observable on the drive path. Its first machine-path observation was
+`require_provider_session_authority` in the acceptance callback, *after* the
+provider had accepted the prompt — and even that passes when the loss trigger
+was an unreadable Store, because the NodeDaemon lease row is then still Active.
+So `latch_machine_authority_loss` now quiesces every served Supervisor scope
+first (`shutdown.rs::quiesce_served_supervisor_scopes`). The drain sets the same
+flag moments later; this only moves it to the instant authority is known lost.
+
+*Second, a turn registers* **before** *`acquire_prepared_cycle_turn`, not after
+it.* Between the last admission check and the drive sits a blocking wait for a
+turn slot plus Store write-lock IO. Registering after that wait would leave a
+window — milliseconds to hundreds of milliseconds under lock contention, and
+lock starvation is this repo's actual loss trigger — in which a turn is
+invisible to the fan-out and starts anyway.
+
+Together they leave no window, because the registry and the fan-out serialize on
+one mutex and every latch now invalidates its scope before it fans out:
 
 - a latch that lands after registration finds the turn in the registry;
 - a latch that lands before it is caught by the `require_supervisor_lease()`
@@ -110,8 +126,24 @@ scope before it fans out:
 The registry deliberately does **not** remember a latched scope, so a turn
 registered later is not born interrupted. Remembering it would permanently break
 a TeamRun that a successor Supervisor generation legitimately re-adopts in the
-same process. Covering the window is the caller's job, and the ordering above is
-how the caller does it.
+same process. Covering the window is the caller's and the latch's job, not the
+registry's.
+
+Quiescing from the machine latch is taken without the per-Supervisor
+`authority_gate`, and that race is benign for a stronger reason than timing:
+`close_process_node_daemon_admission` is the *first* statement of
+`latch_machine_authority_loss`, so in every interleaving where a concurrent
+Close gets past the flag, process admission is already closed and
+`require_current_node_daemon_unlocked` refuses its durable effect at the Store.
+There is no ordering in which a Close both passes the flag and lands a provider
+effect.
+
+One evidence consequence, deliberate: quiescing here means
+`latch_supervisor_lease_lost` finds those scopes already false and prints no
+per-run line, so the quiesce loop prints that line itself. Machine-path evidence
+is therefore the per-run quiesce line, the Process-scope fan-out report, and the
+`cooperative_interrupt_dispatched` self-stop detail — which now also carries
+`supervisor_scopes_quiesced`.
 
 Codex's Close path additionally pauses an observed native Goal before
 interrupting. That belongs to Close semantics and is not part of this path:
@@ -241,11 +273,18 @@ durable log.
   self-wait guard, the idempotent second-latch report, that a turn registered
   before the fan-out is always reached, and that a latched scope is *not*
   remembered for turns registered afterwards.
-- `crates/firm-cli/src/main_tests/general/active_turn_lease_limits_execution_without_limiting_idle_members.rs`
-  — `queued_prepared_cycle_rechecks_quiesce_after_occupied_slot_is_released`
-  pins both halves of the §1 ordering: a turn parked on the occupied-slot wait
-  is already reachable by the fan-out, and a quiesce that lands before the wait
-  ends refuses the drive.
+- `crates/firm-cli/src/main_tests/general/acceptance_wake.rs` —
+  `a_parked_turn_is_registered_before_the_occupied_slot_wait` drives the real
+  `run_team_member_with_adapter` loop with the turn slot held, fans out while
+  the member is parked, and asserts `turns_live == 1` for that member plus the
+  interrupt crossing the provider bridge. Moving the registration back below
+  the wait reports 0 — the ordering half of §1 has real signal.
+- `crates/firm-cli/src/daemon_integration_tests/self_stop_events_tests.rs` —
+  `machine_authority_loss_quiesces_every_served_supervisor_scope` and
+  `a_turn_admitted_before_the_machine_latch_cannot_drive_after_it` pin the
+  quiesce half: with the durable Supervisor row left Active, a turn registered
+  after the machine fan-out refuses at `acquire_prepared_cycle_turn` and never
+  drives. Both go red without the quiesce.
 - `crates/firm-cli/src/daemon_integration_tests/self_stop_events_tests.rs` — a
   live turn is interrupted on machine authority loss and named in the
   journalled evidence with outcome `dispatched`.
