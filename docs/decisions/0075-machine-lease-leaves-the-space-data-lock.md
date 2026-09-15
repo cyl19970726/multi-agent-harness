@@ -74,7 +74,7 @@ readers that matter most already read it lock-free**: the admission fence
 `current_node_daemon_lease_after_admission_at` (`runtime_command_admission.rs:9-31`) resolve
 through `latest_node_daemon_lease`, an unsynchronized `read_jsonl`
 (`store_read_models.rs:325-331`; the torn-tail retry that makes it survivable is documented at
-`store_jsonl.rs:324-346`). The write lock is not buying reader consistency for them; it is
+`store_jsonl.rs:328-350`). The write lock is not buying reader consistency for them; it is
 buying a queue — while every lease row in evidence is **351–365 bytes** (median 353).
 
 The other machine-authority readers are **not** in that shape, and the difference decides how
@@ -283,6 +283,12 @@ sample `now` **after** the lease lock is held and **immediately before** the ren
 `expires = that sample + TTL`. Additionally refuse any write that would move `expires` or
 `generation` backwards relative to the document on disk — monotonic in both fields, per node.
 
+**Scoped within a status.** `generation` is monotonic unconditionally. `expires` is monotonic
+only while the *status* is unchanged: a renewal must never shrink the lease, which is the
+backwards-clock case the rule exists for, but `Draining` deliberately sets a shorter settlement
+window and `Released` deliberately expires the lease now. Clamping those would leave a released
+generation looking live on disk, which is the opposite of what the rule protects.
+
 ### Generation minting
 
 The generation becomes **machine-wide and monotonic**: `generation + 1` of the document under the
@@ -319,7 +325,7 @@ rows / 28 MB that heartbeat appends produced before #811.
 
 `predecessor_was_released(generation)` reads the history file **lock-free**, exactly like every
 other reader here; a single-line atomic append means a concurrent reader can see at most a torn
-final line, which the existing torn-tail retry (`store_jsonl.rs:324-346`) already handles. A
+final line, which the existing torn-tail retry (`store_jsonl.rs:328-350`) already handles. A
 generation that appears in **neither** the history file nor the legacy Space rows fails closed
 with today's reattach refusal — expiry still never becomes a drain receipt.
 
@@ -396,6 +402,14 @@ not before — and its test is retargeted at the legacy path. `daemon status` ga
   failure at each step; `generation`/`expires` monotonicity; foreign `node_id` refused; the lock
   registry panics on a Space lock requested under the lease lock;
   `MACHINE_LEASE_FILE_UNRESOLVED` on a node-home-less store.
+- **Two clocks, deliberately.** The lease writer's time sample is injected
+  (`node_lease_document.rs`, `LeaseClock`) because *when* `now` is taken under the lock is the
+  property this ADR turns on, and `ttl_ms.max(1)` (`store_node_runtime.rs:338`) means no TTL
+  value can express it — the arithmetic that made a `Some(0)` TTL a no-op for #990. That
+  injection covers **lease-document writes in `firm-store` only**. The daemon's bundle
+  revalidation samples its own clock and writes no document, so #992's
+  `bundle_revalidation_delay_ms` seam remains the right instrument there and is **not** made
+  redundant by the injected clock. Neither replaces the other; do not remove one as a cleanup.
 - **Integration (the gen-4 regression)** — hold a Space `.store.lock` for 3× TTL while a writer
   thread keeps rewriting the trust journal; assert **zero** renewal failures and a still-Active
   lease. The same test on today's code fails at TTL; that is the point of the slice.
@@ -417,6 +431,16 @@ not before — and its test is retargeted at the legacy path. `daemon status` ga
   self-stop.
 
 ## Rollout
+
+**Three slices, one cutover.** E2a-0 bound the node home into `HarnessStore` with nothing
+reading it. **E2a-1 ships this mechanism inert**: the document, its history, the leaf lock and the
+typed resolver exist and are tested, but no fence reads them, so the slice cannot change who owns
+a machine. **E2a-2 flips the readers** — all 46 deciders, the daemon's heartbeat and bundle,
+recover-predecessor, `daemon status` — which is the one revision where authority actually moves.
+**E2b retires the writers**: the per-Space `node_daemon_leases.jsonl` writers, the compactor, and
+the store-root shape derivation. Splitting the mechanism from the cutover is a review property,
+not a rollout one: a reviewer can hold an inert 1.3k-line mechanism in one head, and then judge
+the cutover against a diff that is only call sites.
 
 **No feature flag.** A flag would mean two authority sources alive at once — the exact hazard
 being removed — and would double the fence surface at every call site above. Cut over on a fresh
