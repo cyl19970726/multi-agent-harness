@@ -46,6 +46,13 @@ const runtimeContractModules = new Map([
     "enum CycleInterruptSettlement",
     "struct CycleSettlement",
   ]],
+  ["cycle_ending", [
+    "enum CycleEndingSettlement",
+    "enum ProviderFailureCode",
+    "enum CycleRefusalCode",
+    "enum TerminalUnobservedCode",
+    "enum CycleEnding",
+  ]],
   ["cycle_assertions", [
     "struct CycleConformanceError",
     "enum CycleFailureDisposition",
@@ -326,8 +333,9 @@ const allowedModuleEdges = new Map([
   ["collaboration_capability", new Set()],
   ["conformance", new Set(["control", "provider_capabilities", "receipt_and_terminal"])],
   ["control", new Set(["conformance", "provider_capabilities", "timeouts"])],
-  ["cycle", new Set(["conformance", "control", "provider_capabilities", "receipt_and_terminal", "timeouts"])],
+  ["cycle", new Set(["conformance", "control", "cycle_ending", "provider_capabilities", "receipt_and_terminal", "timeouts"])],
   ["cycle_assertions", new Set(["cycle", "receipt_and_terminal", "timeouts"])],
+  ["cycle_ending", new Set(["cycle", "receipt_and_terminal"])],
   ["provider_capabilities", new Set(["conformance"])],
   ["receipt_and_terminal", new Set(["conformance"])],
 ]);
