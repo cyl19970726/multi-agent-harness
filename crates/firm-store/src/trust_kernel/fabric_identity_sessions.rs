@@ -967,10 +967,22 @@ impl HarnessStore {
         session.node_daemon_generation = successor_daemon_generation;
         session.control_state.runtime_residency = RuntimeResidency::Detached;
         session.control_state.activity = RuntimeActivity::Idle;
+        // Saturating here would hand the successor the predecessor's own driver
+        // generation, so every downstream driver fence would accept the stale
+        // driver. Fail closed instead.
         session.control_state.driver_generation = session
             .control_state
             .driver_generation
-            .saturating_add(1)
+            .checked_add(1)
+            .ok_or_else(|| {
+                trust_error(
+                    TrustErrorCode::MemberRunGenerationFenced,
+                    "AGENT_SESSION_DRIVER_GENERATION_EXHAUSTED: the driver generation cannot advance further",
+                    "agent_session",
+                    session_id,
+                    Some(session.version),
+                )
+            })?
             .max(1);
         session.control_state.driver_ref = RuntimeDriverRef::NodeDaemon {
             node_daemon_id: successor_daemon_id.to_string(),
@@ -1104,8 +1116,15 @@ impl HarnessStore {
                     Some(session.version),
                 ));
             }
-            if next_control_state.driver_generation
-                != session.control_state.driver_generation.saturating_add(1)
+            // `checked_add` keeps "advance exactly once" meaningful at
+            // u64::MAX, where a saturating successor equals the predecessor and
+            // a caller that never advanced would pass this guard.
+            let advanced_once = session
+                .control_state
+                .driver_generation
+                .checked_add(1)
+                .is_some_and(|expected| next_control_state.driver_generation == expected);
+            if !advanced_once
                 || next_control_state.handoff_state
                     != firm_core::agentfirm_api::DriverHandoffState::None
             {

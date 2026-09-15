@@ -22,7 +22,7 @@
     "daemon_id": { "type": "string", "minLength": 1 },
     "generation": { "type": "integer", "minimum": 1 },
     "instance_id": { "type": "string", "minLength": 1 },
-    "status": { "type": "string", "enum": ["active", "draining", "released", "expired"] },
+    "status": { "type": "string", "enum": ["active", "draining", "released"] },
     "acquired_unix_ms": { "type": "integer", "minimum": 0 },
     "renewed_unix_ms": { "type": "integer", "minimum": 0 },
     "expires_unix_ms": { "type": "integer", "minimum": 0 },

@@ -948,7 +948,7 @@ export interface NodeDaemonLease {
   daemon_id: string;
   generation: number;
   instance_id: string;
-  status: "active" | "draining" | "released" | "expired" | string;
+  status: "active" | "draining" | "released" | string;
   acquired_unix_ms: number;
   renewed_unix_ms: number;
   expires_unix_ms: number;

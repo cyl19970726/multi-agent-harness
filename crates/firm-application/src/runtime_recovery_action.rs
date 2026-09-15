@@ -235,7 +235,6 @@ mod tests {
             None,
             Some(lease(NodeDaemonLeaseStatus::Draining, 101)),
             Some(lease(NodeDaemonLeaseStatus::Released, 101)),
-            Some(lease(NodeDaemonLeaseStatus::Expired, 101)),
             Some(lease(NodeDaemonLeaseStatus::Active, 100)),
         ] {
             let mut persistence = persistence(candidate);

@@ -277,13 +277,22 @@ pub(super) fn claim_canonical_work_for_member(
                 delivery
             }
             None => {
+                // The Store refuses a saturated expectation, so propose the
+                // named refusal here rather than a value that cannot be a
+                // successor.
                 let binding_generation = bindings
                     .iter()
                     .filter(|binding| binding.work_id == work.id)
                     .map(|binding| binding.binding_generation)
                     .max()
                     .unwrap_or(0)
-                    .saturating_add(1);
+                    .checked_add(1)
+                    .ok_or_else(|| {
+                        CliError::Usage(format!(
+                            "WORK_EXECUTION_BINDING_GENERATION_EXHAUSTED: Work {}",
+                            work.id
+                        ))
+                    })?;
                 let binding_id = format!(
                     "work-binding:{}:{}:{}:{}",
                     work.id, work.version, session.runtime_generation, binding_generation
