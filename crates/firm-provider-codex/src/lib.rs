@@ -763,7 +763,10 @@ impl CodexAppServerClient {
         timeout: Duration,
     ) -> CliResult<serde_json::Value> {
         self.next_request_id += 1;
-        self.last_rpc_failure = CodexRpcFailure::Rejected;
+        // Review r1 P3-6: until the frame is on the wire the conservative value
+        // is a lost transport. A broken pipe after the bytes reached the child
+        // is NOT a refused start, and only a refused start is replay-safe.
+        self.last_rpc_failure = CodexRpcFailure::TransportLost;
         let id = self.next_request_id;
         let (tx, rx) = channel();
         self.pending
@@ -771,6 +774,7 @@ impl CodexAppServerClient {
             .unwrap_or_else(|error| error.into_inner())
             .insert(id, tx);
         self.write(&serde_json::json!({"id": id, "method": method, "params": params}))?;
+        self.last_rpc_failure = CodexRpcFailure::Rejected;
         let frame = rx.recv_timeout(timeout).map_err(|error| {
             self.pending
                 .lock()

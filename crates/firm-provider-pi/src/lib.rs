@@ -106,6 +106,13 @@ pub struct PiRpcClient {
     /// Why the last cycle failed (ADR 0076), so the adapter classifies the
     /// cycle ending from a typed fact instead of parsing the message.
     last_cycle_failure: PiCycleFailure,
+    /// Whether the CURRENT cycle's input has crossed the provider boundary.
+    ///
+    /// Review r1 B2: without this, every RPC — including the mid-cycle abort —
+    /// reset the failure to the one replay-safe value, so a failed abort on an
+    /// ACCEPTED prompt read back as "nothing was applied". After acceptance no
+    /// RPC failure may claim replay-safety.
+    cycle_input_accepted: bool,
     /// Response waiters: string request id → oneshot sender.
     pending: Arc<Mutex<HashMap<String, Sender<serde_json::Value>>>>,
     /// Streaming events / notifications from the reader thread.
@@ -369,7 +376,8 @@ impl PiRpcClient {
             owned_process_group,
             stdin,
             next_request_id: 0,
-            last_cycle_failure: PiCycleFailure::StartRejected,
+            last_cycle_failure: PiCycleFailure::TransportLost,
+            cycle_input_accepted: false,
             pending,
             incoming,
             reader: Some(reader),
@@ -489,7 +497,11 @@ impl PiRpcClient {
             let response = self
                 .request_blocking("abort", serde_json::json!({}), HANDSHAKE_TIMEOUT)
                 .inspect_err(|_| {
-                    if self.last_cycle_failure == PiCycleFailure::InputAcceptanceTimeout {
+                    // The abort RPC is only ever issued after acceptance, so it
+                    // can never be a refused start. A dead transport stays a
+                    // dead transport; anything else is the control failing to
+                    // settle (review r1 B2).
+                    if self.last_cycle_failure != PiCycleFailure::TransportLost {
                         self.last_cycle_failure = PiCycleFailure::ControlSettleTimeout;
                     }
                 })?;
@@ -663,6 +675,12 @@ impl PiRpcClient {
         on_event: &mut dyn FnMut(&serde_json::Value),
         poll_control: &mut dyn FnMut() -> harness_runtime_contract::CycleControl,
     ) -> CliResult<PiTurnOutcome> {
+        // Per-cycle reset, conservative in both directions: before acceptance
+        // `TransportLost` settles Rejected/NotApplied, after it
+        // RecoveryRequired/Unknown. Nothing may carry over from a prior cycle
+        // or a non-cycle RPC (review r1 P3-5).
+        self.last_cycle_failure = PiCycleFailure::TransportLost;
+        self.cycle_input_accepted = false;
         // Pi's `agent_settled` event has no native cycle id. Under the strict
         // one-driver contract the previous cycle has already proved idle, so
         // discard every queued pre-dispatch event before assigning the next
@@ -694,6 +712,9 @@ impl PiRpcClient {
         on_input_accepted(&input_acceptance_receipt).inspect_err(|_| {
             self.last_cycle_failure = PiCycleFailure::HostAborted;
         })?;
+        // The input has crossed the provider boundary. From here no failure may
+        // settle Rejected/NotApplied (review r1 B2).
+        self.cycle_input_accepted = true;
 
         let mut interrupt: Option<harness_runtime_contract::InterruptCause> = None;
         let mut control_sent_at: Option<Instant> = None;
@@ -911,7 +932,13 @@ impl PiRpcClient {
         timeout: Duration,
     ) -> CliResult<serde_json::Value> {
         self.next_request_id += 1;
-        self.last_cycle_failure = PiCycleFailure::StartRejected;
+        // Review r1 B2. Until the frame is on the wire the conservative value
+        // is a lost transport; it settles replay-safe only when the input has
+        // not been accepted, and unproven once it has. After a successful
+        // write, a pre-acceptance failure is Pi refusing the start, while ANY
+        // post-acceptance failure is a terminal we cannot observe. No branch
+        // here may claim replay-safety on an accepted prompt.
+        self.last_cycle_failure = PiCycleFailure::TransportLost;
         let id = format!("pi-rpc-{}", self.next_request_id);
         let (tx, rx) = channel();
         self.pending
@@ -923,6 +950,11 @@ impl PiRpcClient {
         frame["id"] = serde_json::Value::String(id.clone());
         frame["type"] = serde_json::Value::String(command.to_string());
         self.write_frame(&frame)?;
+        self.last_cycle_failure = if self.cycle_input_accepted {
+            PiCycleFailure::PostconditionUnknown
+        } else {
+            PiCycleFailure::StartRejected
+        };
 
         let frame = rx.recv_timeout(timeout).map_err(|error| {
             self.pending
@@ -931,7 +963,13 @@ impl PiRpcClient {
                 .remove(&id);
             let failure = match error {
                 RecvTimeoutError::Timeout => {
-                    self.last_cycle_failure = PiCycleFailure::InputAcceptanceTimeout;
+                    self.last_cycle_failure = if self.cycle_input_accepted {
+                        // The only deadline that can expire after acceptance is
+                        // a control's.
+                        PiCycleFailure::ControlSettleTimeout
+                    } else {
+                        PiCycleFailure::InputAcceptanceTimeout
+                    };
                     "timed out"
                 }
                 RecvTimeoutError::Disconnected => {

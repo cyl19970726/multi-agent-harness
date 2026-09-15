@@ -15,7 +15,7 @@ use harness_runtime_contract::{CycleEnding, CycleRefusalCode, TerminalUnobserved
 ///
 /// Adding a variant is a compile error until it is placed in the table below,
 /// and the mapping match is deliberately wildcard-free for the same reason.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PiCycleFailure {
     /// The `prompt` RPC was never answered within `input_acceptance`. The RPC
     /// deadline IS the acceptance bound here, so its expiry is replay-safe:
@@ -24,9 +24,10 @@ pub(crate) enum PiCycleFailure {
     /// The RPC transport died, or the reader thread exited.
     TransportLost,
     /// Pi answered the prompt with an error, or omitted the id the cycle must
-    /// correlate against (`PI_PROMPT_RECEIPT_UNKNOWN`). The conservative
-    /// default: it never claims a bound that was not reached.
-    #[default]
+    /// correlate against (`PI_PROMPT_RECEIPT_UNKNOWN`). This is the ONLY
+    /// replay-safe value in the enum, so it is never a default and is only ever
+    /// recorded before the input has crossed the provider boundary (review r1
+    /// B2). There is no `Default` derive for exactly that reason.
     StartRejected,
     /// An issued abort was never settled within `control_settle`
     /// (`PI_CONTROL_SETTLE_TIMEOUT`).

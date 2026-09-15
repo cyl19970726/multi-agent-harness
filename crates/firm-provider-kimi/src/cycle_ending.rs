@@ -20,7 +20,7 @@ use harness_runtime_contract::{
 ///
 /// Adding a variant is a compile error until it is placed in the table below,
 /// and the mapping match is deliberately wildcard-free for the same reason.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum KimiCycleFailure {
     /// No ACP session exists yet, so no prompt can be opened.
     SessionNotEstablished,
@@ -41,10 +41,10 @@ pub(crate) enum KimiCycleFailure {
     /// `CycleControl::fatal_error`, or the Harness's own `on_input_accepted`
     /// callback failing. Never a provider ending.
     HostAborted,
-    /// The provider reported an error for this turn. The conservative
-    /// default: an unclassified failure is the provider's, and its own text
-    /// travels with it.
-    #[default]
+    /// The provider reported an error for this turn, with its own text. Never a
+    /// default: attributing an unrecorded fault to the provider is a false
+    /// claim, so there is no `Default` derive and every site chooses (review r1
+    /// P3-6).
     ProviderError,
 }
 

@@ -330,7 +330,8 @@ mod cycle_conformance {
                 owned_process_group,
                 stdin: BufWriter::new(stdin),
                 next_request_id: 0,
-                last_cycle_failure: crate::PiCycleFailure::StartRejected,
+                last_cycle_failure: crate::PiCycleFailure::TransportLost,
+                cycle_input_accepted: false,
                 pending: Arc::new(Mutex::new(HashMap::new())),
                 incoming,
                 reader: None,
@@ -416,23 +417,40 @@ mod cycle_conformance {
     }
 
     fn drive_pi_cycle_with(
+        client: (PiRpcClient, Sender<serde_json::Value>),
+        script: PiScript,
+        timeouts: &harness_runtime_contract::CycleTimeouts,
+        control: impl FnMut() -> harness_runtime_contract::CycleControl + Send + 'static,
+    ) -> Result<harness_runtime_contract::ExecutionCycleOutcome, String> {
+        drive_pi_cycle_capturing_ending(client, script, timeouts, control).0
+    }
+
+    /// The same driver, keeping the adapter's ADR 0076 ending so a test can
+    /// assert what an `Err` recorded and how it settles.
+    fn drive_pi_cycle_capturing_ending(
         (client, event_tx): (PiRpcClient, Sender<serde_json::Value>),
         script: PiScript,
         timeouts: &harness_runtime_contract::CycleTimeouts,
         mut control: impl FnMut() -> harness_runtime_contract::CycleControl + Send + 'static,
-    ) -> Result<harness_runtime_contract::ExecutionCycleOutcome, String> {
+    ) -> (
+        Result<harness_runtime_contract::ExecutionCycleOutcome, String>,
+        Option<harness_runtime_contract::CycleEnding>,
+    ) {
         let pending = Arc::clone(&client.pending);
         let timeouts = *timeouts;
         let handle = std::thread::spawn(move || {
             let mut adapter = crate::team_runtime::PiTeamRuntime::new(client);
-            harness_runtime_contract::TeamRuntimeAdapter::run_cycle(
+            let result = harness_runtime_contract::TeamRuntimeAdapter::run_cycle(
                 &mut adapter,
                 "conformance cycle",
                 timeouts,
                 &mut |_receipt| Ok(()),
                 &mut |_event| {},
                 &mut control,
-            )
+            );
+            let ending =
+                harness_runtime_contract::TeamRuntimeAdapter::take_cycle_ending(&mut adapter);
+            (result, ending)
         });
         let mut events = script.events.into_iter();
         let mut answered = 0usize;
@@ -440,12 +458,16 @@ mod cycle_conformance {
             let deadline = Instant::now() + Duration::from_secs(2);
             let id = loop {
                 if handle.is_finished() {
-                    let early = handle
-                        .join()
-                        .map_err(|_| "adapter thread panicked".to_string())?;
-                    return Err(format!(
-                        "adapter finished before the scripted {command} answer: {early:?}"
-                    ));
+                    let (early, ending) = match handle.join() {
+                        Ok(pair) => pair,
+                        Err(_) => return (Err("adapter thread panicked".to_string()), None),
+                    };
+                    return (
+                        Err(format!(
+                            "adapter finished before the scripted {command} answer: {early:?}"
+                        )),
+                        ending,
+                    );
                 }
                 let waiter = pending
                     .lock()
@@ -476,24 +498,24 @@ mod cycle_conformance {
                 .remove(&id)
                 .expect("request waiter")
                 .send(frame)
-                .map_err(|error| error.to_string())?;
+                .expect("request waiter accepts the scripted answer");
             answered += 1;
             if answered == script.events_after {
                 if script.delay_events_ms > 0 {
                     std::thread::sleep(Duration::from_millis(script.delay_events_ms));
                 }
                 for event in events.by_ref() {
-                    event_tx.send(event).map_err(|error| error.to_string())?;
+                    event_tx.send(event).expect("scripted event channel");
                 }
             }
         }
         if script.disconnect_after {
             drop(event_tx);
         }
-        handle
-            .join()
-            .map_err(|_| "adapter thread panicked".to_string())?
-            .map_err(|error| error.to_string())
+        match handle.join() {
+            Ok((result, ending)) => (result.map_err(|error| error.to_string()), ending),
+            Err(_) => (Err("adapter thread panicked".to_string()), None),
+        }
     }
 
     struct PiCycleConformanceFixture;
@@ -802,6 +824,104 @@ mod cycle_conformance {
             harness_runtime_contract::CycleSettlement::from_cycle_outcome(&outcome),
         );
         harness_runtime_contract::assert_c1_terminal_failure_unsatisfied(&receipt).expect("C1");
+    }
+
+    /// ADR 0076 / review r1 B2. An abort that fails AFTER the prompt was
+    /// accepted must never settle Rejected/NotApplied: the input crossed the
+    /// provider boundary, so claiming "nothing was applied" invites a replay of
+    /// an accepted prompt. Before the fix every RPC — including this abort —
+    /// reset the failure to the one replay-safe value, so this cycle read back
+    /// as `NotStarted{ProviderRejectedStart}`.
+    #[test]
+    fn a_failed_abort_after_acceptance_never_settles_not_applied() {
+        let (result, ending) = drive_pi_cycle_capturing_ending(
+            scripted_pi_client(),
+            PiScript {
+                answers: vec![
+                    (
+                        "prompt".to_string(),
+                        pi_response("pi-rpc-1", "prompt", serde_json::json!({})),
+                    ),
+                    (
+                        // Pi answers the abort unsuccessfully.
+                        "abort".to_string(),
+                        serde_json::json!({
+                            "id": "pi-rpc-2",
+                            "type": "response",
+                            "command": "abort",
+                            "success": false,
+                            "error": "abort refused"
+                        }),
+                    ),
+                ],
+                events: vec![
+                    serde_json::json!({"type": "turn_end", "message": {"content": [{"type": "text", "text": "done"}]}}),
+                ],
+                events_after: 1,
+                delay_events_ms: 0,
+                disconnect_after: false,
+            },
+            &pi_timeouts(),
+            || harness_runtime_contract::CycleControl {
+                close: false,
+                interrupt: true,
+                fatal_error: None,
+            },
+        );
+        let error = result.expect_err("a refused abort ends the cycle");
+        assert!(error.contains("abort"), "{error}");
+        let ending = ending.expect("a refused abort must record a typed ending");
+        assert_ne!(
+            ending.settlement(true),
+            harness_runtime_contract::CycleEndingSettlement::RejectedNotApplied,
+            "an accepted prompt must never read back as replay-safe: {ending:?}"
+        );
+        assert!(
+            !matches!(
+                ending,
+                harness_runtime_contract::CycleEnding::NotStarted { .. }
+            ),
+            "the cycle DID start: {ending:?}"
+        );
+        assert_eq!(
+            ending,
+            harness_runtime_contract::CycleEnding::ControlSettleTimeout,
+            "an abort is only ever issued after acceptance, so its failure is a control fact"
+        );
+        assert_eq!(ending.action_type(), "control_settle_timeout");
+    }
+
+    /// ADR 0076 / review r1 P3-3: the `Ok`-half evidence on Pi.
+    #[test]
+    fn a_silent_turn_is_empty_output_on_pi() {
+        let outcome = drive_pi_cycle(
+            PiScript {
+                answers: vec![
+                    (
+                        "prompt".to_string(),
+                        pi_response("pi-rpc-1", "prompt", serde_json::json!({})),
+                    ),
+                    (
+                        "get_state".to_string(),
+                        pi_response("pi-rpc-2", "get_state", pi_state(false)),
+                    ),
+                ],
+                // `agent_settled` with no `turn_end` text: nothing authored.
+                events: vec![serde_json::json!({"type": "agent_settled"})],
+                events_after: 1,
+                delay_events_ms: 0,
+                disconnect_after: false,
+            },
+            &pi_timeouts(),
+            harness_runtime_contract::CycleControl::default,
+        )
+        .expect("a silent turn is still an Ok cycle");
+        assert!(outcome.provider_terminal_failure.is_none());
+        assert!(outcome.final_text.trim().is_empty());
+        assert_eq!(
+            harness_runtime_contract::CycleEnding::from_outcome(&outcome),
+            harness_runtime_contract::CycleEnding::EmptyOutput
+        );
     }
 }
 
