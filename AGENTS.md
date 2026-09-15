@@ -143,7 +143,10 @@ registered Execution Spaces; each machine has one machine-scoped NodeDaemon and
 the lease is never scoped to one Execution Space. The stored row is still per
 Execution Space and its `generation` is a Space-local counter; machine scope is
 reconstructed by the daemon's all-or-nothing bundle over every registered
-Space, and any failure in that bundle closes provider admission machine-wide.
+Space. An authority failure in any Space — a fenced generation, a confirmed
+expiry, a revalidation mismatch, a retired Node — closes provider admission
+machine-wide; a transient Store IO, lock, or JSON failure instead rolls the
+bundle back and defers that discovery pass with admission left open.
 `TeamRun` and `MemberRun` remain coordination/history projections; they never
 own a provider process or authorize a provider effect. Every provider effect is
 prepared and settled through a durable `RuntimeCommand` bound to the exact

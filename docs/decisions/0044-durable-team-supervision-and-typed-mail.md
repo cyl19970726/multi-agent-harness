@@ -16,7 +16,7 @@
 > (`crates/firm-store/src/store_node_runtime.rs:299-317`). The Supervisor rule
 > still holds: the Store refuses a successor only while the current lease is
 > `Active` and unexpired, and daemon discovery adopts an expired one
-> (`crates/firm-store/src/store_node_runtime.rs:579-592`,
+> (`crates/firm-store/src/store_node_runtime.rs:583-591`,
 > `crates/firm-node-daemon/src/supervisor_daemon/team_supervision.rs:106-110`).
 > Why that stays safe is recorded in
 > [Node Runtime and Message Fabric](../current/architecture/agent-runtime.md).

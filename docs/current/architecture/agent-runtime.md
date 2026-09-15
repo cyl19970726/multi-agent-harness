@@ -22,9 +22,15 @@ Store still checks exact ownership and expiry after acquiring the lock, and
 all workers are joined during daemon shutdown. Authority remains
 process-local and machine-wide. Before any Team may admit a provider effect,
 the NodeDaemon acquires and revalidates the complete set of per-Space leases
-for every registered Space owned by that Node. A failure in any member of this
-bundle permanently closes admission for that daemon instance and initiates
-machine-wide drain. A partial first acquisition rolls back only leases that
+for every registered Space owned by that Node. An **authority** failure in any
+member of this bundle — a fenced generation, a confirmed expiry, a revalidation
+mismatch, a retired Node — permanently closes admission for that daemon
+instance and initiates machine-wide drain; a **transient** `StoreError::Io`,
+`LockTimeout`, or `Json` failure instead rolls back and defers that discovery
+pass with admission left open
+(`crates/firm-node-daemon/src/supervisor_daemon/machine_authority.rs:201-214`,
+`crates/firm-node-daemon/src/supervisor_daemon/team_supervision.rs:15-22`).
+A partial first acquisition rolls back only leases that
 this instance acquired before provider admission opened. Lease expiry alone is
 never a provider-drain receipt.
 
@@ -34,27 +40,40 @@ two leases, and the difference is deliberate:
 | Lease | On predecessor expiry | Source |
 | --- | --- | --- |
 | `NodeDaemonLease` | A successor is refused. `acquire_node_daemon_lease` admits a new generation only over an explicitly `Released` row; anything else is `NODE_DAEMON_PREDECESSOR_SETTLEMENT_REQUIRED` (same daemon/instance) or `NODE_DAEMON_PREDECESSOR_RECOVERY_REQUIRED` (foreign), whatever the clock says. | `crates/firm-store/src/store_node_runtime.rs:299-317` |
-| `TeamSupervisorLease` | A successor **is** admitted. The Store refuses another supervisor only while the current lease is `Active` *and* unexpired, and the daemon's discovery pass deliberately adopts a TeamRun whose Supervisor lease is non-Active or expired. | `crates/firm-store/src/store_node_runtime.rs:579-592`, `crates/firm-node-daemon/src/supervisor_daemon/team_supervision.rs:106-110` |
+| `TeamSupervisorLease` | A successor **is** admitted. The Store refuses another supervisor only while the current lease is `Active` *and* unexpired, and the daemon's discovery pass deliberately adopts a TeamRun whose Supervisor lease is non-Active or expired. | `crates/firm-store/src/store_node_runtime.rs:583-591`, `crates/firm-node-daemon/src/supervisor_daemon/team_supervision.rs:106-110` |
 
-Expiry takeover is safe for the Supervisor lease today because the predecessor
-cannot keep acting on a lease it no longer holds:
+Expiry takeover is safe for the Supervisor lease today at the level of durable
+state, because the predecessor cannot *write* under a lease it no longer holds:
 
 - the predecessor's own `require_supervisor_lease` check latches false on its
   next read and quiesces that generation rather than issuing new provider
   operations
-  (`crates/firm-cli/src/main_modules/member_work_coordination.rs:444-462`,
+  (`crates/firm-cli/src/main_modules/member_work_coordination.rs:453-479`,
   `crates/firm-cli/src/main_modules/supervisor_control.rs:148-162`);
 - a provider-facing effect re-checks the exact driver ref, so a stale Supervisor
   generation is refused at the write rather than merely discouraged: the live
   driver check requires the current lease to match supervisor id *and*
   generation and still be Active and unexpired
-  (`crates/firm-store/src/trust_kernel/fabric_foundation.rs:340-382`), and the
+  (`crates/firm-store/src/trust_kernel/fabric_foundation.rs:339-392`), and the
   stale-driver detector on RuntimeCommands demands the same tuple
   (`crates/firm-store/src/trust_kernel/fabric_runtime_commands.rs:47-65`); and
-- the successor runs under the same machine NodeDaemon, whose drain terminates
-  and reaps only the provider process groups registered by that exact daemon
-  process, so an orphaned provider child does not survive the handover
-  (see [NodeDaemon Runtime](multi-team-supervisor-daemon.md)).
+- the successor runs under the *same* machine NodeDaemon, so the handover
+  changes nothing about which daemon process owns the machine's leases.
+
+That is a write fence, not a process fence, and the distinction is load-bearing.
+A provider process group is terminated and reaped only by this daemon's own
+shutdown drain, which targets only the groups that exact daemon process
+registered
+(`crates/firm-node-daemon/src/supervisor_daemon/shutdown.rs:89-145`; those are
+the only non-test callers of `terminate_registered_process_groups` and
+`complete_registered_process_group_shutdown`). Adoption runs no drain
+(`crates/firm-node-daemon/src/supervisor_daemon/team_supervision.rs:120-154`).
+So an expiry takeover under a live daemon fences every durable write from the
+stale generation but does **not** itself terminate a provider child the
+predecessor left running. That residue is tracked as
+[#937](https://github.com/cyl19970726/multi-agent-harness/issues/937) and is not
+fixed at this checkout; do not read the write fence as a guarantee that no
+orphaned provider process survives.
 
 The asymmetry is therefore a statement about *which* lease protects *what*: the
 NodeDaemon lease guards durable machine authority and demands explicit
@@ -65,15 +84,15 @@ One more fact about where those checks live, so nobody looks in the wrong file.
 The nine mutating lease entrances on the Store —
 `acquire`/`renew`/`renew_…_cancellable`/`drain`/`release_node_daemon_lease` and
 `acquire_team_supervisor_under_node_lease`/`renew`/`renew_…_cancellable`/`release_team_supervisor_lease`
-(`crates/firm-store/src/store_node_runtime.rs:273-753`), plus the three
+(`crates/firm-store/src/store_node_runtime.rs:273-764`), plus the three
 Host-binding ones
-(`crates/firm-store/src/store_host_attention.rs:60-195`) — take plain identity
+(`crates/firm-store/src/store_host_attention.rs:60-184`) — take plain identity
 strings (`node_id`, `daemon_id`, `instance_id`, `generation`) and no
 authenticated actor. They fence on *identity equality and generation*, which is
 what a lease is for. The authenticated-actor check is a separate trust-kernel
 concern: `require_current_node_daemon_unlocked` and
 `require_node_daemon_settlement_authority_unlocked`
-(`crates/firm-store/src/trust_kernel/fabric_foundation.rs:35-96`, `:98-161`),
+(`crates/firm-store/src/trust_kernel/fabric_foundation.rs:35-95`, `:97-160`),
 called by the fabric mutation and settlement paths rather than by the lease
 entrances themselves.
 
@@ -176,7 +195,7 @@ An `AgentSession` row id is minted as
 generation segments are a **mint-time stamp, not current state**: reattaching a
 session to a successor NodeDaemon updates the `node_daemon_generation` field and
 leaves the id untouched
-(`crates/firm-store/src/trust_kernel/fabric_identity_sessions.rs:964-975`), so a
+(`crates/firm-store/src/trust_kernel/fabric_identity_sessions.rs:965-984`), so a
 long-lived session's id routinely names a generation that is no longer current.
 Nothing reads those segments — no fence, authority check, or router parses the
 id — so the drift is cosmetic. Read the field, never the id, when you need the
