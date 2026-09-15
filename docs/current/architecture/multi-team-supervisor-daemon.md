@@ -79,6 +79,30 @@ isolated" is a statement about discovery reads, not about losing authority.
 On restart the new daemon generation recovers eligible non-terminal
 TeamRuns without duplicating provider delivery.
 
+A successor may acquire only over an explicitly `Released` predecessor lease,
+and it releases one itself only when the predecessor's death is *proven*. On
+the first scan it runs exactly the proofs `firm daemon recover-predecessor`
+runs — one unreleased predecessor instance across every registered Execution
+Space, every selected lease past expiry, the predecessor process absent, no
+ambiguous RuntimeCommand of that generation — plus recycled-pid detection: a
+live pid whose process provably started after the predecessor's last lease
+renewal is not the predecessor. All proofs holding, it settles, releases, and
+takes `generation + 1`, journaling the receipt as `node_daemon` /
+`predecessor_recovered_automatically`. Any proof failing, it refuses and names
+the failing proof in `daemon status`; an alive-but-starved predecessor and
+ambiguous commands remain operator-gated. The proofs have one owner each,
+shared with the CLI and the Operator HTTP action: the process proof in
+`firm-runtime-host`, instance selection and the per-Space transition in
+`firm-store` (ADR 0073).
+
+A generation that loses authority — its lease moved, or its drain did not
+converge — cannot settle the lanes it was running, because settlement requires
+process-group termination proof it does not have. It records that instead: each
+such lane carries a `settlement_incomplete` fact naming the daemon id,
+generation, instance and reason, written without touching lifecycle, residency
+or cycle state. Recovery reads it, settles the lane under a real proof, and
+clears it; the release fence refuses while one of that generation still stands.
+
 ## Timing constants
 
 Every value below is the shipped default in this checkout. They are stated
