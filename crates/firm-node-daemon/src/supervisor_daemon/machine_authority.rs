@@ -115,7 +115,13 @@ impl MultiTeamDaemon {
             })?;
         let now_ms = current_unix_ms_u64();
         for space in spaces {
-            let store = HarnessStore::new(space.store_root.clone());
+            // Machine authority belongs to this Firm home, not to whatever a
+            // Space root's parent directory happens to be called (ADR 0075).
+            // A registered `store_root` may be an absolute path outside the
+            // home under `FIRM_ALLOW_EXTERNAL_STORE_ROOT`, so binding the home
+            // this function was handed is the only way the daemon and the CLI
+            // name one machine lease.
+            let store = HarnessStore::new(space.store_root.clone()).with_firm_home(firm_home);
             let lease = store.latest_node_daemon_lease(node_id).map_err(|error| {
                 CliError::Usage(format!(
                     "NODE_DAEMON_SOCKET_RECLAIM_UNSAFE: cannot verify Node {node_id} authority in Execution Space {}: {error}",
@@ -156,6 +162,11 @@ impl MultiTeamDaemon {
                 // The held lease already owns a long-lived Store handle.
                 // Reuse only its disposable read cache, never its lease as an
                 // authorization decision. Root changes still get a fresh handle.
+                // Every machine-lease writer in this module runs on one of
+                // these Stores, so each is bound to this daemon's Firm home
+                // explicitly (ADR 0075). Deriving the home from the Space
+                // root's shape would name a different lease document than the
+                // CLI whenever a registered root lives outside the home.
                 let store = self
                     .confirmed_node_leases
                     .lock()
@@ -163,7 +174,9 @@ impl MultiTeamDaemon {
                     .get(&space.id)
                     .filter(|(store, _)| store.root() == space.store_root.as_path())
                     .map(|(store, _)| store.clone())
-                    .unwrap_or_else(|| HarnessStore::new(space.store_root.clone()));
+                    .unwrap_or_else(|| {
+                        HarnessStore::new(space.store_root.clone()).with_firm_home(&self.firm_home)
+                    });
                 (space, store)
             })
             .collect())

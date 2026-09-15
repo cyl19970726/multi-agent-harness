@@ -194,12 +194,15 @@ fn hostile_runtime_resolution_fails_before_node_daemon_effect() {
 
 #[test]
 fn company_node_is_the_wave4c_execution_node_and_gateway_is_daemon_child() {
-    let root =
+    let firm_home =
         std::env::temp_dir().join(format!("agentfirm-node-authority-{}", std::process::id()));
-    if root.exists() {
-        std::fs::remove_dir_all(&root).expect("remove prior isolated test root");
+    if firm_home.exists() {
+        std::fs::remove_dir_all(&firm_home).expect("remove prior isolated test root");
     }
-    std::fs::create_dir(&root).expect("create isolated Store root");
+    // Production's layout: `<FIRM_HOME>/execution-spaces/<id>`, so the Store
+    // names its own Firm home the way a registered store does.
+    let root = firm_home.join("execution-spaces").join("space");
+    std::fs::create_dir_all(&root).expect("create isolated Store root");
     let store = harness_store::HarnessStore::new(&root);
     let node_id = "11111111-1111-4111-8111-111111111111";
     store

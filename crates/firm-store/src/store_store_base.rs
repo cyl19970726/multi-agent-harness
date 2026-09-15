@@ -6,6 +6,13 @@ impl HarnessStore {
         Self {
             process_write_lock: process_write_lock_for(&root),
             read_cache: Arc::new(Mutex::new(Default::default())),
+            // Production binds its Firm home explicitly with `with_firm_home`
+            // (ADR 0075). This shape derivation is the fixture and
+            // open-by-path affordance: an Execution Space store root names its
+            // own home, and a root of any other shape — or a relative one —
+            // stays unbound so a machine-authority read fails closed instead of
+            // guessing.
+            firm_home: firm_home_of_execution_space_root(&root),
             root,
             provider_compatibility_scope: None,
         }

@@ -100,14 +100,22 @@ impl RemoteFabricStoreLayout {
     }
 }
 
-fn validate_id(value: &str, label: &str) -> Result<(), FabricError> {
-    if value.is_empty()
-        || value.len() > 128
-        || !value
+/// The crate's one rule for an id that becomes a single directory name.
+///
+/// Shared with `store_node_home`, which names `<FIRM_HOME>/nodes/<node_id>`
+/// from the same kind of id: one allowlist for one question, so the stricter
+/// caller cannot end up with the laxer rule.
+pub(crate) fn is_safe_path_component(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 128
+        && value
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b':'))
-        || matches!(value, "." | "..")
-    {
+        && !matches!(value, "." | "..")
+}
+
+fn validate_id(value: &str, label: &str) -> Result<(), FabricError> {
+    if !is_safe_path_component(value) {
         return Err(FabricError::none(
             FabricErrorCode::InvalidPayload,
             format!("{label} id is not a safe canonical path component"),

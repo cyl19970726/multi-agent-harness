@@ -196,15 +196,18 @@ fn test_runtime_binding(session_id: &str) -> firm_core::agentfirm_api::RuntimeCo
 }
 
 fn fabric_store() -> (HarnessStore, PathBuf) {
-    let root = std::env::temp_dir().join(format!(
-        "firm-runtime-fabric-{}-{}-{}",
-        std::process::id(),
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos(),
-        FABRIC_STORE_SEQUENCE.fetch_add(1, Ordering::Relaxed),
-    ));
+    let root = std::env::temp_dir()
+        .join(format!(
+            "firm-runtime-fabric-{}-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+            FABRIC_STORE_SEQUENCE.fetch_add(1, Ordering::Relaxed),
+        ))
+        .join("execution-spaces")
+        .join("space");
     let store = HarnessStore::new(&root);
     store.init().unwrap();
     store

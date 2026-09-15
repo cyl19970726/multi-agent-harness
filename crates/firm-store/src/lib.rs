@@ -281,6 +281,10 @@ pub enum HostAttentionClaimResult {
 pub struct HarnessStore {
     root: PathBuf,
     provider_compatibility_scope: Option<(String, String)>,
+    /// Where this machine's NodeDaemon lease document lives (ADR 0075).
+    /// `None` means "this Store cannot name it", which fails every
+    /// machine-authority read closed rather than falling back to Space data.
+    firm_home: Option<PathBuf>,
     process_write_lock: Arc<ProcessWriteLock>,
     read_cache: Arc<Mutex<store_read_cache::StoreReadCache>>,
 }
@@ -290,6 +294,8 @@ mod store_host_attention;
 mod store_host_attention_internals;
 mod store_host_runtime_binding;
 mod store_jsonl;
+mod store_node_home;
+pub use store_node_home::{firm_home_of_execution_space_root, MACHINE_LEASE_FILE_UNRESOLVED};
 mod store_node_runtime;
 mod store_read_cache;
 mod store_read_models;

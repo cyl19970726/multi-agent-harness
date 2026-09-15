@@ -24,14 +24,17 @@ use work_execution_fixture::{
 };
 
 fn lock_policy_test_store(label: &str) -> HarnessStore {
-    let root = std::env::temp_dir().join(format!(
-        "firm-store-lock-policy-{label}-{}-{}",
-        std::process::id(),
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("clock")
-            .as_nanos()
-    ));
+    let root = std::env::temp_dir()
+        .join(format!(
+            "firm-store-lock-policy-{label}-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ))
+        .join("execution-spaces")
+        .join("space");
     let store = HarnessStore::new(root);
     store.init().expect("init lock-policy store");
     store
@@ -1094,13 +1097,16 @@ fn test_delivery(delivery_id: &str) -> RegistryDeliveryAttempt {
 }
 
 fn temp_store(label: &str) -> (PathBuf, HarnessStore) {
-    let root = std::env::temp_dir().join(format!(
-        "firm-store-{label}-{}",
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("system clock")
-            .as_nanos()
-    ));
+    let root = std::env::temp_dir()
+        .join(format!(
+            "firm-store-{label}-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system clock")
+                .as_nanos()
+        ))
+        .join("execution-spaces")
+        .join("space");
     let store = HarnessStore::new(&root);
     (root, store)
 }
@@ -1160,6 +1166,7 @@ mod member_close_request_survives_store_reopen_and_is_idempotent;
 mod member_created_work_is_limited_to_self_or_unassigned;
 mod mission_and_legacy_wave_ledgers_keep_history_and_project_latest_rows;
 mod node_daemon_lease_renewal_compacts_and_keeps_latest;
+mod node_home_is_bound_explicitly_or_derived_from_an_execution_space_root;
 mod node_project_registration_is_fenced_to_selected_execution_space;
 mod peer_reviewer_request_changes_is_exact_and_space_scoped;
 mod provider_compatibility_admission_is_exact_and_preserves_policy;
