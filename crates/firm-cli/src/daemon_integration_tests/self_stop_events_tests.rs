@@ -82,12 +82,17 @@ fn authority_renewal_failure_is_returned_by_the_team_run_events_reader() {
         .collect::<Vec<_>>();
     assert_eq!(
         self_stop.len(),
-        3,
-        "renewal, lease-loss, and process-group phases"
+        4,
+        "renewal, lease-loss, cooperative-interrupt, and process-group phases"
     );
     assert_eq!(self_stop[0]["kind"], "node_daemon_self_stop");
     assert_eq!(self_stop[0]["reason"], "NODE_DAEMON_MACHINE_AUTHORITY_LOST");
     assert_eq!(self_stop[0]["phase"], "renewal_failed");
+    assert_eq!(
+        self_stop[0]["detail"],
+        serde_json::Value::Null,
+        "phases without extra evidence keep their exact summary shape"
+    );
     assert_eq!(self_stop[1]["phase"], "lease_lost");
     assert_eq!(self_stop[1]["daemon_id"], daemon.daemon_id());
     assert_eq!(self_stop[1]["daemon_instance_id"], daemon.instance_id());
@@ -99,9 +104,16 @@ fn authority_renewal_failure_is_returned_by_the_team_run_events_reader() {
         self_stop[1]["terminated_provider_process_groups"],
         serde_json::json!([])
     );
-    assert_eq!(self_stop[2]["phase"], "process_groups_terminated");
+    // The cooperative interrupt precedes the drain, so its phase is journalled
+    // before any process group is terminated. This fixture serves no live
+    // provider turn, so the honest count is zero rather than an absent phase.
+    assert_eq!(self_stop[2]["phase"], "cooperative_interrupt_dispatched");
+    assert_eq!(self_stop[2]["detail"]["turns_live"], 0);
+    assert_eq!(self_stop[2]["detail"]["turns_interrupted"], 0);
+    assert_eq!(self_stop[2]["detail"]["scope"], "process");
+    assert_eq!(self_stop[3]["phase"], "process_groups_terminated");
     assert_eq!(
-        self_stop[2]["terminated_provider_process_groups"],
+        self_stop[3]["terminated_provider_process_groups"],
         serde_json::json!([4242])
     );
 }
