@@ -12,9 +12,21 @@ const MACHINE_AUTHORITY_LOSS_INTERRUPT_REASON: &str =
 const MACHINE_AUTHORITY_LOSS_INTERRUPT_OBSERVE_TIMEOUT: Duration = Duration::from_secs(2);
 
 impl MultiTeamDaemon {
-    /// Hand one cooperative interrupt to every live provider turn this process
-    /// still owns, before the bounded cooperative drain wait and its SIGKILL
-    /// backstop (ADR 0074).
+    /// Quiesce every Supervisor scope this process is serving, then hand one
+    /// cooperative interrupt to every live provider turn it still owns —
+    /// before the bounded cooperative drain wait and its SIGKILL backstop
+    /// (ADR 0074).
+    ///
+    /// The quiesce is what makes the interrupt complete rather than
+    /// best-effort. Closing provider-effect admission stops turns that have
+    /// not yet reached their admission check, and the fan-out reaches turns
+    /// already registered; a turn that passed admission but registers *after*
+    /// the fan-out is covered by neither. `latch_machine_authority_loss`
+    /// writes only NodeDaemon lease rows and process-wide flags, none of which
+    /// `TeamRunLedger::require_supervisor_lease` reads, so without this flip
+    /// that turn would pass `acquire_prepared_cycle_turn` and drive on. The
+    /// drain sets the same flag a moment later; this only moves it to the
+    /// instant authority is known lost.
     ///
     /// Deliberately not a `RuntimeCommand`: machine authority is already
     /// permanently closed when this runs, so no provider effect can be
@@ -23,18 +35,60 @@ impl MultiTeamDaemon {
     /// `interrupt_current_cycle` path, and `graceful_shutdown_with_deadlines`
     /// then runs unchanged.
     pub(super) fn interrupt_live_provider_turns_for_authority_loss(&self) {
+        let quiesced = self.quiesce_served_supervisor_scopes();
         let report = harness_runtime_host::request_authority_loss_interrupt(
             &harness_runtime_host::AuthorityLossScope::Process,
             MACHINE_AUTHORITY_LOSS_INTERRUPT_REASON,
             MACHINE_AUTHORITY_LOSS_INTERRUPT_OBSERVE_TIMEOUT,
         );
-        let detail = report.to_json();
+        let mut detail = report.to_json();
+        if let Some(object) = detail.as_object_mut() {
+            object.insert("supervisor_scopes_quiesced".to_string(), quiesced.into());
+        }
         eprintln!("[node-daemon] cooperative interrupt before drain: {detail}");
         self.journal_machine_authority_loss_phase_with_detail(
             "cooperative_interrupt_dispatched",
             &[],
             Some(detail),
         );
+    }
+
+    /// Mark every served TeamRun's process-local Supervisor scope invalid, and
+    /// return how many were still valid. This is the same `heartbeat_valid`
+    /// `Arc` the owning `TeamRunLedger` reads as `supervisor_valid`, so once
+    /// this returns every `require_supervisor_lease` in this process fails
+    /// closed — including the one inside `acquire_prepared_cycle_turn`, which
+    /// is the check a late-registering turn meets before it can drive.
+    ///
+    /// Taken without the per-Supervisor `authority_gate`, deliberately. That
+    /// gate linearizes a Close against *Supervisor-lease* loss; racing it from
+    /// here can only make a concurrent Close reject earlier, never let one
+    /// through, because `close_process_node_daemon_admission` already ran and
+    /// the Store refuses to admit a further provider effect for this instance.
+    ///
+    /// Quiescing here means `latch_supervisor_lease_lost` finds these scopes
+    /// already false and prints no per-run line, so this loop prints it
+    /// instead: per-run evidence must not disappear just because the machine
+    /// latch got there first.
+    fn quiesce_served_supervisor_scopes(&self) -> usize {
+        self.contexts
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .iter()
+            .filter(|context| {
+                if !context.heartbeat_valid.swap(false, Ordering::AcqRel) {
+                    return false;
+                }
+                eprintln!(
+                    "team run {} supervisor {} generation {} quiesced: {}",
+                    context.run_id,
+                    context.supervisor_id,
+                    context.supervisor_generation,
+                    self_stop_events::MACHINE_AUTHORITY_LOST_REASON
+                );
+                true
+            })
+            .count()
     }
 
     /// Stop every machine-owned runtime before releasing this daemon generation.

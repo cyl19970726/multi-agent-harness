@@ -234,7 +234,7 @@ fn native_open_test_member(
     }
 }
 
-fn persisted_native_test_member(
+pub(crate) fn persisted_native_test_member(
     store: &HarnessStore,
     provider: &str,
     mode: &str,
@@ -509,7 +509,7 @@ fn append_test_delivery_attempt(
         .expect("append delivery attempt");
 }
 
-fn temp_store(label: &str) -> (HarnessStore, PathBuf) {
+pub(crate) fn temp_store(label: &str) -> (HarnessStore, PathBuf) {
     let root = std::env::temp_dir().join(format!("harness-cli-test-{}", generated_id(label)));
     (HarnessStore::new(&root), root)
 }
