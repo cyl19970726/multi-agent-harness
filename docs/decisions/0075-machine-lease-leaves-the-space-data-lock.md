@@ -1,7 +1,8 @@
 # ADR 0075: The machine-authority lease leaves the Execution Space data lock
 
 ```text
-status: Accepted — Owner 2026-09-15 (CORE5-E2); implementation tracked by Task CORE5-E2-20260915
+status: Accepted — Owner 2026-09-15 (CORE5-E2); implementation tracked by Task CORE5-E2-20260915;
+        amended 2026-09-15 (predecessor history; corrected fence list) before any code was written
 date: 2026-09-15
 amends: ADR 0042 (the machine lease stops being Execution Space data); ADR 0044 (the NodeDaemon
         parent fence reads a file, not a Space ledger row); AGENTS.md "machine-scoped authority";
@@ -142,6 +143,21 @@ replaces `latest_node_daemon_lease` at every fence site listed above. `MachineLe
 `HarnessStore` built without a node-home (imports, fixtures) fails the fence closed with
 `MACHINE_LEASE_FILE_UNRESOLVED`; it never skips it.
 
+The fence list above was verified site by site at 35bcda73 and corrected. Three fences were
+missing from it and must switch with the rest:
+
+- `fabric_runtime_commands.rs:118-130` — RuntimeCommand admission ("RuntimeCommand requires an
+  exact current NodeDaemon lease").
+- `trust_foundation.rs:294-305` — a **fourth** TeamSupervisorLease parent fence, on delivery
+  mutations. There are four, not three.
+- `node_daemon_shutdown.rs:39-58` — the shutdown settlement fence, which reads
+  `node_daemon_leases.jsonl` directly.
+
+One listed site needs no change: `from_admitted_command` (`provider_capabilities.rs:453-462`)
+receives `node_daemon: &NodeDaemonLease` as a parameter and reads no store, so it is already
+source-agnostic — the swap belongs at its callers. `team_supervision.rs` reads no lease at all
+and is untouched.
+
 ### Time sampling
 
 Today the authority clock is sampled *inside* the write lock precisely so queueing cannot
@@ -156,6 +172,40 @@ sample `now` **after** the lease lock is held and **immediately before** the ren
 The generation becomes **machine-wide and monotonic**: `generation + 1` of the document under the
 lease lock, once per machine, for all Spaces. The Space-local counters disappear — the 1..148
 spread above becomes one number.
+
+### Predecessor history
+
+One document is the current authority, and it is deliberately **not** a history. Exactly one
+reader needs history: `predecessor_was_released` (`fabric_identity_sessions.rs:943-951`) does an
+`rfind` for a **named past generation** to prove that generation reached `Released`, because
+expiry is not a provider-drain receipt. Today that proof survives only because
+`compact_node_daemon_leases_unlocked` keeps first-of-group plus last-of-each-status *per
+generation* for exactly this reason (its own comment at `store_jsonl.rs:185-194` says so), and
+two kernel tests pin it: `agent_session_reattach_rejects_expiry_without_provider_drain_receipt`
+and `drained_session_resumes_under_the_next_daemon_generation`. A latest-state document alone
+would silently delete that proof on the successor's acquire and break session adoption on every
+daemon restart.
+
+So the document gains a companion:
+
+```text
+<FIRM_HOME>/nodes/<node_id>/node-daemon-lease-history.jsonl
+```
+
+**One row per generation transition** — `acquired`, `drained`, `released` — carrying the same
+fields as the document row, appended under the **same lease lock**, inside the same
+acquire/drain/release write. The leaf-lock rule is unchanged: still no Space I/O and no second
+lock under the lease lock, and the file lives in the same directory as the document.
+
+No compaction: this is one row per *generation*, never per renewal. In evidence the busiest node
+took 14 generations in 3 days and 79 in 12 days — roughly 28 KB of history, against the 87,354
+rows / 28 MB that heartbeat appends produced before #811.
+
+`predecessor_was_released(generation)` reads the history file **lock-free**, exactly like every
+other reader here; a single-line atomic append means a concurrent reader can see at most a torn
+final line, which the existing torn-tail retry (`store_jsonl.rs:322-345`) already handles. A
+generation that appears in **neither** the history file nor the legacy Space rows fails closed
+with today's reattach refusal — expiry still never becomes a drain receipt.
 
 ### Drain, release, predecessor recovery
 
@@ -178,9 +228,10 @@ gains a `lease_source` field.
 
 All writers retire. Rows stay decodable and readable by projections
 (`dashboard_projection.rs:195-236`, `http_get_routes.rs:197`) as pre-cutover legacy.
-`compact_node_daemon_leases_unlocked` exists only to bound heartbeat appends
-(`store_jsonl.rs:185-252`); with the writers gone it is deleted with its renewal call site and its
-test is retargeted at the legacy path. `daemon status` gains `lease_path` and `lease_source`; its
+`compact_node_daemon_leases_unlocked` bounds heartbeat appends *and* preserves the
+per-generation history the reattach proof depends on (`store_jsonl.rs:185-252`). The history file
+above replaces the second guarantee, so the compactor retires with the per-Space writers in E2b —
+not before — and its test is retargeted at the legacy path. `daemon status` gains `lease_path` and `lease_source`; its
 `authority_lost` derivation (`control_protocol.rs:1077`) and `lease_renewals` diagnostics
 (`lease_renewal_diagnostics.rs:11-31`) are unchanged.
 
@@ -231,6 +282,10 @@ test is retargeted at the legacy path. `daemon status` gains `lease_path` and `l
   lock held by a dead process (assert the kernel releases the flock, do not assume it).
 - **Upgrade** — pre-cutover store + new daemon: legacy rows decode, projections render, admission
   refuses with the named error, `daemon status` reports `lease_source: legacy_space_row`.
+- **Predecessor history** — `agent_session_reattach_rejects_expiry_without_provider_drain_receipt`
+  and `drained_session_resumes_under_the_next_daemon_generation` stay green against the history
+  file; one row per generation transition and none per renewal; a generation in neither the
+  history file nor the legacy rows keeps today's reattach refusal; a torn final line is tolerated.
 - **Evidence** — replay the S1 gen-4 window against the new writer in a fixture; assert no
   self-stop.
 
