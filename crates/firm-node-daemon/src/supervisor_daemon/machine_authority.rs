@@ -260,6 +260,14 @@ impl MultiTeamDaemon {
             }
         }
 
+        // Test seam only: the Store floors every TTL at 1 ms and this sample
+        // is adjacent to the acquisitions above, so a test that needs the
+        // freshly acquired lease observed as expired must let that
+        // millisecond pass here (#990). Production compiles it out.
+        #[cfg(any(test, feature = "test-support"))]
+        if let Some(delay_ms) = self.bundle_revalidation_delay_ms {
+            std::thread::sleep(Duration::from_millis(delay_ms));
+        }
         let now_ms = current_unix_ms_u64();
         let mut failures = Vec::new();
         for (space_id, store, expected, _) in &acquired {

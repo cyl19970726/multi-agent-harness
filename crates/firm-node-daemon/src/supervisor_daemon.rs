@@ -243,6 +243,13 @@ pub(crate) struct MultiTeamDaemon {
     deferred_stop_responses: Mutex<Vec<DeferredStopResponse>>,
     #[cfg(any(test, feature = "test-support"))]
     lease_ttl_override_ms: Option<u64>,
+    /// Milliseconds to wait between the bundle's last acquisition and the
+    /// clock sample of its final revalidation. The Store floors every lease
+    /// TTL at 1 ms and the two phases are adjacent, so a test that needs the
+    /// freshly acquired lease to be observed as expired cannot rely on a
+    /// millisecond elapsing on its own (#990). Compiled out of production.
+    #[cfg(any(test, feature = "test-support"))]
+    bundle_revalidation_delay_ms: Option<u64>,
     /// Bounded (cooperative, forced) drain deadlines in milliseconds. Tests
     /// use it to exercise the honest Stop answer without waiting the full
     /// production bound.
@@ -387,6 +394,8 @@ impl MultiTeamDaemon {
             deferred_stop_responses: Mutex::new(Vec::new()),
             #[cfg(any(test, feature = "test-support"))]
             lease_ttl_override_ms: None,
+            #[cfg(any(test, feature = "test-support"))]
+            bundle_revalidation_delay_ms: None,
             #[cfg(any(test, feature = "test-support"))]
             drain_timeout_override_ms: None,
         });

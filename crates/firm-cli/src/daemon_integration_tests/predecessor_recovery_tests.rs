@@ -753,9 +753,14 @@ fn only_the_exact_daemon_service_may_record_its_own_unsettled_lanes() {
 fn a_failed_bundle_rolls_back_the_lease_its_own_recovery_just_made_acquirable() {
     let mut fixture = RecoveryFixture::new("recovery-rollback");
     // A lease that has already expired by the time the bundle revalidates it
-    // fails that revalidation deterministically — the same partial state a
-    // later Space's failure produces, without racing a second Store.
+    // fails that revalidation — the same partial state a later Space's
+    // failure produces, without racing a second Store. The Store floors every
+    // TTL at 1 ms and the bundle acquires and revalidates inside one call, so
+    // on a fast runner both land in the same millisecond and the lease is
+    // still valid at revalidation (#990). The delay seam makes the bundle
+    // sample its revalidation clock only after that millisecond has passed.
     fixture.inner.daemon.set_lease_ttl_override(Some(1));
+    fixture.inner.daemon.set_bundle_revalidation_delay(Some(5));
     let dead = fixture.expire(&fixture.seed_predecessor(ABSENT_PID));
 
     let error = fixture
