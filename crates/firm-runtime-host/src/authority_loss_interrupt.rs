@@ -9,7 +9,7 @@
 //! cooperative interrupt through the adapter's own `interrupt_current_cycle`
 //! path, before the drain's bounded cooperative wait and its SIGKILL backstop.
 //!
-//! Two properties keep the fan-out honest:
+//! Three properties keep the fan-out honest:
 //!
 //! * **At most one request per turn.** A second latch (for example the machine
 //!   latch after a Supervisor latch) never re-requests a turn that already
@@ -19,6 +19,15 @@
 //!   hung provider. The request itself stays latched, so a turn that polls
 //!   later still gets its interrupt; the report simply records it as
 //!   `not_observed` inside that window.
+//! * **The latch is not sticky, and that is deliberate.** A scope is never
+//!   remembered after its fan-out, so a turn registered later is not born
+//!   interrupted. Remembering it would permanently break a TeamRun that a
+//!   *successor* Supervisor generation legitimately re-adopts in this same
+//!   process. Covering the pre-registration window is therefore the caller's
+//!   job, and it is cheap: register the turn before the last authority check
+//!   that precedes the provider drive, so a latch either finds the turn here
+//!   (registration and the fan-out share one mutex) or is caught by that check.
+//!   `runtime_adapter::run_team_member_with_adapter` does exactly that.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Condvar, Mutex, OnceLock};
@@ -130,11 +139,12 @@ struct LiveProviderTurnEntry {
 struct LiveProviderTurns {
     next_token: u64,
     turns: HashMap<u64, LiveProviderTurnEntry>,
-    /// Tokens whose cooperative interrupt was taken. A turn commonly dispatches
-    /// its interrupt and then ends within the same observation window, so the
-    /// dispatch fact must outlive the entry or the report would downgrade a
-    /// real interrupt to `turn_ended`. The reporting fan-out drains what it
-    /// reads, so this holds at most the turns that were live at one latch.
+    /// Tokens whose cooperative interrupt was taken and whose entry has since
+    /// been dropped. A turn commonly dispatches its interrupt and then ends
+    /// inside the same observation window, so the dispatch fact must outlive
+    /// the entry or the report would downgrade a real interrupt to
+    /// `turn_ended`. A still-live entry carries its own `dispatched` flag, so
+    /// this holds at most the turns that ended during one latch's window.
     dispatched: HashSet<u64>,
 }
 
@@ -143,9 +153,12 @@ fn live_provider_turns() -> &'static (Mutex<LiveProviderTurns>, Condvar) {
     TURNS.get_or_init(|| (Mutex::new(LiveProviderTurns::default()), Condvar::new()))
 }
 
-/// Process-local registration for one live provider turn. The supervisor loop
-/// keeps this guard for exactly as long as a provider cycle is being driven;
-/// Drop removes it, so a finished turn is never reported as interruptible.
+/// Process-local registration for one live provider turn.
+///
+/// The supervisor loop takes this guard before the last authority check that
+/// precedes the drive — not at the drive itself — so that a turn still waiting
+/// for its turn slot is already reachable by a fan-out. Drop removes it, so a
+/// finished turn is never reported as interruptible.
 #[derive(Debug)]
 pub struct LiveProviderTurn {
     token: u64,
@@ -245,12 +258,14 @@ pub fn request_authority_loss_interrupt(
     let current = std::thread::current().id();
     let deadline = Instant::now() + observe_timeout;
     loop {
+        // A turn whose entry is gone is finished either way, and a turn that
+        // already dispatched carries the proof on its own entry — so a second
+        // latch over the same turns neither waits nor re-reports.
         let waiting = targets.iter().any(|(token, ..)| {
-            !turns.dispatched.contains(token)
-                && turns
-                    .turns
-                    .get(token)
-                    .is_some_and(|entry| entry.owner != current)
+            turns
+                .turns
+                .get(token)
+                .is_some_and(|entry| !entry.dispatched && entry.owner != current)
         });
         if !waiting {
             break;
@@ -267,12 +282,15 @@ pub fn request_authority_loss_interrupt(
 
     let mut report_turns = Vec::with_capacity(targets.len());
     for (token, provider, team_run_id, member_run_id) in targets {
-        let outcome = if turns.dispatched.remove(&token) {
-            AuthorityLossInterruptOutcome::Dispatched
-        } else if turns.turns.contains_key(&token) {
-            AuthorityLossInterruptOutcome::NotObserved
-        } else {
-            AuthorityLossInterruptOutcome::TurnEnded
+        let live = turns.turns.get(&token).map(|entry| entry.dispatched);
+        let outcome = match live {
+            Some(true) => AuthorityLossInterruptOutcome::Dispatched,
+            Some(false) => AuthorityLossInterruptOutcome::NotObserved,
+            // The entry is gone. It counts as interrupted only if it took its
+            // request before ending; the token is drained so the record does
+            // not outlive the turns one latch was responsible for.
+            None if turns.dispatched.remove(&token) => AuthorityLossInterruptOutcome::Dispatched,
+            None => AuthorityLossInterruptOutcome::TurnEnded,
         };
         report_turns.push(AuthorityLossInterruptTurn {
             provider,

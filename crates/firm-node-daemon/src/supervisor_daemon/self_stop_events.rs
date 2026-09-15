@@ -145,7 +145,7 @@ impl MultiTeamDaemon {
 
         let reason = loss.reason;
         for target in loss.served_runs {
-            let mut summary_value = serde_json::json!({
+            let summary = serde_json::json!({
                 "kind": "node_daemon_self_stop",
                 "reason": reason,
                 "error": loss.trigger_error,
@@ -155,10 +155,7 @@ impl MultiTeamDaemon {
                 "daemon_generation": target.daemon_generation,
                 "terminated_provider_process_groups": terminated_provider_process_groups,
             });
-            if let (Some(object), Some(detail)) = (summary_value.as_object_mut(), detail.as_ref()) {
-                object.insert("detail".to_string(), detail.clone());
-            }
-            let summary = summary_value.to_string();
+            let summary = with_phase_detail(summary, detail.as_ref()).to_string();
             let stable_key = format!(
                 "node-daemon-self-stop:{}:{}:{}",
                 self.instance_id, target.team_run_id, phase
@@ -230,4 +227,18 @@ impl MultiTeamDaemon {
             );
         }
     }
+}
+
+/// Attach one phase-specific `detail` object to a self-stop summary.
+///
+/// Kept out of the `json!` literal on purpose: the literal itself is untouched
+/// by this change, so a sibling slice editing its fields rebases cleanly.
+fn with_phase_detail(
+    mut summary: serde_json::Value,
+    detail: Option<&serde_json::Value>,
+) -> serde_json::Value {
+    if let (Some(object), Some(detail)) = (summary.as_object_mut(), detail) {
+        object.insert("detail".to_string(), detail.clone());
+    }
+    summary
 }

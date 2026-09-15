@@ -487,6 +487,23 @@ pub(crate) fn run_team_member_with_adapter<A: TeamRuntimeAdapter<Error = CliErro
 
             let mut round_start = member_row.clone();
             let turn_result = {
+                // Register BEFORE `acquire_prepared_cycle_turn`, and keep it
+                // that way (ADR 0074). The registry and the authority-loss
+                // fan-out serialize on one mutex, and an authority latch marks
+                // its scope invalid before it fans out, so this order leaves no
+                // window: a latch that lands after this line finds this turn in
+                // the registry and interrupts it, and a latch that lands before
+                // it is caught by the `require_supervisor_lease()` that
+                // `acquire_prepared_cycle_turn` performs after its blocking
+                // turn-slot wait — which is exactly the Store-IO gap a
+                // registration placed after that call would leave open.
+                // Dropping the guard when the cycle returns is what keeps a
+                // finished turn out of any later fan-out.
+                let authority_loss_turn = harness_runtime_host::register_live_provider_turn(
+                    provider,
+                    &ledger.run_id,
+                    &member_row.id,
+                );
                 let _turn_lease = acquire_prepared_cycle_turn(
                     ledger,
                     &effect,
@@ -499,15 +516,6 @@ pub(crate) fn run_team_member_with_adapter<A: TeamRuntimeAdapter<Error = CliErro
                     member_row.agent_member_id.clone(),
                     member_row.id.clone(),
                     member_row.runtime_generation,
-                );
-                // Make this exact turn reachable by the process-local
-                // authority-loss interrupt (ADR 0074) for as long as it is
-                // being driven. Dropping the guard when the cycle returns is
-                // what keeps a finished turn out of the fan-out.
-                let authority_loss_turn = harness_runtime_host::register_live_provider_turn(
-                    provider,
-                    &ledger.run_id,
-                    &member_row.id,
                 );
                 let live_sink = context.live_sink.clone();
                 adapter.run_cycle(

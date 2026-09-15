@@ -125,6 +125,9 @@ fn authority_renewal_failure_is_returned_by_the_team_run_events_reader() {
 /// prepared or settled on this path — admission is already closed.
 #[test]
 fn machine_authority_loss_hands_each_live_turn_one_cooperative_interrupt() {
+    // This latch is Process-scoped, so it reaches every live turn in this test
+    // binary. CI is --test-threads=1; a local `cargo test` is not.
+    let _serialized = crate::live_turn_serialization::serialized_live_provider_turns();
     const INTERRUPTED_MEMBER_RUN_ID: &str = "member-run-cooperative-interrupt";
     let fixture = adoption_fixture("self-stop-cooperative-interrupt");
     let daemon = &fixture.daemon;

@@ -24,6 +24,7 @@ fn active_turn_lease_limits_execution_without_limiting_idle_members() {
 
 #[test]
 fn queued_prepared_cycle_rechecks_quiesce_after_occupied_slot_is_released() {
+    let _serialized = crate::live_turn_serialization::serialized_live_provider_turns();
     let (store, root) = temp_store("queued-prepared-cycle-quiesce");
     let (ledger, member) =
         persisted_native_test_member(&store, "codex", "codex_app_server", "thread-queued-quiesce");
@@ -38,6 +39,16 @@ fn queued_prepared_cycle_rechecks_quiesce_after_occupied_slot_is_released() {
             ledger
                 .require_supervisor_lease()
                 .expect("B passed the pre-wait check");
+            // Production order (ADR 0074): the live turn is registered before
+            // the blocking slot wait, so an authority latch that lands while B
+            // is parked finds B in the registry, and one that lands earlier is
+            // caught by the `require_supervisor_lease()` that
+            // `acquire_prepared_cycle_turn` performs after the wait.
+            let _live_turn = harness_runtime_host::register_live_provider_turn(
+                "codex",
+                &member.team_run_id,
+                &member.id,
+            );
             let result =
                 crate::runtime_adapter::acquire_prepared_cycle_turn(&ledger, &effect, &pool, &[]);
             if result.is_ok() {
@@ -56,6 +67,18 @@ fn queued_prepared_cycle_rechecks_quiesce_after_occupied_slot_is_released() {
             );
             std::thread::yield_now();
         }
+        // The registration window BF-1 named: B has passed admission and is
+        // doing blocking work before its drive. It must already be reachable.
+        let fanned_out = harness_runtime_host::request_authority_loss_interrupt(
+            &harness_runtime_host::AuthorityLossScope::TeamRun(member.team_run_id.clone()),
+            "queued-cycle quiesce",
+            Duration::ZERO,
+        );
+        assert_eq!(
+            fanned_out.turns_live, 1,
+            "a turn parked on the slot wait must already be reachable by the authority-loss fan-out"
+        );
+        assert_eq!(fanned_out.turns[0].member_run_id, member.id);
         let prepared = store
             .runtime_commands(&space)
             .unwrap()

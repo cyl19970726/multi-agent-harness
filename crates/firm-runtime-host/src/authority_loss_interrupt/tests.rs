@@ -247,3 +247,83 @@ fn the_report_renders_the_journalled_interrupt_evidence() {
     assert_eq!(json["turns"][0]["member_run_id"], "member-1");
     assert_eq!(json["turns"][0]["outcome"], "dispatched");
 }
+
+/// BF-1. The registry deliberately does not remember a latched scope: a turn
+/// registered afterwards is NOT born interrupted, because a successor
+/// Supervisor generation may legitimately re-adopt the same TeamRun in this
+/// same process and must not be permanently interrupted by its predecessor's
+/// loss. Closing the pre-registration window is the caller's job — it registers
+/// before its last authority check (see
+/// `runtime_adapter::run_team_member_with_adapter` and
+/// `queued_prepared_cycle_rechecks_quiesce_after_occupied_slot_is_released`).
+#[test]
+fn a_latched_scope_is_not_remembered_for_turns_registered_afterwards() {
+    let _serialized = serialized();
+    let report = request_authority_loss_interrupt(
+        &team_scope("run-not-sticky"),
+        "lease lost",
+        Duration::ZERO,
+    );
+    assert_eq!(
+        report.turns_live, 0,
+        "nothing was live when the latch fired"
+    );
+
+    let successor = register_live_provider_turn("kimi", "run-not-sticky", "member-1");
+
+    assert_eq!(
+        successor.take_authority_loss_interrupt(),
+        None,
+        "a later generation's turn must not inherit its predecessor's lease loss"
+    );
+}
+
+/// A turn that is registered before the fan-out is always reached, however
+/// long it then blocks before its first control poll. Registration and the
+/// fan-out share one mutex, so there is no ordering in which a registered turn
+/// is missed.
+#[test]
+fn a_turn_registered_before_the_fan_out_is_always_reached() {
+    let _serialized = serialized();
+    let parked = register_live_provider_turn("codex", "run-parked", "member-1");
+
+    let report =
+        request_authority_loss_interrupt(&team_scope("run-parked"), "lease lost", Duration::ZERO);
+
+    assert_eq!(report.turns_live, 1);
+    assert_eq!(report.turns[0].member_run_id, "member-1");
+    assert_eq!(
+        parked.take_authority_loss_interrupt().as_deref(),
+        Some("lease lost"),
+        "a turn that has not polled yet still carries its request"
+    );
+}
+
+/// P3-1. A later latch over a turn that already took its interrupt must report
+/// the first result and must not spend its observation window waiting for a
+/// dispatch that already happened.
+#[test]
+fn a_second_latch_reports_the_first_result_without_waiting() {
+    let _serialized = serialized();
+    let turn = register_live_provider_turn("kimi", "run-idempotent", "member-1");
+    request_authority_loss_interrupt(&team_scope("run-idempotent"), "first", Duration::ZERO);
+    assert!(turn.take_authority_loss_interrupt().is_some());
+
+    let started = Instant::now();
+    let second = request_authority_loss_interrupt(
+        &team_scope("run-idempotent"),
+        "second",
+        Duration::from_secs(10),
+    );
+    let elapsed = started.elapsed();
+
+    assert!(
+        elapsed < Duration::from_secs(1),
+        "a second latch must not wait on an already dispatched turn: {elapsed:?}"
+    );
+    assert_eq!(second.turns_interrupted, 1);
+    assert_eq!(
+        second.turns[0].outcome,
+        AuthorityLossInterruptOutcome::Dispatched
+    );
+}

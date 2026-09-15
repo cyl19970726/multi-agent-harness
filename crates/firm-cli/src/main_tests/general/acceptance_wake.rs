@@ -23,6 +23,10 @@ enum AcceptanceScenario {
 }
 
 fn acceptance_fixture(scenario: AcceptanceScenario) {
+    // Drives a real cycle, so it registers a live turn in the process-global
+    // authority-loss registry (ADR 0074). Serialize against the tests that fan
+    // an interrupt out over that registry.
+    let _serialized = crate::live_turn_serialization::serialized_live_provider_turns();
     let (store, root) = temp_store("canonical-supervisor-work-delivery");
     let created = create_two_member_team_run(&store);
     let member = created.member_runs[0].clone();
