@@ -1,6 +1,6 @@
 use super::*;
 
-fn current_store_unix_ms() -> u64 {
+pub(crate) fn current_store_unix_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()

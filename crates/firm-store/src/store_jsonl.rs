@@ -303,10 +303,14 @@ impl HarnessStore {
             }
             match lock_file_exclusive(&file) {
                 Ok(()) => {
+                    // ADR 0075 rule 1: a lease-lock holder does no Space I/O.
+                    // Asserted here rather than reviewed, because the rule is
+                    // what makes the two-lock graph acyclic by construction.
+                    crate::node_lease_lock::registry_enter_space_lock(&lock_path);
                     return Ok(StoreWriteLock {
                         file,
                         _process_write_permit: process_write_permit,
-                    })
+                    });
                 }
                 Err(error) if would_block_lock(&error) => {
                     if Instant::now() >= deadline {
