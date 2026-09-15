@@ -449,10 +449,7 @@ impl HarnessStore {
         if lease.status == NodeDaemonLeaseStatus::Draining {
             return Ok(lease);
         }
-        if !matches!(
-            lease.status,
-            NodeDaemonLeaseStatus::Active | NodeDaemonLeaseStatus::Expired
-        ) {
+        if lease.status != NodeDaemonLeaseStatus::Active {
             return Err(StoreError::Conflict(format!(
                 "NODE_DAEMON_GENERATION_FENCED: Node {node_id} cannot enter predecessor settlement from {:?}",
                 lease.status

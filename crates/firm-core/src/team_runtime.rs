@@ -131,7 +131,6 @@ pub enum NodeDaemonLeaseStatus {
     Active,
     Draining,
     Released,
-    Expired,
 }
 
 /// Exclusive machine-scoped authority for the one NodeDaemon allowed to

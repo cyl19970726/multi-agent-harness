@@ -129,7 +129,6 @@ impl HarnessStore {
                 lease.status,
                 firm_core::NodeDaemonLeaseStatus::Active
                     | firm_core::NodeDaemonLeaseStatus::Draining
-                    | firm_core::NodeDaemonLeaseStatus::Expired
             )
         {
             return Err(trust_error(

@@ -146,7 +146,6 @@ fn daemon_absent_status(firm_home: &Path, node_id: &str, log_path: &Path) -> Cli
                 let status = match lease.status {
                     NodeDaemonLeaseStatus::Active => "active",
                     NodeDaemonLeaseStatus::Draining => "draining",
-                    NodeDaemonLeaseStatus::Expired => "expired",
                     NodeDaemonLeaseStatus::Released => unreachable!(),
                 };
                 let expiry = if lease.expires_unix_ms <= now {

@@ -210,8 +210,7 @@ impl HarnessStore {
             let status_rank = match lease.status {
                 NodeDaemonLeaseStatus::Active => 0,
                 NodeDaemonLeaseStatus::Draining => 1,
-                NodeDaemonLeaseStatus::Expired => 2,
-                NodeDaemonLeaseStatus::Released => 3,
+                NodeDaemonLeaseStatus::Released => 2,
             };
             last_of_group_status.insert((group.0, group.1, group.2, status_rank), index);
         }
