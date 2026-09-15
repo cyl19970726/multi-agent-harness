@@ -79,6 +79,7 @@ impl TestDaemon {
                 stop_requested: config.stop_requested,
                 authority_shutdown: config.authority_shutdown,
                 lease_ttl_override_ms: config.lease_ttl_override_ms,
+                bundle_revalidation_delay_ms: None,
                 drain_timeout_override_ms: config.drain_timeout_override_ms,
                 supervisor_start_gate: Mutex::new(()),
                 session_runtimes: Mutex::new(HashMap::new()),
@@ -136,6 +137,14 @@ impl TestDaemon {
         Arc::get_mut(&mut self.inner)
             .expect("unique fixture owner")
             .lease_ttl_override_ms = value;
+    }
+    /// Make the bundle wait this long before sampling the clock for its final
+    /// revalidation, so a lease with the Store's minimum 1 ms TTL is observed
+    /// as expired instead of racing the runner (#990).
+    pub fn set_bundle_revalidation_delay(&mut self, value: Option<u64>) {
+        Arc::get_mut(&mut self.inner)
+            .expect("unique fixture owner")
+            .bundle_revalidation_delay_ms = value;
     }
     pub fn set_drain_timeout_override(&mut self, value: Option<(u64, u64)>) {
         Arc::get_mut(&mut self.inner)
