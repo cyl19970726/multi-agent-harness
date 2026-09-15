@@ -122,6 +122,10 @@ pub(crate) struct ClaudeRunnerTransport {
     pub(crate) last_cycle_terminal: bool,
     pub(crate) last_interrupt_resumed_same_session: bool,
     pub(crate) close_reason: Option<String>,
+    /// The ADR 0076 ending of the last cycle that ended in `Err`. Drained by
+    /// `TeamRuntimeAdapter::take_cycle_ending` and cleared at the start of
+    /// every cycle so a stale ending can never be attributed to a later one.
+    pub(crate) last_cycle_ending: Option<CycleEnding>,
 }
 
 impl ClaudeRunnerTransport {
@@ -198,6 +202,7 @@ impl ClaudeRunnerTransport {
             last_cycle_terminal: false,
             last_interrupt_resumed_same_session: false,
             close_reason: None,
+            last_cycle_ending: None,
         };
         transport.write_frame(&start_frame)?;
         Ok(transport)
@@ -410,6 +415,21 @@ impl ClaudeRunnerTransport {
         }
     }
 
+    /// Record the ADR 0076 ending for this cycle and return the error
+    /// unchanged. Every `Err` leaving `run_cycle` goes through here or
+    /// through [`Self::classify`], so the shared loop always has a typed
+    /// ending instead of an untyped catch-all.
+    fn fail(&mut self, failure: ClaudeCycleFailure, error: CliError) -> CliError {
+        self.last_cycle_ending = Some(failure.ending(&error.to_string()));
+        error
+    }
+
+    /// The `?`-propagating form: classify a helper's error without restating
+    /// its message.
+    fn classify<T>(&mut self, result: CliResult<T>, failure: ClaudeCycleFailure) -> CliResult<T> {
+        result.map_err(|error| self.fail(failure, error))
+    }
+
     pub(crate) fn run_cycle(
         &mut self,
         input: &str,
@@ -418,7 +438,9 @@ impl ClaudeRunnerTransport {
         on_event: &mut dyn FnMut(&Value),
         poll_control: &mut dyn FnMut() -> CycleControl,
     ) -> CliResult<ExecutionCycleOutcome> {
-        let input_id = self.send_input(input)?;
+        self.last_cycle_ending = None;
+        let sent = self.send_input(input);
+        let input_id = self.classify(sent, ClaudeCycleFailure::TransportClosed)?;
         let input_sent_at = Instant::now();
         let mut final_text = String::new();
         let mut input_acceptance_receipt = None;
@@ -434,7 +456,7 @@ impl ClaudeRunnerTransport {
         loop {
             let control = poll_control();
             if let Some(error) = control.fatal_error {
-                return Err(CliError::Usage(error));
+                return Err(self.fail(ClaudeCycleFailure::HostFatalControl, CliError::Usage(error)));
             }
             interrupt_requested |= control.interrupt || control.close;
             close_requested |= control.close;
@@ -442,12 +464,14 @@ impl ClaudeRunnerTransport {
             // StartCycle. Do not race query.interrupt ahead of query creation
             // and then claim a cycle that never crossed that boundary.
             if interrupt_requested && input_acceptance_receipt.is_some() && !interrupt_sent {
-                self.interrupt()?;
+                let sent = self.interrupt();
+                self.classify(sent, ClaudeCycleFailure::TransportClosed)?;
                 interrupt_sent = true;
                 interrupt_sent_at = Some(Instant::now());
             }
 
-            let Some(event) = self.receive_event(CONTROL_POLL)? else {
+            let received = self.receive_event(CONTROL_POLL);
+            let Some(event) = self.classify(received, ClaudeCycleFailure::TransportClosed)? else {
                 // A healthy Claude turn may legitimately run for hours, and a
                 // provider tool may be silent while it does real work. The
                 // caller's timeout therefore fences only the unacknowledged
@@ -455,25 +479,32 @@ impl ClaudeRunnerTransport {
                 // an accepted cycle. `transport_liveness` (Spec D2) is proven
                 // by `ensure_alive()` and by child-exit/stdout-disconnect
                 // failing closed — never by a silence verdict.
-                self.ensure_alive()?;
+                let alive = self.ensure_alive();
+                self.classify(alive, ClaudeCycleFailure::TransportClosed)?;
                 // A5/D3: an issued Interrupt that the provider never
                 // acknowledges expires after control_settle — Unknown, never
                 // a cycle failure and never a silent hang.
                 if let Some(sent_at) = interrupt_sent_at {
                     if sent_at.elapsed() >= timeouts.control_settle {
-                        return Err(CliError::Usage(format!(
-                            "CLAUDE_AGENT_SDK_CONTROL_SETTLE_TIMEOUT: interrupt was not acknowledged within {}s",
-                            timeouts.control_settle.as_secs()
-                        )));
+                        return Err(self.fail(
+                            ClaudeCycleFailure::ControlSettleTimeout,
+                            CliError::Usage(format!(
+                                "CLAUDE_AGENT_SDK_CONTROL_SETTLE_TIMEOUT: interrupt was not acknowledged within {}s",
+                                timeouts.control_settle.as_secs()
+                            )),
+                        ));
                     }
                 }
                 if input_acceptance_receipt.is_none()
                     && input_sent_at.elapsed() >= timeouts.input_acceptance
                 {
-                    return Err(CliError::Usage(format!(
-                        "CLAUDE_AGENT_SDK_INPUT_ACCEPTANCE_TIMEOUT: cycle {input_id} was not consumed within {}s",
-                        timeouts.input_acceptance.as_secs()
-                    )));
+                    return Err(self.fail(
+                        ClaudeCycleFailure::InputAcceptanceTimeout,
+                        CliError::Usage(format!(
+                            "CLAUDE_AGENT_SDK_INPUT_ACCEPTANCE_TIMEOUT: cycle {input_id} was not consumed within {}s",
+                            timeouts.input_acceptance.as_secs()
+                        )),
+                    ));
                 }
                 continue;
             };
@@ -482,7 +513,8 @@ impl ClaudeRunnerTransport {
             // application callback so a later timeout cannot erase a valid
             // binding or make the callback persist unverified provider data.
             if event.name == "session_bound" {
-                self.accept_session_binding(&event)?;
+                let bound = self.accept_session_binding(&event);
+                self.classify(bound, ClaudeCycleFailure::TerminalMismatch)?;
             }
             on_event(&event.raw);
             match event.name.as_str() {
@@ -507,7 +539,8 @@ impl ClaudeRunnerTransport {
                             response_id: Some(format!("claude-sdk-session:{session}:{input_id}")),
                             success: true,
                         };
-                        on_input_accepted(&receipt)?;
+                        let accepted = on_input_accepted(&receipt);
+                        self.classify(accepted, ClaudeCycleFailure::AcceptanceCallbackFailed)?;
                         input_acceptance_receipt = Some(receipt);
                     }
                 }
@@ -519,11 +552,14 @@ impl ClaudeRunnerTransport {
                     }
                     self.last_cycle_terminal = true;
                     self.state = TransportState::Idle;
-                    let receipt = input_acceptance_receipt.clone().ok_or_else(|| {
-                        CliError::Usage(format!(
-                            "CLAUDE_AGENT_SDK_PROTOCOL_ERROR: turn_complete preceded consumed for {input_id}"
-                        ))
-                    })?;
+                    let Some(receipt) = input_acceptance_receipt.clone() else {
+                        return Err(self.fail(
+                            ClaudeCycleFailure::ProtocolViolation,
+                            CliError::Usage(format!(
+                                "CLAUDE_AGENT_SDK_PROTOCOL_ERROR: turn_complete preceded consumed for {input_id}"
+                            )),
+                        ));
+                    };
                     let provider_terminal_failure =
                         if event.data.get("isError").and_then(Value::as_bool) == Some(true) {
                             Some(ProviderTerminalFailure {
@@ -575,19 +611,25 @@ impl ClaudeRunnerTransport {
                 "member_resumed_after_interrupt" if interrupted => {
                     let resumed = event.data.get("sessionId").and_then(Value::as_str);
                     if resumed != Some(self.native_session_id.as_str()) {
-                        return Err(CliError::Usage(format!(
-                            "CLAUDE_AGENT_SDK_INTERRUPT_RESUME_MISMATCH: retained={} resumed={resumed:?}",
-                            self.native_session_id
-                        )));
+                        let retained = self.native_session_id.clone();
+                        return Err(self.fail(
+                            ClaudeCycleFailure::TerminalMismatch,
+                            CliError::Usage(format!(
+                                "CLAUDE_AGENT_SDK_INTERRUPT_RESUME_MISMATCH: retained={retained} resumed={resumed:?}"
+                            )),
+                        ));
                     }
                     self.last_cycle_terminal = true;
                     self.last_interrupt_resumed_same_session = true;
                     self.state = TransportState::Idle;
-                    let receipt = input_acceptance_receipt.clone().ok_or_else(|| {
-                        CliError::Usage(format!(
-                            "CLAUDE_AGENT_SDK_PROTOCOL_ERROR: interrupt preceded consumed for {input_id}"
-                        ))
-                    })?;
+                    let Some(receipt) = input_acceptance_receipt.clone() else {
+                        return Err(self.fail(
+                            ClaudeCycleFailure::ProtocolViolation,
+                            CliError::Usage(format!(
+                                "CLAUDE_AGENT_SDK_PROTOCOL_ERROR: interrupt preceded consumed for {input_id}"
+                            )),
+                        ));
+                    };
                     return Ok(ExecutionCycleOutcome {
                         final_text,
                         provider_terminal_failure: None,
@@ -600,16 +642,20 @@ impl ClaudeRunnerTransport {
                     });
                 }
                 "runner_error" => {
-                    return Err(CliError::Usage(format!(
-                        "CLAUDE_AGENT_SDK_RUNNER_ERROR: {}",
-                        event.data
-                    )));
+                    let data = event.data.clone();
+                    return Err(self.fail(
+                        ClaudeCycleFailure::RunnerError,
+                        CliError::Usage(format!("CLAUDE_AGENT_SDK_RUNNER_ERROR: {data}")),
+                    ));
                 }
                 "member_closed" => {
                     self.state = TransportState::Closed;
-                    return Err(CliError::Usage(
-                        "CLAUDE_AGENT_SDK_UNEXPECTED_CLOSE: member_closed without CloseRuntime"
-                            .into(),
+                    return Err(self.fail(
+                        ClaudeCycleFailure::UnexpectedClose,
+                        CliError::Usage(
+                            "CLAUDE_AGENT_SDK_UNEXPECTED_CLOSE: member_closed without CloseRuntime"
+                                .into(),
+                        ),
                     ));
                 }
                 _ => {}

@@ -36,6 +36,7 @@ fn scripted_client() -> (KimiAcpClient, Sender<serde_json::Value>) {
             prompt_active: false,
             settled_boundary_observed: true,
             shutdown_receipt: None,
+            last_prompt_failure: crate::KimiCycleFailure::ProviderError,
         },
         update_tx,
     )

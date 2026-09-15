@@ -51,6 +51,10 @@ impl rt::TeamRuntimeAdapter for PiTeamRuntime {
             .map_err(crate::pi_rpc::provider_error)
     }
 
+    fn take_cycle_ending(&mut self) -> Option<rt::CycleEnding> {
+        rt::TeamRuntimeAdapter::take_cycle_ending(&mut self.0)
+    }
+
     fn run_cycle(
         &mut self,
         input: &str,

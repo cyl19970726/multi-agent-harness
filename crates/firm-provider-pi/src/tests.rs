@@ -330,6 +330,7 @@ mod cycle_conformance {
                 owned_process_group,
                 stdin: BufWriter::new(stdin),
                 next_request_id: 0,
+                last_cycle_failure: crate::PiCycleFailure::StartRejected,
                 pending: Arc::new(Mutex::new(HashMap::new())),
                 incoming,
                 reader: None,

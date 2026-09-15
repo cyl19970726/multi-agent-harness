@@ -95,6 +95,7 @@ pub fn correlate_provider_cycle(
     native: firm_runtime_contract::NativeCycleCorrelation,
     terminal_observed: bool,
     interrupt: Option<firm_runtime_contract::InterruptCause>,
+    ending: &firm_runtime_contract::CycleEnding,
 ) -> Result<
     (
         firm_core::agentfirm_api::ProviderCycleCorrelation,
@@ -155,6 +156,7 @@ pub fn correlate_provider_cycle(
         agent_session_generation: authority.agent_session_generation,
         provider_attempt: authority.provider_attempt,
         interrupt_cause: interrupt.as_ref().map(durable_interrupt_cause),
+        ending: Some(ending.wire()),
     };
     let outcome = if !terminal_observed {
         CycleOutcome::StillRunning
@@ -253,6 +255,7 @@ pub fn provider_retry_authority(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use firm_runtime_contract::CycleEnding;
 
     fn native_cycle(
         terminal_provider_input_id: Option<&str>,
@@ -286,6 +289,7 @@ mod tests {
             native_cycle(Some("provider-input:1")),
             true,
             None,
+            &CycleEnding::Completed,
         )
         .unwrap();
         assert_eq!(correlation.invocation_id, "runtime-command:1");
@@ -307,6 +311,7 @@ mod tests {
             native_cycle(Some("provider-input:old")),
             true,
             None,
+            &CycleEnding::Completed,
         )
         .unwrap_err();
         assert!(error.contains("PROVIDER_CYCLE_TERMINAL_MISMATCH"));
@@ -314,15 +319,26 @@ mod tests {
 
     #[test]
     fn missing_terminal_identity_is_rejected_before_durable_correlation() {
-        let missing_input =
-            correlate_provider_cycle(cycle_authority(), native_cycle(None), true, None)
-                .unwrap_err();
+        let missing_input = correlate_provider_cycle(
+            cycle_authority(),
+            native_cycle(None),
+            true,
+            None,
+            &CycleEnding::Completed,
+        )
+        .unwrap_err();
         assert!(missing_input.contains("terminal_provider_input_id"));
 
         let mut missing_ref = native_cycle(Some("provider-input:1"));
         missing_ref.exact_terminal_ref = None;
-        let error =
-            correlate_provider_cycle(cycle_authority(), missing_ref, true, None).unwrap_err();
+        let error = correlate_provider_cycle(
+            cycle_authority(),
+            missing_ref,
+            true,
+            None,
+            &CycleEnding::Completed,
+        )
+        .unwrap_err();
         assert!(error.contains("exact_terminal_ref"));
     }
 
@@ -337,6 +353,7 @@ mod tests {
             native_cycle(Some("provider-input:1")),
             true,
             Some(InterruptCause::HostControl),
+            &CycleEnding::InterruptedByHost,
         )
         .unwrap();
         let (policy_correlation, policy_outcome) = correlate_provider_cycle(
@@ -344,6 +361,9 @@ mod tests {
             native_cycle(Some("provider-input:1")),
             true,
             InterruptCause::adapter_policy("provider-native quiesce policy"),
+            &CycleEnding::InterruptedByProvider {
+                reason: "adapter_policy:provider-native quiesce policy".to_string(),
+            },
         )
         .unwrap();
         let (provider_correlation, provider_outcome) = correlate_provider_cycle(
@@ -351,6 +371,9 @@ mod tests {
             native_cycle(Some("provider-input:1")),
             true,
             InterruptCause::provider_initiated("member cancelled in the provider UI"),
+            &CycleEnding::InterruptedByProvider {
+                reason: "member cancelled in the provider UI".to_string(),
+            },
         )
         .unwrap();
         assert_eq!(

@@ -11,6 +11,7 @@ mod conformance;
 mod control;
 mod cycle;
 mod cycle_assertions;
+mod cycle_ending;
 mod provider_capabilities;
 mod receipt_and_terminal;
 mod timeouts;
@@ -19,6 +20,7 @@ pub use collaboration_capability::*;
 pub use conformance::*;
 pub use control::*;
 pub use cycle::*;
+pub use cycle_ending::*;
 
 pub use cycle_assertions::*;
 pub use provider_capabilities::*;

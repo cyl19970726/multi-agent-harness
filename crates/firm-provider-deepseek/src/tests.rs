@@ -251,6 +251,7 @@ mod cycle_conformance {
                 last_cycle_terminal: false,
                 last_interrupt_resumed_same_session: false,
                 close_reason: None,
+                last_cycle_ending: None,
             },
             line_tx,
         )

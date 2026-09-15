@@ -850,13 +850,23 @@ pub(crate) fn run_team_member_with_adapter<A: TeamRuntimeAdapter<Error = CliErro
                             &error.to_string(),
                         )?;
                     }
-                    let provider_status = adapter
-                        .take_cycle_terminal_failure()
-                        .filter(|_| accepted_provider_receipt.is_some())
-                        .map(|failure| failure.to_provider_status());
+                    // ADR 0076: every adapter records exactly one typed ending
+                    // on every `Err` path, so a failed cycle is no longer one
+                    // untyped `provider_error` row telling the operator only to
+                    // "inspect the provider-native session". The action type
+                    // and the machine-readable provider_status both come from
+                    // the closed table, on all five providers.
+                    let ending = adapter.take_cycle_ending();
+                    let (action_type, provider_status) = match ending.as_ref() {
+                        Some(ending) => (ending.action_type(), Some(ending.provider_status())),
+                        // An adapter that records no ending is a contract
+                        // defect, not a new ending class. Keep the historical
+                        // row shape and say so, rather than inventing a code.
+                        None => ("provider_error", None),
+                    };
                     let action = ledger.append_action_with_provider_status(
                         &member_row.id,
-                        "provider_error",
+                        action_type,
                         MemberActionStatus::Failed,
                         &format!("{display} provider round {round} failed"),
                         &crate::provider_turn_failure_summary(display, round),
@@ -930,6 +940,13 @@ pub(crate) fn run_team_member_with_adapter<A: TeamRuntimeAdapter<Error = CliErro
                 )));
             }
             let cycle_terminal_observed = turn.terminal_observation.terminal_cycle_observed();
+            // ADR 0076: the `Ok` half of the closed ending table, derived from
+            // the outcome the adapter already returned. It is recorded on the
+            // cycle correlation and keys the round decision below; the
+            // outcome's own close/interrupt/failure fields stay intact for the
+            // control-acknowledgement checks, which still need each of them
+            // separately.
+            let cycle_ending = harness_runtime_contract::CycleEnding::from_outcome(&turn);
             let (cycle_correlation, cycle_outcome) = harness_application::correlate_provider_cycle(
                 harness_application::ProviderCycleAuthority {
                     invocation_id: effect.command_id.clone(),
@@ -944,6 +961,7 @@ pub(crate) fn run_team_member_with_adapter<A: TeamRuntimeAdapter<Error = CliErro
                 turn.native_correlation.clone(),
                 cycle_terminal_observed,
                 turn.interrupt.clone(),
+                &cycle_ending,
             )
             .map_err(CliError::RuntimeRecoveryRequired)?;
             if matches!(
@@ -1150,15 +1168,12 @@ pub(crate) fn run_team_member_with_adapter<A: TeamRuntimeAdapter<Error = CliErro
                     )));
                 }
             } else {
-                let final_text = turn.final_text;
-                let provider_terminal_failure = turn.provider_terminal_failure;
-                let semantic_done = parse_round_result(&final_text) == MemberRoundResult::Done;
+                let semantic_done = parse_round_result(&turn.final_text) == MemberRoundResult::Done;
                 let decision = decide_team_round(
                     display,
                     round,
-                    &final_text,
-                    turn.tool_call_count,
-                    provider_terminal_failure.as_ref(),
+                    &cycle_ending,
+                    &turn.final_text,
                     semantic_done,
                     *zero_output_streak,
                 );

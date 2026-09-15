@@ -57,6 +57,10 @@ impl rt::TeamRuntimeAdapter for ClaudeTeamRuntime {
             .map_err(crate::claude_team_runtime::provider_error)
     }
 
+    fn take_cycle_ending(&mut self) -> Option<rt::CycleEnding> {
+        rt::TeamRuntimeAdapter::take_cycle_ending(&mut self.0)
+    }
+
     fn native_session_locator(&self) -> &str {
         rt::TeamRuntimeAdapter::native_session_locator(&self.0)
     }

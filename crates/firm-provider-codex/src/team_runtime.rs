@@ -15,10 +15,11 @@ use harness_core::agentfirm_api::{
 use harness_core::ProviderIntegrationProfile;
 use serde_json::Value;
 
+use crate::cycle_ending::CodexCycleFailure;
 use crate::descendant_threads::{DescendantThreadRegistry, FrameThreadScope};
 use crate::{
     CodexAppServerClient, CodexAppServerShutdownReceipt, CodexError as CliError,
-    CodexResult as CliResult,
+    CodexResult as CliResult, CodexRpcFailure,
 };
 use harness_runtime_contract::{
     AdmissionDecision, ControlIntent, ControlRequest, EffectInspection, EffectReceipt,
@@ -31,7 +32,8 @@ use harness_runtime_contract::{
     CycleRuntimeObservation, ExecutionCycleOutcome, TeamRuntimeAdapter,
 };
 use harness_runtime_contract::{
-    CycleSettlement, CycleTimeouts, InterruptCause, ProviderTerminalFailure,
+    CycleEnding, CycleSettlement, CycleTimeouts, InterruptCause, ProviderFailureCode,
+    ProviderTerminalFailure,
 };
 use harness_runtime_contract::{
     NativeControlPrimitive, ProviderControlAction, ProviderControlPlan, ProviderNativeControl,
@@ -53,6 +55,13 @@ pub trait CodexAppServerBridge {
     fn ensure_transport_alive(&mut self) -> CliResult<()>;
     fn thread_id(&self) -> &str;
     fn start_turn(&mut self, text: &str, acceptance: Duration) -> CliResult<String>;
+    /// Why the last blocking RPC failed, so the caller can classify the cycle
+    /// ending without parsing the message (ADR 0076). The default is the
+    /// conservative `Rejected`: a bridge that cannot tell must never claim an
+    /// acceptance bound or a transport death it did not observe.
+    fn last_rpc_failure(&self) -> CodexRpcFailure {
+        CodexRpcFailure::Rejected
+    }
     fn interrupt(&mut self, turn_id: &str) -> CliResult<()>;
     fn recv(&self, timeout: Duration) -> Result<Value, RecvTimeoutError>;
     fn read_thread(&mut self, include_turns: bool) -> CliResult<Value>;
@@ -72,6 +81,10 @@ impl CodexAppServerBridge for CodexAppServerClient {
 
     fn start_turn(&mut self, text: &str, acceptance: Duration) -> CliResult<String> {
         CodexAppServerClient::start_turn(self, text, acceptance)
+    }
+
+    fn last_rpc_failure(&self) -> CodexRpcFailure {
+        CodexAppServerClient::last_rpc_failure(self)
     }
 
     fn interrupt(&mut self, turn_id: &str) -> CliResult<()> {
@@ -142,6 +155,10 @@ pub struct CodexTeamRuntime<'a, B = CodexAppServerClient> {
     active_turn_id: Option<String>,
     last_cycle_terminal: bool,
     cycle_terminal_failure: Option<ProviderTerminalFailure>,
+    /// The ADR 0076 ending of the last cycle that ended in `Err`. Drained by
+    /// `TeamRuntimeAdapter::take_cycle_ending` and cleared at the start of
+    /// every cycle so a stale ending can never be attributed to a later one.
+    last_cycle_ending: Option<CycleEnding>,
     last_control_acknowledged: bool,
     canonical_quiesced: bool,
     runtime_closed: bool,
@@ -149,6 +166,21 @@ pub struct CodexTeamRuntime<'a, B = CodexAppServerClient> {
 }
 
 impl<'a, B: CodexAppServerBridge> CodexTeamRuntime<'a, B> {
+    /// Record the ADR 0076 ending for this cycle and return the error
+    /// unchanged. Every `Err` leaving `run_cycle` goes through here or
+    /// through [`Self::classify`], so the shared loop always has a typed
+    /// ending instead of an untyped catch-all.
+    fn fail(&mut self, failure: CodexCycleFailure, error: CliError) -> CliError {
+        self.last_cycle_ending = Some(failure.ending(&error.to_string()));
+        error
+    }
+
+    /// The `?`-propagating form: classify a helper's error without restating
+    /// its message.
+    fn classify<T>(&mut self, result: CliResult<T>, failure: CodexCycleFailure) -> CliResult<T> {
+        result.map_err(|error| self.fail(failure, error))
+    }
+
     pub fn new(bridge: B) -> Self {
         let descendant_threads = DescendantThreadRegistry::new(bridge.thread_id());
         Self {
@@ -165,6 +197,7 @@ impl<'a, B: CodexAppServerBridge> CodexTeamRuntime<'a, B> {
             active_turn_id: None,
             last_cycle_terminal: true,
             cycle_terminal_failure: None,
+            last_cycle_ending: None,
             last_control_acknowledged: false,
             canonical_quiesced: false,
             runtime_closed: false,
@@ -498,10 +531,12 @@ impl<'a, B: CodexAppServerBridge> CodexTeamRuntime<'a, B> {
             match self.bridge.recv(Duration::from_millis(50)) {
                 Ok(frame) => {
                     if frame.get("id").is_some() && frame.get("method").is_some() {
-                        self.handle_provider_request(&frame)?;
+                        let handled = self.handle_provider_request(&frame);
+                        self.classify(handled, CodexCycleFailure::TransportClosed)?;
                         continue;
                     }
-                    match self.observe_frame_thread(&frame)? {
+                    let scope = self.observe_frame_thread(&frame);
+                    match self.classify(scope, CodexCycleFailure::TerminalMismatch)? {
                         FrameThreadScope::Descendant | FrameThreadScope::Pending => continue,
                         FrameThreadScope::Owned | FrameThreadScope::Unscoped => {}
                     }
@@ -652,8 +687,8 @@ impl<'a, B: CodexAppServerBridge> TeamRuntimeAdapter for CodexTeamRuntime<'a, B>
         self.bridge.ensure_transport_alive()
     }
 
-    fn take_cycle_terminal_failure(&mut self) -> Option<ProviderTerminalFailure> {
-        self.cycle_terminal_failure.take()
+    fn take_cycle_ending(&mut self) -> Option<CycleEnding> {
+        self.last_cycle_ending.take()
     }
 
     fn native_session_locator(&self) -> &str {
@@ -731,39 +766,54 @@ impl<'a, B: CodexAppServerBridge> TeamRuntimeAdapter for CodexTeamRuntime<'a, B>
         poll_control: &mut dyn FnMut() -> CycleControl,
     ) -> CliResult<ExecutionCycleOutcome> {
         self.cycle_terminal_failure = None;
+        self.last_cycle_ending = None;
         if self.runtime_closed {
-            return Err(CliError::Usage(
-                "codex app-server runtime was explicitly closed".to_string(),
+            return Err(self.fail(
+                CodexCycleFailure::RuntimeClosed,
+                CliError::Usage("codex app-server runtime was explicitly closed".to_string()),
             ));
         }
         if self.active_turn_id.is_some() {
-            return Err(CliError::Usage(
-                "CODEX_ONE_DRIVER_VIOLATION: start_cycle called while another turn is active"
-                    .to_string(),
+            return Err(self.fail(
+                CodexCycleFailure::OneDriverViolation,
+                CliError::Usage(
+                    "CODEX_ONE_DRIVER_VIOLATION: start_cycle called while another turn is active"
+                        .to_string(),
+                ),
             ));
         }
         if let Some(session) = self.authority_session.as_ref() {
             if session.control_state.execution_driver != MemberExecutionDriver::HostDriven {
-                return Err(CliError::Usage(
-                    "CODEX_ONE_DRIVER_VIOLATION: Harness start_cycle requires HostDriven authority"
-                        .to_string(),
+                return Err(self.fail(
+                    CodexCycleFailure::OneDriverViolation,
+                    CliError::Usage(
+                        "CODEX_ONE_DRIVER_VIOLATION: Harness start_cycle requires HostDriven authority"
+                            .to_string(),
+                    ),
                 ));
             }
             if matches!(
                 session.control_state.continuation.activation,
                 NativeContinuationActivation::Armed { .. }
             ) {
-                return Err(CliError::Usage(
-                    "CODEX_ONE_DRIVER_VIOLATION: HostDriven start rejected while native Goal continuation is armed"
-                        .to_string(),
+                return Err(self.fail(
+                    CodexCycleFailure::ContinuationArmed,
+                    CliError::Usage(
+                        "CODEX_ONE_DRIVER_VIOLATION: HostDriven start rejected while native Goal continuation is armed"
+                            .to_string(),
+                    ),
                 ));
             }
-            if let Some(goal) = self.bridge.read_thread_goal()? {
+            let goal = self.bridge.read_thread_goal();
+            if let Some(goal) = self.classify(goal, CodexCycleFailure::PostconditionUnknown)? {
                 match goal.get("status").and_then(Value::as_str) {
                     Some("active") => {
-                        return Err(CliError::Usage(
-                            "CODEX_ONE_DRIVER_VIOLATION: native Goal is active while Harness owns HostDriven scheduling"
-                                .to_string(),
+                        return Err(self.fail(
+                            CodexCycleFailure::ContinuationArmed,
+                            CliError::Usage(
+                                "CODEX_ONE_DRIVER_VIOLATION: native Goal is active while Harness owns HostDriven scheduling"
+                                    .to_string(),
+                            ),
                         ))
                     }
                     Some(
@@ -774,20 +824,38 @@ impl<'a, B: CodexAppServerBridge> TeamRuntimeAdapter for CodexTeamRuntime<'a, B>
                         | "complete",
                     ) => {}
                     Some(status) => {
-                        return Err(CliError::Usage(format!(
+                        let error = CliError::Usage(format!(
                             "CODEX_RUNTIME_POSTCONDITION_UNKNOWN: HostDriven start cannot classify native Goal status {status}"
-                        )))
+                        ));
+                        return Err(self.fail(CodexCycleFailure::PostconditionUnknown, error));
                     }
                     None => {
-                        return Err(CliError::Usage(
-                            "CODEX_RUNTIME_POSTCONDITION_UNKNOWN: native Goal omitted status before HostDriven start"
-                                .to_string(),
+                        return Err(self.fail(
+                            CodexCycleFailure::PostconditionUnknown,
+                            CliError::Usage(
+                                "CODEX_RUNTIME_POSTCONDITION_UNKNOWN: native Goal omitted status before HostDriven start"
+                                    .to_string(),
+                            ),
                         ))
                     }
                 }
             }
         }
-        let turn_id = self.bridge.start_turn(input, timeouts.input_acceptance)?;
+        let turn_id = match self.bridge.start_turn(input, timeouts.input_acceptance) {
+            Ok(turn_id) => turn_id,
+            Err(error) => {
+                // The `turn/start` RPC deadline IS the acceptance bound, so
+                // its expiry is an AcceptanceTimeout rather than a generic
+                // RPC-timeout string (ADR 0076). A dead transport and an
+                // app-server rejection stay distinct facts.
+                let failure = match self.bridge.last_rpc_failure() {
+                    CodexRpcFailure::Timeout => CodexCycleFailure::InputAcceptanceTimeout,
+                    CodexRpcFailure::TransportLost => CodexCycleFailure::TransportClosed,
+                    CodexRpcFailure::Rejected => CodexCycleFailure::StartRejected,
+                };
+                return Err(self.fail(failure, error));
+            }
+        };
         self.active_turn_id = Some(turn_id.clone());
         self.last_cycle_terminal = false;
         self.last_control_acknowledged = false;
@@ -797,7 +865,8 @@ impl<'a, B: CodexAppServerBridge> TeamRuntimeAdapter for CodexTeamRuntime<'a, B>
             response_id: Some(turn_id.clone()),
             success: true,
         };
-        on_input_accepted(&input_receipt)?;
+        let accepted = on_input_accepted(&input_receipt);
+        self.classify(accepted, CodexCycleFailure::AcceptanceCallbackFailed)?;
 
         let mut final_text = String::new();
         let mut tool_call_count = 0u32;
@@ -810,10 +879,11 @@ impl<'a, B: CodexAppServerBridge> TeamRuntimeAdapter for CodexTeamRuntime<'a, B>
         loop {
             let control = poll_control();
             if let Some(error) = control.fatal_error {
-                return Err(CliError::Usage(error));
+                return Err(self.fail(CodexCycleFailure::HostFatalControl, CliError::Usage(error)));
             }
             if (control.interrupt || control.close) && !interrupt_sent {
-                self.bridge.interrupt(&turn_id)?;
+                let sent = self.bridge.interrupt(&turn_id);
+                self.classify(sent, CodexCycleFailure::TransportClosed)?;
                 interrupt_sent = true;
                 interrupt = Some(InterruptCause::HostControl);
                 close_requested = control.close;
@@ -853,17 +923,22 @@ impl<'a, B: CodexAppServerBridge> TeamRuntimeAdapter for CodexTeamRuntime<'a, B>
                         .or_else(|| params.pointer("/turn/id"))
                         .and_then(Value::as_str);
                     if method == Some("turn/started") {
-                        self.require_exact_frame_thread(&frame, "turn/started")?;
-                        let observed = frame_turn_id.ok_or_else(|| {
-                            CliError::Usage(
-                                "CODEX_RUNTIME_POSTCONDITION_UNKNOWN: turn/started omitted turn id"
-                                    .to_string(),
-                            )
-                        })?;
+                        let exact = self.require_exact_frame_thread(&frame, "turn/started");
+                        self.classify(exact, CodexCycleFailure::TerminalMismatch)?;
+                        let Some(observed) = frame_turn_id else {
+                            return Err(self.fail(
+                                CodexCycleFailure::PostconditionUnknown,
+                                CliError::Usage(
+                                    "CODEX_RUNTIME_POSTCONDITION_UNKNOWN: turn/started omitted turn id"
+                                        .to_string(),
+                                ),
+                            ));
+                        };
                         if observed != turn_id {
-                            return Err(CliError::Usage(format!(
+                            let error = CliError::Usage(format!(
                                 "CODEX_ONE_DRIVER_VIOLATION: admitted turn {turn_id} observed concurrent turn {observed}"
-                            )));
+                            ));
+                            return Err(self.fail(CodexCycleFailure::TerminalMismatch, error));
                         }
                     }
                     if method != Some("turn/completed")
@@ -897,9 +972,11 @@ impl<'a, B: CodexAppServerBridge> TeamRuntimeAdapter for CodexTeamRuntime<'a, B>
                             on_event(&frame)
                         }
                         Some("turn/completed") => {
-                            self.require_resolved_frame_threads()?;
+                            let resolved = self.require_resolved_frame_threads();
+                            self.classify(resolved, CodexCycleFailure::TerminalMismatch)?;
+                            let terminal = self.terminal_frame_for_active_turn(&frame);
                             let terminal = self
-                                .terminal_frame_for_active_turn(&frame)?
+                                .classify(terminal, CodexCycleFailure::TerminalMismatch)?
                                 .expect("matched terminal method");
                             if final_text.trim().is_empty() {
                                 final_text = params
@@ -921,10 +998,13 @@ impl<'a, B: CodexAppServerBridge> TeamRuntimeAdapter for CodexTeamRuntime<'a, B>
                                 terminal.status.as_str(),
                                 "completed" | "interrupted" | "failed"
                             ) {
-                                return Err(CliError::Usage(format!(
+                                let error = CliError::Usage(format!(
                                     "codex app-server turn {turn_id} ended as {}",
                                     terminal.status
-                                )));
+                                ));
+                                return Err(
+                                    self.fail(CodexCycleFailure::UnknownTerminalStatus, error)
+                                );
                             }
                             if terminal.status == "interrupted" && interrupt.is_none() {
                                 // The real second interrupt source: the
@@ -943,7 +1023,24 @@ impl<'a, B: CodexAppServerBridge> TeamRuntimeAdapter for CodexTeamRuntime<'a, B>
                             self.cycle_terminal_failure = (terminal.status == "failed")
                                 .then(|| provider_terminal_failure(terminal.error.as_ref()));
                             self.active_turn_id = None;
-                            self.exact_thread_is_idle(false)?;
+                            if let Err(error) = self.exact_thread_is_idle(false) {
+                                // The provider's OWN reported failure is the
+                                // more specific fact and outranks the
+                                // unprovable idle postcondition: an operator
+                                // needs `usageLimitExceeded`, not
+                                // "postcondition unknown" (ADR 0076).
+                                let ending = match self.cycle_terminal_failure.clone() {
+                                    Some(failure) => CycleEnding::ProviderFailed {
+                                        code: ProviderFailureCode::classify(&failure),
+                                        detail: failure.reason,
+                                        http_status: failure.http_status,
+                                    },
+                                    None => CodexCycleFailure::PostconditionUnknown
+                                        .ending(&error.to_string()),
+                                };
+                                self.last_cycle_ending = Some(ending);
+                                return Err(error);
+                            }
                             self.last_cycle_terminal = true;
                             let provider_terminal_failure = self.cycle_terminal_failure.take();
                             let exact_terminal_ref =
@@ -983,17 +1080,25 @@ impl<'a, B: CodexAppServerBridge> TeamRuntimeAdapter for CodexTeamRuntime<'a, B>
                     // never a cycle failure (D3/A5).
                     if let Some(deadline) = interrupt_deadline {
                         if Instant::now() >= deadline {
-                            return Err(CliError::Usage(
-                                "CODEX_RUNTIME_CONTROL_UNKNOWN: turn/interrupt was acknowledged but turn/completed was not observed"
-                                    .to_string(),
+                            return Err(self.fail(
+                                CodexCycleFailure::ControlSettleTimeout,
+                                CliError::Usage(
+                                    "CODEX_RUNTIME_CONTROL_UNKNOWN: turn/interrupt was acknowledged but turn/completed was not observed"
+                                        .to_string(),
+                                ),
                             ));
                         }
                     }
                 }
                 Err(RecvTimeoutError::Disconnected) => {
-                    self.require_resolved_frame_threads()?;
-                    return Err(CliError::Usage(
-                        "codex app-server transport disconnected before turn/completed".to_string(),
+                    let resolved = self.require_resolved_frame_threads();
+                    self.classify(resolved, CodexCycleFailure::TerminalMismatch)?;
+                    return Err(self.fail(
+                        CodexCycleFailure::TransportClosed,
+                        CliError::Usage(
+                            "codex app-server transport disconnected before turn/completed"
+                                .to_string(),
+                        ),
                     ));
                 }
             }
