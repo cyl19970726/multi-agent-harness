@@ -263,11 +263,24 @@ impl HarnessStore {
                         && session.node_daemon_generation == generation
                 })
             {
-                // A lane already at rest needs no marker, and a lane already
-                // marked by this exact generation must not be rewritten.
+                // A lane already at rest needs no marker, and the same
+                // observation twice is a replay rather than a second record.
+                // `observed_at` is deliberately excluded from that comparison:
+                // it is when the daemon looked, not what it saw.
+                let already_recorded = session
+                    .control_state
+                    .settlement_incomplete
+                    .as_ref()
+                    .is_some_and(|existing| {
+                        existing.node_id == marker.node_id
+                            && existing.node_daemon_id == marker.node_daemon_id
+                            && existing.node_daemon_generation == marker.node_daemon_generation
+                            && existing.instance_id == marker.instance_id
+                            && existing.reason == marker.reason
+                    });
                 if (session.control_state.runtime_residency == RuntimeResidency::Detached
                     && session.current_cycle_marker.is_none())
-                    || session.control_state.settlement_incomplete.as_ref() == Some(&marker)
+                    || already_recorded
                 {
                     continue;
                 }

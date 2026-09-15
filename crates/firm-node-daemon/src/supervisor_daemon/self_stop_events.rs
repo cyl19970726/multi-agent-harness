@@ -120,50 +120,71 @@ impl MultiTeamDaemon {
                 "node-daemon-self-stop:{}:{}:{}",
                 self.instance_id, target.team_run_id, phase
             );
-            let event = harness_core::TeamRunEvent {
-                id: String::new(),
-                seq: 0,
-                team_run_id: target.team_run_id.clone(),
-                source_kind: harness_core::TeamRunEventSourceKind::Service,
-                member_run_id: None,
-                delegation_run_id: None,
-                entity_type: "node_daemon".to_string(),
-                entity_id: self.instance_id.clone(),
-                operation: "self_stopped".to_string(),
-                summary: summary.clone(),
-                occurred_at: crate::daemon_support::now_string(),
-            };
+            self.journal_node_daemon_team_run_event(
+                &target.execution_space_id,
+                &target.team_run_id,
+                &stable_key,
+                "self_stopped",
+                &summary,
+                reason,
+            );
+        }
+    }
 
-            let mut last_error = None;
-            for attempt in 1..=SELF_STOP_EVENT_WRITE_ATTEMPTS {
-                let result = self
-                    .store_for_space(&target.execution_space_id)
-                    .and_then(|store| {
-                        store
-                            .ensure_team_run_event_next(&stable_key, event.clone())
-                            .map(|_| ())
-                            .map_err(CliError::Store)
-                    });
-                match result {
-                    Ok(()) => {
-                        eprintln!("[node-daemon] {reason}: {summary}");
-                        last_error = None;
-                        break;
-                    }
-                    Err(error) => {
-                        last_error = Some(error);
-                        if attempt < SELF_STOP_EVENT_WRITE_ATTEMPTS {
-                            std::thread::sleep(SELF_STOP_EVENT_WRITE_BACKOFF);
-                        }
+    /// Write one durable `node_daemon` TeamRunEvent through the canonical
+    /// `team_run_events.jsonl` writer, retrying a bounded number of times and
+    /// always falling back to stderr, which is the detached daemon's durable
+    /// log. Both the self-stop phases and automatic predecessor recovery
+    /// journal through this one writer.
+    pub(super) fn journal_node_daemon_team_run_event(
+        &self,
+        execution_space_id: &str,
+        team_run_id: &str,
+        stable_key: &str,
+        operation: &str,
+        summary: &str,
+        log_label: &str,
+    ) {
+        let event = harness_core::TeamRunEvent {
+            id: String::new(),
+            seq: 0,
+            team_run_id: team_run_id.to_string(),
+            source_kind: harness_core::TeamRunEventSourceKind::Service,
+            member_run_id: None,
+            delegation_run_id: None,
+            entity_type: "node_daemon".to_string(),
+            entity_id: self.instance_id.clone(),
+            operation: operation.to_string(),
+            summary: summary.to_string(),
+            occurred_at: crate::daemon_support::now_string(),
+        };
+
+        let mut last_error = None;
+        for attempt in 1..=SELF_STOP_EVENT_WRITE_ATTEMPTS {
+            let result = self.store_for_space(execution_space_id).and_then(|store| {
+                store
+                    .ensure_team_run_event_next(stable_key, event.clone())
+                    .map(|_| ())
+                    .map_err(CliError::Store)
+            });
+            match result {
+                Ok(()) => {
+                    eprintln!("[node-daemon] {log_label}: {summary}");
+                    last_error = None;
+                    break;
+                }
+                Err(error) => {
+                    last_error = Some(error);
+                    if attempt < SELF_STOP_EVENT_WRITE_ATTEMPTS {
+                        std::thread::sleep(SELF_STOP_EVENT_WRITE_BACKOFF);
                     }
                 }
             }
-            if let Some(error) = last_error {
-                eprintln!(
-                    "[node-daemon] NODE_DAEMON_SELF_STOP_EVENT_WRITE_FAILED: attempts={SELF_STOP_EVENT_WRITE_ATTEMPTS}; execution_space_id={}; team_run_id={}; error={error}; event={summary}",
-                    target.execution_space_id, target.team_run_id
-                );
-            }
+        }
+        if let Some(error) = last_error {
+            eprintln!(
+                "[node-daemon] NODE_DAEMON_EVENT_WRITE_FAILED: operation={operation}; attempts={SELF_STOP_EVENT_WRITE_ATTEMPTS}; execution_space_id={execution_space_id}; team_run_id={team_run_id}; error={error}; event={summary}"
+            );
         }
     }
 }
