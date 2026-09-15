@@ -157,24 +157,8 @@ pub(crate) fn recover_daemon_predecessor_spaces(
         request_fingerprint,
         current_unix_ms_u64(),
     )?;
-    receipt["process_death_proof"] = predecessor_process_death_proof_json(&proof);
+    receipt["process_death_proof"] = proof.to_receipt_json();
     Ok(receipt)
-}
-
-/// The reportable shape of one process-death proof. Automatic recovery
-/// (`machine_authority.rs`) journals the identical object, so an operator
-/// reads the same evidence whichever path settled the predecessor.
-pub(crate) fn predecessor_process_death_proof_json(
-    proof: &harness_runtime_host::PredecessorProcessProof,
-) -> serde_json::Value {
-    serde_json::json!({
-        "pid": proof.pid,
-        "reason": proof.reason(),
-        "anchor_unix_ms": proof.anchor_unix_ms,
-        "instance_minted_unix_ms": proof.instance_minted_unix_ms,
-        "started_unix_ms_lower_bound": proof.started_unix_ms_lower_bound,
-        "evidence": proof.evidence,
-    })
 }
 
 fn execution_space_error_pair(

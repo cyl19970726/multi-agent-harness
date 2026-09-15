@@ -451,14 +451,9 @@ impl MultiTeamDaemon {
             "instance_id": self.instance_id,
             "automatic": true,
         });
-        receipt["process_death_proof"] = serde_json::json!({
-            "pid": proof.pid,
-            "reason": proof.reason(),
-            "anchor_unix_ms": proof.anchor_unix_ms,
-            "instance_minted_unix_ms": proof.instance_minted_unix_ms,
-            "started_unix_ms_lower_bound": proof.started_unix_ms_lower_bound,
-            "evidence": proof.evidence,
-        });
+        // The same builder the CLI receipt uses, so the two receipts cannot
+        // drift apart.
+        receipt["process_death_proof"] = proof.to_receipt_json();
         receipt["predecessor_expires_unix_ms"] = serde_json::json!(latest.expires_unix_ms);
         Ok(Some((latest.expires_unix_ms, receipt)))
     }

@@ -6,6 +6,8 @@
 
 mod predecessor_process;
 
+#[cfg(unix)]
+pub use predecessor_process::classify_kill_result;
 pub use predecessor_process::{
     classify_predecessor_process, parse_elapsed_seconds, parse_predecessor_instance_id,
     probe_predecessor_process, process_exists, process_start_lower_bound_unix_ms,

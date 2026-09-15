@@ -16,9 +16,16 @@
 //!   id's own mint time). Pids are recycled; such a process is a different
 //!   one, and the predecessor is absent.
 //!
-//! Everything else — an unreadable probe, an unparsable elapsed time, a start
-//! time that cannot be separated from the anchor — fails closed as `Alive`,
-//! which keeps recovery human-gated exactly as it is today.
+//! Everything else — an unparsable elapsed time, a start time that cannot be
+//! separated from the anchor — fails closed as `Alive`, which keeps recovery
+//! human-gated exactly as it is today; a probe that cannot be run at all is an
+//! `Err`, which its callers turn into an equally closed refusal.
+//!
+//! One limitation is deliberate and not covered by the tolerance: `now` and the
+//! anchor are wall-clock unix-ms while `etime` is boot-relative, so a forward
+//! wall-clock step larger than the tolerance plus the predecessor's own age can
+//! classify a *running* predecessor as a recycled pid. A monotone wall clock on
+//! a single machine is the assumed environment (ADR 0073 Consequences).
 
 use std::process::Command;
 
@@ -88,6 +95,21 @@ impl PredecessorProcessProof {
     pub fn reason(&self) -> &'static str {
         self.state.reason()
     }
+
+    /// The reportable shape of this proof. The `daemon recover-predecessor`
+    /// receipt and the successor's automatic-recovery journal both render it
+    /// through here, so an operator reads the same evidence whichever path
+    /// settled the predecessor and the two can never drift apart.
+    pub fn to_receipt_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "pid": self.pid,
+            "reason": self.reason(),
+            "anchor_unix_ms": self.anchor_unix_ms,
+            "instance_minted_unix_ms": self.instance_minted_unix_ms,
+            "started_unix_ms_lower_bound": self.started_unix_ms_lower_bound,
+            "evidence": self.evidence,
+        })
+    }
 }
 
 /// Parse `<pid>:<minted unix-ms>:<daemon label>`. Only the pid is required;
@@ -117,23 +139,35 @@ pub fn process_exists(pid: i32) -> Result<bool, String> {
         // SAFETY: kill(pid, 0) sends no signal and is the standard process
         // existence probe.
         let result = unsafe { libc::kill(pid, 0) };
-        if result == 0 {
-            return Ok(true);
-        }
-        match std::io::Error::last_os_error().raw_os_error() {
-            Some(libc::ESRCH) => Ok(false),
-            Some(libc::EPERM) => Ok(true),
-            Some(code) => Err(format!(
-                "cannot verify predecessor process {pid}: errno {code}"
-            )),
-            None => Err(format!("cannot verify predecessor process {pid}")),
-        }
+        let errno = if result == 0 {
+            None
+        } else {
+            std::io::Error::last_os_error().raw_os_error()
+        };
+        classify_kill_result(pid, result, errno)
     }
     #[cfg(not(unix))]
     {
         Err(format!(
             "cannot verify predecessor process {pid} on this platform"
         ))
+    }
+}
+
+/// The verdict half of `process_exists`, split out so every branch — including
+/// the ones a test cannot provoke on a real process — is exercised directly.
+#[cfg(unix)]
+pub fn classify_kill_result(pid: i32, result: i32, errno: Option<i32>) -> Result<bool, String> {
+    if result == 0 {
+        return Ok(true);
+    }
+    match errno {
+        Some(libc::ESRCH) => Ok(false),
+        Some(libc::EPERM) => Ok(true),
+        Some(code) => Err(format!(
+            "cannot verify predecessor process {pid}: errno {code}"
+        )),
+        None => Err(format!("cannot verify predecessor process {pid}")),
     }
 }
 
@@ -372,17 +406,46 @@ mod tests {
         assert!(proof.evidence.contains("could not be measured"));
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn the_kill_probe_reads_esrch_as_absent_eperm_as_alive_and_anything_else_as_unverified() {
+        // Split out of `process_exists` precisely so the branches a test
+        // cannot provoke against a real process are still proven.
+        assert_eq!(classify_kill_result(4242, 0, None), Ok(true));
+        assert_eq!(classify_kill_result(4242, -1, Some(libc::ESRCH)), Ok(false));
+        // A process owned by another user: it exists, and the probe says so.
+        assert_eq!(classify_kill_result(4242, -1, Some(libc::EPERM)), Ok(true));
+        let unverified = classify_kill_result(4242, -1, Some(libc::EINVAL))
+            .expect_err("an unexpected errno is not a verdict");
+        assert!(unverified.contains("cannot verify predecessor process 4242"));
+        assert!(classify_kill_result(4242, -1, None).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pid_one_is_observed_as_alive_through_the_live_probe() {
+        // pid 1 always exists and is root-owned, so an unprivileged runner
+        // reaches the EPERM branch and a privileged one reaches the success
+        // branch; both must answer "alive".
+        assert_eq!(process_exists(1), Ok(true));
+    }
+
     #[test]
     fn this_process_is_alive_against_its_own_start_and_reused_against_a_stale_anchor() {
         let now = now_unix_ms();
         let pid = std::process::id() as i32;
         assert!(process_exists(pid).expect("probe own pid"));
         let measured = process_start_lower_bound_unix_ms(pid, now).expect("measure own start time");
-        let Some((lower_bound, _)) = measured.clone() else {
-            // `ps` is unavailable in this environment; the classifier's
-            // fail-closed branch is covered by its own test.
-            return;
-        };
+        // Deliberately not tolerant of an unmeasurable own start time: if this
+        // ever goes quiet, reused-pid detection is dead on that platform and
+        // every predecessor there is refused forever. Proving `ps -o etime=`
+        // parses on the CI runner is the whole point of this test.
+        let (lower_bound, row) = measured.expect(
+            "the running test process must have a measurable start time; \
+             without it reused-pid detection cannot fire on this platform",
+        );
+        assert!(!row.trim().is_empty(), "ps row: {row:?}");
+        let measured = Some((lower_bound, row));
         assert!(lower_bound <= now);
 
         let instance = PredecessorInstanceId {
@@ -395,6 +458,28 @@ mod tests {
         // Anchored at "now", nothing proves it is a different process.
         let alive = classify_predecessor_process(&instance, true, measured, now);
         assert_eq!(alive.state, PredecessorProcessState::Alive);
+    }
+
+    #[test]
+    fn the_receipt_shape_carries_every_fact_a_reader_needs() {
+        let proof = classify_predecessor_process(
+            &PredecessorInstanceId {
+                pid: 4242,
+                minted_unix_ms: Some(1_000),
+            },
+            true,
+            Some((9_000, "01:00 Mon Sep 15 00:00:00 2026".into())),
+            2_000,
+        );
+        let receipt = proof.to_receipt_json();
+        assert_eq!(receipt["pid"], 4242);
+        assert_eq!(receipt["reason"], "process_absent_reused_pid");
+        assert_eq!(receipt["anchor_unix_ms"], 2_000);
+        assert_eq!(receipt["instance_minted_unix_ms"], 1_000);
+        assert_eq!(receipt["started_unix_ms_lower_bound"], 9_000);
+        assert!(receipt["evidence"]
+            .as_str()
+            .is_some_and(|evidence| evidence.starts_with("ps: ")));
     }
 
     #[test]
