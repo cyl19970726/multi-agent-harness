@@ -137,7 +137,13 @@ by a debug-time lock registry that panics on a Space lock requested under the le
 Acquire the lease lock (timeout `min(TTL/4, 1 s)` — an honest ceiling once the only
 contenders are this daemon's own renewal and a rare operator verb) → read → verify exact
 `(daemon_id, instance_id, generation)` ownership and `expires > now` → sample `now` → write
-`tmp` → `fsync(tmp)` → `rename` → `fsync(dir)` → release. ~350 bytes, two fsyncs, no unrelated
+`tmp` → `fsync(tmp)` → `rename` → `fsync(dir)` → release. The directory fsync is what makes the
+replacement survive a crash, and it is deliberately **best-effort**: by the time it runs the
+rename has already succeeded, so the new document is already current for every reader on the
+machine. Reporting a failed directory fsync as a write failure would tell the caller its write
+did not land when it did, and the caller's only honest response — retry — would republish a
+document that is already in place. A failure there narrows the durability claim without
+invalidating the write. ~350 bytes, two fsyncs, no unrelated
 data in the critical section, and no compaction step because a replace has nothing to compact.
 The renewal is **one write per machine**, not one per Space:
 `run_held_node_authorities` and its per-Space workers (`machine_authority.rs:621-674`, `:676-711`)
@@ -381,8 +387,12 @@ not before — and its test is retargeted at the legacy path. `daemon status` ga
   daemon fails closed at start if it cannot take the lease lock on that path.
 - **Clock skew.** Single machine, one clock — unchanged in kind; the monotonic
   `expires`/`generation` rule bounds a backwards system-clock step.
-- **A reader that still trusts a legacy row.** The typed `MachineLeaseSource` makes this a
-  compile-time obligation, not a review habit.
+- **A reader that still trusts a legacy row.** `MachineLeaseSource` alone would not have made
+  this a compile-time obligation — a caller can destructure a `(lease, source)` pair and drop the
+  source with no diagnostic. `AuthorizedMachineLease` does: its field is private and its only
+  constructor is the `NodeFile` arm of `authoritative_machine_lease`, so a fence that wants a
+  lease it may act on must name that type, and a `LegacySpaceRow` can never become one. E2a-2's
+  deciders take it rather than a bare `NodeDaemonLease`.
 - **The TeamSupervisorLease parent fence needs the file.** Three fences inside `firm-store`
   read a Space ledger while holding the Space lock today; they now need a node-home path
   injected into `HarnessStore`, and a store without one must fail the fence closed rather than

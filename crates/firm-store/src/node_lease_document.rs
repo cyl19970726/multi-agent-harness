@@ -173,11 +173,13 @@ pub(crate) fn publish_lease_document(
     node_home: &Path,
     node_id: &str,
     clock: &LeaseClock<'_>,
-    next: impl FnOnce(u64) -> StoreResult<NodeDaemonLeaseDocument>,
+    next: impl FnOnce(Option<&NodeDaemonLeaseDocument>, u64) -> StoreResult<NodeDaemonLeaseDocument>,
 ) -> StoreResult<NodeDaemonLeaseDocument> {
+    // Read once. The caller decides from this same snapshot, so the document it
+    // reasons about and the document the guard compares against cannot differ.
     let current = read_lease_document(node_home, node_id)?;
     // Sampled here: lock held, nothing else between this and the rename.
-    let document = next(clock.now())?;
+    let document = next(current.as_ref(), clock.now())?;
     require_document_belongs_here(&document, node_id, &lease_document_path(node_home))?;
     require_forward_only(current.as_ref(), &document, node_home)?;
     atomic_replace(node_home, &document)?;
@@ -233,11 +235,20 @@ fn require_forward_only(
 /// tmp in the same directory → fsync the tmp inode → rename → fsync the
 /// directory.
 ///
-/// The directory fsync is not optional and not cargo-culted: POSIX lets a
-/// crash recover either directory entry after a rename, so without it a reboot
-/// can resurrect the previous document — and with it a generation that has
-/// already been superseded. The same reasoning is already written down for the
+/// The directory fsync is what makes the replacement survive a crash: POSIX
+/// lets a crash recover either directory entry after a rename, so without it a
+/// reboot can resurrect the previous document — and with it a generation that
+/// has already been superseded. The same reasoning is written down for the
 /// trust journal's compaction; this is the same primitive on a smaller file.
+///
+/// It is nonetheless **best-effort**, and deliberately so. By the time it runs
+/// the rename has already succeeded: the new document *is* the current one for
+/// every reader on this machine. Returning an error here would tell the caller
+/// its write failed when it did not, and the caller's only honest response —
+/// retry — would republish a document that is already in place. So a failed
+/// directory open or fsync narrows the durability claim (the write may not
+/// survive an immediate power loss) without invalidating the write, and is not
+/// reported as a write failure.
 fn atomic_replace(node_home: &Path, document: &NodeDaemonLeaseDocument) -> StoreResult<()> {
     let tmp = lease_document_tmp_path(node_home);
     let target = lease_document_path(node_home);

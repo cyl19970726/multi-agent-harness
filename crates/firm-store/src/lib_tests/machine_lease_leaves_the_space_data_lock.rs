@@ -30,6 +30,13 @@ fn acquire(store: &HarnessStore, daemon: &str, instance: &str, ttl_ms: u64) -> N
 /// than the lease TTL — the shape of an 8.75 MB trust-journal rewrite — while
 /// the machine lease is renewed throughout. Under the old design every renewal
 /// queued behind that lock and the machine was lost; here the two never meet.
+///
+/// **What a broken build looks like, because it is not an assertion failure.**
+/// Without the leaf lock — that is, if the lease writer took `.store.lock` the
+/// way the per-Space writers do — `acquire_machine_lease` would block on the
+/// lock this fixture already holds. The test would not fail fast; it would
+/// **hang** until the holder thread's 10 s `recv_timeout` expires, then fail on
+/// a lock timeout. That reads as a flake unless it is written down, so it is.
 #[test]
 fn a_held_space_lock_cannot_cost_the_machine_its_authority() {
     let (_home, store) = machine_lease_store("gen-4-regression");
@@ -138,12 +145,17 @@ fn a_reader_never_sees_a_half_written_document() {
     assert!(reads > 0, "the reader observed at least one document");
 }
 
-/// Authority only moves forward. A resurrected predecessor or a backwards
-/// system-clock step is refused by name rather than clamped, because a lease
-/// that silently shrinks is one whose holder believes it owns more time than
-/// the file grants.
+/// The exact-generation fence, on a document that has been tampered with.
+///
+/// Named for what it pins: a caller naming generation N cannot write a document
+/// that says N-1, because `require_exact_generation` compares the caller's
+/// claim against what is on disk and refuses first. The forward-only guard
+/// never runs here — that one is pinned by the two tests below, which reach
+/// `publish_lease_document` directly because every `HarnessStore` verb either
+/// mints `generation + 1` or is stopped by this fence before the guard is
+/// reached.
 #[test]
-fn a_write_that_would_move_authority_backwards_is_refused() {
+fn a_planted_stale_document_is_refused_by_the_exact_generation_fence() {
     let (home, store) = machine_lease_store("forward-only");
     let first = acquire(&store, "node-daemon:fwd", "instance-1", 60_000);
     store
@@ -369,7 +381,7 @@ fn the_written_lease_carries_the_clock_sampled_under_the_lock() {
     let clock = LeaseClock::new(&source);
 
     let lock = NodeLeaseLock::acquire(&node_home, Duration::from_millis(500)).expect("lease lock");
-    let published = publish_lease_document(&lock, &node_home, NODE, &clock, |now| {
+    let published = publish_lease_document(&lock, &node_home, NODE, &clock, |_current, now| {
         assert_eq!(
             now, after_a_long_wait,
             "the writer samples the clock, not the caller"
@@ -406,5 +418,126 @@ fn the_written_lease_carries_the_clock_sampled_under_the_lock() {
     assert_eq!(
         on_disk.lease.expires_unix_ms,
         published.lease.expires_unix_ms
+    );
+}
+
+/// Helper for the two forward-only tests: publish an arbitrary document under
+/// the lease lock, with an arbitrary clock. Both guards live in
+/// `publish_lease_document`, and every Store verb mints `generation + 1` or
+/// refuses earlier, so this is the only way to reach them.
+fn publish_raw(
+    node_home: &Path,
+    now: u64,
+    lease: NodeDaemonLease,
+) -> StoreResult<crate::node_lease_document::NodeDaemonLeaseDocument> {
+    use crate::node_lease_document::{publish_lease_document, LeaseClock, NodeDaemonLeaseDocument};
+    use crate::node_lease_lock::NodeLeaseLock;
+
+    let source = move || now;
+    let clock = LeaseClock::new(&source);
+    let lock = NodeLeaseLock::acquire(node_home, Duration::from_millis(500)).expect("lease lock");
+    publish_lease_document(&lock, node_home, NODE, &clock, |_current, sampled| {
+        Ok(NodeDaemonLeaseDocument::new(
+            NodeDaemonLease {
+                acquired_unix_ms: sampled,
+                ..lease
+            },
+            std::process::id(),
+        ))
+    })
+}
+
+/// A backwards system-clock step, which is what the forward-only guard exists
+/// for. Same generation, same `Active` status, an earlier expiry: refused by
+/// name rather than clamped, because a lease that silently shrinks is one whose
+/// holder believes it owns more time than the file grants.
+///
+/// Red proof: stubbing out the `require_forward_only` call in
+/// `publish_lease_document` makes this test fail — the shortened expiry lands
+/// on disk and `expect_err` gets an `Ok`.
+#[test]
+fn expiry_moving_backwards_within_a_status_is_refused() {
+    let (home, store) = machine_lease_store("forward-only-expiry");
+    let live = acquire(&store, "node-daemon:clock-step", "instance-1", 60_000);
+    let node_home = home.join("nodes").join(NODE);
+
+    // The clock steps back: this write's window ends before the one on disk.
+    let stepped_back = live.expires_unix_ms - 30_000;
+    let error = publish_raw(
+        &node_home,
+        stepped_back,
+        NodeDaemonLease {
+            expires_unix_ms: stepped_back,
+            renewed_unix_ms: stepped_back,
+            ..live.clone()
+        },
+    )
+    .expect_err("a shortened Active window is a backwards clock, not a renewal");
+    assert!(
+        error
+            .to_string()
+            .contains(crate::node_lease_document::MACHINE_LEASE_DOCUMENT_INVALID),
+        "{error}"
+    );
+
+    // The document on disk still carries the longer window.
+    let (current, _) = store
+        .current_machine_lease(NODE)
+        .expect("resolve")
+        .expect("a machine lease");
+    assert_eq!(current.expires_unix_ms, live.expires_unix_ms);
+
+    // The permissive side of the same rule: a *status* change may shorten it.
+    store
+        .drain_machine_lease(
+            NODE,
+            &live.daemon_id,
+            live.generation,
+            &live.instance_id,
+            1_000,
+        )
+        .expect("Draining sets its own, shorter window");
+}
+
+/// A resurrected predecessor: a document whose generation is below the one on
+/// disk. Refused by name, so a restored backup or a stale writer cannot hand a
+/// generation back to a daemon that has already been superseded.
+///
+/// Red proof: stubbing out the `require_forward_only` call makes this test fail
+/// — generation 1 overwrites generation 2 on disk and `expect_err` gets an `Ok`.
+#[test]
+fn a_generation_moving_backwards_is_refused() {
+    let (home, store) = machine_lease_store("forward-only-generation");
+    let first = acquire(&store, "node-daemon:gen", "instance-1", 60_000);
+    store
+        .release_machine_lease(NODE, &first.daemon_id, first.generation, &first.instance_id)
+        .expect("release");
+    let second = acquire(&store, "node-daemon:gen", "instance-2", 60_000);
+    assert_eq!(second.generation, first.generation + 1);
+
+    let node_home = home.join("nodes").join(NODE);
+    let error = publish_raw(
+        &node_home,
+        second.expires_unix_ms,
+        NodeDaemonLease {
+            generation: first.generation,
+            ..second.clone()
+        },
+    )
+    .expect_err("a generation may never move backwards on a node");
+    assert!(
+        error
+            .to_string()
+            .contains(crate::node_lease_document::MACHINE_LEASE_DOCUMENT_INVALID),
+        "{error}"
+    );
+
+    let (current, _) = store
+        .current_machine_lease(NODE)
+        .expect("resolve")
+        .expect("a machine lease");
+    assert_eq!(
+        current.generation, second.generation,
+        "the superseded generation did not come back"
     );
 }

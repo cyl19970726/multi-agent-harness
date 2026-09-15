@@ -54,6 +54,35 @@ impl MachineLeaseSource {
 /// legacy Space rows, which never authorize an effect after cutover.
 pub const MACHINE_LEASE_NOT_AUTHORITATIVE: &str = "MACHINE_LEASE_NOT_AUTHORITATIVE";
 
+/// A machine lease that came from the node file, and therefore may authorize a
+/// provider effect.
+///
+/// The ADR claims the typed source makes "only `NodeFile` authorizes" a
+/// compile-time obligation rather than a review habit. A `(lease, source)` pair
+/// does not deliver that: a caller can destructure it and drop the source with
+/// no diagnostic. This does — the field is private and the only constructor is
+/// the `NodeFile` arm of [`HarnessStore::authoritative_machine_lease`], so a
+/// fence that wants a lease it may act on must name this type, and a
+/// `LegacySpaceRow` can never be turned into one.
+///
+/// E2a-2's 46 deciders take this rather than a bare `NodeDaemonLease`, which is
+/// why it exists before them: the obligation has to be in place before the call
+/// sites are written, not retrofitted after.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AuthorizedMachineLease(NodeDaemonLease);
+
+impl AuthorizedMachineLease {
+    /// The lease, once the caller has been forced to obtain it from the one
+    /// source that authorizes.
+    pub fn lease(&self) -> &NodeDaemonLease {
+        &self.0
+    }
+
+    pub fn into_lease(self) -> NodeDaemonLease {
+        self.0
+    }
+}
+
 impl HarnessStore {
     /// Resolve who owns this machine, and say where the answer came from.
     ///
@@ -65,6 +94,8 @@ impl HarnessStore {
     /// A Store that cannot name its node home fails closed with
     /// `MACHINE_LEASE_FILE_UNRESOLVED` rather than falling back to Space rows —
     /// "I do not know who owns this machine" is never "nobody does".
+    #[must_use = "the source decides whether this lease may authorize an effect; \
+                  dropping it is how a legacy row becomes authority"]
     pub fn current_machine_lease(
         &self,
         node_id: &str,
@@ -83,9 +114,14 @@ impl HarnessStore {
     /// The fence form: resolve, and refuse anything a provider effect may not
     /// be built on. Every one of ADR 0075's decider sites goes through this, so
     /// "only NodeFile authorizes" is one predicate rather than 46 copies.
-    pub fn authoritative_machine_lease(&self, node_id: &str) -> StoreResult<NodeDaemonLease> {
+    pub fn authoritative_machine_lease(
+        &self,
+        node_id: &str,
+    ) -> StoreResult<AuthorizedMachineLease> {
         match self.current_machine_lease(node_id)? {
-            Some((lease, source)) if source.authorizes_provider_effect() => Ok(lease),
+            Some((lease, source)) if source.authorizes_provider_effect() => {
+                Ok(AuthorizedMachineLease(lease))
+            }
             Some((_, source)) => Err(StoreError::Conflict(format!(
                 "{MACHINE_LEASE_NOT_AUTHORITATIVE}: Node {node_id} resolved from {} and cannot authorize a provider effect; this Store predates the machine lease cutover",
                 source.as_str()
@@ -278,22 +314,22 @@ impl HarnessStore {
         let clock = LeaseClock::system();
         let mut settled: Option<NodeDaemonLease> = None;
         let mut recorded_at = 0;
-        let document = publish_lease_document(&lock, &node_home, node_id, &clock, |now| {
-            recorded_at = now;
-            let current = read_lease_document(&node_home, node_id)?;
-            match next(current.as_ref(), now)? {
-                Some(lease) => Ok(NodeDaemonLeaseDocument::new(lease, std::process::id())),
-                None => {
-                    let unchanged = current.ok_or_else(|| {
-                        StoreError::Conflict(format!(
+        let document =
+            publish_lease_document(&lock, &node_home, node_id, &clock, |current, now| {
+                recorded_at = now;
+                match next(current, now)? {
+                    Some(lease) => Ok(NodeDaemonLeaseDocument::new(lease, std::process::id())),
+                    None => {
+                        let unchanged = current.cloned().ok_or_else(|| {
+                            StoreError::Conflict(format!(
                             "NODE_DAEMON_GENERATION_FENCED: {node_id} has no machine lease to keep"
                         ))
-                    })?;
-                    settled = Some(unchanged.lease.clone());
-                    Ok(unchanged)
+                        })?;
+                        settled = Some(unchanged.lease.clone());
+                        Ok(unchanged)
+                    }
                 }
-            }
-        })?;
+            })?;
         if settled.is_none() {
             // One row per generation transition, never per renewal: a renewal
             // keeps the generation, so only a status change is history.

@@ -298,7 +298,9 @@ mod store_host_attention_internals;
 mod store_host_runtime_binding;
 mod store_jsonl;
 mod store_machine_lease;
-pub use store_machine_lease::{MachineLeaseSource, MACHINE_LEASE_NOT_AUTHORITATIVE};
+pub use store_machine_lease::{
+    AuthorizedMachineLease, MachineLeaseSource, MACHINE_LEASE_NOT_AUTHORITATIVE,
+};
 mod store_node_home;
 pub use store_node_home::{firm_home_of_execution_space_root, MACHINE_LEASE_FILE_UNRESOLVED};
 mod store_node_runtime;
