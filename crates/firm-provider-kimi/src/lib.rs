@@ -819,16 +819,14 @@ impl KimiAcpClient {
         let mut cancelled_at: Option<Instant> = None;
         loop {
             if cancelled_at.is_none() {
-                let requested = control().map_err(|error| {
+                let requested = control().inspect_err(|_| {
                     self.last_prompt_failure = KimiCycleFailure::HostAborted;
-                    error
                 })?;
                 match requested {
                     PromptControl::Continue => {}
                     PromptControl::Cancel => {
-                        self.cancel().map_err(|error| {
+                        self.cancel().inspect_err(|_| {
                             self.last_prompt_failure = KimiCycleFailure::TransportLost;
-                            error
                         })?;
                         cancelled_at = Some(Instant::now());
                     }
@@ -873,16 +871,14 @@ impl KimiAcpClient {
                         // Publish the receipt before handling the tail so tools
                         // invoked by this turn may immediately send a
                         // correlation-valid handoff or peer message.
-                        on_accepted(&provider_receipt_id).map_err(|error| {
+                        on_accepted(&provider_receipt_id).inspect_err(|_| {
                             self.last_prompt_failure = KimiCycleFailure::HostAborted;
-                            error
                         })?;
                     }
                     for update in &tail {
                         self.handle_incoming(update, on_update, on_request, on_request_written)
-                            .map_err(|error| {
+                            .inspect_err(|_| {
                                 self.last_prompt_failure = KimiCycleFailure::ProtocolViolation;
-                                error
                             })?;
                     }
                     return Ok(outcome);
@@ -903,9 +899,8 @@ impl KimiAcpClient {
                         // handling the frame so tools invoked by this turn can
                         // immediately send a correlation-valid handoff or peer
                         // message.
-                        on_accepted(&provider_receipt_id).map_err(|error| {
+                        on_accepted(&provider_receipt_id).inspect_err(|_| {
                             self.last_prompt_failure = KimiCycleFailure::HostAborted;
-                            error
                         })?;
                         accepted = true;
                     }
@@ -917,9 +912,8 @@ impl KimiAcpClient {
                         last_activity = Instant::now();
                     }
                     self.handle_incoming(&frame, on_update, on_request, on_request_written)
-                        .map_err(|error| {
+                        .inspect_err(|_| {
                             self.last_prompt_failure = KimiCycleFailure::ProtocolViolation;
-                            error
                         })?;
                     continue;
                 }
@@ -946,9 +940,8 @@ impl KimiAcpClient {
                 // I1/B4: the cancel strike exists only before acceptance
                 // evidence; after acceptance a silent tool interval is never
                 // an adapter-initiated interrupt.
-                self.cancel().map_err(|error| {
+                self.cancel().inspect_err(|_| {
                     self.last_prompt_failure = KimiCycleFailure::TransportLost;
-                    error
                 })?;
                 cancelled_at = Some(Instant::now());
             }

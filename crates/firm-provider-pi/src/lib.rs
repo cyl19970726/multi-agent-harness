@@ -488,11 +488,10 @@ impl PiRpcClient {
             // a control-settle fact, never an input-acceptance one.
             let response = self
                 .request_blocking("abort", serde_json::json!({}), HANDSHAKE_TIMEOUT)
-                .map_err(|error| {
+                .inspect_err(|_| {
                     if self.last_cycle_failure == PiCycleFailure::InputAcceptanceTimeout {
                         self.last_cycle_failure = PiCycleFailure::ControlSettleTimeout;
                     }
-                    error
                 })?;
             receipts.push(harness_runtime_contract::ControlTransportReceipt {
                 command: "abort".to_string(),
@@ -692,9 +691,8 @@ impl PiRpcClient {
                 "PI_PROMPT_RECEIPT_UNKNOWN: successful prompt response had no id".to_string(),
             ));
         }
-        on_input_accepted(&input_acceptance_receipt).map_err(|error| {
+        on_input_accepted(&input_acceptance_receipt).inspect_err(|_| {
             self.last_cycle_failure = PiCycleFailure::HostAborted;
-            error
         })?;
 
         let mut interrupt: Option<harness_runtime_contract::InterruptCause> = None;
@@ -835,9 +833,8 @@ impl PiRpcClient {
                 on_event(&frame);
             }
         }
-        let terminal_observation = self.observe_runtime(true).map_err(|error| {
+        let terminal_observation = self.observe_runtime(true).inspect_err(|_| {
             self.last_cycle_failure = PiCycleFailure::TransportLost;
-            error
         })?;
         if terminal_observation.is_streaming != Some(false) {
             self.last_cycle_failure = PiCycleFailure::PostconditionUnknown;
