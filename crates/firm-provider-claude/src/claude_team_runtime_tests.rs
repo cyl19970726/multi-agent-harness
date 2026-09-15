@@ -998,3 +998,198 @@ fn claude_c1_terminal_failure_settles_unsatisfied() {
     );
     harness_runtime_contract::assert_c1_terminal_failure_unsatisfied(&receipt).expect("C1");
 }
+
+// ---------------------------------------------------------------------------
+// ADR 0076: the closed ending table, and the two misalignments it closes.
+
+fn claude_control_timeouts() -> harness_runtime_contract::CycleTimeouts {
+    harness_runtime_contract::CycleTimeouts {
+        input_acceptance: Duration::from_secs(5),
+        transport_liveness: Duration::from_secs(5),
+        control_settle: Duration::from_secs(5),
+    }
+}
+
+fn claude_turn_complete_empty(input_id: &str) -> String {
+    claude_turn_complete(input_id)
+}
+
+/// ADR 0076 misalignment 1. A Host Interrupt that races a normal
+/// `turn_complete` used to vanish: the terminal arm hard-coded
+/// `interrupt: None, close_requested_by_harness: false`, so the shared loop
+/// held a pending control with no acknowledgement and failed the whole member
+/// with `RuntimeRecoveryRequired`. The control must travel on the outcome, and
+/// with an abort receipt, so the loop can settle it.
+#[cfg(unix)]
+#[test]
+fn requested_interrupt_survives_a_turn_that_completes_normally() {
+    let outcome = drive_claude_cycle(
+        vec![
+            claude_consumed("claude-cycle-2"),
+            claude_assistant_message(),
+            claude_turn_complete("claude-cycle-2"),
+        ],
+        false,
+        &claude_control_timeouts(),
+        || harness_runtime_contract::CycleControl {
+            close: false,
+            interrupt: true,
+            fatal_error: None,
+        },
+    )
+    .expect("a normally completed turn is still an Ok cycle");
+
+    assert_eq!(
+        outcome.interrupt,
+        Some(harness_runtime_contract::InterruptCause::HostControl),
+        "the requested interrupt must survive the normal completion"
+    );
+    assert!(
+        outcome
+            .control_receipts
+            .iter()
+            .any(|receipt| receipt.command == "abort" && receipt.success),
+        "the settled control needs its abort receipt: {:?}",
+        outcome.control_receipts
+    );
+    assert!(
+        harness_application_verified_terminal_control_ack(&outcome),
+        "the shared loop must be able to verify this terminal control ack"
+    );
+    assert_eq!(
+        harness_runtime_contract::CycleEnding::from_outcome(&outcome),
+        harness_runtime_contract::CycleEnding::InterruptedByHost
+    );
+}
+
+/// The same race under Close: Close dominates Interrupt in the ADR 0076
+/// precedence order, and must reach the loop so the member runtime is disposed.
+#[cfg(unix)]
+#[test]
+fn requested_close_survives_a_turn_that_completes_normally() {
+    let outcome = drive_claude_cycle(
+        vec![
+            claude_consumed("claude-cycle-2"),
+            claude_assistant_message(),
+            claude_turn_complete("claude-cycle-2"),
+        ],
+        false,
+        &claude_control_timeouts(),
+        || harness_runtime_contract::CycleControl {
+            close: true,
+            interrupt: false,
+            fatal_error: None,
+        },
+    )
+    .expect("a normally completed turn is still an Ok cycle");
+
+    assert!(
+        outcome.close_requested_by_harness,
+        "the requested Close must survive the normal completion"
+    );
+    assert_eq!(
+        harness_runtime_contract::CycleEnding::from_outcome(&outcome),
+        harness_runtime_contract::CycleEnding::Closed
+    );
+}
+
+/// The Harness-side predicate the shared loop uses, reproduced here so the
+/// regression binds to the loop's real acceptance rule rather than to a field.
+fn harness_application_verified_terminal_control_ack(
+    outcome: &harness_runtime_contract::ExecutionCycleOutcome,
+) -> bool {
+    let abort_receipt_observed = outcome
+        .control_receipts
+        .iter()
+        .any(|receipt| receipt.command == "abort" && receipt.success);
+    outcome.interrupt.is_some()
+        && abort_receipt_observed
+        && outcome.terminal_observation.terminal_cycle_observed()
+        && (!outcome.close_requested_by_harness)
+}
+
+/// ADR 0076 misalignment 2. An empty terminal is EMPTY OUTPUT, not a provider
+/// failure. Reporting it as `empty_final_report` made Claude and DeepSeek the
+/// only providers on which zero output RESET the unproductive-round streak
+/// instead of feeding the circuit breaker.
+#[cfg(unix)]
+#[test]
+fn empty_terminal_is_empty_output_not_a_provider_failure() {
+    let outcome = drive_claude_cycle(
+        vec![
+            claude_consumed("claude-cycle-2"),
+            claude_turn_complete_empty("claude-cycle-2"),
+        ],
+        false,
+        &claude_control_timeouts(),
+        harness_runtime_contract::CycleControl::default,
+    )
+    .expect("an empty terminal is still an Ok cycle");
+
+    assert!(
+        outcome.provider_terminal_failure.is_none(),
+        "an empty terminal must not be reported as a provider failure: {:?}",
+        outcome.provider_terminal_failure
+    );
+    assert_eq!(
+        harness_runtime_contract::CycleEnding::from_outcome(&outcome),
+        harness_runtime_contract::CycleEnding::EmptyOutput
+    );
+}
+
+/// Exhaustiveness: every ending this adapter can produce is placed in the
+/// closed table. The `expected` match below is wildcard-free, so adding a
+/// variant to `ClaudeCycleFailure` breaks this test's compilation until the
+/// new ending is decided on deliberately.
+#[test]
+fn every_claude_cycle_ending_is_placed_in_the_closed_table() {
+    use harness_runtime_contract::{CycleEnding, ProviderFailureCode, TerminalUnobservedCode};
+    fn expected(failure: ClaudeCycleFailure) -> CycleEnding {
+        match failure {
+            ClaudeCycleFailure::HostFatalControl | ClaudeCycleFailure::AcceptanceCallbackFailed => {
+                CycleEnding::HostAborted {
+                    detail: "detail".to_string(),
+                }
+            }
+            ClaudeCycleFailure::TransportClosed => CycleEnding::TransportLost {
+                detail: "detail".to_string(),
+            },
+            ClaudeCycleFailure::InputAcceptanceTimeout => CycleEnding::AcceptanceTimeout,
+            ClaudeCycleFailure::ControlSettleTimeout => CycleEnding::ControlSettleTimeout,
+            ClaudeCycleFailure::RunnerError => CycleEnding::ProviderFailed {
+                code: ProviderFailureCode::RunnerError,
+                detail: "detail".to_string(),
+                http_status: None,
+            },
+            ClaudeCycleFailure::UnexpectedClose => CycleEnding::TerminalUnobserved {
+                code: TerminalUnobservedCode::UnexpectedClose,
+                detail: "detail".to_string(),
+            },
+            ClaudeCycleFailure::ProtocolViolation => CycleEnding::TerminalUnobserved {
+                code: TerminalUnobservedCode::ProtocolViolation,
+                detail: "detail".to_string(),
+            },
+            ClaudeCycleFailure::TerminalMismatch => CycleEnding::TerminalUnobserved {
+                code: TerminalUnobservedCode::TerminalMismatch,
+                detail: "detail".to_string(),
+            },
+        }
+    }
+    assert_eq!(
+        ClaudeCycleFailure::ALL.len(),
+        9,
+        "ALL must list every variant the wildcard-free match above covers"
+    );
+    for failure in ClaudeCycleFailure::ALL {
+        let ending = failure.ending("detail");
+        assert_eq!(ending, expected(*failure), "{failure:?}");
+        assert!(
+            !ending.action_type().is_empty(),
+            "{failure:?} needs a fixed action_type"
+        );
+        assert!(
+            !ending.provider_status().is_empty(),
+            "{failure:?} needs a machine-readable provider_status"
+        );
+    }
+}

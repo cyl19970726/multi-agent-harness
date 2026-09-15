@@ -446,7 +446,6 @@ impl ClaudeRunnerTransport {
         let mut input_acceptance_receipt = None;
         let mut control_receipts = Vec::new();
         let mut tool_call_count = 0u32;
-        let mut saw_assistant_message = false;
         let mut interrupt_sent = false;
         let mut interrupt_sent_at: Option<Instant> = None;
         let mut interrupt_requested = false;
@@ -520,7 +519,6 @@ impl ClaudeRunnerTransport {
             match event.name.as_str() {
                 "session_bound" => {}
                 "assistant_message" => {
-                    saw_assistant_message = true;
                     let (text, tools) = assistant_projection(&event.data);
                     final_text.push_str(&text);
                     tool_call_count = tool_call_count.saturating_add(tools);
@@ -560,6 +558,16 @@ impl ClaudeRunnerTransport {
                             )),
                         ));
                     };
+                    // A turn that produced no assistant message is an EMPTY
+                    // TERMINAL, not a provider failure (ADR 0076). Reporting
+                    // it as `empty_final_report` made Claude and DeepSeek the
+                    // only providers on which zero output RESET the
+                    // unproductive-round streak instead of feeding the
+                    // circuit breaker, because `decide_team_round` disqualifies
+                    // the zero-output branch whenever a terminal failure is
+                    // present. The `saw_assistant_message` flag that drove it
+                    // is gone: emptiness is decided from the outcome's own
+                    // text and tool count, the same way on all five providers.
                     let provider_terminal_failure =
                         if event.data.get("isError").and_then(Value::as_bool) == Some(true) {
                             Some(ProviderTerminalFailure {
@@ -575,19 +583,30 @@ impl ClaudeRunnerTransport {
                                     .get("apiErrorStatus")
                                     .and_then(Value::as_i64),
                             })
-                        } else if !saw_assistant_message {
-                            Some(ProviderTerminalFailure {
-                                reason: "empty_final_report".to_string(),
-                                http_status: None,
-                            })
                         } else {
                             None
                         };
+                    // A requested Interrupt/Close that races a normal
+                    // completion is still SETTLED by this terminal: the
+                    // control asked the turn to end and it ended at its exact
+                    // native boundary. Hard-coding `None`/`false` here dropped
+                    // the control from the outcome, and the shared loop then
+                    // failed the whole member with
+                    // "control lacked verified terminal acknowledgement"
+                    // (ADR 0076 misalignment 1). The receipt is claimed only
+                    // when the interrupt frame actually crossed the boundary.
+                    if interrupt_sent {
+                        control_receipts.push(ControlTransportReceipt {
+                            command: "abort".into(),
+                            response_id: Some(format!("claude-sdk-interrupt:{input_id}")),
+                            success: true,
+                        });
+                    }
                     return Ok(ExecutionCycleOutcome {
                         final_text,
                         provider_terminal_failure,
-                        interrupt: None,
-                        close_requested_by_harness: false,
+                        interrupt: interrupt_sent.then_some(InterruptCause::HostControl),
+                        close_requested_by_harness: close_requested && interrupt_sent,
                         tool_call_count,
                         native_correlation: cycle_ref(&input_id, receipt, "turn_complete"),
                         control_receipts,
