@@ -240,7 +240,7 @@ pub fn request_authority_loss_interrupt(
             entry.member_run_id.clone(),
         ));
     }
-    targets.sort_by(|left, right| left.0.cmp(&right.0));
+    targets.sort_by_key(|target| target.0);
 
     let current = std::thread::current().id();
     let deadline = Instant::now() + observe_timeout;
