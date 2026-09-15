@@ -324,6 +324,12 @@ impl TeamRuntimeAdapter for ClaudeTeamRuntime {
                 session.provider_kind, profile.provider, profile.execution_mode
             )));
         }
+        // #937: label the owned runner process group with its exact cleanup
+        // scope so a machine-level owner can prove and terminate it if this
+        // runtime's driver dies before settling the lane.
+        self.transport
+            .child
+            .set_cleanup_label(&format!("{}:rg{}", session.id, session.runtime_generation));
         if profile.provider_version.as_deref() != Some(REVIEWED_CLAUDE_CODE_VERSION) {
             return Err(CliError::Usage(format!(
                 "CLAUDE_AGENT_SDK_VERSION_UNREVIEWED: profile must bind exact Claude Code {}, got {:?}",
@@ -380,6 +386,10 @@ impl TeamRuntimeAdapter for ClaudeTeamRuntime {
 impl RuntimeAdapter for ClaudeTeamRuntime {
     fn describe(&self) -> &RuntimeDescription {
         &self.description
+    }
+
+    fn owned_process_group_id(&self) -> Option<u32> {
+        Some(self.transport.child.owned_process_group_id())
     }
 
     fn open_or_resume(

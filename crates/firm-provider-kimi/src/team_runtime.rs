@@ -243,6 +243,11 @@ impl harness_runtime_contract::TeamRuntimeAdapter for KimiTeamRuntime<'_> {
                 session.provider_kind, profile.provider, profile.execution_mode
             )));
         }
+        // #937: label the owned provider process group with its exact cleanup
+        // scope so a machine-level owner can prove and terminate it if this
+        // runtime's driver dies before settling the lane.
+        self.client
+            .set_cleanup_label(&format!("{}:rg{}", session.id, session.runtime_generation));
         let client_version = self.client.provider_version();
         let profile_version = profile.provider_version.as_deref();
         if !reviewed_runtime_version_pair(client_version, profile_version) {
@@ -494,6 +499,10 @@ fn kimi_contract_bridge_error(
 impl harness_runtime_contract::RuntimeAdapter for KimiTeamRuntime<'_> {
     fn describe(&self) -> &harness_runtime_contract::RuntimeDescription {
         &self.description
+    }
+
+    fn owned_process_group_id(&self) -> Option<u32> {
+        self.client.owned_process_group_id()
     }
 
     fn open_or_resume(
