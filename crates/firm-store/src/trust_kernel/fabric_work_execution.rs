@@ -613,6 +613,9 @@ impl HarnessStore {
             "work-delivery:{}:{}",
             binding.work_id, binding.binding_generation
         );
+        // A saturating expectation equals the predecessor's generation at
+        // u64::MAX, so `binding.binding_generation != expected` below would stop
+        // separating a new binding from the current one. Refuse the ceiling.
         let expected_binding_generation = self
             .fabric_work_execution_bindings(&context.execution_space_id)?
             .into_iter()
@@ -620,7 +623,16 @@ impl HarnessStore {
             .map(|existing| existing.binding_generation)
             .max()
             .unwrap_or(0)
-            .saturating_add(1);
+            .checked_add(1)
+            .ok_or_else(|| {
+                trust_error(
+                    TrustErrorCode::UnauthorizedActor,
+                    "WORK_EXECUTION_BINDING_GENERATION_EXHAUSTED: the binding generation cannot advance further",
+                    "work_execution_binding",
+                    &binding.id,
+                    None,
+                )
+            })?;
         if work.version != binding.work_revision {
             return Err(trust_error(
                 TrustErrorCode::WorkRevisionStale,

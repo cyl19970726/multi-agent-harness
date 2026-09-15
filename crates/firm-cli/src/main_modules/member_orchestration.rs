@@ -347,10 +347,19 @@ pub(crate) fn bind_team_runtime_supervisor(
         next.driver_generation = if already_bound {
             session.control_state.driver_generation.max(1)
         } else {
+            // The Store's transfer guard requires exactly one advance and now
+            // refuses the saturated ceiling, so fail here with the named reason
+            // instead of proposing a value that cannot be a successor.
             session
                 .control_state
                 .driver_generation
-                .saturating_add(1)
+                .checked_add(1)
+                .ok_or_else(|| {
+                    CliError::Usage(format!(
+                        "AGENT_SESSION_DRIVER_GENERATION_EXHAUSTED: AgentSession {}",
+                        session.id
+                    ))
+                })?
                 .max(1)
         };
         next.driver_ref = target_driver;
