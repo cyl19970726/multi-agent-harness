@@ -496,7 +496,7 @@ fn publish_team_message_with_draft(
         })
         .ok_or_else(|| CliError::Usage("EXECUTION_SPACE_SCOPE_MISMATCH".into()))?;
     let lease = store
-        .latest_node_daemon_lease(&run.execution_node_id)?
+        .current_authorized_machine_lease(&run.execution_node_id)?
         .filter(|lease| {
             lease.status == NodeDaemonLeaseStatus::Active
                 && lease.expires_unix_ms > current_unix_ms_u64()

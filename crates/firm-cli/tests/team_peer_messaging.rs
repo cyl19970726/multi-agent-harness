@@ -39,7 +39,7 @@ fn run_err(home: &TempHome, project_id: &str, args: &[&str]) -> String {
 fn seed_sender_session(home: &TempHome, project_id: &str, node_id: &str) {
     let store = HarnessStore::new(home.spaces_dir().join(project_id));
     let lease = store
-        .latest_node_daemon_lease(node_id)
+        .current_authorized_machine_lease(node_id)
         .expect("read daemon lease")
         .expect("current daemon lease");
     store
@@ -250,7 +250,7 @@ fn peer_team_message_send_inbox_claim_and_replay() {
     loop {
         let store = HarnessStore::new(home.spaces_dir().join(&project_id));
         if store
-            .latest_node_daemon_lease(&node_id)
+            .current_authorized_machine_lease(&node_id)
             .ok()
             .flatten()
             .is_some_and(|lease| lease.status == harness_core::NodeDaemonLeaseStatus::Active)

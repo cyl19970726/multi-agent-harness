@@ -121,7 +121,7 @@ fn canonical_team_message_journey_uses_node_daemon_sessions_and_deliveries() {
     );
     assert_eq!(status, 200, "NodeDaemon bootstrap: {bootstrap}");
     let lease = store
-        .latest_node_daemon_lease(&node_id)
+        .current_authorized_machine_lease(&node_id)
         .expect("daemon lease")
         .expect("current daemon lease");
     let sessions = store

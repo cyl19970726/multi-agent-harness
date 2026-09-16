@@ -10,6 +10,14 @@ canonical_for: what happens to a running provider turn when this process loses
   is deliberately not a RuntimeCommand
 ```
 
+> **Amended by ADR 0075 (E2a-2a).** "Machine authority" is now one document per machine rather than
+> a bundle of per-Space lease rows, so the loss this ADR responds to is detected on that document.
+> Two lease-renewal acceptance tests in this lineage were retargeted rather than deleted; see the
+> retarget mapping table in
+> [ADR 0075](0075-machine-lease-leaves-the-space-data-lock.md#what-executing-this-checklist-found-e2a-2a),
+> rows 2 and 3. What this ADR decides — one cooperative interrupt before the SIGKILL backstop — is
+> unchanged.
+
 ## Context
 
 Two latches fence a running provider turn, and until this decision neither of

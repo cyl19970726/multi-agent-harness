@@ -92,7 +92,7 @@ fn recover_predecessor_releases_dead_instance_and_is_idempotent() {
     let (_tree, firm_home, store) = seed_recover_test_node("release");
     let dead_instance_id = format!("2147483647:{}:dead-daemon", current_unix_ms_u64());
     let dead_lease = store
-        .acquire_node_daemon_lease(
+        .seed_machine_authority_for_test(
             RECOVER_TEST_NODE_ID,
             "dead-daemon",
             &dead_instance_id,
@@ -153,8 +153,19 @@ fn recover_predecessor_releases_dead_instance_and_is_idempotent() {
     assert_eq!(second["generation"], dead_lease.generation);
 }
 
+/// ADR 0075 retarget of `recover_predecessor_partial_failure_preserves_releases_and_retry_markers`.
+///
+/// The old test proved that a partial failure *preserved* what it had already
+/// released: per-Space leases, so one Space could be `Released` while another
+/// was not, and `authority_released: false` meant "partly" (DEV-149-REVIEW-03).
+/// One document per machine makes "partly released" unsayable, so the successor
+/// property is the stronger one the ADR asks for: the publish is
+/// **all-or-nothing**. A failure anywhere leaves the machine still carrying the
+/// predecessor generation — a successor cannot acquire, and the retry has
+/// something to retry — while the per-Space settlements that did land stay
+/// landed, because those are Space facts and remain true.
 #[test]
-fn recover_predecessor_partial_failure_preserves_releases_and_retry_markers() {
+fn recover_predecessor_failure_publishes_no_release_and_keeps_its_retry_markers() {
     let (_tree, firm_home, store) = seed_recover_test_node("partial-receipt");
     let second_space = crate::execution_space::register_and_activate(
         &firm_home,
@@ -177,29 +188,31 @@ fn recover_predecessor_partial_failure_preserves_releases_and_retry_markers() {
         })
         .expect("insert node in second space");
     let instance = "2147483647:partial:dead-daemon";
-    let _lease = store
-        .acquire_node_daemon_lease(RECOVER_TEST_NODE_ID, "dead-daemon", instance, 1, 1)
-        .expect("seed expired predecessor in first space");
-
-    // Change only the second Space after capture. Its old tuple is now
-    // deterministically fenced, independent of runner speed or wall-clock TTL.
-    let second_lease = second
-        .acquire_node_daemon_lease(RECOVER_TEST_NODE_ID, "dead-daemon", instance, 1, 1)
-        .unwrap();
+    let captured = store
+        .seed_machine_authority_for_test(RECOVER_TEST_NODE_ID, "dead-daemon", instance, 1, 1)
+        .expect("seed expired predecessor");
     let intent =
         validate_daemon_predecessor_recovery(&firm_home, RECOVER_TEST_NODE_ID, None).unwrap();
+    assert_eq!(intent.spaces.len(), 2, "recovery spans both Spaces");
+
+    // Change the machine after capture. The captured tuple is now
+    // deterministically fenced, independent of runner speed or wall-clock TTL —
+    // and because there is one document, it is fenced for *every* Space at
+    // once, which is what makes a partial publish unconstructable.
     second
-        .release_node_daemon_lease(
+        .release_machine_authority_for_test(
             RECOVER_TEST_NODE_ID,
             "dead-daemon",
-            second_lease.generation,
+            captured.generation,
             instance,
             3,
         )
         .unwrap();
     let successor = second
-        .acquire_node_daemon_lease(RECOVER_TEST_NODE_ID, "dead-daemon", instance, 4, 1)
+        .seed_machine_authority_for_test(RECOVER_TEST_NODE_ID, "dead-daemon", instance, 4, 1)
         .unwrap();
+    assert!(successor.generation > captured.generation);
+    std::thread::sleep(Duration::from_millis(5));
     let actor = harness_core::agentfirm_api::ActorRef {
         kind: harness_core::agentfirm_api::ActorKind::Service,
         id: RECOVER_TEST_NODE_ID.into(),
@@ -217,22 +230,36 @@ fn recover_predecessor_partial_failure_preserves_releases_and_retry_markers() {
     .unwrap_err();
     let receipt: serde_json::Value = serde_json::from_str(&error.1).unwrap();
     assert_eq!(receipt["status"], "partial");
-    assert_eq!(receipt["space_settlements"][0]["already_released"], false);
-    assert!(receipt["failures"][0]
-        .as_str()
-        .unwrap()
-        .contains("NODE_DAEMON_GENERATION_FENCED"));
+    // The retry markers: the receipt still names every Space the request
+    // carried and the exact refusal each met, so the operator retries with
+    // evidence rather than a guess.
+    assert_eq!(receipt["space_leases"].as_array().unwrap().len(), 2);
+    let failures = receipt["failures"].as_array().unwrap();
+    assert_eq!(failures.len(), 2);
+    assert!(
+        failures.iter().all(|failure| failure
+            .as_str()
+            .unwrap()
+            .contains("NODE_DAEMON_GENERATION_FENCED")),
+        "{failures:?}"
+    );
+    // All-or-nothing on the document: no Space's outcome could publish a
+    // release, so the machine is exactly where it was and nothing may acquire.
+    assert_eq!(receipt["authority_released"], false);
     assert_eq!(
         second
-            .latest_node_daemon_lease(RECOVER_TEST_NODE_ID)
+            .current_authorized_machine_lease(RECOVER_TEST_NODE_ID)
             .unwrap()
             .unwrap(),
         successor
     );
-    // A new request captures the changed same-instance local generation,
-    // retaining the successful first settlement as an idempotent skip.
+    assert_ne!(successor.status, NodeDaemonLeaseStatus::Released);
+
+    // A new request captures the current machine generation and completes, so
+    // the failure above cost the operator a retry rather than the machine.
     let retry_intent =
         validate_daemon_predecessor_recovery(&firm_home, RECOVER_TEST_NODE_ID, None).unwrap();
+    assert_eq!(retry_intent.spaces[0].1.generation, successor.generation);
     let repeated = recover_daemon_predecessor_spaces(
         &firm_home,
         RECOVER_TEST_NODE_ID,
@@ -243,16 +270,18 @@ fn recover_predecessor_partial_failure_preserves_releases_and_retry_markers() {
         "test:partial-retry",
         None,
     )
-    .expect("retry preserves already released space and recovers second");
+    .expect("the retry settles every Space and publishes one release");
     assert_eq!(repeated["status"], "released");
-    let settlements = repeated["space_settlements"].as_array().unwrap();
-    assert_eq!(settlements.len(), 2);
-    for row in settlements {
-        assert_eq!(
-            row["already_released"],
-            row["execution_space_id"] == "space-recover"
-        );
-    }
+    assert_eq!(repeated["authority_released"], true);
+    assert_eq!(repeated["space_settlements"].as_array().unwrap().len(), 2);
+    assert_eq!(
+        store
+            .current_authorized_machine_lease(RECOVER_TEST_NODE_ID)
+            .unwrap()
+            .unwrap()
+            .status,
+        NodeDaemonLeaseStatus::Released
+    );
 }
 
 #[test]
@@ -264,7 +293,7 @@ fn recover_predecessor_refuses_a_live_predecessor_process() {
         current_unix_ms_u64()
     );
     store
-        .acquire_node_daemon_lease(
+        .seed_machine_authority_for_test(
             RECOVER_TEST_NODE_ID,
             "live-daemon",
             &live_instance_id,
@@ -288,7 +317,7 @@ fn recover_predecessor_refuses_an_unexpired_lease_naming_the_expiry() {
     let (_tree, firm_home, store) = seed_recover_test_node("unexpired");
     let dead_instance_id = format!("2147483647:{}:dead-daemon", current_unix_ms_u64());
     let lease = store
-        .acquire_node_daemon_lease(
+        .seed_machine_authority_for_test(
             RECOVER_TEST_NODE_ID,
             "dead-daemon",
             &dead_instance_id,
@@ -308,14 +337,24 @@ fn recover_predecessor_refuses_an_unexpired_lease_naming_the_expiry() {
     assert!(message.contains("retry after expiry"), "{message}");
 }
 
+/// ADR 0075 retarget of `absent_status_names_each_predecessor_lease_expiry`.
+///
+/// "Each" is the word that stopped being true. The old status named one
+/// predecessor lease per Execution Space, because that is where the lease
+/// lived — and in the dogfood evidence a single node carried 23 distinct
+/// "current" generations across 25 Spaces, so "each" meant an operator reading
+/// 25 lines that disagreed. There is now one lease, so the status names it
+/// once, says which record answered (`lease_source`) and where that record is
+/// (`lease_path`). Naming the file is strictly more than the old form gave: the
+/// operator can open the exact document the refusal was decided from.
 #[test]
-fn absent_status_names_each_predecessor_lease_expiry() {
+fn absent_status_names_the_one_predecessor_lease_and_the_document_it_read() {
     let log_path = Path::new("node-daemon.log");
 
     let (_unexpired_tree, unexpired_home, unexpired_store) =
         seed_recover_test_node("status-unexpired");
     let lease = unexpired_store
-        .acquire_node_daemon_lease(
+        .seed_machine_authority_for_test(
             RECOVER_TEST_NODE_ID,
             "unexpired-daemon",
             &format!("2147483647:{}:unexpired-daemon", current_unix_ms_u64()),
@@ -332,10 +371,26 @@ fn absent_status_names_each_predecessor_lease_expiry() {
         )),
         "{status}"
     );
+    // Once, not once per Space — and the machine's own record said so.
+    assert_eq!(
+        status
+            .matches("unreleased predecessor NodeDaemonLease")
+            .count(),
+        1,
+        "{status}"
+    );
+    assert!(status.contains("lease_source node_file"), "{status}");
+    let document = unexpired_store
+        .machine_lease_path(RECOVER_TEST_NODE_ID)
+        .expect("the machine lease document path");
+    assert!(
+        status.contains(&format!("lease_path {}", document.display())),
+        "{status}"
+    );
 
     let (_expired_tree, expired_home, expired_store) = seed_recover_test_node("status-expired");
     let expired_lease = expired_store
-        .acquire_node_daemon_lease(
+        .seed_machine_authority_for_test(
             RECOVER_TEST_NODE_ID,
             "expired-daemon",
             &format!("2147483647:{}:expired-daemon", current_unix_ms_u64()),
@@ -378,15 +433,29 @@ fn second_recovery_store(home: &Path) -> HarnessStore {
     store
 }
 
-fn seed_local_generation(store: &HarnessStore, generation: u64, instance: &str) {
+/// Drive the machine document up to `generation`, one real acquire/release pair
+/// per step.
+///
+/// Renamed from `seed_local_generation`: ADR 0075 abolishes Space-local
+/// generations, so a helper named for them would describe a counter that no
+/// longer exists. Every Store handed here resolves the same
+/// `<FIRM_HOME>/nodes/<node_id>/` document, which is what the callers now rely
+/// on rather than work around.
+fn seed_machine_generations(store: &HarnessStore, generation: u64, instance: &str) {
     for index in 1..=generation {
         let lease = store
-            .acquire_node_daemon_lease(RECOVER_TEST_NODE_ID, "dead-daemon", instance, index * 2, 1)
+            .seed_machine_authority_for_test(
+                RECOVER_TEST_NODE_ID,
+                "dead-daemon",
+                instance,
+                index * 2,
+                1,
+            )
             .unwrap();
         assert_eq!(lease.generation, index);
         if index < generation {
             store
-                .release_node_daemon_lease(
+                .release_machine_authority_for_test(
                     RECOVER_TEST_NODE_ID,
                     "dead-daemon",
                     index,
@@ -417,85 +486,154 @@ fn recover_captured(
     )
 }
 
+/// ADR 0075 retarget of `recovery_uses_space_local_generations_and_http_never_expands_its_tuple`.
+///
+/// The old test *depended* on the defect: it drove one Execution Space to
+/// generation 4 and another to 26 for the same machine authority, then proved
+/// recovery honoured each Space's own counter. That state is what this ADR
+/// removes — in the live dogfood store one node carried 23 distinct "current"
+/// generations, from 1 to 148, for one authority — so the successor property is
+/// its inverse, and it is the cutover's central claim: **the generation is
+/// machine-wide and monotonic, whichever Store asks**.
+///
+/// The second half is preserved unchanged: an HTTP intent authorizes exactly
+/// one `(daemon, instance, generation)` tuple and can never implicitly expand
+/// to another generation.
 #[test]
-fn recovery_uses_space_local_generations_and_http_never_expands_its_tuple() {
-    let (_tree, home, first) = seed_recover_test_node("local-generations");
+fn the_generation_is_machine_wide_and_monotonic_and_http_never_expands_its_tuple() {
+    let (_tree, home, first) = seed_recover_test_node("machine-wide-generations");
     let second = second_recovery_store(&home);
     let instance = "2147483647:local:dead-daemon";
-    seed_local_generation(&first, 4, instance);
-    seed_local_generation(&second, 26, instance);
-    // Existing HTTP intent can recover generation 4 despite a higher local
-    // counter elsewhere, but it cannot authorize generation 26 implicitly.
+    // Four real transitions, driven through the first Space's Store.
+    seed_machine_generations(&first, 4, instance);
+    let read_through = |store: &HarnessStore| {
+        store
+            .current_authorized_machine_lease(RECOVER_TEST_NODE_ID)
+            .unwrap()
+            .unwrap()
+    };
+    // The second Space's Store reports the same number rather than starting its
+    // own count at 1, which is exactly what it would have done before.
+    assert_eq!(read_through(&first).generation, 4);
+    assert_eq!(read_through(&second).generation, 4);
+    assert_eq!(
+        read_through(&first),
+        read_through(&second),
+        "one machine, one lease — not one per Execution Space"
+    );
+
+    // Monotonic across handles: a transition driven from the other Store
+    // continues the same sequence instead of restarting it.
+    second
+        .release_machine_authority_for_test(RECOVER_TEST_NODE_ID, "dead-daemon", 4, instance, 9)
+        .unwrap();
+    let fifth = second
+        .seed_machine_authority_for_test(RECOVER_TEST_NODE_ID, "dead-daemon", instance, 10, 1)
+        .unwrap();
+    assert_eq!(fifth.generation, 5);
+    assert_eq!(read_through(&first).generation, 5);
+    std::thread::sleep(Duration::from_millis(5));
+
+    // An HTTP intent naming the exact live tuple recovers that tuple.
     let http = validate_daemon_predecessor_recovery(
+        &home,
+        RECOVER_TEST_NODE_ID,
+        Some(("dead-daemon", instance, 5)),
+    )
+    .unwrap();
+    assert_eq!(http.instance_id, instance);
+    // Every Space this node serves is settled by the one recovery, because the
+    // per-Space half of recovery is Session settlement, not authority.
+    assert_eq!(http.spaces.len(), 2);
+    assert!(http.spaces.iter().all(|(_, lease)| lease.generation == 5));
+    let result = recover_captured(&home, &http).unwrap();
+    assert_eq!(result["space_settlements"][0]["generation"], 5);
+    assert_eq!(read_through(&first).status, NodeDaemonLeaseStatus::Released);
+
+    // And it cannot implicitly authorize a different generation: a tuple naming
+    // the superseded generation 4 is refused rather than widened to 5.
+    let superseded = validate_daemon_predecessor_recovery(
         &home,
         RECOVER_TEST_NODE_ID,
         Some(("dead-daemon", instance, 4)),
     )
-    .unwrap();
-    assert_eq!(http.spaces.len(), 1);
-    let result = recover_captured(&home, &http).unwrap();
-    assert_eq!(result["space_settlements"][0]["generation"], 4);
-    assert_ne!(
-        second
-            .latest_node_daemon_lease(RECOVER_TEST_NODE_ID)
-            .unwrap()
-            .unwrap()
-            .status,
-        NodeDaemonLeaseStatus::Released
-    );
-    // CLI retry includes the already released exact predecessor and remaining
-    // generation 26, each passed independently to the Store.
-    let result =
-        daemon_recover_predecessor(&home, RECOVER_TEST_NODE_ID, &recover_args(true)).unwrap();
-    assert!(
-        result["generation"].is_null(),
-        "no fabricated machine-wide generation"
-    );
-    let rows = result["space_settlements"].as_array().unwrap();
-    assert!(rows
-        .iter()
-        .any(|row| row["generation"] == 4 && row["already_released"] == true));
-    assert!(rows
-        .iter()
-        .any(|row| row["generation"] == 26 && row["already_released"] == false));
+    .err()
+    .expect("an HTTP tuple naming a superseded generation must be refused");
     assert_eq!(
-        daemon_recover_predecessor(&home, RECOVER_TEST_NODE_ID, &recover_args(true)).unwrap()
-            ["already_released"],
-        true
+        superseded.0, "SUPERVISOR_GENERATION_FENCED",
+        "{superseded:?}"
     );
+    assert!(
+        superseded.1.contains("exact latest predecessor"),
+        "{superseded:?}"
+    );
+
+    // The CLI retry reports the already released exact predecessor once, under
+    // the one generation that exists.
+    let retry =
+        daemon_recover_predecessor(&home, RECOVER_TEST_NODE_ID, &recover_args(true)).unwrap();
+    assert_eq!(retry["already_released"], true);
+    assert_eq!(retry["generation"], 5);
 }
 
+/// ADR 0075 retarget of the first half only; the second half is untouched.
+///
+/// The first half used to construct two Spaces holding *different* unreleased
+/// instances at the same generation and assert that `validate` refused with
+/// "different unreleased". One document per machine keeps the property and
+/// moves where it is enforced: the foreign instance is refused at acquisition,
+/// so `validate` is never handed the ambiguity in the first place. That is
+/// strictly stronger — the old refusal still had to be reached after both rows
+/// existed — and the test name stays true, because a same-generation foreign
+/// instance is still exactly what is refused.
+///
+/// The second half — a successor generation taken after `validate` captured its
+/// intent must fence the captured recovery — is unchanged and is the reason
+/// this test is migrated rather than replaced.
 #[test]
 fn recovery_refuses_same_generation_foreign_instance_and_fences_successor() {
     let (_tree, home, first) = seed_recover_test_node("foreign-instance");
     let second = second_recovery_store(&home);
     let instance = "2147483647:first:dead-daemon";
-    seed_local_generation(&first, 1, instance);
-    seed_local_generation(&second, 1, "2147483647:foreign:dead-daemon");
+    seed_machine_generations(&first, 1, instance);
+    let foreign = second
+        .acquire_machine_lease(
+            RECOVER_TEST_NODE_ID,
+            "dead-daemon",
+            "2147483647:foreign:dead-daemon",
+            1,
+            &[],
+        )
+        .expect_err("a foreign instance cannot take a machine an unreleased predecessor holds")
+        .to_string();
     assert!(
-        validate_daemon_predecessor_recovery(&home, RECOVER_TEST_NODE_ID, None)
-            .err()
-            .unwrap()
-            .1
-            .contains("different unreleased")
+        foreign.contains("NODE_DAEMON_PREDECESSOR_RECOVERY_REQUIRED"),
+        "{foreign}"
     );
-    assert_ne!(
-        first
-            .latest_node_daemon_lease(RECOVER_TEST_NODE_ID)
+    assert!(foreign.contains(instance), "{foreign}");
+    // Nothing was written, so the one predecessor `validate` can see is still
+    // the exact instance that held the machine.
+    let held = first
+        .current_authorized_machine_lease(RECOVER_TEST_NODE_ID)
+        .unwrap()
+        .unwrap();
+    assert_ne!(held.status, NodeDaemonLeaseStatus::Released);
+    assert_eq!(held.instance_id, instance);
+    assert_eq!(
+        validate_daemon_predecessor_recovery(&home, RECOVER_TEST_NODE_ID, None)
             .unwrap()
-            .unwrap()
-            .status,
-        NodeDaemonLeaseStatus::Released
+            .instance_id,
+        instance
     );
 
     let (_tree, home, store) = seed_recover_test_node("successor-after-validate");
-    seed_local_generation(&store, 1, instance);
+    seed_machine_generations(&store, 1, instance);
     let intent = validate_daemon_predecessor_recovery(&home, RECOVER_TEST_NODE_ID, None).unwrap();
     store
-        .release_node_daemon_lease(RECOVER_TEST_NODE_ID, "dead-daemon", 1, instance, 3)
+        .release_machine_authority_for_test(RECOVER_TEST_NODE_ID, "dead-daemon", 1, instance, 3)
         .unwrap();
     let successor = store
-        .acquire_node_daemon_lease(
+        .seed_machine_authority_for_test(
             RECOVER_TEST_NODE_ID,
             "dead-daemon",
             "2147483647:successor:dead-daemon",
@@ -507,28 +645,53 @@ fn recovery_refuses_same_generation_foreign_instance_and_fences_successor() {
     assert!(refusal.1.contains("NODE_DAEMON_GENERATION_FENCED"));
     assert_eq!(
         store
-            .latest_node_daemon_lease(RECOVER_TEST_NODE_ID)
+            .current_authorized_machine_lease(RECOVER_TEST_NODE_ID)
             .unwrap()
             .unwrap(),
         successor
     );
 }
 
+/// ADR 0075 retarget of `recovery_does_not_add_spaces_after_validation`.
+///
+/// The old test proved a Space registered *after* validation could not join the
+/// recovery set and have its lease released behind the operator's back — a real
+/// hazard while every Space carried its own authority row. Spaces no longer
+/// enter the authority decision at all, so the successor property pins that
+/// directly: the captured intent still settles exactly the Spaces it captured,
+/// and a Space that appears afterwards changes neither the recovered set nor —
+/// the half that used to matter most — who owns the machine, because it never
+/// had a lease of its own to release.
 #[test]
-fn recovery_does_not_add_spaces_after_validation() {
+fn a_space_appearing_after_validation_joins_neither_the_recovery_set_nor_the_authority() {
     let (_tree, home, first) = seed_recover_test_node("captured-spaces");
     let instance = "2147483647:captured:dead-daemon";
-    seed_local_generation(&first, 1, instance);
+    seed_machine_generations(&first, 1, instance);
     let intent = validate_daemon_predecessor_recovery(&home, RECOVER_TEST_NODE_ID, None).unwrap();
+    assert_eq!(intent.spaces.len(), 1);
+    // A Space that appears after capture. It carries no machine authority of
+    // its own — it resolves the same document every other Store does — so there
+    // is nothing here for a widened sweep to release.
     let second = second_recovery_store(&home);
-    seed_local_generation(&second, 1, instance);
     assert_eq!(
-        recover_captured(&home, &intent).unwrap()["recovered_spaces"],
-        serde_json::json!(["space-recover"])
-    );
-    assert_ne!(
         second
             .latest_node_daemon_lease(RECOVER_TEST_NODE_ID)
+            .unwrap(),
+        None,
+        "a new Space mints no lease row of its own after cutover"
+    );
+    let receipt = recover_captured(&home, &intent).unwrap();
+    assert_eq!(
+        receipt["recovered_spaces"],
+        serde_json::json!(["space-recover"]),
+        "the captured set is the settled set"
+    );
+    // The machine's own authority moved exactly once, for the captured
+    // generation, and the late Space reads that same one answer.
+    assert_eq!(receipt["authority_released"], true);
+    assert_eq!(
+        second
+            .current_authorized_machine_lease(RECOVER_TEST_NODE_ID)
             .unwrap()
             .unwrap()
             .status,

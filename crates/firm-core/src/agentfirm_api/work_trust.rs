@@ -605,6 +605,15 @@ pub enum TrustErrorCode {
     GateWaiverUnauthorized,
     ReportEvidenceMissing,
     FailureAnalysisMissing,
+    /// A Store could not name this machine's NodeDaemon lease document, or
+    /// resolved one that does not authorize a provider effect (ADR 0075).
+    ///
+    /// Typed rather than a message prefix because the fences that consume it
+    /// are the 46 machine-authority deciders: a string they all have to match
+    /// identically is a rule enforced by 46 copies of a habit. "I cannot say
+    /// who owns this machine" is never "nobody does", so this is always a
+    /// refusal and never a fallback.
+    MachineLeaseUnresolved,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

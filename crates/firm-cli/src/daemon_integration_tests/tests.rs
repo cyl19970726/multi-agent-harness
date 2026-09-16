@@ -37,8 +37,21 @@ fn node_authority_heartbeat_is_independent_of_a_long_discovery_scan() {
     );
 }
 
+/// ADR 0075 retarget of `unreadable_held_space_latches_only_after_confirmed_deadline`.
+///
+/// The old test proved a Space whose lease ledger could not be read eventually
+/// latched machine-wide authority loss — the right answer while that ledger
+/// *was* the authority, because an unreadable Space might hold the live lease.
+/// It is not the authority any more. An unreadable Space is a **projection**
+/// problem: the machine's owner is one document under the Firm home, and no
+/// Space can hide it, contradict it, or cost the daemon the machine by being
+/// corrupt. So the successor property is the inverse, and it is the stronger
+/// claim: the heartbeat renews straight through two unreadable Spaces, every
+/// Space — corrupt ones included — resolves the same lease from the node file,
+/// and the corrupt ledgers are still exactly as corrupt afterwards, which is
+/// what proves the daemon never needed them.
 #[test]
-fn unreadable_held_space_latches_only_after_confirmed_deadline() {
+fn an_unreadable_space_is_a_projection_problem_not_an_authority_problem() {
     const NODE_ID: &str = "11111111-1111-4111-8111-111111111112";
     let tree = TestTree::new("parallel-authority-refresh");
     let firm_home = tree.0.join("home");
@@ -54,17 +67,18 @@ fn unreadable_held_space_latches_only_after_confirmed_deadline() {
         .expect("register test Execution Space");
     }
     let spaces = crate::execution_space::list_spaces(&firm_home).expect("list test Spaces");
-    let (healthy, slow_spaces) = spaces.split_last().expect("at least one test Space");
-    for space in slow_spaces {
-        std::fs::create_dir_all(&space.store_root).expect("initialize slow Store root");
+    let (healthy, unreadable_spaces) = spaces.split_last().expect("at least one test Space");
+    const CORRUPT_TAIL: &[u8] = b"{\"generation\":1";
+    for space in unreadable_spaces {
+        std::fs::create_dir_all(&space.store_root).expect("initialize unreadable Store root");
         std::fs::write(
             space.store_root.join("node_daemon_leases.jsonl"),
-            b"{\"generation\":1",
+            CORRUPT_TAIL,
         )
         .expect("write bounded incomplete tail");
     }
 
-    let store = HarnessStore::new(healthy.store_root.clone());
+    let store = HarnessStore::new(healthy.store_root.clone()).with_firm_home(&firm_home);
     store.init().expect("initialize healthy Store");
     store
         .insert_execution_node(&harness_core::ExecutionNode {
@@ -89,17 +103,17 @@ fn unreadable_held_space_latches_only_after_confirmed_deadline() {
         )
         .expect("register healthy test project");
     let lease = store
-        .acquire_node_daemon_lease(
+        .seed_machine_authority_for_test(
             NODE_ID,
             &format!("node-daemon:{NODE_ID}"),
             "parallel-refresh-instance",
             current_unix_ms_u64(),
-            250,
+            3_000,
         )
-        .expect("acquire deliberately short test lease");
+        .expect("acquire the machine lease");
 
     let daemon = TestDaemon::new(TestDaemonConfig {
-        firm_home,
+        firm_home: firm_home.clone(),
         node_id: NODE_ID.into(),
         daemon_id: format!("node-daemon:{NODE_ID}"),
         instance_id: "parallel-refresh-instance".into(),
@@ -114,133 +128,67 @@ fn unreadable_held_space_latches_only_after_confirmed_deadline() {
         drain_timeout_override_ms: None,
     });
 
-    // Seed the leases that this instance previously confirmed. Corruption in
-    // an unheld historical Space is not a machine authority-loss signal.
+    // Every Space this instance holds, including the two whose lease ledgers
+    // cannot be parsed.
     daemon.remember_node_lease(&healthy.id, &store, &lease);
-    for space in slow_spaces {
+    for space in unreadable_spaces {
         daemon.remember_node_lease(
             &space.id,
-            &HarnessStore::new(space.store_root.clone()),
+            &HarnessStore::new(space.store_root.clone()).with_firm_home(&firm_home),
             &lease,
         );
     }
 
-    let command_actor = harness_core::agentfirm_api::ActorRef {
-        kind: harness_core::agentfirm_api::ActorKind::Service,
-        id: daemon.daemon_id().to_string(),
-    };
-    let command_payload = serde_json::json!({"draft": {}});
-    let command = harness_core::agentfirm_api::ControlCommandEnvelope {
-        id: "runtime-command-after-machine-loss".into(),
-        execution_space_id: healthy.id.clone(),
-        target_node_id: NODE_ID.into(),
-        target_node_daemon_id: daemon.daemon_id().to_string(),
-        target_node_daemon_generation: lease.generation,
-        authenticated_actor: command_actor.clone(),
-        command: harness_core::agentfirm_api::RuntimeCommandKind::AuthorMessage,
-        required_capability: "message.author".into(),
-        idempotency_key: "runtime-command-after-machine-loss".into(),
-        expected_version: 0,
-        expires_unix_ms: current_unix_ms_u64().saturating_add(30_000),
-        binding: Default::default(),
-        precondition: Default::default(),
-        postcondition: Default::default(),
-        payload_fingerprint: harness_store::canonical_json_fingerprint(&command_payload),
-        payload: command_payload,
-        issued_at: "unix-ms:2".into(),
-    };
-    let command_context = harness_core::agentfirm_api::MutationContext {
-        execution_space_id: healthy.id.clone(),
-        authenticated_actor: command_actor.clone(),
-        authority_actor: Some(command_actor),
-        command_name: "runtime.message.author".into(),
-        idempotency_key: command.idempotency_key.clone(),
-        expected_version: 0,
-        request_fingerprint: Some(
-            harness_store::runtime_command_envelope_fingerprint(&command)
-                .expect("fingerprint test RuntimeCommand"),
-        ),
-    };
+    daemon
+        .refresh_held_node_authorities()
+        .expect("an unreadable Space ledger cannot cost this machine its authority");
+    assert!(!daemon.authority_lost());
+    assert!(!daemon.stop_requested_flag().load(Ordering::SeqCst));
 
-    let started = Instant::now();
-    let error = std::thread::scope(|scope| {
-        let refresh = scope.spawn(|| daemon.refresh_held_node_authorities());
-        let deadline = Instant::now() + Duration::from_secs(3);
-        while !daemon.authority_lost() && Instant::now() < deadline {
-            std::thread::yield_now();
-        }
-        assert!(
-            daemon.authority_lost(),
-            "the unreadable Space must latch process authority loss"
-        );
-        let still_active = store
-            .latest_node_daemon_lease(NODE_ID)
-            .expect("read healthy lease while another Space blocks drain")
-            .expect("healthy lease remains present");
+    let renewed = store
+        .current_authorized_machine_lease(NODE_ID)
+        .expect("read the machine lease after the heartbeat")
+        .expect("the machine lease is still there");
+    assert_eq!(renewed.generation, lease.generation);
+    assert_eq!(renewed.instance_id, lease.instance_id);
+    assert_eq!(renewed.status, harness_core::NodeDaemonLeaseStatus::Active);
+    assert!(renewed.renewed_unix_ms >= lease.renewed_unix_ms);
+    assert!(renewed.expires_unix_ms > current_unix_ms_u64());
+
+    // The corrupt Spaces answer the machine question with the same document,
+    // from the same source — they are projections of it, not competitors.
+    for space in unreadable_spaces {
+        let (from_corrupt, source) = HarnessStore::new(space.store_root.clone())
+            .with_firm_home(&firm_home)
+            .current_machine_lease(NODE_ID)
+            .expect("an unreadable ledger does not block the machine question")
+            .expect("the machine lease resolves through every Space");
+        assert_eq!(from_corrupt, renewed);
+        assert_eq!(source, harness_store::MachineLeaseSource::NodeFile);
+        // Still exactly as corrupt: the heartbeat never touched it, which is
+        // the whole reason it could not be hurt by it.
         assert_eq!(
-            still_active.status,
-            harness_core::NodeDaemonLeaseStatus::Active,
-            "the cross-Space regression must observe process admission closed before durable drain reaches the healthy Space"
+            std::fs::read(space.store_root.join("node_daemon_leases.jsonl")).unwrap(),
+            CORRUPT_TAIL
         );
-        let operations_before = store
-            .canonical_operations()
-            .expect("read operations before fenced admission");
-        let admission_error = store
-            .prepare_runtime_command(
-                &command_context,
-                &command,
-                current_unix_ms_u64(),
-                "unix-ms:3",
-            )
-            .expect_err("machine authority loss must immediately fence another Space");
-        assert!(
-            admission_error
-                .to_string()
-                .contains("SUPERVISOR_GENERATION_FENCED"),
-            "unexpected admission error: {admission_error}"
-        );
-        assert_eq!(
-            store
-                .canonical_operations()
-                .expect("read operations after fenced admission"),
-            operations_before,
-            "fenced admission must have zero durable effect"
-        );
-        refresh
-            .join()
-            .expect("authority refresh worker must not panic")
-            .expect_err("an unreadable Space must close machine-wide authority")
-    });
-    assert!(
-        started.elapsed() >= Duration::from_millis(900),
-        "the fixture must exercise the incomplete-row retry window"
-    );
-    assert!(
-        error
-            .to_string()
-            .contains("NODE_DAEMON_MACHINE_AUTHORITY_LOST"),
-        "unexpected authority error: {error}"
-    );
-    assert!(daemon.authority_lost());
-    assert!(daemon.stop_requested_flag().load(Ordering::SeqCst));
-    let not_refreshed = store
-        .latest_node_daemon_lease(NODE_ID)
-        .expect("read fenced lease")
-        .expect("fenced lease remains present");
-    assert_eq!(not_refreshed.generation, lease.generation);
-    assert_eq!(
-        not_refreshed.instance_id, lease.instance_id,
-        "authority loss never fabricates a successor"
-    );
-    assert_eq!(
-        not_refreshed.status,
-        harness_core::NodeDaemonLeaseStatus::Draining,
-        "machine authority loss must durably drain every readable exact lease"
-    );
+    }
 }
 
+/// ADR 0075 retarget of `authority_bundle_rolls_back_partial_acquisition_until_every_predecessor_is_released`.
+///
+/// "Partial acquisition" was a state only per-Space leases could reach: the
+/// bundle acquired Space by Space, so a later Space's refusal left earlier ones
+/// already acquired and the daemon had to roll them back by hand. There is one
+/// acquire now, on one document, under one lock — so the successor property is
+/// the stronger one: acquisition is **atomic on the document**. A publish that
+/// fails leaves the previous generation and its history byte-for-byte intact,
+/// proven here by injecting a real failure at the atomic replace's staging step
+/// rather than by trusting the code path.
+///
+/// The "until every predecessor is released" half is unchanged, because it is
+/// unchanged: an unsettled predecessor still blocks the whole machine.
 #[test]
-fn authority_bundle_rolls_back_partial_acquisition_until_every_predecessor_is_released() {
+fn authority_acquisition_is_atomic_on_the_document_until_every_predecessor_is_released() {
     const NODE_ID: &str = "11111111-1111-4111-8111-111111111113";
     let tree = TestTree::new("authority-bundle");
     let firm_home = tree.0.join("home");
@@ -284,7 +232,7 @@ fn authority_bundle_rolls_back_partial_acquisition_until_every_predecessor_is_re
     }
     let blocked_store = HarnessStore::new(spaces[1].store_root.clone());
     blocked_store
-        .acquire_node_daemon_lease(NODE_ID, "predecessor", "crashed-instance", 1, 1)
+        .seed_machine_authority_for_test(NODE_ID, "predecessor", "crashed-instance", 1, 1)
         .expect("create expired unsettled predecessor");
 
     let daemon = TestDaemon::new(TestDaemonConfig {
@@ -308,18 +256,20 @@ fn authority_bundle_rolls_back_partial_acquisition_until_every_predecessor_is_re
     assert!(error
         .to_string()
         .contains("NODE_DAEMON_MACHINE_AUTHORITY_LOST"));
+    // Nothing partial to roll back: the one document still names the
+    // predecessor, and every Space reads that same answer.
     for space in &spaces {
         let lease = HarnessStore::new(space.store_root.clone())
-            .latest_node_daemon_lease(NODE_ID)
-            .expect("read post-rollback lease");
-        assert!(lease.as_ref().is_none_or(|lease| {
-            lease.status == harness_core::NodeDaemonLeaseStatus::Released
-                || lease.instance_id == "crashed-instance"
-        }));
+            .with_firm_home(&firm_home)
+            .current_authorized_machine_lease(NODE_ID)
+            .expect("read the machine lease after the refused acquire")
+            .expect("the predecessor lease is still there");
+        assert_eq!(lease.instance_id, "crashed-instance");
+        assert_ne!(lease.status, harness_core::NodeDaemonLeaseStatus::Released);
     }
 
     blocked_store
-        .release_node_daemon_lease(
+        .release_machine_authority_for_test(
             NODE_ID,
             "predecessor",
             1,
@@ -327,18 +277,65 @@ fn authority_bundle_rolls_back_partial_acquisition_until_every_predecessor_is_re
             current_unix_ms_u64(),
         )
         .expect("simulate explicit Operator predecessor recovery");
+
+    // Fault injection at the one step that can leave a half-state: staging.
+    // A directory where the `.tmp` file must be created makes `File::create`
+    // fail inside the lease lock, after the decision and before the rename.
+    let node_home = blocked_store
+        .machine_lease_path(NODE_ID)
+        .expect("machine lease path")
+        .parent()
+        .expect("node home")
+        .to_path_buf();
+    let released = blocked_store
+        .current_authorized_machine_lease(NODE_ID)
+        .expect("read the released predecessor")
+        .expect("the released predecessor is still the document");
+    let document_before = std::fs::read(node_home.join("node-daemon-lease.json"))
+        .expect("read the document before the failed acquire");
+    let history_before = std::fs::read(node_home.join("node-daemon-lease-history.jsonl"))
+        .expect("read the history before the failed acquire");
+    std::fs::create_dir(node_home.join("node-daemon-lease.json.tmp"))
+        .expect("block the atomic replace's staging file");
+
     let successor = daemon.successor("successor-instance".into());
+    successor
+        .ensure_node_authority_bundle()
+        .expect_err("an acquire that cannot stage its document must not half-land");
+    // Atomic on the document: the previous generation and its history are
+    // byte-for-byte what they were. No partial state — not a truncated
+    // document, not an orphan history row for a generation nobody owns.
+    assert_eq!(
+        std::fs::read(node_home.join("node-daemon-lease.json")).unwrap(),
+        document_before
+    );
+    assert_eq!(
+        std::fs::read(node_home.join("node-daemon-lease-history.jsonl")).unwrap(),
+        history_before
+    );
+    assert_eq!(
+        blocked_store
+            .current_authorized_machine_lease(NODE_ID)
+            .unwrap()
+            .unwrap(),
+        released
+    );
+
+    std::fs::remove_dir(node_home.join("node-daemon-lease.json.tmp"))
+        .expect("clear the staging fault");
     let bundle = successor
         .ensure_node_authority_bundle()
         .expect("all Released predecessors permit one complete bundle");
     assert_eq!(bundle.len(), 2);
     for space in &spaces {
         let lease = HarnessStore::new(space.store_root.clone())
-            .latest_node_daemon_lease(NODE_ID)
+            .with_firm_home(&firm_home)
+            .current_authorized_machine_lease(NODE_ID)
             .expect("read successor lease")
             .expect("successor lease exists");
         assert_eq!(lease.instance_id, "successor-instance");
         assert_eq!(lease.status, harness_core::NodeDaemonLeaseStatus::Active);
+        assert_eq!(lease.generation, released.generation + 1);
     }
 }
 
@@ -759,7 +756,7 @@ fn shutdown_renews_node_authority_until_accepted_worker_finishes() {
         )
         .expect("register test Node project");
     let lease = store
-        .acquire_node_daemon_lease(
+        .seed_machine_authority_for_test(
             NODE_ID,
             &format!("node-daemon:{NODE_ID}"),
             "test-instance",
@@ -853,7 +850,7 @@ fn shutdown_renews_node_authority_until_accepted_worker_finishes() {
         std::thread::sleep(Duration::from_millis(1_600));
         assert!(!server.is_finished(), "daemon still drains accepted worker");
         let during_drain = store
-            .latest_node_daemon_lease(NODE_ID)
+            .current_authorized_machine_lease(NODE_ID)
             .expect("read lease during drain")
             .expect("lease remains present");
         assert_eq!(
@@ -877,7 +874,7 @@ fn shutdown_renews_node_authority_until_accepted_worker_finishes() {
     });
 
     let released = store
-        .latest_node_daemon_lease(NODE_ID)
+        .current_authorized_machine_lease(NODE_ID)
         .expect("read released lease")
         .expect("released lease remains auditable");
     assert_eq!(
@@ -889,7 +886,7 @@ fn shutdown_renews_node_authority_until_accepted_worker_finishes() {
     // prove completion. Shutdown may fence it as Draining, but must not mint
     // the Released receipt that would authorize another successor.
     let failed_lease = store
-        .acquire_node_daemon_lease(
+        .seed_machine_authority_for_test(
             NODE_ID,
             &format!("node-daemon:{NODE_ID}"),
             "test-failure-instance",
@@ -992,7 +989,7 @@ fn shutdown_renews_node_authority_until_accepted_worker_finishes() {
         );
     });
     let not_released = store
-        .latest_node_daemon_lease(NODE_ID)
+        .current_authorized_machine_lease(NODE_ID)
         .expect("read failed generation")
         .expect("failed generation remains auditable");
     assert_eq!(not_released.generation, failed_lease.generation);

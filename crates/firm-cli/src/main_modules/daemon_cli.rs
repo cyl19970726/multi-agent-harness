@@ -135,14 +135,33 @@ pub(crate) fn daemon_start_failure(pid: u32, reason: &str, log_path: &Path) -> C
     ))
 }
 
+/// Why a NodeDaemon is absent, and what a human should do about it.
+///
+/// ADR 0075: one machine, one lease, one question. This used to walk every
+/// Execution Space and name a predecessor lease *per Space*, because that is
+/// where the lease lived; a node in 25 Spaces produced 25 lines describing one
+/// authority, and in the dogfood evidence they disagreed with each other. The
+/// Space list is still walked, but only to obtain a Store handle bound to this
+/// Firm home — every Store on this node resolves the same
+/// `<FIRM_HOME>/nodes/<node_id>/` document, so the first one answers for the
+/// machine and the rest would only repeat it. A Firm home with no Execution
+/// Space has no Node registered either, which is the same "no NodeDaemon"
+/// answer the per-Space walk gave.
+///
+/// The line names the document that decided it, and the source it came from, so
+/// an operator reading a refusal can open the exact file (ADR 0075: `daemon
+/// status` gains `lease_path` and `lease_source`).
 fn daemon_absent_status(firm_home: &Path, node_id: &str, log_path: &Path) -> CliResult<String> {
-    let mut predecessors = Vec::new();
-    let mut unreadable_spaces = Vec::new();
     let now = current_unix_ms_u64();
-    for space in execution_space::list_spaces(firm_home).map_err(execution_space_err)? {
-        let store = HarnessStore::new(space.store_root);
-        match store.latest_node_daemon_lease(node_id) {
-            Ok(Some(lease)) if lease.status != NodeDaemonLeaseStatus::Released => {
+    let mut details = Vec::new();
+    let store = execution_space::list_spaces(firm_home)
+        .map_err(execution_space_err)?
+        .into_iter()
+        .next()
+        .map(|space| HarnessStore::new(space.store_root).with_firm_home(firm_home));
+    if let Some(store) = store {
+        match store.current_machine_lease(node_id) {
+            Ok(Some((lease, source))) if lease.status != NodeDaemonLeaseStatus::Released => {
                 let status = match lease.status {
                     NodeDaemonLeaseStatus::Active => "active",
                     NodeDaemonLeaseStatus::Draining => "draining",
@@ -157,34 +176,27 @@ fn daemon_absent_status(firm_home: &Path, node_id: &str, log_path: &Path) -> Cli
                         (lease.expires_unix_ms - now) / 1000
                     )
                 };
-                predecessors.push(format!(
-                    "{}={status} generation {} (daemon {}, instance {}, {expiry})",
-                    space.id, lease.generation, lease.daemon_id, lease.instance_id
+                let document = match store.machine_lease_path(node_id) {
+                    Ok(path) => format!(", lease_path {}", path.display()),
+                    // The lease resolved, so this can only be a node id the
+                    // directory rule refuses; say so rather than print nothing.
+                    Err(error) => format!(", lease_path unresolved ({error})"),
+                };
+                details.push(format!(
+                    "unreleased predecessor NodeDaemonLease: {status} generation {} (daemon {}, instance {}, {expiry}, lease_source {}{document})",
+                    lease.generation, lease.daemon_id, lease.instance_id, source.as_str()
                 ));
             }
             Ok(_) => {}
-            Err(error) => unreadable_spaces.push(format!("{} ({error})", space.id)),
+            Err(error) => details.push(format!("unreadable machine lease: {error}")),
         }
     }
-    if predecessors.is_empty() && unreadable_spaces.is_empty() {
+    if details.is_empty() {
         Ok(format!(
             "absent (no NodeDaemon for Node {node_id}); log: {}",
             log_path.display()
         ))
     } else {
-        let mut details = Vec::new();
-        if !predecessors.is_empty() {
-            details.push(format!(
-                "unreleased predecessor NodeDaemonLease: {}",
-                predecessors.join(", ")
-            ));
-        }
-        if !unreadable_spaces.is_empty() {
-            details.push(format!(
-                "unreadable NodeDaemonLease stores: {}",
-                unreadable_spaces.join(", ")
-            ));
-        }
         Ok(format!(
             "absent (no live NodeDaemon for Node {node_id}); {}; recovery action: \
              firm daemon recover-predecessor --confirm daemon-recover-predecessor; log: {}",
@@ -395,13 +407,19 @@ pub(super) fn daemon_command(args: &[String]) -> CliResult<()> {
             );
         }
         "stop" => {
+            // ADR 0075: the generation comes from the one machine document, not
+            // from whichever Space happened to carry the highest row. The
+            // request still names an Execution Space because the control
+            // protocol resolves a Store through it — but that names *where to
+            // look*, never who owns the machine, and a legacy row here would
+            // hand the daemon a generation its own stop fence then refuses.
             let (space_id, generation) = execution_space::list_spaces(&firm_home)
                 .map_err(execution_space_err)?
                 .into_iter()
                 .find_map(|space| {
-                    let store = HarnessStore::new(space.store_root);
+                    let store = HarnessStore::new(space.store_root).with_firm_home(&firm_home);
                     store
-                        .latest_node_daemon_lease(&node_id)
+                        .current_authorized_machine_lease(&node_id)
                         .ok()
                         .flatten()
                         .filter(|lease| {

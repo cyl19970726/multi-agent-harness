@@ -49,7 +49,7 @@ fn seed_draining_predecessor(home: &TempHome, node_id: &str) {
     let store = HarnessStore::new(home.spaces_dir().join(current_space_id(home)));
     let now = firm_env::unix_ms();
     let lease = store
-        .acquire_node_daemon_lease(
+        .seed_machine_authority_for_test(
             node_id,
             "dead-predecessor",
             "dead-predecessor-instance",
@@ -58,7 +58,7 @@ fn seed_draining_predecessor(home: &TempHome, node_id: &str) {
         )
         .expect("acquire predecessor lease");
     let draining = store
-        .drain_node_daemon_lease(
+        .drain_machine_authority_for_test(
             node_id,
             &lease.daemon_id,
             lease.generation,
@@ -115,6 +115,18 @@ fn daemon_status_names_draining_predecessor_and_recovery_action() {
     );
 }
 
+/// ADR 0075, the integration-level consequence of retarget rows 4 and 8.
+///
+/// This used to assert that `daemon status` named the healthy Space, named the
+/// unreadable one as an "unreadable NodeDaemonLease store", and still pointed at
+/// predecessor recovery — the right shape while each Space carried its own lease
+/// row and one of them could genuinely be unreadable. Neither half is a Space
+/// question any more. The machine has one lease under the Firm home, so a
+/// poisoned sibling ledger cannot hide it, contradict it, or become a caveat on
+/// it; and the status names that one lease once, with the document it read.
+///
+/// The successor property is therefore stronger and is what is asserted here:
+/// the unreadable Space changes the answer in no way at all.
 #[test]
 fn daemon_status_degrades_one_unreadable_space_and_keeps_predecessor_recovery() {
     let home = TempHome::new("node-daemon-degraded-status");
@@ -155,11 +167,30 @@ fn daemon_status_degrades_one_unreadable_space_and_keeps_predecessor_recovery() 
         "degraded daemon status failed: {output:?}"
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains(&healthy_space_id), "{stdout}");
+    assert!(stdout.contains("absent (no live NodeDaemon"), "{stdout}");
     assert!(stdout.contains("draining"), "{stdout}");
-    assert!(stdout.contains(unreadable_space_id), "{stdout}");
-    assert!(stdout.contains("unreadable NodeDaemonLease"), "{stdout}");
+    assert!(stdout.contains("dead-predecessor-instance"), "{stdout}");
     assert!(stdout.contains("daemon-recover-predecessor"), "{stdout}");
+    // The answer came from the machine document, and says which one.
+    assert!(stdout.contains("lease_source node_file"), "{stdout}");
+    assert!(
+        stdout.contains(
+            &home
+                .firm_home()
+                .join("nodes")
+                .join(&node_id)
+                .join("node-daemon-lease.json")
+                .display()
+                .to_string()
+        ),
+        "status omitted the document it read: {stdout}"
+    );
+    // The unreadable Space is not a caveat on machine authority, because it is
+    // not a source of it: it appears nowhere in the answer, and neither does
+    // the healthy one.
+    assert!(!stdout.contains(unreadable_space_id), "{stdout}");
+    assert!(!stdout.contains("unreadable NodeDaemonLease"), "{stdout}");
+    assert!(!stdout.contains(&healthy_space_id), "{stdout}");
 }
 
 #[test]

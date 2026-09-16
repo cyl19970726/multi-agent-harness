@@ -28,6 +28,30 @@
 
 use super::*;
 
+use firm_core::agentfirm_api::{TrustError, TrustErrorCode};
+
+/// Build the machine-lease refusal as a typed `TrustError`, not a message
+/// prefix.
+///
+/// The consumers are ADR 0075's 46 machine-authority deciders. A string that 46
+/// call sites must match identically is a rule enforced by 46 copies of a
+/// habit; a variant is enforced by the compiler. The display text keeps the
+/// `MACHINE_LEASE_FILE_UNRESOLVED` token so operator-facing output and the
+/// existing predicate stay readable.
+pub(crate) fn machine_lease_unresolved(node_id: &str, detail: String) -> StoreError {
+    StoreError::Conflict(
+        serde_json::to_string(&TrustError {
+            code: TrustErrorCode::MachineLeaseUnresolved,
+            message: format!("{MACHINE_LEASE_FILE_UNRESOLVED}: {detail}"),
+            retryable: false,
+            resource_kind: "node_daemon_lease".to_string(),
+            resource_id: node_id.to_string(),
+            current_version: None,
+        })
+        .unwrap_or_else(|_| format!("{MACHINE_LEASE_FILE_UNRESOLVED}: {detail}")),
+    )
+}
+
 /// The named refusal for a Store that cannot say where this machine's
 /// NodeDaemon lease document lives.
 ///
@@ -127,9 +151,12 @@ fn canonical_firm_home(firm_home: &Path) -> Option<PathBuf> {
 /// the two.
 fn require_node_directory_segment(node_id: &str) -> StoreResult<()> {
     if !crate::remote_fabric_store::is_safe_path_component(node_id) {
-        return Err(StoreError::Conflict(format!(
-            "{MACHINE_LEASE_FILE_UNRESOLVED}: Node id {node_id:?} is not a safe canonical path component, so it cannot name a directory under a Firm home"
-        )));
+        return Err(machine_lease_unresolved(
+            node_id,
+            format!(
+                "Node id {node_id:?} is not a safe canonical path component, so it cannot name a directory under a Firm home"
+            ),
+        ));
     }
     Ok(())
 }
@@ -172,16 +199,22 @@ impl HarnessStore {
     pub fn node_home(&self, node_id: &str) -> StoreResult<PathBuf> {
         require_node_directory_segment(node_id)?;
         let firm_home = self.firm_home.as_ref().ok_or_else(|| {
-            StoreError::Conflict(format!(
-                "{MACHINE_LEASE_FILE_UNRESOLVED}: Store {} is bound to no Firm home, so the machine lease document for Node {node_id} cannot be named",
-                self.root.display()
-            ))
+            machine_lease_unresolved(
+                node_id,
+                format!(
+                    "Store {} is bound to no Firm home, so the machine lease document for Node {node_id} cannot be named",
+                    self.root.display()
+                ),
+            )
         })?;
         let canonical = canonical_firm_home(firm_home).ok_or_else(|| {
-            StoreError::Conflict(format!(
-                "{MACHINE_LEASE_FILE_UNRESOLVED}: Firm home {} is not an absolute, resolvable directory, so the machine lease document for Node {node_id} would name a different file from every other process",
-                firm_home.display()
-            ))
+            machine_lease_unresolved(
+                node_id,
+                format!(
+                    "Firm home {} is not an absolute, resolvable directory, so the machine lease document for Node {node_id} would name a different file from every other process",
+                    firm_home.display()
+                ),
+            )
         })?;
         Ok(canonical.join("nodes").join(node_id))
     }
@@ -198,9 +231,11 @@ impl StoreError {
     /// surface this slice deliberately does not move; the fences that consume
     /// the refusal arrive with the cutover, and the decision belongs with them.
     pub fn is_machine_lease_unresolved(&self) -> bool {
-        match self {
-            Self::Conflict(message) => message.starts_with(MACHINE_LEASE_FILE_UNRESOLVED),
-            _ => false,
+        match self.trust_error() {
+            Some(error) => error.code == TrustErrorCode::MachineLeaseUnresolved,
+            // Pre-typed refusals and the non-trust paths still carry the token.
+            None => matches!(self, Self::Conflict(message)
+                if message.starts_with(MACHINE_LEASE_FILE_UNRESOLVED)),
         }
     }
 }

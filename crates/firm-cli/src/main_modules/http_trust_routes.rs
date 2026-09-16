@@ -638,7 +638,7 @@ impl HttpExchange<'_> {
                         && registration.execution_space_id == *coordination_store_id
                         && registration.status == NodeProjectRegistrationStatus::Active
                 });
-            let lease = store_owned.latest_node_daemon_lease(&target_node_id)?;
+            let lease = store_owned.current_authorized_machine_lease(&target_node_id)?;
             let Some(lease) = lease.filter(|lease| {
                 registered
                     && lease.status == NodeDaemonLeaseStatus::Active

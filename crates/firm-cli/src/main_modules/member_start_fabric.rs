@@ -345,7 +345,7 @@ fn supervisor_fabric_authority(ledger: &TeamRunLedger) -> CliResult<TeamSupervis
     };
     let daemon = ledger
         .store
-        .latest_node_daemon_lease(&lease.node_id)?
+        .current_authorized_machine_lease(&lease.node_id)?
         .ok_or_else(|| {
             CliError::Usage(format!(
                 "NODE_DAEMON_GENERATION_FENCED: Node {} has no current NodeDaemon lease",

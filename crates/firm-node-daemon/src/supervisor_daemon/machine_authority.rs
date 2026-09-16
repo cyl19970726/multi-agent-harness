@@ -122,7 +122,7 @@ impl MultiTeamDaemon {
             // this function was handed is the only way the daemon and the CLI
             // name one machine lease.
             let store = HarnessStore::new(space.store_root.clone()).with_firm_home(firm_home);
-            let lease = store.latest_node_daemon_lease(node_id).map_err(|error| {
+            let lease = store.current_authorized_machine_lease(node_id).map_err(|error| {
                 CliError::Usage(format!(
                     "NODE_DAEMON_SOCKET_RECLAIM_UNSAFE: cannot verify Node {node_id} authority in Execution Space {}: {error}",
                     space.id
@@ -191,6 +191,7 @@ impl MultiTeamDaemon {
         self.require_machine_authority_open()?;
         let spaces = self.registered_spaces()?;
         let mut required = Vec::new();
+        let mut space_generations: Vec<u64> = Vec::new();
         let mut blocked_by_predecessor = false;
         for (space, store) in spaces {
             let node = store
@@ -218,22 +219,45 @@ impl MultiTeamDaemon {
                             == harness_core::NodeProjectRegistrationStatus::Active
                 });
             if registered {
-                let previous = store
+                // ADR 0075: "who owns this machine" is now ONE question with one
+                // answer, so it is asked once below rather than once per Space.
+                // What stays per-Space is the registration check above — which
+                // Spaces this node serves is Space data and always was.
+                //
+                // The legacy row is still read here for one reason only: at
+                // cutover the first document must start above every generation
+                // any Space ever issued, or a successor could reuse a number a
+                // predecessor already drove under (ADR 0075 Migration 3).
+                //
+                // This deliberately reads `latest_node_daemon_lease` and not the
+                // resolver. The resolver's whole job is to refuse a legacy row,
+                // and a pre-cutover store is nothing but legacy rows — asking it
+                // here would turn the one input the cutover mint needs into
+                // `MACHINE_LEASE_NOT_AUTHORITATIVE` and leave the first document
+                // unable to start above them. This read decides nothing and
+                // refuses nothing, which is exactly why the inclusion rule
+                // excludes it.
+                if let Some(row) = store
                     .latest_node_daemon_lease(&self.node_id)
-                    .map_err(CliError::Store)?;
-                let newly_acquired = previous.as_ref().is_none_or(|lease| {
-                    lease.status == harness_core::NodeDaemonLeaseStatus::Released
-                });
-                // A lease this instance does not own and that is not Released
-                // will refuse acquisition below with
-                // NODE_DAEMON_PREDECESSOR_RECOVERY_REQUIRED.
-                blocked_by_predecessor |= previous.as_ref().is_some_and(|lease| {
+                    .map_err(CliError::Store)?
+                {
+                    space_generations.push(row.generation);
+                }
+                required.push((space, store, false));
+            }
+        }
+        // ADR 0075: the predecessor question is one MACHINE question. Ask it
+        // once, of the document, rather than once per Space — the per-Space
+        // form could disagree with itself, which is the state this ADR removes.
+        if let Some((_, probe, _)) = required.first() {
+            blocked_by_predecessor = probe
+                .current_authorized_machine_lease(&self.node_id)
+                .map_err(CliError::Store)?
+                .is_some_and(|lease| {
                     lease.status != harness_core::NodeDaemonLeaseStatus::Released
                         && (lease.daemon_id != self.daemon_id
                             || lease.instance_id != self.instance_id)
                 });
-                required.push((space, store, newly_acquired));
-            }
         }
         if blocked_by_predecessor {
             // The predecessor may be provably dead. Run the same proofs the
@@ -251,26 +275,35 @@ impl MultiTeamDaemon {
             }
         }
 
-        let mut acquired = Vec::new();
-        for (space, store, newly_acquired) in &required {
-            match self.ensure_node_authority(space, store) {
-                Ok(lease) => acquired.push((space.id.clone(), store, lease, *newly_acquired)),
-                Err(error) => {
-                    let mut failures = vec![format!("{}: {error}", space.id)];
-                    self.rollback_unused_bundle_leases(&acquired, &mut failures);
-                    if matches!(
-                        &error,
-                        CliError::Store(
-                            harness_store::StoreError::Io(_)
-                                | harness_store::StoreError::LockTimeout(_)
-                                | harness_store::StoreError::Json(_)
-                        )
-                    ) {
-                        return Err(error);
-                    }
-                    return Err(self.latch_machine_authority_loss(&failures));
+        // ONE acquire for the machine, not one per Space. Every Store here
+        // resolves the same `<FIRM_HOME>/nodes/<node_id>/` document, so the
+        // first registered Space's Store is simply the handle through which the
+        // machine question is asked.
+        let Some((_, any_store, _)) = required.first() else {
+            return Ok(HashSet::new());
+        };
+        let owned = match self.acquire_machine_authority(any_store, &space_generations) {
+            Ok(lease) => lease,
+            Err(error) => {
+                let failures = vec![format!("machine lease: {error}")];
+                if matches!(
+                    &error,
+                    CliError::Store(
+                        harness_store::StoreError::Io(_)
+                            | harness_store::StoreError::LockTimeout(_)
+                            | harness_store::StoreError::Json(_)
+                    )
+                ) {
+                    return Err(error);
                 }
+                return Err(self.latch_machine_authority_loss(&failures));
             }
+        };
+        let newly_acquired = required.iter().any(|(_, _, flag)| *flag);
+        let mut acquired = Vec::new();
+        for (space, store, _) in &required {
+            self.remember_node_lease(&space.id, store, &owned);
+            acquired.push((space.id.clone(), store, owned.clone(), newly_acquired));
         }
 
         // Test seam only: the Store floors every TTL at 1 ms and this sample
@@ -283,25 +316,26 @@ impl MultiTeamDaemon {
         }
         let now_ms = current_unix_ms_u64();
         let mut failures = Vec::new();
-        for (space_id, store, expected, _) in &acquired {
-            match store.latest_node_daemon_lease(&self.node_id) {
-                Ok(Some(current))
-                    if daemon_control_generation_authorized(
-                        Some(&current),
-                        &self.daemon_id,
-                        &self.instance_id,
-                        expected.generation,
-                        now_ms,
-                    ) => {}
-                Ok(Some(current)) => failures.push(format!(
-                    "{space_id}: final bundle revalidation observed daemon {} instance {} generation {} ({:?})",
-                    current.daemon_id, current.instance_id, current.generation, current.status
-                )),
-                Ok(None) => failures.push(format!("{space_id}: final bundle lease is missing")),
-                Err(error) => {
-                    self.rollback_unused_bundle_leases(&acquired, &mut failures);
-                    return Err(CliError::Store(error));
-                }
+        // One document, so one revalidation. The bundle's all-or-nothing rule
+        // is now structural rather than enforced by looping: there is a single
+        // record, and it either still names this instance or it does not.
+        match any_store.current_authorized_machine_lease(&self.node_id) {
+            Ok(Some(current))
+                if daemon_control_generation_authorized(
+                    Some(&current),
+                    &self.daemon_id,
+                    &self.instance_id,
+                    owned.generation,
+                    now_ms,
+                ) => {}
+            Ok(Some(current)) => failures.push(format!(
+                "final bundle revalidation observed daemon {} instance {} generation {} ({:?})",
+                current.daemon_id, current.instance_id, current.generation, current.status
+            )),
+            Ok(None) => failures.push("final bundle lease is missing".to_string()),
+            Err(error) => {
+                self.rollback_unused_bundle_leases(&acquired, &mut failures);
+                return Err(CliError::Store(error));
             }
         }
         if !failures.is_empty() {
@@ -376,7 +410,7 @@ impl MultiTeamDaemon {
         })?;
         let mut candidates = Vec::new();
         for (space, store) in spaces {
-            match store.latest_node_daemon_lease(&self.node_id) {
+            match store.current_authorized_machine_lease(&self.node_id) {
                 Ok(Some(lease)) => candidates.push(((space.id.clone(), store), lease)),
                 Ok(None) => {}
                 // An unreadable Store may hold the live lease this recovery
@@ -536,12 +570,11 @@ impl MultiTeamDaemon {
             if !newly_acquired {
                 continue;
             }
-            if let Err(error) = store.release_node_daemon_lease(
+            if let Err(error) = store.release_machine_lease(
                 &self.node_id,
                 &lease.daemon_id,
                 lease.generation,
                 &lease.instance_id,
-                current_unix_ms_u64(),
             ) {
                 failures.push(format!("{space_id}: bundle rollback failed: {error}"));
             }
@@ -743,7 +776,7 @@ impl MultiTeamDaemon {
         // Each Space has its own worker, so other Spaces keep renewing.
         let started = Instant::now();
         let result = store
-                .latest_node_daemon_lease(&self.node_id)
+                .current_authorized_machine_lease(&self.node_id)
                 .and_then(|current| {
                     if let Some(current) = current.as_ref() {
                         if current.daemon_id != confirmed.daemon_id
@@ -767,15 +800,19 @@ impl MultiTeamDaemon {
                     }) {
                         return Ok(None);
                     }
+                    // ADR 0075: one write per machine, on the document, under
+                    // its own leaf lock. The cancellable FIFO ticket the Space
+                    // writer needed is gone with the queue it protected — the
+                    // only contenders for this lock are this daemon's own
+                    // renewal and a rare operator verb, each holding it for one
+                    // ~350-byte atomic replace.
                     store
-                        .renew_node_daemon_lease_cancellable(
+                        .renew_machine_lease(
                             &self.node_id,
                             &confirmed.daemon_id,
                             confirmed.generation,
                             &confirmed.instance_id,
-                            current_unix_ms_u64(),
                             self.node_lease_ttl_ms(),
-                            &|| self.authority_shutdown.load(Ordering::SeqCst),
                         )
                         .map(Some)
                 });
@@ -818,8 +855,16 @@ impl MultiTeamDaemon {
                 );
                 let fenced = matches!(&error, harness_store::StoreError::Conflict(message)
                         if message.starts_with("NODE_DAEMON_GENERATION_FENCED:"));
+                // ADR 0075: "I cannot name the machine lease" and "I resolved a
+                // legacy Space row" are not transient. Waiting cannot turn
+                // either into authority, so retrying until the TTL runs out
+                // would leave this daemon driving provider effects for a full
+                // TTL on authority it has already been told it does not have —
+                // which is the fence being skipped, just slowly. Latch on the
+                // first one, exactly like a generation fence.
+                let unresolved = error.is_machine_lease_unresolved();
                 let remaining = expires.saturating_sub(current_unix_ms_u64());
-                if fenced || remaining == 0 {
+                if fenced || unresolved || remaining == 0 {
                     return Err(format!(
                         "{space}: {reason}; confirmed_expires_unix_ms={expires}"
                     ));
@@ -872,9 +917,27 @@ impl MultiTeamDaemon {
                 self.node_id, space.id
             )));
         }
+        let lease = self.acquire_machine_authority(store, &[])?;
+        self.remember_node_lease(&space.id, store, &lease);
+        Ok(lease)
+    }
+
+    /// Take, or confirm, this machine's authority — once, on the one document.
+    ///
+    /// `space_generations` matters only at cutover: on a node whose authority
+    /// still lives in Space rows, the first document must start above every
+    /// generation any Space ever issued. Afterwards the document's own
+    /// generation is the only input and this argument is empty.
+    pub(super) fn acquire_machine_authority(
+        &self,
+        store: &HarnessStore,
+        space_generations: &[u64],
+    ) -> CliResult<harness_core::NodeDaemonLease> {
         let now_ms = current_unix_ms_u64();
-        let ttl_ms = self.node_lease_ttl_ms();
-        if let Some(lease) = store.latest_node_daemon_lease(&self.node_id)? {
+        if let Some(lease) = store
+            .current_authorized_machine_lease(&self.node_id)
+            .map_err(CliError::Store)?
+        {
             if daemon_control_generation_authorized(
                 Some(&lease),
                 &self.daemon_id,
@@ -882,41 +945,47 @@ impl MultiTeamDaemon {
                 lease.generation,
                 now_ms,
             ) {
-                self.remember_node_lease(&space.id, store, &lease);
                 return Ok(lease);
             }
         }
-        let lease = store
-            .acquire_node_daemon_lease(
+        store
+            .acquire_machine_lease(
                 &self.node_id,
                 &self.daemon_id,
                 &self.instance_id,
-                now_ms,
-                ttl_ms,
+                self.node_lease_ttl_ms(),
+                space_generations,
             )
-            .map_err(CliError::Store)?;
-        self.remember_node_lease(&space.id, store, &lease);
-        Ok(lease)
+            .map_err(CliError::Store)
     }
 
+    /// Hand this machine to a successor generation, the way a real takeover
+    /// does: this instance publishes `Released`, then a different daemon
+    /// instance acquires the next generation on the same document.
+    ///
+    /// Both halves are needed for the heartbeat to lose anything. `Released`
+    /// alone leaves the document naming this exact instance and generation, so
+    /// the renewal reads it as its own finished authority and exits quietly —
+    /// which is correct behaviour and the opposite of the fence these tests are
+    /// about. The fence fires on the successor's `(daemon_id, instance_id,
+    /// generation)`, so a successor has to exist.
     #[cfg(any(test, feature = "test-support"))]
     pub(super) fn supersede_node_authority_for_test(&self, store: &HarnessStore) -> CliResult<()> {
         let lease = store
-            .latest_node_daemon_lease(&self.node_id)?
+            .current_authorized_machine_lease(&self.node_id)?
             .ok_or_else(|| CliError::Usage("test NodeDaemon lease is missing".into()))?;
-        store.release_node_daemon_lease(
+        store.release_machine_lease(
             &self.node_id,
             &self.daemon_id,
             lease.generation,
             &self.instance_id,
-            current_unix_ms_u64(),
         )?;
-        store.acquire_node_daemon_lease(
+        store.acquire_machine_lease(
             &self.node_id,
             "node-daemon:successor",
             "successor-instance",
-            current_unix_ms_u64(),
             60_000,
+            &[],
         )?;
         Ok(())
     }
@@ -936,7 +1005,7 @@ impl MultiTeamDaemon {
             Err(error) => return (Err(error), report),
         };
         for (space, store) in spaces {
-            let lease = match store.latest_node_daemon_lease(&self.node_id) {
+            let lease = match store.current_authorized_machine_lease(&self.node_id) {
                 Ok(Some(lease)) => lease,
                 Ok(None) => continue,
                 Err(error) => {
@@ -948,12 +1017,11 @@ impl MultiTeamDaemon {
             if lease.daemon_id != self.daemon_id || lease.instance_id != self.instance_id {
                 continue;
             }
-            match store.release_node_daemon_lease(
+            match store.release_machine_lease(
                 &self.node_id,
                 &lease.daemon_id,
                 lease.generation,
                 &lease.instance_id,
-                current_unix_ms_u64(),
             ) {
                 Ok(_) => report.released_space_ids.push(space.id.clone()),
                 Err(error) => {
@@ -978,7 +1046,7 @@ impl MultiTeamDaemon {
         let mut failures = Vec::new();
         let updated_at = format!("unix-ms:{}", current_unix_ms_u64());
         for (space, store) in self.registered_spaces()? {
-            let lease = match store.latest_node_daemon_lease(&self.node_id) {
+            let lease = match store.current_authorized_machine_lease(&self.node_id) {
                 Ok(Some(lease)) => lease,
                 Ok(None) => continue,
                 Err(error) => {
@@ -1129,7 +1197,7 @@ impl MultiTeamDaemon {
         const DRAIN_TTL_MS: u64 = 60_000;
         let mut failures = Vec::new();
         for (space, store) in self.registered_spaces()? {
-            let lease = match store.latest_node_daemon_lease(&self.node_id) {
+            let lease = match store.current_authorized_machine_lease(&self.node_id) {
                 Ok(Some(lease)) => lease,
                 Ok(None) => continue,
                 Err(error) => {
@@ -1140,12 +1208,11 @@ impl MultiTeamDaemon {
             if lease.daemon_id != self.daemon_id || lease.instance_id != self.instance_id {
                 continue;
             }
-            if let Err(error) = store.drain_node_daemon_lease(
+            if let Err(error) = store.drain_machine_lease(
                 &self.node_id,
                 &lease.daemon_id,
                 lease.generation,
                 &lease.instance_id,
-                current_unix_ms_u64(),
                 DRAIN_TTL_MS,
             ) {
                 failures.push(format!("{}: {error}", space.id));

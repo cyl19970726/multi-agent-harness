@@ -154,7 +154,7 @@ pub(super) fn claim_canonical_work_for_member(
     };
     let daemon = ledger
         .store
-        .latest_node_daemon_lease(&session.node_id)?
+        .current_authorized_machine_lease(&session.node_id)?
         .filter(|lease| {
             lease.daemon_id == session.node_daemon_id
                 && lease.generation == session.node_daemon_generation
@@ -1112,7 +1112,7 @@ impl TeamRunLedger {
             let session = sessions.into_iter().next().expect("one session");
             let daemon = self
                 .store
-                .latest_node_daemon_lease(&session.node_id)?
+                .current_authorized_machine_lease(&session.node_id)?
                 .filter(|lease| {
                     lease.daemon_id == session.node_daemon_id
                         && lease.generation == session.node_daemon_generation
@@ -1192,7 +1192,7 @@ impl TeamRunLedger {
         let session = sessions.into_iter().next().expect("one session");
         let daemon = self
             .store
-            .latest_node_daemon_lease(&session.node_id)?
+            .current_authorized_machine_lease(&session.node_id)?
             .filter(|lease| {
                 lease.daemon_id == session.node_daemon_id
                     && lease.generation == session.node_daemon_generation

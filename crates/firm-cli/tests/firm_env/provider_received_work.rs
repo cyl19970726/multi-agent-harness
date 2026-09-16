@@ -26,7 +26,7 @@ pub fn record_provider_received_work(
     let delivery_id = binding.delivery_id.clone();
     let delivery = exact_delivery(&store, execution_space_id, binding);
     let daemon = store
-        .latest_node_daemon_lease(&delivery.target_node_id)
+        .current_authorized_machine_lease(&delivery.target_node_id)
         .expect("read fixture NodeDaemon")
         .expect("fixture NodeDaemon is current");
     let context = |command_name: &str, suffix: &str| MutationContext {

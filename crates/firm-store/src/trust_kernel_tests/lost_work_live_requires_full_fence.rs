@@ -137,7 +137,7 @@ fn legal_driver_handoff_and_daemon_drain_are_unproven_not_live() {
         if drain {
             fixture
                 .store
-                .drain_node_daemon_lease(
+                .drain_machine_authority_for_test(
                     &fixture.session.node_id,
                     "daemon-1",
                     1,

@@ -1330,8 +1330,10 @@ pub(crate) fn poll_team_run_github_linkages(
                 .rev()
                 .find(|run| run.id == run_id)
                 .ok_or_else(|| CliError::Usage(format!("TeamRun not found: {run_id}")))?;
+            // ADR 0075: `NODE_DAEMON_LEASE_REQUIRED` is a machine-authority
+            // refusal, so it is decided from the machine document.
             let daemon = store
-                .latest_node_daemon_lease(&run.execution_node_id)?
+                .current_authorized_machine_lease(&run.execution_node_id)?
                 .ok_or_else(|| {
                     CliError::Usage(format!(
                         "NODE_DAEMON_LEASE_REQUIRED: GitHub evidence refresh for {run_id} requires the current NodeDaemon"
@@ -1392,8 +1394,9 @@ pub(super) fn github_poll_host_context(
         .rev()
         .find(|run| run.id == run_id)
         .ok_or_else(|| CliError::Usage(format!("TeamRun not found: {run_id}")))?;
+    // ADR 0075: same machine-authority refusal, same one record.
     let daemon = store
-        .latest_node_daemon_lease(&run.execution_node_id)?
+        .current_authorized_machine_lease(&run.execution_node_id)?
         .ok_or_else(|| {
             CliError::Usage(format!(
                 "NODE_DAEMON_LEASE_REQUIRED: GitHub evidence refresh for {run_id} requires the current NodeDaemon"

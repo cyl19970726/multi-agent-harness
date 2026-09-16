@@ -394,7 +394,7 @@ fn execution_binding_fences_runtime_without_owning_responsibility() {
         .expect("create current MemberRun projections atomically");
 
     store
-        .acquire_node_daemon_lease(
+        .seed_machine_authority_for_test(
             NODE,
             "daemon-cutover",
             "instance-cutover",

@@ -152,7 +152,10 @@ pub fn recover_predecessor_generation_across_spaces(
             expected_version: lease.generation,
             request_fingerprint: request_fingerprint.clone(),
         };
-        match space.store.recover_node_daemon_predecessor(
+        // Phase 1 only. `Released` is one statement about the machine, so it
+        // is published once, below, after every Space has proved it owes
+        // nothing (ADR 0075).
+        match space.store.settle_node_daemon_predecessor_in_space(
             &context,
             node_id,
             daemon_id,
@@ -202,26 +205,115 @@ pub fn recover_predecessor_generation_across_spaces(
         "evidence_ref": evidence_ref,
     });
     if !failures.is_empty() {
+        // All-or-nothing: no Space's failure may leave the machine looking
+        // released. The settlements that did land stay landed and are named in
+        // the receipt — they are per-Space facts and remain true — but the
+        // document still carries the predecessor generation, so a successor
+        // cannot acquire and the retry has something to retry.
         receipt["status"] = serde_json::json!("partial");
         receipt["failures"] = serde_json::json!(failures);
+        receipt["authority_released"] = serde_json::json!(false);
         return Err((
             "NODE_DAEMON_PREDECESSOR_RECOVERY_INCOMPLETE".to_string(),
             receipt.to_string(),
         ));
     }
+    // One publish for the machine, through any Space's Store handle: they all
+    // resolve the same `<FIRM_HOME>/nodes/<node_id>/` document.
+    if let Some(space) = spaces.first() {
+        if !space_settlements
+            .iter()
+            .all(|row| row["already_released"] == true)
+        {
+            match space.store.release_machine_lease(
+                node_id,
+                daemon_id,
+                space.lease.generation,
+                instance_id,
+            ) {
+                Ok(_) => {}
+                Err(error) => {
+                    receipt["status"] = serde_json::json!("partial");
+                    receipt["authority_released"] = serde_json::json!(false);
+                    receipt["failures"] =
+                        serde_json::json!([format!("machine lease release failed: {error}")]);
+                    return Err((
+                        "NODE_DAEMON_PREDECESSOR_RECOVERY_INCOMPLETE".to_string(),
+                        receipt.to_string(),
+                    ));
+                }
+            }
+        }
+    }
+    receipt["authority_released"] = serde_json::json!(true);
     Ok(receipt)
 }
 
 impl HarnessStore {
-    /// Explicit hard-crash recovery for one exact predecessor generation.
+    /// Explicit hard-crash recovery for one exact predecessor generation, in
+    /// one Execution Space: settle everything that Space owes, and publish the
+    /// machine's `Released` once it does.
     ///
     /// This is not authority acquisition. The machine Operator confirms the
     /// external process/process-group facts, while the Store independently
     /// rejects every unknown RuntimeCommand before projecting the dead
     /// generation's sessions and supervisors into a settled state. Only then
     /// may the predecessor lease become Released.
+    ///
+    /// A node serving several Execution Spaces must not use this verb per
+    /// Space: the machine has one lease, so the first Space to finish would
+    /// publish `Released` while later Spaces still owed settlement. Those
+    /// callers gather the proof with
+    /// [`HarnessStore::settle_node_daemon_predecessor_in_space`] across every
+    /// Space first and publish once — which is what
+    /// `recover_predecessor_generation_across_spaces` does.
     #[allow(clippy::too_many_arguments)]
     pub fn recover_node_daemon_predecessor(
+        &self,
+        context: &firm_core::agentfirm_api::MutationContext,
+        node_id: &str,
+        daemon_id: &str,
+        generation: u64,
+        instance_id: &str,
+        process_terminated_confirmed: bool,
+        provider_process_groups_terminated_confirmed: bool,
+        evidence_ref: &str,
+        now_unix_ms: u64,
+        updated_at: &str,
+    ) -> StoreResult<NodeDaemonPredecessorRecovery> {
+        let settled = self.settle_node_daemon_predecessor_in_space(
+            context,
+            node_id,
+            daemon_id,
+            generation,
+            instance_id,
+            process_terminated_confirmed,
+            provider_process_groups_terminated_confirmed,
+            evidence_ref,
+            now_unix_ms,
+            updated_at,
+        )?;
+        if settled.already_released {
+            return Ok(settled);
+        }
+        Ok(NodeDaemonPredecessorRecovery {
+            lease: self.release_machine_lease(node_id, daemon_id, generation, instance_id)?,
+            ..settled
+        })
+    }
+
+    /// Phase 1 of recovery for one Execution Space: settle every obligation
+    /// this generation owes *here*, and stop short of publishing the machine's
+    /// `Released`.
+    ///
+    /// Separated from the publish because the machine lease is one document for
+    /// the whole node (ADR 0075). "Released" is a statement about the machine,
+    /// so it may only be made once every registered Space has proved it owes
+    /// nothing — which turns the old continue-past-failure partial release into
+    /// one all-or-nothing publish over an explicit proof set, and makes
+    /// `authority_released: false` stop meaning "partly".
+    #[allow(clippy::too_many_arguments)]
+    pub fn settle_node_daemon_predecessor_in_space(
         &self,
         context: &firm_core::agentfirm_api::MutationContext,
         node_id: &str,
@@ -258,12 +350,21 @@ impl HarnessStore {
                     .into(),
             ));
         }
-        let mut lease = latest_by_id(
-            self.read_jsonl::<NodeDaemonLease>("node_daemon_leases.jsonl")?,
-            |lease| lease.node_id.clone(),
-        )
-        .remove(node_id)
-        .ok_or_else(|| StoreError::Conflict(format!("NODE_DAEMON_GENERATION_FENCED: {node_id}")))?;
+        // ADR 0075: the lease half of recovery reads and writes the one
+        // document. The confirm, dead-socket and dead-pid proofs above are
+        // unchanged, and the per-Space session settlement below still walks
+        // every Space — only "who owns this machine" moved.
+        //
+        // Deliberately NOT the authoritative_machine_lease fence: recovery
+        // exists to settle a predecessor that no longer authorizes anything,
+        // so it must be able to read a lease the fence would refuse.
+        let mut lease = self
+            .current_machine_lease(node_id)?
+            .filter(|(_, source)| source.authorizes_provider_effect())
+            .map(|(lease, _)| lease)
+            .ok_or_else(|| {
+                StoreError::Conflict(format!("NODE_DAEMON_GENERATION_FENCED: {node_id}"))
+            })?;
         if lease.daemon_id != daemon_id
             || lease.generation != generation
             || lease.instance_id != instance_id
@@ -469,11 +570,24 @@ impl HarnessStore {
         }
 
         self.require_node_daemon_settlement_unlocked(&lease)?;
+        // ---- end of phase 1 -------------------------------------------------
+        // Everything above needs the Space write lock: the settlement proof and
+        // the per-Space session/command settlement. The legacy row is written
+        // here too, while that lock is still held, because it IS Space data.
         lease.status = NodeDaemonLeaseStatus::Released;
         lease.renewed_unix_ms = now_unix_ms;
         lease.expires_unix_ms = now_unix_ms;
         lease.released_unix_ms = Some(now_unix_ms);
         self.append_jsonl_unlocked("node_daemon_leases.jsonl", &lease)?;
+        drop(_lock);
+
+        // The machine's own `Released` is NOT published here. The lease lock is
+        // a LEAF lock: it may not be taken while the Space lock is held (ADR
+        // 0075 Rule 2), so the drop above is load-bearing rather than
+        // incidental — the debug lock registry refused exactly that collapse
+        // here during development. Publishing is also the caller's decision,
+        // because on a multi-Space node it is one statement about the machine
+        // and may only be made after every Space has reached this line.
         Ok(NodeDaemonPredecessorRecovery {
             lease,
             already_released: false,

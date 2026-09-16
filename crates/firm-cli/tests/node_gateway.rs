@@ -215,7 +215,7 @@ fn company_node_is_the_wave4c_execution_node_and_gateway_is_daemon_child() {
         })
         .expect("insert ExecutionNode");
     let lease = store
-        .acquire_node_daemon_lease(node_id, "daemon-a", "instance-a", 10, 30_000)
+        .seed_machine_authority_for_test(node_id, "daemon-a", "instance-a", 10, 30_000)
         .expect("acquire NodeDaemon lease");
     let node = CompanyNode {
         id: node_id.into(),

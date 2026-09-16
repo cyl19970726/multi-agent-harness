@@ -208,8 +208,16 @@ impl MultiTeamDaemon {
         run_id: &str,
         error: &CliError,
     ) -> bool {
+        // ADR 0075's inclusion rule excludes this site — it reads the lease and
+        // returns a bool, never a refusal — but it still moves to the node
+        // file, deliberately. The question it asks is "is the live machine
+        // authority *mine*", and after cutover the legacy Space row is not the
+        // record that answers it: a row this daemon no longer writes could only
+        // make the comparison wrong, and a wrong answer here silently drops a
+        // blocking recovery marker. An unresolvable or legacy-sourced lease
+        // stays the fail-safe `None`, exactly as a foreign daemon already did.
         let daemon = store
-            .latest_node_daemon_lease(&self.node_id)
+            .current_authorized_machine_lease(&self.node_id)
             .ok()
             .flatten()
             .filter(|lease| {

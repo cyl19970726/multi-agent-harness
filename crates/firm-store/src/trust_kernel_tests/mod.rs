@@ -233,7 +233,7 @@ fn fabric_store() -> (HarnessStore, PathBuf) {
         )
         .unwrap();
     store
-        .acquire_node_daemon_lease(
+        .seed_machine_authority_for_test(
             "11111111-1111-4111-8111-111111111111",
             "daemon-1",
             "instance-1",

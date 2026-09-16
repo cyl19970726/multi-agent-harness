@@ -66,7 +66,7 @@ fn expired_predecessor_replays_and_settles_but_cannot_admit_a_new_effect() {
 
     let successor_time = current_unix_ms() + 60_001;
     let successor_error = store
-        .acquire_node_daemon_lease(
+        .seed_machine_authority_for_test(
             "11111111-1111-4111-8111-111111111111",
             "daemon-2",
             "instance-2",
@@ -164,7 +164,7 @@ fn draining_predecessor_settles_prepared_command_but_cannot_prepare_another() {
         .expect("prepare exact command before drain");
 
     store
-        .drain_node_daemon_lease(
+        .drain_machine_authority_for_test(
             "11111111-1111-4111-8111-111111111111",
             "daemon-1",
             1,

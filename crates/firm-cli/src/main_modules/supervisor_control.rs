@@ -534,7 +534,7 @@ pub(super) fn require_bound_live_member_authority(
         ));
     }
     let daemon_lease = store
-        .latest_node_daemon_lease(&session.node_id)?
+        .current_authorized_machine_lease(&session.node_id)?
         .ok_or_else(|| {
             CliError::Usage(
                 "NODE_DAEMON_GENERATION_FENCED: current NodeDaemon lease is missing".into(),

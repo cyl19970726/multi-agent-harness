@@ -116,16 +116,20 @@ impl HarnessStore {
             ));
         }
         let lease = self
-            .latest_node_daemon_lease(&command.target_node_id)?
-            .ok_or_else(|| {
+            .authoritative_machine_lease(&command.target_node_id)
+            .map_err(|error| {
                 trust_error(
-                    TrustErrorCode::SupervisorGenerationFenced,
-                    "RuntimeCommand requires an exact current NodeDaemon lease",
+                    TrustErrorCode::MachineLeaseUnresolved,
+                    format!(
+                        "RuntimeCommand requires an exact current NodeDaemon lease from the node file: {}",
+                        HarnessStore::machine_lease_refusal_reason(&error)
+                    ),
                     "runtime_command",
                     &command.id,
                     None,
                 )
-            })?;
+            })?
+            .into_lease();
         if lease.daemon_id != command.target_node_daemon_id
             || lease.generation != command.target_node_daemon_generation
             || lease.status != firm_core::NodeDaemonLeaseStatus::Active

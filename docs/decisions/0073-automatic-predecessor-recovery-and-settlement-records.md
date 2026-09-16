@@ -7,6 +7,13 @@ amends: ADR 0065 two runtime epochs (unchanged); the NodeDaemonLease acquisition
 canonical_for: when a successor NodeDaemon may settle a predecessor generation without a human; what a generation writes about the lanes it could not settle
 ```
 
+> **Amended by ADR 0075 (E2a-2a).** One of this ADR's acceptance tests —
+> `automatic_recovery_refuses_two_unreleased_predecessor_instances` — pinned a refusal the machine
+> lease cutover makes structurally impossible, and was retargeted rather than deleted. See the
+> retarget mapping table in
+> [ADR 0075](0075-machine-lease-leaves-the-space-data-lock.md#what-executing-this-checklist-found-e2a-2a),
+> row 10. What this ADR decides is unchanged; only where its input lives has moved.
+
 ## Context
 
 A machine-scoped `NodeDaemonLease` may be acquired only over an explicitly

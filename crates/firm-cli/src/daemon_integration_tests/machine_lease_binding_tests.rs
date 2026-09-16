@@ -143,3 +143,124 @@ fn a_space_root_that_names_no_home_still_resolves_through_the_daemons_binding() 
             .join(NODE_ID)
     );
 }
+
+/// A pre-cutover Execution Space: legacy lease rows, no machine document.
+fn pre_cutover_home(label: &str) -> (PathBuf, HarnessStore, harness_core::NodeDaemonLease) {
+    let firm_home = std::env::temp_dir().join(format!(
+        "firm-machine-lease-legacy-{label}-{}-{}",
+        std::process::id(),
+        current_unix_ms_u64()
+    ));
+    let space = crate::execution_space::register_and_activate(
+        &firm_home,
+        "legacy-space",
+        "Legacy Space",
+        Some("legacy-project".into()),
+        None,
+        "unix-ms:1",
+    )
+    .expect("register the pre-cutover Space");
+    let store = HarnessStore::new(space.store_root).with_firm_home(&firm_home);
+    store.init().expect("initialize the pre-cutover Store");
+    store
+        .insert_execution_node(&harness_core::ExecutionNode {
+            id: NODE_ID.into(),
+            display_name: "Pre-cutover Node".into(),
+            status: harness_core::ExecutionNodeStatus::Active,
+            created_at: "unix-ms:1".into(),
+            updated_at: "unix-ms:1".into(),
+        })
+        .expect("insert the pre-cutover Node");
+    store
+        .register_node_project(
+            &harness_core::NodeProjectRegistration {
+                node_id: NODE_ID.into(),
+                execution_space_id: "legacy-space".into(),
+                project_binding_id: "legacy-project".into(),
+                status: harness_core::NodeProjectRegistrationStatus::Active,
+                created_at: "unix-ms:1".into(),
+                updated_at: "unix-ms:1".into(),
+            },
+            "legacy-space",
+        )
+        .expect("register the pre-cutover project");
+    // Only the legacy writer runs here, exactly as it did before the cutover.
+    let row = store
+        .acquire_node_daemon_lease(
+            NODE_ID,
+            &format!("node-daemon:{NODE_ID}"),
+            "machine-lease-binding-instance",
+            current_unix_ms_u64(),
+            600_000,
+        )
+        .expect("a pre-cutover Store still writes its Space row");
+    (firm_home, store, row)
+}
+
+/// Legacy-refusal class, **daemon fence**.
+///
+/// The heartbeat renews authority it already holds. Handed a Store whose only
+/// record is a pre-cutover Space row, it must refuse rather than renew — and it
+/// must refuse loudly, latching machine authority loss, because "I resolved a
+/// record that cannot authorize" is not "nothing to do here". A `LegacySpaceRow`
+/// read as a benign absence is precisely how a daemon would keep driving on
+/// authority it no longer has (ADR 0075).
+#[test]
+fn a_legacy_space_row_cannot_reach_the_daemon_heartbeat_fence() {
+    let (firm_home, store, row) = pre_cutover_home("daemon-fence");
+    let daemon = daemon_for(firm_home);
+    daemon.remember_node_lease("legacy-space", &store, &row);
+
+    let error = daemon
+        .refresh_held_node_authorities()
+        .expect_err("a legacy Space row can never renew machine authority");
+    assert!(
+        error
+            .to_string()
+            .contains("MACHINE_LEASE_NOT_AUTHORITATIVE"),
+        "the refusal must name the legacy source: {error}"
+    );
+    assert!(daemon.authority_lost());
+    // And nothing was written: the pre-cutover row is untouched and no document
+    // was invented for it.
+    assert_eq!(
+        store
+            .latest_node_daemon_lease(NODE_ID)
+            .expect("read the legacy row")
+            .expect("the legacy row is still there"),
+        row
+    );
+    assert!(!store
+        .machine_lease_path(NODE_ID)
+        .expect("machine lease path")
+        .exists());
+}
+
+/// Legacy-refusal class, **CLI fence**.
+///
+/// `firm daemon recover-predecessor` validates before it settles anything. On a
+/// pre-cutover Store it must refuse by name instead of treating the legacy row
+/// as a predecessor it may recover — recovering one would settle Sessions and
+/// publish a release against a record no fence reads.
+#[test]
+fn a_legacy_space_row_cannot_reach_the_cli_recovery_fence() {
+    let (firm_home, store, row) = pre_cutover_home("cli-fence");
+    let (code, detail) = crate::daemon_predecessor_recovery::validate_daemon_predecessor_recovery(
+        &firm_home, NODE_ID, None,
+    )
+    .err()
+    .expect("a legacy Space row is not a recoverable predecessor");
+    assert_eq!(code, "NODE_DAEMON_PREDECESSOR_RECOVERY_INCOMPLETE");
+    assert!(
+        detail.contains("MACHINE_LEASE_NOT_AUTHORITATIVE"),
+        "the refusal must name the legacy source: {detail}"
+    );
+    assert_eq!(
+        store
+            .latest_node_daemon_lease(NODE_ID)
+            .expect("read the legacy row")
+            .expect("the legacy row is still there"),
+        row,
+        "a refused validation settles nothing"
+    );
+}

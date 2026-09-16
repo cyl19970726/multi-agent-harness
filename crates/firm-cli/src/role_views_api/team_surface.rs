@@ -663,10 +663,19 @@ pub(crate) fn team_view(
         }))
         })
         .transpose()?;
+    // ADR 0075: the daemon summary shows who owns this machine, so it asks the
+    // record that decides it. Resolved once rather than twice, and through
+    // `current_machine_lease` so a pre-cutover Store still renders — the source
+    // travels with the lease and a legacy row is shown, never acted on.
+    let machine_lease = store
+        .current_machine_lease(&team.node_id)
+        .ok()
+        .flatten()
+        .map(|(lease, _)| lease);
     Ok(envelope(
         "host_console",
         &facts,
-        json!({"team_ref":team.id,"mission_ref":team.mission_id,"mission_context":mission_context,"team_supervisor":supervisor,"host_runtime":host_runtime,"host_inbox":host_inbox,"member_runtime":members,"runtime_recovery":runtime_recovery,"pressure_summary":pressure_summary,"all_works":works,"work_graph":work_graph,"work_queues":{"ready":works.iter().filter(|w|w["readiness"]["state"]=="ready").cloned().collect::<Vec<_>>(),"unassigned":works.iter().filter(|w|w["owner_actor_ref"].is_null()).cloned().collect::<Vec<_>>(),"blocked":works.iter().filter(|w|w["condition"]=="blocked").cloned().collect::<Vec<_>>(),"review":by_phase("review"),"integration":works.iter().filter(|w|w["module_refs"].as_array().is_some_and(|a|a.iter().any(|m|m=="integration-plan"))).cloned().collect::<Vec<_>>()},"member_capacity":members,"convergence_plans":[],"reusable_findings":findings,"workspace_conflicts":record_summaries("workspace_binding",raw_workspace_attention),"provider_capacity_attention":[{"state":"not_modeled","reason":"Provider account quota is not modeled in this RoleView."}],"deliveries_requiring_reconcile":record_summaries("work_delivery",facts.work_deliveries.iter().filter(|delivery|delivery_requires_team_reconcile(delivery,&team_work_ids)).cloned().collect()),"gate_attention":requirements,"daemon_summary":{"node_id":team.node_id,"lease_status":store.latest_node_daemon_lease(&team.node_id).ok().flatten().map(|lease|enum_string(&lease.status)),"generation":store.latest_node_daemon_lease(&team.node_id).ok().flatten().map(|lease|lease.generation)},"collaboration":collaboration}),
+        json!({"team_ref":team.id,"mission_ref":team.mission_id,"mission_context":mission_context,"team_supervisor":supervisor,"host_runtime":host_runtime,"host_inbox":host_inbox,"member_runtime":members,"runtime_recovery":runtime_recovery,"pressure_summary":pressure_summary,"all_works":works,"work_graph":work_graph,"work_queues":{"ready":works.iter().filter(|w|w["readiness"]["state"]=="ready").cloned().collect::<Vec<_>>(),"unassigned":works.iter().filter(|w|w["owner_actor_ref"].is_null()).cloned().collect::<Vec<_>>(),"blocked":works.iter().filter(|w|w["condition"]=="blocked").cloned().collect::<Vec<_>>(),"review":by_phase("review"),"integration":works.iter().filter(|w|w["module_refs"].as_array().is_some_and(|a|a.iter().any(|m|m=="integration-plan"))).cloned().collect::<Vec<_>>()},"member_capacity":members,"convergence_plans":[],"reusable_findings":findings,"workspace_conflicts":record_summaries("workspace_binding",raw_workspace_attention),"provider_capacity_attention":[{"state":"not_modeled","reason":"Provider account quota is not modeled in this RoleView."}],"deliveries_requiring_reconcile":record_summaries("work_delivery",facts.work_deliveries.iter().filter(|delivery|delivery_requires_team_reconcile(delivery,&team_work_ids)).cloned().collect()),"gate_attention":requirements,"daemon_summary":{"node_id":team.node_id,"lease_status":machine_lease.as_ref().map(|lease|enum_string(&lease.status)),"generation":machine_lease.as_ref().map(|lease|lease.generation)},"collaboration":collaboration}),
         identity_attention,
         actions,
     ))

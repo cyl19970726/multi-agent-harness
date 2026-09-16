@@ -20,6 +20,7 @@ use crate::node_lease_document::{
 };
 use crate::node_lease_history::{append_lease_history, generation_was_released};
 use crate::node_lease_lock::{lease_lock_timeout, NodeLeaseLock};
+use crate::store_node_home::machine_lease_unresolved;
 
 /// Which record answered "who owns this machine".
 ///
@@ -114,6 +115,18 @@ impl HarnessStore {
     /// The fence form: resolve, and refuse anything a provider effect may not
     /// be built on. Every one of ADR 0075's decider sites goes through this, so
     /// "only NodeFile authorizes" is one predicate rather than 46 copies.
+    /// The refusal reason as one readable line.
+    ///
+    /// A fence wrapping this in its own typed error must not embed a whole
+    /// serialized `TrustError` inside another one — the result is unreadable in
+    /// a panic message and doubly-escaped on the wire.
+    pub fn machine_lease_refusal_reason(error: &StoreError) -> String {
+        error
+            .trust_error()
+            .map(|typed| typed.message)
+            .unwrap_or_else(|| error.to_string())
+    }
+
     pub fn authoritative_machine_lease(
         &self,
         node_id: &str,
@@ -122,13 +135,48 @@ impl HarnessStore {
             Some((lease, source)) if source.authorizes_provider_effect() => {
                 Ok(AuthorizedMachineLease(lease))
             }
-            Some((_, source)) => Err(StoreError::Conflict(format!(
-                "{MACHINE_LEASE_NOT_AUTHORITATIVE}: Node {node_id} resolved from {} and cannot authorize a provider effect; this Store predates the machine lease cutover",
-                source.as_str()
-            ))),
-            None => Err(StoreError::Conflict(format!(
-                "{MACHINE_LEASE_NOT_AUTHORITATIVE}: Node {node_id} has no machine lease"
-            ))),
+            // Both refusals carry the same typed code: from a fence's point of
+            // view "the machine lease did not resolve to something that
+            // authorizes" is one answer, and splitting it would make 46 call
+            // sites decide which half they meant.
+            Some((_, source)) => Err(machine_lease_unresolved(
+                node_id,
+                format!(
+                    "{MACHINE_LEASE_NOT_AUTHORITATIVE}: Node {node_id} resolved from {} and cannot authorize a provider effect; this Store predates the machine lease cutover",
+                    source.as_str()
+                ),
+            )),
+            None => Err(machine_lease_unresolved(
+                node_id,
+                format!("{MACHINE_LEASE_NOT_AUTHORITATIVE}: Node {node_id} has no machine lease"),
+            )),
+        }
+    }
+
+    /// The node-file lease for call sites that carry their own refusal.
+    ///
+    /// `Ok(None)` means only one thing: this machine has no lease at all — the
+    /// benign absence several callers already handle. A lease that resolves
+    /// from a legacy Space row is an `Err`, never a `None`, because reading it
+    /// as "no daemon here" is exactly how a pre-cutover row would quietly stop
+    /// fencing anything.
+    ///
+    /// Callers that must have a lease use `authoritative_machine_lease` and get
+    /// the `AuthorizedMachineLease` newtype instead.
+    pub fn current_authorized_machine_lease(
+        &self,
+        node_id: &str,
+    ) -> StoreResult<Option<NodeDaemonLease>> {
+        match self.current_machine_lease(node_id)? {
+            Some((lease, source)) if source.authorizes_provider_effect() => Ok(Some(lease)),
+            Some((_, source)) => Err(machine_lease_unresolved(
+                node_id,
+                format!(
+                    "{MACHINE_LEASE_NOT_AUTHORITATIVE}: Node {node_id} resolved from {} and cannot authorize a provider effect; this Store predates the machine lease cutover",
+                    source.as_str()
+                ),
+            )),
+            None => Ok(None),
         }
     }
 
@@ -371,4 +419,139 @@ fn require_exact_generation(
         )));
     }
     Ok(lease)
+}
+
+impl HarnessStore {
+    /// Seed machine authority the way a post-cutover node actually carries it:
+    /// the node-file document that every fence now reads, and — as far as it
+    /// still can — the legacy Space row that E2b has not yet retired.
+    ///
+    /// **The document is acquired first, and it is the only half that may
+    /// fail.** After cutover the daemon writes the document and nothing else:
+    /// `release_node_authorities` publishes `Released` on the document and
+    /// leaves the predecessor's Space row exactly where it was, because a
+    /// second live authority record is the failure ADR 0075 removes. A fixture
+    /// that drains through the daemon and then seeds a successor therefore
+    /// meets a legacy row that is still `Active` and will never be released by
+    /// anyone. Refusing there would fail a test for a record no fence reads.
+    /// So the row is kept in step best-effort: it is a projection courtesy for
+    /// the cutover window, not authority, and the two records are allowed to
+    /// diverge exactly where production lets them.
+    ///
+    /// The legacy rows are read for one reason — the cutover mint. The first
+    /// document on a node must start above every generation any Space ever
+    /// issued (ADR 0075 Migration 3), or a successor could reuse a number a
+    /// predecessor already drove under. Once the document exists its own
+    /// generation is the only input and this argument is ignored.
+    ///
+    /// Un-gated for the same reason `append_mission` is (`store_store_base.rs`):
+    /// integration tests under `tests/` link the non-test build, so a
+    /// `cfg(test)` seeder is invisible to them. `#[doc(hidden)]` and the
+    /// `_for_test` suffix carry the intent instead.
+    #[doc(hidden)]
+    pub fn seed_machine_authority_for_test(
+        &self,
+        node_id: &str,
+        daemon_id: &str,
+        instance_id: &str,
+        now_unix_ms: u64,
+        ttl_ms: u64,
+    ) -> StoreResult<NodeDaemonLease> {
+        let space_generations = self
+            .latest_node_daemon_lease(node_id)?
+            .map(|row| row.generation)
+            .into_iter()
+            .collect::<Vec<_>>();
+        let document = self.acquire_machine_lease(
+            node_id,
+            daemon_id,
+            instance_id,
+            ttl_ms,
+            &space_generations,
+        )?;
+        let _ =
+            self.acquire_node_daemon_lease(node_id, daemon_id, instance_id, now_unix_ms, ttl_ms);
+        Ok(document)
+    }
+}
+
+impl HarnessStore {
+    /// Drive one machine-authority transition across both records, the way a
+    /// cutover-era daemon does.
+    ///
+    /// Lifecycle tests assert what a fence decides, and fences read the
+    /// document — but the legacy row is still written until E2b, and a fixture
+    /// whose two records disagreed would fail for reasons unrelated to its
+    /// subject. These keep them in step so a test says what it means.
+    #[doc(hidden)]
+    pub fn drain_machine_authority_for_test(
+        &self,
+        node_id: &str,
+        daemon_id: &str,
+        generation: u64,
+        instance_id: &str,
+        now_unix_ms: u64,
+        drain_ttl_ms: u64,
+    ) -> StoreResult<NodeDaemonLease> {
+        let _ = self.drain_node_daemon_lease(
+            node_id,
+            daemon_id,
+            generation,
+            instance_id,
+            now_unix_ms,
+            drain_ttl_ms,
+        );
+        self.drain_machine_lease(node_id, daemon_id, generation, instance_id, drain_ttl_ms)
+    }
+
+    #[doc(hidden)]
+    pub fn release_machine_authority_for_test(
+        &self,
+        node_id: &str,
+        daemon_id: &str,
+        generation: u64,
+        instance_id: &str,
+        now_unix_ms: u64,
+    ) -> StoreResult<NodeDaemonLease> {
+        let _ = self.release_node_daemon_lease(
+            node_id,
+            daemon_id,
+            generation,
+            instance_id,
+            now_unix_ms,
+        );
+        self.release_machine_lease(node_id, daemon_id, generation, instance_id)
+    }
+}
+
+impl HarnessStore {
+    /// Make the current machine lease look expired, the way wall-clock time
+    /// does to a crashed daemon that stopped renewing.
+    ///
+    /// There is deliberately no production writer for this: `expires` is
+    /// monotonic within a status, so nothing may shorten a live lease — that
+    /// guard is what bounds a backwards clock step. A fixture that needs an
+    /// expired predecessor is simulating *elapsed time*, not a write, so it
+    /// writes the document directly rather than being handed an API that would
+    /// undo the guard for everyone.
+    ///
+    /// Un-gated for the same reason as the seeders above: integration tests
+    /// under `tests/` link the non-test build.
+    #[doc(hidden)]
+    pub fn expire_machine_lease_for_test(&self, node_id: &str) -> StoreResult<NodeDaemonLease> {
+        use crate::node_lease_document::{lease_document_path, NodeDaemonLeaseDocument};
+        let node_home = self.node_home(node_id)?;
+        let mut document = read_lease_document(&node_home, node_id)?.ok_or_else(|| {
+            StoreError::Conflict(format!("no machine lease to expire for Node {node_id}"))
+        })?;
+        let now = crate::store_node_runtime::current_store_unix_ms();
+        document.lease.expires_unix_ms = now.saturating_sub(1);
+        document.lease.renewed_unix_ms = document.lease.expires_unix_ms;
+        let bytes = serde_json::to_vec(&NodeDaemonLeaseDocument::new(
+            document.lease.clone(),
+            document.owner_pid,
+        ))?;
+        std::fs::write(lease_document_path(&node_home), bytes)?;
+        Ok(document.lease)
+    }
 }

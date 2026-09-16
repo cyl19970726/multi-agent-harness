@@ -65,7 +65,7 @@ fn bind_matrix_work(
         panic!("matrix responsibility must resolve exactly one AgentSession");
     };
     let daemon = store
-        .latest_node_daemon_lease(node_id)
+        .current_authorized_machine_lease(node_id)
         .expect("matrix NodeDaemon lease")
         .expect("active matrix NodeDaemon lease");
     let binding_id = format!("work-binding:{work_id}:{binding_generation}");

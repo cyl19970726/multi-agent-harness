@@ -941,15 +941,21 @@ impl HarnessStore {
             ));
         }
 
-        let predecessor_was_released = self
-            .read_jsonl::<firm_core::NodeDaemonLease>("node_daemon_leases.jsonl")?
-            .into_iter()
-            .rfind(|lease| {
-                lease.node_id == session.node_id
-                    && lease.daemon_id == session.node_daemon_id
-                    && lease.generation == expected_predecessor_daemon_generation
-            })
-            .is_some_and(|lease| lease.status == firm_core::NodeDaemonLeaseStatus::Released);
+        // The one machine-authority question that is HISTORICAL rather than
+        // current: did this NAMED PAST generation publish `Released`? Lease
+        // expiry is not a provider-drain receipt, so a session whose
+        // predecessor merely timed out may still have a live provider process
+        // behind it. The generation history file answers it (ADR 0075); before
+        // the cutover this read the Space rows, whose per-generation trail the
+        // compactor preserved for exactly this reader.
+        //
+        // Fails closed: "no record either way" is `false`, which keeps today's
+        // refusal rather than admitting a reattach on silence.
+        let predecessor_was_released = self.machine_generation_was_released(
+            &session.node_id,
+            &session.node_daemon_id,
+            expected_predecessor_daemon_generation,
+        )?;
         let predecessor_may_have_owned_runtime = session.native_session_ref.is_some()
             || session.control_state.runtime_residency != RuntimeResidency::Detached;
         if predecessor_may_have_owned_runtime && !predecessor_was_released {

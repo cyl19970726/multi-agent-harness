@@ -81,7 +81,7 @@ impl RecoveryFixture {
     fn seed_predecessor(&self, instance_pid: &str) -> harness_core::NodeDaemonLease {
         let instance_id = format!("{instance_pid}:{}:dead-daemon", current_unix_ms_u64());
         self.store()
-            .acquire_node_daemon_lease(
+            .seed_machine_authority_for_test(
                 self.daemon().node_id(),
                 "dead-daemon",
                 &instance_id,
@@ -94,28 +94,37 @@ impl RecoveryFixture {
     /// End the predecessor's lease life the way a dead daemon does: its last
     /// renewal simply stops being in the future.
     fn expire(&self, lease: &harness_core::NodeDaemonLease) -> harness_core::NodeDaemonLease {
+        // Simulating elapsed time, not a write: `expires` is monotonic within a
+        // status (ADR 0075), so no API may shorten a live lease — that guard is
+        // what bounds a backwards clock step. The document is written directly
+        // for the same reason wall-clock time would have done it.
         let expired = self
             .store()
-            .renew_node_daemon_lease(
-                self.daemon().node_id(),
-                &lease.daemon_id,
-                lease.generation,
-                &lease.instance_id,
-                current_unix_ms_u64(),
-                1,
-            )
-            .expect("expire the predecessor lease");
-        // A 1ms TTL is in the past by the time the scan reads it; make that
-        // unambiguous rather than racing the clock.
+            .expire_machine_lease_for_test(self.daemon().node_id())
+            .expect("expire the predecessor machine lease");
+        let _ = self.store().renew_node_daemon_lease(
+            self.daemon().node_id(),
+            &lease.daemon_id,
+            lease.generation,
+            &lease.instance_id,
+            current_unix_ms_u64(),
+            1,
+        );
+        // Unambiguously in the past rather than racing the clock.
         std::thread::sleep(Duration::from_millis(5));
         expired
     }
 
-    fn latest_lease(&self) -> harness_core::NodeDaemonLease {
+    /// Who owns this machine now, asked of the record that decides it.
+    ///
+    /// The legacy Space row stopped being that record at cutover: the daemon
+    /// writes only the document, so a row left behind by a predecessor would
+    /// answer "the predecessor" forever (ADR 0075).
+    fn current_lease(&self) -> harness_core::NodeDaemonLease {
         self.store()
-            .latest_node_daemon_lease(self.daemon().node_id())
-            .expect("read latest lease")
-            .expect("a lease row")
+            .current_authorized_machine_lease(self.daemon().node_id())
+            .expect("read the machine lease")
+            .expect("a machine lease")
     }
 
     /// One AgentSession owned by an exact daemon generation, attached and
@@ -256,7 +265,7 @@ fn automatic_recovery_settles_a_proven_dead_predecessor_and_takes_the_next_gener
 
     // The successor owns the next generation, acquired over a lease that the
     // recovery explicitly Released rather than one it stole.
-    let lease = fixture.latest_lease();
+    let lease = fixture.current_lease();
     assert_eq!(lease.daemon_id, fixture.daemon().daemon_id());
     assert_eq!(lease.instance_id, fixture.daemon().instance_id());
     assert_eq!(lease.generation, dead.generation + 1);
@@ -329,7 +338,7 @@ fn automatic_recovery_refuses_a_predecessor_lease_that_has_not_expired() {
         "{error}"
     );
 
-    let lease = fixture.latest_lease();
+    let lease = fixture.current_lease();
     assert_eq!(lease.daemon_id, "dead-daemon");
     assert_eq!(lease.generation, dead.generation);
     assert_eq!(lease.status, harness_core::NodeDaemonLeaseStatus::Active);
@@ -365,7 +374,7 @@ fn automatic_recovery_refuses_a_predecessor_process_that_still_exists() {
             .contains("NODE_DAEMON_MACHINE_AUTHORITY_LOST"),
         "{error}"
     );
-    assert_eq!(fixture.latest_lease().generation, dead.generation);
+    assert_eq!(fixture.current_lease().generation, dead.generation);
 
     let diagnostic = fixture
         .recovery_diagnostic()
@@ -380,12 +389,26 @@ fn automatic_recovery_refuses_a_predecessor_process_that_still_exists() {
     );
 }
 
+/// ADR 0075 retarget of `automatic_recovery_refuses_two_unreleased_predecessor_instances`.
+///
+/// That test proved the successor was fenced when two Execution Spaces each
+/// held a *different* unreleased predecessor instance, because a cross-Space
+/// sweep could not tell which one it was recovering and must not guess. One
+/// document per machine does not improve that detection — it removes the state
+/// the detection existed for. The second instance is refused at acquisition, by
+/// name, before it owns anything, so the ambiguity can never be written down.
+///
+/// The successor property is therefore strictly stronger (impossible rather
+/// than detected) and both halves are asserted here: the refusal that makes it
+/// impossible, and that automatic recovery of the one real predecessor then
+/// proceeds with nothing left to be ambiguous about.
 #[test]
-fn automatic_recovery_refuses_two_unreleased_predecessor_instances() {
+fn the_machine_admits_one_unreleased_predecessor_instance_so_recovery_never_guesses() {
     let fixture = RecoveryFixture::new("auto-recover-ambiguous");
     let dead = fixture.expire(&fixture.seed_predecessor(ABSENT_PID));
-    // A second registered Execution Space holding a different unreleased
-    // instance: recovery must not sweep an instance nobody asked about.
+    // A second Execution Space on the same machine. Before the cutover it could
+    // carry its own lease row; now every Space on this node resolves the one
+    // document, so this is the attempt that used to create the ambiguity.
     let other = crate::execution_space::register_and_activate(
         &fixture.inner.firm_home(),
         "second-space",
@@ -406,40 +429,48 @@ fn automatic_recovery_refuses_two_unreleased_predecessor_instances() {
             updated_at: "unix-ms:1".to_string(),
         })
         .expect("insert Node in the second Space");
-    other_store
-        .acquire_node_daemon_lease(
+
+    let refusal = other_store
+        .acquire_machine_lease(
             fixture.daemon().node_id(),
             "other-dead-daemon",
             &format!("{ABSENT_PID}:1:other-dead-daemon"),
-            current_unix_ms_u64(),
             1,
+            &[],
         )
-        .expect("seed a second unreleased instance");
-    std::thread::sleep(Duration::from_millis(5));
+        .expect_err("a second unreleased instance can never take this machine");
+    let refusal = refusal.to_string();
+    assert!(
+        refusal.contains("NODE_DAEMON_PREDECESSOR_RECOVERY_REQUIRED"),
+        "{refusal}"
+    );
+    // Expiry is not a release: the predecessor above is already expired and the
+    // refusal still stands, which is the whole reason a successor has to prove
+    // death rather than wait one out.
+    assert!(refusal.contains(&dead.instance_id), "{refusal}");
+    assert_eq!(fixture.current_lease().instance_id, dead.instance_id);
+    assert_eq!(fixture.current_lease().daemon_id, "dead-daemon");
+    assert_ne!(
+        fixture.current_lease().status,
+        harness_core::NodeDaemonLeaseStatus::Released
+    );
 
-    let error = fixture
+    // With exactly one unreleased instance on the machine there is nothing to
+    // be ambiguous about, so the successor recovers it instead of refusing.
+    fixture
         .daemon()
         .ensure_node_authority_bundle()
-        .expect_err("two unreleased instances must fence the successor");
-    assert!(
-        error
-            .to_string()
-            .contains("NODE_DAEMON_MACHINE_AUTHORITY_LOST"),
-        "{error}"
+        .expect("one proven-dead predecessor leaves the successor nothing to guess");
+    assert_eq!(fixture.current_lease().generation, dead.generation + 1);
+    assert_eq!(
+        fixture.current_lease().instance_id,
+        fixture.daemon().instance_id()
     );
-    assert_eq!(fixture.latest_lease().generation, dead.generation);
-    assert_eq!(fixture.latest_lease().daemon_id, "dead-daemon");
-
-    let last_error = fixture
-        .recovery_diagnostic()
-        .expect("the refused attempt is reported by daemon status")["last_error"]
-        .as_str()
-        .expect("a named proof failure")
-        .to_string();
-    assert!(
-        last_error.contains("SUPERVISOR_GENERATION_FENCED")
-            && last_error.contains("different unreleased predecessor instances"),
-        "{last_error}"
+    assert_eq!(
+        fixture
+            .recovery_diagnostic()
+            .expect("the recovery attempt is reported by daemon status")["last_error"],
+        serde_json::Value::Null
     );
 }
 
@@ -778,7 +809,7 @@ fn a_failed_bundle_rolls_back_the_lease_its_own_recovery_just_made_acquirable() 
     // so that lease is this scan's own newly acquired one and must come back
     // Released — not be left behind because the flag was decided before the
     // recovery ran.
-    let lease = fixture.latest_lease();
+    let lease = fixture.current_lease();
     assert_eq!(lease.daemon_id, fixture.daemon().daemon_id());
     assert_eq!(lease.generation, dead.generation + 1);
     assert_eq!(

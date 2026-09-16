@@ -106,24 +106,32 @@ fn runtime_command_admission_revalidates_same_daemon_renewal() {
         })
         .expect("insert ExecutionNode");
 
+    // The timeline is real wall-clock rather than the synthetic 1_000/1_500/…
+    // it used to be: after ADR 0075 the machine lease writer samples its own
+    // clock under the lease lock — deliberately, because *when* `now` is taken
+    // under that lock is the property the ADR turns on — so a caller can no
+    // longer dictate the expiry it will later assert on. Every instant below is
+    // therefore derived from a lease the writer actually produced.
     let initial = store
-        .acquire_node_daemon_lease(node_id, "daemon-a", "instance-a", 1_000, 1_000)
+        .seed_machine_authority_for_test(node_id, "daemon-a", "instance-a", 1_000, 1_000)
         .expect("acquire initial daemon lease");
     let renewed = store
-        .renew_node_daemon_lease(
+        .renew_machine_lease(
             node_id,
             &initial.daemon_id,
             initial.generation,
             &initial.instance_id,
-            1_500,
-            3_000,
+            120_000,
         )
         .expect("renew exact daemon instance");
+    assert!(renewed.expires_unix_ms > initial.expires_unix_ms);
 
+    // Past the admitted snapshot's own expiry, inside the renewal's.
+    let after_admitted_expiry = initial.expires_unix_ms + 1;
     let current = current_node_daemon_lease_after_admission_at(
         &store,
         &initial,
-        2_500,
+        after_admitted_expiry,
         "runtime-command:test-renewal",
     )
     .expect("the exact daemon renewal remains current after the admitted snapshot expires");
@@ -132,23 +140,23 @@ fn runtime_command_admission_revalidates_same_daemon_renewal() {
     assert_eq!(current.expires_unix_ms, renewed.expires_unix_ms);
 
     store
-        .release_node_daemon_lease(
+        .release_machine_authority_for_test(
             node_id,
             &renewed.daemon_id,
             renewed.generation,
             &renewed.instance_id,
-            2_600,
+            after_admitted_expiry,
         )
         .expect("release exact daemon instance");
     let successor = store
-        .acquire_node_daemon_lease(node_id, "daemon-b", "instance-b", 2_600, 3_000)
+        .seed_machine_authority_for_test(node_id, "daemon-b", "instance-b", 2_600, 120_000)
         .expect("acquire successor daemon generation");
     assert!(successor.generation > initial.generation);
 
     let error = current_node_daemon_lease_after_admission_at(
         &store,
         &initial,
-        2_700,
+        after_admitted_expiry,
         "runtime-command:test-renewal",
     )
     .expect_err("a successor daemon generation must fence the admitted snapshot");
@@ -204,7 +212,7 @@ fn draining_after_durable_command_prepare_requires_exact_reconciliation() {
         .expect("active daemon lease");
     let now = current_unix_ms_u64();
     store
-        .drain_node_daemon_lease(
+        .drain_machine_authority_for_test(
             &current.node_id,
             &current.daemon_id,
             current.generation,

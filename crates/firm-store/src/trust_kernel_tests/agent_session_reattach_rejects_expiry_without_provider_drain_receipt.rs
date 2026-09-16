@@ -32,9 +32,16 @@ fn agent_session_reattach_rejects_expiry_without_provider_drain_receipt() {
         )
         .unwrap();
     let after_expiry = current_unix_ms() + 61_000;
+    // Elapsed time, not a caller-supplied `now`: after ADR 0075 the machine
+    // lease writer samples its own clock under the lease lock, so a caller can
+    // no longer hand it a future instant and have the lease read as expired.
+    // The document is aged directly, exactly as wall-clock time would age it.
+    store
+        .expire_machine_lease_for_test(&target.node_id)
+        .expect("age the machine lease past its expiry");
     let operations_before = store.canonical_operations().unwrap();
     let foreign_error = store
-        .acquire_node_daemon_lease(
+        .seed_machine_authority_for_test(
             &target.node_id,
             "daemon-2",
             "instance-2",
@@ -46,7 +53,7 @@ fn agent_session_reattach_rejects_expiry_without_provider_drain_receipt() {
         .to_string()
         .contains("NODE_DAEMON_PREDECESSOR_RECOVERY_REQUIRED"));
     let same_instance_error = store
-        .acquire_node_daemon_lease(
+        .seed_machine_authority_for_test(
             &target.node_id,
             "daemon-1",
             "instance-1",
@@ -60,7 +67,7 @@ fn agent_session_reattach_rejects_expiry_without_provider_drain_receipt() {
     assert_eq!(store.canonical_operations().unwrap(), operations_before);
 
     store
-        .drain_node_daemon_lease(
+        .drain_machine_authority_for_test(
             &target.node_id,
             "daemon-1",
             1,
@@ -70,7 +77,7 @@ fn agent_session_reattach_rejects_expiry_without_provider_drain_receipt() {
         )
         .expect("same instance may drain its expired predecessor");
     store
-        .release_node_daemon_lease(
+        .release_machine_authority_for_test(
             &target.node_id,
             "daemon-1",
             1,
@@ -79,7 +86,7 @@ fn agent_session_reattach_rejects_expiry_without_provider_drain_receipt() {
         )
         .expect("explicit predecessor settlement publishes Released");
     let successor = store
-        .acquire_node_daemon_lease(
+        .seed_machine_authority_for_test(
             &target.node_id,
             "daemon-2",
             "instance-2",
@@ -223,7 +230,7 @@ fn hard_crash_recovery_requires_exact_operator_evidence_and_detaches_the_predece
     );
     assert!(recovered.current_cycle_marker.is_none());
     store
-        .acquire_node_daemon_lease(
+        .seed_machine_authority_for_test(
             &released.lease.node_id,
             "daemon-2",
             "instance-2",

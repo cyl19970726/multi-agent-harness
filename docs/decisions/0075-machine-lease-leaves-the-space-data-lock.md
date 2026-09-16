@@ -18,7 +18,7 @@ baseline: master 35bcda73 for the evidence; line citations re-verified at master
 A NodeDaemon's machine authority is a **lease row inside every Execution Space's data
 store**. `acquire`/`renew`/`drain`/`release` all append to that Space's
 `node_daemon_leases.jsonl` while holding that Space's `.store.lock`
-(`store_node_runtime.rs:273-343`, `:368-424`, `:431-470`, `:472-506`) — the same lock that
+(`store_node_runtime.rs:276-346`, `:371-427`, `:434-473`, `:475-509`) — the same lock that
 serializes every ordinary data mutation there. That coupling has a measured price:
 
 - **Data writes are O(whole file) under that lock.** A Work transition rewrites
@@ -32,10 +32,10 @@ serializes every ordinary data mutation there. That coupling has a measured pric
   `budget = remaining TTL` (`store_node_runtime.rs:382-391`), then queues on `.store.lock`.
   A renewal therefore cannot fail *before* expiry — and cannot succeed after a queue
   longer than the TTL either. TTL is `max(scan_interval*4, 15_000)` ms
-  (`machine_authority.rs:551-563`); renewal runs every `remaining/4`, capped at 5 s
-  (`:40-44`, `:586-616`, `:676-711`).
+  (`machine_authority.rs:584-596`); renewal runs every `remaining/4`, capped at 5 s
+  (`:40-44`, `:619-649`, `:709-744`).
 - **Every renewal also rewrites the lease ledger.** `compact_node_daemon_leases_unlocked` runs
-  on each renewal (`store_node_runtime.rs:415`, `store_jsonl.rs:195-251`): full read + temp +
+  on each renewal (`store_node_runtime.rs:418`, `store_jsonl.rs:195-251`): full read + temp +
   rename + directory fsync, added by #811 because append-only heartbeats grew the ledger without
   bound (one uncompacted copy in evidence: 87,354 rows / 28 MB).
 
@@ -65,12 +65,12 @@ Two further facts make today's shape hard to defend on its own terms. First, **t
 scope is reconstructed, not stored**: generations are Space-local counters
 (`store_node_runtime.rs:323`, one per Space store), and "machine-wide" exists only because
 `ensure_node_authority_bundle` takes the whole set at once and treats any member's failure
-as total loss (`machine_authority.rs:190-315`) — a rule written down only in
+as total loss (`machine_authority.rs:190-349`) — a rule written down only in
 `agent-runtime.md:24-27`. In evidence one node (`2437c3dd…`) is registered in 25 Spaces
 carrying **23 distinct** "current" generations for the same authority, from 1 to 148;
 `AGENTS.md`'s "never scoped to one Execution Space" is not true of the rows. Second, **the
 readers that matter most already read it lock-free**: the admission fence
-(`fabric_foundation.rs:35-93`), the settlement fence (`:98-158`) and
+(`fabric_foundation.rs:35-105`), the settlement fence (`:108-176`) and
 `current_node_daemon_lease_after_admission_at` (`runtime_command_admission.rs:9-31`) resolve
 through `latest_node_daemon_lease`, an unsynchronized `read_jsonl`
 (`store_read_models.rs:325-331`; the torn-tail retry that makes it survivable is documented at
@@ -80,8 +80,8 @@ buying a queue — while every lease row in evidence is **351–365 bytes** (med
 The other machine-authority readers are **not** in that shape, and the difference decides how
 E2a has to edit them, so it is stated here rather than discovered:
 
-- The three TeamSupervisorLease parent fences (`store_node_runtime.rs:123-127`, `:562-566`,
-  `:696-700`) do not call `latest_node_daemon_lease` at all — each **inlines**
+- The three TeamSupervisorLease parent fences (`store_node_runtime.rs:125-128`, `:565-567`,
+  `:701-704`) do not call `latest_node_daemon_lease` at all — each **inlines**
   `latest_by_id(self.read_jsonl::<NodeDaemonLease>("node_daemon_leases.jsonl")?, …)` — and each
   runs **while the Space write lock is held** (`require_exact_supervisor_authority_unlocked`
   says so at `:106-108`; the other two sit inside `acquire_write_lock()` at `:527` and
@@ -146,8 +146,8 @@ document that is already in place. A failure there narrows the durability claim 
 invalidating the write. ~350 bytes, two fsyncs, no unrelated
 data in the critical section, and no compaction step because a replace has nothing to compact.
 The renewal is **one write per machine**, not one per Space:
-`run_held_node_authorities` and its per-Space workers (`machine_authority.rs:621-674`, `:676-711`)
-collapse into a single heartbeat, and `ensure_node_authority_bundle` (`:190-315`) becomes one
+`run_held_node_authorities` and its per-Space workers (`machine_authority.rs:654-707`, `:709-744`)
+collapse into a single heartbeat, and `ensure_node_authority_bundle` (`:190-349`) becomes one
 acquire plus the unchanged per-Space *registration* check — `node_project_registrations.jsonl`
 stays Space-local because it says which Spaces this node serves, not who owns the machine.
 
@@ -176,24 +176,29 @@ an unbound Store fails every machine-authority read closed. That deletion is saf
 because the two production entry points above bind explicitly — a derivation that production
 still depended on could not be removed without breaking the daemon.
 
-**The full checklist.** Verified site by site at 35bcda73. Grepping for
+**The full checklist.** Verified site by site at 35bcda73. **"Reads today" means at that
+baseline**: since E2a-2a every row below reads the node file instead, through
+`authoritative_machine_lease` or `current_authorized_machine_lease`, and the line citations have
+been re-pointed at the current tree so the table stays navigable. The column is kept as written
+because it is the evidence for the decision — it says what each site had to be changed *from*, and
+which lock it was under while it read. Grepping for
 `latest_node_daemon_lease` and swapping it finds **three** of these and silently misses the
 rest, with no compile error, so each site below names how it reads today and under which lock:
 
 | Site | Reads today | Lock |
 |---|---|---|
 | admission fence `fabric_foundation.rs:35-93` | `latest_node_daemon_lease` | lock-free |
-| settlement fence `fabric_foundation.rs:98-158` | `latest_node_daemon_lease` | lock-free |
+| settlement fence `fabric_foundation.rs:108-176` | `latest_node_daemon_lease` | lock-free |
 | `runtime_command_admission.rs:9-31` | `latest_node_daemon_lease` | lock-free |
-| Supervisor parent fence `store_node_runtime.rs:123-127` | inline `read_jsonl` | Space write lock held |
-| Supervisor parent fence `store_node_runtime.rs:562-566` | inline `read_jsonl` | Space write lock held |
-| Supervisor parent fence `store_node_runtime.rs:696-700` | inline `read_jsonl` | Space write lock held |
-| Supervisor parent fence `trust_foundation.rs:296-306` (delivery mutations) | `latest_node_daemon_lease` | Space write lock held |
+| Supervisor parent fence `store_node_runtime.rs:125-128` | inline `read_jsonl` | Space write lock held |
+| Supervisor parent fence `store_node_runtime.rs:565-567` | inline `read_jsonl` | Space write lock held |
+| Supervisor parent fence `store_node_runtime.rs:701-704` | inline `read_jsonl` | Space write lock held |
+| Supervisor parent fence `trust_foundation.rs:298-306` (delivery mutations) | `latest_node_daemon_lease` | Space write lock held |
 | RuntimeCommand admission `fabric_runtime_commands.rs:119-131` | `latest_node_daemon_lease` | Space write lock held |
 | shutdown settlement `trust_kernel/fabric_work_execution_recovery/node_daemon_shutdown.rs:41-47` | inline `read_jsonl` | Space write lock held |
-| recover-predecessor `trust_kernel/fabric_work_execution_recovery/node_daemon_predecessor.rs:262-267` | inline `read_jsonl` | Space write lock held |
+| recover-predecessor `trust_kernel/fabric_work_execution_recovery/node_daemon_predecessor.rs:362-367` | inline `read_jsonl` | Space write lock held |
 | `ensure_stale_socket_reclaimable` `machine_authority.rs:104-146` | `latest_node_daemon_lease` per Space | lock-free |
-| reattach released-predecessor proof `fabric_identity_sessions.rs:944-952` | inline `read_jsonl`, **historical** | Space write lock held |
+| reattach released-predecessor proof `fabric_identity_sessions.rs:954-960` | inline `read_jsonl`, **historical** | Space write lock held |
 | provider-session transition `runtime_effects.rs:264` (`transition_provider_session_for_member_as`) | `latest_node_daemon_lease` | lock-free |
 | provider-session authority `runtime_effects.rs:617` (`require_provider_session_authority_inner`) | `latest_node_daemon_lease` | lock-free |
 | message claim `runtime_effects.rs:767` (`claim_canonical_messages_with_before_claim`) | `latest_node_daemon_lease` | lock-free |
@@ -267,12 +272,14 @@ here so the count closes:
 
 **Excluded, and why** — the other 31 production reads never refuse: the Dashboard and HTTP lease
 projections (`dashboard_projection.rs:197`/`:200`/`:459`, `http_get_routes.rs:214`),
-`daemon status` display (`daemon_cli.rs:144`/`:404`, `control_protocol.rs:1211`), RoleView
+`daemon status` display (`daemon_cli.rs:144`; **corrected during E2a-2a — `daemon_cli.rs:404` and
+`control_protocol.rs:1211` are not display, they are the CLI and daemon halves of `stop` and both
+refuse; see "What executing this checklist found"**), RoleView
 surfaces (`member_surface.rs:326`, `team_surface.rs:669`, `workspace_surface.rs:714`,
 `firm-cli/src/role_views_api.rs:1376`), the host-binding projection
 input (`store_host_runtime_binding.rs:86`), the two accessors themselves
 (`store_read_models.rs:327`/`:335`), the compactor (`store_jsonl.rs:200`), and the reattach
-proof (`fabric_identity_sessions.rs:945`), which is historical and moves to the history file
+proof (`fabric_identity_sessions.rs:954`), which is historical and moves to the history file
 rather than the document. These keep reading legacy rows after cutover by design.
 
 Two sites need no swap: `from_admitted_command`
@@ -304,7 +311,7 @@ spread above becomes one number.
 ### Predecessor history
 
 One document is the current authority, and it is deliberately **not** a history. Exactly one
-reader needs history: `predecessor_was_released` (`fabric_identity_sessions.rs:944-952`) does an
+reader needs history: `predecessor_was_released` (`fabric_identity_sessions.rs:954-960`) does an
 `rfind` for a **named past generation** to prove that generation reached `Released`, because
 expiry is not a provider-drain receipt. Today that proof survives only because
 `compact_node_daemon_leases_unlocked` keeps first-of-group plus last-of-each-status *per
@@ -339,13 +346,13 @@ with today's reattach refusal — expiry still never becomes a drain receipt.
 
 `drain` and `release` become single-document status transitions under the lease lock. The
 **settlement gate keeps its current strength**: `require_node_daemon_settlement_unlocked`
-(`trust_kernel/fabric_work_execution_recovery/node_daemon_predecessor.rs:489-553`) refuses Release while any Supervisor lease of that
+(`trust_kernel/fabric_work_execution_recovery/node_daemon_predecessor.rs:603-667`) refuses Release while any Supervisor lease of that
 generation is unreleased or any Session of it is non-`Detached` or has an open cycle. With one
 document that proof is gathered from **every registered Space first**, and only then is
 `released` published — so today's continue-past-failure partial release
-(`machine_authority.rs:931-975`, `:1128-1162`) becomes one all-or-nothing publish over an explicit
+(`machine_authority.rs:1000-1043`, `:1196-1229`) becomes one all-or-nothing publish over an explicit
 proof set, and `authority_released: false` stops meaning "partly". `recover-predecessor`
-(`daemon_cli.rs:200-252`, `daemon_predecessor_recovery.rs:43-163`) keeps its exact-literal
+(`daemon_cli.rs:212-264`, `daemon_predecessor_recovery.rs:43-163`) keeps its exact-literal
 confirm, dead-socket and dead-pid checks and its per-Space session settlement, but the lease half
 stops being a cross-Space sweep and its "different unreleased instances across Spaces" refusal
 becomes structurally impossible. E1a's automatic takeover (ADR 0073) reads one document instead
@@ -439,6 +446,145 @@ not before — and its test is retargeted at the legacy path. `daemon status` ga
   history file nor the legacy rows keeps today's reattach refusal; a torn final line is tolerated.
 - **Evidence** — replay the S1 gen-4 window against the new writer in a fixture; assert no
   self-stop.
+
+## What executing this checklist found (E2a-2a)
+
+The inventory above was verified by hand at `fccbf4cc`, and executing it found the limits of that.
+Four things are recorded here because a reader who trusts the tables above would otherwise be
+misled, and because each was found by running code rather than by reading it.
+
+### The checklist missed thirteen sites, and the miss has a shape
+
+Eleven production sites read the lease and produce a machine-authority refusal — deciders by this
+ADR's own inclusion rule — and appear nowhere in the tables above. Two more moved deliberately for
+reasons given below. Every one of them is in a file the tables never name at all, which is the
+pattern: the hand inventory was organised around the kernel and the `main_modules` surface, and the
+CLI's own verbs, the control protocol and the Fabric routing layer were not swept.
+
+| Site | Function and refusal | How it was filed before |
+|---|---|---|
+| `firm-node-daemon/src/supervisor_daemon/control_protocol.rs:1211` | the `stop` control verb; refuses `SUPERVISOR_GENERATION_FENCED` | "`daemon status` display" |
+| `firm-cli/src/main_modules/daemon_cli.rs:404` | the CLI `stop` verb's generation selector; chooses the generation the fence above then checks | "`daemon status` display" |
+| `firm-cli/src/daemon_client.rs:500` | `start_daemon_process_fenced`; refuses `SUPERVISOR_GENERATION_FENCED` | absent |
+| `firm-cli/src/daemon_client.rs:555` | `daemon start`'s acquisition wait; decides whether the start succeeded | absent |
+| `firm-cli/src/daemon_client.rs:677` | `reconcile_team_run_start_postcondition`; the exact-generation postcondition | absent |
+| `firm-cli/src/fabric_runtime/cli_routing.rs:44` | NodeGateway session parent fence | absent |
+| `firm-cli/src/fabric_runtime/cli_routing.rs:520` | NodeGateway serve requires the current active lease | absent |
+| `firm-cli/src/main_modules/http_protocol.rs:216` | peer-Team author parent fence | absent |
+| `firm-cli/src/main_modules/team_recovery_work.rs:1334`, `:1396` | refuses `NODE_DAEMON_LEASE_REQUIRED` | absent |
+| `firm-cli/src/role_actions_api/runtime_recovery_adapter.rs:28` | supplies the lease the runtime-recovery fence decides on | absent |
+
+Two more moved without the rule requiring it, and are named so the edge is deliberate rather than
+accidental:
+
+- `firm-node-daemon/src/supervisor_daemon/recovery.rs:212`
+  (`block_start_failure_with_unresolved_runtime_command`) reads the lease and returns a bool, so the
+  rule excludes it — the ADR's own Issue Pool said so. It moved anyway, because the question it asks
+  is "is the live machine authority *mine*", and after cutover a record this daemon no longer writes
+  can only make that comparison wrong; a wrong answer there silently drops a blocking recovery
+  marker. An unresolvable or legacy-sourced lease stays the fail-safe `None`.
+- `firm-cli/src/main_modules/daemon_cli.rs:144` (`daemon_absent_status`) is a display and stays one.
+  It moved because the retarget below requires it to name *the* predecessor lease once, with its
+  document path, instead of one line per Execution Space.
+
+**Why leaving them would not have been a partial cutover but a broken one.** `firm daemon start`
+would have waited for a generation on a ledger nothing writes and then timed out; `firm daemon stop`
+would have selected a legacy generation that the daemon's own stop fence then refused. Neither
+failure is subtle, and neither was reachable by the unit suites — the first test to catch any of it
+was a lifecycle test whose stop no longer converged.
+
+**So the site-by-site checklist is now discharged mechanically, not by hand.**
+`machine_lease_cutover::no_production_decider_reads_the_legacy_lease_ledger_outside_the_named_exclusions`
+walks every production source file and fails on any read of `latest_node_daemon_lease`,
+`latest_node_daemon_leases` or an inline `read_jsonl::<NodeDaemonLease>` that is not in a named
+allowlist carrying its reason — counts included, so a second read added to an already-listed file
+also turns it red. A hand list is only as good as the sweep that produced it; this one re-runs on
+every build.
+
+### The Rule-2 hazard, and the incident that proved it is real
+
+Seven production deciders resolve the machine lease **while holding an Execution Space
+`.store.lock`**: the four TeamSupervisorLease parent fences
+(`store_node_runtime.rs:125`, `:567`, `:701` and `trust_foundation.rs:298`), RuntimeCommand
+admission (`fabric_runtime_commands.rs:119`), shutdown settlement
+(`node_daemon_shutdown.rs:41`) and predecessor recovery (`node_daemon_predecessor.rs:360`). Each is
+a place where taking the lease lock would nest the two locks and reintroduce, in the opposite
+direction, the queueing this ADR exists to remove.
+
+That is not hypothetical. The first recover-predecessor cut published the document from inside the
+Space-locked body, and the debug lock registry panicked by name in 0.2 s rather than deadlocking
+under load. Recovery is therefore two-phase: gather the settlement proof and settle the Space's
+Sessions under the Space write lock, **`drop(_lock)`**, then take the lease lock and publish
+`Released` plus its history row. The `drop` is load-bearing and the comment beside it says so.
+
+The registry is `cfg(debug_assertions)`, which is the right trade and worth stating plainly: it
+compiles out of release builds, so "protected structurally" means "caught by debug test runs on the
+paths a test exercises". CI runs debug, and every newly wired decider path now has a test that runs
+it — including `machine_lease_cutover::the_registry_is_armed_in_this_test_binary`, whose only job is
+to make a deliberate violation panic so the other lock tests cannot pass by the registry being off.
+
+### Collapsing a per-Space walk drops the questions it was asking
+
+Collapsing `ensure_node_authority_bundle`'s per-Space loop lost `blocked_by_predecessor`, so
+automatic predecessor recovery silently stopped running and acquisition refused instead. E1a's own
+test caught it. The lesson is not "be careful": it is that a loop over Spaces was carrying *two*
+questions — which Spaces this node serves, and who owns the machine — and only the second one
+collapses. The first stays per-Space and always was Space data. `blocked_by_predecessor` is now one
+question asked once, of the document, which is the form that cannot disagree with itself.
+
+The same collapse has one consequence worth naming: `ensure_node_authority_bundle`'s cutover mint
+reads `latest_node_daemon_lease`, deliberately, and not the resolver. The resolver's whole job is to
+refuse a legacy row, and a pre-cutover store is nothing but legacy rows — asking it there would turn
+the one input Migration step 3 needs into `MACHINE_LEASE_NOT_AUTHORITATIVE` and leave the first
+document unable to start above the generations the Spaces already issued.
+
+### Two properties the mechanism had that nobody had stated
+
+- **An unresolved machine lease is not transient.** The heartbeat classified every non-fence error
+  as retryable and kept renewing until the confirmed expiry. `MACHINE_LEASE_FILE_UNRESOLVED` and
+  `MACHINE_LEASE_NOT_AUTHORITATIVE` are not transient — waiting cannot turn either into authority —
+  so a daemon meeting one would have gone on driving provider effects for a full TTL on authority it
+  had already been told it did not have. That is the fence being skipped, just slowly. Both now
+  latch on the first occurrence, exactly like a generation fence, keyed off the typed
+  `StoreError::is_machine_lease_unresolved()` rather than a message prefix.
+- **`expires` monotonicity makes a mid-generation TTL reduction fatal.** A generation acquired under
+  a 20 s TTL can never renew down to 1.2 s: every such renewal is refused as a backwards expiry
+  until the lease simply runs out. This is correct — a lease that silently shrinks is one whose
+  holder believes it owns more time than the file grants — and production never meets it, because a
+  generation's TTL is fixed for its life and a new TTL arrives with a fresh acquire. It is written
+  down because a fixture that shortens a live TTL looks reasonable and fails in a way that reads as
+  a flake.
+
+### Retargeted acceptance tests
+
+Eleven per-Space acceptance tests pinned behaviour this ADR abolishes. None was deleted. Each was
+retargeted to a successor property **at least as strong**, and renamed wherever the old name states
+the abolished behaviour. The Brain approved nine; two more — rows 10 and 11 — met the same clause of
+this ADR ("its 'different unreleased instances across Spaces' refusal becomes structurally
+impossible") and are submitted for the same bounded review rather than quietly folded in.
+
+Originating change verified with `git log -S<test name>` rather than inferred. Four of the nine were
+attributed to ADR 0073's acceptance in the E2a-2a handoff; that was wrong, and only row 10 is
+actually E1a's.
+
+| # | Old name | Old property | New name | New property | Originated in |
+|---|---|---|---|---|---|
+| 1 | `recovery_uses_space_local_generations_and_http_never_expands_its_tuple` | generations are Space-local; recovery honours each Space's own counter | `the_generation_is_machine_wide_and_monotonic_and_http_never_expands_its_tuple` | **inverted**: one machine-wide monotonic generation, whichever Store asks; the HTTP tuple half unchanged | `e5f1adc3` (captured space-local predecessor generations, DEV-234 lineage) |
+| 2 | `contended_space_does_not_delay_healthy_space_to_expiry` | one Space's contention does not starve another Space's lease to expiry | `a_contended_space_does_not_delay_the_machine_heartbeat_at_all` | the renewal lands *while* the Space lock is held, not merely before the TTL | `c96f7f0d` (bound node renewal rounds across Spaces, ADR 0044 lineage) |
+| 3 | `default_leases_survive_ten_second_writer_contention_without_extending_ttl` | renewal survived 10 s of data-lock contention | `a_ten_second_space_lock_does_not_slow_the_machine_heartbeat` | same 10 s contention, now measured: the first renewal lands inside the hold, under 2 s | `2b6c20ad` (renew leases within confirmed authority budgets, DEV-149-REVIEW-02 lineage) |
+| 4 | `absent_status_names_each_predecessor_lease_expiry` | status names one predecessor lease per Execution Space | `absent_status_names_the_one_predecessor_lease_and_the_document_it_read` | names it once, with `lease_source` and the `lease_path` an operator can open | `83970be3` (#796/#802, DEV-193) |
+| 5 | `authority_bundle_rolls_back_partial_acquisition_until_every_predecessor_is_released` | a partial per-Space acquisition is rolled back | `authority_acquisition_is_atomic_on_the_document_until_every_predecessor_is_released` | atomic on the document under injected staging failure: previous generation and history byte-for-byte intact | `651dfee8` (fence NodeDaemon authority handoff, ADR 0044 lineage) |
+| 6 | `recover_predecessor_partial_failure_preserves_releases_and_retry_markers` | a partial release preserved per-Space markers; `authority_released: false` meant "partly" | `recover_predecessor_failure_publishes_no_release_and_keeps_its_retry_markers` | all-or-nothing: a failure publishes no release, keeps the previous generation, and names every Space and refusal for the retry | `5f57c6bf` (DEV-234; DEV-149-REVIEW-03 semantics) |
+| 7 | `recovery_does_not_add_spaces_after_validation` | a Space cannot join the recovery set after validation | `a_space_appearing_after_validation_joins_neither_the_recovery_set_nor_the_authority` | Spaces no longer enter the authority decision at all; a late Space has no lease of its own to release | `e5f1adc3` |
+| 8 | `unreadable_held_space_latches_only_after_confirmed_deadline` | an unreadable Space latches authority loss after a deadline | `an_unreadable_space_is_a_projection_problem_not_an_authority_problem` | **inverted**: the heartbeat renews straight through two unreadable Spaces, which still resolve the same document | `2b6c20ad` |
+| 9 | `expired_owned_space_still_latches_global_authority_loss` | an expired per-Space lease escalates to a global loss | `an_expired_machine_lease_latches_authority_loss` | an expired *document* is a machine-wide loss by construction, not by a rule written in prose | `c96f7f0d` |
+| 10 | `automatic_recovery_refuses_two_unreleased_predecessor_instances` | two different unreleased instances fence the successor | `the_machine_admits_one_unreleased_predecessor_instance_so_recovery_never_guesses` | the second instance is refused at acquisition, so the ambiguity cannot be written down; recovery of the one real predecessor then proceeds | `cf828dff` (#985, **ADR 0073 / E1a**) |
+| 11 | `recovery_refuses_same_generation_foreign_instance_and_fences_successor` (first clause only) | `validate` refused when two Spaces held different unreleased instances | unchanged name — both clauses are still true | the foreign instance is refused earlier, at acquisition, so `validate` is never handed the ambiguity; the successor-fence clause is untouched | `e5f1adc3` |
+
+"At least as strong" is meant literally in every row: rows 1, 8 and 9 invert a claim that was only
+ever true because of the defect; rows 2, 3 and 5 keep the original scenario and raise the assertion;
+rows 4, 6, 7, 10 and 11 replace a per-Space enumeration with the single fact that made the
+enumeration unnecessary.
 
 ## Rollout
 

@@ -50,7 +50,7 @@ fn member_statuses(fixture: &DrainFixture) -> Vec<(String, MemberRunStatus)> {
 pub(super) fn reattach_without_resuming(fixture: &DrainFixture) -> u64 {
     let successor = fixture
         .store
-        .acquire_node_daemon_lease(
+        .seed_machine_authority_for_test(
             fixture.node_id(),
             fixture.daemon_id(),
             "drain-instance-2",

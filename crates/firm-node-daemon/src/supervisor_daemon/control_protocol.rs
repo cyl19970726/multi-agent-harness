@@ -1206,9 +1206,16 @@ impl MultiTeamDaemon {
             .ok_or_else(|| {
                 CliError::Usage(format!("Execution Space not found: {execution_space_id}"))
             })?;
-        let store = HarnessStore::new(space.store_root);
+        // ADR 0075: this is a machine-authority decider, not a projection — it
+        // refuses `stop` with `SUPERVISOR_GENERATION_FENCED`, which is one of
+        // the refusal forms the inclusion rule names. It therefore reads the
+        // node file, and the Store it reads through is bound to this daemon's
+        // Firm home: a Store opened by bare path would resolve a derived node
+        // directory, so a Space registered outside the home would fence `stop`
+        // against a document no one writes.
+        let store = HarnessStore::new(space.store_root).with_firm_home(&self.firm_home);
         let now_ms = current_unix_ms_u64();
-        let lease = store.latest_node_daemon_lease(&self.node_id)?;
+        let lease = store.current_authorized_machine_lease(&self.node_id)?;
         let authorized = daemon_control_generation_authorized(
             lease.as_ref(),
             &self.daemon_id,

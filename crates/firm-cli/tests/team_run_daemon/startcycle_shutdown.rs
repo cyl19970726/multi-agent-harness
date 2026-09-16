@@ -151,7 +151,7 @@ fn experiment(mode: u8) {
         });
     }
     let generation = store
-        .latest_node_daemon_lease(&fixture.node_id)
+        .current_authorized_machine_lease(&fixture.node_id)
         .unwrap()
         .unwrap()
         .generation;

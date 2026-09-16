@@ -128,7 +128,7 @@ pub(super) fn assert_report_only_submission_succeeds(
         .expect("exact TeamRun");
     let node_id = run.execution_node_id.as_str();
     let daemon = store
-        .latest_node_daemon_lease(node_id)
+        .current_authorized_machine_lease(node_id)
         .expect("NodeDaemon lease for the report-only Work")
         .expect("live NodeDaemon lease");
     let member_run_id = store

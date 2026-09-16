@@ -91,7 +91,7 @@ fn predecessor_recovery_is_idempotent_across_daemon_generations() {
 
     // The successor generation adopts both Sessions.
     let successor = store
-        .acquire_node_daemon_lease(
+        .seed_machine_authority_for_test(
             node_id,
             "daemon-2",
             "instance-2",
@@ -271,7 +271,7 @@ fn predecessor_recovery_is_idempotent_across_daemon_generations() {
 
     // The successor generation can take machine authority again.
     store
-        .acquire_node_daemon_lease(
+        .seed_machine_authority_for_test(
             node_id,
             "daemon-3",
             "instance-3",

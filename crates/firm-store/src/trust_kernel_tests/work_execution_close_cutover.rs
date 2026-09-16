@@ -10,7 +10,7 @@ fn closed_process_admission_settles_claimed_delivery_but_cannot_claim_another() 
     const INSTANCE_ID: &str = "instance-process-admission-work-test";
     let now = current_unix_ms();
     store
-        .release_node_daemon_lease(
+        .release_machine_authority_for_test(
             "11111111-1111-4111-8111-111111111111",
             "daemon-1",
             1,
@@ -19,7 +19,7 @@ fn closed_process_admission_settles_claimed_delivery_but_cannot_claim_another() 
         )
         .unwrap();
     let daemon_lease = store
-        .acquire_node_daemon_lease(
+        .seed_machine_authority_for_test(
             "11111111-1111-4111-8111-111111111111",
             DAEMON_ID,
             INSTANCE_ID,

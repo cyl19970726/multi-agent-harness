@@ -243,7 +243,7 @@ fn stop_daemon(
 ) {
     let store = HarnessStore::new(home.spaces_dir().join(&fixture.execution_space_id));
     let generation = store
-        .latest_node_daemon_lease(&fixture.node_id)
+        .current_authorized_machine_lease(&fixture.node_id)
         .expect("NodeDaemon lease read")
         .expect("live NodeDaemon lease")
         .generation;
@@ -707,7 +707,7 @@ fn stale_socket_with_live_lease_is_not_reclaimed() {
         .unwrap()
         .as_millis() as u64;
     store
-        .acquire_node_daemon_lease(
+        .seed_machine_authority_for_test(
             &fixture.node_id,
             "node-daemon:previous-owner",
             "previous-instance",

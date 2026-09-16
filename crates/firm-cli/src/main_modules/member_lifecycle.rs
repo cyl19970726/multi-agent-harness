@@ -446,7 +446,7 @@ fn release_closed_generation_work_bindings(
     let (execution_space_id, session) = provider_session_for_member(ledger, member)?;
     let daemon = ledger
         .store
-        .latest_node_daemon_lease(&session.node_id)?
+        .current_authorized_machine_lease(&session.node_id)?
         .filter(|lease| {
             lease.daemon_id == session.node_daemon_id
                 && lease.generation == session.node_daemon_generation

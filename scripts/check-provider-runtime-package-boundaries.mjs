@@ -437,9 +437,15 @@ rejectText(
   /pub\(super\) role_action_token: String/,
   "live provider registry must retain only a non-secret capability fingerprint",
 );
+// ADR 0075: the rule is unchanged — every Role Action revalidates the current
+// NodeDaemon lease — but the record that answers it moved from the Execution
+// Space lease rows to the machine document, so the token moved with it. The
+// legacy accessor is deliberately NOT accepted here: after the cutover it
+// resolves a `LegacySpaceRow`, which can never authorize a provider effect, so
+// a Role Action revalidating against it would be revalidating against nothing.
 requireText(
   "crates/firm-cli/src/main_modules/supervisor_control.rs",
-  /latest_node_daemon_lease/,
+  /current_authorized_machine_lease/,
   "every Role Action must revalidate the current NodeDaemon lease",
 );
 for (const provider of providerCrates) {

@@ -78,7 +78,7 @@ fn stop_fixture(
         .expect("register stop project");
     let daemon_id = format!("node-daemon:{STOP_TEST_NODE_ID}");
     let lease = store
-        .acquire_node_daemon_lease(
+        .seed_machine_authority_for_test(
             STOP_TEST_NODE_ID,
             &daemon_id,
             "stop-instance",
@@ -136,21 +136,29 @@ fn managed_context(
     })
 }
 
-/// Read the lease this daemon generation actually left in the Store. The stop
+/// Read the lease this daemon generation actually left behind. The stop
 /// receipt's `authority_released` must agree with this, never with a guess
 /// derived from whether some phase reported a failure (DEV-149-REVIEW-02).
-fn observed_lease_is_released(fixture: &StopFixture) -> bool {
+///
+/// Bound to the daemon's own Firm home, because that is what names the machine
+/// lease document (ADR 0075). A Store opened by bare path would answer from a
+/// derived directory, which is the one way this observation could quietly stop
+/// observing the record the daemon actually wrote.
+fn observed_machine_lease(fixture: &StopFixture) -> harness_core::NodeDaemonLease {
     HarnessStore::new(
         crate::execution_space::list_spaces(fixture.daemon.firm_home())
             .expect("list stop Spaces")
             .remove(0)
             .store_root,
     )
-    .latest_node_daemon_lease(STOP_TEST_NODE_ID)
+    .with_firm_home(fixture.daemon.firm_home())
+    .current_authorized_machine_lease(STOP_TEST_NODE_ID)
     .expect("read stop lease")
     .expect("stop lease remains auditable")
-    .status
-        == harness_core::NodeDaemonLeaseStatus::Released
+}
+
+fn observed_lease_is_released(fixture: &StopFixture) -> bool {
+    observed_machine_lease(fixture).status == harness_core::NodeDaemonLeaseStatus::Released
 }
 
 fn request_stop(fixture: &StopFixture) -> serde_json::Value {
@@ -373,7 +381,7 @@ fn stop_keeps_authority_until_the_registered_process_group_exits_body() {
             std::thread::sleep(Duration::from_millis(5));
         }
         let status_before_termination = store
-            .latest_node_daemon_lease(STOP_TEST_NODE_ID)
+            .current_authorized_machine_lease(STOP_TEST_NODE_ID)
             .unwrap()
             .unwrap()
             .status;
@@ -397,12 +405,15 @@ fn stop_keeps_authority_until_the_registered_process_group_exits_body() {
         Some(managed_context(thread, heartbeat)),
         (5_000, 1_000),
     );
+    // Bound to the daemon's Firm home so the worker reads the same machine
+    // lease document the daemon writes (ADR 0075).
     let store = HarnessStore::new(
         crate::execution_space::list_spaces(fixture.daemon.firm_home())
             .unwrap()
             .remove(0)
             .store_root,
-    );
+    )
+    .with_firm_home(fixture.daemon.firm_home());
     store_tx.send(store).unwrap();
     std::thread::scope(|scope| {
         let daemon = Arc::clone(&fixture.daemon);
