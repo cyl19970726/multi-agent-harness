@@ -751,7 +751,7 @@ impl<'a, B: CodexAppServerBridge> TeamRuntimeAdapter for CodexTeamRuntime<'a, B>
         Ok(())
     }
 
-    /// `transport_liveness` proof: the app-server reader thread's
+    /// Liveness proof: the app-server reader thread's
     /// `RecvTimeoutError::Disconnected` branch — a dead transport fails
     /// closed without any wall-clock silence verdict (D2). The acceptance
     /// RPC itself is bounded by `timeouts.input_acceptance`.
@@ -1067,6 +1067,11 @@ impl<'a, B: CodexAppServerBridge> TeamRuntimeAdapter for CodexTeamRuntime<'a, B>
                                         input_acceptance_receipt: input_receipt,
                                         terminal_provider_input_id: Some(turn_id.clone()),
                                         exact_terminal_ref: Some(exact_terminal_ref),
+                                        // The app-server minted this turn id and
+                                        // returned it on `turn/start`; the Harness
+                                        // only echoes it.
+                                        acceptance_id_provenance:
+                                            harness_runtime_contract::AcceptanceIdProvenance::ProviderMinted,
                                     },
                                 control_receipts,
                                 terminal_observation: CycleRuntimeObservation {
@@ -1074,7 +1079,6 @@ impl<'a, B: CodexAppServerBridge> TeamRuntimeAdapter for CodexTeamRuntime<'a, B>
                                     process_alive: true,
                                     is_streaming: Some(false),
                                     pending_message_count: Some(0),
-                                    steering_mode: None,
                                     follow_up_mode: Some("harness_next_round".to_string()),
                                     settled_boundary_observed: true,
                                 },

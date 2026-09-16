@@ -17,7 +17,6 @@ fn observation(settled: bool) -> CycleRuntimeObservation {
         process_alive: true,
         is_streaming: Some(false),
         pending_message_count: Some(0),
-        steering_mode: None,
         follow_up_mode: None,
         settled_boundary_observed: settled,
     }
@@ -39,6 +38,7 @@ fn outcome() -> ExecutionCycleOutcome {
             },
             terminal_provider_input_id: Some("provider-input:1".to_string()),
             exact_terminal_ref: Some("provider.terminal:1".to_string()),
+            acceptance_id_provenance: crate::AcceptanceIdProvenance::HarnessSynthesized,
         },
         control_receipts: Vec::new(),
         terminal_observation: observation(true),

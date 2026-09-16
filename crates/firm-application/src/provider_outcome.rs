@@ -82,7 +82,6 @@ fn durable_interrupt_cause(cause: &firm_runtime_contract::InterruptCause) -> Str
     use firm_runtime_contract::InterruptCause;
     match cause {
         InterruptCause::HostControl => "host_control".to_string(),
-        InterruptCause::AdapterPolicy { reason } => format!("adapter_policy:{reason}"),
         InterruptCause::ProviderInitiated { reason } => format!("provider_initiated:{reason}"),
     }
 }
@@ -145,6 +144,7 @@ pub fn correlate_provider_cycle(
         .filter(|value| !value.trim().is_empty())
         .ok_or_else(|| "PROVIDER_CYCLE_CORRELATION_MISSING: exact_terminal_ref".to_string())?;
 
+    let native_acceptance_provenance = native.acceptance_id_provenance;
     let correlation = firm_core::agentfirm_api::ProviderCycleCorrelation {
         invocation_id: authority.invocation_id.clone(),
         source_delivery_id: authority.source_delivery_id,
@@ -157,6 +157,7 @@ pub fn correlate_provider_cycle(
         provider_attempt: authority.provider_attempt,
         interrupt_cause: interrupt.as_ref().map(durable_interrupt_cause),
         ending: Some(ending.wire()),
+        acceptance_id_provenance: Some(native_acceptance_provenance.wire().to_string()),
     };
     let outcome = if !terminal_observed {
         CycleOutcome::StillRunning
@@ -269,6 +270,7 @@ mod tests {
             },
             terminal_provider_input_id: terminal_provider_input_id.map(str::to_string),
             exact_terminal_ref: Some("provider-terminal:1".into()),
+            acceptance_id_provenance: firm_runtime_contract::AcceptanceIdProvenance::ProviderMinted,
         }
     }
 
@@ -342,9 +344,11 @@ mod tests {
         assert!(error.contains("exact_terminal_ref"));
     }
 
-    /// B3: Host, adapter-policy and provider-initiated interrupts correlate to
-    /// distinct typed outcomes AND read back distinguishably from the durable
-    /// correlation carried on the RuntimeCommandRecord.
+    /// B3: the two surviving interrupt causes — Host control and
+    /// provider-initiated — correlate to distinct typed outcomes AND read back
+    /// distinguishably from the durable correlation carried on the
+    /// RuntimeCommandRecord. (`AdapterPolicy` was the third; X1b deleted it
+    /// with zero producers.)
     #[test]
     fn interrupt_causes_correlate_to_distinct_outcomes_and_durable_labels() {
         use firm_runtime_contract::InterruptCause;
@@ -354,16 +358,6 @@ mod tests {
             true,
             Some(InterruptCause::HostControl),
             &CycleEnding::InterruptedByHost,
-        )
-        .unwrap();
-        let (policy_correlation, policy_outcome) = correlate_provider_cycle(
-            cycle_authority(),
-            native_cycle(Some("provider-input:1")),
-            true,
-            InterruptCause::adapter_policy("provider-native quiesce policy"),
-            &CycleEnding::InterruptedByProvider {
-                reason: "adapter_policy:provider-native quiesce policy".to_string(),
-            },
         )
         .unwrap();
         let (provider_correlation, provider_outcome) = correlate_provider_cycle(
@@ -381,10 +375,6 @@ mod tests {
             Some("host_control")
         );
         assert_eq!(
-            policy_correlation.interrupt_cause.as_deref(),
-            Some("adapter_policy:provider-native quiesce policy")
-        );
-        assert_eq!(
             provider_correlation.interrupt_cause.as_deref(),
             Some("provider_initiated:member cancelled in the provider UI")
         );
@@ -396,22 +386,13 @@ mod tests {
             }
         ));
         assert!(matches!(
-            policy_outcome,
-            CycleOutcome::Interrupted {
-                cause: InterruptCause::AdapterPolicy { .. },
-                ..
-            }
-        ));
-        assert!(matches!(
             provider_outcome,
             CycleOutcome::Interrupted {
                 cause: InterruptCause::ProviderInitiated { .. },
                 ..
             }
         ));
-        assert_ne!(host_outcome, policy_outcome);
         assert_ne!(host_outcome, provider_outcome);
-        assert_ne!(policy_outcome, provider_outcome);
     }
 
     /// The S3 durability rule: pre-S3 ProviderCycleCorrelation rows (no
@@ -432,6 +413,41 @@ mod tests {
         // ADR 0076 is additive the same way: a durable row written before the
         // closed ending table carries no `ending` key and reads back as None.
         assert_eq!(correlation.ending, None);
+        // X1b item C is additive on the same terms: a pre-X1b row carries no
+        // `acceptance_id_provenance` key either.
+        assert_eq!(correlation.acceptance_id_provenance, None);
+    }
+
+    /// X1b item C. The provenance of the acceptance id reaches the durable row,
+    /// and it is the ADAPTER's statement — `correlate_provider_cycle` copies it
+    /// rather than deciding it, because only the adapter knows its transport.
+    #[test]
+    fn the_cycle_correlation_records_who_minted_the_acceptance_id() {
+        use firm_runtime_contract::AcceptanceIdProvenance;
+        for (provenance, wire) in [
+            (AcceptanceIdProvenance::ProviderMinted, "provider_minted"),
+            (
+                AcceptanceIdProvenance::HarnessSynthesized,
+                "harness_synthesized",
+            ),
+            (AcceptanceIdProvenance::Inferred, "inferred"),
+        ] {
+            let mut native = native_cycle(Some("provider-input:1"));
+            native.acceptance_id_provenance = provenance;
+            let (correlation, _) = correlate_provider_cycle(
+                cycle_authority(),
+                native,
+                true,
+                None,
+                &CycleEnding::Completed,
+            )
+            .unwrap();
+            assert_eq!(
+                correlation.acceptance_id_provenance.as_deref(),
+                Some(wire),
+                "{provenance:?}"
+            );
+        }
     }
 
     /// The ending recorded on the correlation is the closed table's frozen

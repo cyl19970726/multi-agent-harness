@@ -293,7 +293,6 @@ mod cycle_conformance {
     fn ds_timeouts() -> harness_runtime_contract::CycleTimeouts {
         harness_runtime_contract::CycleTimeouts {
             input_acceptance: Duration::from_millis(1),
-            transport_liveness: Duration::from_millis(1),
             control_settle: Duration::ZERO,
         }
     }
@@ -490,14 +489,6 @@ mod cycle_conformance {
                 )),
             })
         }
-
-        fn run_adapter_policy_interrupt(
-            &mut self,
-            timeouts: &harness_runtime_contract::CycleTimeouts,
-            _reason: &str,
-        ) -> Result<harness_runtime_contract::CycleConformanceOutcome, Self::Error> {
-            self.run_receipt_then_silence(timeouts)
-        }
     }
 
     #[test]
@@ -581,7 +572,6 @@ mod cycle_conformance {
     fn ds_control_timeouts() -> harness_runtime_contract::CycleTimeouts {
         harness_runtime_contract::CycleTimeouts {
             input_acceptance: Duration::from_secs(5),
-            transport_liveness: Duration::from_secs(5),
             control_settle: Duration::from_secs(5),
         }
     }
@@ -793,5 +783,30 @@ mod cycle_conformance {
             harness_runtime_contract::CycleEndingSettlement::RecoveryRequiredUnknown
         );
         assert_eq!(ending.action_type(), "transport_lost");
+    }
+
+    /// X1b item C. DeepSeek's acceptance id is HARNESS-synthesized:
+    /// `deepseek-cycle-N` is ours and the runner carries it back on `consumed`.
+    #[test]
+    fn deepseek_states_a_harness_synthesized_acceptance_id() {
+        let outcome = drive_ds_cycle(
+            vec![
+                ds_consumed("deepseek-cycle-2"),
+                ds_assistant_message(),
+                ds_turn_complete("deepseek-cycle-2"),
+            ],
+            false,
+            &ds_control_timeouts(),
+            harness_runtime_contract::CycleControl::default,
+        )
+        .expect("a clean cycle");
+        assert_eq!(
+            outcome.native_correlation.acceptance_id_provenance,
+            harness_runtime_contract::AcceptanceIdProvenance::HarnessSynthesized
+        );
+        assert_eq!(
+            outcome.native_correlation.provider_input_id,
+            "deepseek-cycle-2"
+        );
     }
 }

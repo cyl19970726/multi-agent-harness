@@ -72,7 +72,7 @@ pub trait CycleConformanceFixture {
 
     /// A1: the exact input acceptance receipt is delivered, then the
     /// transport stays silent longer than `input_acceptance` and
-    /// `transport_liveness` combined, with continuous liveness proof.
+    /// the acceptance bound with continuous structural liveness proof.
     fn run_receipt_then_silence(
         &mut self,
         timeouts: &CycleTimeouts,
@@ -101,13 +101,6 @@ pub trait CycleConformanceFixture {
     fn run_host_interrupt(
         &mut self,
         timeouts: &CycleTimeouts,
-    ) -> Result<CycleConformanceOutcome, Self::Error>;
-
-    /// B2: an adapter-internal policy interrupts with `reason` and settles.
-    fn run_adapter_policy_interrupt(
-        &mut self,
-        timeouts: &CycleTimeouts,
-        reason: &str,
     ) -> Result<CycleConformanceOutcome, Self::Error>;
 }
 
@@ -251,28 +244,6 @@ pub fn assert_b1_host_interrupt_attribution<F: CycleConformanceFixture>(
         other => fail(
             A,
             format!("a Host control interrupt was attributed to {other:?}"),
-        ),
-    }
-}
-
-/// B2 — an adapter-policy interrupt is attributed with a non-empty reason.
-pub fn assert_b2_adapter_policy_interrupt_attribution<F: CycleConformanceFixture>(
-    fixture: &mut F,
-    timeouts: &CycleTimeouts,
-    reason: &str,
-) -> Result<(), CycleConformanceError> {
-    const A: &str = "B2";
-    let outcome = fixture
-        .run_adapter_policy_interrupt(timeouts, reason)
-        .map_err(|error| CycleConformanceError {
-            assertion: A,
-            detail: format!("fixture error: {error:?}"),
-        })?;
-    match outcome.interrupt {
-        Some(InterruptCause::AdapterPolicy { reason }) if !reason.trim().is_empty() => Ok(()),
-        other => fail(
-            A,
-            format!("an adapter-policy interrupt was attributed to {other:?}"),
         ),
     }
 }

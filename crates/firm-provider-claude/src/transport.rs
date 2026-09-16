@@ -475,7 +475,7 @@ impl ClaudeRunnerTransport {
                 // provider tool may be silent while it does real work. The
                 // caller's timeout therefore fences only the unacknowledged
                 // delivery boundary; it is not a hidden wall-clock limit on
-                // an accepted cycle. `transport_liveness` (Spec D2) is proven
+                // an accepted cycle. Transport liveness (Spec D2) is proven
                 // by `ensure_alive()` and by child-exit/stdout-disconnect
                 // failing closed — never by a silence verdict.
                 let alive = self.ensure_alive();
@@ -692,7 +692,6 @@ impl ClaudeRunnerTransport {
             process_alive: alive,
             is_streaming: Some(matches!(self.state, TransportState::Active)),
             pending_message_count: Some(self.pending_input_count),
-            steering_mode: Some("unsupported".into()),
             follow_up_mode: Some("harness_safe_boundary".into()),
             settled_boundary_observed: settled,
         }

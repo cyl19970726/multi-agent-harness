@@ -1,4 +1,6 @@
-use harness_runtime_contract::{ControlTransportReceipt, NativeCycleCorrelation};
+use harness_runtime_contract::{
+    AcceptanceIdProvenance, ControlTransportReceipt, NativeCycleCorrelation,
+};
 
 pub(super) fn cycle_ref(
     input_id: &str,
@@ -10,5 +12,7 @@ pub(super) fn cycle_ref(
         input_acceptance_receipt: receipt,
         terminal_provider_input_id: Some(input_id.to_string()),
         exact_terminal_ref: Some(format!("claude_sdk.{terminal_kind}:{input_id}")),
+        // `claude-cycle-N` is ours; the runner carries it back on `consumed`.
+        acceptance_id_provenance: AcceptanceIdProvenance::HarnessSynthesized,
     }
 }

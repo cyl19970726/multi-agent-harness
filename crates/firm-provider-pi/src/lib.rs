@@ -439,10 +439,6 @@ impl PiRpcClient {
             pending_message_count: data
                 .get("pendingMessageCount")
                 .and_then(|value| value.as_u64()),
-            steering_mode: data
-                .get("steeringMode")
-                .and_then(|value| value.as_str())
-                .map(str::to_string),
             follow_up_mode: data
                 .get("followUpMode")
                 .and_then(|value| value.as_str())
@@ -517,14 +513,17 @@ impl PiRpcClient {
         Ok(receipts)
     }
 
-    /// Point-in-time native queue observation (steering/follow-up mode and
-    /// pending message count from `get_state`). Observation only; it is not a
-    /// durable Harness fact. Consumed by the RPC-level unit test today.
+    /// Point-in-time native queue observation (follow-up mode and pending
+    /// message count from `get_state`). Observation only; it is not a durable
+    /// Harness fact. Consumed by the RPC-level unit test today.
+    ///
+    /// Pi's native `steeringMode` is deliberately absent: ADR 0076's X1b slice
+    /// deleted the contract field that mirrored it, because nothing in the
+    /// Harness ever read it. It stays readable from Pi's own `get_state`.
     #[allow(dead_code)]
     pub fn queue_snapshot(&mut self) -> CliResult<serde_json::Value> {
         let observation = self.observe_runtime(false)?;
         Ok(serde_json::json!({
-            "steering_mode": observation.steering_mode,
             "follow_up_mode": observation.follow_up_mode,
             "pending_message_count": observation.pending_message_count,
             "is_streaming": observation.is_streaming,
@@ -620,7 +619,6 @@ impl PiRpcClient {
                 process_alive: false,
                 is_streaming: Some(false),
                 pending_message_count: None,
-                steering_mode: None,
                 follow_up_mode: None,
                 settled_boundary_observed: false,
             },
@@ -688,7 +686,7 @@ impl PiRpcClient {
         // follow-up.
         while self.incoming.try_recv().is_ok() {}
         // The acceptance RPC itself is bounded by input_acceptance; after
-        // it, `transport_liveness` is proven by the reader thread's
+        // it, transport liveness is proven by the reader thread's
         // Disconnected branch, never by a wall-clock silence verdict (D2).
         let prompt_response = self.request_blocking(
             "prompt",
@@ -895,6 +893,10 @@ impl PiRpcClient {
                 // the local cycle; there is no stronger native terminal id.
                 terminal_provider_input_id: Some(provider_input_id.clone()),
                 exact_terminal_ref: Some(format!("pi.agent_settled:{provider_input_id}")),
+                // `pi-rpc-N` is ours; Pi merely echoes it on the prompt
+                // response, which is what makes the correlation exact.
+                acceptance_id_provenance:
+                    harness_runtime_contract::AcceptanceIdProvenance::HarnessSynthesized,
             },
             control_receipts,
             terminal_observation,

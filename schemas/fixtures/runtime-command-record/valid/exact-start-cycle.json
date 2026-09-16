@@ -50,7 +50,8 @@
     "native_session_id": "native-session-1",
     "agent_session_generation": 3,
     "provider_attempt": 1,
-    "ending": "completed"
+    "ending": "completed",
+    "acceptance_id_provenance": "provider_minted"
   },
   "version": 1,
   "created_at": "unix-ms:1",

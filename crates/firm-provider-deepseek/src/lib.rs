@@ -120,6 +120,9 @@ fn native_cycle_correlation(
         exact_terminal_ref: Some(format!(
             "deepseek_harness.{terminal_kind}:{input_id}:{native_session_id}"
         )),
+        // `deepseek-cycle-N` is ours; the runner carries it back on `consumed`.
+        acceptance_id_provenance:
+            harness_runtime_contract::AcceptanceIdProvenance::HarnessSynthesized,
     }
 }
 
@@ -832,7 +835,6 @@ impl DeepSeekRunnerTransport {
             process_alive: alive,
             is_streaming: Some(matches!(self.state, TransportState::Active)),
             pending_message_count: Some(self.pending_input_count),
-            steering_mode: Some("unsupported".into()),
             follow_up_mode: Some("harness_safe_boundary".into()),
             settled_boundary_observed: settled,
         }

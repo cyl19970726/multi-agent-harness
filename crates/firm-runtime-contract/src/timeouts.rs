@@ -1,8 +1,18 @@
-/// The three irreducible cycle time bounds (SPEC-TYPED-CYCLE-OUTCOME-01 §3.1).
+/// The two irreducible cycle time bounds (SPEC-TYPED-CYCLE-OUTCOME-01 §3.1,
+/// trimmed from three by ADR 0076's X1b slice).
 ///
-/// One bare `Duration` previously carried all three meanings and each adapter
-/// guessed one (#708). These are transport-layer bounds only: none of them is
-/// a plan gate, a work-acceptance gate, or a provider-silence verdict.
+/// One bare `Duration` previously carried every meaning and each adapter
+/// guessed one (#708). These are transport-layer bounds only: neither is a
+/// plan gate, a work-acceptance gate, or a provider-silence verdict.
+///
+/// There is deliberately no liveness bound. It was specified as a probe
+/// deadline, shipped as a field, and **never read by any adapter**: all five
+/// prove liveness structurally instead — a reader thread's `Disconnected`
+/// branch, or an `ensure_alive()` probe on every silent poll — which is
+/// strictly better than a wall clock, because it cannot mistake a slow turn
+/// for a dead one. Carrying an unread `Duration` invited exactly the
+/// silence-verdict reading that frozen decision D2 forbids, so the field is
+/// gone and the property it named is proven by construction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CycleTimeouts {
     /// Delivery boundary: from writing the input to holding the exact
@@ -13,15 +23,6 @@ pub struct CycleTimeouts {
     /// arrives fails here, and that failure maps to "input never accepted"
     /// (replay-safe), because the provider never took the input.
     pub input_acceptance: std::time::Duration,
-    /// Liveness-proof boundary: the longest interval allowed WITHOUT a
-    /// positive proof that the process and transport are alive. It is NOT a
-    /// provider-silence cap (frozen decision D2): an adapter that
-    /// continuously proves liveness (e.g. an `ensure_alive` probe or a
-    /// reader-thread disconnect branch) uses this only as a probe deadline,
-    /// and its expiry alone is not a failure — only a failed or impossible
-    /// probe fails, and that failure stays fail-closed as "accepted, outcome
-    /// unproven" (invariant I2), never "not applied".
-    pub transport_liveness: std::time::Duration,
     /// Control-settle boundary: after Interrupt/Close is sent, the longest
     /// wait for its exact settled confirmation. It bounds control only, never
     /// the cycle itself (A5); an expired settle maps to "unproven" (Unknown),
@@ -31,10 +32,9 @@ pub struct CycleTimeouts {
 
 impl CycleTimeouts {
     /// Contract defaults (frozen decision 6): a caller that exposes one
-    /// timeout flag sets only `input_acceptance` and takes these for the
-    /// other two bounds.
+    /// timeout flag sets only `input_acceptance` and takes this for the
+    /// other bound.
     pub const DEFAULT_INPUT_ACCEPTANCE: std::time::Duration = std::time::Duration::from_secs(300);
-    pub const DEFAULT_TRANSPORT_LIVENESS: std::time::Duration = std::time::Duration::from_secs(30);
     pub const DEFAULT_CONTROL_SETTLE: std::time::Duration = std::time::Duration::from_secs(15);
 
     /// Bounds for a pure control path (Interrupt/Close), where only
@@ -46,8 +46,8 @@ impl CycleTimeouts {
         }
     }
 
-    /// The single-flag shape: an explicit `input_acceptance`, contract
-    /// defaults for the rest (frozen decision 6).
+    /// The single-flag shape: an explicit `input_acceptance`, the contract
+    /// default for the rest (frozen decision 6).
     pub fn with_input_acceptance(input_acceptance: std::time::Duration) -> Self {
         Self {
             input_acceptance,
@@ -60,7 +60,6 @@ impl Default for CycleTimeouts {
     fn default() -> Self {
         Self {
             input_acceptance: Self::DEFAULT_INPUT_ACCEPTANCE,
-            transport_liveness: Self::DEFAULT_TRANSPORT_LIVENESS,
             control_settle: Self::DEFAULT_CONTROL_SETTLE,
         }
     }

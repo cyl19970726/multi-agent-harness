@@ -3,11 +3,10 @@
 ```text
 status: Accepted — Owner 2026-09-15 (core 6); implementation tracked by Task CORE6-X1-20260915
 date: 2026-09-15
-amends: no ADR. This adds a table where there was none; `InterruptCause`, `CycleTimeouts` and
-        `ExecutionCycleOutcome` keep every field and meaning they had. (The zero-producer
-        `InterruptCause::AdapterPolicy`, which SPEC-TYPED-CYCLE-OUTCOME-01 froze as a reviewed
-        escape hatch, is projected onto `InterruptedByProvider` here and its retirement is a
-        separate decision, tracked by the core-6 contract-trim Task.)
+amends: no ADR. The X1a slice added a table where there was none. The X1b slice then trimmed
+        three contract members the table proved were dead — see "X1b contract trim" below.
+        Frozen decisions 2 and D2 of SPEC-TYPED-CYCLE-OUTCOME-01 are amended there; no
+        repository ADR froze either, so this is the amending record for both.
 canonical_for: the closed set of ways one ExecutionCycle may end; how each ending maps to a
         member_actions action_type, a provider_status, and a durable settlement; and the two
         Harness↔provider turn misalignments this closes
@@ -249,6 +248,79 @@ they ended. Pre-ADR-0076 rows carry no key and read back as `None`.
   breaker everywhere.** `empty_final_report` is no longer a provider terminal failure.
   `decide_team_round` derives zero output from the ending rather than re-deriving it from
   text, so the same observable fact can no longer be recorded two ways.
+
+### The classification is gated, not just tested
+
+`scripts/check-cycle-ending-classification.mjs` (in `pnpm check` and
+`pnpm check:fast`) walks every cycle body the way the X1a review had to by hand:
+each entry point is located by signature, its body brace-matched to its exact
+closing brace, comments and string literals stripped, and every `?` and
+`return Err(` reported with the statement it terminates and a stated reason.
+Ten bodies, 91 sites, zero unclassified at this revision.
+
+It is a `scripts/` gate rather than a Rust test because it is a cross-crate
+source-structure assertion over five provider crates — the same shape as the
+provider-runtime-package, work-kernel, runtime-composition, node-daemon and
+native-session gates. A Rust test would have to live in one crate and read four
+siblings' sources.
+
+`--self-test` is the negative control, and building it found three ways the
+analyser could have passed the very defect it exists to catch: treating an
+earlier `classify(...)` as covering later sites, treating the per-cycle
+`last_cycle_ending = None` RESET as a classification, and — the one that
+actually mattered — never detecting `let Some(x) = f()? else {` as a site at
+all, then swallowing its `else` block into the statement so a classified call
+inside it classified the bare `?` above. Each is now a fixture the analyser must
+reject, and the gate was red-verified against both real r1 sites (deepseek
+`receive_event`, codex `handle_provider_request`) before being wired in.
+
+## X1b contract trim
+
+Writing the closed table made three contract members visibly dead. Each is deleted here with
+its evidence, and each amends a frozen decision that lives in SPEC-TYPED-CYCLE-OUTCOME-01
+rather than in any repository ADR — so this section is the amending record.
+
+- **`CycleTimeouts.transport_liveness`** (amends frozen decision D2). Specified as a probe
+  deadline; shipped as a field; **read by no adapter**. Every reference was its declaration,
+  its default, its initializer, six test fixtures, and doc comments in five adapters — all of
+  which say liveness is proven STRUCTURALLY, by a reader thread's `Disconnected` branch or an
+  `ensure_alive()` probe on every silent poll. That is strictly stronger than a wall clock,
+  which cannot tell a slow turn from a dead one. Carrying an unread `Duration` beside two live
+  bounds invited exactly the silence-verdict reading D2 forbids. `CycleTimeouts` is now two
+  bounds; D2's *property* is unchanged and is proven by construction.
+- **`InterruptCause::AdapterPolicy`** (amends frozen decision 2, the "reviewed escape hatch").
+  Zero producers at ship, zero ever since; the S2 migration removed the last path that could
+  yield it, and the standing invariant has been that no adapter's normal path may. The
+  invariant now lives in the type: `InterruptCause` has two variants, the Host's and the
+  provider's, and there is no third for an adapter deciding on its own to stop a turn. The
+  conformance assertion B2 and its fixture method go with it. **B4 keeps its behavioural
+  half**: `codex_a4_silence_no_longer_interrupts_and_b4_no_policy_interrupt` still drives a
+  long silent turn and asserts the adapter never reaches `bridge.interrupt`. A future variant
+  could re-introduce the attribution; it could not re-introduce the call without failing that
+  test. The durable `interrupt_cause` column is an opaque `String`, so any historical
+  `adapter_policy:<reason>` row still decodes unchanged — no wire value is lost.
+- **`CycleRuntimeObservation.steering_mode`** — written by all five adapters and consumed by
+  no decision anywhere. Four wrote the literal `"unsupported"`; only Pi carried a real value,
+  and its one reader was Pi's own `queue_snapshot` diagnostic — itself `#[allow(dead_code)]`
+  with a single unit test — which is removed with the field. Pi's `steeringMode` stays
+  authoritative in Pi's own `get_state`.
+
+### The four continuation/injection command kinds stay, decode-only
+
+`RuntimeCommandKind::{ActivateContinuation, InhibitContinuation, InjectCurrentCycle,
+QueueAtNativeBoundary}` are retired vocabulary (ADR 0067, ADR 0068) and were checked against
+the read-only September store copies: **128,987 rows across 61 `.jsonl` files in five
+stores — plus the 5 `.json` files beside them — and not one carries any of the four as a
+command kind.** Zero producers in code, too — every
+reference is a match arm in a label table, the admission rejection table, or the frozen-kinds
+list.
+
+They stay anyway, and the count is the reason to be careful rather than a licence to delete:
+1,293 `member_runs` rows DO carry three of those exact spellings — as
+`provider_profile.capability_bindings[].capability`, a different vocabulary that happens to
+share the words. A deletion justified by "we searched for the string and found rows" would
+have been justified by the wrong rows. The command kinds remain decode-only with a test that
+proves a historical row still round-trips, and no constructor exists to add.
 
 ## Consequences
 

@@ -175,3 +175,23 @@ fn a_silent_turn_is_empty_output_on_kimi() {
         harness_runtime_contract::CycleEnding::EmptyOutput
     );
 }
+
+/// X1b item C. Kimi is the one adapter whose acceptance is INFERRED: ACP has no
+/// prompt-start acknowledgement, the request id is ours and nothing echoes it,
+/// so the evidence is the first prompt-scoped `session/update`.
+#[cfg(unix)]
+#[test]
+fn kimi_states_an_inferred_acceptance_id() {
+    let outcome = drive_kimi_cycle(
+        &kimi_conformance_timeouts(),
+        true,
+        Some(terminal_frame(2, "end_turn")),
+        false,
+        harness_runtime_contract::CycleControl::default,
+    )
+    .expect("a clean cycle");
+    assert_eq!(
+        outcome.native_correlation.acceptance_id_provenance,
+        harness_runtime_contract::AcceptanceIdProvenance::Inferred
+    );
+}

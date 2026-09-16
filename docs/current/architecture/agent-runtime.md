@@ -610,15 +610,21 @@ Every managed provider adapter (Claude, Codex, DeepSeek, Kimi, Pi) imposes no
 hidden wall-clock limit after a cycle is accepted: a long reasoning turn or
 silent provider tool remains live while the owned runner process and transport
 remain intact, and Interrupt/Close keep polling. The only timeouts an adapter
-applies are the three physical quantities of
+applies are the two physical quantities of
 `CycleTimeouts` (`crates/firm-runtime-contract/src/timeouts.rs`):
 `input_acceptance` bounds only the delivery boundary from input written to the
-provider's exact acceptance receipt; `transport_liveness` bounds the proof
-that the owned process and transport are still alive; `control_settle` bounds
-an issued control's settlement. Silence after acceptance is never a failure
+provider's exact acceptance receipt, and `control_settle` bounds an issued
+control's settlement. There is deliberately no liveness bound: the field that
+named one was never read by any adapter, and all five prove liveness
+structurally instead — a reader thread's `Disconnected` branch, or an
+`ensure_alive()` probe on every silent poll — which cannot mistake a slow turn
+for a dead one the way a wall clock can. Silence after acceptance is never a failure
 and never an adapter-initiated interrupt; an interrupted cycle carries an
-attributed `InterruptCause` (Host control, adapter policy, or provider
-initiated), and a provider terminal failure never settles `Satisfied` — it
+attributed `InterruptCause`, and there are exactly two: the Host issued the
+control, or the provider ended its own turn as interrupted. There is no
+adapter-policy cause — an adapter may not stop a turn on its own initiative, and
+since ADR 0076's X1b slice the type has no variant for it. A provider terminal
+failure never settles `Satisfied` — it
 either settles the cycle receipt `Unsatisfied` (Claude, Codex, DeepSeek, Pi)
 or stops the cycle at `RuntimeRecoveryRequired` before any receipt exists
 (Kimi; cross-adapter unification is tracked in [GitHub issue
@@ -644,7 +650,16 @@ wildcard-free enum and drains the result through
 The ending is the single source for `member_actions.action_type` (frozen string
 values) and for `provider_status`, which is therefore populated on all five
 providers rather than on Codex alone; it is also recorded on the cycle
-correlation as the additive `ending` field. It is a summary, never a
+correlation as the additive `ending` field.
+
+Alongside it the correlation records `acceptance_id_provenance`: who minted the
+id that ties the acceptance receipt to the provider-native turn. The three cases
+differ in what the id proves — `provider_minted` exists provider-side
+independently of anything the Harness chose, `harness_synthesized` is ours and
+merely carried back, and `inferred` means nothing acknowledges the id at all, so
+acceptance rests on the first prompt-scoped provider activity. Each adapter
+states its own, so the field cannot be filled in by a caller that does not know
+the transport. It is a summary, never a
 replacement: `close_requested_by_harness`, `interrupt` and
 `provider_terminal_failure` stay on the outcome because
 `verified_terminal_control_ack` reads each of them separately.
@@ -656,6 +671,7 @@ Per-provider alignment:
 | one cycle = | one app-server turn (`turn/start` → `turn/completed`) | one NDJSON `deliver` → runner `turn_complete` | one ACP `session/prompt` → its correlated response | one NDJSON `deliver` → runner `turn_complete` | one `prompt` RPC → `agent_settled` |
 | accepted when | the `turn/start` response arrives | the runner's `consumed` event matches the input id | the first prompt-scoped `session/update` (ACP has no prompt-start ack) | the runner's `consumed` event matches the input id | the synchronous `prompt` response echoes its id |
 | acceptance id | provider-minted (`turn_id`) | Harness-synthesized (`claude-cycle-N`) | Harness-assigned request id, acceptance inferred | Harness-synthesized (`deepseek-cycle-N`) | Harness-assigned (`pi-rpc-N`), echoed back |
+| acceptance id provenance | `provider_minted` | `harness_synthesized` | `inferred` | `harness_synthesized` | `harness_synthesized` |
 | ends when | `turn/completed` **and** `thread/read` reports idle | `turn_complete` for this input, or the interrupt-resume pair | the `session/prompt` response, classified by `stopReason` | `turn_complete` for this input, or the interrupt-resume pair | `agent_settled` **and** `get_state` reports `isStreaming=false` |
 | interrupt = | native `turn/interrupt` RPC | NDJSON `{"command":"interrupt"}` on runner stdin, withheld until acceptance | `session/cancel` notification; process group killed on grace expiry | NDJSON `{"command":"interrupt"}`, withheld until acceptance | blocking `abort` RPC |
 | abort receipt succeeds when | the RPC was sent | the frame crossed the boundary | the notification crossed the boundary | the frame crossed the boundary | the RPC was sent |
@@ -692,8 +708,8 @@ pre-effect admission contention retry are owned by
 classifies errors; adapters retain transport observation and protocol control.
 `ControlRequest.timeouts` carries the caller's budget through all five semantic
 control adapters. That control request currently has no production constructor;
-ordinary Team cycles keep their configured `CycleTimeouts` and the unchanged
-300/30/15-second contract defaults.
+ordinary Team cycles keep their configured `CycleTimeouts` and the contract
+defaults, now 300 s acceptance and 15 s control settle.
 
 A managed Host-driven member may receive one reconsideration cycle when its
 own other Work is accepted after its current block, with no other owned Normal

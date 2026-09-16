@@ -96,6 +96,7 @@ fn runtime_cycle_correlation_is_exact_and_idempotent() {
         provider_attempt: 2,
         interrupt_cause: None,
         ending: Some("completed".to_string()),
+        acceptance_id_provenance: Some("provider_minted".to_string()),
     };
     let correlation_context = service_context(
         "node_daemon.provider_cycle.correlate",

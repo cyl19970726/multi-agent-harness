@@ -744,7 +744,6 @@ fn claude_turn_complete(input_id: &str) -> String {
 fn claude_conformance_timeouts() -> harness_runtime_contract::CycleTimeouts {
     harness_runtime_contract::CycleTimeouts {
         input_acceptance: Duration::from_millis(1),
-        transport_liveness: Duration::from_millis(1),
         control_settle: Duration::ZERO,
     }
 }
@@ -936,14 +935,6 @@ impl harness_runtime_contract::CycleConformanceFixture for ClaudeCycleConformanc
             result: harness_runtime_contract::CycleConformanceResult::Outcome(Box::new(outcome)),
         })
     }
-
-    fn run_adapter_policy_interrupt(
-        &mut self,
-        timeouts: &harness_runtime_contract::CycleTimeouts,
-        _reason: &str,
-    ) -> Result<harness_runtime_contract::CycleConformanceOutcome, Self::Error> {
-        self.run_receipt_then_silence(timeouts)
-    }
 }
 
 #[cfg(unix)]
@@ -1005,7 +996,6 @@ fn claude_c1_terminal_failure_settles_unsatisfied() {
 fn claude_control_timeouts() -> harness_runtime_contract::CycleTimeouts {
     harness_runtime_contract::CycleTimeouts {
         input_acceptance: Duration::from_secs(5),
-        transport_liveness: Duration::from_secs(5),
         control_settle: Duration::from_secs(5),
     }
 }
@@ -1242,4 +1232,31 @@ fn a_transport_death_mid_cycle_records_a_typed_ending() {
         harness_runtime_contract::CycleEndingSettlement::RecoveryRequiredUnknown
     );
     assert_eq!(ending.action_type(), "transport_lost");
+}
+
+/// X1b item C. Claude's acceptance id is HARNESS-synthesized: `claude-cycle-N`
+/// is ours and the runner carries it back on `consumed`. The correlation is
+/// exact, but the identifier is not the provider's.
+#[cfg(unix)]
+#[test]
+fn claude_states_a_harness_synthesized_acceptance_id() {
+    let outcome = drive_claude_cycle(
+        vec![
+            claude_consumed("claude-cycle-2"),
+            claude_assistant_message(),
+            claude_turn_complete("claude-cycle-2"),
+        ],
+        false,
+        &claude_control_timeouts(),
+        harness_runtime_contract::CycleControl::default,
+    )
+    .expect("a clean cycle");
+    assert_eq!(
+        outcome.native_correlation.acceptance_id_provenance,
+        harness_runtime_contract::AcceptanceIdProvenance::HarnessSynthesized
+    );
+    assert_eq!(
+        outcome.native_correlation.provider_input_id,
+        "claude-cycle-2"
+    );
 }

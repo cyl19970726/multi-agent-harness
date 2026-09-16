@@ -879,7 +879,9 @@ pub(crate) fn run_team_member_with_adapter<A: TeamRuntimeAdapter<Error = CliErro
                                 "{display} provider round {round} ended without a recorded cycle ending"
                             ),
                             format!(
-                                "{display} provider round {round} returned an error with no ADR 0076 cycle ending;                                  this is a runtime-contract defect in the {provider} adapter, not a provider verdict"
+                                "{display} provider round {round} returned an error with no \
+                                 ADR 0076 cycle ending; that is a runtime-contract defect in \
+                                 the {provider} adapter, not a provider verdict"
                             ),
                             Some("cycle_ending:unrecorded".to_string()),
                         ),

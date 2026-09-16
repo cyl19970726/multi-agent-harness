@@ -18,6 +18,7 @@ fn test_correlation() -> NativeCycleCorrelation {
         },
         terminal_provider_input_id: Some("input-1".to_string()),
         exact_terminal_ref: Some("terminal-1".to_string()),
+        acceptance_id_provenance: AcceptanceIdProvenance::HarnessSynthesized,
     }
 }
 
@@ -90,12 +91,12 @@ fn c3_unobserved_terminal_settles_unknown_without_semantics() {
 #[test]
 fn settled_interrupt_on_clean_terminal_settles_satisfied() {
     // D5's fourth cell (Brain errata): a settled interrupt — Host or
-    // AdapterPolicy — with the terminal observed and no failure derives
+    // provider-initiated — with the terminal observed and no failure derives
     // Satisfied; the cause travels on the receipt's evidence.
     for cause in [
         InterruptCause::HostControl,
-        InterruptCause::AdapterPolicy {
-            reason: "reviewed policy".to_string(),
+        InterruptCause::ProviderInitiated {
+            reason: "provider ended the turn".to_string(),
         },
     ] {
         let receipt = cycle_receipt(settlement(
@@ -159,15 +160,35 @@ fn c4_no_settlement_input_can_smuggle_a_satisfied_postcondition() {
 }
 
 #[test]
-fn adapter_policy_reason_must_be_non_empty() {
-    assert!(InterruptCause::adapter_policy("").is_none());
-    assert!(InterruptCause::adapter_policy("   ").is_none());
+fn an_attributed_interrupt_reason_must_be_non_empty() {
+    assert!(InterruptCause::provider_initiated("").is_none());
+    assert!(InterruptCause::provider_initiated("   ").is_none());
     assert_eq!(
-        InterruptCause::adapter_policy("rate limit"),
-        Some(InterruptCause::AdapterPolicy {
-            reason: "rate limit".to_string()
+        InterruptCause::provider_initiated("cancelled in the provider UI"),
+        Some(InterruptCause::ProviderInitiated {
+            reason: "cancelled in the provider UI".to_string()
         })
     );
+}
+
+/// X1b item D, the type-level half of the B4 reverse proof: there is no
+/// adapter-policy interrupt cause to produce. `InterruptCause` has exactly two
+/// variants, and neither can be minted by an adapter deciding on its own to
+/// stop a turn — the Host issues one, the provider reports the other.
+#[test]
+fn the_interrupt_cause_set_has_no_adapter_policy_escape_hatch() {
+    let causes = [
+        InterruptCause::HostControl,
+        InterruptCause::ProviderInitiated {
+            reason: "provider ended the turn".to_string(),
+        },
+    ];
+    for cause in &causes {
+        match cause {
+            InterruptCause::HostControl | InterruptCause::ProviderInitiated { .. } => {}
+        }
+    }
+    assert_eq!(causes.len(), 2);
 }
 
 #[test]
@@ -176,10 +197,6 @@ fn timeouts_single_flag_shape_uses_contract_defaults() {
     assert_eq!(
         timeouts.input_acceptance,
         std::time::Duration::from_secs(42)
-    );
-    assert_eq!(
-        timeouts.transport_liveness,
-        CycleTimeouts::DEFAULT_TRANSPORT_LIVENESS
     );
     assert_eq!(
         timeouts.control_settle,
@@ -203,7 +220,6 @@ fn test_cycle_outcome() -> ExecutionCycleOutcome {
             process_alive: true,
             is_streaming: Some(false),
             pending_message_count: Some(0),
-            steering_mode: None,
             follow_up_mode: None,
             settled_boundary_observed: true,
         },
@@ -221,7 +237,6 @@ struct ScriptedFixture {
     a5_replay_safe: bool,
     a5_terminal_failure: bool,
     b1_cause: InterruptCause,
-    b2_cause: InterruptCause,
 }
 
 impl Default for ScriptedFixture {
@@ -235,9 +250,6 @@ impl Default for ScriptedFixture {
             a5_replay_safe: false,
             a5_terminal_failure: false,
             b1_cause: InterruptCause::HostControl,
-            b2_cause: InterruptCause::AdapterPolicy {
-                reason: "scripted policy".to_string(),
-            },
         }
     }
 }
@@ -317,18 +329,6 @@ impl CycleConformanceFixture for ScriptedFixture {
             control_unproven: false,
         })
     }
-
-    fn run_adapter_policy_interrupt(
-        &mut self,
-        _timeouts: &CycleTimeouts,
-        _reason: &str,
-    ) -> Result<CycleConformanceOutcome, Self::Error> {
-        Ok(CycleConformanceOutcome {
-            result: CycleConformanceResult::Outcome(Box::new(test_cycle_outcome())),
-            interrupt: Some(self.b2_cause.clone()),
-            control_unproven: false,
-        })
-    }
 }
 
 #[test]
@@ -340,8 +340,6 @@ fn conforming_fixture_passes_the_a_and_b_assertion_family() {
     assert_a3_transport_death_fails_closed(&mut fixture, &timeouts).expect("A3");
     assert_a5_control_settle_only_bounds_control(&mut fixture, &timeouts).expect("A5");
     assert_b1_host_interrupt_attribution(&mut fixture, &timeouts).expect("B1");
-    assert_b2_adapter_policy_interrupt_attribution(&mut fixture, &timeouts, "scripted policy")
-        .expect("B2");
 }
 
 #[test]
@@ -412,22 +410,13 @@ fn nonconforming_fixtures_fail_their_assertions() {
     );
 
     let mut b1_wrong = ScriptedFixture {
-        b1_cause: InterruptCause::AdapterPolicy {
-            reason: "self".to_string(),
+        b1_cause: InterruptCause::ProviderInitiated {
+            reason: "the provider stopped itself".to_string(),
         },
         ..ScriptedFixture::default()
     };
     assert!(
         assert_b1_host_interrupt_attribution(&mut b1_wrong, &timeouts).is_err(),
-        "a Host interrupt attributed to the adapter must fail B1"
-    );
-
-    let mut b2_wrong = ScriptedFixture {
-        b2_cause: InterruptCause::HostControl,
-        ..ScriptedFixture::default()
-    };
-    assert!(
-        assert_b2_adapter_policy_interrupt_attribution(&mut b2_wrong, &timeouts, "x").is_err(),
-        "an adapter-policy interrupt attributed to the Host must fail B2"
+        "a Host interrupt attributed to the provider must fail B1"
     );
 }

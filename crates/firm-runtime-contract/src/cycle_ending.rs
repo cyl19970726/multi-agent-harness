@@ -48,6 +48,46 @@ pub enum CycleEndingSettlement {
     RecoveryRequiredUnknown,
 }
 
+/// Who minted the id that correlates one cycle's acceptance receipt to its
+/// provider-native turn.
+///
+/// The three cases are already real and already different in kind; this records
+/// which one applies so an operator (or a later reader of the durable row) does
+/// not have to know the adapter to judge how much the id proves. It says
+/// nothing about whether the acceptance itself is valid — that is the receipt's
+/// own `success` — only where the identifier came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AcceptanceIdProvenance {
+    /// The PROVIDER minted the id and the Harness echoed it back: Codex's
+    /// `turn/start` response carries the app-server's own `turn_id`. The
+    /// strongest of the three — the id exists provider-side independently of
+    /// anything the Harness chose.
+    ProviderMinted,
+    /// The HARNESS synthesized the id and the provider carried it through:
+    /// Claude's `claude-cycle-N` and DeepSeek's `deepseek-cycle-N` come back on
+    /// the runner's `consumed` event, and Pi echoes `pi-rpc-N` on its prompt
+    /// response. The correlation is exact, but the identifier is ours.
+    HarnessSynthesized,
+    /// No acknowledgement carries an id at all, so acceptance is INFERRED from
+    /// the first prompt-scoped provider activity: ACP has no prompt-start ack,
+    /// so Kimi's evidence is the first `session/update` (or a matching-session
+    /// `session/request_permission`) for the prompt it just wrote. The weakest
+    /// of the three, and the reason it is worth recording.
+    Inferred,
+}
+
+impl AcceptanceIdProvenance {
+    /// Frozen wire spelling, stored on the durable cycle correlation.
+    pub fn wire(self) -> &'static str {
+        match self {
+            Self::ProviderMinted => "provider_minted",
+            Self::HarnessSynthesized => "harness_synthesized",
+            Self::Inferred => "inferred",
+        }
+    }
+}
+
 /// Why the PROVIDER itself reported a failed turn.
 ///
 /// Derived from today's producers only: Codex `codexErrorInfo` variant keys
@@ -278,11 +318,6 @@ impl CycleEnding {
         }
         match &outcome.interrupt {
             Some(InterruptCause::HostControl) => return Self::InterruptedByHost,
-            Some(InterruptCause::AdapterPolicy { reason }) => {
-                return Self::InterruptedByProvider {
-                    reason: format!("adapter_policy:{reason}"),
-                }
-            }
             Some(InterruptCause::ProviderInitiated { reason }) => {
                 return Self::InterruptedByProvider {
                     reason: reason.clone(),

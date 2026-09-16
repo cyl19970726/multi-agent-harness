@@ -29,6 +29,8 @@ fn runtime_adapter_cycle_terminal_mismatch_rejected_for_all_five_adapters() {
             },
             terminal_provider_input_id: terminal_provider_input_id.map(str::to_string),
             exact_terminal_ref: Some(exact_terminal_ref.into()),
+            acceptance_id_provenance:
+                harness_runtime_contract::AcceptanceIdProvenance::HarnessSynthesized,
         }
     }
 
