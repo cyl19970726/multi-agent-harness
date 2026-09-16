@@ -2,7 +2,7 @@ use super::*;
 
 /// `decide_wake` predicts from a pure view built before the claim. When the
 /// matching claim has already disappeared, the `DeliverPending`, `Continue`
-/// and `ClaimHint` arms used to re-enter the loop with no sleep at all, so an
+/// and `ClaimBoardWork` arms used to re-enter the loop with no sleep at all, so an
 /// idle member re-ran whole-Store scans at 100% CPU (#584).
 ///
 /// The loop body now returns `IdleWakeStep`, and `IdleWakeStep::Retry` is the

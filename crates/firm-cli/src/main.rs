@@ -175,6 +175,9 @@ use member_work_coordination::*;
 #[path = "main_modules/managed_host_delivery.rs"]
 mod managed_host_delivery;
 use managed_host_delivery::*;
+#[path = "main_modules/member_wake_record.rs"]
+mod member_wake_record;
+use member_wake_record::*;
 #[path = "main_modules/member_lifecycle.rs"]
 mod member_lifecycle;
 use member_lifecycle::*;

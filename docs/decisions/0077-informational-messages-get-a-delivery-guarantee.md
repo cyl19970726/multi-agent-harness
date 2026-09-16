@@ -75,7 +75,7 @@ change that.
 
 `decide_wake` gains one arm (`WakeDecision::DeliverInformational`), **below every arm that
 already has a reason to run a cycle** — degraded, delivery/message pending, continuation,
-probation, claim hint — and **above `Sleep`**:
+probation, board claim — and **above `Sleep`**:
 
 - Below them, because any of those cycles carries the queued mail for free under #941.
   Firing above them would deliver the same mail one cycle sooner at the cost of an extra
@@ -97,6 +97,32 @@ member whose daemon is recycled more often than the interval would never accumul
 idle time to earn a delivery. The guarantee would silently not hold in exactly the
 circumstances where a Host is most likely to be sending notes. An unknown or unparseable
 stamp yields `None` and never fires the arm: no clock, no wake.
+
+Two things that rationale does not by itself cover, recorded here because the X3 review was
+right that they were reasoning gaps rather than defects:
+
+- **"Never started" is a real `None`, and it is unreachable where the arm runs.** A freshly
+  created MemberRun genuinely carries `last_event_at: None` together with `status: Idle`
+  (`team_run_setup.rs:239`, `:262`), so "unknown stamp forever" exists in the data. It cannot
+  be observed by this predicate: the arm is only ever evaluated inside a member's own
+  supervisor loop, and that loop exists only after a start which stamps the row before the
+  first poll. The `None` default is therefore a fail-closed guard for legacy or corrupt
+  stamps, not the live case.
+- **`last_event_at` has roughly forty writers, and the error direction is delay-only.** It is
+  a general member-row activity stamp, not a cycle-boundary field, so "not rewritten while
+  idle" is a property of its call sites rather than an invariant. The ones worth naming,
+  because they are the ones that could plausibly touch an idle row: the message claim chain
+  writes no member row at all (`runtime_effects.rs` `claim_canonical_messages_*`); authoring
+  or queueing a Message writes none; the Supervisor lease stamps on Close, a lifecycle
+  transition, not on renewal (`supervisor_control.rs:423`); a provider-profile refresh returns
+  early when unchanged (`team_provider_profiles.rs:1160-1165`); the gateway and health writers
+  stamp a `ProviderProcess` row, not `member_runs` (`delivery_gateway.rs:273`,
+  `gateway_runtime.rs:466`); and capacity writers are admission and recovery paths, whose
+  members are `Blocked` and excluded by the degraded arm regardless.
+  A future writer that did stamp an idle row would only *delay* delivery by one more
+  interval. It cannot cause an early fire, and it cannot cause a loss: any cycle that ran at
+  all already emptied the informational queue through #941, so there is nothing left for a
+  later stamp to strand.
 
 ## Consequences
 

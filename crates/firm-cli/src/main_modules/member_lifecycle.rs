@@ -743,6 +743,12 @@ pub(super) fn wait_for_idle_member_wake(
     }
 }
 
+/// One pass of the idle wake loop, with the ADR 0078 decision row written
+/// around it.
+///
+/// The row is written HERE rather than at each of the nine `Ready` sites
+/// inside, so a new arm cannot be added without one: a wake that reaches the
+/// caller has been recorded by construction.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn poll_idle_member_wake(
     ledger: &TeamRunLedger,
@@ -753,6 +759,43 @@ pub(super) fn poll_idle_member_wake(
     last_consumed_work_version: Option<u64>,
     policy: &supervisor_wake::WakePolicy,
     backoff: &mut supervisor_wake::WakeBackoff,
+) -> CliResult<IdleWakeStep> {
+    // The arms reset the backoff before they return, so the length of the idle
+    // episode this poll may end has to be read first.
+    let episode_polls = backoff.consecutive_sleeps();
+    if backoff.at_cap(policy) && !backoff.cap_recorded() {
+        record_idle_episode_capped(ledger, member_row, policy, episode_polls)?;
+        backoff.mark_cap_recorded();
+    }
+    let mut decided: Option<supervisor_wake::WakeDecision> = None;
+    let step = poll_idle_member_wake_step(
+        ledger,
+        member_row,
+        controls,
+        ensure_transport_alive,
+        zero_output_streak,
+        last_consumed_work_version,
+        policy,
+        backoff,
+        &mut decided,
+    )?;
+    if let IdleWakeStep::Ready(wake) = &step {
+        record_wake_decision(ledger, member_row, wake, decided.as_ref(), episode_polls)?;
+    }
+    Ok(step)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn poll_idle_member_wake_step(
+    ledger: &TeamRunLedger,
+    member_row: &mut ProviderRuntimeProjection,
+    controls: &ControlReceiver<MemberControlCommand>,
+    ensure_transport_alive: &mut impl FnMut() -> CliResult<()>,
+    zero_output_streak: u32,
+    last_consumed_work_version: Option<u64>,
+    policy: &supervisor_wake::WakePolicy,
+    backoff: &mut supervisor_wake::WakeBackoff,
+    decided: &mut Option<supervisor_wake::WakeDecision>,
 ) -> CliResult<IdleWakeStep> {
     {
         // A command may have passed the control-plane fence just before this
@@ -890,6 +933,10 @@ pub(super) fn poll_idle_member_wake(
         let board_view = build_board_wake_view(ledger, member_row)?;
 
         let decision = supervisor_wake::decide_wake(&member_view, &board_view, policy, backoff);
+        // The true arm for the row the caller writes. Set BEFORE the match so
+        // it survives every early return inside it, including the arms that
+        // fall through to Retry.
+        *decided = Some(decision.clone());
         match decision {
             supervisor_wake::WakeDecision::DeliverPending => {
                 // Try work deliveries first (work contract prompt).
@@ -998,11 +1045,30 @@ pub(super) fn poll_idle_member_wake(
                 }
                 // Work version changed but continuation candidate disappeared — fall through to Sleep.
             }
-            supervisor_wake::WakeDecision::ClaimHint(_work_ids) => {
-                // Board-discovery hint for idle members: the wake is only a
-                // discovery hint; ownership starts at the atomic claim.
-                // Inject a lightweight prompt so the member can discover and
-                // claim eligible Works.
+            supervisor_wake::WakeDecision::ClaimBoardWork => {
+                // The member is idle and the board holds an unclaimed, ready
+                // `team_claim` Work it is eligible for. This arm is the ONLY
+                // wake that reaches board Work: the eager claim
+                // (`claim_canonical_work_for_member`), `DeliverPending`
+                // (`queued_works_for`) and `Continue`
+                // (`is_active_work_continuation_candidate`) all filter on
+                // `owner_member_id == this member`, and an unclaimed board
+                // Work has no owner yet.
+                //
+                // What it does is deliver that Work as an ordinary
+                // continuation: `active_work_continuation_for` falls through to
+                // its last-resort branch (member_work_coordination.rs:1007),
+                // which selects exactly `owner_member_id.is_none() &&
+                // claim_mode == TeamClaim` and returns the highest-priority
+                // one. Ownership still starts at the atomic claim inside the
+                // cycle; this is the wake, not the claim.
+                //
+                // Until ADR 0078 this arm was called `ClaimHint` and its
+                // comment claimed to "inject a lightweight prompt so the member
+                // can discover and claim eligible Works". No prompt was ever
+                // injected and the decision's work ids were discarded — which
+                // read as a dead arm and very nearly got it deleted. The name
+                // now says what happens.
                 if let Some(work) = ledger.active_work_continuation_for(&member_row.id)? {
                     backoff.reset();
                     let expected = member_row.clone();
@@ -1117,7 +1183,7 @@ pub(super) fn poll_idle_member_wake(
             }
         }
     }
-    // No arm produced a wake. `DeliverPending`, `Continue` and `ClaimHint` are
+    // No arm produced a wake. `DeliverPending`, `Continue` and `ClaimBoardWork` are
     // predictions from a pure view built before the claim; when the matching
     // claim has already disappeared they used to re-enter the loop with no
     // sleep at all and re-ran whole-Store scans at 100% CPU (#584). `Retry` is

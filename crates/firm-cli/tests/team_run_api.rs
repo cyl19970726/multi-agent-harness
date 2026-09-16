@@ -1156,6 +1156,8 @@ mod host_can_explicitly_close_a_live_codex_member;
 mod host_close_reports_bounded_store_contention_as_retryable_503;
 #[path = "team_run_api/idle_kimi_member_consumes_late_mail_on_the_same_native_session.rs"]
 mod idle_kimi_member_consumes_late_mail_on_the_same_native_session;
+#[path = "team_run_api/idle_member_claims_an_unclaimed_board_work.rs"]
+mod idle_member_claims_an_unclaimed_board_work;
 #[path = "team_run_api/idle_member_with_no_work_receives_informational_mail_on_its_own_boundary.rs"]
 mod idle_member_with_no_work_receives_informational_mail_on_its_own_boundary;
 #[path = "team_run_api/installed_kimi_upgrade_to_unreviewed_blocks_reopen_and_recovery_without_reusing_native_session.rs"]
@@ -1238,5 +1240,7 @@ mod work_list_since_returns_only_works_changed_after_cursor;
 
 #[path = "team_run_api/codex_quota_diagnostic_preserves_runtime_uncertainty.rs"]
 mod codex_quota_diagnostic_preserves_runtime_uncertainty;
+#[path = "team_run_api/wake_decisions_are_on_the_record_exactly_once.rs"]
+mod wake_decisions_are_on_the_record_exactly_once;
 #[path = "team_run_api/work_readers_agree_across_both_journals.rs"]
 mod work_readers_agree_across_both_journals;
