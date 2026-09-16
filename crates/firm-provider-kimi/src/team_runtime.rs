@@ -478,6 +478,11 @@ impl harness_runtime_contract::TeamRuntimeAdapter for KimiTeamRuntime<'_> {
                 input_acceptance_receipt,
                 terminal_provider_input_id: Some(provider_input_id),
                 exact_terminal_ref: Some(exact_terminal_ref),
+                // ACP has no prompt-start acknowledgement: the request id is
+                // ours and nothing echoes it, so acceptance is inferred from the
+                // first prompt-scoped `session/update`.
+                acceptance_id_provenance:
+                    harness_runtime_contract::AcceptanceIdProvenance::Inferred,
             },
             control_receipts,
             terminal_observation: harness_runtime_contract::CycleRuntimeObservation {

@@ -247,3 +247,25 @@ fn a_silent_turn_is_empty_output_on_codex() {
         "empty_provider_round"
     );
 }
+
+/// X1b item C. Codex is the one adapter whose acceptance id is PROVIDER-minted:
+/// the app-server returns its own `turn_id` on `turn/start` and the Harness only
+/// echoes it.
+#[test]
+fn codex_states_a_provider_minted_acceptance_id() {
+    let mut adapter = CodexTeamRuntime::new(FakeBridge::completed("completed"));
+    let outcome = TeamRuntimeAdapter::run_cycle(
+        &mut adapter,
+        "input",
+        CycleTimeouts::with_input_acceptance(Duration::from_secs(1)),
+        &mut |_| Ok(()),
+        &mut |_| {},
+        &mut CycleControl::default,
+    )
+    .expect("a clean cycle");
+    assert_eq!(
+        outcome.native_correlation.acceptance_id_provenance,
+        harness_runtime_contract::AcceptanceIdProvenance::ProviderMinted
+    );
+    assert_eq!(outcome.native_correlation.provider_input_id, "turn-1");
+}

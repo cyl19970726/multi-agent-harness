@@ -39,6 +39,7 @@ fn outcome() -> ExecutionCycleOutcome {
             },
             terminal_provider_input_id: Some("provider-input:1".to_string()),
             exact_terminal_ref: Some("provider.terminal:1".to_string()),
+            acceptance_id_provenance: crate::AcceptanceIdProvenance::HarnessSynthesized,
         },
         control_receipts: Vec::new(),
         terminal_observation: observation(true),

@@ -91,6 +91,11 @@ pub struct NativeCycleCorrelation {
     pub input_acceptance_receipt: ControlTransportReceipt,
     pub terminal_provider_input_id: Option<String>,
     pub exact_terminal_ref: Option<String>,
+    /// Who minted `provider_input_id` — the provider, the Harness, or nobody
+    /// (inferred from the first prompt-scoped activity). Each adapter states
+    /// its own, so the field cannot be filled in by a caller that does not
+    /// know the transport.
+    pub acceptance_id_provenance: crate::AcceptanceIdProvenance,
 }
 
 /// Whether the provider's terminal cycle state was observed. Source: the

@@ -294,6 +294,14 @@ pub struct ProviderCycleCorrelation {
     /// when unset.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ending: Option<String>,
+    /// Who minted `provider_input_id`: `provider_minted` (the provider's own
+    /// id, echoed by the Harness), `harness_synthesized` (ours, carried back by
+    /// the provider) or `inferred` (nothing acknowledges the id; acceptance is
+    /// evidenced by the first prompt-scoped provider activity). Additive:
+    /// absent on pre-X1b durable rows, which read back as `None`; the key is
+    /// omitted entirely when unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub acceptance_id_provenance: Option<String>,
 }
 
 /// Durable machine-local command journal. The NodeDaemon records acceptance

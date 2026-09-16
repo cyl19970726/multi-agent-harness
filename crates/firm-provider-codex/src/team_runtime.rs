@@ -1067,6 +1067,11 @@ impl<'a, B: CodexAppServerBridge> TeamRuntimeAdapter for CodexTeamRuntime<'a, B>
                                         input_acceptance_receipt: input_receipt,
                                         terminal_provider_input_id: Some(turn_id.clone()),
                                         exact_terminal_ref: Some(exact_terminal_ref),
+                                        // The app-server minted this turn id and
+                                        // returned it on `turn/start`; the Harness
+                                        // only echoes it.
+                                        acceptance_id_provenance:
+                                            harness_runtime_contract::AcceptanceIdProvenance::ProviderMinted,
                                     },
                                 control_receipts,
                                 terminal_observation: CycleRuntimeObservation {

@@ -47,6 +47,7 @@ const runtimeContractModules = new Map([
     "struct CycleSettlement",
   ]],
   ["cycle_ending", [
+    "enum AcceptanceIdProvenance",
     "enum CycleEndingSettlement",
     "enum ProviderFailureCode",
     "enum CycleRefusalCode",

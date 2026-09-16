@@ -18,6 +18,7 @@ fn test_correlation() -> NativeCycleCorrelation {
         },
         terminal_provider_input_id: Some("input-1".to_string()),
         exact_terminal_ref: Some("terminal-1".to_string()),
+        acceptance_id_provenance: AcceptanceIdProvenance::HarnessSynthesized,
     }
 }
 

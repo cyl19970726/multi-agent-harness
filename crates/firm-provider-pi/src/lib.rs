@@ -895,6 +895,10 @@ impl PiRpcClient {
                 // the local cycle; there is no stronger native terminal id.
                 terminal_provider_input_id: Some(provider_input_id.clone()),
                 exact_terminal_ref: Some(format!("pi.agent_settled:{provider_input_id}")),
+                // `pi-rpc-N` is ours; Pi merely echoes it on the prompt
+                // response, which is what makes the correlation exact.
+                acceptance_id_provenance:
+                    harness_runtime_contract::AcceptanceIdProvenance::HarnessSynthesized,
             },
             control_receipts,
             terminal_observation,

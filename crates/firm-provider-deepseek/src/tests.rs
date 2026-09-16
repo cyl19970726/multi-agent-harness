@@ -794,4 +794,29 @@ mod cycle_conformance {
         );
         assert_eq!(ending.action_type(), "transport_lost");
     }
+
+    /// X1b item C. DeepSeek's acceptance id is HARNESS-synthesized:
+    /// `deepseek-cycle-N` is ours and the runner carries it back on `consumed`.
+    #[test]
+    fn deepseek_states_a_harness_synthesized_acceptance_id() {
+        let outcome = drive_ds_cycle(
+            vec![
+                ds_consumed("deepseek-cycle-2"),
+                ds_assistant_message(),
+                ds_turn_complete("deepseek-cycle-2"),
+            ],
+            false,
+            &ds_control_timeouts(),
+            harness_runtime_contract::CycleControl::default,
+        )
+        .expect("a clean cycle");
+        assert_eq!(
+            outcome.native_correlation.acceptance_id_provenance,
+            harness_runtime_contract::AcceptanceIdProvenance::HarnessSynthesized
+        );
+        assert_eq!(
+            outcome.native_correlation.provider_input_id,
+            "deepseek-cycle-2"
+        );
+    }
 }

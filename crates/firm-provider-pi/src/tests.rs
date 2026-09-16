@@ -923,6 +923,42 @@ mod cycle_conformance {
             harness_runtime_contract::CycleEnding::EmptyOutput
         );
     }
+
+    /// X1b item C. Pi's acceptance id is HARNESS-synthesized: `pi-rpc-N` is
+    /// ours, and Pi echoing it on the prompt response is what makes the
+    /// correlation exact.
+    #[test]
+    fn pi_states_a_harness_synthesized_acceptance_id() {
+        let outcome = drive_pi_cycle(
+            PiScript {
+                answers: vec![
+                    (
+                        "prompt".to_string(),
+                        pi_response("pi-rpc-1", "prompt", serde_json::json!({})),
+                    ),
+                    (
+                        "get_state".to_string(),
+                        pi_response("pi-rpc-2", "get_state", pi_state(false)),
+                    ),
+                ],
+                events: vec![
+                    serde_json::json!({"type": "turn_end", "message": {"content": [{"type": "text", "text": "done"}]}}),
+                    serde_json::json!({"type": "agent_settled"}),
+                ],
+                events_after: 1,
+                delay_events_ms: 0,
+                disconnect_after: false,
+            },
+            &pi_timeouts(),
+            harness_runtime_contract::CycleControl::default,
+        )
+        .expect("a clean cycle");
+        assert_eq!(
+            outcome.native_correlation.acceptance_id_provenance,
+            harness_runtime_contract::AcceptanceIdProvenance::HarnessSynthesized
+        );
+        assert_eq!(outcome.native_correlation.provider_input_id, "pi-rpc-1");
+    }
 }
 
 /// ADR 0076 exhaustiveness: every ending this adapter can produce is placed in

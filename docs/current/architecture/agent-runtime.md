@@ -644,7 +644,16 @@ wildcard-free enum and drains the result through
 The ending is the single source for `member_actions.action_type` (frozen string
 values) and for `provider_status`, which is therefore populated on all five
 providers rather than on Codex alone; it is also recorded on the cycle
-correlation as the additive `ending` field. It is a summary, never a
+correlation as the additive `ending` field.
+
+Alongside it the correlation records `acceptance_id_provenance`: who minted the
+id that ties the acceptance receipt to the provider-native turn. The three cases
+differ in what the id proves — `provider_minted` exists provider-side
+independently of anything the Harness chose, `harness_synthesized` is ours and
+merely carried back, and `inferred` means nothing acknowledges the id at all, so
+acceptance rests on the first prompt-scoped provider activity. Each adapter
+states its own, so the field cannot be filled in by a caller that does not know
+the transport. It is a summary, never a
 replacement: `close_requested_by_harness`, `interrupt` and
 `provider_terminal_failure` stay on the outcome because
 `verified_terminal_control_ack` reads each of them separately.
@@ -656,6 +665,7 @@ Per-provider alignment:
 | one cycle = | one app-server turn (`turn/start` → `turn/completed`) | one NDJSON `deliver` → runner `turn_complete` | one ACP `session/prompt` → its correlated response | one NDJSON `deliver` → runner `turn_complete` | one `prompt` RPC → `agent_settled` |
 | accepted when | the `turn/start` response arrives | the runner's `consumed` event matches the input id | the first prompt-scoped `session/update` (ACP has no prompt-start ack) | the runner's `consumed` event matches the input id | the synchronous `prompt` response echoes its id |
 | acceptance id | provider-minted (`turn_id`) | Harness-synthesized (`claude-cycle-N`) | Harness-assigned request id, acceptance inferred | Harness-synthesized (`deepseek-cycle-N`) | Harness-assigned (`pi-rpc-N`), echoed back |
+| acceptance id provenance | `provider_minted` | `harness_synthesized` | `inferred` | `harness_synthesized` | `harness_synthesized` |
 | ends when | `turn/completed` **and** `thread/read` reports idle | `turn_complete` for this input, or the interrupt-resume pair | the `session/prompt` response, classified by `stopReason` | `turn_complete` for this input, or the interrupt-resume pair | `agent_settled` **and** `get_state` reports `isStreaming=false` |
 | interrupt = | native `turn/interrupt` RPC | NDJSON `{"command":"interrupt"}` on runner stdin, withheld until acceptance | `session/cancel` notification; process group killed on grace expiry | NDJSON `{"command":"interrupt"}`, withheld until acceptance | blocking `abort` RPC |
 | abort receipt succeeds when | the RPC was sent | the frame crossed the boundary | the notification crossed the boundary | the frame crossed the boundary | the RPC was sent |
