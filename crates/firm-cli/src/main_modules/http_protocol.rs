@@ -213,7 +213,8 @@ pub(super) fn resolve_peer_team_message_admission_authority(
     // The authoring session must be a child of the exact current NodeDaemon
     // generation; otherwise the daemon cannot honestly bind this author.
     let lease = store
-        .latest_node_daemon_lease(local_node_id)
+        // ADR 0075: a parent-generation fence reads the machine document.
+        .current_authorized_machine_lease(local_node_id)
         .map_err(|error| error.to_string())?
         .filter(|lease| {
             lease.status == harness_core::NodeDaemonLeaseStatus::Active

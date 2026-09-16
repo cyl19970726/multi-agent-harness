@@ -211,7 +211,7 @@ pub(crate) fn validate_wave4c_node_authority(
         ));
     }
     let current = store
-        .latest_node_daemon_lease(&company_node.id)
+        .current_authorized_machine_lease(&company_node.id)
         .map_err(store_error)?
         .ok_or_else(|| {
             FabricError::none(

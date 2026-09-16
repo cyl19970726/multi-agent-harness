@@ -25,7 +25,10 @@ impl RuntimeRecoveryPersistence for HarnessStoreRuntimeRecovery<'_> {
         &mut self,
         node_id: &str,
     ) -> Result<Option<NodeDaemonLease>, Self::Error> {
-        self.store.latest_node_daemon_lease(node_id)
+        // ADR 0075: this feeds the runtime-recovery authority fence, so it is
+        // the machine document rather than a legacy Space row. A row that
+        // cannot authorize resolves as the refusal, never as `None`.
+        self.store.current_authorized_machine_lease(node_id)
     }
 
     fn commit_runtime_recovery(

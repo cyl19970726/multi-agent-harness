@@ -40,8 +40,10 @@ pub(super) fn route_command(
                     .into(),
             )
         })?;
+    // ADR 0075: the NodeGateway session's parent fence reads the machine
+    // document, like every other parent fence.
     let lease = wave4c_store
-        .latest_node_daemon_lease(&node_id)?
+        .current_authorized_machine_lease(&node_id)?
         .filter(|lease| {
             lease.status == harness_core::NodeDaemonLeaseStatus::Active
                 && lease.expires_unix_ms > now
@@ -516,8 +518,9 @@ pub(super) fn node_gateway_command(
     let company_id = required(args, "--company")?;
     let node_id = crate::read_local_node_id()?;
     let now = now_unix_ms().map_err(fabric_error)?;
+    // ADR 0075: same fence, same one record.
     let daemon = wave4c_store
-        .latest_node_daemon_lease(&node_id)?
+        .current_authorized_machine_lease(&node_id)?
         .filter(|lease| {
             lease.status == harness_core::NodeDaemonLeaseStatus::Active
                 && lease.expires_unix_ms > now

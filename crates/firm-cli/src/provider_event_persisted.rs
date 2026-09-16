@@ -61,7 +61,7 @@ pub(crate) fn read_persisted_session_for_daemon(
     let store = HarnessStore::new(&space.store_root);
     let now = current_unix_ms_u64();
     let lease = store
-        .latest_node_daemon_lease(&request.node_id)?
+        .current_authorized_machine_lease(&request.node_id)?
         .ok_or_else(|| CliError::Usage("NODE_DAEMON_GENERATION_FENCED: lease missing".into()))?;
     if lease.daemon_id != daemon_id
         || lease.generation != daemon_generation
@@ -392,7 +392,7 @@ pub(crate) fn local_operator_session_read_request(
         CliError::Usage("PROVIDER_NATIVE_SESSION_UNAVAILABLE: Session has no native binding".into())
     })?;
     let lease = store
-        .latest_node_daemon_lease(&team.node_id)?
+        .current_authorized_machine_lease(&team.node_id)?
         .ok_or_else(|| CliError::Usage("NODE_DAEMON_GENERATION_FENCED: lease missing".into()))?;
     Ok(PersistedSessionReadRequest {
         execution_space_id: execution_space_id.into(),

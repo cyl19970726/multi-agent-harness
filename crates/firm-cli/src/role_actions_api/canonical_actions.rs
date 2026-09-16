@@ -562,7 +562,7 @@ pub(super) fn execute_canonical_role_action(
                 ));
             }
             let lease = store
-                .latest_node_daemon_lease(node_id)?
+                .current_authorized_machine_lease(node_id)?
                 .filter(|lease| {
                     lease.status == NodeDaemonLeaseStatus::Active
                         && lease.expires_unix_ms > crate::current_unix_ms_u64()

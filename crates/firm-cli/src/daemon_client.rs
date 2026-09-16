@@ -495,9 +495,13 @@ pub(crate) fn start_daemon_process_fenced(
         .ok_or_else(|| {
             CliError::Usage(format!("Execution Space not found: {execution_space_id}"))
         })?;
-    let store = HarnessStore::new(space.store_root);
+    // ADR 0075: `daemon start` fences on the machine generation, so it reads the
+    // machine document — bound to the Firm home it was invoked for, because
+    // that is what names the document. Reading a legacy Space row here would
+    // fence a start against a number nothing writes any more.
+    let store = HarnessStore::new(space.store_root).with_firm_home(firm_home);
     let current_generation = store
-        .latest_node_daemon_lease(node_id)?
+        .current_authorized_machine_lease(node_id)?
         .map(|lease| lease.generation)
         .unwrap_or(0);
     if current_generation != observed_generation {
@@ -552,7 +556,10 @@ pub(crate) fn start_daemon_process_fenced(
                 let instance_id = status_value
                     .as_ref()
                     .and_then(|value| value["instance_id"].as_str());
-                let lease = store.latest_node_daemon_lease(node_id)?;
+                // The generation the new daemon actually took is on the
+                // machine document (ADR 0075); the legacy row is no longer
+                // written, so waiting on it would never observe the start.
+                let lease = store.current_authorized_machine_lease(node_id)?;
                 if lease.as_ref().is_some_and(|lease| {
                     lease.daemon_id == format!("node-daemon:{node_id}")
                         && Some(lease.instance_id.as_str()) == instance_id
@@ -674,7 +681,9 @@ pub(crate) fn reconcile_team_run_start_postcondition(
     let supervisor_id = run["supervisor_id"].as_str()?;
     let supervisor_generation = run["supervisor_generation"].as_u64()?;
     let now = current_unix_ms_u64();
-    let daemon = match store.latest_node_daemon_lease(node_id) {
+    // The start postcondition is a statement about the exact machine
+    // generation, so it is read from the record that holds one (ADR 0075).
+    let daemon = match store.current_authorized_machine_lease(node_id) {
         Ok(Some(daemon)) => daemon,
         Ok(None) => return None,
         Err(error) => return Some(Err(error.into())),

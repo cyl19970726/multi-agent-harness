@@ -13,7 +13,7 @@ pub(crate) fn current_node_daemon_lease_after_admission_at(
     command_id: &str,
 ) -> CliResult<harness_core::NodeDaemonLease> {
     store
-        .latest_node_daemon_lease(&admitted_lease.node_id)
+        .current_authorized_machine_lease(&admitted_lease.node_id)
         .map_err(|error| prepared_command_recovery(command_id, error))?
         .filter(|lease| {
             lease.node_id == admitted_lease.node_id
@@ -255,7 +255,7 @@ pub(crate) fn prepare_provider_effect_kind(
     }
     let lease = ledger
         .store
-        .latest_node_daemon_lease(&session.node_id)
+        .current_authorized_machine_lease(&session.node_id)
         .map_err(|error| CliError::ProviderAdmissionRejected(error.to_string()))?
         .filter(|lease| {
             lease.daemon_id == session.node_daemon_id
@@ -449,7 +449,7 @@ pub(crate) fn prepare_provider_process_effect(
             .map_err(classify_pre_effect_provider_admission_error)?;
     let lease = ledger
         .store
-        .latest_node_daemon_lease(&session.node_id)
+        .current_authorized_machine_lease(&session.node_id)
         .map_err(|error| classify_pre_effect_provider_admission_error(error.into()))?
         .filter(|lease| {
             lease.daemon_id == session.node_daemon_id

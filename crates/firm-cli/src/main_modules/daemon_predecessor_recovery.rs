@@ -55,13 +55,21 @@ pub(crate) fn validate_daemon_predecessor_recovery(
     for space in execution_space::list_spaces(firm_home).map_err(|error| {
         execution_space_error_pair("NODE_DAEMON_PREDECESSOR_RECOVERY_INCOMPLETE", error)
     })? {
-        let store = HarnessStore::new(space.store_root.clone());
-        if let Some(lease) = store.latest_node_daemon_lease(node_id).map_err(|error| {
-            (
-                "NODE_DAEMON_PREDECESSOR_RECOVERY_INCOMPLETE".into(),
-                format!("{}: {error}", space.id),
-            )
-        })? {
+        // Bound to the Firm home this verb was invoked for: after ADR 0075 the
+        // machine lease is named by `(FIRM_HOME, node_id)`, and a Store opened
+        // by bare path would fall back to a directory derived from the Space
+        // root's shape — a different document whenever a registered root lives
+        // outside the home.
+        let store = HarnessStore::new(space.store_root.clone()).with_firm_home(firm_home);
+        if let Some(lease) = store
+            .current_authorized_machine_lease(node_id)
+            .map_err(|error| {
+                (
+                    "NODE_DAEMON_PREDECESSOR_RECOVERY_INCOMPLETE".into(),
+                    format!("{}: {error}", space.id),
+                )
+            })?
+        {
             leases.push((space, lease));
         }
     }
@@ -146,7 +154,7 @@ pub(crate) fn recover_daemon_predecessor_spaces(
             .iter()
             .map(|(space, lease)| harness_store::PredecessorSpaceLease {
                 execution_space_id: space.id.clone(),
-                store: HarnessStore::new(space.store_root.clone()),
+                store: HarnessStore::new(space.store_root.clone()).with_firm_home(firm_home),
                 lease: lease.clone(),
             })
             .collect::<Vec<_>>(),

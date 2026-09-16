@@ -415,7 +415,7 @@ pub(super) fn execute_operator_action(
     }
     match (operation, intent) {
         ("diagnostics", OperatorActionIntent::Diagnose) => {
-            let lease = store.latest_node_daemon_lease(node_id)?;
+            let lease = store.current_authorized_machine_lease(node_id)?;
             Ok(RoleActionResult {
                 ok: true,
                 action_protocol_version: "agentfirm.role_actions.v1",
@@ -448,7 +448,7 @@ pub(super) fn execute_operator_action(
             }
             let firm_home = firm_home.expect("daemon action resolves firm home before dispatch");
             let current_generation = store
-                .latest_node_daemon_lease(node_id)?
+                .current_authorized_machine_lease(node_id)?
                 .map(|lease| lease.generation)
                 .unwrap_or(0);
             if daemon_generation != current_generation {
@@ -486,7 +486,7 @@ pub(super) fn execute_operator_action(
                         Some(node_revision),
                     )
                 })?;
-                let lease = store.latest_node_daemon_lease(node_id)?;
+                let lease = store.current_authorized_machine_lease(node_id)?;
                 Ok(RoleActionResult {
                     ok: true,
                     action_protocol_version: "agentfirm.role_actions.v1",
@@ -504,15 +504,17 @@ pub(super) fn execute_operator_action(
         }
         ("daemon-stop", OperatorActionIntent::DaemonStop { daemon_generation }) => {
             let firm_home = firm_home.expect("daemon action resolves firm home before dispatch");
-            let lease = store.latest_node_daemon_lease(node_id)?.ok_or_else(|| {
-                encoded_error(
-                    "SUPERVISOR_GENERATION_FENCED",
-                    "daemon stop requires a current NodeDaemon lease",
-                    "node_daemon_lease",
-                    node_id,
-                    None,
-                )
-            })?;
+            let lease = store
+                .current_authorized_machine_lease(node_id)?
+                .ok_or_else(|| {
+                    encoded_error(
+                        "SUPERVISOR_GENERATION_FENCED",
+                        "daemon stop requires a current NodeDaemon lease",
+                        "node_daemon_lease",
+                        node_id,
+                        None,
+                    )
+                })?;
             if lease.generation != daemon_generation
                 || lease.status != harness_core::NodeDaemonLeaseStatus::Active
                 || lease.expires_unix_ms <= crate::current_unix_ms_u64()

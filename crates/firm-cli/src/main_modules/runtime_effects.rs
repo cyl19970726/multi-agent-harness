@@ -283,7 +283,7 @@ pub(super) fn transition_provider_session_for_member_as(
     let (space_id, mut session) = provider_session_for_member(ledger, member)?;
     let daemon = ledger
         .store
-        .latest_node_daemon_lease(&session.node_id)?
+        .current_authorized_machine_lease(&session.node_id)?
         .filter(|lease| {
             lease.daemon_id == session.node_daemon_id
                 && lease.generation == session.node_daemon_generation
@@ -636,7 +636,7 @@ fn require_provider_session_authority_inner(
     if require_live_daemon {
         ledger
             .store
-            .latest_node_daemon_lease(&session.node_id)?
+            .current_authorized_machine_lease(&session.node_id)?
             .filter(|lease| {
                 lease.daemon_id == session.node_daemon_id
                     && lease.generation == session.node_daemon_generation
@@ -786,7 +786,7 @@ pub(super) fn claim_canonical_messages_with_before_claim(
         }
         let lease = ledger
             .store
-            .latest_node_daemon_lease(&session.node_id)?
+            .current_authorized_machine_lease(&session.node_id)?
             .filter(|lease| {
                 lease.daemon_id == session.node_daemon_id
                     && lease.generation == session.node_daemon_generation
@@ -968,7 +968,7 @@ impl TeamSupervisorRegistration {
         let owner_locator = format!("tcp://{}", control_listener.local_addr()?);
         let run = latest_team_run(store, team_run_id)?;
         let parent = store
-            .latest_node_daemon_lease(&run.execution_node_id)?
+            .current_authorized_machine_lease(&run.execution_node_id)?
             .ok_or_else(|| {
                 CliError::Usage(format!(
                     "NODE_DAEMON_UNAVAILABLE: Node {} has no daemon lease",

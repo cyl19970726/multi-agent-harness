@@ -699,7 +699,7 @@ pub(super) fn team_message_send(
     )
     .map_err(CliError::Usage)?;
     let lease = store
-        .latest_node_daemon_lease(&local_node_id)?
+        .current_authorized_machine_lease(&local_node_id)?
         .filter(|lease| {
             lease.status == NodeDaemonLeaseStatus::Active
                 && lease.expires_unix_ms > current_unix_ms_u64()
@@ -1030,7 +1030,7 @@ pub(super) fn team_message_claim(
             CliError::Usage(format!("active TeamMembership not found: {membership_id}"))
         })?;
     let lease = store
-        .latest_node_daemon_lease(&team.node_id)?
+        .current_authorized_machine_lease(&team.node_id)?
         .filter(|lease| {
             lease.status == NodeDaemonLeaseStatus::Active
                 && lease.expires_unix_ms > current_unix_ms_u64()

@@ -60,7 +60,7 @@ impl DaemonApplicationPort for DaemonApplication {
         }
         let project_binding_id = body.run.project_binding_id.clone();
         let daemon_generation = store
-            .latest_node_daemon_lease(node_id)?
+            .current_authorized_machine_lease(node_id)?
             .filter(|lease| lease.daemon_id == daemon_id && lease.instance_id == instance_id)
             .ok_or_else(|| {
                 CliError::Usage("NODE_DAEMON_GENERATION_FENCED: current lease is missing".into())
