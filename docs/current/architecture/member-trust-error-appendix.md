@@ -40,3 +40,4 @@ Protocol: `agentfirm-member-trust/1`
 | `GATE_WAIVER_UNAUTHORIZED` | Typed kernel rejection; inspect message, resource and current_version. | false unless the returned payload explicitly says otherwise |
 | `REPORT_EVIDENCE_MISSING` | Typed kernel rejection; inspect message, resource and current_version. | false unless the returned payload explicitly says otherwise |
 | `FAILURE_ANALYSIS_MISSING` | Typed kernel rejection; inspect message, resource and current_version. | false unless the returned payload explicitly says otherwise |
+| `MACHINE_LEASE_UNRESOLVED` | Typed kernel rejection; inspect message, resource and current_version. | false unless the returned payload explicitly says otherwise |

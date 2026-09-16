@@ -711,7 +711,9 @@ fn read_persisted_session_projection(
     let session: harness_core::agentfirm_api::AgentSession =
         serde_json::from_value(session_value.clone()).ok()?;
     let native = session.native_session_ref.as_ref()?;
-    let lease = match store.latest_node_daemon_lease(&team.node_id) {
+    // ADR 0075: an availability gate, not display — it decides whether the
+    // native-session read is offered. It reads the record that decides.
+    let lease = match store.current_authorized_machine_lease(&team.node_id) {
         Ok(Some(lease)) => lease,
         result => {
             return Some(json!({

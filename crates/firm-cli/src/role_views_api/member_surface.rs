@@ -323,13 +323,20 @@ pub(crate) fn operator_view(
             "OperatorView requires an exact machine-scoped Service authority".into(),
         ));
     }
-    let lease = store.latest_node_daemon_lease(node_id).map_err(|e| {
-        (
-            "500 Internal Server Error",
-            "ROLE_VIEW_BUILD_FAILED",
-            e.to_string(),
-        )
-    })?;
+    // ADR 0075: the OperatorView shows who owns this machine, so it asks the
+    // record that decides it. `current_machine_lease` rather than the fence
+    // form, because a pre-cutover Store must still render — the source travels
+    // with the lease and a legacy row is shown, never acted on.
+    let lease = store
+        .current_machine_lease(node_id)
+        .map(|resolved| resolved.map(|(lease, _)| lease))
+        .map_err(|e| {
+            (
+                "500 Internal Server Error",
+                "ROLE_VIEW_BUILD_FAILED",
+                e.to_string(),
+            )
+        })?;
     let node_revision = store
         .execution_nodes()
         .map_err(|e| {

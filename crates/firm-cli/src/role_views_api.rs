@@ -1372,8 +1372,14 @@ fn message_fabric_disabled(
     store: &HarnessStore,
     team: &AgentTeam,
 ) -> Option<String> {
+    // ADR 0075: this is not display — it decides whether canonical Message
+    // authoring is offered at all, and the fence it projects
+    // (`team_messaging.rs`, `node_team_commands.rs`) reads the node file. A
+    // projection that answers from the legacy rows would disagree with the
+    // fence it exists to explain. A legacy row resolves as `Err` here and so
+    // becomes "not current", which is the same answer the fence gives.
     let daemon_is_current = store
-        .latest_node_daemon_lease(&team.node_id)
+        .current_authorized_machine_lease(&team.node_id)
         .ok()
         .flatten()
         .is_some_and(|lease| {

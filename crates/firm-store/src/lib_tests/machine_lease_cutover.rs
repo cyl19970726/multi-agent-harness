@@ -272,26 +272,6 @@ fn no_production_decider_reads_the_legacy_lease_ledger_outside_the_named_exclusi
             "HTTP lease projection; displays pre-cutover rows by design",
         ),
         (
-            "crates/firm-cli/src/role_views_api.rs",
-            1,
-            "RoleView daemon summary; display only",
-        ),
-        (
-            "crates/firm-cli/src/role_views_api/member_surface.rs",
-            1,
-            "RoleView surface; display only",
-        ),
-        (
-            "crates/firm-cli/src/role_views_api/team_surface.rs",
-            2,
-            "RoleView surface; display only",
-        ),
-        (
-            "crates/firm-cli/src/role_views_api/workspace_surface.rs",
-            1,
-            "RoleView surface; display only",
-        ),
-        (
             "crates/firm-node-daemon/src/supervisor_daemon/machine_authority.rs",
             1,
             "the cutover mint: the first document must start above every generation any Space ever issued (ADR 0075 Migration 3); decides nothing and refuses nothing",

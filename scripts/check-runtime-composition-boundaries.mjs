@@ -603,7 +603,22 @@ if (!read(runtimeRecoveryCanonicalPath).includes("runtime_recovery_adapter::exec
     `${runtimeRecoveryCanonicalPath}: Runtime Recovery route bypasses its dedicated adapter`,
   );
 }
-const authorityWriterTokens = [
+// ADR 0075: the rule is unchanged — every machine-authority write lives in one
+// module and nowhere else — but the writers moved from the per-Space
+// `node_daemon_leases.jsonl` quartet to the one machine document. The legacy
+// quartet is listed here too, and now means something stronger: after the
+// cutover no production path outside firm-store may call it at all, including
+// the authority owner, because a second live authority record is the failure
+// ADR 0075 removes. The cancellable renewal went with the queue it protected —
+// the lease lock's only contenders are this daemon's own renewal and a rare
+// operator verb, each holding it for one ~350-byte atomic replace.
+const machineAuthorityWriterTokens = [
+  ".acquire_machine_lease(",
+  ".renew_machine_lease(",
+  ".drain_machine_lease(",
+  ".release_machine_lease(",
+];
+const retiredAuthorityWriterTokens = [
   ".acquire_node_daemon_lease(",
   ".renew_node_daemon_lease(",
   ".renew_node_daemon_lease_cancellable(",
@@ -612,20 +627,23 @@ const authorityWriterTokens = [
 ];
 for (const path of productionRustPaths) {
   const content = read(path);
-  for (const token of authorityWriterTokens) {
+  for (const token of machineAuthorityWriterTokens) {
     if (path !== machineAuthorityPath && content.includes(token)) {
       failures.push(
         `${path}: NodeDaemon machine authority writer escaped ${machineAuthorityPath}: ${token}`,
       );
     }
   }
+  for (const token of retiredAuthorityWriterTokens) {
+    if (content.includes(token)) {
+      failures.push(
+        `${path}: retired per-Space NodeDaemon lease writer ${token} — after ADR 0075 the machine lease is one document; use the ${machineAuthorityPath} machine-lease writers`,
+      );
+    }
+  }
 }
 const machineAuthority = read(machineAuthorityPath);
-// Keep both renewal entry points confined to the authority owner, but require
-// the production owner to use the cancellable renewal operation.
-for (const token of authorityWriterTokens.filter(
-  (token) => token !== ".renew_node_daemon_lease(",
-)) {
+for (const token of machineAuthorityWriterTokens) {
   if (!machineAuthority.includes(token)) {
     failures.push(`${machineAuthorityPath}: missing authority operation ${token}`);
   }
