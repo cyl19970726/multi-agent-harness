@@ -153,6 +153,33 @@ impl HarnessStore {
         }
     }
 
+    /// The node-file lease for call sites that carry their own refusal.
+    ///
+    /// `Ok(None)` means only one thing: this machine has no lease at all — the
+    /// benign absence several callers already handle. A lease that resolves
+    /// from a legacy Space row is an `Err`, never a `None`, because reading it
+    /// as "no daemon here" is exactly how a pre-cutover row would quietly stop
+    /// fencing anything.
+    ///
+    /// Callers that must have a lease use `authoritative_machine_lease` and get
+    /// the `AuthorizedMachineLease` newtype instead.
+    pub fn current_authorized_machine_lease(
+        &self,
+        node_id: &str,
+    ) -> StoreResult<Option<NodeDaemonLease>> {
+        match self.current_machine_lease(node_id)? {
+            Some((lease, source)) if source.authorizes_provider_effect() => Ok(Some(lease)),
+            Some((_, source)) => Err(machine_lease_unresolved(
+                node_id,
+                format!(
+                    "{MACHINE_LEASE_NOT_AUTHORITATIVE}: Node {node_id} resolved from {} and cannot authorize a provider effect; this Store predates the machine lease cutover",
+                    source.as_str()
+                ),
+            )),
+            None => Ok(None),
+        }
+    }
+
     /// Where this machine's lease document lives, for `daemon status`.
     pub fn machine_lease_path(&self, node_id: &str) -> StoreResult<PathBuf> {
         Ok(crate::node_lease_document::lease_document_path(
@@ -486,5 +513,37 @@ impl HarnessStore {
             now_unix_ms,
         );
         self.release_machine_lease(node_id, daemon_id, generation, instance_id)
+    }
+}
+
+impl HarnessStore {
+    /// Make the current machine lease look expired, the way wall-clock time
+    /// does to a crashed daemon that stopped renewing.
+    ///
+    /// There is deliberately no production writer for this: `expires` is
+    /// monotonic within a status, so nothing may shorten a live lease — that
+    /// guard is what bounds a backwards clock step. A fixture that needs an
+    /// expired predecessor is simulating *elapsed time*, not a write, so it
+    /// writes the document directly rather than being handed an API that would
+    /// undo the guard for everyone.
+    ///
+    /// Un-gated for the same reason as the seeders above: integration tests
+    /// under `tests/` link the non-test build.
+    #[doc(hidden)]
+    pub fn expire_machine_lease_for_test(&self, node_id: &str) -> StoreResult<NodeDaemonLease> {
+        use crate::node_lease_document::{lease_document_path, NodeDaemonLeaseDocument};
+        let node_home = self.node_home(node_id)?;
+        let mut document = read_lease_document(&node_home, node_id)?.ok_or_else(|| {
+            StoreError::Conflict(format!("no machine lease to expire for Node {node_id}"))
+        })?;
+        let now = crate::store_node_runtime::current_store_unix_ms();
+        document.lease.expires_unix_ms = now.saturating_sub(1);
+        document.lease.renewed_unix_ms = document.lease.expires_unix_ms;
+        let bytes = serde_json::to_vec(&NodeDaemonLeaseDocument::new(
+            document.lease.clone(),
+            document.owner_pid,
+        ))?;
+        std::fs::write(lease_document_path(&node_home), bytes)?;
+        Ok(document.lease)
     }
 }
