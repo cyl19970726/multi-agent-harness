@@ -72,6 +72,7 @@ fn runtime_adapter_cycle_terminal_mismatch_rejected_for_all_five_adapters() {
             native_cycle(input_id, Some(stale_terminal_id), terminal_ref),
             true,
             None,
+            &harness_runtime_contract::CycleEnding::Completed,
         ) {
             Ok(_) => panic!("{provider}: a mismatched terminal must not correlate"),
             Err(error) => error,
@@ -86,6 +87,7 @@ fn runtime_adapter_cycle_terminal_mismatch_rejected_for_all_five_adapters() {
             native_cycle(input_id, Some(input_id), terminal_ref),
             true,
             None,
+            &harness_runtime_contract::CycleEnding::Completed,
         )
         .unwrap_or_else(|error| panic!("{provider}: matching ids must correlate: {error}"));
     }

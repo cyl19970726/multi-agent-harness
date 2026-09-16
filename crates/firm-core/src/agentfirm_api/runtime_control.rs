@@ -287,6 +287,13 @@ pub struct ProviderCycleCorrelation {
     /// both read back as `None`; the key is omitted entirely when unset.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub interrupt_cause: Option<String>,
+    /// How the cycle ended, as one frozen value from the closed ADR 0076
+    /// table (for example `completed`, `empty_output`, `interrupted_by_host`,
+    /// `provider_failed:quota_exhausted`). Additive: absent on pre-ADR-0076
+    /// durable rows, which read back as `None`; the key is omitted entirely
+    /// when unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ending: Option<String>,
 }
 
 /// Durable machine-local command journal. The NodeDaemon records acceptance

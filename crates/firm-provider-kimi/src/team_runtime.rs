@@ -20,6 +20,8 @@ use harness_core::agentfirm_api::{
 };
 use serde_json::Value;
 
+use crate::KimiCycleFailure;
+
 use crate::{KimiAcpClient, PromptControl};
 use crate::{KimiError as CliError, KimiResult as CliResult};
 
@@ -52,6 +54,10 @@ pub struct KimiTeamRuntime<'a> {
     on_provider_request_written: ProviderRequestWrittenHandler<'a>,
     last_cycle_terminal: bool,
     last_cycle_cancelled: bool,
+    /// The ADR 0076 ending of the last cycle that ended in `Err`. Drained by
+    /// `TeamRuntimeAdapter::take_cycle_ending` and cleared at the start of
+    /// every cycle so a stale ending can never be attributed to a later one.
+    last_cycle_ending: Option<harness_runtime_contract::CycleEnding>,
 }
 
 impl<'a> KimiTeamRuntime<'a> {
@@ -78,7 +84,16 @@ impl<'a> KimiTeamRuntime<'a> {
             on_provider_request_written: Box::new(on_provider_request_written),
             last_cycle_terminal: true,
             last_cycle_cancelled: false,
+            last_cycle_ending: None,
         }
+    }
+
+    /// Record the ADR 0076 ending for this cycle and return the error
+    /// unchanged. Every `Err` leaving `run_cycle` goes through here, so the
+    /// shared loop always has a typed ending instead of an untyped catch-all.
+    fn fail(&mut self, failure: KimiCycleFailure, error: CliError) -> CliError {
+        self.last_cycle_ending = Some(failure.ending(&error.to_string()));
+        error
     }
 
     fn contract_preflight(
@@ -318,6 +333,7 @@ impl harness_runtime_contract::TeamRuntimeAdapter for KimiTeamRuntime<'_> {
 
         self.last_cycle_terminal = false;
         self.last_cycle_cancelled = false;
+        self.last_cycle_ending = None;
         let outcome = self.client.prompt(
             input,
             timeouts,
@@ -365,9 +381,18 @@ impl harness_runtime_contract::TeamRuntimeAdapter for KimiTeamRuntime<'_> {
                     Ok(PromptControl::Continue)
                 }
             },
-        )?;
+        );
+        let outcome = match outcome {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                // The ACP client already classified WHY it failed; the adapter
+                // only lifts that typed fact onto the cycle (ADR 0076).
+                let failure = self.client.last_prompt_failure();
+                return Err(self.fail(failure, error));
+            }
+        };
         if let Some(error) = control_error {
-            return Err(CliError::Usage(error));
+            return Err(self.fail(KimiCycleFailure::HostAborted, CliError::Usage(error)));
         }
         // Only the reviewed stop-reason vocabulary is a known semantic
         // failure. The client already verifies the exact prompt id; acceptance
@@ -378,19 +403,22 @@ impl harness_runtime_contract::TeamRuntimeAdapter for KimiTeamRuntime<'_> {
         );
         if let Some(provider_error) = outcome.provider_error.as_ref() {
             if !known_failure || accepted_receipt.is_none() {
-                return Err(CliError::Usage(format!(
-                    "KIMI_CYCLE_PROVIDER_ERROR: {provider_error}"
-                )));
+                let error = CliError::Usage(format!("KIMI_CYCLE_PROVIDER_ERROR: {provider_error}"));
+                return Err(self.fail(KimiCycleFailure::ProviderError, error));
             }
         }
-        let input_acceptance_receipt = accepted_receipt.ok_or_else(|| {
-            CliError::Usage("RUNTIME_COMMAND_RECOVERY_REQUIRED: Kimi cycle had no correlated input-acceptance receipt".to_string())
-        })?;
+        let Some(input_acceptance_receipt) = accepted_receipt else {
+            let error = CliError::Usage("RUNTIME_COMMAND_RECOVERY_REQUIRED: Kimi cycle had no correlated input-acceptance receipt".to_string());
+            return Err(self.fail(KimiCycleFailure::ProtocolViolation, error));
+        };
         if input_acceptance_receipt.response_id.as_deref()
             != Some(outcome.provider_input_id.as_str())
         {
-            return Err(CliError::Usage(
-                "KIMI_CYCLE_TERMINAL_MISMATCH: acceptance belongs to another prompt".into(),
+            return Err(self.fail(
+                KimiCycleFailure::TerminalMismatch,
+                CliError::Usage(
+                    "KIMI_CYCLE_TERMINAL_MISMATCH: acceptance belongs to another prompt".into(),
+                ),
             ));
         }
         let provider_terminal_failure =
@@ -401,6 +429,18 @@ impl harness_runtime_contract::TeamRuntimeAdapter for KimiTeamRuntime<'_> {
         self.last_cycle_terminal = true;
         self.last_cycle_cancelled =
             matches!(outcome.stop_reason.as_str(), "cancelled" | "canceled");
+        // ADR 0076 misalignment 1, applied to the fifth provider (review r1
+        // IP-1). `cancel_requested` is only ever true after the client wrote
+        // `session/cancel` — a failed write returns `Err` out of
+        // `drive_prompt`, so reaching here means the control CROSSED the
+        // provider boundary. Its receipt therefore succeeds on delivery,
+        // independently of the eventual stop reason: a Host Close or Interrupt
+        // that races a normally completed turn is still settled by that
+        // terminal, exactly as on Codex and Pi. Gating `success` on
+        // `last_cycle_cancelled` instead failed the whole member with
+        // "kimi control lacked verified terminal acknowledgement" whenever the
+        // turn finished on its own first. The stop reason stays on the
+        // receipt's `response_id` as native evidence.
         let control_receipts = if cancel_requested {
             vec![harness_runtime_contract::ControlTransportReceipt {
                 command: "abort".to_string(),
@@ -412,12 +452,16 @@ impl harness_runtime_contract::TeamRuntimeAdapter for KimiTeamRuntime<'_> {
                         .unwrap_or("kimi-acp-prompt"),
                     outcome.stop_reason
                 )),
-                success: self.last_cycle_cancelled,
+                success: true,
             }]
         } else {
             Vec::new()
         };
-        let process = self.client.observe_runtime()?;
+        let process = self.client.observe_runtime();
+        let process = match process {
+            Ok(process) => process,
+            Err(error) => return Err(self.fail(KimiCycleFailure::TransportLost, error)),
+        };
         let provider_input_id = outcome.provider_input_id;
         let exact_terminal_ref = format!(
             "kimi_acp.session_prompt:{provider_input_id}:stop_reason={}",
@@ -446,6 +490,10 @@ impl harness_runtime_contract::TeamRuntimeAdapter for KimiTeamRuntime<'_> {
                 settled_boundary_observed: process.settled_boundary_observed,
             },
         })
+    }
+
+    fn take_cycle_ending(&mut self) -> Option<harness_runtime_contract::CycleEnding> {
+        self.last_cycle_ending.take()
     }
 
     fn native_control<'b>(

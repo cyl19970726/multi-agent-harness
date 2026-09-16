@@ -45,6 +45,7 @@ pub enum CodexError {
 mod team_runtime;
 pub use team_runtime::*;
 mod compatibility;
+mod cycle_ending;
 mod descendant_threads;
 pub use compatibility::*;
 mod permission;
@@ -278,6 +279,27 @@ pub struct CodexAppServerClient {
     collaboration_mode: &'static str,
     shutdown_attempted: bool,
     shutdown_receipt: Option<CodexAppServerShutdownReceipt>,
+    last_rpc_failure: CodexRpcFailure,
+}
+
+/// Why the last blocking app-server RPC failed (ADR 0076).
+///
+/// `request_blocking` collapses three different facts into one message
+/// string, and a cycle ending must not be reconstructed by parsing that
+/// string: a deadline that expired, a dead transport and an app-server
+/// rejection are three different endings with different operator meanings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CodexRpcFailure {
+    /// The RPC was never answered within its deadline. On `turn/start` that
+    /// deadline IS `CycleTimeouts::input_acceptance`.
+    Timeout,
+    /// The app-server transport died before answering.
+    TransportLost,
+    /// The app-server answered with an error, or omitted a required field.
+    /// The conservative default: it never claims a bound that was not
+    /// reached.
+    #[default]
+    Rejected,
 }
 
 /// Process-local evidence returned by an explicit Team-member Close.
@@ -471,6 +493,7 @@ impl CodexAppServerClient {
             owned_process_group,
             stdin,
             next_request_id: 0,
+            last_rpc_failure: CodexRpcFailure::Rejected,
             pending,
             incoming,
             reader: Some(reader),
@@ -568,6 +591,12 @@ impl CodexAppServerClient {
             )));
         }
         Ok(())
+    }
+
+    /// Why the last blocking RPC failed. Read by the Team runtime to classify
+    /// a cycle ending without parsing the error message (ADR 0076).
+    pub fn last_rpc_failure(&self) -> CodexRpcFailure {
+        self.last_rpc_failure
     }
 
     pub fn start_turn(&mut self, text: &str, acceptance: Duration) -> CliResult<String> {
@@ -734,6 +763,10 @@ impl CodexAppServerClient {
         timeout: Duration,
     ) -> CliResult<serde_json::Value> {
         self.next_request_id += 1;
+        // Review r1 P3-6: until the frame is on the wire the conservative value
+        // is a lost transport. A broken pipe after the bytes reached the child
+        // is NOT a refused start, and only a refused start is replay-safe.
+        self.last_rpc_failure = CodexRpcFailure::TransportLost;
         let id = self.next_request_id;
         let (tx, rx) = channel();
         self.pending
@@ -741,14 +774,21 @@ impl CodexAppServerClient {
             .unwrap_or_else(|error| error.into_inner())
             .insert(id, tx);
         self.write(&serde_json::json!({"id": id, "method": method, "params": params}))?;
+        self.last_rpc_failure = CodexRpcFailure::Rejected;
         let frame = rx.recv_timeout(timeout).map_err(|error| {
             self.pending
                 .lock()
                 .unwrap_or_else(|lock_error| lock_error.into_inner())
                 .remove(&id);
             let failure = match error {
-                RecvTimeoutError::Timeout => "timed out",
-                RecvTimeoutError::Disconnected => "transport disconnected",
+                RecvTimeoutError::Timeout => {
+                    self.last_rpc_failure = CodexRpcFailure::Timeout;
+                    "timed out"
+                }
+                RecvTimeoutError::Disconnected => {
+                    self.last_rpc_failure = CodexRpcFailure::TransportLost;
+                    "transport disconnected"
+                }
             };
             CliError::Usage(format!(
                 "codex app-server {method} {failure}{}",

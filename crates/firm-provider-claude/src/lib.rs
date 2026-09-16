@@ -19,17 +19,21 @@ use serde_json::{json, Value};
 
 use harness_runtime_contract::{
     AdmissionDecision, CapabilityBinding, CapabilityStatus, ControlIntent, ControlRequest,
-    ControlTransportReceipt, CycleControl, CycleRuntimeObservation as CycleObservation,
-    CycleSettlement, CycleTimeouts, EffectInspection, EffectReceipt, ExecutionCycleOutcome,
-    InterruptCause, MemberRuntimeCloseReceipt, NativeControlPrimitive, ProviderControlAction,
-    ProviderControlPlan, ProviderNativeControl, ProviderTerminalFailure, QuiesceReceipt,
-    QuiesceReceiptBuilder, QuiesceStep, ReconcileReceipt, ReleaseReceipt, RuntimeAdapter,
-    RuntimeBindingFence, RuntimeContractError, RuntimeDescription, SemanticCapability,
-    TeamRuntimeAdapter,
+    ControlTransportReceipt, CycleControl, CycleEnding,
+    CycleRuntimeObservation as CycleObservation, CycleSettlement, CycleTimeouts, EffectInspection,
+    EffectReceipt, ExecutionCycleOutcome, InterruptCause, MemberRuntimeCloseReceipt,
+    NativeControlPrimitive, ProviderControlAction, ProviderControlPlan, ProviderFailureCode,
+    ProviderNativeControl, ProviderTerminalFailure, QuiesceReceipt, QuiesceReceiptBuilder,
+    QuiesceStep, ReconcileReceipt, ReleaseReceipt, RuntimeAdapter, RuntimeBindingFence,
+    RuntimeContractError, RuntimeDescription, SemanticCapability, TeamRuntimeAdapter,
+    TerminalUnobservedCode,
 };
 
 mod cycle_correlation;
 use cycle_correlation::cycle_ref;
+
+mod cycle_ending;
+pub(crate) use cycle_ending::ClaudeCycleFailure;
 
 mod capability_transport;
 mod compatibility;
@@ -367,6 +371,10 @@ impl TeamRuntimeAdapter for ClaudeTeamRuntime {
     ) -> CliResult<ExecutionCycleOutcome> {
         self.transport
             .run_cycle(input, timeouts, on_input_accepted, on_event, poll_control)
+    }
+
+    fn take_cycle_ending(&mut self) -> Option<CycleEnding> {
+        self.transport.last_cycle_ending.take()
     }
 
     fn native_control<'a>(

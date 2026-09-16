@@ -376,11 +376,39 @@ pub trait TeamRuntimeAdapter: RuntimeAdapter {
         on_event: &mut dyn FnMut(&serde_json::Value),
         poll_control: &mut dyn FnMut() -> CycleControl,
     ) -> Result<ExecutionCycleOutcome, Self::Error>;
-    /// Consume a diagnostic from the just-failed cycle. This is ephemeral
-    /// semantic evidence, never a runtime-idle or effect-settlement receipt.
-    /// Implementations must clear it before starting or rejecting another cycle.
-    fn take_cycle_terminal_failure(&mut self) -> Option<ProviderTerminalFailure> {
+    /// Consume the typed ending of the just-FAILED cycle (ADR 0076).
+    ///
+    /// An `Err` out of [`TeamRuntimeAdapter::run_cycle`] carries only a
+    /// free-form message, so without this the shared loop could record
+    /// nothing machine-readable about how the cycle ended. Every adapter
+    /// records exactly one [`crate::CycleEnding`] on every `Err` path and
+    /// drains it here; the `Ok` half of the table needs no adapter help,
+    /// because [`crate::CycleEnding::from_outcome`] derives it from the
+    /// outcome itself.
+    ///
+    /// This is ephemeral diagnostic evidence, never a runtime-idle or
+    /// effect-settlement receipt. Implementations must clear it before
+    /// starting or rejecting another cycle, so a stale ending can never be
+    /// attributed to a later cycle.
+    fn take_cycle_ending(&mut self) -> Option<crate::CycleEnding> {
         None
+    }
+    /// The provider's own structured terminal failure for the just-failed
+    /// cycle, derived from [`TeamRuntimeAdapter::take_cycle_ending`].
+    ///
+    /// Shared on purpose (ADR 0076): before the ending table exactly one
+    /// adapter implemented this, so `provider_status` was blank on four of
+    /// five providers. Do not override it — record the ending instead, and
+    /// every provider gets a structured status for free.
+    ///
+    /// Calling this CONSUMES the ending, because it drains
+    /// [`TeamRuntimeAdapter::take_cycle_ending`]: a caller that wants both must
+    /// take the ending once and derive the failure from it (review r1 P3-8).
+    /// The shared loop does exactly that; this method has no production caller.
+    fn take_cycle_terminal_failure(&mut self) -> Option<ProviderTerminalFailure> {
+        self.take_cycle_ending()
+            .as_ref()
+            .and_then(crate::CycleEnding::provider_terminal_failure)
     }
     fn native_control<'a>(
         close: &'a mut bool,

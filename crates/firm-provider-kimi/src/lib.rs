@@ -35,11 +35,13 @@
 
 mod capability_transport;
 mod compatibility;
+mod cycle_ending;
 mod host_runtime;
 mod permission;
 
 pub use capability_transport::*;
 pub use compatibility::*;
+pub(crate) use cycle_ending::KimiCycleFailure;
 pub use host_runtime::*;
 pub use permission::*;
 
@@ -215,6 +217,9 @@ pub struct KimiAcpClient {
     prompt_active: bool,
     settled_boundary_observed: bool,
     shutdown_receipt: Option<KimiAcpShutdownReceipt>,
+    /// Why the last `prompt` failed (ADR 0076), so the adapter classifies the
+    /// cycle ending from a typed fact instead of parsing the message.
+    last_prompt_failure: KimiCycleFailure,
 }
 
 impl KimiAcpClient {
@@ -292,6 +297,7 @@ impl KimiAcpClient {
             effective_effort: Some("max".to_string()),
             config_options: Vec::new(),
             provider_version: Some("0.36.1".to_string()),
+            last_prompt_failure: KimiCycleFailure::TransportLost,
             supports_session_close: true,
             prompt_active: false,
             settled_boundary_observed: true,
@@ -411,6 +417,7 @@ impl KimiAcpClient {
             effective_effort: None,
             config_options: Vec::new(),
             provider_version: None,
+            last_prompt_failure: KimiCycleFailure::TransportLost,
             supports_session_close: false,
             prompt_active: false,
             settled_boundary_observed: true,
@@ -730,16 +737,20 @@ impl KimiAcpClient {
         mut on_request_written: impl FnMut(&serde_json::Value) -> CliResult<()>,
         mut control: impl FnMut() -> CliResult<PromptControl>,
     ) -> CliResult<PromptOutcome> {
+        self.last_prompt_failure = KimiCycleFailure::TransportLost;
         self.ensure_transport_alive()?;
         if self.prompt_active {
+            self.last_prompt_failure = KimiCycleFailure::PromptAlreadyActive;
             return Err(CliError::Usage(
                 "kimi acp already has an active session/prompt".to_string(),
             ));
         }
-        let session_id = self
-            .session_id
-            .clone()
-            .ok_or_else(|| CliError::Usage("kimi acp session not established".to_string()))?;
+        let Some(session_id) = self.session_id.clone() else {
+            self.last_prompt_failure = KimiCycleFailure::SessionNotEstablished;
+            return Err(CliError::Usage(
+                "kimi acp session not established".to_string(),
+            ));
+        };
         self.prompt_active = true;
         self.settled_boundary_observed = false;
         let request = match self.request(
@@ -752,6 +763,7 @@ impl KimiAcpClient {
             Ok(request) => request,
             Err(error) => {
                 self.prompt_active = false;
+                self.last_prompt_failure = KimiCycleFailure::TransportLost;
                 return Err(error);
             }
         };
@@ -789,10 +801,12 @@ impl KimiAcpClient {
         control: &mut impl FnMut() -> CliResult<PromptControl>,
     ) -> CliResult<PromptOutcome> {
         let (prompt_id, response) = request;
-        let session_id = self
-            .session_id
-            .clone()
-            .ok_or_else(|| CliError::Usage("kimi acp session not established".to_string()))?;
+        let Some(session_id) = self.session_id.clone() else {
+            self.last_prompt_failure = KimiCycleFailure::SessionNotEstablished;
+            return Err(CliError::Usage(
+                "kimi acp session not established".to_string(),
+            ));
+        };
         let input_acceptance_limit = if timeouts.input_acceptance.is_zero() {
             Duration::from_secs(DEFAULT_PROMPT_IDLE_TIMEOUT_SECS)
         } else {
@@ -805,10 +819,15 @@ impl KimiAcpClient {
         let mut cancelled_at: Option<Instant> = None;
         loop {
             if cancelled_at.is_none() {
-                match control()? {
+                let requested = control().inspect_err(|_| {
+                    self.last_prompt_failure = KimiCycleFailure::HostAborted;
+                })?;
+                match requested {
                     PromptControl::Continue => {}
                     PromptControl::Cancel => {
-                        self.cancel()?;
+                        self.cancel().inspect_err(|_| {
+                            self.last_prompt_failure = KimiCycleFailure::TransportLost;
+                        })?;
                         cancelled_at = Some(Instant::now());
                     }
                 }
@@ -821,6 +840,7 @@ impl KimiAcpClient {
                 Ok(frame) => {
                     let mut outcome = prompt_outcome(&frame);
                     if frame.get("id").and_then(serde_json::Value::as_u64) != Some(prompt_id) {
+                        self.last_prompt_failure = KimiCycleFailure::TerminalMismatch;
                         return Err(CliError::Usage(format!(
                             "KIMI_CYCLE_TERMINAL_MISMATCH: prompt {prompt_id} received terminal frame {frame}"
                         )));
@@ -851,15 +871,21 @@ impl KimiAcpClient {
                         // Publish the receipt before handling the tail so tools
                         // invoked by this turn may immediately send a
                         // correlation-valid handoff or peer message.
-                        on_accepted(&provider_receipt_id)?;
+                        on_accepted(&provider_receipt_id).inspect_err(|_| {
+                            self.last_prompt_failure = KimiCycleFailure::HostAborted;
+                        })?;
                     }
                     for update in &tail {
-                        self.handle_incoming(update, on_update, on_request, on_request_written)?;
+                        self.handle_incoming(update, on_update, on_request, on_request_written)
+                            .inspect_err(|_| {
+                                self.last_prompt_failure = KimiCycleFailure::ProtocolViolation;
+                            })?;
                     }
                     return Ok(outcome);
                 }
                 Err(TryRecvError::Empty) => {}
                 Err(TryRecvError::Disconnected) => {
+                    self.last_prompt_failure = KimiCycleFailure::TransportLost;
                     return Err(self.session_ended_error("prompt"));
                 }
             }
@@ -873,7 +899,9 @@ impl KimiAcpClient {
                         // handling the frame so tools invoked by this turn can
                         // immediately send a correlation-valid handoff or peer
                         // message.
-                        on_accepted(&provider_receipt_id)?;
+                        on_accepted(&provider_receipt_id).inspect_err(|_| {
+                            self.last_prompt_failure = KimiCycleFailure::HostAborted;
+                        })?;
                         accepted = true;
                     }
                     // The reader multiplexes every ACP frame onto this
@@ -883,12 +911,16 @@ impl KimiAcpClient {
                     if active_session_activity(&frame, &session_id) {
                         last_activity = Instant::now();
                     }
-                    self.handle_incoming(&frame, on_update, on_request, on_request_written)?;
+                    self.handle_incoming(&frame, on_update, on_request, on_request_written)
+                        .inspect_err(|_| {
+                            self.last_prompt_failure = KimiCycleFailure::ProtocolViolation;
+                        })?;
                     continue;
                 }
                 Err(TryRecvError::Empty) => {}
                 Err(TryRecvError::Disconnected) => {
                     lock(&self.pending).remove(&prompt_id);
+                    self.last_prompt_failure = KimiCycleFailure::TransportLost;
                     return Err(self.session_ended_error("prompt"));
                 }
             }
@@ -897,6 +929,7 @@ impl KimiAcpClient {
                 if cancelled.elapsed() > timeouts.cancel_grace {
                     self.kill_quiet();
                     lock(&self.pending).remove(&prompt_id);
+                    self.last_prompt_failure = KimiCycleFailure::CancelGraceExpired;
                     return Err(CliError::Usage(format!(
                         "kimi acp prompt idle: session/cancel ignored for {}s; session killed{}",
                         timeouts.cancel_grace.as_secs(),
@@ -907,7 +940,9 @@ impl KimiAcpClient {
                 // I1/B4: the cancel strike exists only before acceptance
                 // evidence; after acceptance a silent tool interval is never
                 // an adapter-initiated interrupt.
-                self.cancel()?;
+                self.cancel().inspect_err(|_| {
+                    self.last_prompt_failure = KimiCycleFailure::TransportLost;
+                })?;
                 cancelled_at = Some(Instant::now());
             }
             std::thread::sleep(Duration::from_millis(10));
@@ -1178,6 +1213,12 @@ impl KimiAcpClient {
         if let Some(reader) = self.reader.take() {
             let _ = reader.join();
         }
+    }
+
+    /// Why the last `prompt` failed. Read by the Team runtime to classify a
+    /// cycle ending without parsing the error message (ADR 0076).
+    pub(crate) fn last_prompt_failure(&self) -> KimiCycleFailure {
+        self.last_prompt_failure
     }
 
     fn session_ended_error(&self, what: &str) -> CliError {

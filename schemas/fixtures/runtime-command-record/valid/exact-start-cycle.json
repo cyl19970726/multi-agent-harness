@@ -49,7 +49,8 @@
     "exact_terminal_ref": "provider-terminal-1",
     "native_session_id": "native-session-1",
     "agent_session_generation": 3,
-    "provider_attempt": 1
+    "provider_attempt": 1,
+    "ending": "completed"
   },
   "version": 1,
   "created_at": "unix-ms:1",
