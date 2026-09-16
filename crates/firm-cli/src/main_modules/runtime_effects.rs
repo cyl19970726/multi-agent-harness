@@ -79,6 +79,28 @@ pub(super) fn member_supervisor_test_idle_grace() -> Option<Duration> {
         .map(Duration::from_millis)
 }
 
+/// The wake policy the member loop actually runs under.
+///
+/// `effective_wake_policy()` stays the single non-configurable source (a
+/// per-run override would silently desync the `team-run recover` classifier
+/// that reads the same threshold). This adds exactly one TEST-ONLY seam, the
+/// same shape and naming as `FIRM_MEMBER_SUPERVISOR_TEST_IDLE_MS` above: ADR
+/// 0077's informational delivery interval is 120 s in production, which no
+/// deterministic test can wait for. Nothing in production sets it.
+pub(super) fn member_wake_policy() -> crate::supervisor_wake::WakePolicy {
+    let mut policy = crate::supervisor_wake::effective_wake_policy();
+    if let Some(ms) = informational_idle_delivery_test_override() {
+        policy.informational_idle_delivery_ms = ms;
+    }
+    policy
+}
+
+fn informational_idle_delivery_test_override() -> Option<u64> {
+    std::env::var("FIRM_TEST_INFORMATIONAL_IDLE_DELIVERY_MS")
+        .ok()
+        .and_then(|raw| raw.parse::<u64>().ok())
+}
+
 pub(super) static NATIVE_SESSION_WAKE_TOKEN: OnceLock<String> = OnceLock::new();
 
 /// Process-local control plane for provider sessions started by `serve` or the

@@ -311,11 +311,30 @@ Message, sequence, or delivery authority.
 ### Managed message boundaries
 
 Wake intent and cycle context are separate. A queued `response_required`
-Message can wake an eligible idle managed member; informational mail alone
-cannot. Once another ordinary cycle is selected (Work, continuation,
-acceptance, Host attention, or Messages), its input also includes the queued
-Messages successfully claimed for that input boundary, including informational
-mail. The same canonical claim and exact Session/NodeDaemon fences apply.
+Message wakes an eligible idle managed member at once; informational mail does
+not wake one on its own. Once another ordinary cycle is selected (Work,
+continuation, acceptance, Host attention, or Messages), its input also includes
+the queued Messages successfully claimed for that input boundary, including
+informational mail. The same canonical claim and exact Session/NodeDaemon
+fences apply.
+
+**The guarantee (ADR 0077).** An informational Message is delivered at the next
+cycle boundary or, when the recipient has been idle with no other reason to run
+a cycle for `WakePolicy.informational_idle_delivery_ms` (120 s, not
+configurable), on a dedicated Messages boundary of its own. Before this,
+informational mail had a delivery *opportunity* conditional on unrelated work
+arriving, not a guarantee: a member idle with no Work is never woken and so
+never folds anything in, and in the S1 dogfood 63 of 111 authored Messages
+never reached a provider, 60 of them informational.
+
+The idle arm sits below every wake predicate that already has a reason to run a
+cycle — such a cycle carries the mail for free — and above `Sleep`, which is
+the state the mail was stranded in. Worst-case latency is stated honestly as
+the interval plus one backoff tick: the predicate is a timed poll and idle
+backoff reaches 30 s, so at worst 150 s. The idle clock is the durable
+`MemberRun.last_event_at`, not a process-local counter, so a daemon generation
+change cannot reset it and hide waiting mail; an unknown stamp never fires the
+arm.
 Claims are individually fenced, not an atomic freeze of the whole mailbox.
 Later arrivals stay queued; a failed or uncertain claim follows the existing
 reconciliation path and cannot be represented as accepted input.
