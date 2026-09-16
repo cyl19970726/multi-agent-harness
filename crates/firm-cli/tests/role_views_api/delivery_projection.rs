@@ -203,7 +203,7 @@ fn delivery_projection_is_consistent_correlated_and_host_mode_is_labeled() {
 
     // Drive the Work-linked delivery to its authoritative acknowledged state.
     let lease = store
-        .latest_node_daemon_lease(&node_id)
+        .current_authorized_machine_lease(&node_id)
         .expect("daemon lease")
         .expect("current daemon lease");
     let linked_delivery = store

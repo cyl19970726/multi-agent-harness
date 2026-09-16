@@ -198,7 +198,7 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
         .and_then(|run| run["id"].as_str())
         .expect("sibling member run id");
     let daemon = store
-        .latest_node_daemon_lease(node_id)
+        .current_authorized_machine_lease(node_id)
         .expect("NodeDaemon lease")
         .expect("active NodeDaemon lease");
     store

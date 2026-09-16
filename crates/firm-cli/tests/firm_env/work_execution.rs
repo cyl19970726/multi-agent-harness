@@ -60,7 +60,7 @@ pub fn assign_work_for_member_run(
     }
     let now = unix_ms();
     let daemon = store
-        .latest_node_daemon_lease(&team_run.execution_node_id)
+        .current_authorized_machine_lease(&team_run.execution_node_id)
         .expect("read fixture NodeDaemon lease")
         .unwrap_or_else(|| {
             store

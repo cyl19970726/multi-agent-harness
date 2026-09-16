@@ -243,7 +243,7 @@ fn stop_daemon(
 ) {
     let store = HarnessStore::new(home.spaces_dir().join(&fixture.execution_space_id));
     let generation = store
-        .latest_node_daemon_lease(&fixture.node_id)
+        .current_authorized_machine_lease(&fixture.node_id)
         .expect("NodeDaemon lease read")
         .expect("live NodeDaemon lease")
         .generation;

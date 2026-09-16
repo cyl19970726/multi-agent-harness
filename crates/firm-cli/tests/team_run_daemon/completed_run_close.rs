@@ -354,7 +354,7 @@ fn completed_run_close_after_kill_requires_predecessor_recovery() {
     let expiry_deadline = Instant::now() + Duration::from_secs(40);
     loop {
         let expired = store
-            .latest_node_daemon_lease(&fixture.node_id)
+            .current_authorized_machine_lease(&fixture.node_id)
             .expect("read NodeDaemon lease")
             .is_some_and(|lease| {
                 lease.expires_unix_ms

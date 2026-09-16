@@ -127,7 +127,7 @@ fn operator_eligible_daemon_and_server_probed_admission_are_real_and_fail_closed
     let release_deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     loop {
         if store
-            .latest_node_daemon_lease(node_id)
+            .current_authorized_machine_lease(node_id)
             .expect("stopped daemon lease")
             .is_some_and(|lease| lease.status == harness_core::NodeDaemonLeaseStatus::Released)
         {
@@ -191,7 +191,7 @@ fn operator_eligible_daemon_and_server_probed_admission_are_real_and_fail_closed
     assert_eq!(status, 200, "predecessor recovery: {recovered}");
     assert_eq!(
         store
-            .latest_node_daemon_lease(node_id)
+            .current_authorized_machine_lease(node_id)
             .expect("recovered lease")
             .expect("lease row")
             .status,

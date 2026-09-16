@@ -272,7 +272,7 @@ fn record_provider_received_work(
         .find(|run| run.id == run_id)
         .expect("TeamRun");
     let daemon = store
-        .latest_node_daemon_lease(&team_run.execution_node_id)
+        .current_authorized_machine_lease(&team_run.execution_node_id)
         .expect("NodeDaemon lease")
         .expect("fixture NodeDaemon");
     let binding = store
@@ -771,7 +771,7 @@ fi
         .find(|run| run.id == run_id)
         .expect("TeamRun");
     let daemon = store
-        .latest_node_daemon_lease(&team_run.execution_node_id)
+        .current_authorized_machine_lease(&team_run.execution_node_id)
         .expect("NodeDaemon lease")
         .expect("fixture NodeDaemon");
     let binding = store
