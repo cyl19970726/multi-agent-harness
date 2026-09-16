@@ -707,7 +707,7 @@ fn stale_socket_with_live_lease_is_not_reclaimed() {
         .unwrap()
         .as_millis() as u64;
     store
-        .acquire_node_daemon_lease(
+        .seed_machine_authority_for_test(
             &fixture.node_id,
             "node-daemon:previous-owner",
             "previous-instance",

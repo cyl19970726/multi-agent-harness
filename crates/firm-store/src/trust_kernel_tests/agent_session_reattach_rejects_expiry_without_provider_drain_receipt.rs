@@ -32,6 +32,13 @@ fn agent_session_reattach_rejects_expiry_without_provider_drain_receipt() {
         )
         .unwrap();
     let after_expiry = current_unix_ms() + 61_000;
+    // Elapsed time, not a caller-supplied `now`: after ADR 0075 the machine
+    // lease writer samples its own clock under the lease lock, so a caller can
+    // no longer hand it a future instant and have the lease read as expired.
+    // The document is aged directly, exactly as wall-clock time would age it.
+    store
+        .expire_machine_lease_for_test(&target.node_id)
+        .expect("age the machine lease past its expiry");
     let operations_before = store.canonical_operations().unwrap();
     let foreign_error = store
         .seed_machine_authority_for_test(

@@ -201,7 +201,7 @@ pub(super) fn drain_fixture_with_pi(label: &str, pi_member: bool) -> DrainFixtur
 
     let daemon_id = format!("node-daemon:{node_id}");
     let lease = store
-        .acquire_node_daemon_lease(
+        .seed_machine_authority_for_test(
             &node_id,
             &daemon_id,
             "drain-instance",
@@ -388,7 +388,7 @@ impl DrainFixture {
     pub(super) fn readopt(&self) -> u64 {
         let successor = self
             .store
-            .acquire_node_daemon_lease(
+            .seed_machine_authority_for_test(
                 &self.node_id,
                 self.daemon.daemon_id(),
                 "drain-instance-2",

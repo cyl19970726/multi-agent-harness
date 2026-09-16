@@ -356,7 +356,7 @@ fn member_role_action_capability_binds_sender_to_live_supervisor_identity() {
         .expect("read NodeDaemon lease")
         .expect("active NodeDaemon lease");
     store
-        .drain_node_daemon_lease(
+        .drain_machine_authority_for_test(
             &active_daemon.node_id,
             &active_daemon.daemon_id,
             active_daemon.generation,

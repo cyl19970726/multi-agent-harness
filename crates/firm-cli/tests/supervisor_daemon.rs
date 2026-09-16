@@ -49,7 +49,7 @@ fn seed_draining_predecessor(home: &TempHome, node_id: &str) {
     let store = HarnessStore::new(home.spaces_dir().join(current_space_id(home)));
     let now = firm_env::unix_ms();
     let lease = store
-        .acquire_node_daemon_lease(
+        .seed_machine_authority_for_test(
             node_id,
             "dead-predecessor",
             "dead-predecessor-instance",
@@ -58,7 +58,7 @@ fn seed_draining_predecessor(home: &TempHome, node_id: &str) {
         )
         .expect("acquire predecessor lease");
     let draining = store
-        .drain_node_daemon_lease(
+        .drain_machine_authority_for_test(
             node_id,
             &lease.daemon_id,
             lease.generation,

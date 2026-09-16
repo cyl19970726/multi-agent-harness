@@ -143,7 +143,7 @@ fn completed_run_coordination_close_newer_daemon_generation_is_the_evidence() {
         .expect("release gen-1 Supervisor lease");
     let run = latest_team_run(&store, &team_run_id).expect("TeamRun");
     store
-        .release_node_daemon_lease(
+        .release_machine_authority_for_test(
             &run.execution_node_id,
             &lease.node_daemon_id,
             lease.node_daemon_generation,
@@ -152,7 +152,7 @@ fn completed_run_coordination_close_newer_daemon_generation_is_the_evidence() {
         )
         .expect("release gen-1 NodeDaemon lease");
     let daemon_gen2 = store
-        .acquire_node_daemon_lease(
+        .seed_machine_authority_for_test(
             &run.execution_node_id,
             &lease.node_daemon_id,
             "test-node-daemon-instance-2",
@@ -296,7 +296,7 @@ fn completed_run_close_rechecks_authority_after_cli_proof() {
             DetachedRecoveryCloseMode::CompletedRunMember,
             |_| {
                 if parent {
-                    store.drain_node_daemon_lease(
+                    store.drain_machine_authority_for_test(
                         &lease.node_id,
                         &lease.node_daemon_id,
                         lease.node_daemon_generation,

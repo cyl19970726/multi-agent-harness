@@ -49,7 +49,7 @@ impl TestSupervisorLeaseExt for HarnessStore {
             {
                 lease
             }
-            _ => self.acquire_node_daemon_lease(
+            _ => self.seed_machine_authority_for_test(
                 &run.execution_node_id,
                 "test-node-daemon",
                 "test-node-daemon-instance",
@@ -568,7 +568,7 @@ impl PeerMessagingFixture {
             )
             .expect("register Node project");
         store
-            .acquire_node_daemon_lease(
+            .seed_machine_authority_for_test(
                 &node_id,
                 "daemon-1",
                 "instance-1",

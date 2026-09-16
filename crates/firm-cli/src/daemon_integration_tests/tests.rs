@@ -89,7 +89,7 @@ fn unreadable_held_space_latches_only_after_confirmed_deadline() {
         )
         .expect("register healthy test project");
     let lease = store
-        .acquire_node_daemon_lease(
+        .seed_machine_authority_for_test(
             NODE_ID,
             &format!("node-daemon:{NODE_ID}"),
             "parallel-refresh-instance",
@@ -284,7 +284,7 @@ fn authority_bundle_rolls_back_partial_acquisition_until_every_predecessor_is_re
     }
     let blocked_store = HarnessStore::new(spaces[1].store_root.clone());
     blocked_store
-        .acquire_node_daemon_lease(NODE_ID, "predecessor", "crashed-instance", 1, 1)
+        .seed_machine_authority_for_test(NODE_ID, "predecessor", "crashed-instance", 1, 1)
         .expect("create expired unsettled predecessor");
 
     let daemon = TestDaemon::new(TestDaemonConfig {
@@ -319,7 +319,7 @@ fn authority_bundle_rolls_back_partial_acquisition_until_every_predecessor_is_re
     }
 
     blocked_store
-        .release_node_daemon_lease(
+        .release_machine_authority_for_test(
             NODE_ID,
             "predecessor",
             1,
@@ -759,7 +759,7 @@ fn shutdown_renews_node_authority_until_accepted_worker_finishes() {
         )
         .expect("register test Node project");
     let lease = store
-        .acquire_node_daemon_lease(
+        .seed_machine_authority_for_test(
             NODE_ID,
             &format!("node-daemon:{NODE_ID}"),
             "test-instance",
@@ -853,7 +853,7 @@ fn shutdown_renews_node_authority_until_accepted_worker_finishes() {
         std::thread::sleep(Duration::from_millis(1_600));
         assert!(!server.is_finished(), "daemon still drains accepted worker");
         let during_drain = store
-            .latest_node_daemon_lease(NODE_ID)
+            .current_authorized_machine_lease(NODE_ID)
             .expect("read lease during drain")
             .expect("lease remains present");
         assert_eq!(
@@ -877,7 +877,7 @@ fn shutdown_renews_node_authority_until_accepted_worker_finishes() {
     });
 
     let released = store
-        .latest_node_daemon_lease(NODE_ID)
+        .current_authorized_machine_lease(NODE_ID)
         .expect("read released lease")
         .expect("released lease remains auditable");
     assert_eq!(
@@ -889,7 +889,7 @@ fn shutdown_renews_node_authority_until_accepted_worker_finishes() {
     // prove completion. Shutdown may fence it as Draining, but must not mint
     // the Released receipt that would authorize another successor.
     let failed_lease = store
-        .acquire_node_daemon_lease(
+        .seed_machine_authority_for_test(
             NODE_ID,
             &format!("node-daemon:{NODE_ID}"),
             "test-failure-instance",
@@ -992,7 +992,7 @@ fn shutdown_renews_node_authority_until_accepted_worker_finishes() {
         );
     });
     let not_released = store
-        .latest_node_daemon_lease(NODE_ID)
+        .current_authorized_machine_lease(NODE_ID)
         .expect("read failed generation")
         .expect("failed generation remains auditable");
     assert_eq!(not_released.generation, failed_lease.generation);

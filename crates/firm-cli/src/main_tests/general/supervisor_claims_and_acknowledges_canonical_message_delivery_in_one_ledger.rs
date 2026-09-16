@@ -476,7 +476,7 @@ fn supervisor_claims_and_acknowledges_canonical_message_delivery_in_one_ledger()
         .expect("read NodeDaemon lease")
         .expect("NodeDaemon lease exists");
     store
-        .drain_node_daemon_lease(
+        .drain_machine_authority_for_test(
             &node_lease.node_id,
             &node_lease.daemon_id,
             node_lease.generation,

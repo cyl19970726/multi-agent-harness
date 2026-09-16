@@ -286,7 +286,7 @@ fn every_start_path_store_conflict_is_typed_and_records_no_hold() {
     // acquisition lose before any thread is spawned.
     let node_lease = fixture
         .store
-        .acquire_node_daemon_lease(
+        .seed_machine_authority_for_test(
             &run.execution_node_id,
             &format!("node-daemon:{}", run.execution_node_id),
             "conflict-test-instance",

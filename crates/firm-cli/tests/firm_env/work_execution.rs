@@ -64,7 +64,7 @@ pub fn assign_work_for_member_run(
         .expect("read fixture NodeDaemon lease")
         .unwrap_or_else(|| {
             store
-                .acquire_node_daemon_lease(
+                .seed_machine_authority_for_test(
                     &team_run.execution_node_id,
                     "test-node-daemon",
                     "test-node-daemon-instance",

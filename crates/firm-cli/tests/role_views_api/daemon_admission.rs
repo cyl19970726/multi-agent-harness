@@ -141,7 +141,7 @@ fn operator_eligible_daemon_and_server_probed_admission_are_real_and_fail_closed
     }
     let dead_instance_id = format!("2147483647:{}:dead-daemon", unix_ms());
     let dead_lease = store
-        .acquire_node_daemon_lease(node_id, "dead-daemon", &dead_instance_id, unix_ms(), 1)
+        .seed_machine_authority_for_test(node_id, "dead-daemon", &dead_instance_id, unix_ms(), 1)
         .expect("expired predecessor fixture lease");
     std::thread::sleep(std::time::Duration::from_millis(5));
     let (status, recovery_view) =
