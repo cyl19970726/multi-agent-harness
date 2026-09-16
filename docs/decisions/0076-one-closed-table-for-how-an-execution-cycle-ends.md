@@ -249,6 +249,31 @@ they ended. Pre-ADR-0076 rows carry no key and read back as `None`.
   `decide_team_round` derives zero output from the ending rather than re-deriving it from
   text, so the same observable fact can no longer be recorded two ways.
 
+### The classification is gated, not just tested
+
+`scripts/check-cycle-ending-classification.mjs` (in `pnpm check` and
+`pnpm check:fast`) walks every cycle body the way the X1a review had to by hand:
+each entry point is located by signature, its body brace-matched to its exact
+closing brace, comments and string literals stripped, and every `?` and
+`return Err(` reported with the statement it terminates and a stated reason.
+Ten bodies, 91 sites, zero unclassified at this revision.
+
+It is a `scripts/` gate rather than a Rust test because it is a cross-crate
+source-structure assertion over five provider crates — the same shape as the
+provider-runtime-package, work-kernel, runtime-composition, node-daemon and
+native-session gates. A Rust test would have to live in one crate and read four
+siblings' sources.
+
+`--self-test` is the negative control, and building it found three ways the
+analyser could have passed the very defect it exists to catch: treating an
+earlier `classify(...)` as covering later sites, treating the per-cycle
+`last_cycle_ending = None` RESET as a classification, and — the one that
+actually mattered — never detecting `let Some(x) = f()? else {` as a site at
+all, then swallowing its `else` block into the statement so a classified call
+inside it classified the bare `?` above. Each is now a fixture the analyser must
+reject, and the gate was red-verified against both real r1 sites (deepseek
+`receive_event`, codex `handle_provider_request`) before being wired in.
+
 ## X1b contract trim
 
 Writing the closed table made three contract members visibly dead. Each is deleted here with
