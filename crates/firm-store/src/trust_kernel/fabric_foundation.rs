@@ -51,15 +51,25 @@ impl HarnessStore {
                 None,
             ));
         }
-        let lease = self.latest_node_daemon_lease(node_id)?.ok_or_else(|| {
-            trust_error(
-                TrustErrorCode::SupervisorGenerationFenced,
-                "NodeDaemon lease is missing",
-                resource_kind,
-                resource_id,
-                None,
-            )
-        })?;
+        // ADR 0075: the node file is the machine authority. `LegacySpaceRow`
+        // cannot reach here — `authoritative_machine_lease` returns the
+        // `AuthorizedMachineLease` newtype only from the `NodeFile` arm, so a
+        // pre-cutover Store is refused rather than admitted on a stale row.
+        let lease = self
+            .authoritative_machine_lease(node_id)
+            .map_err(|error| {
+                trust_error(
+                    TrustErrorCode::MachineLeaseUnresolved,
+                    format!(
+                        "NodeDaemon lease is not authoritative: {}",
+                        HarnessStore::machine_lease_refusal_reason(&error)
+                    ),
+                    resource_kind,
+                    resource_id,
+                    None,
+                )
+            })?
+            .into_lease();
         let registered = self
             .latest_node_project_registrations()?
             .iter()
@@ -114,15 +124,21 @@ impl HarnessStore {
                 None,
             ));
         }
-        let lease = self.latest_node_daemon_lease(node_id)?.ok_or_else(|| {
-            trust_error(
-                TrustErrorCode::SupervisorGenerationFenced,
-                "NodeDaemon settlement lease is missing",
-                resource_kind,
-                resource_id,
-                None,
-            )
-        })?;
+        let lease = self
+            .authoritative_machine_lease(node_id)
+            .map_err(|error| {
+                trust_error(
+                    TrustErrorCode::MachineLeaseUnresolved,
+                    format!(
+                        "NodeDaemon settlement lease is not authoritative: {}",
+                        HarnessStore::machine_lease_refusal_reason(&error)
+                    ),
+                    resource_kind,
+                    resource_id,
+                    None,
+                )
+            })?
+            .into_lease();
         if lease.daemon_id != daemon_id
             || lease.generation != daemon_generation
             || !matches!(

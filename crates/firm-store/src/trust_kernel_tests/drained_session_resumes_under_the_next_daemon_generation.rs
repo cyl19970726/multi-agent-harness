@@ -121,10 +121,16 @@ fn drained_session_resumes_under_the_next_daemon_generation() {
     // Predecessor settlement, then the successor generation.
     let drain_time = current_unix_ms();
     store
-        .release_node_daemon_lease(&mid_turn.node_id, "daemon-1", 1, "instance-1", drain_time)
+        .release_machine_authority_for_test(
+            &mid_turn.node_id,
+            "daemon-1",
+            1,
+            "instance-1",
+            drain_time,
+        )
         .expect("the drained daemon releases its own settled lease");
     let successor = store
-        .acquire_node_daemon_lease(
+        .seed_machine_authority_for_test(
             &mid_turn.node_id,
             "daemon-2",
             "instance-2",

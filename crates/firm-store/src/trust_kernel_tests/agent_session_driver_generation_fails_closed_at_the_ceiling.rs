@@ -29,13 +29,13 @@ fn agent_session_driver_generation_fails_closed_at_the_ceiling() {
 
     let now = current_unix_ms();
     store
-        .drain_node_daemon_lease(&target.node_id, "daemon-1", 1, "instance-1", now, 60_000)
+        .drain_machine_authority_for_test(&target.node_id, "daemon-1", 1, "instance-1", now, 60_000)
         .unwrap();
     store
-        .release_node_daemon_lease(&target.node_id, "daemon-1", 1, "instance-1", now + 1)
+        .release_machine_authority_for_test(&target.node_id, "daemon-1", 1, "instance-1", now + 1)
         .unwrap();
     let successor = store
-        .acquire_node_daemon_lease(&target.node_id, "daemon-2", "instance-2", now + 2, 60_000)
+        .seed_machine_authority_for_test(&target.node_id, "daemon-2", "instance-2", now + 2, 60_000)
         .unwrap();
 
     let reattach_context = MutationContext {

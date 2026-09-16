@@ -35,7 +35,7 @@ pub(super) fn start_claimed_work_for_test(
         .is_none()
     {
         store
-            .acquire_node_daemon_lease(
+            .seed_machine_authority_for_test(
                 &run.execution_node_id,
                 "test-node-daemon",
                 "test-node-daemon-instance",

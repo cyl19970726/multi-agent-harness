@@ -120,17 +120,20 @@ impl HarnessStore {
                 "TEAM_SUPERVISOR_LEASE_LOST: TeamRun {team_run_id} is not owned by {supervisor_id} generation {supervisor_generation}"
             )));
         }
-        let parent = latest_by_id(
-            self.read_jsonl::<NodeDaemonLease>("node_daemon_leases.jsonl")?,
-            |parent| parent.node_id.clone(),
-        )
-        .remove(&lease.node_id)
-        .ok_or_else(|| {
-            StoreError::Conflict(format!(
-                "TEAM_SUPERVISOR_PARENT_FENCED: Node {} has no active parent",
-                lease.node_id
-            ))
-        })?;
+        // ADR 0075 Rule-2 hazard: this runs while the Space write lock is
+        // held, so the parent must be resolved by a LOCK-FREE read of the node
+        // file. `authoritative_machine_lease` takes no lock; if it ever did,
+        // the debug lock registry panics here rather than deadlocking.
+        let parent = self
+            .authoritative_machine_lease(&lease.node_id)
+            .map_err(|error| {
+                StoreError::Conflict(format!(
+                    "TEAM_SUPERVISOR_PARENT_FENCED: Node {} has no authoritative parent: {}",
+                    lease.node_id,
+                    HarnessStore::machine_lease_refusal_reason(&error)
+                ))
+            })?
+            .into_lease();
         if parent.status != NodeDaemonLeaseStatus::Active
             || parent.daemon_id != lease.node_daemon_id
             || parent.generation != lease.node_daemon_generation
@@ -559,16 +562,16 @@ impl HarnessStore {
                 "PROJECT_NOT_REGISTERED_ON_NODE: expected one active registration for TeamRun {team_run_id} in Execution Space {execution_space_id}, found {registrations}"
             )));
         }
-        let parent = latest_by_id(
-            self.read_jsonl::<NodeDaemonLease>("node_daemon_leases.jsonl")?,
-            |lease| lease.node_id.clone(),
-        )
-        .remove(node_id)
-        .ok_or_else(|| {
-            StoreError::Conflict(format!(
-                "TEAM_SUPERVISOR_PARENT_FENCED: Node {node_id} has no NodeDaemon lease"
-            ))
-        })?;
+        // Same Rule-2 hazard: Space write lock held, node file read lock-free.
+        let parent = self
+            .authoritative_machine_lease(node_id)
+            .map_err(|error| {
+                StoreError::Conflict(format!(
+                    "TEAM_SUPERVISOR_PARENT_FENCED: Node {node_id} has no authoritative NodeDaemon lease: {}",
+                    HarnessStore::machine_lease_refusal_reason(&error)
+                ))
+            })?
+            .into_lease();
         if parent.status != NodeDaemonLeaseStatus::Active
             || parent.daemon_id != node_daemon_id
             || parent.generation != node_daemon_generation
@@ -693,17 +696,20 @@ impl HarnessStore {
                 "Supervisor lease for team run {team_run_id} is no longer owned by {supervisor_id} generation {generation}"
             )));
         }
-        let parent = latest_by_id(
-            self.read_jsonl::<NodeDaemonLease>("node_daemon_leases.jsonl")?,
-            |parent| parent.node_id.clone(),
-        )
-        .remove(&lease.node_id)
-        .ok_or_else(|| {
-            StoreError::Conflict(format!(
-                "TEAM_SUPERVISOR_PARENT_FENCED: Node {} has no active parent",
-                lease.node_id
-            ))
-        })?;
+        // ADR 0075 Rule-2 hazard: this runs while the Space write lock is
+        // held, so the parent must be resolved by a LOCK-FREE read of the node
+        // file. `authoritative_machine_lease` takes no lock; if it ever did,
+        // the debug lock registry panics here rather than deadlocking.
+        let parent = self
+            .authoritative_machine_lease(&lease.node_id)
+            .map_err(|error| {
+                StoreError::Conflict(format!(
+                    "TEAM_SUPERVISOR_PARENT_FENCED: Node {} has no authoritative parent: {}",
+                    lease.node_id,
+                    HarnessStore::machine_lease_refusal_reason(&error)
+                ))
+            })?
+            .into_lease();
         // Reuse the existing latest-per-run retention rule on every heartbeat.
         // Otherwise one long-lived generation grows the fresh 20 Hz lease
         // reader's window forever. Recheck the clock after this I/O as well.

@@ -6,7 +6,7 @@ fn supervisor_lease_rejects_caller_selected_foreign_execution_space_without_writ
     let store = HarnessStore::new(&root);
     seed_lease_run(&store, "run-a");
     let parent = store
-        .acquire_node_daemon_lease(
+        .seed_machine_authority_for_test(
             "00000000-0000-4000-8000-000000000001",
             "daemon-test",
             "instance-test",

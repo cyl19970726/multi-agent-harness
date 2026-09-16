@@ -37,12 +37,15 @@ impl HarnessStore {
                     .into(),
             ));
         }
-        let lease = latest_by_id(
-            self.read_jsonl::<NodeDaemonLease>("node_daemon_leases.jsonl")?,
-            |lease| lease.node_id.clone(),
-        )
-        .remove(node_id)
-        .ok_or_else(|| StoreError::Conflict(format!("NODE_DAEMON_GENERATION_FENCED: {node_id}")))?;
+        let lease = self
+            .authoritative_machine_lease(node_id)
+            .map_err(|error| {
+                StoreError::Conflict(format!(
+                    "NODE_DAEMON_GENERATION_FENCED: {node_id} has no authoritative machine lease: {}",
+                    HarnessStore::machine_lease_refusal_reason(&error)
+                ))
+            })?
+            .into_lease();
         if lease.daemon_id != daemon_id
             || lease.generation != generation
             || lease.instance_id != instance_id

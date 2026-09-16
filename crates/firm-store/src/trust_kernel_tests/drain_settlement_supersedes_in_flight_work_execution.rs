@@ -327,10 +327,16 @@ fn drain_settlement_cannot_reach_the_successor_generation_binding() {
         )
         .unwrap();
     store
-        .release_node_daemon_lease(NODE_ID, "daemon-1", 1, "instance-1", current_unix_ms())
+        .release_machine_authority_for_test(NODE_ID, "daemon-1", 1, "instance-1", current_unix_ms())
         .unwrap();
     let successor = store
-        .acquire_node_daemon_lease(NODE_ID, "daemon-2", "instance-2", current_unix_ms(), 60_000)
+        .seed_machine_authority_for_test(
+            NODE_ID,
+            "daemon-2",
+            "instance-2",
+            current_unix_ms(),
+            60_000,
+        )
         .unwrap();
     assert_eq!(successor.generation, 2);
     let drained_session = current_session(&store, &lane.session.id);

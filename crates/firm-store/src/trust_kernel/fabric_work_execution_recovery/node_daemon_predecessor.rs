@@ -258,12 +258,21 @@ impl HarnessStore {
                     .into(),
             ));
         }
-        let mut lease = latest_by_id(
-            self.read_jsonl::<NodeDaemonLease>("node_daemon_leases.jsonl")?,
-            |lease| lease.node_id.clone(),
-        )
-        .remove(node_id)
-        .ok_or_else(|| StoreError::Conflict(format!("NODE_DAEMON_GENERATION_FENCED: {node_id}")))?;
+        // ADR 0075: the lease half of recovery reads and writes the one
+        // document. The confirm, dead-socket and dead-pid proofs above are
+        // unchanged, and the per-Space session settlement below still walks
+        // every Space — only "who owns this machine" moved.
+        //
+        // Deliberately NOT the authoritative_machine_lease fence: recovery
+        // exists to settle a predecessor that no longer authorizes anything,
+        // so it must be able to read a lease the fence would refuse.
+        let mut lease = self
+            .current_machine_lease(node_id)?
+            .filter(|(_, source)| source.authorizes_provider_effect())
+            .map(|(lease, _)| lease)
+            .ok_or_else(|| {
+                StoreError::Conflict(format!("NODE_DAEMON_GENERATION_FENCED: {node_id}"))
+            })?;
         if lease.daemon_id != daemon_id
             || lease.generation != generation
             || lease.instance_id != instance_id
@@ -469,11 +478,29 @@ impl HarnessStore {
         }
 
         self.require_node_daemon_settlement_unlocked(&lease)?;
+        // ---- end of phase 1 -------------------------------------------------
+        // Everything above needs the Space write lock: the settlement proof and
+        // the per-Space session/command settlement. The legacy row is written
+        // here too, while that lock is still held, because it IS Space data.
         lease.status = NodeDaemonLeaseStatus::Released;
         lease.renewed_unix_ms = now_unix_ms;
         lease.expires_unix_ms = now_unix_ms;
         lease.released_unix_ms = Some(now_unix_ms);
         self.append_jsonl_unlocked("node_daemon_leases.jsonl", &lease)?;
+        drop(_lock);
+
+        // ---- phase 2: publish the machine authority -------------------------
+        // The lease lock is a LEAF lock: it may not be taken while the Space
+        // lock is held (ADR 0075 Rule 2). Collapsing these two phases is not a
+        // shortcut, it is a deadlock — the debug lock registry refused exactly
+        // that here during development, which is why this drop is explicit and
+        // load-bearing rather than incidental.
+        //
+        // Publishing second is also the right order on its own terms: the
+        // document is what a successor's acquire reads, so it must not say
+        // `Released` until every obligation this generation owed has actually
+        // been settled.
+        let lease = self.release_machine_lease(node_id, daemon_id, generation, instance_id)?;
         Ok(NodeDaemonPredecessorRecovery {
             lease,
             already_released: false,

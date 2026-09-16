@@ -355,7 +355,7 @@ fn acquire_supervisor(
 ) -> firm_core::TeamSupervisorLease {
     let now = unix_ms();
     let daemon = store
-        .acquire_node_daemon_lease(NODE, "daemon-test", "daemon-instance-test", now, 60_000)
+        .seed_machine_authority_for_test(NODE, "daemon-test", "daemon-instance-test", now, 60_000)
         .expect("acquire node daemon lease");
     store
         .acquire_team_supervisor_under_node_lease(
@@ -487,7 +487,7 @@ fn seed_active_team_work(store: &HarnessStore, label: &str, work_id: &str) -> St
         )
         .expect("assign Work");
     store
-        .acquire_node_daemon_lease(
+        .seed_machine_authority_for_test(
             NODE,
             "daemon-test",
             "daemon-instance-test",

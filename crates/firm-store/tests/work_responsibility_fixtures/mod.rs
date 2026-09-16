@@ -32,11 +32,18 @@ pub struct TestStore {
 
 impl TestStore {
     pub fn new(label: &str) -> Self {
-        let root = std::env::temp_dir().join(format!(
-            "firm-store-work-cutover-{label}-{}-{}",
-            std::process::id(),
-            NEXT_TEMP.fetch_add(1, Ordering::Relaxed)
-        ));
+        // Production's layout: `<FIRM_HOME>/execution-spaces/<id>`, so the
+        // Store names its own Firm home and can reach the machine lease
+        // document (ADR 0075). A bare temp root fails every machine-authority
+        // read closed, which is correct but not what this fixture is testing.
+        let root = std::env::temp_dir()
+            .join(format!(
+                "firm-store-work-cutover-{label}-{}-{}",
+                std::process::id(),
+                NEXT_TEMP.fetch_add(1, Ordering::Relaxed)
+            ))
+            .join("execution-spaces")
+            .join("space");
         let store = HarnessStore::new(&root);
         store.init().expect("initialize test store");
         Self { root, store }

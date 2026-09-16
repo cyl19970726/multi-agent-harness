@@ -47,7 +47,7 @@ fn closed_work_refuses_every_host_mutation_with_one_terminal_code() {
         .current_team_run_execution_space(&run)
         .expect("resolve the TeamRun Execution Space");
     let daemon = store
-        .acquire_node_daemon_lease(
+        .seed_machine_authority_for_test(
             &run.execution_node_id,
             "terminal-immutability-daemon",
             "terminal-immutability-instance",
@@ -205,7 +205,7 @@ fn terminal_work_refuses_external_evidence_updates() {
         .current_team_run_execution_space(&run)
         .expect("resolve the TeamRun Execution Space");
     let daemon = store
-        .acquire_node_daemon_lease(
+        .seed_machine_authority_for_test(
             &run.execution_node_id,
             "terminal-updated-daemon",
             "terminal-updated-instance",

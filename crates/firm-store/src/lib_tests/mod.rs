@@ -638,7 +638,7 @@ impl TestSupervisorLeaseExt for HarnessStore {
                 updated_at: "unix-ms:1".into(),
             })?;
         }
-        let parent = self.acquire_node_daemon_lease(
+        let parent = self.seed_machine_authority_for_test(
             &run.execution_node_id,
             "daemon-test",
             "instance-test",

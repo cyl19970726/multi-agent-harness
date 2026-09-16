@@ -339,10 +339,10 @@ fn reconciled_recovery_required_lane_is_reattached_by_the_successor_daemon() {
     // Predecessor settlement, then the successor generation reattaches it.
     let drain_time = current_unix_ms();
     store
-        .release_node_daemon_lease(&lane.node_id, "daemon-1", 1, "instance-1", drain_time)
+        .release_machine_authority_for_test(&lane.node_id, "daemon-1", 1, "instance-1", drain_time)
         .expect("the drained daemon releases its own settled lease");
     let successor = store
-        .acquire_node_daemon_lease(
+        .seed_machine_authority_for_test(
             &lane.node_id,
             "daemon-2",
             "instance-2",
@@ -442,7 +442,7 @@ fn reconciled_recovery_required_lane_is_reattached_after_a_predecessor_crash() {
     );
 
     let successor = store
-        .acquire_node_daemon_lease(
+        .seed_machine_authority_for_test(
             &lane.node_id,
             "daemon-2",
             "instance-2",

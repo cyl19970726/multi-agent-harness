@@ -115,6 +115,18 @@ impl HarnessStore {
     /// The fence form: resolve, and refuse anything a provider effect may not
     /// be built on. Every one of ADR 0075's decider sites goes through this, so
     /// "only NodeFile authorizes" is one predicate rather than 46 copies.
+    /// The refusal reason as one readable line.
+    ///
+    /// A fence wrapping this in its own typed error must not embed a whole
+    /// serialized `TrustError` inside another one — the result is unreadable in
+    /// a panic message and doubly-escaped on the wire.
+    pub fn machine_lease_refusal_reason(error: &StoreError) -> String {
+        error
+            .trust_error()
+            .map(|typed| typed.message)
+            .unwrap_or_else(|| error.to_string())
+    }
+
     pub fn authoritative_machine_lease(
         &self,
         node_id: &str,
@@ -380,4 +392,99 @@ fn require_exact_generation(
         )));
     }
     Ok(lease)
+}
+
+impl HarnessStore {
+    /// Seed machine authority the way a post-cutover node actually carries it:
+    /// the node-file document that every fence now reads, and the legacy Space
+    /// row that E2b has not yet retired.
+    ///
+    /// Fixtures need both because that is the real shape of a node during the
+    /// cutover window — the document is authority, the row is still written and
+    /// still read by projections. Seeding only the row would leave a fixture
+    /// that no fence can pass; seeding only the document would hide the
+    /// projections that still read rows.
+    ///
+    /// Generations are kept in step deliberately: a fence compares the
+    /// session's `node_daemon_generation` against the document, and a fixture
+    /// whose two records disagreed would fail for a reason that has nothing to
+    /// do with what it is testing.
+    ///
+    /// Un-gated for the same reason `append_mission` is (`store_store_base.rs`):
+    /// integration tests under `tests/` link the non-test build, so a
+    /// `cfg(test)` seeder is invisible to them. `#[doc(hidden)]` and the
+    /// `_for_test` suffix carry the intent instead.
+    #[doc(hidden)]
+    pub fn seed_machine_authority_for_test(
+        &self,
+        node_id: &str,
+        daemon_id: &str,
+        instance_id: &str,
+        now_unix_ms: u64,
+        ttl_ms: u64,
+    ) -> StoreResult<NodeDaemonLease> {
+        let row =
+            self.acquire_node_daemon_lease(node_id, daemon_id, instance_id, now_unix_ms, ttl_ms)?;
+        let document = self.acquire_machine_lease(
+            node_id,
+            daemon_id,
+            instance_id,
+            ttl_ms,
+            &[row.generation.saturating_sub(1)],
+        )?;
+        debug_assert_eq!(
+            row.generation, document.generation,
+            "fixture records must agree on the generation a fence will compare"
+        );
+        Ok(document)
+    }
+}
+
+impl HarnessStore {
+    /// Drive one machine-authority transition across both records, the way a
+    /// cutover-era daemon does.
+    ///
+    /// Lifecycle tests assert what a fence decides, and fences read the
+    /// document — but the legacy row is still written until E2b, and a fixture
+    /// whose two records disagreed would fail for reasons unrelated to its
+    /// subject. These keep them in step so a test says what it means.
+    #[doc(hidden)]
+    pub fn drain_machine_authority_for_test(
+        &self,
+        node_id: &str,
+        daemon_id: &str,
+        generation: u64,
+        instance_id: &str,
+        now_unix_ms: u64,
+        drain_ttl_ms: u64,
+    ) -> StoreResult<NodeDaemonLease> {
+        let _ = self.drain_node_daemon_lease(
+            node_id,
+            daemon_id,
+            generation,
+            instance_id,
+            now_unix_ms,
+            drain_ttl_ms,
+        );
+        self.drain_machine_lease(node_id, daemon_id, generation, instance_id, drain_ttl_ms)
+    }
+
+    #[doc(hidden)]
+    pub fn release_machine_authority_for_test(
+        &self,
+        node_id: &str,
+        daemon_id: &str,
+        generation: u64,
+        instance_id: &str,
+        now_unix_ms: u64,
+    ) -> StoreResult<NodeDaemonLease> {
+        let _ = self.release_node_daemon_lease(
+            node_id,
+            daemon_id,
+            generation,
+            instance_id,
+            now_unix_ms,
+        );
+        self.release_machine_lease(node_id, daemon_id, generation, instance_id)
+    }
 }

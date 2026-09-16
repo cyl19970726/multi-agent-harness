@@ -25,7 +25,7 @@ fn update_work_github_links_refreshes_only_evidence_without_churn() {
         )
         .expect("create GitHub-linked Work");
     let daemon = store
-        .acquire_node_daemon_lease(
+        .seed_machine_authority_for_test(
             &run.execution_node_id,
             "github-evidence-daemon",
             "github-evidence-instance",
@@ -148,7 +148,7 @@ fn idle_current_queries_keep_work_history_fold_out_of_each_poll() {
         )
         .unwrap();
     let daemon = store
-        .acquire_node_daemon_lease(
+        .seed_machine_authority_for_test(
             &run.execution_node_id,
             "idle-history-daemon",
             "idle-history-instance",

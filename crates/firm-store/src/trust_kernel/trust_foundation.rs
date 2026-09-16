@@ -292,17 +292,23 @@ impl HarnessStore {
                 current_version,
             ));
         }
+        // ADR 0075: the fourth Supervisor parent fence. Space write lock held,
+        // node file read lock-free.
         let parent = self
-            .latest_node_daemon_lease(&lease.node_id)?
-            .ok_or_else(|| {
+            .authoritative_machine_lease(&lease.node_id)
+            .map_err(|error| {
                 trust_error(
-                    TrustErrorCode::SupervisorGenerationFenced,
-                    "Team Supervisor parent NodeDaemon lease is missing",
+                    TrustErrorCode::MachineLeaseUnresolved,
+                    format!(
+                        "Team Supervisor parent NodeDaemon lease is not authoritative: {}",
+                        HarnessStore::machine_lease_refusal_reason(&error)
+                    ),
                     resource_kind,
                     resource_id,
                     current_version,
                 )
-            })?;
+            })?
+            .into_lease();
         if parent.status != firm_core::NodeDaemonLeaseStatus::Active
             || parent.daemon_id != lease.node_daemon_id
             || parent.generation != lease.node_daemon_generation
