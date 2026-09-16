@@ -17,6 +17,8 @@ fn idle_wake_loop_sleeps_on_every_mispredicted_arm() {
         backoff_initial_ms: BACKOFF_MS,
         backoff_max_ms: BACKOFF_MS,
         backoff_multiplier: 1.0,
+        informational_idle_delivery_ms: supervisor_wake::WakePolicy::default()
+            .informational_idle_delivery_ms,
     };
     let mut backoff = supervisor_wake::WakeBackoff::new();
 

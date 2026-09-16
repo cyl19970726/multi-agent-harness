@@ -23,6 +23,11 @@ pub enum WakeDecision {
     Continue(String),
     /// Unconsumed canonical Work delivery or response-required messages are waiting.
     DeliverPending,
+    /// The member has been idle with nothing else to run for at least
+    /// `informational_idle_delivery_ms`, and informational mail is queued for
+    /// it. The queued batch is delivered on its own Messages boundary rather
+    /// than waiting for a cycle that may never come (ADR 0077).
+    DeliverInformational,
     /// Idle member + eligible ready team_claim Work exists → board-discovery
     /// hint. The member must perform the atomic claim itself.
     ClaimHint(Vec<String>),
@@ -51,6 +56,18 @@ pub struct MemberWakeView {
     pub unconsumed_delivery_count: u32,
     /// Number of response-required messages queued for this member.
     pub unconsumed_message_count: u32,
+    /// Number of queued messages for this member that do NOT trigger a round
+    /// on their own — ordinary informational mail. Counted separately from
+    /// `unconsumed_message_count` because the two have different guarantees:
+    /// a response-required message wakes immediately, an informational one is
+    /// folded into the next cycle that runs for another reason and, failing
+    /// that, gets its own boundary after an idle interval (ADR 0077).
+    pub unconsumed_informational_message_count: u32,
+    /// How long this member has been continuously idle, from the durable
+    /// MemberRun row rather than a process-local counter, so a daemon
+    /// generation change does not reset the clock and hide waiting mail.
+    /// `None` when the member is not idle or the row carries no usable stamp.
+    pub idle_for: Option<Duration>,
     /// Consecutive provider turns with zero tool calls AND no Work transition.
     pub zero_output_streak: u32,
 }
@@ -73,6 +90,10 @@ pub struct WakePolicy {
     pub backoff_max_ms: u64,
     /// Backoff multiplier (doubling per consecutive sleep).
     pub backoff_multiplier: f64,
+    /// How long a member must have been continuously idle, with nothing else
+    /// to run, before queued informational mail earns its own delivery
+    /// boundary (ADR 0077).
+    pub informational_idle_delivery_ms: u64,
 }
 
 impl Default for WakePolicy {
@@ -82,6 +103,14 @@ impl Default for WakePolicy {
             backoff_initial_ms: 500,
             backoff_max_ms: 30_000,
             backoff_multiplier: 2.0,
+            // 120s. Long enough that a member about to be given Work is not
+            // interrupted by mail one cycle early — the ordinary path is still
+            // #941's fold into the next cycle, and this only fires when that
+            // cycle never comes. Short enough that a Host note to an idle
+            // member is not left for the tens of minutes measured in the S1
+            // dogfood, where 60 informational Messages never reached a
+            // provider at all. See ADR 0077 for the latency arithmetic.
+            informational_idle_delivery_ms: 120_000,
         }
     }
 }
@@ -114,7 +143,11 @@ pub fn effective_wake_policy() -> WakePolicy {
 /// 5. **Zero-output probation + active Work** → one bounded continuation so
 ///    the threshold can be observed instead of stalling after the first turn.
 /// 6. **Idle + eligible team_claim Works** → `ClaimHint`.
-/// 7. **No predicate matches** → `Sleep` with exponential backoff.
+/// 7. **Idle ≥ the informational delivery interval + informational mail
+///    queued** → `DeliverInformational` (ADR 0077). Below every arm that
+///    already runs a cycle, because such a cycle carries the mail anyway;
+///    above `Sleep`, because otherwise the mail never moves.
+/// 8. **No predicate matches** → `Sleep` with exponential backoff.
 ///
 /// Never wakes for Work in review/blocked/done/cancelled status.
 pub fn decide_wake(
@@ -168,7 +201,26 @@ pub fn decide_wake(
         return WakeDecision::ClaimHint(board.eligible_claim_work_ids.clone());
     }
 
-    // 7. No predicate matches → sleep with exponential backoff.
+    // 7. Idle long enough, with informational mail queued and no other reason
+    // to run → give that mail its own boundary (ADR 0077).
+    //
+    // Placed HERE, below every arm that already has a reason to run a cycle,
+    // because #941 folds queued mail into any such cycle for free: a member
+    // with Work, a continuation, an acceptance or a claim hint receives its
+    // mail without this arm, and firing earlier would only interrupt it one
+    // cycle sooner. This arm exists for the case that path cannot reach — an
+    // idle member with no Work, where the fold never happens because no cycle
+    // ever runs. Placed ABOVE Sleep because otherwise there is no wake at all.
+    if member.is_idle
+        && member.unconsumed_informational_message_count > 0
+        && member.idle_for.is_some_and(|idle| {
+            idle >= Duration::from_millis(policy.informational_idle_delivery_ms)
+        })
+    {
+        return WakeDecision::DeliverInformational;
+    }
+
+    // 8. No predicate matches → sleep with exponential backoff.
     WakeDecision::Sleep(backoff.current_duration(policy))
 }
 
@@ -255,6 +307,10 @@ mod tests {
             last_consumed_work_version: o.last_consumed_work_version,
             unconsumed_delivery_count: o.unconsumed_delivery_count.unwrap_or(0),
             unconsumed_message_count: o.unconsumed_message_count.unwrap_or(0),
+            unconsumed_informational_message_count: o
+                .unconsumed_informational_message_count
+                .unwrap_or(0),
+            idle_for: o.idle_for,
             zero_output_streak: o.zero_output_streak.unwrap_or(0),
         }
     }
@@ -268,6 +324,8 @@ mod tests {
         last_consumed_work_version: Option<u64>,
         unconsumed_delivery_count: Option<u32>,
         unconsumed_message_count: Option<u32>,
+        unconsumed_informational_message_count: Option<u32>,
+        idle_for: Option<Duration>,
         zero_output_streak: Option<u32>,
     }
 
@@ -689,5 +747,202 @@ mod tests {
         // Next sleep starts fresh.
         let d = backoff.current_duration(&policy);
         assert_eq!(d, Duration::from_millis(500));
+    }
+
+    // -----------------------------------------------------------------------
+    // ADR 0077: informational mail gets its own boundary once a member has
+    // been idle long enough that no other cycle is coming.
+
+    fn informational_view(idle_ms: u64, informational: u32) -> MemberWakeView {
+        member_view(MemberWakeViewOverrides {
+            unconsumed_informational_message_count: Some(informational),
+            idle_for: Some(Duration::from_millis(idle_ms)),
+            ..Default::default()
+        })
+    }
+
+    #[test]
+    fn informational_mail_earns_a_boundary_at_the_policy_interval_and_not_before() {
+        let policy = WakePolicy::default();
+        let board = board_view(&[]);
+        let backoff = WakeBackoff::new();
+        let n = policy.informational_idle_delivery_ms;
+
+        // One millisecond short of the interval: still asleep. The guarantee
+        // is an upper bound on latency, not an excuse to interrupt early.
+        assert_eq!(
+            decide_wake(&informational_view(n - 1, 1), &board, &policy, &backoff),
+            WakeDecision::Sleep(backoff.current_duration(&policy))
+        );
+        // Exactly at the interval, and beyond it.
+        assert_eq!(
+            decide_wake(&informational_view(n, 1), &board, &policy, &backoff),
+            WakeDecision::DeliverInformational
+        );
+        assert_eq!(
+            decide_wake(&informational_view(n * 5, 3), &board, &policy, &backoff),
+            WakeDecision::DeliverInformational
+        );
+    }
+
+    #[test]
+    fn an_idle_member_with_no_informational_mail_still_sleeps() {
+        let policy = WakePolicy::default();
+        let board = board_view(&[]);
+        let backoff = WakeBackoff::new();
+        assert_eq!(
+            decide_wake(
+                &informational_view(policy.informational_idle_delivery_ms * 10, 0),
+                &board,
+                &policy,
+                &backoff
+            ),
+            WakeDecision::Sleep(backoff.current_duration(&policy))
+        );
+    }
+
+    #[test]
+    fn response_required_mail_still_wakes_immediately_and_outranks_the_idle_arm() {
+        let policy = WakePolicy::default();
+        let board = board_view(&[]);
+        let backoff = WakeBackoff::new();
+        // Both kinds queued, idle well past the interval: the response-required
+        // arm must win, because it wakes at once and carries the rest with it.
+        // A member is never made to wait N minutes for mail that already has a
+        // wake reason.
+        let view = member_view(MemberWakeViewOverrides {
+            unconsumed_message_count: Some(1),
+            unconsumed_informational_message_count: Some(2),
+            idle_for: Some(Duration::from_millis(
+                policy.informational_idle_delivery_ms * 10,
+            )),
+            ..Default::default()
+        });
+        assert_eq!(
+            decide_wake(&view, &board, &policy, &backoff),
+            WakeDecision::DeliverPending
+        );
+    }
+
+    #[test]
+    fn a_busy_member_never_takes_the_idle_informational_arm() {
+        let policy = WakePolicy::default();
+        let board = board_view(&[]);
+        let backoff = WakeBackoff::new();
+        // `is_idle` false with no idle clock: the member is mid-turn, and
+        // #941 will fold this mail into the boundary it is already heading for.
+        let running = member_view(MemberWakeViewOverrides {
+            status: Some(MemberRunStatus::Running),
+            is_idle: Some(false),
+            unconsumed_informational_message_count: Some(4),
+            idle_for: None,
+            ..Default::default()
+        });
+        assert_eq!(
+            decide_wake(&running, &board, &policy, &backoff),
+            WakeDecision::Sleep(backoff.current_duration(&policy))
+        );
+        // Belt and braces: even if an idle clock were somehow present, the
+        // predicate still requires `is_idle`.
+        let running_with_clock = member_view(MemberWakeViewOverrides {
+            status: Some(MemberRunStatus::Running),
+            is_idle: Some(false),
+            unconsumed_informational_message_count: Some(4),
+            idle_for: Some(Duration::from_millis(
+                policy.informational_idle_delivery_ms * 10,
+            )),
+            ..Default::default()
+        });
+        assert_eq!(
+            decide_wake(&running_with_clock, &board, &policy, &backoff),
+            WakeDecision::Sleep(backoff.current_duration(&policy))
+        );
+    }
+
+    #[test]
+    fn every_arm_with_a_reason_to_run_outranks_the_idle_informational_arm() {
+        let policy = WakePolicy::default();
+        let backoff = WakeBackoff::new();
+        let long_idle = Duration::from_millis(policy.informational_idle_delivery_ms * 10);
+
+        // A queued Work delivery.
+        let with_work = member_view(MemberWakeViewOverrides {
+            unconsumed_delivery_count: Some(1),
+            unconsumed_informational_message_count: Some(1),
+            idle_for: Some(long_idle),
+            ..Default::default()
+        });
+        assert_eq!(
+            decide_wake(&with_work, &board_view(&[]), &policy, &backoff),
+            WakeDecision::DeliverPending
+        );
+
+        // A changed active Work version.
+        let with_continuation = member_view(MemberWakeViewOverrides {
+            active_work_id: Some("work-1".into()),
+            active_work_version: Some(2),
+            last_consumed_work_version: Some(1),
+            unconsumed_informational_message_count: Some(1),
+            idle_for: Some(long_idle),
+            ..Default::default()
+        });
+        assert_eq!(
+            decide_wake(&with_continuation, &board_view(&[]), &policy, &backoff),
+            WakeDecision::Continue("work-1".into())
+        );
+
+        // An eligible claimable Work on the board.
+        let with_hint = member_view(MemberWakeViewOverrides {
+            unconsumed_informational_message_count: Some(1),
+            idle_for: Some(long_idle),
+            ..Default::default()
+        });
+        assert_eq!(
+            decide_wake(&with_hint, &board_view(&["work-2"]), &policy, &backoff),
+            WakeDecision::ClaimHint(vec!["work-2".into()])
+        );
+
+        // Each of those cycles carries the mail for free (#941), which is why
+        // the idle arm sits below them.
+    }
+
+    #[test]
+    fn a_degraded_member_is_not_woken_by_informational_mail() {
+        let policy = WakePolicy::default();
+        let board = board_view(&[]);
+        let backoff = WakeBackoff::new();
+        // Degradation means the Host must intervene; mail must not restart a
+        // member the loop has deliberately stopped driving.
+        let degraded = member_view(MemberWakeViewOverrides {
+            status: Some(MemberRunStatus::Blocked),
+            zero_output_streak: Some(policy.zero_output_degradation_threshold),
+            unconsumed_informational_message_count: Some(3),
+            idle_for: Some(Duration::from_millis(
+                policy.informational_idle_delivery_ms * 10,
+            )),
+            ..Default::default()
+        });
+        assert_eq!(
+            decide_wake(&degraded, &board, &policy, &backoff),
+            WakeDecision::Sleep(backoff.current_duration(&policy))
+        );
+    }
+
+    #[test]
+    fn an_unknown_idle_clock_never_fires_the_arm() {
+        let policy = WakePolicy::default();
+        let board = board_view(&[]);
+        let backoff = WakeBackoff::new();
+        // A MemberRun row with no usable `last_event_at` yields `None`. Fail
+        // closed: no clock, no wake — never treat "unknown" as "long enough".
+        let view = member_view(MemberWakeViewOverrides {
+            unconsumed_informational_message_count: Some(2),
+            idle_for: None,
+            ..Default::default()
+        });
+        assert_eq!(
+            decide_wake(&view, &board, &policy, &backoff),
+            WakeDecision::Sleep(backoff.current_duration(&policy))
+        );
     }
 }

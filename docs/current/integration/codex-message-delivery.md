@@ -127,7 +127,7 @@ is not inferred from a transport receipt.
 
 | Member/runtime state | Ordinary Message |
 | --- | --- |
-| live and idle | response-required mail may start a turn; informational alone stays queued |
+| live and idle | response-required mail may start a turn; informational alone does not, but is guaranteed a boundary of its own once the member has been idle past the policy interval (ADR 0077) |
 | current turn running | retain queued until the next eligible round |
 | waiting on a provider question | answer with an exact correlated `provider_interaction_response` |
 | interrupted but runtime open | allow a later ordinary turn |
@@ -135,7 +135,12 @@ is not inferred from a transport receipt.
 | native session unavailable/incompatible | show blocker; do not fabricate resume |
 
 An otherwise-selected Work, continuation, acceptance, or Host-attention cycle
-also carries its eligible queued Messages, including informational context.
+also carries its eligible queued Messages, including informational context. When
+no such cycle ever comes — a member idle with no Work — the queued informational
+batch earns a dedicated Messages boundary after
+`WakePolicy.informational_idle_delivery_ms` (120 s), so informational mail has a
+delivery guarantee and not merely an opportunity (ADR 0077). Worst case is that
+interval plus one idle backoff tick.
 This does not turn a Message into Work authority. The successfully claimed deliveries define
 this input boundary; it is not an atomic claim of the whole mailbox. Later
 arrivals remain queued; failed or uncertain claims follow reconciliation. Receipt records cover only the

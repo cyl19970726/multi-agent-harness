@@ -1020,6 +1020,39 @@ pub(super) fn poll_idle_member_wake(
                     )));
                 }
             }
+            supervisor_wake::WakeDecision::DeliverInformational => {
+                // ADR 0077. The member has been idle past the policy interval
+                // with informational mail queued and nothing else to run, so
+                // that mail gets its own Messages boundary. The claim uses the
+                // BOUNDARY variant (`require_round_trigger = false`) because
+                // by construction none of this mail triggers a round — that is
+                // precisely why it is still here.
+                //
+                // The claim can legitimately come back empty: another arm or
+                // another generation may have taken the batch between the pure
+                // view and here. That is a Retry, not a wake — the same
+                // fall-through every other predicted arm uses (#584).
+                let informational =
+                    claim_canonical_messages_for_cycle_boundary(ledger, member_row)?;
+                if !informational.is_empty() {
+                    backoff.reset();
+                    let expected = member_row.clone();
+                    member_row.status = MemberRunStatus::Running;
+                    member_row.finished_at = None;
+                    member_row.last_event_at = Some(now_string());
+                    ledger.save_member_run(&expected, member_row)?;
+                    transition_provider_session_for_member(
+                        ledger,
+                        member_row,
+                        harness_core::agentfirm_api::AgentSessionStatus::Active,
+                    )?;
+                    return Ok(IdleWakeStep::Ready(IdleMemberWake::Messages {
+                        messages: informational,
+                        host_attentions: Vec::new(),
+                    }));
+                }
+                // Fall through to Retry.
+            }
             supervisor_wake::WakeDecision::Sleep(_duration) => {
                 if member_view.is_idle
                     && zero_output_streak < policy.zero_output_degradation_threshold
@@ -1132,11 +1165,43 @@ pub(super) fn build_member_wake_view(
 
     let delivery_count = ledger.queued_works_for(&member_row.id)?.len() as u32;
 
-    let message_count = ledger
-        .queued_messages_for(&member_row.id)?
+    let queued_messages = ledger.queued_messages_for(&member_row.id)?;
+    let message_count = queued_messages
         .iter()
         .filter(|message| message.requires_response())
         .count() as u32;
+    // Everything else queued for this member is informational: it never
+    // triggers a round on its own (`require_round_trigger` in
+    // runtime_effects.rs uses the same two conditions), so without ADR 0077's
+    // arm it moves only when some other reason runs a cycle.
+    let informational_message_count = queued_messages
+        .iter()
+        .filter(|message| {
+            !message.requires_response()
+                && message.kind != harness_core::ProviderDispatchIntent::ProviderInteractionResponse
+        })
+        .count() as u32;
+
+    // Idle-since comes from the DURABLE MemberRun row, not a process-local
+    // counter: `last_event_at` is stamped with the status change that made the
+    // member idle and is not rewritten while it stays idle, so it survives a
+    // daemon generation change. A fresh counter would restart on every restart
+    // and could hide mail indefinitely — exactly the failure ADR 0077 closes.
+    let idle_for = is_idle
+        .then(|| {
+            member_row
+                .last_event_at
+                .as_deref()
+                .and_then(harness_core::parse_harness_unix_ms)
+                .map(|idle_since_ms| {
+                    let now_ms = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_millis() as u64;
+                    std::time::Duration::from_millis(now_ms.saturating_sub(idle_since_ms))
+                })
+        })
+        .flatten();
 
     Ok(supervisor_wake::MemberWakeView {
         member_id: member_row.id.clone(),
@@ -1147,6 +1212,8 @@ pub(super) fn build_member_wake_view(
         last_consumed_work_version,
         unconsumed_delivery_count: delivery_count,
         unconsumed_message_count: message_count,
+        unconsumed_informational_message_count: informational_message_count,
+        idle_for,
         zero_output_streak,
     })
 }
