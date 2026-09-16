@@ -82,7 +82,6 @@ fn durable_interrupt_cause(cause: &firm_runtime_contract::InterruptCause) -> Str
     use firm_runtime_contract::InterruptCause;
     match cause {
         InterruptCause::HostControl => "host_control".to_string(),
-        InterruptCause::AdapterPolicy { reason } => format!("adapter_policy:{reason}"),
         InterruptCause::ProviderInitiated { reason } => format!("provider_initiated:{reason}"),
     }
 }
@@ -345,9 +344,11 @@ mod tests {
         assert!(error.contains("exact_terminal_ref"));
     }
 
-    /// B3: Host, adapter-policy and provider-initiated interrupts correlate to
-    /// distinct typed outcomes AND read back distinguishably from the durable
-    /// correlation carried on the RuntimeCommandRecord.
+    /// B3: the two surviving interrupt causes — Host control and
+    /// provider-initiated — correlate to distinct typed outcomes AND read back
+    /// distinguishably from the durable correlation carried on the
+    /// RuntimeCommandRecord. (`AdapterPolicy` was the third; X1b deleted it
+    /// with zero producers.)
     #[test]
     fn interrupt_causes_correlate_to_distinct_outcomes_and_durable_labels() {
         use firm_runtime_contract::InterruptCause;
@@ -357,16 +358,6 @@ mod tests {
             true,
             Some(InterruptCause::HostControl),
             &CycleEnding::InterruptedByHost,
-        )
-        .unwrap();
-        let (policy_correlation, policy_outcome) = correlate_provider_cycle(
-            cycle_authority(),
-            native_cycle(Some("provider-input:1")),
-            true,
-            InterruptCause::adapter_policy("provider-native quiesce policy"),
-            &CycleEnding::InterruptedByProvider {
-                reason: "adapter_policy:provider-native quiesce policy".to_string(),
-            },
         )
         .unwrap();
         let (provider_correlation, provider_outcome) = correlate_provider_cycle(
@@ -384,10 +375,6 @@ mod tests {
             Some("host_control")
         );
         assert_eq!(
-            policy_correlation.interrupt_cause.as_deref(),
-            Some("adapter_policy:provider-native quiesce policy")
-        );
-        assert_eq!(
             provider_correlation.interrupt_cause.as_deref(),
             Some("provider_initiated:member cancelled in the provider UI")
         );
@@ -399,22 +386,13 @@ mod tests {
             }
         ));
         assert!(matches!(
-            policy_outcome,
-            CycleOutcome::Interrupted {
-                cause: InterruptCause::AdapterPolicy { .. },
-                ..
-            }
-        ));
-        assert!(matches!(
             provider_outcome,
             CycleOutcome::Interrupted {
                 cause: InterruptCause::ProviderInitiated { .. },
                 ..
             }
         ));
-        assert_ne!(host_outcome, policy_outcome);
         assert_ne!(host_outcome, provider_outcome);
-        assert_ne!(policy_outcome, provider_outcome);
     }
 
     /// The S3 durability rule: pre-S3 ProviderCycleCorrelation rows (no

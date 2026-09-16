@@ -1048,25 +1048,6 @@ impl harness_runtime_contract::CycleConformanceFixture for CodexCycleConformance
             result: harness_runtime_contract::CycleConformanceResult::Outcome(Box::new(outcome)),
         })
     }
-
-    fn run_adapter_policy_interrupt(
-        &mut self,
-        timeouts: &harness_runtime_contract::CycleTimeouts,
-        _reason: &str,
-    ) -> Result<harness_runtime_contract::CycleConformanceOutcome, Self::Error> {
-        // B4: the old trigger (a silent interval past the old idle bound) no
-        // longer produces any adapter-initiated interrupt.
-        let outcome = drive_cycle(
-            silent_then("completed", 40),
-            timeouts,
-            &mut harness_runtime_contract::CycleControl::default,
-        )?;
-        Ok(harness_runtime_contract::CycleConformanceOutcome {
-            interrupt: outcome.interrupt.clone(),
-            control_unproven: false,
-            result: harness_runtime_contract::CycleConformanceResult::Outcome(Box::new(outcome)),
-        })
-    }
 }
 
 #[test]
@@ -1088,9 +1069,16 @@ fn codex_passes_the_s1_cycle_conformance_family() {
 #[test]
 fn codex_a4_silence_no_longer_interrupts_and_b4_no_policy_interrupt() {
     // A4: a silent tool interval far past the OLD idle_timeout completes
-    // normally and never reaches bridge.interrupt (B4: the adapter's normal
-    // path cannot produce InterruptCause::AdapterPolicy anymore). The
-    // assertion binds the DRIVEN bridge, not a fresh one.
+    // normally and never reaches bridge.interrupt. B4 is the reverse proof
+    // that the adapter's normal path never interrupts on its own initiative.
+    //
+    // X1b deleted `InterruptCause::AdapterPolicy`, so "it cannot be ATTRIBUTED
+    // to adapter policy" is now a type-level fact and needs no test. What still
+    // needs proving, and is what this asserts, is the behaviour underneath it:
+    // the adapter does not reach for `bridge.interrupt` at all when a turn goes
+    // quiet. A future variant could re-introduce the attribution; it could not
+    // re-introduce the call without failing here. The assertion binds the
+    // DRIVEN bridge, not a fresh one.
     let mut adapter = CodexTeamRuntime::new(silent_then("completed", 40));
     let outcome = TeamRuntimeAdapter::run_cycle(
         &mut adapter,

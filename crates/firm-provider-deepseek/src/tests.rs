@@ -489,14 +489,6 @@ mod cycle_conformance {
                 )),
             })
         }
-
-        fn run_adapter_policy_interrupt(
-            &mut self,
-            timeouts: &harness_runtime_contract::CycleTimeouts,
-            _reason: &str,
-        ) -> Result<harness_runtime_contract::CycleConformanceOutcome, Self::Error> {
-            self.run_receipt_then_silence(timeouts)
-        }
     }
 
     #[test]

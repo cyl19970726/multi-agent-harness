@@ -65,7 +65,6 @@ const runtimeContractModules = new Map([
     "fn assert_a3_transport_death_fails_closed",
     "fn assert_a5_control_settle_only_bounds_control",
     "fn assert_b1_host_interrupt_attribution",
-    "fn assert_b2_adapter_policy_interrupt_attribution",
     "fn assert_c1_terminal_failure_unsatisfied",
     "fn assert_c2_clean_terminal_satisfied",
     "fn assert_c3_unobserved_terminal_unknown",

@@ -318,11 +318,6 @@ impl CycleEnding {
         }
         match &outcome.interrupt {
             Some(InterruptCause::HostControl) => return Self::InterruptedByHost,
-            Some(InterruptCause::AdapterPolicy { reason }) => {
-                return Self::InterruptedByProvider {
-                    reason: format!("adapter_policy:{reason}"),
-                }
-            }
             Some(InterruptCause::ProviderInitiated { reason }) => {
                 return Self::InterruptedByProvider {
                     reason: reason.clone(),

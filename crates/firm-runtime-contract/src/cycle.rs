@@ -8,18 +8,22 @@ use crate::{
     ProviderTerminalFailure, RuntimeAdapter,
 };
 
-/// Who caused an interrupt (invariant I3: a Host control action and an
-/// adapter's own policy must be distinguishable in the durable record).
+/// Who caused an interrupt (invariant I3: a Host control action and a
+/// provider-initiated stop must be distinguishable in the durable record).
+///
+/// Two causes, not three. A third, `AdapterPolicy`, was kept as a reviewed
+/// escape hatch for an adapter interrupting on its own provider-native policy.
+/// It shipped with zero producers and never gained one: the S2 migration
+/// removed the last path that could yield it, and the invariant since then has
+/// been that no adapter's normal path may. ADR 0076's X1b slice deletes it, so
+/// that invariant is now carried by the type instead of by a test. The durable
+/// `interrupt_cause` column is an opaque `String`, so any historical
+/// `adapter_policy:<reason>` row still decodes unchanged.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum InterruptCause {
     /// The Harness/Host issued Interrupt through `CycleControl`. This is the
     /// only cause adapters produce on the ordinary path.
     HostControl,
-    /// The adapter interrupted on its own provider-native policy. Kept as a
-    /// reviewed escape hatch (frozen decision 2) but NOT produced by default:
-    /// after the S2 migration no adapter's normal path may yield it (B4 is
-    /// the reverse proof). `reason` must be non-empty (assertion B2).
-    AdapterPolicy { reason: String },
     /// The PROVIDER ended the cycle as interrupted on its own — no Harness
     /// control request and no adapter policy (Owner decision after S2 review
     /// 01: the real second interrupt source §3.2's two variants cannot
@@ -28,12 +32,6 @@ pub enum InterruptCause {
 }
 
 impl InterruptCause {
-    /// The only construction path for an adapter-policy cause; rejects an
-    /// empty or blank reason so B2 is falsifiable at the type boundary.
-    pub fn adapter_policy(reason: impl Into<String>) -> Option<Self> {
-        Self::with_reason(reason, |reason| Self::AdapterPolicy { reason })
-    }
-
     /// The only construction path for a provider-initiated cause; rejects an
     /// empty or blank reason for the same falsifiability.
     pub fn provider_initiated(reason: impl Into<String>) -> Option<Self> {
@@ -223,7 +221,7 @@ impl EffectReceipt {
     /// - terminal not observed, or interrupt unsettled → `Unknown`;
     /// - terminal observed, no failure, no interrupt → `Satisfied`;
     /// - terminal observed, no failure, interrupt SETTLED (Host or
-    ///   AdapterPolicy) → `Satisfied` — D5's fourth cell, decided by the
+    ///   ProviderInitiated) → `Satisfied` — D5's fourth cell, decided by the
     ///   Brain as a Spec errata: a settled interrupt IS an observed terminal
     ///   boundary, the cause travels on the receipt (I3 is attribution, not
     ///   postcondition), and `Unsatisfied` is reserved for provider terminal
@@ -282,9 +280,6 @@ impl EffectReceipt {
             CycleInterruptSettlement::Settled(InterruptCause::HostControl) => {
                 native_evidence.push("interrupt=host_control".to_string());
             }
-            CycleInterruptSettlement::Settled(InterruptCause::AdapterPolicy { reason }) => {
-                native_evidence.push(format!("interrupt=adapter_policy:{reason}"));
-            }
             CycleInterruptSettlement::Settled(InterruptCause::ProviderInitiated { reason }) => {
                 native_evidence.push(format!("interrupt=provider_initiated:{reason}"));
             }
@@ -325,8 +320,10 @@ pub struct ExecutionCycleOutcome {
     pub provider_terminal_failure: Option<ProviderTerminalFailure>,
     /// The attributed interrupt cause when the cycle was interrupted
     /// (invariant I3). `Some(HostControl)` is the only cause adapters produce
-    /// on the ordinary path; after the S2 migration no adapter's normal path
-    /// may yield `AdapterPolicy` (B4 is the reverse proof).
+    /// on the ordinary path; a provider that ends its own turn as interrupted
+    /// is `ProviderInitiated` (Codex only today). No adapter may interrupt on
+    /// its own policy — since X1b the type has no variant for it, and B4 is
+    /// the behavioural reverse proof that the normal path never tries.
     pub interrupt: Option<InterruptCause>,
     pub close_requested_by_harness: bool,
     pub tool_call_count: u32,

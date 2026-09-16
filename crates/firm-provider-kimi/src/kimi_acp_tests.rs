@@ -1283,15 +1283,6 @@ impl harness_runtime_contract::CycleConformanceFixture for KimiCycleConformanceF
             result: harness_runtime_contract::CycleConformanceResult::Outcome(Box::new(outcome)),
         })
     }
-
-    fn run_adapter_policy_interrupt(
-        &mut self,
-        timeouts: &harness_runtime_contract::CycleTimeouts,
-        _reason: &str,
-    ) -> Result<harness_runtime_contract::CycleConformanceOutcome, Self::Error> {
-        // B4: silence after acceptance is never an adapter-initiated cancel.
-        self.run_receipt_then_silence(timeouts)
-    }
 }
 
 #[test]

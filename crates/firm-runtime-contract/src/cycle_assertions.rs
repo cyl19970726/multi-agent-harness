@@ -102,13 +102,6 @@ pub trait CycleConformanceFixture {
         &mut self,
         timeouts: &CycleTimeouts,
     ) -> Result<CycleConformanceOutcome, Self::Error>;
-
-    /// B2: an adapter-internal policy interrupts with `reason` and settles.
-    fn run_adapter_policy_interrupt(
-        &mut self,
-        timeouts: &CycleTimeouts,
-        reason: &str,
-    ) -> Result<CycleConformanceOutcome, Self::Error>;
 }
 
 /// A1 — accepted input never fails by time alone (invariant I1).
@@ -251,28 +244,6 @@ pub fn assert_b1_host_interrupt_attribution<F: CycleConformanceFixture>(
         other => fail(
             A,
             format!("a Host control interrupt was attributed to {other:?}"),
-        ),
-    }
-}
-
-/// B2 — an adapter-policy interrupt is attributed with a non-empty reason.
-pub fn assert_b2_adapter_policy_interrupt_attribution<F: CycleConformanceFixture>(
-    fixture: &mut F,
-    timeouts: &CycleTimeouts,
-    reason: &str,
-) -> Result<(), CycleConformanceError> {
-    const A: &str = "B2";
-    let outcome = fixture
-        .run_adapter_policy_interrupt(timeouts, reason)
-        .map_err(|error| CycleConformanceError {
-            assertion: A,
-            detail: format!("fixture error: {error:?}"),
-        })?;
-    match outcome.interrupt {
-        Some(InterruptCause::AdapterPolicy { reason }) if !reason.trim().is_empty() => Ok(()),
-        other => fail(
-            A,
-            format!("an adapter-policy interrupt was attributed to {other:?}"),
         ),
     }
 }
