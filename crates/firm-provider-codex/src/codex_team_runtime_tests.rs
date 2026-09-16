@@ -891,7 +891,6 @@ struct CodexCycleConformanceFixture;
 fn conformance_timeouts() -> harness_runtime_contract::CycleTimeouts {
     harness_runtime_contract::CycleTimeouts {
         input_acceptance: Duration::from_millis(1),
-        transport_liveness: Duration::from_millis(1),
         control_settle: Duration::from_millis(30),
     }
 }

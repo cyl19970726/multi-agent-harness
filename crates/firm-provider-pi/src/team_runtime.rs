@@ -233,7 +233,7 @@ impl harness_runtime_contract::TeamRuntimeAdapter for PiTeamRuntime {
         Ok(())
     }
 
-    /// `transport_liveness` proof: the RPC reader thread's Disconnected
+    /// Liveness proof: the RPC reader thread's Disconnected
     /// branch — a dead transport fails closed without a wall-clock silence
     /// verdict (D2); the prompt (acceptance) RPC is bounded by
     /// `timeouts.input_acceptance`.

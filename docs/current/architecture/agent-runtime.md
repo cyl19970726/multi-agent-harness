@@ -613,9 +613,12 @@ remain intact, and Interrupt/Close keep polling. The only timeouts an adapter
 applies are the three physical quantities of
 `CycleTimeouts` (`crates/firm-runtime-contract/src/timeouts.rs`):
 `input_acceptance` bounds only the delivery boundary from input written to the
-provider's exact acceptance receipt; `transport_liveness` bounds the proof
-that the owned process and transport are still alive; `control_settle` bounds
-an issued control's settlement. Silence after acceptance is never a failure
+provider's exact acceptance receipt, and `control_settle` bounds an issued
+control's settlement. There is deliberately no liveness bound: the field that
+named one was never read by any adapter, and all five prove liveness
+structurally instead — a reader thread's `Disconnected` branch, or an
+`ensure_alive()` probe on every silent poll — which cannot mistake a slow turn
+for a dead one the way a wall clock can. Silence after acceptance is never a failure
 and never an adapter-initiated interrupt; an interrupted cycle carries an
 attributed `InterruptCause` (Host control, adapter policy, or provider
 initiated), and a provider terminal failure never settles `Satisfied` — it
@@ -702,8 +705,8 @@ pre-effect admission contention retry are owned by
 classifies errors; adapters retain transport observation and protocol control.
 `ControlRequest.timeouts` carries the caller's budget through all five semantic
 control adapters. That control request currently has no production constructor;
-ordinary Team cycles keep their configured `CycleTimeouts` and the unchanged
-300/30/15-second contract defaults.
+ordinary Team cycles keep their configured `CycleTimeouts` and the contract
+defaults, now 300 s acceptance and 15 s control settle.
 
 A managed Host-driven member may receive one reconsideration cycle when its
 own other Work is accepted after its current block, with no other owned Normal

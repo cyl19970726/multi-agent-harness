@@ -720,7 +720,7 @@ impl KimiAcpClient {
     /// response; a still-silent session is then killed tree-wide and an
     /// error returned. After acceptance, silence is never a failure (I1).
     ///
-    /// `transport_liveness` is proven by the multiplexed reader: a
+    /// Transport liveness is proven by the multiplexed reader: a
     /// disconnected updates/response channel ends the session fail-closed
     /// (`session_ended_error`), never a wall-clock silence verdict (D2). On
     /// `control_settle` expiry the client kills the owned process group —

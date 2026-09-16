@@ -72,7 +72,7 @@ pub trait CycleConformanceFixture {
 
     /// A1: the exact input acceptance receipt is delivered, then the
     /// transport stays silent longer than `input_acceptance` and
-    /// `transport_liveness` combined, with continuous liveness proof.
+    /// the acceptance bound with continuous structural liveness proof.
     fn run_receipt_then_silence(
         &mut self,
         timeouts: &CycleTimeouts,

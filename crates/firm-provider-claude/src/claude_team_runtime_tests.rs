@@ -744,7 +744,6 @@ fn claude_turn_complete(input_id: &str) -> String {
 fn claude_conformance_timeouts() -> harness_runtime_contract::CycleTimeouts {
     harness_runtime_contract::CycleTimeouts {
         input_acceptance: Duration::from_millis(1),
-        transport_liveness: Duration::from_millis(1),
         control_settle: Duration::ZERO,
     }
 }
@@ -1005,7 +1004,6 @@ fn claude_c1_terminal_failure_settles_unsatisfied() {
 fn claude_control_timeouts() -> harness_runtime_contract::CycleTimeouts {
     harness_runtime_contract::CycleTimeouts {
         input_acceptance: Duration::from_secs(5),
-        transport_liveness: Duration::from_secs(5),
         control_settle: Duration::from_secs(5),
     }
 }

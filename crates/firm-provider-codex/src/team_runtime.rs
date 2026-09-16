@@ -751,7 +751,7 @@ impl<'a, B: CodexAppServerBridge> TeamRuntimeAdapter for CodexTeamRuntime<'a, B>
         Ok(())
     }
 
-    /// `transport_liveness` proof: the app-server reader thread's
+    /// Liveness proof: the app-server reader thread's
     /// `RecvTimeoutError::Disconnected` branch — a dead transport fails
     /// closed without any wall-clock silence verdict (D2). The acceptance
     /// RPC itself is bounded by `timeouts.input_acceptance`.

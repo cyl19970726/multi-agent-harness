@@ -475,7 +475,7 @@ impl ClaudeRunnerTransport {
                 // provider tool may be silent while it does real work. The
                 // caller's timeout therefore fences only the unacknowledged
                 // delivery boundary; it is not a hidden wall-clock limit on
-                // an accepted cycle. `transport_liveness` (Spec D2) is proven
+                // an accepted cycle. Transport liveness (Spec D2) is proven
                 // by `ensure_alive()` and by child-exit/stdout-disconnect
                 // failing closed — never by a silence verdict.
                 let alive = self.ensure_alive();

@@ -688,7 +688,7 @@ impl PiRpcClient {
         // follow-up.
         while self.incoming.try_recv().is_ok() {}
         // The acceptance RPC itself is bounded by input_acceptance; after
-        // it, `transport_liveness` is proven by the reader thread's
+        // it, transport liveness is proven by the reader thread's
         // Disconnected branch, never by a wall-clock silence verdict (D2).
         let prompt_response = self.request_blocking(
             "prompt",

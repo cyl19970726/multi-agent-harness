@@ -179,10 +179,6 @@ fn timeouts_single_flag_shape_uses_contract_defaults() {
         std::time::Duration::from_secs(42)
     );
     assert_eq!(
-        timeouts.transport_liveness,
-        CycleTimeouts::DEFAULT_TRANSPORT_LIVENESS
-    );
-    assert_eq!(
         timeouts.control_settle,
         CycleTimeouts::DEFAULT_CONTROL_SETTLE
     );

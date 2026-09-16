@@ -1069,7 +1069,6 @@ fn kimi_conformance_timeouts() -> harness_runtime_contract::CycleTimeouts {
     // the tiny bound (it is the fixture that must expire).
     harness_runtime_contract::CycleTimeouts {
         input_acceptance: Duration::from_secs(2),
-        transport_liveness: Duration::from_millis(1),
         control_settle: Duration::ZERO,
     }
 }
