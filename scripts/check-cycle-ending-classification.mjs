@@ -64,8 +64,16 @@ const ENTRY_POINTS = [
 ];
 
 /**
- * Callees that record the typed failure at EVERY one of their own exits. Each
- * is itself an entry point above, so the claim is verified by this same walk.
+ * Callees that record the typed failure at EVERY one of their own exits.
+ *
+ * The invariant is that each is itself an ENTRY POINT above, so the claim is
+ * verified by this same walk rather than taken on trust. That used to be a
+ * comment, and a comment is not a check: X1b review r1 demonstrated the evasion
+ * by adding a non-recording helper here and watching the gate stay green, and
+ * `write_frame` already broke the stated rule (it was never an entry point, and
+ * it was not needed — its one call site is covered by the conservative
+ * assignment immediately above it). `validateRecordingCallees` below now
+ * enforces the invariant, with no exceptions.
  */
 const RECORDING_CALLEES = new Map([
   [
@@ -76,13 +84,20 @@ const RECORDING_CALLEES = new Map([
     "apply_cycle_control",
     "pi/lib.rs apply_cycle_control records fatal_error=HostAborted and delegates the abort to request_blocking plus its own inspect_err",
   ],
-  [
-    "write_frame",
-    "covered by the conservative TransportLost set immediately above it in request_blocking",
-  ],
 ]);
 
-/** Closures an adapter hands to a client, which the client wraps and records. */
+/**
+ * Closures an adapter hands to a client, which the client wraps and records.
+ *
+ * `validateCallerWrapped` checks the half that is mechanically checkable: the
+ * site must live inside a body this gate walks. The other half — that the
+ * client really does record when it wraps that call — is prose, because the
+ * wrapping happens in a different function under a different parameter name
+ * (`on_input_accepted` here, `on_accepted` there). This is the one remaining
+ * piece of unenforced trust in the gate, and it is named rather than left for a
+ * reader to discover: adding an entry here is a deliberate edit, visible in
+ * review, and each must cite where the wrapping records.
+ */
 const CALLER_WRAPPED = new Map([
   [
     "crates/firm-provider-kimi/src/team_runtime.rs::on_input_accepted",
@@ -130,6 +145,48 @@ const PATH_TAGS = [
   "last_rpc_failure =",
   "last_cycle_ending =",
 ];
+
+/** The function name in an ENTRY_POINTS signature, e.g. `fn run_cycle(` -> run_cycle. */
+function entryPointName(signature) {
+  const match = signature.match(/\bfn\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(/);
+  return match ? match[1] : null;
+}
+
+/**
+ * Every RECORDING_CALLEES key must name a function this gate itself walks.
+ * Otherwise the entry is an unchecked promise that the callee records, which is
+ * exactly how a cycle body can exit through a helper that records nothing while
+ * the gate stays green.
+ */
+function validateRecordingCallees(callees, entryPoints) {
+  const walked = new Set(
+    entryPoints.map(([, , signature]) => entryPointName(signature)).filter(Boolean),
+  );
+  const problems = [];
+  for (const [callee, reason] of callees) {
+    if (!walked.has(callee)) {
+      problems.push(
+        `RECORDING_CALLEES lists \`${callee}\` (${reason}), but it is not an ENTRY_POINTS function, so nothing here verifies that it records at every exit. Add it to ENTRY_POINTS or remove the entry.`,
+      );
+    }
+  }
+  return problems;
+}
+
+/** Every CALLER_WRAPPED site must live in a body this gate walks. */
+function validateCallerWrapped(wrapped, entryPoints) {
+  const paths = new Set(entryPoints.map(([, path]) => path));
+  const problems = [];
+  for (const [key] of wrapped) {
+    const [path] = key.split("::");
+    if (!paths.has(path)) {
+      problems.push(
+        `CALLER_WRAPPED names \`${key}\`, but ${path} holds no walked cycle body, so the entry can never apply.`,
+      );
+    }
+  }
+  return problems;
+}
 
 /**
  * Whether a line assigns the typed failure to a VALUE on this path. A reset to
@@ -419,6 +476,47 @@ if (process.argv.includes("--self-test")) {
   ];
 
   const problems = [];
+
+  // The allowlist half. X1b review r1 added a non-recording helper to
+  // RECORDING_CALLEES and the gate stayed green: the invariant was a comment,
+  // so a cycle body could exit through a helper that records nothing. Both
+  // shapes must now be rejected.
+  const unbackedCallee = validateRecordingCallees(
+    new Map([["reviewer_probe_helper", "a helper that records nothing"]]),
+    ENTRY_POINTS,
+  );
+  if (unbackedCallee.length !== 1) {
+    problems.push(
+      `an allowlisted callee that is not an entry point must be rejected, got ${JSON.stringify(unbackedCallee)}`,
+    );
+  }
+  const backedCallee = validateRecordingCallees(
+    new Map([["request_blocking", "a real entry point"]]),
+    ENTRY_POINTS,
+  );
+  if (backedCallee.length !== 0) {
+    problems.push(
+      `an allowlisted callee that IS an entry point must be accepted, got ${JSON.stringify(backedCallee)}`,
+    );
+  }
+  const unwalkedWrap = validateCallerWrapped(
+    new Map([["crates/firm-provider-kimi/src/nowhere.rs::on_input_accepted", "prose"]]),
+    ENTRY_POINTS,
+  );
+  if (unwalkedWrap.length !== 1) {
+    problems.push(
+      `a caller-wrapped entry in an unwalked file must be rejected, got ${JSON.stringify(unwalkedWrap)}`,
+    );
+  }
+  // The real allowlists must satisfy their own invariants.
+  const live = [
+    ...validateRecordingCallees(RECORDING_CALLEES, ENTRY_POINTS),
+    ...validateCallerWrapped(CALLER_WRAPPED, ENTRY_POINTS),
+  ];
+  if (live.length !== 0) {
+    problems.push(`the gate's own allowlists must validate, got ${JSON.stringify(live)}`);
+  }
+
   for (const fixture of fixtures) {
     const source = [
       "    fn run_cycle(",
@@ -444,12 +542,15 @@ if (process.argv.includes("--self-test")) {
     process.exit(1);
   }
   console.log(
-    `cycle-ending classification gate self-test: ${fixtures.length} fixtures, including two the analyser must REJECT (a bare \`?\` and a bare multi-line \`return Err\`) and a sibling-branch assignment it must not accept.`,
+    `cycle-ending classification gate self-test: ${fixtures.length} statement fixtures, including two the analyser must REJECT (a bare \`?\` and a bare multi-line \`return Err\`) and a sibling-branch assignment it must not accept, plus 4 allowlist checks — an un-backed RECORDING_CALLEES entry and an unwalked CALLER_WRAPPED entry must both be rejected.`,
   );
   process.exit(0);
 }
 
-const failures = [];
+const failures = [
+  ...validateRecordingCallees(RECORDING_CALLEES, ENTRY_POINTS),
+  ...validateCallerWrapped(CALLER_WRAPPED, ENTRY_POINTS),
+];
 let walked = 0;
 let bodies = 0;
 for (const [provider, path, signature] of ENTRY_POINTS) {

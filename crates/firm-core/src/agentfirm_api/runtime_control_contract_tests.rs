@@ -301,7 +301,7 @@ fn legacy_command_status_folds_without_inventing_effect_or_execution_authority()
 /// still read back as the kind it was written as.
 ///
 /// Evidence for keeping rather than deleting them: across the five read-only
-/// September store copies — 128,987 JSONL rows in 66 files — not one carries
+/// September store copies — 128,987 rows across 61 `.jsonl` files — not one carries
 /// any of the four as a command kind, and there is no constructor in the tree.
 /// But 1,293 `member_runs` rows DO carry three of the same spellings as
 /// `provider_profile.capability_bindings[].capability`, a different vocabulary

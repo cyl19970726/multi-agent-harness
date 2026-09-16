@@ -299,14 +299,19 @@ rather than in any repository ADR — so this section is the amending record.
   could re-introduce the attribution; it could not re-introduce the call without failing that
   test. The durable `interrupt_cause` column is an opaque `String`, so any historical
   `adapter_policy:<reason>` row still decodes unchanged — no wire value is lost.
-- **`CycleRuntimeObservation.steering_mode`** — written by all five adapters, read by none.
+- **`CycleRuntimeObservation.steering_mode`** — written by all five adapters and consumed by
+  no decision anywhere. Four wrote the literal `"unsupported"`; only Pi carried a real value,
+  and its one reader was Pi's own `queue_snapshot` diagnostic — itself `#[allow(dead_code)]`
+  with a single unit test — which is removed with the field. Pi's `steeringMode` stays
+  authoritative in Pi's own `get_state`.
 
 ### The four continuation/injection command kinds stay, decode-only
 
 `RuntimeCommandKind::{ActivateContinuation, InhibitContinuation, InjectCurrentCycle,
 QueueAtNativeBoundary}` are retired vocabulary (ADR 0067, ADR 0068) and were checked against
-the read-only September store copies: **128,987 JSONL rows across 66 files in five stores,
-and not one carries any of the four as a command kind.** Zero producers in code, too — every
+the read-only September store copies: **128,987 rows across 61 `.jsonl` files in five
+stores — plus the 5 `.json` files beside them — and not one carries any of the four as a
+command kind.** Zero producers in code, too — every
 reference is a match arm in a label table, the admission rejection table, or the frozen-kinds
 list.
 

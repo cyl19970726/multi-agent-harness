@@ -610,7 +610,7 @@ Every managed provider adapter (Claude, Codex, DeepSeek, Kimi, Pi) imposes no
 hidden wall-clock limit after a cycle is accepted: a long reasoning turn or
 silent provider tool remains live while the owned runner process and transport
 remain intact, and Interrupt/Close keep polling. The only timeouts an adapter
-applies are the three physical quantities of
+applies are the two physical quantities of
 `CycleTimeouts` (`crates/firm-runtime-contract/src/timeouts.rs`):
 `input_acceptance` bounds only the delivery boundary from input written to the
 provider's exact acceptance receipt, and `control_settle` bounds an issued
@@ -620,8 +620,11 @@ structurally instead — a reader thread's `Disconnected` branch, or an
 `ensure_alive()` probe on every silent poll — which cannot mistake a slow turn
 for a dead one the way a wall clock can. Silence after acceptance is never a failure
 and never an adapter-initiated interrupt; an interrupted cycle carries an
-attributed `InterruptCause` (Host control, adapter policy, or provider
-initiated), and a provider terminal failure never settles `Satisfied` — it
+attributed `InterruptCause`, and there are exactly two: the Host issued the
+control, or the provider ended its own turn as interrupted. There is no
+adapter-policy cause — an adapter may not stop a turn on its own initiative, and
+since ADR 0076's X1b slice the type has no variant for it. A provider terminal
+failure never settles `Satisfied` — it
 either settles the cycle receipt `Unsatisfied` (Claude, Codex, DeepSeek, Pi)
 or stops the cycle at `RuntimeRecoveryRequired` before any receipt exists
 (Kimi; cross-adapter unification is tracked in [GitHub issue

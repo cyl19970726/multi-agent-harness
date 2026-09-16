@@ -19,15 +19,22 @@ use crate::{
 /// that invariant is now carried by the type instead of by a test. The durable
 /// `interrupt_cause` column is an opaque `String`, so any historical
 /// `adapter_policy:<reason>` row still decodes unchanged.
+///
+/// The `Deserialize` derive below is required only because
+/// `firm-application`'s `CycleOutcome` derives it and carries this type.
+/// Neither is decoded anywhere in the tree — no `from_str`, `from_value` or
+/// typed binding — and neither is written to a durable record, so no stored row
+/// depends on this variant set. That is what makes deleting a variant a type
+/// question rather than a wire-compatibility one; if a decode path is ever
+/// wired up, it stops being one.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum InterruptCause {
     /// The Harness/Host issued Interrupt through `CycleControl`. This is the
     /// only cause adapters produce on the ordinary path.
     HostControl,
-    /// The PROVIDER ended the cycle as interrupted on its own — no Harness
-    /// control request and no adapter policy (Owner decision after S2 review
-    /// 01: the real second interrupt source §3.2's two variants cannot
-    /// express). `reason` must be non-empty.
+    /// The PROVIDER ended the cycle as interrupted on its own, with no Harness
+    /// control request behind it (Owner decision after S2 review 01: the real
+    /// second interrupt source). `reason` must be non-empty.
     ProviderInitiated { reason: String },
 }
 
@@ -54,11 +61,12 @@ impl InterruptCause {
 /// Non-invasive provider observation. It is deliberately not a transcript or
 /// a provider-event mirror.
 ///
-/// There is no `steering_mode`. The field existed, all five adapters wrote it
-/// — four of them the literal `"unsupported"` — and nothing ever read it, so
-/// it was a provider detail mirrored into a Harness struct for no consumer
-/// (ADR 0076, X1b). Pi's real `steeringMode` remains readable where it is
-/// authoritative: in Pi's own `get_state`.
+/// There is no `steering_mode`. The field existed and all five adapters wrote
+/// it — four of them the literal `"unsupported"` — but nothing ever made a
+/// decision from it: its only reader was Pi's own diagnostic snapshot, which is
+/// removed with it, and no branch anywhere consumed the value (ADR 0076, X1b).
+/// Pi's real `steeringMode` remains readable where it is authoritative: in Pi's
+/// own `get_state`.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct CycleRuntimeObservation {
     pub transport_alive: bool,
