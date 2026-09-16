@@ -294,3 +294,49 @@ fn legacy_command_status_folds_without_inventing_effect_or_execution_authority()
         assert!(serde_json::from_value::<RuntimeCommandRecord>(wire).is_err());
     }
 }
+
+/// ADR 0076, X1b item D. The four retired continuation/injection command kinds
+/// stay as DECODE-ONLY wire values: ADR 0067 and ADR 0068 retired the paths,
+/// not the vocabulary, and a durable row written before those cutovers must
+/// still read back as the kind it was written as.
+///
+/// Evidence for keeping rather than deleting them: across the five read-only
+/// September store copies — 128,987 JSONL rows in 66 files — not one carries
+/// any of the four as a command kind, and there is no constructor in the tree.
+/// But 1,293 `member_runs` rows DO carry three of the same spellings as
+/// `provider_profile.capability_bindings[].capability`, a different vocabulary
+/// that happens to share the words. A deletion justified by "we grepped for the
+/// string and found rows" would have been justified by the wrong rows, so the
+/// wire values stay and this test holds them.
+#[test]
+fn the_retired_continuation_and_injection_command_kinds_still_decode() {
+    use super::RuntimeCommandKind;
+    for (wire, expected) in [
+        (
+            "activate_continuation",
+            RuntimeCommandKind::ActivateContinuation,
+        ),
+        (
+            "inhibit_continuation",
+            RuntimeCommandKind::InhibitContinuation,
+        ),
+        (
+            "inject_current_cycle",
+            RuntimeCommandKind::InjectCurrentCycle,
+        ),
+        (
+            "queue_at_native_boundary",
+            RuntimeCommandKind::QueueAtNativeBoundary,
+        ),
+    ] {
+        let decoded: RuntimeCommandKind =
+            serde_json::from_value(serde_json::Value::String(wire.to_string()))
+                .unwrap_or_else(|error| panic!("{wire} must still decode: {error}"));
+        assert_eq!(decoded, expected, "{wire}");
+        assert_eq!(
+            serde_json::to_value(decoded).expect("re-serialize"),
+            serde_json::Value::String(wire.to_string()),
+            "{wire} must round-trip to the same frozen spelling"
+        );
+    }
+}
