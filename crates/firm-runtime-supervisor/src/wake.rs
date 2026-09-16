@@ -237,27 +237,58 @@ pub fn decide_wake(
 // ---------------------------------------------------------------------------
 
 /// Trackable exponential backoff state for the wake loop.
+///
+/// `consecutive_sleeps` is also the length of the current **idle episode**: the
+/// unbroken run of polls that found nothing to do. ADR 0078 records an idle
+/// episode with two durable rows rather than one per poll, and both are derived
+/// from this counter — `cap_recorded` latches the first so the cap row cannot
+/// be written twice for the same episode. No clock lives here: the crate stays
+/// I/O-free and the episode is measured in polls, not wall time.
 #[derive(Debug, Clone)]
 pub struct WakeBackoff {
     consecutive_sleeps: u32,
+    cap_recorded: bool,
 }
 
 impl WakeBackoff {
     pub fn new() -> Self {
         Self {
             consecutive_sleeps: 0,
+            cap_recorded: false,
         }
     }
 
-    /// Number of consecutive Sleep decisions without an intervening wake event.
-    #[cfg(test)]
+    /// Number of consecutive Sleep decisions without an intervening wake event,
+    /// i.e. how many polls the current idle episode has lasted.
     pub fn consecutive_sleeps(&self) -> u32 {
         self.consecutive_sleeps
     }
 
+    /// The backoff has stopped growing: this episode now polls at
+    /// `backoff_max_ms` and every further tick is indistinguishable from the
+    /// last. One row at this point describes the whole tail (ADR 0078).
+    pub fn at_cap(&self, policy: &WakePolicy) -> bool {
+        self.consecutive_sleeps > 0
+            && self.current_duration(policy) >= Duration::from_millis(policy.backoff_max_ms)
+    }
+
+    /// Whether the cap row has already been written for THIS episode.
+    pub fn cap_recorded(&self) -> bool {
+        self.cap_recorded
+    }
+
+    /// Latch the cap row for this episode. Cleared by `reset`, so the next
+    /// idle episode records its own cap exactly once.
+    pub fn mark_cap_recorded(&mut self) {
+        self.cap_recorded = true;
+    }
+
     /// Reset the backoff because a real event occurred (Work, delivery, etc.).
+    /// This is also the end of the idle episode, so the cap latch clears with
+    /// it.
     pub fn reset(&mut self) {
         self.consecutive_sleeps = 0;
+        self.cap_recorded = false;
     }
 
     /// Record one more sleep cycle.
@@ -752,6 +783,54 @@ mod tests {
         // Next sleep starts fresh.
         let d = backoff.current_duration(&policy);
         assert_eq!(d, Duration::from_millis(500));
+    }
+
+    // -----------------------------------------------------------------------
+    // ADR 0078: an idle episode is two durable rows, not one per poll.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn idle_episode_reaches_its_cap_once_and_rearms_on_the_next_episode() {
+        let policy = WakePolicy::default();
+        let mut backoff = WakeBackoff::new();
+
+        // A fresh episode is not at its cap, and a poll that has not slept at
+        // all is not an episode.
+        assert!(!backoff.at_cap(&policy));
+        assert!(!backoff.cap_recorded());
+
+        // 500ms doubling to a 30s ceiling reaches the cap on the 6th tick.
+        for _ in 0..5 {
+            backoff.tick();
+            assert!(
+                !backoff.at_cap(&policy),
+                "still growing at {} sleeps",
+                backoff.consecutive_sleeps()
+            );
+        }
+        backoff.tick();
+        assert_eq!(backoff.consecutive_sleeps(), 6);
+        assert!(backoff.at_cap(&policy));
+        assert!(
+            !backoff.cap_recorded(),
+            "reaching the cap does not itself write the row"
+        );
+
+        // The latch makes the row once-per-episode: every further tick is at
+        // the cap and none of them may write again.
+        backoff.mark_cap_recorded();
+        for _ in 0..50 {
+            backoff.tick();
+            assert!(backoff.at_cap(&policy));
+            assert!(backoff.cap_recorded());
+        }
+
+        // The wake that ends the episode clears both, so the NEXT idle stretch
+        // records its own cap exactly once rather than staying silent forever.
+        backoff.reset();
+        assert_eq!(backoff.consecutive_sleeps(), 0);
+        assert!(!backoff.at_cap(&policy));
+        assert!(!backoff.cap_recorded());
     }
 
     // -----------------------------------------------------------------------

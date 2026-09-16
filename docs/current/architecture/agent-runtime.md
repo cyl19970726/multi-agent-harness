@@ -357,6 +357,30 @@ running cycle. To change a busy member's course, Interrupt the cycle and send
 the correction as ordinary mail. Interrupt ends a turn, not its Work, and does
 not by itself pause automatic continuation.
 
+### Why a member woke
+
+**ADR 0078.** Every wake that starts a cycle writes one `team_run_event` on the
+member: `operation` `wake_decided`, `summary` the arm that actually fired plus a
+Harness-owned trigger key — `EagerClaim work=<id> version=<n>`,
+`CanonicalMessages messages=<n> first=<delivery id>`,
+`ClaimBoardWork work=<id> version=<n>`, `Acceptance acceptance=<event id> …`.
+Never provider content: no prompt, answer, Work title or message body.
+
+The arm is the decision that fired, not one inferred from what was delivered.
+Three arms produce an `ActiveWorkContinuation` and two paths produce a `Work`,
+so a derived name would routinely be wrong — and `ClaimBoardWork` recorded as
+`Continue` would assert the member resumed a Work it did not own.
+
+`Sleep` is bounded rather than silent. An idle **episode** — the unbroken run of
+polls that found nothing — writes at most two rows: `wake_idle_capped` once when
+the backoff first reaches its 30 s ceiling (past it every poll is identical),
+and `wake_idle_ended` carrying the poll count when a wake ends the episode. An
+hour of idling is two rows, not ~120. `firm team-run events` reads all three
+without change.
+
+Two wakes are deliberately unrecorded here because they already write their own
+event at the same instant: `Degraded` and `CloseRequested`.
+
 ### Cross-node messaging
 
 The source NodeDaemon remains the only Message author. The Control Plane owns

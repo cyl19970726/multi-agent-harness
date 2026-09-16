@@ -743,6 +743,12 @@ pub(super) fn wait_for_idle_member_wake(
     }
 }
 
+/// One pass of the idle wake loop, with the ADR 0078 decision row written
+/// around it.
+///
+/// The row is written HERE rather than at each of the nine `Ready` sites
+/// inside, so a new arm cannot be added without one: a wake that reaches the
+/// caller has been recorded by construction.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn poll_idle_member_wake(
     ledger: &TeamRunLedger,
@@ -753,6 +759,43 @@ pub(super) fn poll_idle_member_wake(
     last_consumed_work_version: Option<u64>,
     policy: &supervisor_wake::WakePolicy,
     backoff: &mut supervisor_wake::WakeBackoff,
+) -> CliResult<IdleWakeStep> {
+    // The arms reset the backoff before they return, so the length of the idle
+    // episode this poll may end has to be read first.
+    let episode_polls = backoff.consecutive_sleeps();
+    if backoff.at_cap(policy) && !backoff.cap_recorded() {
+        record_idle_episode_capped(ledger, member_row, policy, episode_polls)?;
+        backoff.mark_cap_recorded();
+    }
+    let mut decided: Option<supervisor_wake::WakeDecision> = None;
+    let step = poll_idle_member_wake_step(
+        ledger,
+        member_row,
+        controls,
+        ensure_transport_alive,
+        zero_output_streak,
+        last_consumed_work_version,
+        policy,
+        backoff,
+        &mut decided,
+    )?;
+    if let IdleWakeStep::Ready(wake) = &step {
+        record_wake_decision(ledger, member_row, wake, decided.as_ref(), episode_polls)?;
+    }
+    Ok(step)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn poll_idle_member_wake_step(
+    ledger: &TeamRunLedger,
+    member_row: &mut ProviderRuntimeProjection,
+    controls: &ControlReceiver<MemberControlCommand>,
+    ensure_transport_alive: &mut impl FnMut() -> CliResult<()>,
+    zero_output_streak: u32,
+    last_consumed_work_version: Option<u64>,
+    policy: &supervisor_wake::WakePolicy,
+    backoff: &mut supervisor_wake::WakeBackoff,
+    decided: &mut Option<supervisor_wake::WakeDecision>,
 ) -> CliResult<IdleWakeStep> {
     {
         // A command may have passed the control-plane fence just before this
@@ -890,6 +933,10 @@ pub(super) fn poll_idle_member_wake(
         let board_view = build_board_wake_view(ledger, member_row)?;
 
         let decision = supervisor_wake::decide_wake(&member_view, &board_view, policy, backoff);
+        // The true arm for the row the caller writes. Set BEFORE the match so
+        // it survives every early return inside it, including the arms that
+        // fall through to Retry.
+        *decided = Some(decision.clone());
         match decision {
             supervisor_wake::WakeDecision::DeliverPending => {
                 // Try work deliveries first (work contract prompt).

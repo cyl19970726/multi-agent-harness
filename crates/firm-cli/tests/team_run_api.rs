@@ -1240,5 +1240,7 @@ mod work_list_since_returns_only_works_changed_after_cursor;
 
 #[path = "team_run_api/codex_quota_diagnostic_preserves_runtime_uncertainty.rs"]
 mod codex_quota_diagnostic_preserves_runtime_uncertainty;
+#[path = "team_run_api/wake_decisions_are_on_the_record_exactly_once.rs"]
+mod wake_decisions_are_on_the_record_exactly_once;
 #[path = "team_run_api/work_readers_agree_across_both_journals.rs"]
 mod work_readers_agree_across_both_journals;

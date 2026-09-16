@@ -135,6 +135,21 @@ Workflow remains retired and has no runtime fallback.
 
 ### Current-state scanning and recovery diagnostics
 
+Why a member ran a cycle — or sat idle instead — is readable with the existing
+`firm team-run events --id <team-run-id>`; no new verb (ADR 0078). Three
+operations on `member_run` entities answer it:
+
+- `wake_decided` — one per cycle. The summary is the arm that fired
+  (`EagerClaim`, `CanonicalMessages`, `HostAttentions`, `DeliverPending`,
+  `Continue`, `ClaimBoardWork`, `DeliverInformational`, `Acceptance`) plus the
+  durable thing it was decided on. It records the decision, not its outcome;
+  the `member_actions` rows own the outcome.
+- `wake_idle_ended` — how many polls the member spent finding nothing before
+  that wake.
+- `wake_idle_capped` — written once when a member's poll backoff reaches its
+  30 s ceiling. A member sitting idle for an hour leaves these two rows, not
+  one per poll, so their absence means short gaps rather than missing evidence.
+
 `daemon status` includes `scan_metrics`: observation elapsed time, ledger size,
 actual bytes read, decoded rows, and cloned current rows. Counters cover
 successful cache, full-history and tail reads; metadata probes and failed reads

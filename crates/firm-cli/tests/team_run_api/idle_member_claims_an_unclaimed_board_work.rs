@@ -117,6 +117,12 @@ fn idle_member_claims_an_unclaimed_board_work() {
         .lines()
         .count();
 
+    // Let the member actually sit idle before the Work appears. The backoff is
+    // 500ms doubling, so two seconds is at least two polls that found nothing:
+    // this is a member woken OUT of an idle stretch, not one that happened to
+    // be mid-poll when the Work landed.
+    std::thread::sleep(Duration::from_secs(2));
+
     // An unclaimed, eligible team_claim Work: no owner, nobody assigned, no
     // delivery row. Nothing about it names this member.
     let board_work = crate::firm_env::member_work::create_work_for_member_run(
@@ -173,5 +179,64 @@ fn idle_member_claims_an_unclaimed_board_work() {
     assert!(
         !new_prompt.contains("ACTIVE WORK CONTINUATION"),
         "this member never owned it: {new_prompt}"
+    );
+
+    // ADR 0078. The durable decision row must name the arm that actually fired.
+    // The delivery is an `ActiveWorkContinuation`, which three arms produce —
+    // so a row derived from the delivery would call this one `Continue` and
+    // assert the member resumed a Work it owned. It owned nothing. Naming the
+    // arm `Continue` is how it became invisible enough to nearly delete, and a
+    // row that repeats the mistake is worse than no row.
+    let decisions: Vec<harness_core::TeamRunEvent> = store
+        .current_team_run_events(&run_id)
+        .expect("team run events")
+        .into_iter()
+        .filter(|event| {
+            event.operation == "wake_decided"
+                && event.member_run_id.as_deref() == Some(member_id.as_str())
+                && event.summary.contains("work-board-claim-1")
+        })
+        .collect();
+    assert_eq!(
+        decisions.len(),
+        1,
+        "one decision, one row: {:?}",
+        decisions.iter().map(|e| &e.summary).collect::<Vec<_>>()
+    );
+    assert_eq!(
+        decisions[0].summary,
+        format!(
+            "ClaimBoardWork work=work-board-claim-1 version={}",
+            board_work.version
+        ),
+        "the row must name the true arm and the Work it was decided on"
+    );
+    assert_eq!(decisions[0].entity_type, "member_run");
+    assert_eq!(decisions[0].entity_id, member_id);
+    assert!(
+        !decisions[0].summary.contains("SHARED WORK")
+            && !decisions[0].summary.contains("Take this from the board"),
+        "the row is Harness-owned ids only, never prompt or Work text: {}",
+        decisions[0].summary
+    );
+
+    // The wake ended an idle episode, so that episode is on the record too —
+    // one row for however many polls it took, not one row per poll.
+    let ended: Vec<String> = store
+        .current_team_run_events(&run_id)
+        .expect("team run events")
+        .into_iter()
+        .filter(|event| {
+            event.operation == "wake_idle_ended"
+                && event.member_run_id.as_deref() == Some(member_id.as_str())
+                && event.summary.ends_with("ClaimBoardWork")
+        })
+        .map(|event| event.summary)
+        .collect();
+    assert_eq!(ended.len(), 1, "one episode, one closing row: {ended:?}");
+    assert!(
+        ended[0].starts_with("idle episode ended after ") && !ended[0].contains("after 0 polls"),
+        "the closing row carries what no other row can — how long the member \
+         found nothing: {ended:?}"
     );
 }
