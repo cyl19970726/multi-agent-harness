@@ -262,7 +262,10 @@ they ended. Pre-ADR-0076 rows carry no key and read back as `None`.
   `input_never_accepted`, `control_settle_timeout`, `cycle_not_started`, `host_aborted`,
   `terminal_unobserved`) and `closed` now also appears for a cycle that ended under a Close.
   Anything reading that column as a closed set must be updated; the four historical values
-  are unchanged.
+  are unchanged. One further value, `cycle_ending_missing`, exists only as the shared loop's
+  unreachable arm: it is not an ending, it is what the row says if an adapter ever returns
+  `Err` without recording one, which is a runtime-contract defect and is asserted against in
+  debug builds.
 - `provider_status` now carries a second prefix, `cycle_ending:`. Readers that parse it as a
   `ProviderTerminalFailure` are unaffected — that parse still returns `None` for the new
   prefix, which is the honest answer.
