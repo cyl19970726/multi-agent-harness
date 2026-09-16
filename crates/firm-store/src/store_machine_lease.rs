@@ -423,19 +423,26 @@ fn require_exact_generation(
 
 impl HarnessStore {
     /// Seed machine authority the way a post-cutover node actually carries it:
-    /// the node-file document that every fence now reads, and the legacy Space
-    /// row that E2b has not yet retired.
+    /// the node-file document that every fence now reads, and — as far as it
+    /// still can — the legacy Space row that E2b has not yet retired.
     ///
-    /// Fixtures need both because that is the real shape of a node during the
-    /// cutover window — the document is authority, the row is still written and
-    /// still read by projections. Seeding only the row would leave a fixture
-    /// that no fence can pass; seeding only the document would hide the
-    /// projections that still read rows.
+    /// **The document is acquired first, and it is the only half that may
+    /// fail.** After cutover the daemon writes the document and nothing else:
+    /// `release_node_authorities` publishes `Released` on the document and
+    /// leaves the predecessor's Space row exactly where it was, because a
+    /// second live authority record is the failure ADR 0075 removes. A fixture
+    /// that drains through the daemon and then seeds a successor therefore
+    /// meets a legacy row that is still `Active` and will never be released by
+    /// anyone. Refusing there would fail a test for a record no fence reads.
+    /// So the row is kept in step best-effort: it is a projection courtesy for
+    /// the cutover window, not authority, and the two records are allowed to
+    /// diverge exactly where production lets them.
     ///
-    /// Generations are kept in step deliberately: a fence compares the
-    /// session's `node_daemon_generation` against the document, and a fixture
-    /// whose two records disagreed would fail for a reason that has nothing to
-    /// do with what it is testing.
+    /// The legacy rows are read for one reason — the cutover mint. The first
+    /// document on a node must start above every generation any Space ever
+    /// issued (ADR 0075 Migration 3), or a successor could reuse a number a
+    /// predecessor already drove under. Once the document exists its own
+    /// generation is the only input and this argument is ignored.
     ///
     /// Un-gated for the same reason `append_mission` is (`store_store_base.rs`):
     /// integration tests under `tests/` link the non-test build, so a
@@ -450,19 +457,20 @@ impl HarnessStore {
         now_unix_ms: u64,
         ttl_ms: u64,
     ) -> StoreResult<NodeDaemonLease> {
-        let row =
-            self.acquire_node_daemon_lease(node_id, daemon_id, instance_id, now_unix_ms, ttl_ms)?;
+        let space_generations = self
+            .latest_node_daemon_lease(node_id)?
+            .map(|row| row.generation)
+            .into_iter()
+            .collect::<Vec<_>>();
         let document = self.acquire_machine_lease(
             node_id,
             daemon_id,
             instance_id,
             ttl_ms,
-            &[row.generation.saturating_sub(1)],
+            &space_generations,
         )?;
-        debug_assert_eq!(
-            row.generation, document.generation,
-            "fixture records must agree on the generation a fence will compare"
-        );
+        let _ =
+            self.acquire_node_daemon_lease(node_id, daemon_id, instance_id, now_unix_ms, ttl_ms);
         Ok(document)
     }
 }
