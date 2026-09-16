@@ -75,7 +75,7 @@ change that.
 
 `decide_wake` gains one arm (`WakeDecision::DeliverInformational`), **below every arm that
 already has a reason to run a cycle** — degraded, delivery/message pending, continuation,
-probation, claim hint — and **above `Sleep`**:
+probation, board claim — and **above `Sleep`**:
 
 - Below them, because any of those cycles carries the queued mail for free under #941.
   Firing above them would deliver the same mail one cycle sooner at the cost of an extra

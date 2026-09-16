@@ -998,11 +998,30 @@ pub(super) fn poll_idle_member_wake(
                 }
                 // Work version changed but continuation candidate disappeared — fall through to Sleep.
             }
-            supervisor_wake::WakeDecision::ClaimHint(_work_ids) => {
-                // Board-discovery hint for idle members: the wake is only a
-                // discovery hint; ownership starts at the atomic claim.
-                // Inject a lightweight prompt so the member can discover and
-                // claim eligible Works.
+            supervisor_wake::WakeDecision::ClaimBoardWork => {
+                // The member is idle and the board holds an unclaimed, ready
+                // `team_claim` Work it is eligible for. This arm is the ONLY
+                // wake that reaches board Work: the eager claim
+                // (`claim_canonical_work_for_member`), `DeliverPending`
+                // (`queued_works_for`) and `Continue`
+                // (`is_active_work_continuation_candidate`) all filter on
+                // `owner_member_id == this member`, and an unclaimed board
+                // Work has no owner yet.
+                //
+                // What it does is deliver that Work as an ordinary
+                // continuation: `active_work_continuation_for` falls through to
+                // its last-resort branch (member_work_coordination.rs:1007),
+                // which selects exactly `owner_member_id.is_none() &&
+                // claim_mode == TeamClaim` and returns the highest-priority
+                // one. Ownership still starts at the atomic claim inside the
+                // cycle; this is the wake, not the claim.
+                //
+                // Until ADR 0078 this arm was called `ClaimHint` and its
+                // comment claimed to "inject a lightweight prompt so the member
+                // can discover and claim eligible Works". No prompt was ever
+                // injected and the decision's work ids were discarded — which
+                // read as a dead arm and very nearly got it deleted. The name
+                // now says what happens.
                 if let Some(work) = ledger.active_work_continuation_for(&member_row.id)? {
                     backoff.reset();
                     let expected = member_row.clone();
@@ -1117,7 +1136,7 @@ pub(super) fn poll_idle_member_wake(
             }
         }
     }
-    // No arm produced a wake. `DeliverPending`, `Continue` and `ClaimHint` are
+    // No arm produced a wake. `DeliverPending`, `Continue` and `ClaimBoardWork` are
     // predictions from a pure view built before the claim; when the matching
     // claim has already disappeared they used to re-enter the loop with no
     // sleep at all and re-ran whole-Store scans at 100% CPU (#584). `Retry` is

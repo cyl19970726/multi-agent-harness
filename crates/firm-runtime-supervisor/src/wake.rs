@@ -2,8 +2,8 @@
 //!
 //! ADR 0050: the pull half of the ownership model — a member is only woken
 //! when a state-change predicate holds. Idle members may be offered a
-//! board-discovery hint for eligible team_claim Works, but ownership starts
-//! only at the explicit atomic claim.
+//! woken for an unclaimed, eligible team_claim Work on the board, but
+//! ownership starts only at the explicit atomic claim.
 //!
 //! This module is free of I/O so it is unit-testable. View structs are built
 //! from store reads in the caller; `decide_wake` produces a `WakeDecision`.
@@ -28,9 +28,17 @@ pub enum WakeDecision {
     /// it. The queued batch is delivered on its own Messages boundary rather
     /// than waiting for a cycle that may never come (ADR 0077).
     DeliverInformational,
-    /// Idle member + eligible ready team_claim Work exists → board-discovery
-    /// hint. The member must perform the atomic claim itself.
-    ClaimHint(Vec<String>),
+    /// An idle member has an unclaimed, ready `team_claim` Work it is eligible
+    /// for. This is the ONLY wake that reaches board Work: every other path —
+    /// the eager claim, `DeliverPending`, `Continue` — filters on
+    /// `owner_member_id == this member`, and an unclaimed board Work has no
+    /// owner yet.
+    ///
+    /// It carried a `Vec<String>` of work ids until ADR 0078. The driver
+    /// discarded them and re-derived the Work through the ordinary
+    /// continuation path, so the payload described a board-discovery hint that
+    /// was never delivered to anyone. The payload is gone; the wake is not.
+    ClaimBoardWork,
     /// Nothing to do; sleep for this duration.
     Sleep(Duration),
     /// Member is degraded (zero-output spiral). Stop continuation injections;
@@ -142,7 +150,7 @@ pub fn effective_wake_policy() -> WakePolicy {
 /// 4. **Active Work version changed** → `Continue`.
 /// 5. **Zero-output probation + active Work** → one bounded continuation so
 ///    the threshold can be observed instead of stalling after the first turn.
-/// 6. **Idle + eligible team_claim Works** → `ClaimHint`.
+/// 6. **Idle + an unclaimed eligible team_claim Work** → `ClaimBoardWork`.
 /// 7. **Idle ≥ the informational delivery interval + informational mail
 ///    queued** → `DeliverInformational` (ADR 0077). Below every arm that
 ///    already runs a cycle, because such a cycle carries the mail anyway;
@@ -196,9 +204,9 @@ pub fn decide_wake(
         }
     }
 
-    // 6. Idle + eligible ready team_claim Works → board-discovery hint.
+    // 6. Idle + an unclaimed ready team_claim Work this member may take.
     if member.is_idle && !board.eligible_claim_work_ids.is_empty() {
-        return WakeDecision::ClaimHint(board.eligible_claim_work_ids.clone());
+        return WakeDecision::ClaimBoardWork;
     }
 
     // 7. Idle long enough, with informational mail queued and no other reason
@@ -206,7 +214,7 @@ pub fn decide_wake(
     //
     // Placed HERE, below every arm that already has a reason to run a cycle,
     // because #941 folds queued mail into any such cycle for free: a member
-    // with Work, a continuation, an acceptance or a claim hint receives its
+    // with Work, a continuation, an acceptance or a board claim receives its
     // mail without this arm, and firing earlier would only interrupt it one
     // cycle sooner. This arm exists for the case that path cannot reach — an
     // idle member with no Work, where the fold never happens because no cycle
@@ -419,7 +427,7 @@ mod tests {
     }
 
     #[test]
-    fn idle_member_with_eligible_claim_work_gets_claim_hint() {
+    fn idle_member_with_eligible_claim_work_is_woken_for_the_board() {
         let member = member_view(MemberWakeViewOverrides {
             status: Some(MemberRunStatus::Idle),
             is_idle: Some(true),
@@ -428,14 +436,11 @@ mod tests {
         let board = board_view(&["work-claimable-1", "work-claimable-2"]);
         let backoff = fresh_backoff();
         let decision = decide_wake(&member, &board, &policy(), &backoff);
-        assert_eq!(
-            decision,
-            WakeDecision::ClaimHint(vec!["work-claimable-1".into(), "work-claimable-2".into()])
-        );
+        assert_eq!(decision, WakeDecision::ClaimBoardWork);
     }
 
     #[test]
-    fn non_idle_member_does_not_get_claim_hint() {
+    fn non_idle_member_is_not_woken_for_the_board() {
         // A member with active work is not idle even if claimable Works exist.
         let member = member_view(MemberWakeViewOverrides {
             status: Some(MemberRunStatus::Running),
@@ -521,7 +526,7 @@ mod tests {
     }
 
     #[test]
-    fn delivery_takes_priority_over_claim_hint() {
+    fn delivery_takes_priority_over_board_claim() {
         let member = member_view(MemberWakeViewOverrides {
             status: Some(MemberRunStatus::Idle),
             is_idle: Some(true),
@@ -535,7 +540,7 @@ mod tests {
     }
 
     #[test]
-    fn continue_takes_priority_over_claim_hint() {
+    fn continue_takes_priority_over_board_claim() {
         let member = member_view(MemberWakeViewOverrides {
             status: Some(MemberRunStatus::Idle),
             is_idle: Some(true),
@@ -892,14 +897,19 @@ mod tests {
         );
 
         // An eligible claimable Work on the board.
-        let with_hint = member_view(MemberWakeViewOverrides {
+        let with_board_work = member_view(MemberWakeViewOverrides {
             unconsumed_informational_message_count: Some(1),
             idle_for: Some(long_idle),
             ..Default::default()
         });
         assert_eq!(
-            decide_wake(&with_hint, &board_view(&["work-2"]), &policy, &backoff),
-            WakeDecision::ClaimHint(vec!["work-2".into()])
+            decide_wake(
+                &with_board_work,
+                &board_view(&["work-2"]),
+                &policy,
+                &backoff
+            ),
+            WakeDecision::ClaimBoardWork
         );
 
         // Each of those cycles carries the mail for free (#941), which is why
