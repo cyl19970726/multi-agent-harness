@@ -124,6 +124,13 @@ The classifier reads only that token: an exact HTTP status integer (401/403 →
 `credits_depleted`, `auth_error`, `authentication_error`, `forbidden`,
 `unauthorized`). Anything else stays unclassified rather than becoming a gate.
 
+Since ADR 0076 that column is populated for every cycle ending on every
+provider, but only a provider-reported terminal failure uses the
+`provider_terminal:` shape. Every other ending carries the distinct
+`cycle_ending:<ending>` prefix, which this classifier deliberately does not
+parse: a transport loss, an acceptance timeout or a refused start is not a
+provider terminal and must never gate an account.
+
 The action `summary` is never scanned. It embeds the MEMBER's own first line, so
 a member writing "fixed the 403 handler" would otherwise mark its account
 unauthorized; substring matching also cannot tell `403` from `1403`.
@@ -133,7 +140,7 @@ Which modes can produce one:
 | Execution mode | Structured terminal metadata | Can gate a start |
 | --- | --- | --- |
 | `claude_agent_sdk` | Yes — `terminal_reason` + `api_error_status` from the SDK result | Yes |
-| `kimi_acp` | **No.** A 403 arrives as free-form JSON-RPC error text with no status field, and a real terminal failure is journalled as `action_type=error`, not `provider_error`. | No — Kimi capacity is always `unknown` |
+| `kimi_acp` | **No.** A 403 arrives as free-form JSON-RPC error text with no status field. Since ADR 0076 a Kimi provider error is journalled as `provider_error` with a `provider_terminal:` status like the others, but its `http_status` is always absent and its reviewed stop reasons (`max_tokens`, `refusal`, `max_turn_requests`) are outside the capacity vocabulary, so nothing there can classify an account. | No — Kimi capacity is always `unknown` |
 | `codex_app_server` | No — adapter error strings. It does not need one: it has a reviewed quota API. | No (uses the quota API instead) |
 
 The search walks backwards past rows it cannot classify, so a silent-round row

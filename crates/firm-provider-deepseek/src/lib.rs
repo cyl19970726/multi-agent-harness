@@ -27,22 +27,25 @@ use serde_json::{json, Value};
 
 use harness_runtime_contract::{
     AdmissionDecision, CapabilityBinding, CapabilityStatus, ControlIntent, ControlRequest,
-    ControlTransportReceipt, CycleControl, CycleRuntimeObservation as CycleObservation,
-    CycleSettlement, CycleTimeouts, EffectInspection, EffectReceipt, ExecutionCycleOutcome,
-    InterruptCause, MemberRuntimeCloseReceipt, NativeControlPrimitive, ProviderControlAction,
-    ProviderControlPlan, ProviderNativeControl, ProviderTerminalFailure, QuiesceReceipt,
-    QuiesceReceiptBuilder, QuiesceStep, ReconcileReceipt, ReleaseReceipt, RuntimeAdapter,
-    RuntimeBindingFence, RuntimeContractError, RuntimeDescription, SemanticCapability,
-    TeamRuntimeAdapter,
+    ControlTransportReceipt, CycleControl, CycleEnding,
+    CycleRuntimeObservation as CycleObservation, CycleSettlement, CycleTimeouts, EffectInspection,
+    EffectReceipt, ExecutionCycleOutcome, InterruptCause, MemberRuntimeCloseReceipt,
+    NativeControlPrimitive, ProviderControlAction, ProviderControlPlan, ProviderFailureCode,
+    ProviderNativeControl, ProviderTerminalFailure, QuiesceReceipt, QuiesceReceiptBuilder,
+    QuiesceStep, ReconcileReceipt, ReleaseReceipt, RuntimeAdapter, RuntimeBindingFence,
+    RuntimeContractError, RuntimeDescription, SemanticCapability, TeamRuntimeAdapter,
+    TerminalUnobservedCode,
 };
 
 mod capability_transport;
 mod composition;
+mod cycle_ending;
 mod error;
 mod permission;
 mod runner_contract;
 pub use capability_transport::*;
 use composition::*;
+pub(crate) use cycle_ending::DeepSeekCycleFailure;
 pub use error::{DeepSeekError, DeepSeekResult};
 pub use permission::*;
 
@@ -223,6 +226,10 @@ struct DeepSeekRunnerTransport {
     last_cycle_terminal: bool,
     last_interrupt_resumed_same_session: bool,
     close_reason: Option<String>,
+    /// The ADR 0076 ending of the last cycle that ended in `Err`. Drained by
+    /// `TeamRuntimeAdapter::take_cycle_ending` and cleared at the start of
+    /// every cycle so a stale ending can never be attributed to a later one.
+    last_cycle_ending: Option<CycleEnding>,
 }
 
 impl DeepSeekRunnerTransport {
@@ -304,6 +311,7 @@ impl DeepSeekRunnerTransport {
             pending_input_count: 0,
             last_cycle_terminal: false,
             last_interrupt_resumed_same_session: false,
+            last_cycle_ending: None,
             close_reason: None,
         };
         transport.write_frame(&start_frame)?;
@@ -527,6 +535,21 @@ impl DeepSeekRunnerTransport {
         }
     }
 
+    /// Record the ADR 0076 ending for this cycle and return the error
+    /// unchanged. Every `Err` leaving `run_cycle` goes through here or
+    /// through [`Self::classify`], so the shared loop always has a typed
+    /// ending instead of an untyped catch-all.
+    fn fail(&mut self, failure: DeepSeekCycleFailure, error: CliError) -> CliError {
+        self.last_cycle_ending = Some(failure.ending(&error.to_string()));
+        error
+    }
+
+    /// The `?`-propagating form: classify a helper's error without restating
+    /// its message.
+    fn classify<T>(&mut self, result: CliResult<T>, failure: DeepSeekCycleFailure) -> CliResult<T> {
+        result.map_err(|error| self.fail(failure, error))
+    }
+
     fn run_cycle(
         &mut self,
         input: &str,
@@ -535,13 +558,14 @@ impl DeepSeekRunnerTransport {
         on_event: &mut dyn FnMut(&Value),
         poll_control: &mut dyn FnMut() -> CycleControl,
     ) -> CliResult<ExecutionCycleOutcome> {
-        let input_id = self.send_input(input)?;
+        self.last_cycle_ending = None;
+        let sent = self.send_input(input);
+        let input_id = self.classify(sent, DeepSeekCycleFailure::TransportClosed)?;
         let started = Instant::now();
         let mut final_text = String::new();
         let mut input_acceptance_receipt = None;
         let mut control_receipts = Vec::new();
         let mut tool_call_count = 0u32;
-        let mut saw_assistant_message = false;
         let mut interrupt_sent = false;
         let mut interrupt_sent_at: Option<Instant> = None;
         let mut interrupt_requested = false;
@@ -551,7 +575,10 @@ impl DeepSeekRunnerTransport {
         loop {
             let control = poll_control();
             if let Some(error) = control.fatal_error {
-                return Err(CliError::Usage(error));
+                return Err(self.fail(
+                    DeepSeekCycleFailure::HostFatalControl,
+                    CliError::Usage(error),
+                ));
             }
             interrupt_requested |= control.interrupt || control.close;
             close_requested |= control.close;
@@ -559,26 +586,38 @@ impl DeepSeekRunnerTransport {
             // StartCycle. Do not race query.interrupt ahead of query creation
             // and then claim a cycle that never crossed that boundary.
             if interrupt_requested && input_acceptance_receipt.is_some() && !interrupt_sent {
-                self.interrupt()?;
+                let sent = self.interrupt();
+                self.classify(sent, DeepSeekCycleFailure::TransportClosed)?;
                 interrupt_sent = true;
                 interrupt_sent_at = Some(Instant::now());
             }
 
-            let Some(event) = self.receive_event(CONTROL_POLL)? else {
+            // The runner-death path: `receive_event` fails on a disconnected
+            // stdout (the child died mid-cycle) or on a frame the shared runner
+            // protocol cannot parse. Both leave the turn unobservable, and both
+            // settle the same way once acceptance is known, so they share one
+            // ending here (ADR 0076).
+            let received = self.receive_event(CONTROL_POLL);
+            let Some(event) = self.classify(received, DeepSeekCycleFailure::TransportClosed)?
+            else {
                 // D2/liveness: prove the transport is alive on every silent
                 // poll; the probe failing (or the reader-thread Disconnected
                 // branch) is the transport-death proof, never a wall-clock
                 // silence verdict.
-                self.ensure_alive()?;
+                let alive = self.ensure_alive();
+                self.classify(alive, DeepSeekCycleFailure::TransportClosed)?;
                 // A5/D3: an issued Interrupt that the provider never
                 // acknowledges expires after control_settle — Unknown, never
                 // a cycle failure and never a silent hang.
                 if let Some(sent_at) = interrupt_sent_at {
                     if sent_at.elapsed() >= timeouts.control_settle {
-                        return Err(CliError::Usage(format!(
-                            "DEEPSEEK_HARNESS_CONTROL_SETTLE_TIMEOUT: interrupt was not acknowledged within {}s",
-                            timeouts.control_settle.as_secs()
-                        )));
+                        return Err(self.fail(
+                            DeepSeekCycleFailure::ControlSettleTimeout,
+                            CliError::Usage(format!(
+                                "DEEPSEEK_HARNESS_CONTROL_SETTLE_TIMEOUT: interrupt was not acknowledged within {}s",
+                                timeouts.control_settle.as_secs()
+                            )),
+                        ));
                     }
                 }
                 // I1: the acceptance bound fences only the unacknowledged
@@ -588,18 +627,28 @@ impl DeepSeekRunnerTransport {
                 if input_acceptance_receipt.is_none()
                     && started.elapsed() >= timeouts.input_acceptance
                 {
-                    return Err(CliError::Usage(format!(
-                        "DEEPSEEK_HARNESS_INPUT_ACCEPTANCE_TIMEOUT: cycle {input_id} was not consumed within {}s",
-                        timeouts.input_acceptance.as_secs()
-                    )));
+                    return Err(self.fail(
+                        DeepSeekCycleFailure::InputAcceptanceTimeout,
+                        CliError::Usage(format!(
+                            "DEEPSEEK_HARNESS_INPUT_ACCEPTANCE_TIMEOUT: cycle {input_id} was not consumed within {}s",
+                            timeouts.input_acceptance.as_secs()
+                        )),
+                    ));
                 }
                 continue;
             };
             on_event(&event.raw);
             match event.name.as_str() {
-                "session_bound" => self.accept_session_binding(&event)?,
+                // Every failure here is about the PROVIDER's reported session
+                // identity — a missing sessionId, an unverifiable provider
+                // version, `DEEPSEEK_HARNESS_RESUME_MISMATCH` or
+                // `DEEPSEEK_HARNESS_SESSION_CHANGED`. None is Harness-side, so
+                // this is a terminal we cannot trust, not a Harness abort.
+                "session_bound" => {
+                    let bound = self.accept_session_binding(&event);
+                    self.classify(bound, DeepSeekCycleFailure::TerminalMismatch)?;
+                }
                 "assistant_message" => {
-                    saw_assistant_message = true;
                     let (text, tools) = assistant_projection(&event.data);
                     final_text.push_str(&text);
                     tool_call_count = tool_call_count.saturating_add(tools);
@@ -618,7 +667,8 @@ impl DeepSeekRunnerTransport {
                             response_id: Some(format!("deepseek-sdk-session:{session}:{input_id}")),
                             success: true,
                         };
-                        on_input_accepted(&receipt)?;
+                        let accepted = on_input_accepted(&receipt);
+                        self.classify(accepted, DeepSeekCycleFailure::AcceptanceCallbackFailed)?;
                         input_acceptance_receipt = Some(receipt);
                     }
                 }
@@ -630,11 +680,24 @@ impl DeepSeekRunnerTransport {
                     }
                     self.last_cycle_terminal = true;
                     self.state = TransportState::Idle;
-                    let receipt = input_acceptance_receipt.clone().ok_or_else(|| {
-                        CliError::Usage(format!(
-                            "DEEPSEEK_HARNESS_PROTOCOL_ERROR: turn_complete preceded consumed for {input_id}"
-                        ))
-                    })?;
+                    let Some(receipt) = input_acceptance_receipt.clone() else {
+                        return Err(self.fail(
+                            DeepSeekCycleFailure::ProtocolViolation,
+                            CliError::Usage(format!(
+                                "DEEPSEEK_HARNESS_PROTOCOL_ERROR: turn_complete preceded consumed for {input_id}"
+                            )),
+                        ));
+                    };
+                    // An empty terminal is EMPTY OUTPUT, not a provider
+                    // failure (ADR 0076). Reporting it as
+                    // `empty_final_report` made DeepSeek and Claude the only
+                    // providers on which zero output RESET the
+                    // unproductive-round streak instead of feeding the
+                    // circuit breaker, because `decide_team_round`
+                    // disqualifies the zero-output branch whenever a terminal
+                    // failure is present. Emptiness is now decided from the
+                    // outcome's own text and tool count, the same way on all
+                    // five providers.
                     let provider_terminal_failure =
                         if event.data.get("isError").and_then(Value::as_bool) == Some(true) {
                             Some(ProviderTerminalFailure {
@@ -650,19 +713,30 @@ impl DeepSeekRunnerTransport {
                                     .get("apiErrorStatus")
                                     .and_then(Value::as_i64),
                             })
-                        } else if !saw_assistant_message {
-                            Some(ProviderTerminalFailure {
-                                reason: "empty_final_report".to_string(),
-                                http_status: None,
-                            })
                         } else {
                             None
                         };
+                    // A requested Interrupt/Close that races a normal
+                    // completion is still SETTLED by this terminal: the
+                    // control asked the turn to end and it ended at its exact
+                    // native boundary. Hard-coding `None`/`false` here dropped
+                    // the control from the outcome, and the shared loop then
+                    // failed the whole member with
+                    // "control lacked verified terminal acknowledgement"
+                    // (ADR 0076 misalignment 1). The receipt is claimed only
+                    // when the interrupt frame actually crossed the boundary.
+                    if interrupt_sent {
+                        control_receipts.push(ControlTransportReceipt {
+                            command: "abort".into(),
+                            response_id: Some(format!("deepseek-sdk-interrupt:{input_id}")),
+                            success: true,
+                        });
+                    }
                     return Ok(ExecutionCycleOutcome {
                         final_text,
                         provider_terminal_failure,
-                        interrupt: None,
-                        close_requested_by_harness: false,
+                        interrupt: interrupt_sent.then_some(InterruptCause::HostControl),
+                        close_requested_by_harness: close_requested && interrupt_sent,
                         tool_call_count,
                         native_correlation: native_cycle_correlation(
                             &input_id,
@@ -691,19 +765,25 @@ impl DeepSeekRunnerTransport {
                 "member_resumed_after_interrupt" if interrupted => {
                     let resumed = event.data.get("sessionId").and_then(Value::as_str);
                     if resumed != Some(self.native_session_id.as_str()) {
-                        return Err(CliError::Usage(format!(
-                            "DEEPSEEK_HARNESS_INTERRUPT_RESUME_MISMATCH: retained={} resumed={resumed:?}",
-                            self.native_session_id
-                        )));
+                        let retained = self.native_session_id.clone();
+                        return Err(self.fail(
+                            DeepSeekCycleFailure::TerminalMismatch,
+                            CliError::Usage(format!(
+                                "DEEPSEEK_HARNESS_INTERRUPT_RESUME_MISMATCH: retained={retained} resumed={resumed:?}"
+                            )),
+                        ));
                     }
                     self.last_cycle_terminal = true;
                     self.last_interrupt_resumed_same_session = true;
                     self.state = TransportState::Idle;
-                    let receipt = input_acceptance_receipt.clone().ok_or_else(|| {
-                        CliError::Usage(format!(
-                            "DEEPSEEK_HARNESS_PROTOCOL_ERROR: interrupt preceded consumed for {input_id}"
-                        ))
-                    })?;
+                    let Some(receipt) = input_acceptance_receipt.clone() else {
+                        return Err(self.fail(
+                            DeepSeekCycleFailure::ProtocolViolation,
+                            CliError::Usage(format!(
+                                "DEEPSEEK_HARNESS_PROTOCOL_ERROR: interrupt preceded consumed for {input_id}"
+                            )),
+                        ));
+                    };
                     return Ok(ExecutionCycleOutcome {
                         final_text,
                         provider_terminal_failure: None,
@@ -721,16 +801,20 @@ impl DeepSeekRunnerTransport {
                     });
                 }
                 "runner_error" => {
-                    return Err(CliError::Usage(format!(
-                        "DEEPSEEK_HARNESS_RUNNER_ERROR: {}",
-                        event.data
-                    )));
+                    let data = event.data.clone();
+                    return Err(self.fail(
+                        DeepSeekCycleFailure::RunnerError,
+                        CliError::Usage(format!("DEEPSEEK_HARNESS_RUNNER_ERROR: {data}")),
+                    ));
                 }
                 "member_closed" => {
                     self.state = TransportState::Closed;
-                    return Err(CliError::Usage(
-                        "DEEPSEEK_HARNESS_UNEXPECTED_CLOSE: member_closed without CloseRuntime"
-                            .into(),
+                    return Err(self.fail(
+                        DeepSeekCycleFailure::UnexpectedClose,
+                        CliError::Usage(
+                            "DEEPSEEK_HARNESS_UNEXPECTED_CLOSE: member_closed without CloseRuntime"
+                                .into(),
+                        ),
                     ));
                 }
                 _ => {}
@@ -1048,6 +1132,10 @@ impl TeamRuntimeAdapter for DeepSeekTeamRuntime {
     ) -> CliResult<ExecutionCycleOutcome> {
         self.transport
             .run_cycle(input, timeouts, on_input_accepted, on_event, poll_control)
+    }
+
+    fn take_cycle_ending(&mut self) -> Option<CycleEnding> {
+        self.transport.last_cycle_ending.take()
     }
 
     fn native_control<'a>(

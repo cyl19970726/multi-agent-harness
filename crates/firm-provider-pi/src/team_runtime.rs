@@ -46,6 +46,10 @@ pub struct PiTeamRuntime {
     authority_session: Option<harness_core::agentfirm_api::AgentSession>,
     canonical_quiesced: bool,
     canonical_released: bool,
+    /// The ADR 0076 ending of the last cycle that ended in `Err`. Drained by
+    /// `TeamRuntimeAdapter::take_cycle_ending` and cleared at the start of
+    /// every cycle so a stale ending can never be attributed to a later one.
+    last_cycle_ending: Option<harness_runtime_contract::CycleEnding>,
 }
 
 impl PiTeamRuntime {
@@ -62,6 +66,7 @@ impl PiTeamRuntime {
             authority_session: None,
             canonical_quiesced: false,
             canonical_released: false,
+            last_cycle_ending: None,
         }
     }
 
@@ -242,13 +247,24 @@ impl harness_runtime_contract::TeamRuntimeAdapter for PiTeamRuntime {
         on_event: &mut dyn FnMut(&serde_json::Value),
         poll_control: &mut dyn FnMut() -> harness_runtime_contract::CycleControl,
     ) -> CliResult<harness_runtime_contract::ExecutionCycleOutcome> {
+        self.last_cycle_ending = None;
         let outcome = self.client.prompt_dyn(
             input,
             timeouts,
             on_input_accepted,
             &mut *on_event,
             &mut *poll_control,
-        )?;
+        );
+        let outcome = match outcome {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                // The RPC client already classified WHY it failed; the adapter
+                // only lifts that typed fact onto the cycle (ADR 0076).
+                let failure = self.client.last_cycle_failure();
+                self.last_cycle_ending = Some(failure.ending(&error.to_string()));
+                return Err(error);
+            }
+        };
         Ok(harness_runtime_contract::ExecutionCycleOutcome {
             final_text: outcome.final_text,
             provider_terminal_failure: outcome.provider_terminal_failure,
@@ -259,6 +275,10 @@ impl harness_runtime_contract::TeamRuntimeAdapter for PiTeamRuntime {
             control_receipts: outcome.control_receipts,
             terminal_observation: outcome.terminal_observation,
         })
+    }
+
+    fn take_cycle_ending(&mut self) -> Option<harness_runtime_contract::CycleEnding> {
+        self.last_cycle_ending.take()
     }
 
     fn native_control<'a>(

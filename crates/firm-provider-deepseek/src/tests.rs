@@ -251,6 +251,7 @@ mod cycle_conformance {
                 last_cycle_terminal: false,
                 last_interrupt_resumed_same_session: false,
                 close_reason: None,
+                last_cycle_ending: None,
             },
             line_tx,
         )
@@ -572,5 +573,225 @@ mod cycle_conformance {
             harness_runtime_contract::CycleSettlement::from_cycle_outcome(&outcome),
         );
         harness_runtime_contract::assert_c1_terminal_failure_unsatisfied(&receipt).expect("C1");
+    }
+
+    // -----------------------------------------------------------------------
+    // ADR 0076: the closed ending table, and the two misalignments it closes.
+
+    fn ds_control_timeouts() -> harness_runtime_contract::CycleTimeouts {
+        harness_runtime_contract::CycleTimeouts {
+            input_acceptance: Duration::from_secs(5),
+            transport_liveness: Duration::from_secs(5),
+            control_settle: Duration::from_secs(5),
+        }
+    }
+
+    /// The Harness-side predicate the shared loop uses, reproduced here so the
+    /// regression binds to the loop's real acceptance rule rather than a field.
+    fn ds_terminal_control_ack(outcome: &harness_runtime_contract::ExecutionCycleOutcome) -> bool {
+        let abort_receipt_observed = outcome
+            .control_receipts
+            .iter()
+            .any(|receipt| receipt.command == "abort" && receipt.success);
+        outcome.interrupt.is_some()
+            && abort_receipt_observed
+            && outcome.terminal_observation.terminal_cycle_observed()
+            && !outcome.close_requested_by_harness
+    }
+
+    /// ADR 0076 misalignment 1. A Host Interrupt that races a normal
+    /// `turn_complete` used to vanish: the terminal arm hard-coded
+    /// `interrupt: None, close_requested_by_harness: false`, so the shared
+    /// loop held a pending control with no acknowledgement and failed the
+    /// whole member with `RuntimeRecoveryRequired`.
+    #[test]
+    fn requested_interrupt_survives_a_turn_that_completes_normally() {
+        let outcome = drive_ds_cycle(
+            vec![
+                ds_consumed("deepseek-cycle-2"),
+                ds_assistant_message(),
+                ds_turn_complete("deepseek-cycle-2"),
+            ],
+            false,
+            &ds_control_timeouts(),
+            || harness_runtime_contract::CycleControl {
+                close: false,
+                interrupt: true,
+                fatal_error: None,
+            },
+        )
+        .expect("a normally completed turn is still an Ok cycle");
+
+        assert_eq!(
+            outcome.interrupt,
+            Some(harness_runtime_contract::InterruptCause::HostControl),
+            "the requested interrupt must survive the normal completion"
+        );
+        assert!(
+            ds_terminal_control_ack(&outcome),
+            "the shared loop must be able to verify this terminal control ack: {:?}",
+            outcome.control_receipts
+        );
+        assert_eq!(
+            harness_runtime_contract::CycleEnding::from_outcome(&outcome),
+            harness_runtime_contract::CycleEnding::InterruptedByHost
+        );
+    }
+
+    /// The same race under Close: Close dominates Interrupt in the ADR 0076
+    /// precedence order and must reach the loop so the runtime is disposed.
+    #[test]
+    fn requested_close_survives_a_turn_that_completes_normally() {
+        let outcome = drive_ds_cycle(
+            vec![
+                ds_consumed("deepseek-cycle-2"),
+                ds_assistant_message(),
+                ds_turn_complete("deepseek-cycle-2"),
+            ],
+            false,
+            &ds_control_timeouts(),
+            || harness_runtime_contract::CycleControl {
+                close: true,
+                interrupt: false,
+                fatal_error: None,
+            },
+        )
+        .expect("a normally completed turn is still an Ok cycle");
+
+        assert!(
+            outcome.close_requested_by_harness,
+            "the requested Close must survive the normal completion"
+        );
+        assert_eq!(
+            harness_runtime_contract::CycleEnding::from_outcome(&outcome),
+            harness_runtime_contract::CycleEnding::Closed
+        );
+    }
+
+    /// ADR 0076 misalignment 2. An empty terminal is EMPTY OUTPUT, not a
+    /// provider failure, so zero output feeds the circuit breaker here exactly
+    /// as it does on Codex, Kimi and Pi.
+    #[test]
+    fn empty_terminal_is_empty_output_not_a_provider_failure() {
+        let outcome = drive_ds_cycle(
+            vec![
+                ds_consumed("deepseek-cycle-2"),
+                ds_turn_complete("deepseek-cycle-2"),
+            ],
+            false,
+            &ds_control_timeouts(),
+            harness_runtime_contract::CycleControl::default,
+        )
+        .expect("an empty terminal is still an Ok cycle");
+
+        assert!(
+            outcome.provider_terminal_failure.is_none(),
+            "an empty terminal must not be reported as a provider failure: {:?}",
+            outcome.provider_terminal_failure
+        );
+        assert_eq!(
+            harness_runtime_contract::CycleEnding::from_outcome(&outcome),
+            harness_runtime_contract::CycleEnding::EmptyOutput
+        );
+    }
+
+    /// Exhaustiveness: every ending this adapter can produce is placed in the
+    /// closed table. The `expected` match below is wildcard-free, so adding a
+    /// variant to `DeepSeekCycleFailure` breaks this test's compilation until
+    /// the new ending is decided on deliberately.
+    #[test]
+    fn every_deepseek_cycle_ending_is_placed_in_the_closed_table() {
+        use crate::DeepSeekCycleFailure;
+        use harness_runtime_contract::{CycleEnding, ProviderFailureCode, TerminalUnobservedCode};
+        fn expected(failure: DeepSeekCycleFailure) -> CycleEnding {
+            match failure {
+                DeepSeekCycleFailure::HostFatalControl
+                | DeepSeekCycleFailure::AcceptanceCallbackFailed => CycleEnding::HostAborted {
+                    detail: "detail".to_string(),
+                },
+                DeepSeekCycleFailure::TransportClosed => CycleEnding::TransportLost {
+                    detail: "detail".to_string(),
+                },
+                DeepSeekCycleFailure::InputAcceptanceTimeout => CycleEnding::AcceptanceTimeout,
+                DeepSeekCycleFailure::ControlSettleTimeout => CycleEnding::ControlSettleTimeout,
+                DeepSeekCycleFailure::RunnerError => CycleEnding::ProviderFailed {
+                    code: ProviderFailureCode::RunnerError,
+                    detail: "detail".to_string(),
+                    http_status: None,
+                },
+                DeepSeekCycleFailure::UnexpectedClose => CycleEnding::TerminalUnobserved {
+                    code: TerminalUnobservedCode::UnexpectedClose,
+                    detail: "detail".to_string(),
+                },
+                DeepSeekCycleFailure::ProtocolViolation => CycleEnding::TerminalUnobserved {
+                    code: TerminalUnobservedCode::ProtocolViolation,
+                    detail: "detail".to_string(),
+                },
+                DeepSeekCycleFailure::TerminalMismatch => CycleEnding::TerminalUnobserved {
+                    code: TerminalUnobservedCode::TerminalMismatch,
+                    detail: "detail".to_string(),
+                },
+            }
+        }
+        assert_eq!(
+            DeepSeekCycleFailure::ALL.len(),
+            9,
+            "ALL must list every variant the wildcard-free match above covers"
+        );
+        for failure in DeepSeekCycleFailure::ALL {
+            let ending = failure.ending("detail");
+            assert_eq!(ending, expected(*failure), "{failure:?}");
+            assert!(!ending.action_type().is_empty(), "{failure:?}");
+            assert!(!ending.provider_status().is_empty(), "{failure:?}");
+        }
+    }
+
+    /// ADR 0076 / review r1 B1. The exhaustiveness test above proves the local
+    /// enum maps totally onto the table; it cannot prove that every `Err` SITE
+    /// records a variant. This drives the adapter to a real mid-cycle runner
+    /// death — the single most likely DeepSeek failure, and the site that was
+    /// missed in the first submission — and asserts an ending was recorded.
+    #[test]
+    fn a_runner_death_mid_cycle_records_a_typed_ending() {
+        let (mut transport, line_tx) = scripted_deepseek_transport();
+        line_tx
+            .send(ds_consumed("deepseek-cycle-2"))
+            .expect("scripted acceptance");
+        // Dropping the sender is the runner dying: `receive_event` sees a
+        // disconnected stdout.
+        drop(line_tx);
+        let error = transport
+            .run_cycle(
+                "conformance cycle",
+                ds_control_timeouts(),
+                &mut |_receipt| Ok(()),
+                &mut |_event| {},
+                &mut harness_runtime_contract::CycleControl::default,
+            )
+            .expect_err("a dead runner ends the cycle");
+        assert!(
+            error
+                .to_string()
+                .contains("DEEPSEEK_HARNESS_TRANSPORT_CLOSED"),
+            "{error}"
+        );
+        let ending = transport
+            .last_cycle_ending
+            .take()
+            .expect("a runner death must record a typed ending");
+        assert!(
+            matches!(
+                ending,
+                harness_runtime_contract::CycleEnding::TransportLost { .. }
+            ),
+            "{ending:?}"
+        );
+        // The input WAS accepted, so this is "accepted, outcome unproven" —
+        // never "not applied", which would invite a replay of an accepted input.
+        assert_eq!(
+            ending.settlement(true),
+            harness_runtime_contract::CycleEndingSettlement::RecoveryRequiredUnknown
+        );
+        assert_eq!(ending.action_type(), "transport_lost");
     }
 }

@@ -1,5 +1,12 @@
 use super::*;
 
+// The ADR 0076 cycle-ending tests live in their own file: this one reached the
+// 1,500-line source ceiling, and "how a cycle ends and what it records" is a
+// cohesive boundary rather than an arbitrary cut. Declared here, not in lib.rs,
+// so the crate root keeps its remaining headroom.
+#[path = "kimi_cycle_ending_tests.rs"]
+mod cycle_ending;
+
 #[cfg(unix)]
 fn scripted_client() -> (KimiAcpClient, Sender<serde_json::Value>) {
     // The child is only a sink for the prompt/reverse-request response
@@ -36,6 +43,7 @@ fn scripted_client() -> (KimiAcpClient, Sender<serde_json::Value>) {
             prompt_active: false,
             settled_boundary_observed: true,
             shutdown_receipt: None,
+            last_prompt_failure: crate::KimiCycleFailure::TransportLost,
         },
         update_tx,
     )
@@ -1063,6 +1071,15 @@ fn kimi_conformance_timeouts() -> harness_runtime_contract::CycleTimeouts {
         input_acceptance: Duration::from_secs(2),
         transport_liveness: Duration::from_millis(1),
         control_settle: Duration::ZERO,
+    }
+}
+
+/// A real control-settle window, so a delivered `session/cancel` is given time
+/// to reach its terminal instead of expiring into the kill path.
+fn kimi_control_timeouts() -> harness_runtime_contract::CycleTimeouts {
+    harness_runtime_contract::CycleTimeouts {
+        control_settle: Duration::from_secs(5),
+        ..kimi_conformance_timeouts()
     }
 }
 

@@ -796,11 +796,17 @@ fn agent_sdk_member_records_provider_errors_instead_of_successful_rounds() {
 }
 
 #[test]
-fn a_silent_provider_turn_is_a_provider_error_and_stays_reconstructable() {
+fn a_silent_provider_turn_is_an_empty_round_and_stays_reconstructable() {
     // The unclassified half of the same defect: a terminal provider failure the
     // runner cannot label ends the turn with NO agent message. `## RESULT`
     // parsing reads empty text as `done`, so without a guard this published a
     // fabricated completion action no member ever wrote.
+    //
+    // ADR 0076 renamed the row without weakening the guard: a silent turn is an
+    // EMPTY TERMINAL, recorded as a failed `empty_provider_round` on all five
+    // providers and counted toward the unproductive-round circuit breaker. It
+    // used to be reported here as `provider_error: empty_final_report`, which
+    // RESET that streak instead of feeding it.
     let home = TempHome::new("agent-sdk-silent-turn");
     init_project(&home, "proj");
     let root = home.base().join("proj");
@@ -820,7 +826,7 @@ fn a_silent_provider_turn_is_a_provider_error_and_stays_reconstructable() {
                 .as_array()
                 .into_iter()
                 .flatten()
-                .any(|action| action["action_type"] == "provider_error")
+                .any(|action| action["action_type"] == "empty_provider_round")
     });
     let member_id = detail_json["member_run"]["id"]
         .as_str()
@@ -835,17 +841,28 @@ fn a_silent_provider_turn_is_a_provider_error_and_stays_reconstructable() {
             .all(|action| action["action_type"] != "completed"),
         "a silent provider turn must not be recorded as completed: {detail_json}"
     );
-    let provider_error = actions
+    let empty_round = actions
         .iter()
-        .find(|action| action["action_type"] == "provider_error")
-        .unwrap_or_else(|| panic!("no provider_error action: {detail_json}"));
-    assert_eq!(provider_error["status"], "failed");
+        .find(|action| action["action_type"] == "empty_provider_round")
+        .unwrap_or_else(|| panic!("no empty_provider_round action: {detail_json}"));
+    assert_eq!(empty_round["status"], "failed");
     assert!(
-        provider_error["summary"]
+        empty_round["summary"]
             .as_str()
             .unwrap_or_default()
-            .contains("empty_final_report"),
-        "the record names the silence honestly: {provider_error}"
+            .contains("without authored output"),
+        "the record names the silence honestly: {empty_round}"
+    );
+    assert_eq!(
+        empty_round["provider_status"].as_str(),
+        Some("cycle_ending:empty_output"),
+        "an empty terminal is not a provider terminal failure: {empty_round}"
+    );
+    assert!(
+        actions
+            .iter()
+            .all(|action| action["action_type"] != "provider_error"),
+        "an empty terminal must not be recorded as a provider error: {detail_json}"
     );
     let outbox = detail_json["mailbox"]["outbox"].as_array().expect("outbox");
     assert!(

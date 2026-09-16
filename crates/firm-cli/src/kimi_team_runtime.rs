@@ -60,6 +60,10 @@ impl rt::TeamRuntimeAdapter for KimiTeamRuntime<'_> {
             .map_err(crate::kimi_acp::provider_error)
     }
 
+    fn take_cycle_ending(&mut self) -> Option<rt::CycleEnding> {
+        rt::TeamRuntimeAdapter::take_cycle_ending(&mut self.0)
+    }
+
     fn run_cycle(
         &mut self,
         input: &str,
