@@ -692,7 +692,6 @@ impl ClaudeRunnerTransport {
             process_alive: alive,
             is_streaming: Some(matches!(self.state, TransportState::Active)),
             pending_message_count: Some(self.pending_input_count),
-            steering_mode: Some("unsupported".into()),
             follow_up_mode: Some("harness_safe_boundary".into()),
             settled_boundary_observed: settled,
         }

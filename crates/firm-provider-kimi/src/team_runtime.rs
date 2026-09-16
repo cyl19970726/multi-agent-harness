@@ -490,7 +490,6 @@ impl harness_runtime_contract::TeamRuntimeAdapter for KimiTeamRuntime<'_> {
                 process_alive: process.process_alive,
                 is_streaming: Some(process.prompt_active),
                 pending_message_count: None,
-                steering_mode: Some("unsupported".to_string()),
                 follow_up_mode: Some("harness_next_round_batched".to_string()),
                 settled_boundary_observed: process.settled_boundary_observed,
             },

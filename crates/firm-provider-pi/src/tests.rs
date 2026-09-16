@@ -175,7 +175,6 @@ for line in sys.stdin:
         Some(2),
         "queue observation must surface the native pending count: {snapshot}"
     );
-    assert_eq!(snapshot["steering_mode"].as_str(), Some("one-at-a-time"));
 
     let (children, children_evidence) = client.writable_children_drain_proof();
     assert_eq!(

@@ -220,7 +220,6 @@ fn test_cycle_outcome() -> ExecutionCycleOutcome {
             process_alive: true,
             is_streaming: Some(false),
             pending_message_count: Some(0),
-            steering_mode: None,
             follow_up_mode: None,
             settled_boundary_observed: true,
         },

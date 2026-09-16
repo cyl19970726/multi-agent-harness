@@ -53,13 +53,18 @@ impl InterruptCause {
 
 /// Non-invasive provider observation. It is deliberately not a transcript or
 /// a provider-event mirror.
+///
+/// There is no `steering_mode`. The field existed, all five adapters wrote it
+/// — four of them the literal `"unsupported"` — and nothing ever read it, so
+/// it was a provider detail mirrored into a Harness struct for no consumer
+/// (ADR 0076, X1b). Pi's real `steeringMode` remains readable where it is
+/// authoritative: in Pi's own `get_state`.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct CycleRuntimeObservation {
     pub transport_alive: bool,
     pub process_alive: bool,
     pub is_streaming: Option<bool>,
     pub pending_message_count: Option<u64>,
-    pub steering_mode: Option<String>,
     pub follow_up_mode: Option<String>,
     pub settled_boundary_observed: bool,
 }
