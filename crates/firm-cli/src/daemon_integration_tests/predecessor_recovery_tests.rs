@@ -389,12 +389,26 @@ fn automatic_recovery_refuses_a_predecessor_process_that_still_exists() {
     );
 }
 
+/// ADR 0075 retarget of `automatic_recovery_refuses_two_unreleased_predecessor_instances`.
+///
+/// That test proved the successor was fenced when two Execution Spaces each
+/// held a *different* unreleased predecessor instance, because a cross-Space
+/// sweep could not tell which one it was recovering and must not guess. One
+/// document per machine does not improve that detection — it removes the state
+/// the detection existed for. The second instance is refused at acquisition, by
+/// name, before it owns anything, so the ambiguity can never be written down.
+///
+/// The successor property is therefore strictly stronger (impossible rather
+/// than detected) and both halves are asserted here: the refusal that makes it
+/// impossible, and that automatic recovery of the one real predecessor then
+/// proceeds with nothing left to be ambiguous about.
 #[test]
-fn automatic_recovery_refuses_two_unreleased_predecessor_instances() {
+fn the_machine_admits_one_unreleased_predecessor_instance_so_recovery_never_guesses() {
     let fixture = RecoveryFixture::new("auto-recover-ambiguous");
     let dead = fixture.expire(&fixture.seed_predecessor(ABSENT_PID));
-    // A second registered Execution Space holding a different unreleased
-    // instance: recovery must not sweep an instance nobody asked about.
+    // A second Execution Space on the same machine. Before the cutover it could
+    // carry its own lease row; now every Space on this node resolves the one
+    // document, so this is the attempt that used to create the ambiguity.
     let other = crate::execution_space::register_and_activate(
         &fixture.inner.firm_home(),
         "second-space",
@@ -415,40 +429,48 @@ fn automatic_recovery_refuses_two_unreleased_predecessor_instances() {
             updated_at: "unix-ms:1".to_string(),
         })
         .expect("insert Node in the second Space");
-    other_store
-        .seed_machine_authority_for_test(
+
+    let refusal = other_store
+        .acquire_machine_lease(
             fixture.daemon().node_id(),
             "other-dead-daemon",
             &format!("{ABSENT_PID}:1:other-dead-daemon"),
-            current_unix_ms_u64(),
             1,
+            &[],
         )
-        .expect("seed a second unreleased instance");
-    std::thread::sleep(Duration::from_millis(5));
+        .expect_err("a second unreleased instance can never take this machine");
+    let refusal = refusal.to_string();
+    assert!(
+        refusal.contains("NODE_DAEMON_PREDECESSOR_RECOVERY_REQUIRED"),
+        "{refusal}"
+    );
+    // Expiry is not a release: the predecessor above is already expired and the
+    // refusal still stands, which is the whole reason a successor has to prove
+    // death rather than wait one out.
+    assert!(refusal.contains(&dead.instance_id), "{refusal}");
+    assert_eq!(fixture.current_lease().instance_id, dead.instance_id);
+    assert_eq!(fixture.current_lease().daemon_id, "dead-daemon");
+    assert_ne!(
+        fixture.current_lease().status,
+        harness_core::NodeDaemonLeaseStatus::Released
+    );
 
-    let error = fixture
+    // With exactly one unreleased instance on the machine there is nothing to
+    // be ambiguous about, so the successor recovers it instead of refusing.
+    fixture
         .daemon()
         .ensure_node_authority_bundle()
-        .expect_err("two unreleased instances must fence the successor");
-    assert!(
-        error
-            .to_string()
-            .contains("NODE_DAEMON_MACHINE_AUTHORITY_LOST"),
-        "{error}"
+        .expect("one proven-dead predecessor leaves the successor nothing to guess");
+    assert_eq!(fixture.current_lease().generation, dead.generation + 1);
+    assert_eq!(
+        fixture.current_lease().instance_id,
+        fixture.daemon().instance_id()
     );
-    assert_eq!(fixture.current_lease().generation, dead.generation);
-    assert_eq!(fixture.current_lease().daemon_id, "dead-daemon");
-
-    let last_error = fixture
-        .recovery_diagnostic()
-        .expect("the refused attempt is reported by daemon status")["last_error"]
-        .as_str()
-        .expect("a named proof failure")
-        .to_string();
-    assert!(
-        last_error.contains("SUPERVISOR_GENERATION_FENCED")
-            && last_error.contains("different unreleased predecessor instances"),
-        "{last_error}"
+    assert_eq!(
+        fixture
+            .recovery_diagnostic()
+            .expect("the recovery attempt is reported by daemon status")["last_error"],
+        serde_json::Value::Null
     );
 }
 
