@@ -68,9 +68,27 @@ pub trait CodexAppServerBridge {
     fn read_thread_goal(&mut self) -> CliResult<Option<Value>>;
     fn set_thread_goal_status(&mut self, status: &str) -> CliResult<Value>;
     fn shutdown_with_receipt(&mut self) -> CliResult<CodexAppServerShutdownReceipt>;
+    /// Label the owned provider process group with its exact cleanup scope
+    /// (an AgentSession id), so a machine-level owner can prove and terminate
+    /// the orphaned group after this runtime's driver dies (#937). Bridges
+    /// without an owned process group may no-op.
+    fn set_cleanup_label(&mut self, _label: &str) {}
+
+    /// The owned provider group leader pid, when this bridge owns one (#937).
+    fn owned_process_group_id(&self) -> Option<u32> {
+        None
+    }
 }
 
 impl CodexAppServerBridge for CodexAppServerClient {
+    fn set_cleanup_label(&mut self, label: &str) {
+        self.owned_process_group.set_cleanup_label(label);
+    }
+
+    fn owned_process_group_id(&self) -> Option<u32> {
+        Some(self.owned_process_group.pid())
+    }
+
     fn ensure_transport_alive(&mut self) -> CliResult<()> {
         CodexAppServerClient::ensure_transport_alive(self)
     }
@@ -718,6 +736,11 @@ impl<'a, B: CodexAppServerBridge> TeamRuntimeAdapter for CodexTeamRuntime<'a, B>
                 )));
             }
         }
+        // #937: label the owned provider process group with its exact cleanup
+        // scope so a machine-level owner can prove and terminate it if this
+        // runtime's driver dies before settling the lane.
+        self.bridge
+            .set_cleanup_label(&format!("{}:rg{}", session.id, session.runtime_generation));
         let composition = profile
             .composition_fingerprint
             .clone()
@@ -1138,6 +1161,10 @@ impl<'a, B: CodexAppServerBridge> harness_runtime_contract::RuntimeAdapter
 {
     fn describe(&self) -> &RuntimeDescription {
         &self.description
+    }
+
+    fn owned_process_group_id(&self) -> Option<u32> {
+        self.bridge.owned_process_group_id()
     }
 
     fn open_or_resume(

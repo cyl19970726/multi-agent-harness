@@ -451,6 +451,18 @@ impl PiRpcClient {
         &self.session_file
     }
 
+    /// Label the owned provider process group with its exact cleanup scope
+    /// (an AgentSession id), so a machine-level owner can prove and terminate
+    /// the orphaned group after this runtime's driver dies (#937).
+    pub(crate) fn set_cleanup_label(&mut self, label: &str) {
+        self.owned_process_group.set_cleanup_label(label);
+    }
+
+    /// The owned provider group leader pid (#937).
+    pub(crate) fn owned_process_group_id(&self) -> Option<u32> {
+        Some(self.owned_process_group.pid())
+    }
+
     pub fn ensure_transport_alive(&mut self) -> CliResult<()> {
         let reader_ended = self.reader.as_ref().is_some_and(JoinHandle::is_finished);
         let child_ended = self

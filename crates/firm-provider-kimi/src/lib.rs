@@ -223,6 +223,20 @@ pub struct KimiAcpClient {
 }
 
 impl KimiAcpClient {
+    /// Label the owned provider process group with its exact cleanup scope
+    /// (an AgentSession id), so a machine-level owner can prove and terminate
+    /// the orphaned group after this runtime's driver dies (#937).
+    pub(crate) fn set_cleanup_label(&mut self, label: &str) {
+        if let Some(group) = self.owned_process_group.as_mut() {
+            group.set_cleanup_label(label);
+        }
+    }
+
+    /// The owned provider group leader pid, when one is registered (#937).
+    pub(crate) fn owned_process_group_id(&self) -> Option<u32> {
+        self.owned_process_group.as_ref().map(|group| group.pid())
+    }
+
     fn try_wait_child(&mut self) -> std::io::Result<Option<std::process::ExitStatus>> {
         match self.owned_process_group.as_mut() {
             Some(group) => group.try_wait_and_release(&mut self.child),

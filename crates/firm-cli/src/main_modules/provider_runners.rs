@@ -1,4 +1,5 @@
 use super::*;
+use crate::runtime_adapter_contract::RuntimeAdapter as _;
 
 /// One persistent member supervisor. Provider transports and turns are
 /// disposable generations beneath the durable ProviderRuntimeProjection/native-session
@@ -642,6 +643,7 @@ pub(super) fn run_codex_member_shared(
         Some(serde_json::json!({
             "provider": "codex",
             "phase": "runtime_attached",
+            "provider_group": adapter.owned_process_group_id(),
             "observation": open_observation,
         })),
         None,
@@ -876,6 +878,7 @@ pub(super) fn run_claude_agent_sdk_team_member_shared(
         Some(serde_json::json!({
             "provider": "claude",
             "phase": "runtime_attached",
+            "provider_group": adapter.owned_process_group_id(),
             "observation": open_observation,
         })),
         None,
@@ -1134,6 +1137,7 @@ pub(super) fn run_deepseek_harness_team_member_shared(
         Some(serde_json::json!({
             "provider": "deepseek_harness",
             "phase": "runtime_attached",
+            "provider_group": adapter.owned_process_group_id(),
             "observation": open_observation,
         })),
         None,
@@ -1404,6 +1408,7 @@ pub(super) fn run_kimi_member_shared(
         Some(serde_json::json!({
             "provider": "kimi",
             "phase": "runtime_attached",
+            "provider_group": adapter.owned_process_group_id(),
             "observation": open_observation,
         })),
         None,

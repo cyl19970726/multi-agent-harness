@@ -85,6 +85,12 @@ struct OwnedProcessGroups {
     accepting: bool,
     next_token: u64,
     groups: HashMap<u32, u64>,
+    /// Exact cleanup scope (an AgentSession id and runtime generation) for a
+    /// registered group, stored WITH the token that was current at label
+    /// time: a pid reused by a newer registration never answers for the stale
+    /// label, so scoped cleanup stays token-exact (#937). Removed together
+    /// with the pid entry.
+    labels: HashMap<u32, (String, u64)>,
     shutdown_signaled: Vec<u32>,
     shutdown_signal_failures: Vec<(u32, i32)>,
     shutdown_reap_failures: Vec<(u32, Option<i32>)>,
@@ -97,6 +103,7 @@ impl Default for OwnedProcessGroups {
             accepting: true,
             next_token: 0,
             groups: HashMap::new(),
+            labels: HashMap::new(),
             shutdown_signaled: Vec::new(),
             shutdown_signal_failures: Vec::new(),
             shutdown_reap_failures: Vec::new(),
@@ -223,6 +230,7 @@ impl OwnedProcessGroupRegistration {
                 .unwrap_or_else(|error| error.into_inner());
             if groups.groups.get(&self.pid) == Some(&self.token) {
                 groups.groups.remove(&self.pid);
+                groups.labels.remove(&self.pid);
             }
             self.registered = false;
         }
@@ -343,6 +351,7 @@ impl OwnedProcessGroupRegistration {
         if self.registered {
             if groups.groups.get(&self.pid) == Some(&self.token) {
                 groups.groups.remove(&self.pid);
+                groups.labels.remove(&self.pid);
             }
             self.registered = false;
         }
@@ -470,6 +479,179 @@ pub fn kill_process_tree(child: &mut std::process::Child) {
     let _ = child.wait();
 }
 
+impl OwnedProcessGroupRegistration {
+    /// The registered leader pid. Callers that durably record the exact
+    /// cleanup scope (the Session's RuntimeCommand inventory) use this so a
+    /// later recovery actor can prove termination even after the live
+    /// registry entry was removed by a successful teardown (#937).
+    pub fn pid(&self) -> u32 {
+        self.pid
+    }
+
+    /// Label this registration with the exact cleanup scope it belongs to
+    /// (an AgentSession id and runtime generation), recorded with the token
+    /// that is current NOW: a later registration reusing this pid never
+    /// answers for the stale label, and removal still requires the exact
+    /// token match (#937). The label is removed together with the pid entry.
+    pub fn set_cleanup_label(&mut self, label: &str) {
+        let mut groups = owned_process_groups()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if groups.groups.get(&self.pid) == Some(&self.token) {
+            groups
+                .labels
+                .insert(self.pid, (label.to_string(), self.token));
+        }
+    }
+}
+
+/// One exact registered group carrying a cleanup label: pid AND token
+/// together. Lookup, signal, absence proof and removal all recheck this pair,
+/// so a bare pid never escapes the anti-PID-reuse fence (#937).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LabeledRegistration {
+    pub pid: u32,
+    pub token: u64,
+}
+
+/// More than one live registration carries the same cleanup label. Selecting
+/// among them would be arbitrary, so scoped cleanup fails closed instead.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LabeledRegistrationAmbiguous {
+    pub label: String,
+    pub pids: Vec<u32>,
+}
+
+/// The exact registration carrying `label`: only entries whose registry token
+/// still matches the token recorded at label time count — a pid reused by a
+/// newer registration is excluded, never answered for the stale label. At
+/// most one live entry is admissible; ambiguity is reported, never guessed.
+pub fn registered_group_for_label(
+    label: &str,
+) -> Result<Option<LabeledRegistration>, LabeledRegistrationAmbiguous> {
+    let groups = owned_process_groups()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let mut matches: Vec<(u32, u64)> = groups
+        .labels
+        .iter()
+        .filter(|(_, (candidate, _))| candidate.as_str() == label)
+        .filter_map(|(pid, (_, label_token))| {
+            groups
+                .groups
+                .get(pid)
+                .filter(|current| *current == label_token)
+                .map(|token| (*pid, *token))
+        })
+        .collect();
+    matches.sort_unstable();
+    match matches.as_slice() {
+        [] => Ok(None),
+        [(pid, token)] => Ok(Some(LabeledRegistration {
+            pid: *pid,
+            token: *token,
+        })),
+        _ => Err(LabeledRegistrationAmbiguous {
+            label: label.to_string(),
+            pids: matches.iter().map(|(pid, _)| *pid).collect(),
+        }),
+    }
+}
+
+/// Honest outcome of a scoped orphan cleanup: signal diagnostics plus whether
+/// absence was actually proven. `proven_gone == false` is never upgraded to a
+/// terminal claim by callers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LabeledGroupTermination {
+    pub registration: LabeledRegistration,
+    pub signal_errno: Option<i32>,
+    pub proven_gone: bool,
+    /// False when a newer registration took the pid before removal; the old
+    /// group's absence proof never removes the newer entry.
+    pub removed: bool,
+    /// True when the (pid, token) no longer matched at signal or removal
+    /// time — the registration changed underneath and nothing was signalled
+    /// or removed for it.
+    pub superseded: bool,
+}
+
+/// Prove one exact registered group is gone without the dead owner thread's
+/// `Child` handle: reap the group leader if it already exited (a targeted
+/// waitpid, never a blanket reap), then observe ESRCH with signal 0. True
+/// only when the group is provably absent.
+#[cfg(unix)]
+pub fn prove_registered_group_absent(pid: u32) -> bool {
+    let mut status: libc::c_int = 0;
+    // A detached handle leaves an exited leader as a zombie, and signal 0 on
+    // a zombie still answers "exists"; reap the exact leader first.
+    let _ = unsafe { libc::waitpid(pid as libc::pid_t, &mut status, libc::WNOHANG) };
+    process_group_is_absent(pid)
+}
+
+/// Terminate the exact group carrying `label` and bound its absence proof.
+/// The registration token is verified under the registry lock before the
+/// signal and again before removal; a pid whose registration changed is
+/// never signalled or removed. On timeout the entry remains and the outcome
+/// says so honestly.
+#[cfg(unix)]
+pub fn terminate_labeled_group_with_proof(
+    label: &str,
+    timeout: Duration,
+) -> Result<Option<LabeledGroupTermination>, LabeledRegistrationAmbiguous> {
+    let Some(registration) = registered_group_for_label(label)? else {
+        return Ok(None);
+    };
+    let (pid, token) = (registration.pid, registration.token);
+    let mut superseded = false;
+    let signal_errno = {
+        let groups = owned_process_groups()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if groups.groups.get(&pid) == Some(&token) {
+            signal_process_group(pid)
+        } else {
+            superseded = true;
+            None
+        }
+    };
+    let deadline = Instant::now() + timeout;
+    loop {
+        if prove_registered_group_absent(pid) {
+            let removed = {
+                let mut groups = owned_process_groups()
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner());
+                if groups.groups.get(&pid) == Some(&token) {
+                    groups.groups.remove(&pid);
+                    groups.labels.remove(&pid);
+                    true
+                } else {
+                    // A newer registration took the pid while we waited; the
+                    // old group's proof never removes it.
+                    false
+                }
+            };
+            return Ok(Some(LabeledGroupTermination {
+                registration,
+                signal_errno,
+                proven_gone: true,
+                removed,
+                superseded,
+            }));
+        }
+        if Instant::now() >= deadline {
+            return Ok(Some(LabeledGroupTermination {
+                registration,
+                signal_errno,
+                proven_gone: false,
+                removed: false,
+                superseded,
+            }));
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
 pub fn run_ndjson_child(
     mut command: Command,
     idle_timeout: Duration,
@@ -589,6 +771,94 @@ mod tests {
         let mut command = Command::new("sh");
         command.arg("-c").arg(script);
         command
+    }
+
+    #[test]
+    fn labeled_orphan_cleanup_terminates_only_the_exact_registered_group() {
+        use std::os::unix::process::CommandExt;
+
+        let _test_lock = registry_test_lock();
+
+        let mut orphan_command = shell("sleep 30");
+        orphan_command.process_group(0);
+        let mut orphan = orphan_command.spawn().expect("spawn labeled orphan group");
+        let orphan_pid = orphan.id();
+        let mut orphan_registration =
+            OwnedProcessGroupRegistration::new(&mut orphan).expect("register labeled orphan");
+        orphan_registration.set_cleanup_label("session-orphaned-lane:rg1");
+
+        let mut bystander_command = shell("sleep 30");
+        bystander_command.process_group(0);
+        let mut bystander = bystander_command.spawn().expect("spawn bystander group");
+        let bystander_pid = bystander.id();
+        let mut bystander_registration =
+            OwnedProcessGroupRegistration::new(&mut bystander).expect("register bystander");
+        bystander_registration.set_cleanup_label("session-other-run:rg1");
+
+        assert_eq!(
+            registered_group_for_label("session-orphaned-lane:rg1")
+                .expect("one exact registration")
+                .map(|registration| registration.pid),
+            Some(orphan_pid)
+        );
+
+        let termination =
+            terminate_labeled_group_with_proof("session-orphaned-lane:rg1", Duration::from_secs(5))
+                .expect("unambiguous label")
+                .expect("registration present");
+        assert!(termination.proven_gone, "{termination:?}");
+        assert!(termination.removed, "{termination:?}");
+        assert!(!termination.superseded, "{termination:?}");
+        assert!(process_group_is_absent(orphan_pid));
+        assert!(registered_group_for_label("session-orphaned-lane:rg1")
+            .expect("lookup")
+            .is_none());
+
+        // The unrelated labeled group is alive and untouched.
+        assert!(!process_group_is_absent(bystander_pid));
+        assert!(bystander_registration
+            .kill_and_reap(&mut bystander)
+            .expect("reap bystander")
+            .is_some());
+        assert!(process_group_is_absent(bystander_pid));
+    }
+
+    #[test]
+    fn ambiguous_label_and_reused_registration_fail_closed() {
+        let _test_lock = registry_test_lock();
+
+        // Two live registrations carrying the same label: selection would be
+        // arbitrary, so the lookup refuses instead.
+        let mut first = OwnedProcessGroupRegistration::register_pid_for_test(999_991);
+        first.set_cleanup_label("session-shared:rg1");
+        let mut second = OwnedProcessGroupRegistration::register_pid_for_test(999_992);
+        second.set_cleanup_label("session-shared:rg1");
+        let ambiguous = registered_group_for_label("session-shared:rg1")
+            .expect_err("two live registrations for one label must be refused");
+        assert_eq!(ambiguous.pids, vec![999_991, 999_992]);
+        first.release();
+        second.release();
+
+        // Reused registration: the label recorded the stale token at label
+        // time; once a newer registration takes the pid, the stale label no
+        // longer resolves, and nothing is signalled or removed for it.
+        let mut stale = OwnedProcessGroupRegistration::register_pid_for_test(999_993);
+        stale.set_cleanup_label("session-reused:rg1");
+        let stale_token = stale.token;
+        let mut newer = OwnedProcessGroupRegistration::register_pid_for_test(999_993);
+        assert_ne!(stale_token, newer.token);
+        assert!(
+            registered_group_for_label("session-reused:rg1")
+                .expect("lookup")
+                .is_none(),
+            "a pid whose token moved to a newer registration never answers for the stale label"
+        );
+        // The newer registration is intact and is itself unlabeled.
+        assert!(registered_group_for_label("session-reused:rg1")
+            .expect("lookup")
+            .is_none());
+        stale.release();
+        newer.release();
     }
 
     #[test]

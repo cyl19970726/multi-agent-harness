@@ -201,6 +201,11 @@ impl harness_runtime_contract::TeamRuntimeAdapter for PiTeamRuntime {
                 session.provider_kind, profile.provider
             )));
         }
+        // #937: label the owned provider process group with its exact cleanup
+        // scope so a machine-level owner can prove and terminate it if this
+        // runtime's driver dies before settling the lane.
+        self.client
+            .set_cleanup_label(&format!("{}:rg{}", session.id, session.runtime_generation));
         let composition = profile
             .composition_fingerprint
             .clone()
@@ -300,6 +305,10 @@ fn pi_contract_bridge_error(
 impl harness_runtime_contract::RuntimeAdapter for PiTeamRuntime {
     fn describe(&self) -> &harness_runtime_contract::RuntimeDescription {
         &self.description
+    }
+
+    fn owned_process_group_id(&self) -> Option<u32> {
+        self.client.owned_process_group_id()
     }
 
     fn open_or_resume(
