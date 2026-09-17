@@ -55,6 +55,29 @@ impl MachineLeaseSource {
 /// legacy Space rows, which never authorize an effect after cutover.
 pub const MACHINE_LEASE_NOT_AUTHORITATIVE: &str = "MACHINE_LEASE_NOT_AUTHORITATIVE";
 
+/// Build the generation-fence refusal as a typed `TrustError`, not a message
+/// prefix.
+///
+/// The consumer that matters is the daemon heartbeat's authority-loss latch:
+/// a stale generation is not transient, and classifying it by matching a
+/// string two lines above the typed `is_machine_lease_unresolved()` latch was
+/// the half-typed state #993 flagged. The display text keeps the
+/// `NODE_DAEMON_GENERATION_FENCED` token so operator-facing output and the
+/// predicate's fallback stay readable.
+pub fn node_daemon_generation_fenced(node_id: &str, detail: String) -> StoreError {
+    StoreError::Conflict(
+        serde_json::to_string(&firm_core::agentfirm_api::TrustError {
+            code: firm_core::agentfirm_api::TrustErrorCode::NodeDaemonGenerationFenced,
+            message: format!("NODE_DAEMON_GENERATION_FENCED: {detail}"),
+            retryable: false,
+            resource_kind: "node_daemon_lease".to_string(),
+            resource_id: node_id.to_string(),
+            current_version: None,
+        })
+        .unwrap_or_else(|_| format!("NODE_DAEMON_GENERATION_FENCED: {detail}")),
+    )
+}
+
 /// A machine lease that came from the node file, and therefore may authorize a
 /// provider effect.
 ///
@@ -274,13 +297,13 @@ impl HarnessStore {
         ttl_ms: u64,
     ) -> StoreResult<NodeDaemonLease> {
         self.write_machine_lease(node_id, ttl_ms, |current, now| {
-            let mut lease = require_exact_generation(
-                current, node_id, daemon_id, generation, instance_id,
-            )?;
+            let mut lease =
+                require_exact_generation(current, node_id, daemon_id, generation, instance_id)?;
             if lease.status != NodeDaemonLeaseStatus::Active || lease.expires_unix_ms <= now {
-                return Err(StoreError::Conflict(format!(
-                    "NODE_DAEMON_GENERATION_FENCED: {daemon_id} generation {generation} no longer owns Node {node_id}"
-                )));
+                return Err(node_daemon_generation_fenced(
+                    node_id,
+                    format!("{daemon_id} generation {generation} no longer owns Node {node_id}"),
+                ));
             }
             lease.renewed_unix_ms = now;
             lease.expires_unix_ms = now.saturating_add(ttl_ms.max(1));
@@ -298,17 +321,19 @@ impl HarnessStore {
         drain_ttl_ms: u64,
     ) -> StoreResult<NodeDaemonLease> {
         self.write_machine_lease(node_id, drain_ttl_ms, |current, now| {
-            let mut lease = require_exact_generation(
-                current, node_id, daemon_id, generation, instance_id,
-            )?;
+            let mut lease =
+                require_exact_generation(current, node_id, daemon_id, generation, instance_id)?;
             if lease.status == NodeDaemonLeaseStatus::Draining {
                 return Ok(None);
             }
             if lease.status != NodeDaemonLeaseStatus::Active {
-                return Err(StoreError::Conflict(format!(
-                    "NODE_DAEMON_GENERATION_FENCED: Node {node_id} cannot enter predecessor settlement from {:?}",
-                    lease.status
-                )));
+                return Err(node_daemon_generation_fenced(
+                    node_id,
+                    format!(
+                        "Node {node_id} cannot enter predecessor settlement from {:?}",
+                        lease.status
+                    ),
+                ));
             }
             lease.status = NodeDaemonLeaseStatus::Draining;
             lease.renewed_unix_ms = now;
@@ -369,9 +394,10 @@ impl HarnessStore {
                     Some(lease) => Ok(NodeDaemonLeaseDocument::new(lease, std::process::id())),
                     None => {
                         let unchanged = current.cloned().ok_or_else(|| {
-                            StoreError::Conflict(format!(
-                            "NODE_DAEMON_GENERATION_FENCED: {node_id} has no machine lease to keep"
-                        ))
+                            node_daemon_generation_fenced(
+                                node_id,
+                                format!("{node_id} has no machine lease to keep"),
+                            )
                         })?;
                         settled = Some(unchanged.lease.clone());
                         Ok(unchanged)
@@ -409,16 +435,36 @@ fn require_exact_generation(
 ) -> StoreResult<NodeDaemonLease> {
     let lease = current
         .map(|document| document.lease.clone())
-        .ok_or_else(|| StoreError::Conflict(format!("NODE_DAEMON_GENERATION_FENCED: {node_id}")))?;
+        .ok_or_else(|| node_daemon_generation_fenced(node_id, node_id.to_string()))?;
     if lease.daemon_id != daemon_id
         || lease.generation != generation
         || lease.instance_id != instance_id
     {
-        return Err(StoreError::Conflict(format!(
-            "NODE_DAEMON_GENERATION_FENCED: stale daemon cannot write Node {node_id}"
-        )));
+        return Err(node_daemon_generation_fenced(
+            node_id,
+            format!("stale daemon cannot write Node {node_id}"),
+        ));
     }
     Ok(lease)
+}
+
+impl StoreError {
+    /// Did this error refuse because the machine lease moved to another
+    /// daemon, instance, or generation?
+    ///
+    /// The typed read is the answer for every writer this module emits; the
+    /// prefix fallback covers the retired per-Space quartet and any pre-typed
+    /// refusal still carrying the bare token, so a fence never has to match
+    /// the display text itself.
+    pub fn is_node_daemon_generation_fenced(&self) -> bool {
+        match self.trust_error() {
+            Some(error) => {
+                error.code == firm_core::agentfirm_api::TrustErrorCode::NodeDaemonGenerationFenced
+            }
+            None => matches!(self, Self::Conflict(message)
+                if message.starts_with("NODE_DAEMON_GENERATION_FENCED:")),
+        }
+    }
 }
 
 impl HarnessStore {
@@ -444,11 +490,13 @@ impl HarnessStore {
     /// predecessor already drove under. Once the document exists its own
     /// generation is the only input and this argument is ignored.
     ///
-    /// Un-gated for the same reason `append_mission` is (`store_store_base.rs`):
-    /// integration tests under `tests/` link the non-test build, so a
-    /// `cfg(test)` seeder is invisible to them. `#[doc(hidden)]` and the
-    /// `_for_test` suffix carry the intent instead.
-    #[doc(hidden)]
+    /// Gated to test builds (#993): these helpers are the only remaining
+    /// callers of the retired per-Space writer quartet, and an un-gated `pub`
+    /// helper would keep that quartet reachable from a production build. The
+    /// crate's own `tests/` suite links the non-test build, so the gate is
+    /// `cfg(any(test, feature = "test-support"))` and the crate dev-depends on
+    /// itself with `test-support` enabled.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn seed_machine_authority_for_test(
         &self,
         node_id: &str,
@@ -483,7 +531,9 @@ impl HarnessStore {
     /// document — but the legacy row is still written until E2b, and a fixture
     /// whose two records disagreed would fail for reasons unrelated to its
     /// subject. These keep them in step so a test says what it means.
-    #[doc(hidden)]
+    ///
+    /// Gated to test builds (#993) — see `seed_machine_authority_for_test`.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn drain_machine_authority_for_test(
         &self,
         node_id: &str,
@@ -504,7 +554,8 @@ impl HarnessStore {
         self.drain_machine_lease(node_id, daemon_id, generation, instance_id, drain_ttl_ms)
     }
 
-    #[doc(hidden)]
+    /// Gated to test builds (#993) — see `seed_machine_authority_for_test`.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn release_machine_authority_for_test(
         &self,
         node_id: &str,
@@ -535,9 +586,8 @@ impl HarnessStore {
     /// writes the document directly rather than being handed an API that would
     /// undo the guard for everyone.
     ///
-    /// Un-gated for the same reason as the seeders above: integration tests
-    /// under `tests/` link the non-test build.
-    #[doc(hidden)]
+    /// Gated to test builds (#993) — see `seed_machine_authority_for_test`.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn expire_machine_lease_for_test(&self, node_id: &str) -> StoreResult<NodeDaemonLease> {
         use crate::node_lease_document::{lease_document_path, NodeDaemonLeaseDocument};
         let node_home = self.node_home(node_id)?;

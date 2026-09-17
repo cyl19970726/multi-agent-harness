@@ -614,6 +614,11 @@ pub enum TrustErrorCode {
     /// who owns this machine" is never "nobody does", so this is always a
     /// refusal and never a fallback.
     MachineLeaseUnresolved,
+    /// The machine lease moved to another daemon, instance, or generation
+    /// (ADR 0075). Typed for the same reason as `MachineLeaseUnresolved`: the
+    /// heartbeat's authority-loss latch must not classify this by matching a
+    /// message prefix two lines away from the typed latch beside it (#993).
+    NodeDaemonGenerationFenced,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -596,10 +596,11 @@ impl MultiTeamDaemon {
             } else {
                 (Ok(()), AuthorityReleaseReport::default())
             };
-            // Observed, never predicted: authority is wholly released only when
-            // the release actually ran and every registered Execution Space
-            // lease actually came back Released. A partial release reports
-            // false here and names the Spaces in the receipt.
+            // Observed, never predicted: authority is released only when the
+            // release actually ran and the one machine document actually came
+            // back Released. A failed release reports false here and names
+            // every registered Space in the receipt's failed list — the
+            // publish is all-or-nothing, so there is no "partly" to report.
             let authority_released = release_attempted && release_result.is_ok();
             // Every accepted `stop` is answered from what the drain actually
             // proved. Authority release is part of that answer: a caller must
@@ -661,9 +662,11 @@ impl MultiTeamDaemon {
                     "released_execution_space_ids": release_report.released_space_ids,
                     "release_failed_execution_space_ids": release_report.failed_space_ids,
                 }),
-                // `authority_released: false` means "not wholly released".
-                // Release continues past a per-Space failure, so the two lists
-                // are the only truthful account of what happened.
+                // `authority_released: false` means "not released". The
+                // machine release is one all-or-nothing publish (ADR 0075),
+                // so the two lists distinguish "never attempted" (both empty)
+                // from "attempted and failed" (every Space named failed) —
+                // there is no longer a partial middle state to account for.
                 Some(failure) => serde_json::json!({
                     "ok": false,
                     "daemon_generation": pending.daemon_generation,

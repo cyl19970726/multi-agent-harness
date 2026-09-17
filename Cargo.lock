@@ -621,6 +621,7 @@ dependencies = [
  "firm-application",
  "firm-core",
  "firm-fabric",
+ "firm-store",
  "serde",
  "serde_json",
  "sha2",
