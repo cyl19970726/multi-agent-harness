@@ -113,6 +113,9 @@ use node_team_commands::*;
 #[path = "main_modules/team_provider_profiles.rs"]
 mod team_provider_profiles;
 use team_provider_profiles::*;
+#[path = "main_modules/provider_compatibility_notes.rs"]
+mod provider_compatibility_notes;
+use provider_compatibility_notes::*;
 #[path = "main_modules/deepseek_provider_profile.rs"]
 mod deepseek_provider_profile;
 use deepseek_provider_profile::*;
