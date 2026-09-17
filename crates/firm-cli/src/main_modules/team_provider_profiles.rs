@@ -382,6 +382,21 @@ pub(super) fn finalize_provider_integration_profile(profile: &mut ProviderIntegr
                         ("kimi", "observe", Some("0.39.0")) =>
                             Some("live:DEV-125:kimi_acp@0.39.0:owned-process+transport-liveness"
                                 .to_string()),
+                        ("kimi", "open_or_resume", Some("0.41.0")) =>
+                            Some("live:2026-09-17:kimi_acp@0.41.0:session_765b4654-382f-4409-aca2-c939603c3016:new+same-session-resume"
+                                .to_string()),
+                        ("kimi", "start_cycle", Some("0.41.0")) =>
+                            Some("live:2026-09-17:kimi_acp@0.41.0:session_765b4654-382f-4409-aca2-c939603c3016:k3+max+prompt+end_turn:round1+round2"
+                                .to_string()),
+                        ("kimi", "interrupt_current_cycle", Some("0.41.0")) =>
+                            Some("live:2026-09-17:kimi_acp@0.41.0:team_run_api-serial:interrupt+close-cancel-suite:session-cancel+cancelled"
+                                .to_string()),
+                        ("kimi", "close_runtime", Some("0.41.0")) =>
+                            Some("live:2026-09-17:kimi_acp@0.41.0:session_765b4654-382f-4409-aca2-c939603c3016:session-close+clean-reap:idle_before_close"
+                                .to_string()),
+                        ("kimi", "observe", Some("0.41.0")) =>
+                            Some("live:2026-09-17:kimi_acp@0.41.0:session_765b4654-382f-4409-aca2-c939603c3016:owned-process+transport-liveness"
+                                .to_string()),
                         ("pi", "open_or_resume", Some("0.84.2")) =>
                             Some("live:DEV-26:pi_rpc@0.84.2:session-2026-08-16T01-23-34-207Z_01a0082a-bebf-72d6-8a0e-2d8f8afac173:new+exact-session-resume"
                                 .to_string()),
@@ -875,9 +890,10 @@ pub(super) fn team_member_provider_profile_for_mode(
                 "0.33.0".to_string(),
                 "0.36.1".to_string(),
                 "0.39.0".to_string(),
+                "0.41.0".to_string(),
             ],
             compatibility_status: ProviderCompatibilityStatus::Unknown,
-            adapter_reviewed_at: Some("2026-08-29".to_string()),
+            adapter_reviewed_at: Some("2026-09-17".to_string()),
             compatibility_note: Some(
                 "Kimi Code 0.39.0 is reviewed for ACP initialize/session creation, \
                  K3 + max reasoning-effort selection, prompt delivery, same-session \
@@ -1055,7 +1071,7 @@ pub(super) fn apply_provider_version(
     if profile.provider == "kimi" {
         profile.supports_cancel = matches!(
             profile.provider_version.as_deref(),
-            Some("0.27.0" | "0.31.0" | "0.31.1" | "0.36.1" | "0.39.0")
+            Some("0.27.0" | "0.31.0" | "0.31.1" | "0.36.1" | "0.39.0" | "0.41.0")
         );
         // Kimi 0.31 adds a real provider-native Goal lifecycle. Harness does
         // not drive it through ACP yet: execution_driver remains host_driven
@@ -1084,47 +1100,11 @@ pub(super) fn apply_provider_version(
         }
         Some(_) => ProviderCompatibilityStatus::ReviewRequired,
     };
-    profile.compatibility_note = Some(match (
+    profile.compatibility_note = Some(provider_compatibility_note(
         profile.provider.as_str(),
         profile.provider_version.as_deref(),
         profile.compatibility_status,
-    ) {
-        ("kimi", Some("0.31.0" | "0.31.1"), ProviderCompatibilityStatus::Current) => {
-            "Kimi Code 0.31.x is adapter-reviewed for persistent ACP prompt \
-             delivery, model/reasoning-effort selection, native-session resume, \
-             next-round batched mail, and cooperative Interrupt through the ACP \
-             session/cancel notification."
-                .to_string()
-        }
-        ("kimi", Some("0.36.1"), ProviderCompatibilityStatus::Current) => {
-            "Kimi Code 0.36.1 is adapter-reviewed for persistent ACP prompt \
-             delivery, K3/max selection, same-session resume with attach replay \
-             drained, next-round batched mail, and cooperative Interrupt through \
-             the ACP session/cancel notification."
-                .to_string()
-        }
-        ("kimi", Some("0.39.0"), ProviderCompatibilityStatus::Current) => {
-            "Kimi Code 0.39.0 is adapter-reviewed for persistent ACP prompt \
-             delivery, K3/max selection, exact same-session resume with attach \
-             replay drained, next-round batched mail, cooperative Interrupt \
-             through session/cancel, and narrow runtime Close through \
-             session/close plus clean owned-process reap."
-                .to_string()
-        }
-        ("codex", Some("0.148.0-alpha.9"), ProviderCompatibilityStatus::Current) => {
-            "Codex 0.148.0-alpha.9 is adapter-reviewed for persistent app-server \
-             thread open/resume, effective sandbox and approval-policy receipts, \
-             completed rounds, current-turn interrupt, explicit runtime Close, and \
-             exact same-thread Reopen. Native Goal supervision and live steer remain \
-             review-required capability slices."
-                .to_string()
-        }
-        (_, _, ProviderCompatibilityStatus::Current) => "Installed provider version matches an adapter-reviewed version.".to_string(),
-        (_, _, ProviderCompatibilityStatus::ReviewRequired) => "Installed provider version has not been reviewed against this adapter contract; regenerate protocol schemas and run provider acceptance before promotion.".to_string(),
-        (_, _, ProviderCompatibilityStatus::Unavailable) => "Provider version could not be detected.".to_string(),
-        (_, _, ProviderCompatibilityStatus::Incompatible) => "Provider version is known to be incompatible with this adapter contract.".to_string(),
-        (_, _, ProviderCompatibilityStatus::Unknown) => "No reviewed provider version is registered for this execution mode.".to_string(),
-    });
+    ));
     finalize_provider_integration_profile(profile);
 }
 

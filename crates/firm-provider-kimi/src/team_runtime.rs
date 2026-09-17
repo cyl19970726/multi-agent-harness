@@ -25,7 +25,7 @@ use crate::KimiCycleFailure;
 use crate::{KimiAcpClient, PromptControl};
 use crate::{KimiError as CliError, KimiResult as CliResult};
 
-const REVIEWED_KIMI_ACP_RUNTIME_VERSIONS: &[&str] = &["0.36.1", "0.39.0"];
+const REVIEWED_KIMI_ACP_RUNTIME_VERSIONS: &[&str] = &["0.36.1", "0.39.0", "0.41.0"];
 
 fn reviewed_runtime_version_pair(client: Option<&str>, profile: Option<&str>) -> bool {
     client == profile
@@ -862,6 +862,10 @@ mod tests {
         assert!(reviewed_runtime_version_pair(
             Some("0.39.0"),
             Some("0.39.0")
+        ));
+        assert!(reviewed_runtime_version_pair(
+            Some("0.41.0"),
+            Some("0.41.0")
         ));
         assert!(!reviewed_runtime_version_pair(
             Some("0.39.0"),

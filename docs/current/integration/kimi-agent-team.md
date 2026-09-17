@@ -151,6 +151,15 @@ Mission `mission-dev26-kimi-0361-v2` (legacy history, DOC-108) records the
 defect, repair judgment, accepted Work revisions, runtime close receipt, and
 closeout.
 
+### 0.41.0 re-review evidence (2026-09-17)
+
+Kimi Code 0.41.0 is admitted on the unchanged `kimi-acp-v1` contract. A live canary
+on native session `session_765b4654-382f-4409-aca2-c939603c3016` exercised `session/new`,
+exact same-session resume, two K3/`max` prompt rounds to `end_turn`, the permission
+allow handshake, and narrow Close via `session/close` plus a clean owned-process reap.
+Mid-turn `session/cancel` is covered by the unchanged contract and the crate's
+deterministic cancel tests rather than a fresh live cancel.
+
 ### DEV-125 exact-version gate evidence
 
 The 0.39.0 gate used the installed Moonshot updater manifest

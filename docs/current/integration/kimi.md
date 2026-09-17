@@ -18,7 +18,7 @@ requested/effective controls, busy-turn mailbox behavior, Interrupt, restart,
 and native-session resume are defined in the focused
 [Kimi ACP Agent Team runtime](kimi-agent-team.md) contract.
 
-The installed Kimi Code probe is 0.39.0. DEV-125 reviewed this exact upgrade;
+The installed Kimi Code probe is 0.41.0. A 2026-09-17 review re-canaried this exact version on kimi-acp-v1 (unchanged from 0.39.0): live session/new, same-session resume, two K3/max prompt rounds, permission allow, and session/close+reap on native session session_765b4654. DEV-125 reviewed the earlier 0.39.0 upgrade;
 `kimi-acp-v1` is reviewed for prompt delivery, K3/`thinking=max` control,
 same-session resume across a Supervisor generation change, next-round batched
 mail, bounded full-access permission receipts, and cooperative Interrupt.
