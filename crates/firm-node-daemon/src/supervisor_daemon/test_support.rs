@@ -391,6 +391,16 @@ impl TestDaemon {
     pub fn supersede_node_authority_for_test(&self, store: &HarnessStore) -> CliResult<()> {
         self.inner.supersede_node_authority_for_test(store)
     }
+    /// The daemon-startup stale-socket decision, exposed so a test can prove
+    /// its first node-file read goes through the explicit Firm-home binding
+    /// (ADR 0075 test plan).
+    pub fn ensure_stale_socket_reclaimable(
+        firm_home: &Path,
+        node_id: &str,
+        application: Arc<dyn DaemonApplicationPort>,
+    ) -> CliResult<()> {
+        MultiTeamDaemon::ensure_stale_socket_reclaimable(firm_home, node_id, &*application)
+    }
     pub fn write_control_response(
         stream: &mut UnixStream,
         response: &serde_json::Value,

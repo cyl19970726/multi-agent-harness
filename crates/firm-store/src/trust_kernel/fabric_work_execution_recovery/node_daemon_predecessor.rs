@@ -42,24 +42,27 @@ pub struct PredecessorSpaceLease {
     pub lease: NodeDaemonLease,
 }
 
-/// The predecessor instance a recovery selected: its latest lease, plus every
-/// Space-local lease belonging to that exact instance, still paired with
-/// whatever the caller keyed its Spaces by.
+/// The predecessor instance a recovery selected: its latest lease, plus the
+/// lease as each registered Space resolved it — one machine document since ADR
+/// 0075, so every entry is the same record — still paired with whatever the
+/// caller keyed its Spaces by.
 pub type SelectedPredecessorSpaces<T> = (NodeDaemonLease, Vec<(T, NodeDaemonLease)>);
 
 /// Choose the one predecessor instance a recovery may touch, from the latest
 /// NodeDaemonLease of every registered Execution Space.
 ///
-/// Generations are Space-local counters, never a machine-wide ordering, so the
-/// selection is by instance identity: the latest unreleased lease names the
-/// instance, and every other unreleased lease must name the same one. A Node
-/// holding unreleased leases of two different instances is not a recovery
-/// case — it is a machine an operator must look at — and recovery refuses
-/// rather than sweeping an instance nobody asked about.
+/// Generations are machine-wide and monotonic since ADR 0075, and every
+/// candidate resolves the same document, so the selection is by instance
+/// identity and the "different unreleased instances across Spaces" case can no
+/// longer be written down: the latest unreleased lease names the instance, and
+/// the consistency check below is defence in depth, not a sweep of genuinely
+/// divergent rows. What it still refuses is a caller-supplied `expected` tuple
+/// that does not match the document — recovery never sweeps an instance nobody
+/// asked about.
 ///
 /// `expected` narrows the selection to one exact tuple for callers whose
-/// authorization names it (the Operator HTTP action). `None` selects every
-/// Space-local lease of the latest instance.
+/// authorization names it (the Operator HTTP action). `None` selects the
+/// document's latest instance.
 ///
 /// Both the `daemon recover-predecessor` CLI and the successor daemon's
 /// automatic recovery select through this one function, so they can never
@@ -363,15 +366,19 @@ impl HarnessStore {
             .filter(|(_, source)| source.authorizes_provider_effect())
             .map(|(lease, _)| lease)
             .ok_or_else(|| {
-                StoreError::Conflict(format!("NODE_DAEMON_GENERATION_FENCED: {node_id}"))
+                crate::store_machine_lease::node_daemon_generation_fenced(
+                    node_id,
+                    node_id.to_string(),
+                )
             })?;
         if lease.daemon_id != daemon_id
             || lease.generation != generation
             || lease.instance_id != instance_id
         {
-            return Err(StoreError::Conflict(format!(
-                "NODE_DAEMON_GENERATION_FENCED: recovery does not match Node {node_id} exact predecessor"
-            )));
+            return Err(crate::store_machine_lease::node_daemon_generation_fenced(
+                node_id,
+                format!("recovery does not match Node {node_id} exact predecessor"),
+            ));
         }
         if lease.status == NodeDaemonLeaseStatus::Released {
             return Ok(NodeDaemonPredecessorRecovery {
@@ -581,13 +588,17 @@ impl HarnessStore {
         self.append_jsonl_unlocked("node_daemon_leases.jsonl", &lease)?;
         drop(_lock);
 
-        // The machine's own `Released` is NOT published here. The lease lock is
-        // a LEAF lock: it may not be taken while the Space lock is held (ADR
-        // 0075 Rule 2), so the drop above is load-bearing rather than
-        // incidental — the debug lock registry refused exactly that collapse
-        // here during development. Publishing is also the caller's decision,
-        // because on a multi-Space node it is one statement about the machine
-        // and may only be made after every Space has reached this line.
+        // The machine's own `Released` is NOT published here. What is
+        // load-bearing is the FUNCTION SPLIT, not this drop: the publish lives
+        // in the caller, which only runs after this function — and therefore
+        // the Space lock — has returned, so the lease lock is never taken while
+        // the Space lock is held (ADR 0075 Rule 2). The explicit drop only
+        // shortens the Space lock's hold by the width of the return; deleting
+        // it alone changes nothing the debug lock registry can see, because the
+        // lease-lock acquisition sits across a function boundary (#993).
+        // Publishing is also the caller's decision, because on a multi-Space
+        // node it is one statement about the machine and may only be made after
+        // every Space has reached this line.
         Ok(NodeDaemonPredecessorRecovery {
             lease,
             already_released: false,

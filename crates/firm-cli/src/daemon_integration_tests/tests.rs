@@ -1121,3 +1121,103 @@ fn rejected_live_scope_does_not_discard_the_registered_serve_endpoint() {
     assert!(!rejected.clears_registered_endpoint());
     assert!(unavailable.clears_registered_endpoint());
 }
+
+/// ADR 0075: a LIVE daemon's status names the machine lease it read —
+/// `lease_source`, the document path, generation and expiry — and gets all of
+/// it Store-free (#671): the Execution Space registry here is deliberately
+/// corrupt, so any Space scan on the status path could not have produced this
+/// answer.
+///
+/// **Red proof**: on the pre-E2a-2b payload none of these fields exists (the
+/// `lease_source` assertion fails), and a status that answered the lease
+/// question by listing Spaces would error on the poisoned registry instead of
+/// returning them.
+#[test]
+fn status_reports_the_machine_lease_document_without_scanning_a_space() {
+    use std::io::BufReader;
+
+    let tree = TestTree::new("status-lease-fields");
+    let firm_home = tree.0.join("home");
+    let node_id = "33333333-3333-4333-8333-000000000d51";
+    let store_root = firm_home.join("execution-spaces").join("space");
+    std::fs::create_dir_all(&store_root).expect("create the Space root");
+    let store = HarnessStore::new(&store_root).with_firm_home(&firm_home);
+    store.init().expect("initialize the store");
+    let lease = store
+        .seed_machine_authority_for_test(
+            node_id,
+            &format!("node-daemon:{node_id}"),
+            "status-instance",
+            current_unix_ms_u64(),
+            600_000,
+        )
+        .expect("seed the machine lease status should report");
+
+    // Poison the registry AFTER seeding: a status that scanned Spaces would
+    // fail here, so a complete answer proves the lease fields are Store-free.
+    let registry_path = crate::execution_space::registry_path(&firm_home);
+    std::fs::write(&registry_path, "{ this is not json").expect("poison the registry");
+
+    let daemon = TestDaemon::new(TestDaemonConfig {
+        firm_home: firm_home.clone(),
+        node_id: node_id.into(),
+        daemon_id: format!("node-daemon:{node_id}"),
+        instance_id: "status-instance".into(),
+        contexts: Vec::new(),
+        application: Arc::new(DaemonApplication),
+        max_concurrency: 1,
+        input_acceptance_secs: 1,
+        scan_interval: Duration::from_secs(60),
+        stop_requested: Arc::new(AtomicBool::new(false)),
+        authority_shutdown: Arc::new(AtomicBool::new(false)),
+        lease_ttl_override_ms: None,
+        drain_timeout_override_ms: None,
+    });
+
+    let (mut server, mut client) = UnixStream::pair().expect("create control socket pair");
+    server
+        .set_nonblocking(true)
+        .expect("model an accepted nonblocking daemon socket");
+    client
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .expect("bound status response wait");
+    daemon
+        .handle_control_command(&mut server, "{\"cmd\":\"status\"}")
+        .expect("status answers despite the poisoned registry");
+    let mut response = String::new();
+    BufReader::new(&mut client)
+        .read_line(&mut response)
+        .expect("status returns a complete answer");
+    let response: serde_json::Value =
+        serde_json::from_str(response.trim()).expect("status is complete JSON");
+
+    assert_eq!(response["ok"], true);
+    assert_eq!(
+        response["lease_source"], "node_file",
+        "status names where the lease came from: {response}"
+    );
+    assert_eq!(
+        response["lease_generation"].as_u64(),
+        Some(lease.generation),
+        "status reports the document's generation: {response}"
+    );
+    assert_eq!(
+        response["lease_expires_unix_ms"].as_u64(),
+        Some(lease.expires_unix_ms),
+        "status reports the document's expiry: {response}"
+    );
+    let expected_path = std::fs::canonicalize(&firm_home)
+        .expect("canonical Firm home")
+        .join("nodes")
+        .join(node_id)
+        .join("node-daemon-lease.json");
+    assert_eq!(
+        response["lease_path"].as_str(),
+        Some(expected_path.to_string_lossy().as_ref()),
+        "status names the document an operator can open: {response}"
+    );
+    assert!(
+        response["lease_error"].is_null(),
+        "a readable document carries no error: {response}"
+    );
+}

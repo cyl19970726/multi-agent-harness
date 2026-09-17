@@ -7,9 +7,11 @@
 
 use super::*;
 
-/// Which Execution Space leases this generation actually released, and which
-/// it could not. Partial release is a real outcome, so the stop receipt
-/// reports both lists rather than one boolean.
+/// Which Execution Spaces the machine release answered for, and which it
+/// could not. The release itself is one all-or-nothing publish on the one
+/// machine document (ADR 0075), so on success every registered Space is named
+/// and on failure none is — the two lists distinguish "released" from "not
+/// released", never "partly".
 #[derive(Debug, Default, Clone)]
 pub(super) struct AuthorityReleaseReport {
     pub(super) released_space_ids: Vec<String>,
@@ -183,8 +185,9 @@ impl MultiTeamDaemon {
     }
 
     /// Acquire the process-local Node authority bundle before any TeamRun may
-    /// admit a provider effect. Durable leases remain per Execution Space,
-    /// but this daemon treats them as one all-or-nothing machine authority.
+    /// admit a provider effect. The durable lease is the one machine document
+    /// (ADR 0075); the bundle's all-or-nothing rule is structural now — a
+    /// single record either still names this instance or it does not.
     /// Newly acquired leases are released on partial failure because no
     /// provider effect can have crossed admission before this method returns.
     pub(super) fn ensure_node_authority_bundle(&self) -> CliResult<HashSet<String>> {
@@ -612,126 +615,73 @@ impl MultiTeamDaemon {
             .min(node_authority_refresh_interval(self.scan_interval))
     }
 
+    /// Any held entry names the one machine lease (ADR 0075): every
+    /// registered Space's Store resolves the same document, so the heartbeat
+    /// asks the machine question once through whichever registration is
+    /// present. Deterministic — the first Space by id — so the diagnostics
+    /// key cannot flap between Spaces across rounds.
+    fn held_machine_lease(&self) -> Option<(String, HarnessStore, harness_core::NodeDaemonLease)> {
+        self.confirmed_node_leases
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .iter()
+            .min_by(|(a, _), (b, _)| a.cmp(b))
+            .map(|(space, (store, lease))| (space.clone(), store.clone(), lease.clone()))
+    }
+
     /// Renew only authority already owned by this exact daemon instance.
     /// Discovery remains responsible for first acquisition; this heartbeat is
     /// deliberately unable to steal or create authority in an unscanned Space.
+    ///
+    /// One renewal for the machine, not one per Space: every held entry
+    /// resolves the same document, so the per-Space fan-out the cutover
+    /// replaced was N writes of one record (#993).
     #[cfg(any(test, feature = "test-support"))]
     pub(super) fn refresh_held_node_authorities(&self) -> CliResult<()> {
         self.require_machine_authority_open()?;
-        // Inventory and ordinary business reads cannot delay the heartbeat.
-        // Discovery records only successfully acquired exact leases here.
-        let held = self
-            .confirmed_node_leases
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .clone();
-        let failures = std::thread::scope(|scope| {
-            let workers = held
-                .into_iter()
-                .map(|(space, (store, lease))| {
-                    scope.spawn(move || self.renew_held_node_lease(&space, &store, lease))
-                })
-                .collect::<Vec<_>>();
-            workers
-                .into_iter()
-                .filter_map(|worker| match worker.join() {
-                    Ok(Ok(())) => None,
-                    Ok(Err(error)) => Some(error),
-                    Err(_) => Some("authority refresh worker panicked".into()),
-                })
-                .collect::<Vec<_>>()
-        });
-        if failures.is_empty() || self.authority_shutdown.load(Ordering::SeqCst) {
-            Ok(())
-        } else {
-            Err(self.latch_machine_authority_loss(&failures))
+        let Some((space, store, lease)) = self.held_machine_lease() else {
+            return Ok(());
+        };
+        match self.renew_held_node_lease(&space, &store, lease) {
+            Ok(()) => Ok(()),
+            // A failure already established before shutdown must not
+            // disappear just because shutdown began.
+            Err(_) if self.authority_shutdown.load(Ordering::SeqCst) => Ok(()),
+            Err(failure) => Err(self.latch_machine_authority_loss(&[failure])),
         }
     }
 
-    /// One lifecycle-owned worker per held Space. A long FIFO wait in one
-    /// Space cannot prevent another Space's next renewal. Discovery remains
-    /// the only authority acquirer; all workers are joined on shutdown.
+    /// ONE heartbeat for the machine. The per-Space renewal workers survived
+    /// the cutover even though every worker renewed the same document; the
+    /// loop below renews that document once per round (#993, ADR 0075: "one
+    /// write per machine, not one per Space"). The per-Space questions that
+    /// remain — which Spaces this node serves, session settlement — are asked
+    /// where the data lives, not here.
     pub(super) fn run_held_node_authorities(&self) -> CliResult<()> {
         self.require_machine_authority_open()?;
-        std::thread::scope(|scope| {
-            let mut workers = HashMap::new();
-            while !self.authority_shutdown.load(Ordering::SeqCst) {
-                let held = self
-                    .confirmed_node_leases
-                    .lock()
-                    .unwrap_or_else(|error| error.into_inner())
-                    .keys()
-                    .cloned()
-                    .collect::<Vec<_>>();
-                for space in held {
-                    workers.entry(space.clone()).or_insert_with(|| {
-                        scope.spawn(move || self.run_space_node_authority(&space))
-                    });
-                }
-                let finished = workers
-                    .iter()
-                    .filter(|(_, worker)| worker.is_finished())
-                    .map(|(space, _)| space.clone())
-                    .collect::<Vec<_>>();
-                for space in finished {
-                    let failure = match workers.remove(&space).unwrap().join() {
-                        Ok(Ok(())) => None,
-                        Ok(Err(error)) => Some(error),
-                        Err(_) => Some(format!("{space}: authority worker panicked")),
-                    };
-                    if let Some(failure) = failure {
-                        // Publish existing Stop/admission fencing before
-                        // scope joins the other workers. The serve loop
-                        // then drains and sets authority_shutdown normally.
-                        return Err(self.latch_machine_authority_loss(&[failure]));
-                    }
-                }
-                std::thread::sleep(Duration::from_millis(20));
-            }
-            let failures = workers
-                .into_values()
-                .filter_map(|worker| match worker.join() {
-                    Ok(Ok(())) => None,
-                    Ok(Err(error)) => Some(error),
-                    Err(_) => Some("authority worker panicked during shutdown".into()),
-                })
-                .collect::<Vec<_>>();
-            if failures.is_empty() {
-                Ok(())
-            } else {
-                // Cancellation returns Ok in the worker. A failure already
-                // established before shutdown must not disappear at join.
-                Err(self.latch_machine_authority_loss(&failures))
-            }
-        })
-    }
-
-    fn run_space_node_authority(&self, space: &str) -> Result<(), String> {
         while !self.authority_shutdown.load(Ordering::SeqCst) {
-            let held = self
-                .confirmed_node_leases
-                .lock()
-                .unwrap_or_else(|error| error.into_inner())
-                .get(space)
-                .cloned();
-            let Some((store, lease)) = held else {
-                return Ok(());
+            let Some((space, store, lease)) = self.held_machine_lease() else {
+                std::thread::sleep(Duration::from_millis(20));
+                continue;
             };
-            self.renew_held_node_lease(space, &store, lease)?;
-            let next = self
+            if let Err(failure) = self.renew_held_node_lease(&space, &store, lease) {
+                // Latching publishes Stop/admission fencing; the serve loop
+                // then drains and sets authority_shutdown normally.
+                return Err(self.latch_machine_authority_loss(&[failure]));
+            }
+            let delay = self
                 .confirmed_node_leases
                 .lock()
                 .unwrap_or_else(|error| error.into_inner())
-                .get(space)
+                .values()
                 .map(|(_, lease)| {
                     Duration::from_millis(
                         (lease.expires_unix_ms.saturating_sub(current_unix_ms_u64()) / 4).max(1),
                     )
-                    .min(node_authority_refresh_interval(self.scan_interval))
-                });
-            let Some(delay) = next else {
-                return Ok(());
-            };
+                })
+                .min()
+                .unwrap_or_else(|| node_authority_refresh_interval(self.scan_interval))
+                .min(node_authority_refresh_interval(self.scan_interval));
             let deadline = Instant::now() + delay;
             while !self.authority_shutdown.load(Ordering::SeqCst) && Instant::now() < deadline {
                 std::thread::sleep(
@@ -772,8 +722,6 @@ impl MultiTeamDaemon {
             return Ok(());
         }
         let expires = confirmed.expires_unix_ms;
-        // One FIFO admission bounded by this exact lease's remaining life.
-        // Each Space has its own worker, so other Spaces keep renewing.
         let started = Instant::now();
         let result = store
                 .current_authorized_machine_lease(&self.node_id)
@@ -782,10 +730,13 @@ impl MultiTeamDaemon {
                         if current.daemon_id != confirmed.daemon_id
                             || current.instance_id != confirmed.instance_id
                             || current.generation != confirmed.generation {
-                            return Err(harness_store::StoreError::Conflict(format!(
-                                "NODE_DAEMON_GENERATION_FENCED: exact Node authority moved to daemon {} instance {} generation {} ({:?})",
-                                current.daemon_id, current.instance_id, current.generation, current.status
-                            )));
+                            return Err(harness_store::node_daemon_generation_fenced(
+                                &self.node_id,
+                                format!(
+                                    "exact Node authority moved to daemon {} instance {} generation {} ({:?})",
+                                    current.daemon_id, current.instance_id, current.generation, current.status
+                                ),
+                            ));
                         }
                     }
                     if current.as_ref().is_some_and(|lease| {
@@ -829,16 +780,18 @@ impl MultiTeamDaemon {
                 return Ok(());
             }
             Ok(None) => {
+                // The document moved to Draining/Released. There is one
+                // document, so EVERY held entry naming this finished
+                // generation is stale — drop them all, not only the
+                // registration this renewal happened to ask through.
                 let mut held = self
                     .confirmed_node_leases
                     .lock()
                     .unwrap_or_else(|error| error.into_inner());
-                if held.get(space).is_some_and(|(_, lease)| {
-                    lease.generation == confirmed.generation
-                        && lease.instance_id == confirmed.instance_id
-                }) {
-                    held.remove(space);
-                }
+                held.retain(|_, (_, lease)| {
+                    !(lease.generation == confirmed.generation
+                        && lease.instance_id == confirmed.instance_id)
+                });
                 return Ok(());
             }
             Err(error) => {
@@ -853,8 +806,11 @@ impl MultiTeamDaemon {
                     started.elapsed(),
                     Some(&reason),
                 );
-                let fenced = matches!(&error, harness_store::StoreError::Conflict(message)
-                        if message.starts_with("NODE_DAEMON_GENERATION_FENCED:"));
+                // Typed, like the unresolved latch below (#993): a stale
+                // generation is not transient, and classifying it by a message
+                // prefix would leave the two latches keyed off different
+                // evidence for the same decision.
+                let fenced = error.is_node_daemon_generation_fenced();
                 // ADR 0075: "I cannot name the machine lease" and "I resolved a
                 // legacy Space row" are not transient. Waiting cannot turn
                 // either into authority, so retrying until the TTL runs out
@@ -990,77 +946,100 @@ impl MultiTeamDaemon {
         Ok(())
     }
 
-    /// Release this generation's lease in every registered Execution Space.
+    /// Release this generation's machine lease — one read, one publish.
     ///
-    /// This deliberately continues past a per-Space failure, so a failure is
-    /// *partial*: some Space leases may already be Released while others are
-    /// not. The report says which, because `authority_released: false` on a
-    /// stop receipt therefore means "not wholly released", never "nothing was
-    /// released" (DEV-149-REVIEW-03).
+    /// The per-Space walk survived the cutover even though every Space's
+    /// Store resolves the same document; the publish is now made once and is
+    /// all-or-nothing, so `authority_released: false` on a stop receipt means
+    /// "not released", full stop — the "partly released" reading
+    /// (DEV-149-REVIEW-03) retired with the per-Space records it described
+    /// (ADR 0075, #993). The report still names every registered Space on
+    /// either side, so the receipt accounts for the whole machine.
     pub(super) fn release_node_authorities(&self) -> (CliResult<()>, AuthorityReleaseReport) {
         let mut report = AuthorityReleaseReport::default();
-        let mut failures = Vec::new();
         let spaces = match self.registered_spaces() {
             Ok(spaces) => spaces,
             Err(error) => return (Err(error), report),
         };
-        for (space, store) in spaces {
-            let lease = match store.current_authorized_machine_lease(&self.node_id) {
-                Ok(Some(lease)) => lease,
-                Ok(None) => continue,
-                Err(error) => {
-                    report.failed_space_ids.push(space.id.clone());
-                    failures.push(format!("{}: {error}", space.id));
-                    continue;
-                }
-            };
-            if lease.daemon_id != self.daemon_id || lease.instance_id != self.instance_id {
-                continue;
+        let space_ids = spaces
+            .iter()
+            .map(|(space, _)| space.id.clone())
+            .collect::<Vec<_>>();
+        let Some((_, store)) = spaces.into_iter().next() else {
+            return (Ok(()), report);
+        };
+        let lease = match store.current_authorized_machine_lease(&self.node_id) {
+            Ok(Some(lease)) => lease,
+            // No machine lease at all: there was nothing to release, for any
+            // Space. Both lists stay empty, exactly like the pre-collapse
+            // walk that found no lease anywhere.
+            Ok(None) => return (Ok(()), report),
+            Err(error) => {
+                report.failed_space_ids = space_ids;
+                return (
+                    Err(CliError::Usage(format!(
+                        "NODE_DAEMON_RELEASE_INCOMPLETE: cannot read the machine lease: {error}"
+                    ))),
+                    report,
+                );
             }
-            match store.release_machine_lease(
-                &self.node_id,
-                &lease.daemon_id,
-                lease.generation,
-                &lease.instance_id,
-            ) {
-                Ok(_) => report.released_space_ids.push(space.id.clone()),
-                Err(error) => {
-                    report.failed_space_ids.push(space.id.clone());
-                    failures.push(format!("{}: {error}", space.id));
-                }
+        };
+        if lease.daemon_id != self.daemon_id || lease.instance_id != self.instance_id {
+            // This generation holds nothing, so there is nothing to release.
+            return (Ok(()), report);
+        }
+        match store.release_machine_lease(
+            &self.node_id,
+            &lease.daemon_id,
+            lease.generation,
+            &lease.instance_id,
+        ) {
+            Ok(_) => {
+                report.released_space_ids = space_ids;
+                (Ok(()), report)
+            }
+            Err(error) => {
+                report.failed_space_ids = space_ids;
+                (
+                    Err(CliError::Usage(format!(
+                        "NODE_DAEMON_RELEASE_INCOMPLETE: the machine lease release is all-or-nothing and it failed: {error}"
+                    ))),
+                    report,
+                )
             }
         }
-        let result = if failures.is_empty() {
-            Ok(())
-        } else {
-            Err(CliError::Usage(format!(
-                "NODE_DAEMON_RELEASE_INCOMPLETE: released {} Execution Space lease(s) before failing: {}",
-                report.released_space_ids.len(),
-                failures.join("; ")
-            )))
-        };
-        (result, report)
     }
 
+    /// Settle this generation's Sessions in every registered Execution Space.
+    ///
+    /// The lease question is asked once — one document, one answer (#993).
+    /// What stays per-Space is the settlement itself: Sessions are Space data
+    /// and each Space's lanes are settled in its own store.
     pub(super) fn settle_node_authorities_for_shutdown(&self) -> CliResult<()> {
         let mut failures = Vec::new();
         let updated_at = format!("unix-ms:{}", current_unix_ms_u64());
-        for (space, store) in self.registered_spaces()? {
-            let lease = match store.current_authorized_machine_lease(&self.node_id) {
-                Ok(Some(lease)) => lease,
-                Ok(None) => continue,
-                Err(error) => {
-                    failures.push(format!("{}: {error}", space.id));
-                    continue;
-                }
-            };
-            if lease.daemon_id != self.daemon_id || lease.instance_id != self.instance_id {
+        let spaces = self.registered_spaces()?;
+        let Some((_, probe)) = spaces.first() else {
+            return Ok(());
+        };
+        let lease = match probe.current_authorized_machine_lease(&self.node_id) {
+            Ok(Some(lease)) => lease,
+            Ok(None) => return Ok(()),
+            Err(error) => {
+                return Err(CliError::Usage(format!(
+                    "NODE_DAEMON_SHUTDOWN_SETTLEMENT_INCOMPLETE: cannot read the machine lease: {error}"
+                )));
+            }
+        };
+        let owned = lease.daemon_id == self.daemon_id && lease.instance_id == self.instance_id;
+        for (space, store) in &spaces {
+            if !owned {
                 // Settlement needs the lease this generation no longer holds.
                 // Record what it therefore could not settle here rather than
                 // returning Ok and losing the lane (ADR 0073).
                 self.record_settlement_incomplete_markers_in(
                     &space.id,
-                    &store,
+                    store,
                     &format!(
                         "NODE_DAEMON_SHUTDOWN_SETTLEMENT_SKIPPED: Execution Space {} authority moved to daemon {} instance {} generation {} before this generation could settle its lanes",
                         space.id, lease.daemon_id, lease.instance_id, lease.generation

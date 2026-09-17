@@ -264,3 +264,134 @@ fn a_legacy_space_row_cannot_reach_the_cli_recovery_fence() {
         "a refused validation settles nothing"
     );
 }
+
+/// ADR 0075 test plan, stale-socket reclaim. `ensure_stale_socket_reclaimable`
+/// is one of the two production entry points that bind the Firm home
+/// explicitly, so its FIRST read of the node file must go through that
+/// binding: a daemon whose Space roots name a different home — or none — must
+/// still refuse (or reclaim) from `<FIRM_HOME>/nodes/<node_id>/`, never from a
+/// directory derived from a Space root's shape.
+///
+/// The fixture's decoy is a NESTED layout: a Space registered at
+/// `<home>/nested/execution-spaces/nested-space` lexically derives
+/// `<home>/nested` as its Firm home, so a shape-deriving read answers from the
+/// decoy's `nodes/` directory instead of the bound home's. (A root outside the
+/// home would trip the external-root refusal; the nested shape needs no
+/// override.)
+///
+/// **Red proof**: remove `.with_firm_home(firm_home)` in
+/// `ensure_stale_socket_reclaimable` and the read falls back to the
+/// shape-derived decoy home — the first direction reclaims despite the real
+/// home's live lease (the `NODE_DAEMON_LEASE_HELD` assertion fails), and the
+/// reverse direction refuses on the decoy's live lease (the `expect` fails).
+#[test]
+fn stale_socket_reclaim_reads_the_node_file_through_the_explicit_binding() {
+    let stamp = format!("{}-{}", std::process::id(), current_unix_ms_u64());
+    let real_home = std::env::temp_dir().join(format!("firm-reclaim-real-{stamp}"));
+    let decoy_home = real_home.join("nested");
+    let real_root = real_home.join("execution-spaces").join("real-space");
+    let decoy_root = decoy_home.join("execution-spaces").join("nested-space");
+    std::fs::create_dir_all(&real_root).expect("real Space root");
+    std::fs::create_dir_all(&decoy_root).expect("decoy Space root");
+
+    // The real home's registry registers BOTH Spaces: its own, and the nested
+    // one a shape-deriving read would resolve to the decoy home.
+    let mut registry = crate::execution_space::ExecutionSpaceRegistry {
+        format_version: 1,
+        current_space_id: Some("real-space".into()),
+        spaces: vec![
+            crate::execution_space::ExecutionSpaceRegistryEntry {
+                id: "real-space".into(),
+                name: "real".into(),
+                store_root: real_root.clone(),
+                default_project_binding_id: None,
+                company_id: None,
+                created_at: "unix-ms:1".into(),
+                last_opened_at: "unix-ms:1".into(),
+            },
+            crate::execution_space::ExecutionSpaceRegistryEntry {
+                id: "nested-space".into(),
+                name: "nested".into(),
+                store_root: decoy_root.clone(),
+                default_project_binding_id: None,
+                company_id: None,
+                created_at: "unix-ms:1".into(),
+                last_opened_at: "unix-ms:1".into(),
+            },
+        ],
+    };
+    registry
+        .save(&real_home)
+        .expect("write the real home's registry");
+
+    // The nested shape really does derive the decoy home — the test is
+    // vacuous otherwise.
+    let derived_decoy = harness_store::firm_home_of_execution_space_root(&decoy_root)
+        .expect("the nested root has the shape the derivation accepts");
+    assert!(
+        derived_decoy.ends_with("nested"),
+        "the nested root derives <home>/nested, not the bound home: {}",
+        derived_decoy.display()
+    );
+
+    // A live lease in the REAL home, owned by another daemon instance.
+    let real_store = HarnessStore::new(&real_root).with_firm_home(&real_home);
+    real_store.init().expect("initialize the real store");
+    let live = real_store
+        .seed_machine_authority_for_test(
+            NODE_ID,
+            &format!("node-daemon:{NODE_ID}"),
+            "the-live-incumbent",
+            current_unix_ms_u64(),
+            600_000,
+        )
+        .expect("seed a live machine lease in the real home");
+    // Nothing in the decoy home.
+    assert!(
+        !decoy_home
+            .join("nodes")
+            .join(NODE_ID)
+            .join("node-daemon-lease.json")
+            .exists(),
+        "the decoy home carries no lease document"
+    );
+
+    let error = harness_node_daemon::test_support::TestDaemon::ensure_stale_socket_reclaimable(
+        &real_home,
+        NODE_ID,
+        Arc::new(DaemonApplication),
+    )
+    .expect_err("the live lease in the BOUND home must refuse the reclaim");
+    assert!(
+        error.to_string().contains("NODE_DAEMON_LEASE_HELD"),
+        "the refusal names the held lease, read from the bound home: {error}"
+    );
+    assert!(
+        error.to_string().contains(&live.generation.to_string()),
+        "the refusal reports the generation only the real home's document carries: {error}"
+    );
+
+    // The reverse direction: a node id with no lease in the bound home but a
+    // live lease in the DECOY home must reclaim cleanly — proving the read
+    // never reached the derived directory.
+    let decoy_node = "22222222-2222-4222-8222-000000000b41";
+    let decoy_store = HarnessStore::new(&decoy_root).with_firm_home(&decoy_home);
+    decoy_store.init().expect("initialize the decoy store");
+    decoy_store
+        .seed_machine_authority_for_test(
+            decoy_node,
+            &format!("node-daemon:{decoy_node}"),
+            "decoy-incumbent",
+            current_unix_ms_u64(),
+            600_000,
+        )
+        .expect("seed a live machine lease in the decoy home");
+    harness_node_daemon::test_support::TestDaemon::ensure_stale_socket_reclaimable(
+        &real_home,
+        decoy_node,
+        Arc::new(DaemonApplication),
+    )
+    .expect("the bound home holds no lease for this Node, so the socket is reclaimable");
+
+    std::fs::remove_dir_all(&real_home).ok();
+}

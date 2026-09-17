@@ -115,7 +115,11 @@ pub fn firm_home_of_execution_space_root(store_root: &Path) -> Option<PathBuf> {
 /// not exist yet still resolves the aliases on the part that does — but
 /// deliberately **without** that helper's cwd-join fallback, which would paper
 /// over a relative home instead of refusing it.
-fn canonical_firm_home(firm_home: &Path) -> Option<PathBuf> {
+///
+/// Public so the CLI's own home derivation applies the same rule instead of
+/// growing a second, weaker copy of it (#993): one canonical identity per Firm
+/// home, in both directions.
+pub fn canonical_firm_home(firm_home: &Path) -> Option<PathBuf> {
     if !firm_home.is_absolute() {
         return None;
     }
@@ -159,6 +163,38 @@ fn require_node_directory_segment(node_id: &str) -> StoreResult<()> {
         ));
     }
     Ok(())
+}
+
+/// The machine lease document, read Store-free — the shape `daemon status`
+/// needs (ADR 0075, #671).
+///
+/// Status answers on the one control lane that must stay answerable while an
+/// Execution Space scan is busy, so it reads only the node file and never
+/// opens a Space store. That is also why there is deliberately no legacy-row
+/// fallback here: the fallback needs a Store. A node with no document is
+/// `Ok(None)` — the one honest "nobody" — and the caller reports it as
+/// absent.
+///
+/// Returns the canonical document path alongside the lease, so status can
+/// name the file an operator can open.
+pub fn machine_lease_document_at(
+    firm_home: &Path,
+    node_id: &str,
+) -> StoreResult<(PathBuf, Option<NodeDaemonLease>)> {
+    require_node_directory_segment(node_id)?;
+    let canonical = canonical_firm_home(firm_home).ok_or_else(|| {
+        machine_lease_unresolved(
+            node_id,
+            format!(
+                "Firm home {} is not an absolute, resolvable directory, so the machine lease document for Node {node_id} cannot be named",
+                firm_home.display()
+            ),
+        )
+    })?;
+    let node_home = canonical.join("nodes").join(node_id);
+    let path = crate::node_lease_document::lease_document_path(&node_home);
+    let document = crate::node_lease_document::read_lease_document(&node_home, node_id)?;
+    Ok((path, document.map(|document| document.lease)))
 }
 
 impl HarnessStore {
@@ -226,10 +262,10 @@ impl StoreError {
     ///
     /// Machine-authority callers must be able to recognise this refusal without
     /// matching the display text, in the same spirit as `trust_error()`, which
-    /// exists so policy callers never classify a message by its words. A
-    /// `TrustErrorCode` variant would be the fuller answer, but that is schema
-    /// surface this slice deliberately does not move; the fences that consume
-    /// the refusal arrive with the cutover, and the decision belongs with them.
+    /// exists so policy callers never classify a message by its words. The
+    /// typed `TrustErrorCode::MachineLeaseUnresolved` variant is what the
+    /// writers emit; the prefix fallback covers pre-typed refusals still
+    /// carrying the bare token.
     pub fn is_machine_lease_unresolved(&self) -> bool {
         match self.trust_error() {
             Some(error) => error.code == TrustErrorCode::MachineLeaseUnresolved,

@@ -320,9 +320,15 @@ fn stop_reports_drain_incomplete_without_releasing_authority_body() {
             Some(released),
             "the receipt must report the lease state the Store actually holds"
         );
-        // `authority_released:false` means "not wholly released". Release
-        // never ran here, so both lists are empty and the operator can tell
-        // that apart from a partial release (DEV-149-REVIEW-03).
+        // Redirected (DEV-149-REVIEW-03), not deleted: the original assertion
+        // distinguished "release never ran" from a *partial* release, which
+        // the per-Space lease records made possible. ADR 0075 collapsed the
+        // release to one all-or-nothing publish on the one machine document,
+        // so "partly released" no longer exists; what this assertion still
+        // pins is the distinction the operator needs — `authority_released:
+        // false` with BOTH lists empty means "release never ran", while an
+        // attempted-and-failed release names every registered Space in the
+        // failed list.
         assert_eq!(
             response["released_execution_space_ids"],
             serde_json::json!([]),
@@ -330,7 +336,9 @@ fn stop_reports_drain_incomplete_without_releasing_authority_body() {
         );
         assert_eq!(
             response["release_failed_execution_space_ids"],
-            serde_json::json!([])
+            serde_json::json!([]),
+            "a release that never ran names no failed Space — that is how the \
+             operator tells it apart from an attempted, atomically failed release: {response}"
         );
     });
 

@@ -70,17 +70,19 @@ fn a_decider_under_the_space_write_lock_resolves_the_node_file_lock_free() {
 /// the Space-locked body. The registry panicked by name in 0.2 s instead of
 /// deadlocking under load, which is the incident that made the two-phase shape
 /// non-negotiable: gather the settlement proof and settle the Space's sessions
-/// under the Space write lock, `drop(_lock)`, then take the lease lock and
-/// publish. That `drop` in `node_daemon_predecessor.rs` is load-bearing and its
-/// comment says so.
+/// under the Space write lock, return, then take the lease lock and publish.
+/// The load-bearing element is that function split — the publish lives in the
+/// caller, past the locked body's return — not the explicit `drop(_lock)` at
+/// the end of the locked body, which only shortens the Space lock's hold by
+/// the width of the return (wording corrected in E2a-2b, #993).
 ///
 /// This test drives that exact writer end to end with the registry armed.
 ///
-/// **Red proof**: move the publish above the `drop(_lock)` — that is, release
-/// the machine lease while the Space lock is still held — and this test panics
-/// with "ADR 0075 lock rule: … was requested while this thread holds an
-/// Execution Space .store.lock". It is not an assertion failure, so it is
-/// written down here rather than left to be rediscovered.
+/// **Red proof**: move the publish into the Space-locked body — that is,
+/// release the machine lease while the Space lock is still held — and this
+/// test panics with "ADR 0075 lock rule: … was requested while this thread
+/// holds an Execution Space .store.lock". It is not an assertion failure, so
+/// it is written down here rather than left to be rediscovered.
 #[test]
 fn the_space_locked_recovery_writer_publishes_outside_the_space_lock() {
     let (_home, store) = cutover_store("recovery-writer-lock-rule");
@@ -463,4 +465,122 @@ fn a_failed_stage_leaves_the_previous_document_intact_and_a_returned_ok_has_alre
         history_before,
         "a renewal is not a generation transition, so it appends no history row"
     );
+}
+
+/// E2a-2b (#993): the collapse of the per-Space walks is mechanical, so it is
+/// pinned mechanically. After the cutover, every registered Space's Store
+/// resolves the SAME machine document, so a loop that renews, releases, or
+/// lease-checks once per Space is N answers to one question. The heartbeat is
+/// one loop, the release is one publish, and settlement reads the lease once
+/// (the settlement itself stays per-Space: Sessions are Space data).
+///
+/// **Red proof**: this test fails on the pre-collapse revision — the release
+/// published inside `for (space, store) in spaces`, the heartbeat fanned out
+/// one `scope.spawn` worker per held Space, and settlement re-read the lease
+/// inside its per-Space loop.
+#[test]
+fn the_heartbeat_release_and_settlement_ask_the_machine_question_once() {
+    let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .expect("repository root")
+        .to_path_buf();
+    let source = std::fs::read_to_string(
+        repo_root.join("crates/firm-node-daemon/src/supervisor_daemon/machine_authority.rs"),
+    )
+    .expect("read machine_authority.rs");
+
+    let release = function_body(&source, "fn release_node_authorities");
+    assert_eq!(
+        release.matches("release_machine_lease(").count(),
+        1,
+        "the machine release is ONE publish on the one document, not one per Space"
+    );
+    assert!(
+        !release.contains("for (space"),
+        "the release must not walk Spaces to publish one document"
+    );
+
+    for heartbeat in [
+        "fn run_held_node_authorities",
+        "fn refresh_held_node_authorities",
+    ] {
+        let body = function_body(&source, heartbeat);
+        assert!(
+            !body.contains("scope.spawn"),
+            "{heartbeat} is the ONE machine heartbeat — no per-Space renewal workers"
+        );
+    }
+
+    let settle = function_body(&source, "fn settle_node_authorities_for_shutdown");
+    assert_eq!(
+        settle.matches("current_authorized_machine_lease(").count(),
+        1,
+        "settlement asks the machine question once; only the Session settlement stays per-Space"
+    );
+}
+
+/// The body of a `fn` item, braces matched, so the assertions above bind to
+/// one function and not to whatever a neighbour happens to contain.
+fn function_body<'a>(source: &'a str, signature: &str) -> &'a str {
+    let start = source
+        .find(signature)
+        .unwrap_or_else(|| panic!("{signature} must exist"));
+    let rest = &source[start..];
+    let open = rest.find('{').expect("function body opens") + 1;
+    let mut depth = 1usize;
+    for (offset, ch) in rest[open..].char_indices() {
+        match ch {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return &rest[open..open + offset];
+                }
+            }
+            _ => {}
+        }
+    }
+    panic!("{signature}: unbalanced braces");
+}
+
+/// E2a-2b (#993): the `*_for_test` machine-lease helpers are the only
+/// remaining callers of the retired per-Space writer quartet. Ungated
+/// `#[doc(hidden)] pub` kept that quartet reachable from a PRODUCTION build;
+/// the gate `cfg(any(test, feature = "test-support"))` is what confines them
+/// to test code, so the gate itself is pinned here rather than by review.
+///
+/// **Red proof**: on the pre-E2a-2b revision each helper was `#[doc(hidden)]
+/// pub fn` with no cfg — the assertions below fail on all four.
+#[test]
+fn the_test_only_machine_lease_helpers_are_cfg_gated_out_of_production() {
+    let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .expect("repository root")
+        .to_path_buf();
+    let source =
+        std::fs::read_to_string(repo_root.join("crates/firm-store/src/store_machine_lease.rs"))
+            .expect("read store_machine_lease.rs");
+    for helper in [
+        "seed_machine_authority_for_test",
+        "drain_machine_authority_for_test",
+        "release_machine_authority_for_test",
+        "expire_machine_lease_for_test",
+    ] {
+        let at = source
+            .find(&format!("pub fn {helper}"))
+            .unwrap_or_else(|| panic!("{helper} must exist"));
+        let before = &source[..at];
+        let attribute_line = before
+            .lines()
+            .rev()
+            .find(|line| !line.trim().is_empty())
+            .expect("an attribute line above the helper");
+        assert_eq!(
+            attribute_line.trim(),
+            "#[cfg(any(test, feature = \"test-support\"))]",
+            "{helper} must be gated out of production builds, not merely doc-hidden"
+        );
+    }
 }

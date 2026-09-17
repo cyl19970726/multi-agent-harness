@@ -115,18 +115,24 @@ pub(crate) fn firm_home(resolved: &ResolvedStore, args: &[String]) -> CliResult<
 }
 
 pub(super) fn firm_home_from_execution_space_root(store_root: &Path) -> CliResult<PathBuf> {
-    let execution_spaces = store_root
-        .parent()
-        .ok_or_else(|| CliError::Usage("cannot derive FIRM_HOME from Execution Space".into()))?;
-    if execution_spaces.file_name().and_then(|name| name.to_str()) != Some("execution-spaces") {
-        return Err(CliError::Usage(
-            "Execution Space store must be a direct child of FIRM_HOME/execution-spaces".into(),
-        ));
-    }
-    execution_spaces
-        .parent()
-        .map(Path::to_path_buf)
-        .ok_or_else(|| CliError::Usage("cannot derive FIRM_HOME from Execution Space".into()))
+    // One rule in both directions (#993, ADR 0075 filesystem aliasing): the
+    // Store-side derivation decides the shape and refuses a relative home, and
+    // the home is then canonicalized so two spellings of one directory cannot
+    // name two machine-lease documents. Deriving lexically here would put the
+    // CLI's home out of step with the one the Store binds.
+    let firm_home =
+        harness_store::firm_home_of_execution_space_root(store_root).ok_or_else(|| {
+            CliError::Usage(
+            "Execution Space store must be a direct child of an absolute FIRM_HOME/execution-spaces"
+                .into(),
+        )
+        })?;
+    harness_store::canonical_firm_home(&firm_home).ok_or_else(|| {
+        CliError::Usage(format!(
+            "cannot resolve FIRM_HOME {} to one canonical directory",
+            firm_home.display()
+        ))
+    })
 }
 
 pub(super) fn required(args: &[String], name: &str) -> CliResult<String> {

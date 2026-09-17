@@ -2,7 +2,9 @@
 
 ```text
 status: Accepted — Owner 2026-09-15 (CORE5-E2); implementation tracked by Task CORE5-E2-20260915;
-        amended 2026-09-15 (predecessor history; corrected fence list) before any code was written
+        amended 2026-09-15 (predecessor history; corrected fence list) before any code was written;
+        amended 2026-09-17 (E2a-2b, #993): the two-phase recovery paragraph now credits the
+        function split, not the explicit `drop(_lock)`, as the load-bearing element
 date: 2026-09-15
 amends: ADR 0042 (the machine lease stops being Execution Space data); ADR 0044 (the NodeDaemon
         parent fence reads a file, not a Space ledger row); AGENTS.md "machine-scoped authority";
@@ -514,8 +516,14 @@ direction, the queueing this ADR exists to remove.
 That is not hypothetical. The first recover-predecessor cut published the document from inside the
 Space-locked body, and the debug lock registry panicked by name in 0.2 s rather than deadlocking
 under load. Recovery is therefore two-phase: gather the settlement proof and settle the Space's
-Sessions under the Space write lock, **`drop(_lock)`**, then take the lease lock and publish
-`Released` plus its history row. The `drop` is load-bearing and the comment beside it says so.
+Sessions under the Space write lock, return, then take the lease lock and publish
+`Released` plus its history row. **What is load-bearing is the function split** — the publish lives
+in the caller, which cannot run until the Space-locked body has returned — not the explicit
+`drop(_lock)` at the end of the locked body, which only shortens the Space lock's hold by the width
+of the return: deleting the drop alone changes nothing the registry can see, because the lease-lock
+acquisition sits across a function boundary. (Wording corrected in E2a-2b, #993: the sentence here
+previously called the `drop` itself load-bearing, and the comment beside it overstated it the same
+way.)
 
 The registry is `cfg(debug_assertions)`, which is the right trade and worth stating plainly: it
 compiles out of release builds, so "protected structurally" means "caught by debug test runs on the

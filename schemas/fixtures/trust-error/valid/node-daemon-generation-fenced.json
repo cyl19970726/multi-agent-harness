@@ -1,0 +1,7 @@
+{
+  "code": "NODE_DAEMON_GENERATION_FENCED",
+  "message": "NODE_DAEMON_GENERATION_FENCED: stale daemon cannot write Node node-1",
+  "retryable": false,
+  "resource_kind": "node_daemon_lease",
+  "resource_id": "node-1"
+}

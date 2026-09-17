@@ -448,22 +448,29 @@ visible without loading an unbounded log.
 At daemon start, a log larger than 8 MiB rotates to `node-daemon.log.1`,
 replacing the previous `.1`, before a new current log is opened. `firm daemon
 status` includes `log_path` in a live daemon's JSON and includes the same path
-in absent status output. If no live daemon exists but any registered Execution
-Space retains a latest `NodeDaemonLease` that is not `Released`, status names
-the lease state and the recovery command `firm daemon recover-predecessor
---confirm daemon-recover-predecessor` instead of reporting a bare absence. A lease store
-that cannot be read is reported by Execution Space without hiding readable
-Spaces or changing the absent status exit code.
+in absent status output. The machine lease is one document per machine (ADR
+0075) at `<FIRM_HOME>/nodes/<node_id>/node-daemon-lease.json`, guarded by its
+own `<FIRM_HOME>/nodes/<node_id>/.node-daemon-lease.lock`, staged through
+`node-daemon-lease.json.tmp` in the same directory, with one
+`node-daemon-lease-history.jsonl` row per generation transition beside it. A
+live daemon's status JSON names that document — `lease_source`, `lease_path`,
+`lease_generation`, `lease_expires_unix_ms` — read Store-free from the node
+file, never by scanning an Execution Space. If no live daemon exists but the
+document (or a pre-cutover Space row) is not `Released`, absent status names
+the one predecessor lease with its `lease_source` and `lease_path` and the
+recovery command `firm daemon recover-predecessor
+--confirm daemon-recover-predecessor` instead of reporting a bare absence. An
+unreadable lease document is reported as such without changing the absent
+status exit code.
 
 Live `firm daemon status` exposes `lease_renewals` as volatile diagnostics.
 `attempt_elapsed_ms` measures the whole latest renewal attempt; a retained
 `last_error` includes `lock_wait_ms` for the actual failed lock wait. These
 observations are not durable lease authority and do not authorize execution.
-An in-progress FIFO lock wait can span more than one former 250ms retry window;
-its completed attempt records the full wait without manufacturing timeout
-failures. It remains bounded by the confirmed lease expiry and is cancellable
-when authority shutdown begins. Lease TTLs and expired-generation refusal are
-unchanged.
+A renewal takes the lease's own leaf lock with a bounded wait of
+`min(TTL/4, 1 s)` — the only contenders are this daemon's own heartbeat and a
+rare operator verb — and never queues on an Execution Space's data lock.
+Lease TTLs and expired-generation refusal are unchanged.
 
 If the NodeDaemon loses its machine authority and self-stops, it records the
 loss on every TeamRun it was serving through the ordinary TeamRun event log.
@@ -476,11 +483,13 @@ written to `node-daemon.log` as `NODE_DAEMON_SELF_STOP_EVENT_WRITE_FAILED`.
 
 A successor daemon recovers a proven-dead predecessor by itself, so the
 operator command below is for the cases it deliberately refuses. On its first
-scan, when the latest `NodeDaemonLease` is unreleased and belongs to another
+scan, when the machine lease document is unreleased and belongs to another
 daemon or instance, the successor runs the same proofs as
-`recover-predecessor`: exactly one unreleased predecessor instance across every
-registered Execution Space, every selected lease past its expiry, the
-predecessor process absent, and no ambiguous RuntimeCommand of that generation.
+`recover-predecessor`: the one unreleased predecessor lease is past its expiry,
+the predecessor process is absent, and no ambiguous RuntimeCommand of that
+generation exists. (The pre-cutover "two different unreleased instances across
+Spaces" ambiguity is structurally impossible now that the lease is one
+document — ADR 0075.)
 It adds one proof of its own — a pid that exists but provably started after the
 predecessor's last lease renewal is a recycled pid and counts as absent. If all
 of them hold it settles, releases, and acquires at `generation + 1`, and
@@ -518,9 +527,12 @@ no `agent-session` CLI verb.
 The named recovery action is an ordinary CLI command, not a hand-crafted HTTP
 call. After the daemon is stopped and the dead predecessor instance's pid is
 proven absent, `firm daemon recover-predecessor --confirm
-daemon-recover-predecessor [--evidence-ref <text>]` releases the exact
-unreleased predecessor `NodeDaemonLease` in every Execution Space belonging to
-this Node and prints the recovery projection (`daemon_id`, `instance_id`,
+daemon-recover-predecessor [--evidence-ref <text>]` settles the predecessor
+generation's Sessions in every registered Execution Space and then publishes
+`Released` on the one machine lease document — one all-or-nothing publish, so
+a failure publishes no release, keeps the previous generation, and names every
+Space and refusal for the retry. It
+prints the recovery projection (`daemon_id`, `instance_id`,
 `generation`, `recovered_spaces`, `space_settlements`, `status=released`).
 `space_settlements` names, per Execution Space, the AgentSessions this recovery
 detached, the ones it skipped because the dying generation's own incomplete
@@ -531,9 +543,10 @@ flag, and the Supervisor leases it released. The receipt also carries
 evidence row — so the proof that authorized the recovery is readable after the
 fact. It
 marks an already released exact predecessor with `already_released=true` in
-its per-Space settlement. A multi-Space failure remains an error, with a JSON
+its per-Space settlement. A failed recovery remains an error, with a JSON
 receipt in its detail (`status=partial`, `failures`, `recovered_spaces`, and
-`space_settlements`); successful releases are not rolled back or discarded.
+`space_settlements`); per-Space Session settlements that did succeed are
+retained, but no release is published — the publish is all-or-nothing.
 The receipt's `evidence_ref` is the current request's reference. Durable rows
 retain the first reference that settled them; a retry does not rewrite their
 history. The exact-predecessor key removes the old duplicate-row collision
@@ -549,7 +562,7 @@ predecessor process still exists, and a second run reports the already
 released lease without changing anything. Recovery inside the lease TTL is
 refused up front with the exact expiry (`predecessor lease generation N has
 not expired (expires unix-ms:<n>, in <s>s)`), and the absent `daemon status`
-output lists each unreleased predecessor lease with its expiry the same way.
+output names the one unreleased predecessor lease with its expiry the same way.
 
 ```bash
 firm daemon recover-predecessor --confirm daemon-recover-predecessor \
@@ -604,17 +617,19 @@ code rather than `SUPERVISOR_GENERATION_FENCED`. Never treat a failed stop as a
 stopped daemon.
 
 `authority_released` on that receipt is an observation, not a prediction: it is
-true only when `release_node_authorities` actually ran and every registered
-Execution Space lease came back Released. Every phase — including the recovery
+true only when `release_node_authorities` actually ran and the one machine
+lease document came back Released. Every phase — including the recovery
 scanner — gates the release, so a scanner failure leaves the lease `Draining`
 and the receipt reports `authority_released:false`.
 
-Read `authority_released:false` as **not wholly released**, never as "nothing
-was released". Release walks every registered Execution Space and continues
-past a per-Space failure, so some Space leases may already be Released while
-others are not. The receipt names them in `released_execution_space_ids` and
-`release_failed_execution_space_ids`, and the CLI prints both. Read each
-`NodeDaemonLease` when you need certainty about a specific Space.
+Read `authority_released:false` as **not released**, never as "partly". The
+release is one all-or-nothing publish on the one document (ADR 0075), so there
+is no per-Space middle state. The receipt's `released_execution_space_ids` and
+`release_failed_execution_space_ids` tell the two honest cases apart: both
+empty means the release never ran; every registered Space named under
+`release_failed_execution_space_ids` means it ran and failed. The CLI prints
+both. Read the machine lease document (`lease_path` in `daemon status`) when
+you need certainty.
 
 Two known limits:
 
@@ -628,18 +643,19 @@ Two known limits:
   drain bound. The serving loop sets no socket timeouts and handles each
   connection on its own thread, so this starves nothing, but a dashboard or
   proxy client with a shorter timeout may give up before the receipt arrives. A
-  client-side timeout is not a failed stop: re-read the `NodeDaemonLease` to
+  client-side timeout is not a failed stop: re-read the machine lease document
+  (`<FIRM_HOME>/nodes/<node_id>/node-daemon-lease.json`) to
   learn whether authority was released.
 
 NodeDaemon lease expiry is not takeover authority. If the exact predecessor
 process is still alive, let that instance settle commands, drain providers and
-release every registered Execution Space. If it crashed, use the Operator
+publish `Released` on the machine lease document. If it crashed, use the Operator
 RoleView's critical `recover daemon predecessor` action only with an exact
 process/provider-group termination evidence reference. The action is fenced to
 the expired daemon id, instance id and generation, fails closed on any unknown
-RuntimeCommand effect, and must release the complete per-Space authority bundle
-before a new daemon may start. Never delete lease rows or retry Start to bypass
-this settlement boundary.
+RuntimeCommand effect, and must publish the release before a new daemon may
+start. Never edit the lease document or its history by hand, or retry Start to
+bypass this settlement boundary.
 
 A drain leaves every member that was mid-turn with an `Interrupted`
 AgentSession. That is recoverable, not wedged: after the predecessor lease is

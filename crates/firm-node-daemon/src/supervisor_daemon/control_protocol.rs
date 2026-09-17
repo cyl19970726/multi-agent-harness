@@ -1053,6 +1053,18 @@ impl MultiTeamDaemon {
                 }
             }
             "status" => {
+                // The machine lease, read Store-free: status is the one
+                // control lane that must stay answerable while an Execution
+                // Space scan is busy (#671), so it reads only the node file —
+                // no Space store, no Space scan, no legacy-row fallback (that
+                // fallback needs a Store; the CLI's absent-status path has
+                // one). An unreadable document degrades to `lease_error`
+                // rather than failing the whole status answer.
+                let (lease_path, machine_lease, lease_error) =
+                    match harness_store::machine_lease_document_at(&self.firm_home, &self.node_id) {
+                        Ok((path, lease)) => (Some(path.display().to_string()), lease, None),
+                        Err(error) => (None, None, Some(error.to_string())),
+                    };
                 let runs: Vec<serde_json::Value> = {
                     let contexts = self
                         .contexts
@@ -1090,6 +1102,14 @@ impl MultiTeamDaemon {
                         &self.firm_home,
                         &self.node_id,
                     ),
+                    // ADR 0075: status names the one machine lease document
+                    // it read, with the generation and expiry an operator
+                    // needs before reaching for recover-predecessor.
+                    "lease_source": machine_lease.as_ref().map(|_| "node_file"),
+                    "lease_path": lease_path,
+                    "lease_generation": machine_lease.as_ref().map(|lease| lease.generation),
+                    "lease_expires_unix_ms": machine_lease.as_ref().map(|lease| lease.expires_unix_ms),
+                    "lease_error": lease_error,
                     "lease_renewals": crate::lease_renewal_diagnostics::snapshot(),
                     "scan_metrics": crate::scan_diagnostics::snapshot(),
                     "native_session_wake_sink_registered": !self

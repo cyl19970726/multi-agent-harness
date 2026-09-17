@@ -448,7 +448,7 @@ pub(super) fn daemon_command(args: &[String]) -> CliResult<()> {
             if receipt["ok"] != true {
                 // A refused stop (generation fence, malformed request) never
                 // reached a drain: its receipt carries only {ok, error}, so
-                // the partial-release wording would invent phases and Space
+                // the drain-failure wording would invent phases and Space
                 // lists that do not exist. `drained` is the field that marks a
                 // receipt as a drain result (DEV-149-REVIEW-04).
                 if !receipt["drained"].is_boolean() {
@@ -459,10 +459,13 @@ pub(super) fn daemon_command(args: &[String]) -> CliResult<()> {
                             .unwrap_or("NODE_DAEMON_STOP_REFUSED"),
                     )));
                 }
-                // Release continues past a per-Space failure, so a failed drain
-                // does not mean nothing was released. Say "not wholly
-                // released" and name the Spaces rather than asserting the
-                // daemon still holds everything (DEV-149-REVIEW-03).
+                // The machine release is one all-or-nothing publish on the
+                // one document (ADR 0075), so a failed drain left authority
+                // either wholly in place (release never ran: both lists are
+                // empty) or wholly unreleased with every registered Space
+                // named failed. There is no partial middle state to describe:
+                // the DEV-149-REVIEW-03 "partly released" reading retired
+                // with the per-Space records it described (#993).
                 let space_ids = |key: &str| {
                     receipt[key]
                         .as_array()
@@ -476,9 +479,9 @@ pub(super) fn daemon_command(args: &[String]) -> CliResult<()> {
                         .unwrap_or_else(|| "none".to_string())
                 };
                 return Err(CliError::Usage(format!(
-                    "{}: NodeDaemon {node_id} machine authority is NOT wholly released \
-                     (failed phase: {}; Execution Space leases already released: {}; \
-                     release failed: {}). Read each NodeDaemonLease for certainty.",
+                    "{}: NodeDaemon {node_id} machine authority is NOT released \
+                     (failed phase: {}; released for: {}; \
+                     release failed for: {}). Read the machine lease document for certainty.",
                     receipt["error"]
                         .as_str()
                         .unwrap_or("NODE_DAEMON_DRAIN_INCOMPLETE"),

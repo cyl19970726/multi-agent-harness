@@ -614,3 +614,105 @@ fn every_machine_lease_refusal_is_typed_not_a_message_prefix() {
         );
     }
 }
+
+/// #993: the generation fence is typed, so the heartbeat's authority-loss
+/// latch classifies it with `is_node_daemon_generation_fenced()` rather than
+/// matching a message prefix two lines above the typed unresolved latch.
+///
+/// Every `NODE_DAEMON_GENERATION_FENCED` the machine-lease writers can emit is
+/// exercised here — a stale renew, a drain from a non-Active status, and a
+/// release naming a generation the document does not carry.
+///
+/// Red proof: reverting the writers to bare `StoreError::Conflict(format!(…))`
+/// fails every `expect("typed")` below — a plain string is not a `TrustError`.
+#[test]
+fn the_generation_fence_is_typed_not_a_message_prefix() {
+    use firm_core::agentfirm_api::TrustErrorCode;
+
+    let (_home, store) = machine_lease_store("typed-generation-fence");
+    let lease = acquire(&store, "node-daemon:fenced", "instance-1", 60_000);
+
+    let cases: Vec<(&str, StoreError)> = vec![
+        (
+            "renew as another daemon",
+            store
+                .renew_machine_lease(
+                    NODE,
+                    "node-daemon:other",
+                    lease.generation,
+                    "instance-9",
+                    1_000,
+                )
+                .expect_err("a stale renew is fenced"),
+        ),
+        (
+            "renew the wrong generation",
+            store
+                .renew_machine_lease(
+                    NODE,
+                    &lease.daemon_id,
+                    lease.generation + 1,
+                    &lease.instance_id,
+                    1_000,
+                )
+                .expect_err("a generation the document does not carry is fenced"),
+        ),
+        (
+            "release the wrong generation",
+            store
+                .release_machine_lease(NODE, &lease.daemon_id, lease.generation + 1, "instance-9")
+                .expect_err("a mismatched release is fenced"),
+        ),
+    ];
+    store
+        .drain_machine_lease(
+            NODE,
+            &lease.daemon_id,
+            lease.generation,
+            &lease.instance_id,
+            30_000,
+        )
+        .expect("drain the live generation");
+    let mut cases = cases;
+    cases.push((
+        "renew a Draining generation",
+        store
+            .renew_machine_lease(
+                NODE,
+                &lease.daemon_id,
+                lease.generation,
+                &lease.instance_id,
+                1_000,
+            )
+            .expect_err("a non-Active generation is fenced"),
+    ));
+
+    for (what, error) in cases {
+        let typed = error
+            .trust_error()
+            .unwrap_or_else(|| panic!("{what}: refusal is not typed: {error}"));
+        assert_eq!(
+            typed.code,
+            TrustErrorCode::NodeDaemonGenerationFenced,
+            "{what}: wrong code"
+        );
+        assert_eq!(typed.resource_kind, "node_daemon_lease", "{what}");
+        assert!(!typed.retryable, "{what}: a generation fence is final");
+        assert!(
+            typed.message.starts_with("NODE_DAEMON_GENERATION_FENCED:"),
+            "{what}: the operator-facing token stays in the message"
+        );
+        assert!(
+            error.is_node_daemon_generation_fenced(),
+            "{what}: the predicate recognises the typed form"
+        );
+    }
+
+    // The unresolved latch and the fenced latch answer different questions.
+    let unbound = HarnessStore::new(team_test_firm_home("typed-fence-not-unresolved"));
+    let unresolved = unbound
+        .authoritative_machine_lease(NODE)
+        .expect_err("an unbound store is unresolved, not fenced");
+    assert!(unresolved.is_machine_lease_unresolved());
+    assert!(!unresolved.is_node_daemon_generation_fenced());
+}
